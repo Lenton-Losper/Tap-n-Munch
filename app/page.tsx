@@ -7,7 +7,7 @@ export default function HomePage() {
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex flex-col items-center justify-center gap-8 p-8">
       <div className="text-center space-y-4 mb-4">
         <h1 className="text-5xl font-bold text-balance bg-gradient-to-r from-[#FF6B35] to-orange-600 bg-clip-text text-transparent">
-          Restaurant Ordering System
+          Tap n Munch
         </h1>
         <p className="text-muted-foreground text-lg">Complete restaurant management solution</p>
       </div>

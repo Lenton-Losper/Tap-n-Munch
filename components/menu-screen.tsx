@@ -236,7 +236,10 @@ export function MenuScreen() {
             <Button variant="ghost" size="icon" onClick={() => window.history.back()} className="h-11 w-11">
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-bold">Table 7</h1>
+            <div className="flex flex-col">
+              <h1 className="text-xl font-bold">Tap n Munch</h1>
+              <p className="text-xs text-muted-foreground">Table 7</p>
+            </div>
           </div>
           <Button variant="ghost" size="icon" className="relative h-11 w-11" onClick={() => setShowCart(true)}>
             <ShoppingCart className="h-5 w-5" />

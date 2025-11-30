@@ -107,7 +107,7 @@ export function QRCodeManagement() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Main Menu QR Code Section */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-6">Your Restaurant Menu QR Code</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-6">Tap n Munch - Menu QR Code</h2>
           <div className="flex flex-col md:flex-row gap-6 items-start">
             {/* QR Code */}
             <div className="flex-shrink-0 p-4 bg-white border-2 border-gray-200 rounded-lg">
