@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { ShoppingCart, ClipboardList, BarChart3, QrCode } from "lucide-react"
+import { ShoppingCart, ClipboardList, BarChart3, QrCode, UtensilsCrossed } from "lucide-react"
 
 export default function HomePage() {
   return (
@@ -37,6 +37,16 @@ export default function HomePage() {
                 <div className="text-left">
                   <div className="font-semibold">Live Orders</div>
                   <div className="text-sm text-gray-600">Manage incoming orders</div>
+                </div>
+              </Link>
+            </Button>
+
+            <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
+              <Link href="/menu-management" className="flex items-start gap-3">
+                <UtensilsCrossed className="w-5 h-5 text-[#FF6B35] mt-0.5" />
+                <div className="text-left">
+                  <div className="font-semibold">Menu Management</div>
+                  <div className="text-sm text-gray-600">Create and edit your menu</div>
                 </div>
               </Link>
             </Button>
