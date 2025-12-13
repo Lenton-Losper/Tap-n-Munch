@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to get restaurant owner_id
+    function getRestaurantOwner(restaurantId) {
+      return get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.owner_id;
+    }
+    
+    // Helper function to check if user is restaurant owner
+    function isRestaurantOwner(restaurantId) {
+      return request.auth != null && 
+             request.auth.uid == getRestaurantOwner(restaurantId);
+    }
+    
+    // Users can only read/write their own user document
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false; // Prevent deletion
+    }
+    
+    // Restaurant: Read by anyone (for customer menus), write by owner only
+    match /restaurants/{restaurantId} {
+      allow read: if true; // Public for customer menus
+      allow create: if request.auth != null;
+      allow update: if isRestaurantOwner(restaurantId);
+      allow delete: if false; // Prevent deletion
+    }
+    
+    // Legacy Categories: Read by anyone, write by restaurant owner only (deprecated)
+    match /categories/{categoryId} {
+      allow read: if true; // Public for customer menus
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+    }
+    
+    // Menu Categories (Top level: "Drinks", "Food", "Specials")
+    match /menu_categories/{categoryId} {
+      allow read: if true; // Public for customer menus
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+    }
+    
+    // Sub Categories (Second level: "Alcoholic drinks", "Soft drinks", etc.)
+    match /sub_categories/{subcategoryId} {
+      allow read: if true; // Public for customer menus
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+    }
+    
+    // Menu items: Read by anyone, write by restaurant owner only
+    match /menu_items/{itemId} {
+      allow read: if true; // Public for customer menus
+      allow create: if request.auth != null 
+        && exists(/databases/$(database)/documents/sub_categories/$(request.resource.data.sub_category_id))
+        && get(/databases/$(database)/documents/sub_categories/$(request.resource.data.sub_category_id)).data.restaurant_id == request.resource.data.restaurant_id;
+      allow update, delete: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+    }
+    
+    // Orders: Create by anyone (customers), read/update by restaurant owner only
+    match /orders/{orderId} {
+      allow create: if true; // Customers can place orders
+      allow read: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+      allow update: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+      allow delete: if false; // Prevent deletion
+    }
+    
+    // Tables: Read by anyone (for QR codes), write by restaurant owner only
+    match /tables/{tableId} {
+      allow read: if true; // Public for QR codes
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+    }
+    
+    // Analytics: Read/write by restaurant owner only
+    match /analytics_daily/{analyticsId} {
+      allow read: if request.auth != null && 
+        isRestaurantOwner(resource.data.restaurant_id);
+      allow create, update: if request.auth != null;
+      allow delete: if false;
+    }
+  }
+}
+

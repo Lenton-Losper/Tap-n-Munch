@@ -1,0 +1,36 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper function to get restaurant owner_id from Firestore
+    function getRestaurantOwner(restaurantId) {
+      return firestore.get(/databases/(default)/documents/restaurants/$(restaurantId)).data.owner_id;
+    }
+    
+    // Helper function to check if user is restaurant owner
+    function isRestaurantOwner(restaurantId) {
+      return request.auth != null && 
+             request.auth.uid == getRestaurantOwner(restaurantId);
+    }
+    
+    // Menu item images: Only restaurant owners can upload/delete
+    match /menu-items/{restaurantId}/{fileName} {
+      // Allow read by anyone (for customer menus)
+      allow read: if true;
+      
+      // Allow upload by authenticated users (will be validated by Firestore rules)
+      allow write: if request.auth != null
+        && request.resource.size < 5 * 1024 * 1024  // Max 5MB
+        && request.resource.contentType.matches('image/.*');  // Only images
+      
+      // Allow delete by restaurant owner
+      allow delete: if request.auth != null && isRestaurantOwner(restaurantId);
+    }
+    
+    // Default: Deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

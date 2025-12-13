@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { ShoppingCart, Plus, Minus, X, ArrowLeft, Trash2, CreditCard, CheckCircle2 } from "lucide-react"
+import { ShoppingCart, Plus, Minus, X, ArrowLeft, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -120,12 +120,6 @@ export function MenuScreen() {
     },
   ])
   const [showCart, setShowCart] = useState(false)
-  const [showPayment, setShowPayment] = useState(false)
-  const [cardNumber, setCardNumber] = useState("")
-  const [cardName, setCardName] = useState("")
-  const [expiryDate, setExpiryDate] = useState("")
-  const [cvv, setCvv] = useState("")
-  const [paymentSuccess, setPaymentSuccess] = useState(false)
 
   const filteredItems = menuItems.filter((item) => item.category === activeCategory)
 
@@ -194,37 +188,8 @@ export function MenuScreen() {
   }
 
   const handlePlaceOrder = () => {
+    // Redirect to checkout page (this is demo code - actual checkout is in /checkout page)
     setShowCart(false)
-    setShowPayment(true)
-  }
-
-  const handlePayment = () => {
-    // Simulate payment processing
-    setPaymentSuccess(true)
-    setTimeout(() => {
-      setShowPayment(false)
-      setPaymentSuccess(false)
-      setCart([])
-      // Reset form
-      setCardNumber("")
-      setCardName("")
-      setExpiryDate("")
-      setCvv("")
-    }, 2000)
-  }
-
-  const formatCardNumber = (value: string) => {
-    const cleaned = value.replace(/\s/g, "")
-    const matches = cleaned.match(/.{1,4}/g)
-    return matches ? matches.join(" ") : cleaned
-  }
-
-  const formatExpiryDate = (value: string) => {
-    const cleaned = value.replace(/\D/g, "")
-    if (cleaned.length >= 2) {
-      return cleaned.slice(0, 2) + "/" + cleaned.slice(2, 4)
-    }
-    return cleaned
   }
 
   return (
@@ -491,138 +456,6 @@ export function MenuScreen() {
         </DialogContent>
       </Dialog>
 
-      {/* Payment Modal */}
-      <Dialog open={showPayment} onOpenChange={setShowPayment}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto p-0">
-          {paymentSuccess ? (
-            <div className="px-6 py-12 text-center space-y-4">
-              <div className="mx-auto w-16 h-16 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
-              </div>
-              <h3 className="text-2xl font-bold">Payment Successful!</h3>
-              <p className="text-muted-foreground">Your order has been placed.</p>
-            </div>
-          ) : (
-            <>
-              <DialogHeader className="px-6 pt-6 pb-4">
-                <DialogTitle className="text-2xl font-bold">Payment</DialogTitle>
-              </DialogHeader>
-
-              <div className="px-6 pb-6 space-y-6">
-                {/* Payment Method - Credit Card Only */}
-                <div className="space-y-4">
-                  <div className="border-2 border-primary rounded-lg p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CreditCard className="h-5 w-5 text-primary" />
-                        <span className="font-semibold">Credit Card</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <img
-                          src="https://upload.wikimedia.org/wikipedia/commons/0/04/Mastercard-logo.png"
-                          alt="Mastercard"
-                          className="h-6"
-                        />
-                        <img
-                          src="https://upload.wikimedia.org/wikipedia/commons/4/41/Visa_Logo.png"
-                          alt="Visa"
-                          className="h-6"
-                        />
-                        <img
-                          src="https://upload.wikimedia.org/wikipedia/commons/3/30/American_Express_logo.svg"
-                          alt="Amex"
-                          className="h-6"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Card Details Form */}
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="cardNumber">Card Number</Label>
-                    <Input
-                      id="cardNumber"
-                      placeholder="1234 5678 9012 3456"
-                      value={cardNumber}
-                      onChange={(e) => {
-                        const formatted = formatCardNumber(e.target.value.replace(/\s/g, "").slice(0, 16))
-                        setCardNumber(formatted)
-                      }}
-                      maxLength={19}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="cardName">Cardholder Name</Label>
-                    <Input
-                      id="cardName"
-                      placeholder="John Doe"
-                      value={cardName}
-                      onChange={(e) => setCardName(e.target.value.toUpperCase())}
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="expiry">Expiry Date</Label>
-                      <Input
-                        id="expiry"
-                        placeholder="MM/YY"
-                        value={expiryDate}
-                        onChange={(e) => {
-                          const formatted = formatExpiryDate(e.target.value)
-                          setExpiryDate(formatted)
-                        }}
-                        maxLength={5}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="cvv">CVV</Label>
-                      <Input
-                        id="cvv"
-                        placeholder="123"
-                        type="password"
-                        value={cvv}
-                        onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 3))}
-                        maxLength={3}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Order Summary */}
-                <div className="bg-muted/30 rounded-lg p-4 space-y-2">
-                  <h3 className="font-semibold mb-3">Order Summary</h3>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Items ({cart.length})</span>
-                    <span>N${calculateCartSubtotal()}</span>
-                  </div>
-                  <Separator />
-                  <div className="flex justify-between font-bold text-lg">
-                    <span>Total</span>
-                    <span className="text-primary">N${calculateCartSubtotal()}</span>
-                  </div>
-                </div>
-
-                {/* Pay Button */}
-                <Button
-                  onClick={handlePayment}
-                  disabled={!cardNumber || !cardName || !expiryDate || !cvv}
-                  className="w-full bg-primary hover:bg-primary/90 text-primary-foreground h-12 text-base font-semibold"
-                >
-                  Pay N${calculateCartSubtotal()}
-                </Button>
-
-                <p className="text-xs text-center text-muted-foreground">
-                  Your payment information is secure and encrypted
-                </p>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
