@@ -69,6 +69,8 @@ export function MenuManagementV2() {
     base_price: '',
     image_url: '',
     imageFile: null as File | null,
+    imageFit: 'contain' as 'contain' | 'cover' | 'fill' | 'scale-down',
+    imagePosition: 'center' as 'center' | 'top' | 'bottom',
     has_sizes: false,
     sizes: [] as Array<{ name: string; price_modifier: number }>,
     has_addons: false,
@@ -201,6 +203,8 @@ export function MenuManagementV2() {
       base_price: '',
       image_url: '',
       imageFile: null,
+      imageFit: 'contain',
+      imagePosition: 'center',
       has_sizes: false,
       sizes: [],
       has_addons: false,
@@ -397,6 +401,8 @@ export function MenuManagementV2() {
         base_price: '',
         image_url: '',
         imageFile: null,
+        imageFit: 'contain',
+        imagePosition: 'center',
         has_sizes: false,
         sizes: [],
         has_addons: false,
@@ -419,6 +425,8 @@ export function MenuManagementV2() {
       base_price: item.base_price.toString(),
       image_url: item.image_url || '',
       imageFile: null,
+      imageFit: item.imageFit || 'contain',
+      imagePosition: item.imagePosition || 'center',
       has_sizes: item.has_sizes,
       sizes: item.sizes || [],
       has_addons: item.has_addons,
@@ -527,6 +535,8 @@ export function MenuManagementV2() {
           description: itemForm.description,
           base_price: price,
           image_url: imageUrl || undefined,
+          imageFit: itemForm.imageFit,
+          imagePosition: itemForm.imagePosition,
           has_sizes: itemForm.has_sizes,
           sizes: itemForm.sizes,
           has_addons: itemForm.has_addons,
@@ -546,6 +556,8 @@ export function MenuManagementV2() {
           description: itemForm.description,
           image_url: imageUrl || undefined,
           base_price: price,
+          imageFit: itemForm.imageFit,
+          imagePosition: itemForm.imagePosition,
           has_sizes: itemForm.has_sizes,
           sizes: itemForm.sizes,
           has_addons: itemForm.has_addons,
@@ -567,6 +579,8 @@ export function MenuManagementV2() {
         base_price: '',
         image_url: '',
         imageFile: null,
+        imageFit: 'contain',
+        imagePosition: 'center',
         has_sizes: false,
         sizes: [],
         has_addons: false,
@@ -784,12 +798,15 @@ export function MenuManagementV2() {
                               className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                             >
                               {item.image_url && (
-                                <div className="relative w-full h-32">
+                                <div className="relative w-full h-32 bg-gray-50">
                                   <Image
                                     src={item.image_url}
                                     alt={item.name}
                                     fill
-                                    className="object-cover"
+                                    style={{
+                                      objectFit: item.imageFit || 'contain',
+                                      objectPosition: item.imagePosition || 'center',
+                                    }}
                                   />
                                 </div>
                               )}
@@ -919,12 +936,15 @@ export function MenuManagementV2() {
                             className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                           >
                             {item.image_url && (
-                              <div className="relative w-full h-32">
+                              <div className="relative w-full h-32 bg-gray-50">
                                 <Image
                                   src={item.image_url}
                                   alt={item.name}
                                   fill
-                                  className="object-cover"
+                                  style={{
+                                    objectFit: item.imageFit || 'contain',
+                                    objectPosition: item.imagePosition || 'center',
+                                  }}
                                 />
                               </div>
                             )}
@@ -1144,14 +1164,17 @@ export function MenuManagementV2() {
                 />
                 
                 {/* Image Preview */}
-                {imagePreview && (
-                  <div className="relative w-full h-48 border rounded-lg overflow-hidden">
-                    <Image
-                      src={imagePreview}
-                      alt="Preview"
-                      fill
-                      className="object-cover"
-                    />
+                    {imagePreview && (
+                      <div className="relative w-full h-48 border rounded-lg overflow-hidden bg-gray-50">
+                        <Image
+                          src={imagePreview}
+                          alt="Preview"
+                          fill
+                          style={{
+                            objectFit: itemForm.imageFit,
+                            objectPosition: itemForm.imagePosition,
+                          }}
+                        />
                     {uploadingImage && (
                       <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
                         <Loader2 className="h-8 w-8 animate-spin text-white" />
@@ -1167,6 +1190,80 @@ export function MenuManagementV2() {
                 )}
               </div>
             </div>
+            
+            {/* Image Display Options */}
+            {imagePreview && (
+              <div className="space-y-4">
+                <div>
+                  <Label>Image Display</Label>
+                  <Select
+                    value={itemForm.imageFit}
+                    onValueChange={(value: 'contain' | 'cover' | 'fill' | 'scale-down') => 
+                      setItemForm({ ...itemForm, imageFit: value })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="contain">Fit (Show full image)</SelectItem>
+                      <SelectItem value="cover">Fill (May crop image)</SelectItem>
+                      <SelectItem value="scale-down">Scale Down</SelectItem>
+                      <SelectItem value="fill">Stretch</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Choose how the image should be displayed in the card
+                  </p>
+                </div>
+                
+                <div>
+                  <Label>Image Position</Label>
+                  <Select
+                    value={itemForm.imagePosition}
+                    onValueChange={(value: 'center' | 'top' | 'bottom') => 
+                      setItemForm({ ...itemForm, imagePosition: value })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="center">Center</SelectItem>
+                      <SelectItem value="top">Top</SelectItem>
+                      <SelectItem value="bottom">Bottom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                {/* Visual Preview */}
+                <div className="grid grid-cols-2 gap-2">
+                  {(['contain', 'cover', 'fill', 'scale-down'] as const).map((fit) => (
+                    <button
+                      key={fit}
+                      type="button"
+                      onClick={() => setItemForm({ ...itemForm, imageFit: fit })}
+                      className={`p-2 border-2 rounded-lg transition-colors ${
+                        itemForm.imageFit === fit ? 'border-[#FF6B35] bg-orange-50' : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <div className="w-full h-16 bg-gray-100 mb-1 rounded overflow-hidden">
+                        {imagePreview && (
+                          <img 
+                            src={imagePreview} 
+                            style={{ objectFit: fit }}
+                            className="w-full h-full"
+                            alt={fit}
+                          />
+                        )}
+                      </div>
+                      <span className="text-xs capitalize block text-center">{fit.replace('-', ' ')}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"

@@ -82,12 +82,15 @@ export function ItemDetailModal({
         <div className="p-6 space-y-6">
           {/* Image */}
           {item.image_url && (
-            <div className="relative w-full h-64 rounded-lg overflow-hidden">
+            <div className="relative w-full h-64 rounded-lg overflow-hidden bg-gray-50">
               <Image
                 src={item.image_url}
                 alt={item.name}
                 fill
-                className="object-cover"
+                style={{
+                  objectFit: item.imageFit || 'contain',
+                  objectPosition: item.imagePosition || 'center',
+                }}
               />
             </div>
           )}

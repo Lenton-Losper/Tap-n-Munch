@@ -91,6 +91,10 @@ export interface MenuItem {
   image_url: string | null
   base_price: number
   
+  // Image display options
+  imageFit?: 'contain' | 'cover' | 'fill' | 'scale-down' // How the image should be displayed
+  imagePosition?: 'center' | 'top' | 'bottom' // Image alignment within container
+  
   // Customizations
   has_sizes: boolean
   sizes: MenuItemSize[]

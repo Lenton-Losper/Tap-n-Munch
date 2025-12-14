@@ -210,12 +210,15 @@ export default function MenuBrowsePage() {
                       className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow"
                     >
                       {item.image_url && (
-                        <div className="relative w-full h-48">
+                        <div className="relative w-full h-48 bg-gray-50">
                           <Image
                             src={item.image_url}
                             alt={item.name}
                             fill
-                            className="object-cover"
+                            style={{
+                              objectFit: item.imageFit || 'contain',
+                              objectPosition: item.imagePosition || 'center',
+                            }}
                           />
                         </div>
                       )}
