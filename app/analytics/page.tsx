@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { AnalyticsDashboard } from "@/components/analytics-dashboard"
 import { ProtectedRoute } from "@/components/auth/protected-route"
 

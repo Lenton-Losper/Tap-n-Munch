@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { QRCodeManagement } from "@/components/qr-code-management"
 import { ProtectedRoute } from "@/components/auth/protected-route"
 
