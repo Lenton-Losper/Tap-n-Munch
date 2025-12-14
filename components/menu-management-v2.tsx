@@ -647,50 +647,52 @@ export function MenuManagementV2() {
     <div className="min-h-screen bg-muted/30">
       {/* Header */}
       <header className="bg-card border-b border-border">
-        <div className="container mx-auto px-6 py-6 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => router.push('/')}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <h1 className="text-3xl font-bold">Menu Management</h1>
-          </div>
-          <div className="flex gap-2">
-            <Button 
-              onClick={() => setShowMenuCategoryModal(true)}
-              className="bg-[#FF6B35] hover:bg-[#e55a28]"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add Category
-            </Button>
-            {selectedMenuCategory && (
+        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
+              <Button variant="ghost" size="icon" onClick={() => router.push('/')} className="h-11 w-11 sm:h-10 sm:w-10">
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <h1 className="text-2xl sm:text-3xl font-bold">Menu Management</h1>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
               <Button 
-                onClick={() => setShowSubCategoryModal(true)}
-                className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                onClick={() => setShowMenuCategoryModal(true)}
+                className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-4 sm:px-6"
               >
                 <Plus className="h-4 w-4 mr-2" />
-                Add Sub-category
+                Add Category
               </Button>
-            )}
+              {selectedMenuCategory && (
+                <Button 
+                  onClick={() => setShowSubCategoryModal(true)}
+                  className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-4 sm:px-6"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Sub-category
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </header>
 
-      <div className="container mx-auto px-6 py-6">
+      <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {/* Category Tabs */}
-        <div className="flex gap-2 mb-6 overflow-x-auto">
+        <div className="flex gap-2 mb-4 sm:mb-6 overflow-x-auto pb-2 scrollbar-hide -mx-4 sm:mx-0 px-4 sm:px-0">
           <Button
             variant={selectedMenuCategory === null ? 'default' : 'outline'}
             onClick={() => handleSelectMenuCategory(null)}
-            className={selectedMenuCategory === null ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+            className={`${selectedMenuCategory === null ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap min-w-[100px] sm:min-w-0`}
           >
             All Items ({getCategoryItemCount(null)})
           </Button>
           {menuCategories.map((category) => (
-            <div key={category.id} className="flex items-center gap-1 group">
+            <div key={category.id} className="flex items-center gap-1 group flex-shrink-0">
               <Button
                 variant={selectedMenuCategory?.id === category.id ? 'default' : 'outline'}
                 onClick={() => handleSelectMenuCategory(category)}
-                className={selectedMenuCategory?.id === category.id ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+                className={`${selectedMenuCategory?.id === category.id ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap`}
               >
                 {category.name} ({getCategoryItemCount(category.id)})
               </Button>
@@ -701,7 +703,7 @@ export function MenuManagementV2() {
                   e.stopPropagation()
                   handleDeleteMenuCategory(category)
                 }}
-                className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 hover:bg-red-50"
+                className="h-11 w-11 sm:h-8 sm:w-8 p-0 opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 text-red-500 hover:text-red-700 hover:bg-red-50"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -710,14 +712,14 @@ export function MenuManagementV2() {
         </div>
 
         {/* Search Bar */}
-        <div className="mb-6">
+        <div className="mb-4 sm:mb-6">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
             <Input
               placeholder="Search menu items..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
+              className="pl-10 h-11 sm:h-10 text-base sm:text-sm"
             />
           </div>
         </div>
@@ -755,11 +757,11 @@ export function MenuManagementV2() {
               
               return (
                 <div key={category.id} className="space-y-6">
-                  <h2 className="text-2xl font-bold">{category.name}</h2>
+                  <h2 className="text-xl sm:text-2xl font-bold">{category.name}</h2>
                   {Object.values(categoryGrouped).map(({ subcategory, items }) => (
                     <div key={subcategory.id} className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-xl font-semibold">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
+                        <h3 className="text-lg sm:text-xl font-semibold">
                           {subcategory.name} ({items.length} {items.length === 1 ? 'item' : 'items'})
                         </h3>
                         <Button
@@ -767,7 +769,7 @@ export function MenuManagementV2() {
                             setSelectedMenuCategory(category)
                             handleAddItemForSubCategory(subcategory)
                           }}
-                          className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                          className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
                           size="sm"
                         >
                           <Plus className="h-4 w-4 mr-2" />
@@ -775,7 +777,7 @@ export function MenuManagementV2() {
                         </Button>
                       </div>
                       {items.length > 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
                           {items.map((item) => (
                             <div
                               key={item.id}
@@ -792,24 +794,24 @@ export function MenuManagementV2() {
                                 </div>
                               )}
                               <div className="p-3">
-                                <div className="flex items-start justify-between mb-1">
-                                  <h4 className="font-semibold text-sm line-clamp-1 flex-1">{item.name}</h4>
-                                  <div className="flex gap-1">
+                                <div className="flex items-start justify-between mb-1 gap-2">
+                                  <h4 className="font-semibold text-sm sm:text-sm line-clamp-1 flex-1">{item.name}</h4>
+                                  <div className="flex gap-1 flex-shrink-0">
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      className="h-6 w-6"
+                                      className="h-8 w-8 sm:h-6 sm:w-6"
                                       onClick={() => handleEditItem(item)}
                                     >
-                                      <Edit className="h-3 w-3" />
+                                      <Edit className="h-4 w-4 sm:h-3 sm:w-3" />
                                     </Button>
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      className="h-6 w-6 text-red-500 hover:text-red-700"
+                                      className="h-8 w-8 sm:h-6 sm:w-6 text-red-500 hover:text-red-700"
                                       onClick={() => handleDeleteItem(item)}
                                     >
-                                      <Trash2 className="h-3 w-3" />
+                                      <Trash2 className="h-4 w-4 sm:h-3 sm:w-3" />
                                     </Button>
                                   </div>
                                 </div>
@@ -844,16 +846,16 @@ export function MenuManagementV2() {
               )
             })}
             {menuCategories.length === 0 && (
-              <div className="text-center py-12 bg-card border rounded-lg">
+              <div className="text-center py-8 sm:py-12 bg-card border rounded-lg px-4 sm:px-6">
                 <div className="max-w-md mx-auto">
-                  <div className="text-6xl mb-4">📋</div>
-                  <h3 className="text-xl font-semibold mb-2">No menu categories yet</h3>
-                  <p className="text-muted-foreground mb-4">
+                  <div className="text-5xl sm:text-6xl mb-3 sm:mb-4">📋</div>
+                  <h3 className="text-lg sm:text-xl font-semibold mb-2">No menu categories yet</h3>
+                  <p className="text-sm sm:text-base text-muted-foreground mb-4 sm:mb-6">
                     Create your first menu category to get started
                   </p>
                   <Button 
                     onClick={() => setShowMenuCategoryModal(true)}
-                    className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                    className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-6"
                   >
                     <Plus className="h-4 w-4 mr-2" />
                     Create First Category
@@ -868,16 +870,16 @@ export function MenuManagementV2() {
         {selectedMenuCategory && (
           <div className="space-y-8">
             {Object.keys(groupedData).length === 0 ? (
-              <div className="text-center py-12 bg-card border rounded-lg">
+              <div className="text-center py-8 sm:py-12 bg-card border rounded-lg px-4 sm:px-6">
                 <div className="max-w-md mx-auto">
-                  <div className="text-6xl mb-4">📁</div>
-                  <h3 className="text-xl font-semibold mb-2">No sub-categories yet</h3>
-                  <p className="text-muted-foreground mb-4">
+                  <div className="text-5xl sm:text-6xl mb-3 sm:mb-4">📁</div>
+                  <h3 className="text-lg sm:text-xl font-semibold mb-2">No sub-categories yet</h3>
+                  <p className="text-sm sm:text-base text-muted-foreground mb-4 sm:mb-6">
                     Create your first sub-category for "{selectedMenuCategory.name}"
                   </p>
                   <Button 
                     onClick={() => setShowSubCategoryModal(true)}
-                    className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                    className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-6"
                   >
                     <Plus className="h-4 w-4 mr-2" />
                     Create First Sub-category
@@ -896,13 +898,13 @@ export function MenuManagementV2() {
                 
                 return (
                   <div key={subcategory.id} className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xl font-semibold">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
+                      <h3 className="text-lg sm:text-xl font-semibold">
                         {subcategory.name} ({filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'})
                       </h3>
                       <Button
                         onClick={() => handleAddItemForSubCategory(subcategory)}
-                        className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                        className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
                         size="sm"
                       >
                         <Plus className="h-4 w-4 mr-2" />
@@ -910,7 +912,7 @@ export function MenuManagementV2() {
                       </Button>
                     </div>
                     {filteredItems.length > 0 ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
                         {filteredItems.map((item) => (
                           <div
                             key={item.id}
@@ -926,28 +928,28 @@ export function MenuManagementV2() {
                                 />
                               </div>
                             )}
-                            <div className="p-3">
-                              <div className="flex items-start justify-between mb-1">
-                                <h4 className="font-semibold text-sm line-clamp-1 flex-1">{item.name}</h4>
-                                <div className="flex gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6"
-                                    onClick={() => handleEditItem(item)}
-                                  >
-                                    <Edit className="h-3 w-3" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 text-red-500 hover:text-red-700"
-                                    onClick={() => handleDeleteItem(item)}
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
+                              <div className="p-3">
+                                <div className="flex items-start justify-between mb-1 gap-2">
+                                  <h4 className="font-semibold text-sm sm:text-sm line-clamp-1 flex-1">{item.name}</h4>
+                                  <div className="flex gap-1 flex-shrink-0">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 sm:h-6 sm:w-6"
+                                      onClick={() => handleEditItem(item)}
+                                    >
+                                      <Edit className="h-4 w-4 sm:h-3 sm:w-3" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 sm:h-6 sm:w-6 text-red-500 hover:text-red-700"
+                                      onClick={() => handleDeleteItem(item)}
+                                    >
+                                      <Trash2 className="h-4 w-4 sm:h-3 sm:w-3" />
+                                    </Button>
+                                  </div>
                                 </div>
-                              </div>
                               <p className="text-xs text-muted-foreground mb-2 line-clamp-1">
                                 {item.description}
                               </p>
