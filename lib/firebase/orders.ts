@@ -193,8 +193,8 @@ export async function createOrder(data: Omit<Order, 'id' | 'order_number' | 'cre
     }
     
     // Final validation - ensure no undefined values
-    const hasUndefined = Object.values(cleanedOrderDoc).some(v => v === undefined)
-    if (hasUndefined) {
+    const hasUndefinedAfterSanitize = Object.values(cleanedOrderDoc).some(v => v === undefined)
+    if (hasUndefinedAfterSanitize) {
       console.error('ERROR: Undefined values still present after sanitization:', cleanedOrderDoc)
       console.error('Problematic fields:', Object.entries(cleanedOrderDoc).filter(([_, v]) => v === undefined))
       throw new Error('Order data contains undefined values after sanitization')
