@@ -1,5 +1,29 @@
 import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, doc, getDoc, onSnapshot, Timestamp } from 'firebase/firestore'
 import { db } from './config'
+import { sanitizeFirestoreData } from './firestore-utils'
+
+/**
+ * Recursively removes customer_email from any object (including nested objects)
+ * This is a nuclear option to ensure customer_email never reaches Firestore
+ */
+function removeCustomerEmailRecursive(obj: any): any {
+  if (obj === null || obj === undefined) return obj
+  if (typeof obj !== 'object') return obj
+  
+  if (Array.isArray(obj)) {
+    return obj.map(item => removeCustomerEmailRecursive(item))
+  }
+  
+  const cleaned: any = {}
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === 'customer_email') {
+      // Skip customer_email completely
+      continue
+    }
+    cleaned[key] = removeCustomerEmailRecursive(value)
+  }
+  return cleaned
+}
 
 export interface OrderItem {
   menu_item_id: string
@@ -20,7 +44,6 @@ export interface Order {
   table_number: number
   customer_name?: string
   customer_phone?: string
-  customer_email?: string
   items: OrderItem[]
   order_instructions?: string
   subtotal: number
@@ -75,13 +98,185 @@ export async function createOrder(data: Omit<Order, 'id' | 'order_number' | 'cre
     // Get next order number
     const orderNumber = await getNextOrderNumber(data.restaurant_id)
     
-    const docRef = await addDoc(collection(db, 'orders'), {
-      ...data,
-      order_number: orderNumber,
+    // CRITICAL: Remove customer_email and any undefined values from input data
+    // Convert to plain object and explicitly remove customer_email
+    const dataObj = data as any
+    const cleanData: any = {}
+    
+    // Copy only allowed fields, explicitly excluding customer_email
+    const allowedFields = [
+      'restaurant_id', 'table_id', 'table_number', 'items',
+      'subtotal', 'tax', 'service_fee', 'discount', 'tip', 'total',
+      'payment_method', 'payment_status', 'status',
+      'customer_name', 'customer_phone', 'order_instructions'
+    ]
+    
+    for (const key of allowedFields) {
+      if (key in dataObj && dataObj[key] !== undefined) {
+        cleanData[key] = dataObj[key]
+      }
+    }
+    
+    // Explicitly verify customer_email is NOT in cleanData
+    if ('customer_email' in cleanData) {
+      console.error('ERROR: customer_email found in cleanData after filtering!')
+      delete cleanData.customer_email
+    }
+    
+    // Helper function to safely get string value or null (never undefined)
+    const safeString = (value: any): string | null => {
+      if (value === undefined || value === null) return null
+      const str = String(value).trim()
+      return str !== '' ? str : null
+    }
+    
+    // Build order document from scratch - ONLY include fields we explicitly want
+    // This ensures NO undefined values can slip through
+    const orderDoc: Record<string, any> = {
+      // Required fields (always present)
+      restaurant_id: String(cleanData.restaurant_id),
+      table_id: String(cleanData.table_id || ''),
+      table_number: Number(cleanData.table_number) || 0,
+      items: Array.isArray(cleanData.items) ? cleanData.items : [],
+      subtotal: Number(cleanData.subtotal) || 0,
+      tax: Number(cleanData.tax) || 0,
+      service_fee: Number(cleanData.service_fee) || 0,
+      discount: Number(cleanData.discount) || 0,
+      tip: Number(cleanData.tip) || 0,
+      total: Number(cleanData.total) || 0,
+      payment_method: String(cleanData.payment_method || 'cash'),
+      payment_status: String(cleanData.payment_status || 'pending'),
+      status: String(cleanData.status || 'new'),
+      order_number: Number(orderNumber),
       placed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    })
+    }
+    
+    // Optional fields: only add if they have valid values, otherwise omit entirely
+    // Using null is Firestore-safe, but we'll use the sanitizer to remove undefined
+    const customerName = safeString(cleanData.customer_name)
+    if (customerName !== null) {
+      orderDoc.customer_name = customerName
+    }
+    
+    const customerPhone = safeString(cleanData.customer_phone)
+    if (customerPhone !== null) {
+      orderDoc.customer_phone = customerPhone
+    }
+    
+    const orderInstructions = safeString(cleanData.order_instructions)
+    if (orderInstructions !== null) {
+      orderDoc.order_instructions = orderInstructions
+    }
+    
+    // === COMPREHENSIVE DEBUG LOGGING ===
+    console.log('=== ORDER DATA DEBUG ===')
+    console.log('Input data keys:', Object.keys(data))
+    console.log('Input data has customer_email?', 'customer_email' in data)
+    console.log('CleanData keys:', Object.keys(cleanData))
+    console.log('CleanData has customer_email?', 'customer_email' in cleanData)
+    console.log('ORDER PAYLOAD BEFORE SANITIZATION →', orderDoc)
+    console.log('OrderDoc keys:', Object.keys(orderDoc))
+    console.log('OrderDoc has customer_email?', 'customer_email' in orderDoc)
+    console.log('Has undefined values?', Object.values(orderDoc).some(v => v === undefined))
+    console.log('Undefined fields:', Object.entries(orderDoc).filter(([_, v]) => v === undefined).map(([k]) => k))
+    console.log('========================')
+    
+    // CRITICAL: Sanitize before Firestore write - removes any undefined values
+    const cleanedOrderDoc = sanitizeFirestoreData(orderDoc)
+    
+    // EXPLICIT: Remove customer_email if it somehow still exists
+    if ('customer_email' in cleanedOrderDoc) {
+      console.warn('WARNING: customer_email found in cleanedOrderDoc, removing it')
+      delete (cleanedOrderDoc as any).customer_email
+    }
+    
+    // Final validation - ensure no undefined values
+    const hasUndefined = Object.values(cleanedOrderDoc).some(v => v === undefined)
+    if (hasUndefined) {
+      console.error('ERROR: Undefined values still present after sanitization:', cleanedOrderDoc)
+      console.error('Problematic fields:', Object.entries(cleanedOrderDoc).filter(([_, v]) => v === undefined))
+      throw new Error('Order data contains undefined values after sanitization')
+    }
+    
+    // Final debug before Firestore write
+    console.log('=== FINAL ORDER PAYLOAD ===')
+    console.log('ORDER PAYLOAD AFTER SANITIZATION →', cleanedOrderDoc)
+    console.log('Final keys:', Object.keys(cleanedOrderDoc))
+    console.log('Has customer_email?', 'customer_email' in cleanedOrderDoc)
+    console.log('Final check - Has undefined values?', Object.values(cleanedOrderDoc).some(v => v === undefined))
+    console.log('All field types:', Object.entries(cleanedOrderDoc).map(([k, v]) => `${k}: ${typeof v}${v === undefined ? ' (UNDEFINED!)' : ''}`))
+    console.log('==========================')
+    
+    // NUCLEAR OPTION: Build final document from scratch with ONLY allowed fields
+    // This is the most reliable way - we explicitly list every field we want
+    const finalOrderDoc: Record<string, any> = {
+      restaurant_id: cleanedOrderDoc.restaurant_id,
+      table_id: cleanedOrderDoc.table_id,
+      table_number: cleanedOrderDoc.table_number,
+      items: cleanedOrderDoc.items,
+      subtotal: cleanedOrderDoc.subtotal,
+      tax: cleanedOrderDoc.tax,
+      service_fee: cleanedOrderDoc.service_fee,
+      discount: cleanedOrderDoc.discount,
+      tip: cleanedOrderDoc.tip,
+      total: cleanedOrderDoc.total,
+      payment_method: cleanedOrderDoc.payment_method,
+      payment_status: cleanedOrderDoc.payment_status,
+      status: cleanedOrderDoc.status,
+      order_number: cleanedOrderDoc.order_number,
+      placed_at: cleanedOrderDoc.placed_at,
+      created_at: cleanedOrderDoc.created_at,
+      updated_at: cleanedOrderDoc.updated_at,
+    }
+    
+    // Only add optional fields if they exist and are not undefined
+    if (cleanedOrderDoc.customer_name !== undefined) {
+      finalOrderDoc.customer_name = cleanedOrderDoc.customer_name
+    }
+    if (cleanedOrderDoc.customer_phone !== undefined) {
+      finalOrderDoc.customer_phone = cleanedOrderDoc.customer_phone
+    }
+    if (cleanedOrderDoc.order_instructions !== undefined) {
+      finalOrderDoc.order_instructions = cleanedOrderDoc.order_instructions
+    }
+    
+    // EXPLICIT: customer_email is NEVER added - it doesn't exist in finalOrderDoc
+    
+    // Final sanitization pass - remove any undefined that might have slipped through
+    const sanitizedFinal = sanitizeFirestoreData(finalOrderDoc)
+    
+    // Final explicit check - ensure customer_email is not present
+    if ('customer_email' in sanitizedFinal) {
+      console.error('CRITICAL ERROR: customer_email found in final document!')
+      delete (sanitizedFinal as any).customer_email
+    }
+    
+    // NUCLEAR OPTION: Recursively remove customer_email from entire object (including nested)
+    const finalCleaned = removeCustomerEmailRecursive(sanitizedFinal)
+    
+    // Final validation - ensure no undefined and no customer_email
+    const hasUndefined = Object.values(finalCleaned).some(v => v === undefined)
+    const hasCustomerEmail = 'customer_email' in finalCleaned
+    
+    if (hasUndefined || hasCustomerEmail) {
+      console.error('CRITICAL ERROR: Final document still has issues!')
+      console.error('Has undefined?', hasUndefined)
+      console.error('Has customer_email?', hasCustomerEmail)
+      console.error('Document:', finalCleaned)
+      throw new Error(`Order data is invalid: ${hasUndefined ? 'undefined values' : ''} ${hasCustomerEmail ? 'customer_email present' : ''}`)
+    }
+    
+    console.log('=== NUCLEAR SANITIZED PAYLOAD ===')
+    console.log('Final order doc:', finalCleaned)
+    console.log('Final keys:', Object.keys(finalCleaned))
+    console.log('Has customer_email?', 'customer_email' in finalCleaned)
+    console.log('Has undefined?', Object.values(finalCleaned).some(v => v === undefined))
+    console.log('All values:', Object.entries(finalCleaned).map(([k, v]) => `${k}: ${v === undefined ? 'UNDEFINED!' : typeof v}`))
+    console.log('=================================')
+    
+    const docRef = await addDoc(collection(db, 'orders'), finalCleaned)
     
     return docRef.id
   } catch (error: any) {

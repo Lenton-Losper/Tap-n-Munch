@@ -89,6 +89,9 @@ type CartItem = {
 }
 
 export function MenuScreen() {
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false)
+  const [orderError, setOrderError] = useState<string | null>(null)
+
   const [activeCategory, setActiveCategory] = useState("Mains")
   const [selectedItem, setSelectedItem] = useState<(typeof menuItems)[0] | null>(null)
   const [selectedSize, setSelectedSize] = useState("regular")
@@ -187,9 +190,65 @@ export function MenuScreen() {
     setCart(cart.filter((item) => item.id !== itemId))
   }
 
-  const handlePlaceOrder = () => {
-    // Redirect to checkout page (this is demo code - actual checkout is in /checkout page)
-    setShowCart(false)
+  const handlePlaceOrder = async () => {
+    if (cart.length === 0 || isPlacingOrder) return
+
+    setIsPlacingOrder(true)
+    setOrderError(null)
+
+    try {
+      const itemsPayload = cart.map((item) => ({
+        menuItemId: item.menuItemId,
+        name: item.name,
+        quantity: item.quantity,
+        basePrice: item.price,
+        size: item.size,
+        addons: item.addons.map((id) => {
+          const addon = addons.find((a) => a.id === id)
+          return {
+            name: addon?.name || id,
+            price: addon?.price || 0,
+          }
+        }),
+        specialInstructions: item.specialInstructions,
+        subtotal: calculateCartItemTotal(item),
+      }))
+
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          restaurantId: "demo-restaurant",
+          tableNumber: 7,
+          items: itemsPayload,
+          total: calculateCartSubtotal(),
+          paymentMethod: "cash",
+          notes: null,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || "Failed to place order")
+      }
+
+      const data = await response.json()
+      const orderId = data.orderId as string
+
+      // Clear the in-memory cart for this demo screen
+      setCart([])
+      setShowCart(false)
+
+      // Redirect to generic order confirmation page
+      window.location.href = `/order-confirmation?orderId=${encodeURIComponent(orderId)}`
+    } catch (error: any) {
+      console.error("Failed to place order:", error)
+      setOrderError(error?.message || "Failed to place order. Please try again.")
+    } finally {
+      setIsPlacingOrder(false)
+    }
   }
 
   return (
@@ -437,6 +496,11 @@ export function MenuScreen() {
                   <span className="text-muted-foreground">Subtotal</span>
                   <span className="font-semibold">N${calculateCartSubtotal()}</span>
                 </div>
+                {orderError && (
+                  <p className="text-sm text-red-600">
+                    {orderError}
+                  </p>
+                )}
                 <div className="flex justify-between text-lg font-bold">
                   <span>Total</span>
                   <span className="text-primary">N${calculateCartSubtotal()}</span>
@@ -446,9 +510,10 @@ export function MenuScreen() {
               <div className="sticky bottom-0 px-6 pb-6 bg-card border-t border-border pt-4">
                 <Button
                   onClick={handlePlaceOrder}
-                  className="w-full bg-primary hover:bg-primary/90 text-primary-foreground h-12 text-base font-semibold"
+                  disabled={isPlacingOrder || cart.length === 0}
+                  className="w-full bg-primary hover:bg-primary/90 text-primary-foreground h-12 text-base font-semibold disabled:opacity-70"
                 >
-                  Place Order - N${calculateCartSubtotal()}
+                  {isPlacingOrder ? "Placing Order..." : `Place Order - N$${calculateCartSubtotal()}`}
                 </Button>
               </div>
             </>

@@ -7,8 +7,6 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getTableByNumber } from '@/lib/firebase/tables'
 import { useCart } from '@/contexts/cart-context'
-import { createOrder } from '@/lib/firebase/orders'
-import { updateMenuItemStats } from '@/lib/firebase/menu-items'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -106,50 +104,72 @@ export default function CheckoutPage() {
       const tax = subtotal * taxRate
       const total = subtotal + tax
 
-      // Create order
-      const orderId = await createOrder({
-        restaurant_id: restaurantId,
-        table_id: table?.id || '',
-        table_number: tableNumber,
-        customer_name: customerName || undefined,
-        customer_phone: customerPhone || undefined,
-        customer_email: undefined,
-        items: items.map(item => ({
-          menu_item_id: item.menu_item_id,
-          name: item.name,
-          quantity: item.quantity,
-          base_price: item.base_price,
-          selected_size: item.selected_size,
-          selected_addons: item.selected_addons,
-          special_instructions: item.special_instructions,
-          subtotal: item.subtotal,
-        })),
-        order_instructions: orderInstructions || undefined,
+      // Prepare order items for API
+      const orderItems = items.map(item => ({
+        menuItemId: item.menu_item_id,
+        name: item.name,
+        quantity: item.quantity,
+        basePrice: item.base_price,
+        size: item.selected_size?.name || null,
+        addons: item.selected_addons || [],
+        specialInstructions: item.special_instructions || '',
+        subtotal: item.subtotal,
+      }))
+
+      // Build request body, only including fields with actual values (omit undefined/empty)
+      const requestBody: any = {
+        restaurantId,
+        items: orderItems,
         subtotal,
         tax,
-        service_fee: 0,
-        discount: 0,
-        tip: 0,
         total,
-        payment_method: paymentMethod === 'card' ? 'card' : 'cash',
-        payment_status: 'pending',
-        status: 'new',
+        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
+      }
+      
+      // Only include optional fields if they have values
+      if (tableNumber > 0) {
+        requestBody.tableNumber = tableNumber
+      }
+      if (orderInstructions && orderInstructions.trim() !== '') {
+        requestBody.notes = orderInstructions.trim()
+      }
+      if (customerName && customerName.trim() !== '') {
+        requestBody.customerName = customerName.trim()
+      }
+      if (customerPhone && customerPhone.trim() !== '') {
+        requestBody.customerPhone = customerPhone.trim()
+      }
+
+      // Defensive logging (temporary - remove after verification)
+      console.log('CHECKOUT REQUEST BODY →', requestBody)
+      console.log('Has undefined values?', Object.values(requestBody).some(v => v === undefined))
+
+      // Call API to create order
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
       })
 
-      // Update menu item statistics
-      for (const item of items) {
-        try {
-          await updateMenuItemStats(item.menu_item_id, item.quantity, item.subtotal)
-        } catch (err) {
-          console.error('Failed to update menu item stats:', err)
-        }
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to place order')
+      }
+
+      const data = await response.json()
+      const orderId = data.orderId
+
+      if (!orderId) {
+        throw new Error('Order was created but no order ID was returned')
       }
 
       // Clear cart
       clearCart()
 
       // Redirect to confirmation
-      router.push(`/menu/${restaurantId}/order-confirmation/${orderId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)
+      router.push(`/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`)
     } catch (error: any) {
       console.error('Failed to place order:', error)
       toast({

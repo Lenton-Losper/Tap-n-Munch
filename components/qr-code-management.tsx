@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getTables, createTable, deleteTable, Table } from '@/lib/firebase/tables'
 import { getRestaurant } from '@/lib/firebase/restaurants'
+import { buildMenuUrl } from '@/lib/base-url'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -81,8 +82,8 @@ export function QRCodeManagement() {
         return
       }
 
-      const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
-      const qrCodeUrl = `${baseUrl}/menu/${restaurantId}?table=${tableNumber}`
+      // Use centralized base URL utility to ensure QR codes point to production
+      const qrCodeUrl = buildMenuUrl(restaurantId, tableNumber)
       
       console.log('Creating table with QR URL:', qrCodeUrl)
       console.log('Restaurant ID:', restaurantId)
@@ -191,17 +192,116 @@ export function QRCodeManagement() {
     }
   }
 
-  const handleDownloadQR = (table: Table) => {
-    // Create a canvas element to render QR code
-    const qrCode = document.getElementById(`qr-${table.id}`)
-    if (!qrCode) return
+  // Helper function to download QR code as PNG
+  const downloadQRCodeAsPNG = async (selector: string, filename: string, successMessage: string) => {
+    try {
+      const container = document.querySelector(selector)
+      if (!container) {
+        toast({
+          title: 'Error',
+          description: 'QR code container not found',
+          variant: 'destructive',
+        })
+        return
+      }
 
-    // For now, just copy the link - full PDF generation would require additional libraries
-    handleCopyLink(table.qr_code_url, table.id)
-    toast({
-      title: 'Download',
-      description: 'Use the copied link to generate QR codes externally, or print this page',
-    })
+      const svgElement = container.querySelector('svg')
+      if (!svgElement) {
+        toast({
+          title: 'Error',
+          description: 'QR code SVG not found',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      // Clone the SVG to avoid modifying the original
+      const clonedSvg = svgElement.cloneNode(true) as SVGElement
+      
+      // Get SVG data
+      const svgData = new XMLSerializer().serializeToString(clonedSvg)
+      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' })
+      const svgUrl = URL.createObjectURL(svgBlob)
+
+      // Create an image element to convert SVG to canvas
+      const img = new Image()
+      img.onload = () => {
+        // Create a canvas
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        
+        if (!ctx) {
+          toast({
+            title: 'Error',
+            description: 'Failed to create canvas context',
+            variant: 'destructive',
+          })
+          URL.revokeObjectURL(svgUrl)
+          return
+        }
+
+        // Draw the image on canvas
+        ctx.drawImage(img, 0, 0)
+        
+        // Convert canvas to blob and download
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            toast({
+              title: 'Error',
+              description: 'Failed to create image blob',
+              variant: 'destructive',
+            })
+            URL.revokeObjectURL(svgUrl)
+            return
+          }
+
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = filename
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          
+          // Clean up
+          URL.revokeObjectURL(url)
+          URL.revokeObjectURL(svgUrl)
+          
+          toast({
+            title: 'Success',
+            description: successMessage,
+          })
+        }, 'image/png')
+      }
+
+      img.onerror = () => {
+        toast({
+          title: 'Error',
+          description: 'Failed to load QR code image',
+          variant: 'destructive',
+        })
+        URL.revokeObjectURL(svgUrl)
+      }
+
+      img.src = svgUrl
+    } catch (error: any) {
+      console.error('Error downloading QR code:', error)
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to download QR code',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleDownloadQR = async (table: Table) => {
+    await downloadQRCodeAsPNG(
+      `#qr-${table.id}`,
+      `qr-code-table-${table.table_number}.png`,
+      `QR code for ${table.table_name} downloaded`
+    )
   }
 
   if (loading) {
@@ -212,8 +312,8 @@ export function QRCodeManagement() {
     )
   }
 
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
-  const mainMenuUrl = restaurantId ? `${baseUrl}/menu/${restaurantId}` : ''
+  // Use centralized base URL utility to ensure QR codes point to production
+  const mainMenuUrl = restaurantId ? buildMenuUrl(restaurantId) : ''
   
   if (!restaurantId) {
     return (
@@ -258,7 +358,7 @@ export function QRCodeManagement() {
             This QR code links to your main menu. Customers can scan it to view your menu.
           </p>
           <div className="flex items-start gap-6">
-            <div className="bg-white p-4 rounded-lg border-2 border-gray-200">
+            <div id="main-menu-qr" className="bg-white p-4 rounded-lg border-2 border-gray-200">
               <QRCodeSVG value={mainMenuUrl} size={200} />
             </div>
             <div className="flex-1 space-y-3">
@@ -277,9 +377,16 @@ export function QRCodeManagement() {
                   <Copy className="w-4 h-4 mr-2" />
                   {copiedLinkId === 'main' ? 'Link Copied!' : 'Copy Link'}
                 </Button>
-                <Button variant="outline" onClick={() => window.print()}>
+                <Button 
+                  variant="outline" 
+                  onClick={() => downloadQRCodeAsPNG(
+                    '#main-menu-qr',
+                    'qr-code-main-menu.png',
+                    'Main menu QR code downloaded'
+                  )}
+                >
                   <Download className="w-4 h-4 mr-2" />
-                  Print
+                  Download
                 </Button>
               </div>
             </div>
