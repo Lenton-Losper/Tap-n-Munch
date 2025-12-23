@@ -3,25 +3,44 @@ import { db } from './config'
 import { sanitizeFirestoreData } from './firestore-utils'
 
 /**
- * Recursively removes customer_email from any object (including nested objects)
- * This is a nuclear option to ensure customer_email never reaches Firestore
+ * Nuclear Clean: Deep recursive cleaner that removes all undefined values and customer_email
+ * from the entire object tree, including nested objects and arrays.
+ * This is the most robust sanitization method.
  */
-function removeCustomerEmailRecursive(obj: any): any {
-  if (obj === null || obj === undefined) return obj
+function nuclearClean(obj: any): any {
+  // Handle primitives and null
+  if (obj === null || obj === undefined) return null
   if (typeof obj !== 'object') return obj
   
+  // Handle arrays
   if (Array.isArray(obj)) {
-    return obj.map(item => removeCustomerEmailRecursive(item))
+    return obj
+      .map(item => nuclearClean(item))
+      .filter(item => item !== undefined && item !== null)
   }
   
-  const cleaned: any = {}
+  // Handle objects
+  const cleaned: Record<string, any> = {}
   for (const [key, value] of Object.entries(obj)) {
+    // Explicitly skip customer_email
     if (key === 'customer_email') {
-      // Skip customer_email completely
       continue
     }
-    cleaned[key] = removeCustomerEmailRecursive(value)
+    
+    // Skip undefined values
+    if (value === undefined) {
+      continue
+    }
+    
+    // Recursively clean nested objects
+    const cleanedValue = nuclearClean(value)
+    
+    // Only add if the cleaned value is not undefined or null (for objects/arrays)
+    if (cleanedValue !== undefined && cleanedValue !== null) {
+      cleaned[key] = cleanedValue
+    }
   }
+  
   return cleaned
 }
 
@@ -91,77 +110,40 @@ export async function getNextOrderNumber(restaurantId: string): Promise<number> 
 }
 
 // Create a new order
-export async function createOrder(data: Omit<Order, 'id' | 'order_number' | 'created_at' | 'updated_at'>): Promise<string> {
-  if (!db) throw new Error('Firestore is not initialized')
-  
-  try {
-    // Get next order number
-    const orderNumber = await getNextOrderNumber(data.restaurant_id)
-    
-    // Extract data and ensure customer_email is removed
-    const dataObj = data as any
-    const { customer_email, ...cleanInput } = dataObj
-    
-    // Collect all order data (may contain undefined values)
-    const rawOrderData: Record<string, any> = {
-      restaurant_id: String(cleanInput.restaurant_id || ''),
-      table_id: String(cleanInput.table_id || ''),
-      table_number: Number(cleanInput.table_number) || 0,
-      items: Array.isArray(cleanInput.items) ? cleanInput.items : [],
-      subtotal: Number(cleanInput.subtotal) || 0,
-      tax: Number(cleanInput.tax) || 0,
-      service_fee: Number(cleanInput.service_fee) || 0,
-      discount: Number(cleanInput.discount) || 0,
-      tip: Number(cleanInput.tip) || 0,
-      total: Number(cleanInput.total) || 0,
-      payment_method: String(cleanInput.payment_method || 'cash'),
-      payment_status: String(cleanInput.payment_status || 'pending'),
-      status: String(cleanInput.status || 'new'),
-      order_number: Number(orderNumber),
-      placed_at: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      // Optional fields (may be undefined)
-      customer_name: cleanInput.customer_name,
-      customer_phone: cleanInput.customer_phone,
-      order_instructions: cleanInput.order_instructions,
-    }
-    
-    // Remove all undefined fields before sending to Firestore
-    // This ensures NO undefined values reach Firestore
-    const orderData: Record<string, any> = {}
-    Object.keys(rawOrderData).forEach(key => {
-      const value = rawOrderData[key]
-      // Skip undefined values and customer_email (legacy field, no longer used)
-      if (value !== undefined && key !== 'customer_email') {
-        orderData[key] = value
-      }
-    })
-    
-    // Defensive logging
-    console.log('📦 Submitting order:', orderData)
-    console.log('Has undefined?', Object.values(orderData).some(v => v === undefined))
-    console.log('Has customer_email?', 'customer_email' in orderData)
-    
-    // Final validation
-    const hasUndefined = Object.values(orderData).some(v => v === undefined)
-    const hasCustomerEmail = 'customer_email' in orderData
-    
-    if (hasUndefined || hasCustomerEmail) {
-      console.error('❌ CRITICAL ERROR: Order data is invalid!')
-      console.error('Has undefined?', hasUndefined)
-      console.error('Has customer_email?', hasCustomerEmail)
-      throw new Error(`Order data is invalid: ${hasUndefined ? 'undefined values' : ''} ${hasCustomerEmail ? 'customer_email present' : ''}`)
-    }
-    
-    const docRef = await addDoc(collection(db, 'orders'), orderData)
-    console.log('✅ Order created successfully! ID:', docRef.id)
-    
-    return docRef.id
-  } catch (error: any) {
-    console.error('❌ Failed to place order:', error)
-    throw new Error(error.message || 'Failed to create order')
+// Delegates to API route which handles Firestore write in Node.js environment
+// Explicitly sets customer_email to null to prevent undefined errors
+export async function createOrder(data: any): Promise<string> {
+  // HARD-CODED FIX: Explicitly set customer_email to null at the last possible second
+  // This ensures the field exists with a valid null value, not undefined
+  // We spread data first, then override customer_email to guarantee it's null
+  const payload = {
+    ...data,
+    customer_email: null, // HARD-CODED FIX - Force null to prevent undefined errors
   }
+
+  // Defensive check: Ensure customer_email is null, not undefined
+  if (payload.customer_email === undefined) {
+    payload.customer_email = null
+  }
+
+  console.log('CLIENT-SIDE - Payload customer_email:', payload.customer_email)
+  console.log('CLIENT-SIDE - Payload has customer_email?', 'customer_email' in payload)
+
+  // Sending as JSON physically removes any keys with 'undefined' values
+  // But customer_email will be null, not undefined, so it will be included
+  const response = await fetch('/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.error || 'Failed to create order via API')
+  }
+
+  const result = await response.json()
+  return result.orderId
 }
 
 // Get orders for a restaurant with status filter

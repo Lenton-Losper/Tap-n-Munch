@@ -1,6 +1,6 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app'
 import { getAuth, Auth } from 'firebase/auth'
-import { getFirestore, Firestore } from 'firebase/firestore'
+import { initializeFirestore, Firestore } from 'firebase/firestore'
 import { getStorage, FirebaseStorage } from 'firebase/storage'
 
 // Firebase configuration
@@ -51,16 +51,23 @@ const isFirebaseConfigValid = () => {
 // Initialize Firebase only if config is valid
 let app: FirebaseApp | null = null
 let auth: Auth | null = null
-let db: Firestore | null = null
 let storage: FirebaseStorage | null = null
+
+// CRITICAL: Strict singleton Firestore instance
+// This is the ONLY place initializeFirestore should be called in the whole app
+// This ensures ignoreUndefinedProperties is ALWAYS set
+let db: Firestore | null = null
 
 if (isFirebaseConfigValid()) {
   try {
     const firebaseConfig = getFirebaseConfig()
-    if (getApps().length === 0) {
+    
+    // Get or create Firebase app - strict singleton check
+    const existingApps = getApps()
+    if (existingApps.length === 0) {
       app = initializeApp(firebaseConfig)
     } else {
-      app = getApps()[0]
+      app = existingApps[0]
     }
 
     // Auth is client-side only
@@ -68,9 +75,21 @@ if (isFirebaseConfigValid()) {
       auth = getAuth(app)
     }
 
-    // Firestore can work on both client and server
+    // CRITICAL: Strict singleton pattern for Firestore
+    // Check if Firestore is already initialized for this app
+    // initializeFirestore can be called multiple times safely, but we want to ensure
+    // ignoreUndefinedProperties is ALWAYS set
     if (app) {
-      db = getFirestore(app)
+      // Always call initializeFirestore with ignoreUndefinedProperties: true
+      // If already initialized, this returns the existing instance with the same settings
+      db = initializeFirestore(app, {
+        ignoreUndefinedProperties: true,
+      })
+      
+      // Verify the instance was created
+      if (!db) {
+        throw new Error('Failed to initialize Firestore instance')
+      }
     }
 
     // Storage is client-side only

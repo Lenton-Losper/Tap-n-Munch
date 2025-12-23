@@ -146,6 +146,7 @@ export interface Order {
   // Customer info (optional)
   customer_name: string | null
   customer_phone: string | null
+  customer_email: string | null // Explicitly set to null to prevent undefined errors
   
   // Order items
   items: OrderItem[]

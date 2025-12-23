@@ -98,6 +98,12 @@ export default function CheckoutPage() {
 
     setSubmitting(true)
 
+    // Show processing alert
+    toast({
+      title: 'Processing your order...',
+      description: 'Please wait while we process your order.',
+    })
+
     try {
       const subtotal = getTotal()
       const taxRate = restaurant?.tax_rate || 0.15
@@ -116,33 +122,51 @@ export default function CheckoutPage() {
         subtotal: item.subtotal,
       }))
 
-      // Build request body, only including fields with actual values (omit undefined/empty)
-      const requestBody: any = {
-        restaurantId,
+      // Build request body - ONLY required fields
+      // DO NOT include customer fields (customer_email, customer_name, customer_phone)
+      const requestBody: Record<string, any> = {
+        restaurantId: String(restaurantId),
         items: orderItems,
-        subtotal,
-        tax,
-        total,
+        subtotal: Number(subtotal),
+        tax: Number(tax),
+        total: Number(total),
         paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
       }
       
-      // Only include optional fields if they have values
+      // Optional: tableNumber (only if > 0)
       if (tableNumber > 0) {
-        requestBody.tableNumber = tableNumber
+        requestBody.tableNumber = Number(tableNumber)
       }
+      
+      // Optional: order_instructions (only if provided)
       if (orderInstructions && orderInstructions.trim() !== '') {
         requestBody.notes = orderInstructions.trim()
       }
-      if (customerName && customerName.trim() !== '') {
-        requestBody.customerName = customerName.trim()
-      }
-      if (customerPhone && customerPhone.trim() !== '') {
-        requestBody.customerPhone = customerPhone.trim()
+
+      // CRITICAL: Remove ALL undefined values
+      const cleanPayload = Object.fromEntries(
+        Object.entries(requestBody).filter(([_, v]) => v !== undefined)
+      )
+
+      // CRITICAL: Verify no undefined values
+      if (Object.values(cleanPayload).some(v => v === undefined)) {
+        const undefinedFields = Object.entries(cleanPayload)
+          .filter(([_, v]) => v === undefined)
+          .map(([k]) => k)
+        throw new Error(`Payload contains undefined fields: ${undefinedFields.join(', ')}`)
       }
 
-      // Defensive logging (temporary - remove after verification)
-      console.log('CHECKOUT REQUEST BODY →', requestBody)
-      console.log('Has undefined values?', Object.values(requestBody).some(v => v === undefined))
+      // CRITICAL: Verify customer fields DO NOT EXIST
+      const forbiddenFields = ['customer_email', 'customerName', 'customerPhone', 'customer_name', 'customer_phone']
+      const foundForbidden = forbiddenFields.filter(field => field in cleanPayload)
+      if (foundForbidden.length > 0) {
+        throw new Error(`Payload contains forbidden customer fields: ${foundForbidden.join(', ')}`)
+      }
+
+      // DEBUG: Log before API call
+      console.log('🚀 CHECKOUT - Calling /api/orders with payload:', cleanPayload)
+      console.log('🚀 CHECKOUT - Payload keys:', Object.keys(cleanPayload))
+      console.log('🚀 CHECKOUT - Has customer_email?', 'customer_email' in cleanPayload)
 
       // Call API to create order
       const response = await fetch('/api/orders', {
@@ -150,15 +174,19 @@ export default function CheckoutPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(cleanPayload),
       })
+
+      console.log('🚀 CHECKOUT - Response status:', response.status)
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || 'Failed to place order')
+        console.error('🚀 CHECKOUT - API Error:', errorData)
+        throw new Error(errorData.error || `Failed to place order (${response.status})`)
       }
 
       const data = await response.json()
+      console.log('🚀 CHECKOUT - API Success:', data)
       const orderId = data.orderId
 
       if (!orderId) {
@@ -171,7 +199,8 @@ export default function CheckoutPage() {
       // Redirect to confirmation
       router.push(`/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`)
     } catch (error: any) {
-      console.error('Failed to place order:', error)
+      console.error('❌ CHECKOUT - Failed to place order:', error)
+      console.error('❌ CHECKOUT - Error stack:', error.stack)
       toast({
         title: 'Order failed',
         description: error.message || 'Failed to place order. Please try again.',
