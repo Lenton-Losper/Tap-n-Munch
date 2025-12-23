@@ -102,7 +102,7 @@ export async function calculateDailyAnalytics(
       .slice(0, 24)
     
     // Customer tracking (simplified - would need customer tracking in production)
-    const uniquePhones = new Set(orders.map(o => o.customer_phone).filter(Boolean))
+    const uniquePhones = new Set(orders.map(o => o.customer?.phone).filter(Boolean))
     const newCustomers = uniquePhones.size // Simplified
     const returningCustomers = 0 // Would need historical data
     

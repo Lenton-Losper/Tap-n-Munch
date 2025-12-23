@@ -67,6 +67,26 @@ export default function CheckoutPage() {
       return
     }
 
+    // VALIDATION: Customer name is required
+    if (!customerName || customerName.trim() === '') {
+      toast({
+        title: 'Name required',
+        description: 'Please enter your name to place an order.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    // VALIDATION: Customer phone is required
+    if (!customerPhone || customerPhone.trim() === '') {
+      toast({
+        title: 'Phone required',
+        description: 'Please enter your phone number to place an order.',
+        variant: 'destructive',
+      })
+      return
+    }
+
     if (!table && tableNumber > 0) {
       toast({
         title: 'Invalid table',
@@ -122,51 +142,21 @@ export default function CheckoutPage() {
         subtotal: item.subtotal,
       }))
 
-      // Build request body - ONLY required fields
-      // DO NOT include customer fields (customer_email, customer_name, customer_phone)
-      const requestBody: Record<string, any> = {
+      // Build request body with new customer object schema
+      const requestBody = {
         restaurantId: String(restaurantId),
+        tableNumber: Number(tableNumber) || 0,
+        customer: {
+          name: String(customerName).trim(),
+          phone: String(customerPhone).trim(),
+        },
         items: orderItems,
         subtotal: Number(subtotal),
         tax: Number(tax),
         total: Number(total),
         paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
+        ...(orderInstructions && orderInstructions.trim() ? { notes: orderInstructions.trim() } : {}),
       }
-      
-      // Optional: tableNumber (only if > 0)
-      if (tableNumber > 0) {
-        requestBody.tableNumber = Number(tableNumber)
-      }
-      
-      // Optional: order_instructions (only if provided)
-      if (orderInstructions && orderInstructions.trim() !== '') {
-        requestBody.notes = orderInstructions.trim()
-      }
-
-      // CRITICAL: Remove ALL undefined values
-      const cleanPayload = Object.fromEntries(
-        Object.entries(requestBody).filter(([_, v]) => v !== undefined)
-      )
-
-      // CRITICAL: Verify no undefined values
-      if (Object.values(cleanPayload).some(v => v === undefined)) {
-        const undefinedFields = Object.entries(cleanPayload)
-          .filter(([_, v]) => v === undefined)
-          .map(([k]) => k)
-        throw new Error(`Payload contains undefined fields: ${undefinedFields.join(', ')}`)
-      }
-
-      // CRITICAL: Verify customer fields DO NOT EXIST
-      const forbiddenFields = ['customer_email', 'customerName', 'customerPhone', 'customer_name', 'customer_phone']
-      const foundForbidden = forbiddenFields.filter(field => field in cleanPayload)
-      if (foundForbidden.length > 0) {
-        throw new Error(`Payload contains forbidden customer fields: ${foundForbidden.join(', ')}`)
-      }
-
-      // DEBUG: Log before API call
-      console.log('🚀 CHECKOUT - Calling /api/orders with payload:', cleanPayload)
-      console.log('🚀 CHECKOUT - Payload keys:', Object.keys(cleanPayload))
-      console.log('🚀 CHECKOUT - Has customer_email?', 'customer_email' in cleanPayload)
 
       // Call API to create order
       const response = await fetch('/api/orders', {
@@ -174,7 +164,7 @@ export default function CheckoutPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(cleanPayload),
+        body: JSON.stringify(requestBody),
       })
 
       console.log('🚀 CHECKOUT - Response status:', response.status)
@@ -250,26 +240,30 @@ export default function CheckoutPage() {
             </div>
           </div>
 
-          {/* Customer Details */}
+          {/* Customer Details - REQUIRED */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
-            <h2 className="text-lg font-semibold">Your Details (Optional)</h2>
+            <h2 className="text-lg font-semibold">Your Details <span className="text-red-500">*</span></h2>
             <div>
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="name">Name <span className="text-red-500">*</span></Label>
               <Input
                 id="name"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Your name"
+                required
+                className={!customerName ? 'border-red-500' : ''}
               />
             </div>
             <div>
-              <Label htmlFor="phone">Phone</Label>
+              <Label htmlFor="phone">Phone <span className="text-red-500">*</span></Label>
               <Input
                 id="phone"
                 type="tel"
                 value={customerPhone}
                 onChange={(e) => setCustomerPhone(e.target.value)}
                 placeholder="+264..."
+                required
+                className={!customerPhone ? 'border-red-500' : ''}
               />
             </div>
           </div>
@@ -315,12 +309,17 @@ export default function CheckoutPage() {
           {/* Place Order Button */}
           <Button
             onClick={handlePlaceOrder}
-            disabled={submitting || items.length === 0}
-            className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white"
+            disabled={submitting || items.length === 0 || !customerName.trim() || !customerPhone.trim()}
+            className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white disabled:opacity-50 disabled:cursor-not-allowed"
             size="lg"
           >
             {submitting ? 'Placing Order...' : 'Place Order 🎉'}
           </Button>
+          {(!customerName.trim() || !customerPhone.trim()) && (
+            <p className="text-sm text-red-500 text-center">
+              Please fill in your name and phone number to place an order
+            </p>
+          )}
         </div>
       </div>
     </div>

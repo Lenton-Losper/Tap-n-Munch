@@ -143,10 +143,11 @@ export interface Order {
   table_id: string | null // FK to tables.id
   table_number: number
   
-  // Customer info (optional)
-  customer_name: string | null
-  customer_phone: string | null
-  customer_email: string | null // Explicitly set to null to prevent undefined errors
+  // Customer info (required) - NEW SCHEMA: nested object
+  customer: {
+    name: string
+    phone: string
+  }
   
   // Order items
   items: OrderItem[]

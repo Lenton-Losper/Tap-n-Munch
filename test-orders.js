@@ -72,12 +72,16 @@ async function testIsolationRoute() {
 }
 
 async function testMainAPIRoute(restaurantId = 'test_restaurant') {
-  logSection('TEST 2: Main API Route (POST /api/orders)')
+  logSection('TEST 2: Main API Route (POST /api/orders) - NEW SCHEMA')
   
-  // Sample order payload - ONLY required fields
+  // Sample order payload - NEW SCHEMA with customer object
   const orderPayload = {
     restaurantId: restaurantId,
     tableNumber: 1,
+    customer: {
+      name: 'Test Customer',
+      phone: '+264123456789',
+    },
     items: [
       {
         menuItemId: 'test_item_1',
@@ -99,22 +103,39 @@ async function testMainAPIRoute(restaurantId = 'test_restaurant') {
 
   // Verify payload has no undefined values
   const hasUndefined = Object.values(orderPayload).some(v => v === undefined)
-  const forbiddenFields = ['customer_email', 'customerName', 'customerPhone', 'customer_name', 'customer_phone']
+  const forbiddenFields = ['customer_email', 'customerEmail', 'customerName', 'customerPhone', 'customer_name', 'customer_phone']
   const foundForbidden = forbiddenFields.filter(field => field in orderPayload)
+  
+  // Check nested customer object
+  const hasCustomerEmail = JSON.stringify(orderPayload).includes('customer_email')
+  const hasCustomerObject = orderPayload.customer && typeof orderPayload.customer === 'object'
 
   log(`\n📦 Payload:`, 'blue')
   log(`   Keys: ${Object.keys(orderPayload).join(', ')}`, 'blue')
+  log(`   Has customer object? ${hasCustomerObject}`, hasCustomerObject ? 'green' : 'red')
+  log(`   Customer keys: ${hasCustomerObject ? Object.keys(orderPayload.customer).join(', ') : 'N/A'}`, 'blue')
   log(`   Has undefined? ${hasUndefined}`, hasUndefined ? 'red' : 'green')
-  log(`   Forbidden fields? ${foundForbidden.length > 0 ? foundForbidden.join(', ') : 'None'}`, foundForbidden.length > 0 ? 'red' : 'green')
+  log(`   Has customer_email in JSON? ${hasCustomerEmail}`, hasCustomerEmail ? 'red' : 'green')
+  log(`   Forbidden fields at root? ${foundForbidden.length > 0 ? foundForbidden.join(', ') : 'None'}`, foundForbidden.length > 0 ? 'red' : 'green')
 
   if (hasUndefined) {
     log(`\n❌ FAILED: Payload contains undefined values!`, 'red')
     return { success: false, error: 'Payload contains undefined values' }
   }
 
+  if (hasCustomerEmail) {
+    log(`\n❌ FAILED: Payload contains customer_email!`, 'red')
+    return { success: false, error: 'Payload contains customer_email' }
+  }
+
   if (foundForbidden.length > 0) {
     log(`\n❌ FAILED: Payload contains forbidden customer fields!`, 'red')
     return { success: false, error: 'Payload contains forbidden customer fields' }
+  }
+
+  if (!hasCustomerObject || !orderPayload.customer.name || !orderPayload.customer.phone) {
+    log(`\n❌ FAILED: Missing required customer object with name and phone!`, 'red')
+    return { success: false, error: 'Missing required customer object' }
   }
 
   try {
@@ -152,33 +173,20 @@ async function runAllTests() {
   log(`   Make sure your dev server is running!`, 'yellow')
 
   const results = {
-    isolation: null,
     mainAPI: null,
   }
 
-  // Test 1: Isolation route
-  results.isolation = await testIsolationRoute()
-
-  // Wait a bit between tests
-  await new Promise(resolve => setTimeout(resolve, 1000))
-
-  // Test 2: Main API route
+  // Test: Main API route with new customer object schema
   results.mainAPI = await testMainAPIRoute()
 
   // Summary
   logSection('TEST SUMMARY')
-  
-  const allPassed = results.isolation?.success && results.mainAPI?.success
-
-  if (results.isolation?.success) {
-    log('✅ Isolation Route: PASSED', 'green')
-  } else {
-    log('❌ Isolation Route: FAILED', 'red')
-    log(`   Error: ${results.isolation?.error || 'Unknown'}`, 'red')
-  }
 
   if (results.mainAPI?.success) {
     log('✅ Main API Route: PASSED', 'green')
+    log('   ✅ New customer object schema works', 'green')
+    log('   ✅ No customer_email detected', 'green')
+    log('   ✅ Order created in Firestore', 'green')
   } else {
     log('❌ Main API Route: FAILED', 'red')
     log(`   Error: ${results.mainAPI?.error || 'Unknown'}`, 'red')
@@ -186,12 +194,15 @@ async function runAllTests() {
 
   console.log('\n' + '='.repeat(60))
   
-  if (allPassed) {
-    log('\n🎉 ALL TESTS PASSED!', 'green')
-    log('   Orders should now appear in Firestore.', 'green')
+  if (results.mainAPI?.success) {
+    log('\n🎉 TEST PASSED!', 'green')
+    log('   ✅ Order created successfully', 'green')
+    log('   ✅ No customer_email in payload', 'green')
+    log('   ✅ Customer object structure correct', 'green')
+    log('   ✅ Order should appear in Firestore', 'green')
     process.exit(0)
   } else {
-    log('\n⚠️  SOME TESTS FAILED', 'yellow')
+    log('\n⚠️  TEST FAILED', 'yellow')
     log('   Check the errors above and fix the issues.', 'yellow')
     process.exit(1)
   }

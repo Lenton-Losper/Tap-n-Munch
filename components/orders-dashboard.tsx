@@ -314,10 +314,10 @@ export function OrdersDashboard() {
                 )}
 
                 {/* Customer Info */}
-                {order.customer_name && (
+                {order.customer && (
                   <div className="text-sm text-muted-foreground">
-                    Customer: {order.customer_name}
-                    {order.customer_phone && ` • ${order.customer_phone}`}
+                    Customer: {order.customer.name}
+                    {order.customer.phone && ` • ${order.customer.phone}`}
                   </div>
                 )}
 

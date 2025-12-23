@@ -2,48 +2,6 @@ import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, d
 import { db } from './config'
 import { sanitizeFirestoreData } from './firestore-utils'
 
-/**
- * Nuclear Clean: Deep recursive cleaner that removes all undefined values and customer_email
- * from the entire object tree, including nested objects and arrays.
- * This is the most robust sanitization method.
- */
-function nuclearClean(obj: any): any {
-  // Handle primitives and null
-  if (obj === null || obj === undefined) return null
-  if (typeof obj !== 'object') return obj
-  
-  // Handle arrays
-  if (Array.isArray(obj)) {
-    return obj
-      .map(item => nuclearClean(item))
-      .filter(item => item !== undefined && item !== null)
-  }
-  
-  // Handle objects
-  const cleaned: Record<string, any> = {}
-  for (const [key, value] of Object.entries(obj)) {
-    // Explicitly skip customer_email
-    if (key === 'customer_email') {
-      continue
-    }
-    
-    // Skip undefined values
-    if (value === undefined) {
-      continue
-    }
-    
-    // Recursively clean nested objects
-    const cleanedValue = nuclearClean(value)
-    
-    // Only add if the cleaned value is not undefined or null (for objects/arrays)
-    if (cleanedValue !== undefined && cleanedValue !== null) {
-      cleaned[key] = cleanedValue
-    }
-  }
-  
-  return cleaned
-}
-
 export interface OrderItem {
   menu_item_id: string
   name: string
@@ -61,8 +19,10 @@ export interface Order {
   restaurant_id: string
   table_id: string
   table_number: number
-  customer_name?: string
-  customer_phone?: string
+  customer: {
+    name: string
+    phone: string
+  }
   items: OrderItem[]
   order_instructions?: string
   subtotal: number
@@ -110,38 +70,20 @@ export async function getNextOrderNumber(restaurantId: string): Promise<number> 
 }
 
 // Create a new order
-// Delegates to API route which handles Firestore write in Node.js environment
-// Explicitly sets customer_email to null to prevent undefined errors
-export async function createOrder(data: any): Promise<string> {
-  // HARD-CODED FIX: Explicitly set customer_email to null at the last possible second
-  // This ensures the field exists with a valid null value, not undefined
-  // We spread data first, then override customer_email to guarantee it's null
-  const payload = {
-    ...data,
-    customer_email: null, // HARD-CODED FIX - Force null to prevent undefined errors
-  }
-
-  // Defensive check: Ensure customer_email is null, not undefined
-  if (payload.customer_email === undefined) {
-    payload.customer_email = null
-  }
-
-  console.log('CLIENT-SIDE - Payload customer_email:', payload.customer_email)
-  console.log('CLIENT-SIDE - Payload has customer_email?', 'customer_email' in payload)
-
-  // Sending as JSON physically removes any keys with 'undefined' values
-  // But customer_email will be null, not undefined, so it will be included
+// COMPLETELY DECOUPLED: No Firebase imports - just a fetch wrapper
+// The browser's Firebase SDK never sees this data, preventing client-side validation errors
+export async function createOrder(orderData: any): Promise<string> {
   const response = await fetch('/api/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(orderData),
   })
-
+  
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.error || 'Failed to create order via API')
+    throw new Error(errorData.error || 'Order failed at the server level')
   }
-
+  
   const result = await response.json()
   return result.orderId
 }
