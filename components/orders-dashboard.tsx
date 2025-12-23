@@ -314,10 +314,15 @@ export function OrdersDashboard() {
                 )}
 
                 {/* Customer Info */}
-                {order.customer && (
+                {order.customer ? (
                   <div className="text-sm text-muted-foreground">
                     Customer: {order.customer.name}
-                    {order.customer.phone && ` • ${order.customer.phone}`}
+                    {order.customer.phone ? ` • ${order.customer.phone}` : ''}
+                  </div>
+                ) : (
+                  // Fallback for old orders that might not have customer object
+                  <div className="text-sm text-muted-foreground text-gray-400">
+                    Customer: Not available
                   </div>
                 )}
 
