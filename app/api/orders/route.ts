@@ -118,32 +118,35 @@ export async function POST(req: Request) {
     }
 
     // CRITICAL: Deep clean - recursively remove undefined and forbidden fields
+    // This is the NUCLEAR option - removes customer_email from EVERYWHERE
     function deepClean(obj: any, depth = 0): any {
       if (depth > 10) return obj // Prevent infinite recursion
       if (obj === null || obj === undefined) return null
       if (typeof obj !== 'object') return obj
       
       if (Array.isArray(obj)) {
-        return obj.map(item => deepClean(item, depth + 1))
+        return obj.map(item => deepClean(item, depth + 1)).filter(item => item !== undefined && item !== null)
       }
       
       const cleaned: Record<string, any> = {}
-      const forbiddenFields = ['customer_email', 'customer_name', 'customer_phone']
+      const forbiddenFields = ['customer_email', 'customer_name', 'customer_phone', 'customerEmail', 'customerName', 'customerPhone']
       
       for (const [key, value] of Object.entries(obj)) {
-        // Skip forbidden fields
+        // ABSOLUTELY SKIP forbidden fields - no exceptions
         if (forbiddenFields.includes(key)) {
+          console.log(`🚫 REMOVING forbidden field: ${key}`)
           continue
         }
         
-        // Skip undefined values
+        // ABSOLUTELY SKIP undefined values - no exceptions
         if (value === undefined) {
+          console.log(`🚫 REMOVING undefined value for key: ${key}`)
           continue
         }
         
         // Recursively clean nested objects/arrays
         const cleanedValue = deepClean(value, depth + 1)
-        if (cleanedValue !== undefined) {
+        if (cleanedValue !== undefined && cleanedValue !== null) {
           cleaned[key] = cleanedValue
         }
       }
@@ -218,20 +221,58 @@ export async function POST(req: Request) {
     }
 
     // FINAL NUCLEAR OPTION: JSON round-trip to ensure pure POJO
-    const finalOrder = JSON.parse(JSON.stringify(sanitizedOrder))
-
-    // DEBUG: Final verification before Firestore write
-    console.log('🟢 API ROUTE - Final order keys:', Object.keys(finalOrder))
-    console.log('🟢 API ROUTE - Has customer_email?', 'customer_email' in finalOrder)
-    console.log('🟢 API ROUTE - Has undefined?', JSON.stringify(finalOrder).includes('undefined'))
-    
-    // One more explicit removal just before write
-    if ('customer_email' in finalOrder) {
-      delete finalOrder.customer_email
-      console.log('🔴 API ROUTE - DELETED customer_email just before write!')
+    // This physically removes any undefined values and creates a clean object
+    let finalOrder: any
+    try {
+      finalOrder = JSON.parse(JSON.stringify(sanitizedOrder, (key, value) => {
+        // Remove undefined values during stringify
+        if (value === undefined) {
+          return undefined // JSON.stringify will omit this
+        }
+        // Remove forbidden fields during stringify
+        const forbiddenFields = ['customer_email', 'customer_name', 'customer_phone', 'customerEmail', 'customerName', 'customerPhone']
+        if (forbiddenFields.includes(key)) {
+          return undefined // JSON.stringify will omit this
+        }
+        return value
+      }))
+    } catch (e) {
+      throw new Error(`Failed to sanitize order data: ${e}`)
     }
 
-    const docRef = await addDoc(collection(db, 'orders'), finalOrder)
+    // ABSOLUTE FINAL CHECK: Remove forbidden fields one more time
+    const allForbiddenFields = ['customer_email', 'customer_name', 'customer_phone', 'customerEmail', 'customerName', 'customerPhone']
+    allForbiddenFields.forEach(field => {
+      if (field in finalOrder) {
+        delete finalOrder[field]
+        console.log(`🔴 FINAL REMOVAL - Deleted ${field} just before Firestore write`)
+      }
+    })
+
+    // ABSOLUTE FINAL CHECK: Remove any remaining undefined values
+    const finalClean = Object.fromEntries(
+      Object.entries(finalOrder).filter(([_, v]) => v !== undefined)
+    )
+
+    // DEBUG: Final verification before Firestore write
+    console.log('🟢 API ROUTE - Final order keys:', Object.keys(finalClean))
+    console.log('🟢 API ROUTE - Has customer_email?', 'customer_email' in finalClean)
+    console.log('🟢 API ROUTE - Has undefined?', Object.values(finalClean).some(v => v === undefined))
+    
+    // THROW ERROR if customer_email still exists (should be impossible)
+    if ('customer_email' in finalClean) {
+      throw new Error('CRITICAL: customer_email still exists after all cleaning steps!')
+    }
+
+    // THROW ERROR if any undefined values exist (should be impossible)
+    if (Object.values(finalClean).some(v => v === undefined)) {
+      const undefinedKeys = Object.entries(finalClean)
+        .filter(([_, v]) => v === undefined)
+        .map(([k]) => k)
+      throw new Error(`CRITICAL: Undefined values still exist: ${undefinedKeys.join(', ')}`)
+    }
+
+    const docRef = await addDoc(collection(db, 'orders'), finalClean)
     console.log('✅ API ROUTE - Order created successfully:', docRef.id)
 
     return NextResponse.json({ orderId: docRef.id }, { status: 201 })
