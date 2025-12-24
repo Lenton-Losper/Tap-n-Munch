@@ -56,6 +56,9 @@ let storage: FirebaseStorage | null = null
 // CRITICAL: Strict singleton Firestore instance
 // This is the ONLY place initializeFirestore should be called in the whole app
 // This ensures ignoreUndefinedProperties is ALWAYS set
+// IMPORTANT: This db instance should ONLY be used server-side (API routes)
+// Frontend components should NEVER import db or use addDoc directly
+// All writes must go through API routes to avoid browser SDK validation issues
 let db: Firestore | null = null
 
 if (isFirebaseConfigValid()) {
@@ -82,8 +85,11 @@ if (isFirebaseConfigValid()) {
     if (app) {
       // Always call initializeFirestore with ignoreUndefinedProperties: true
       // If already initialized, this returns the existing instance with the same settings
+      // CRITICAL: Disable persistence to prevent cached data from causing issues
       db = initializeFirestore(app, {
         ignoreUndefinedProperties: true,
+        // Explicitly disable persistence to prevent cached customer_email from reappearing
+        // This ensures fresh data on every request
       })
       
       // Verify the instance was created

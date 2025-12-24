@@ -224,7 +224,7 @@ export default function CartPage() {
               </div>
 
               <Link
-                href={`/menu/${restaurantId}/checkout${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
+                href={`/menu/${restaurantId}/order-secure${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
                 className="block"
               >
                 <Button

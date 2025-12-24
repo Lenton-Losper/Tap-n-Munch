@@ -72,11 +72,26 @@ export async function getNextOrderNumber(restaurantId: string): Promise<number> 
 // Create a new order
 // COMPLETELY DECOUPLED: No Firebase imports - just a fetch wrapper
 // The browser's Firebase SDK never sees this data, preventing client-side validation errors
+// CRITICAL: JSON.parse(JSON.stringify()) is the only 100% effective way to strip undefined keys
 export async function createOrder(orderData: any): Promise<string> {
-  const response = await fetch('/api/orders', {
+  console.log('🚀 API BRIDGE EXECUTING')
+  
+  // CRITICAL: Strip undefined values before sending
+  // This physically removes any keys with undefined values from the object
+  const cleanData = JSON.parse(JSON.stringify(orderData))
+  
+  // Explicitly ensure forbidden field is gone (defensive)
+  if ('customer_email' in cleanData) {
+    delete cleanData.customer_email
+  }
+  if ('customerEmail' in cleanData) {
+    delete cleanData.customerEmail
+  }
+  
+  const response = await fetch('/api/orders-TYPO', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(orderData),
+    body: JSON.stringify(cleanData),
   })
   
   if (!response.ok) {
