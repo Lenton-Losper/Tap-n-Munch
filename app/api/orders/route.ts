@@ -2,6 +2,7 @@ import { db } from '@/lib/firebase/config'
 import { collection, addDoc } from 'firebase/firestore'
 import { NextResponse } from 'next/server'
 import { getNextOrderNumber } from '@/lib/firebase/orders'
+import { assertNoForbiddenFields, removeUndefinedDeep, prepareForFirestore } from '@/lib/firebase/firestore-guards'
 
 /**
  * SECURE ORDER CREATION API - STRICT VALIDATOR
@@ -113,13 +114,55 @@ export async function POST(req: Request) {
       )
     }
     
+    // Apply Firestore guards: assert no forbidden fields and remove undefined
+    const finalizedPayload = prepareForFirestore(orderDoc)
+    
+    // Explicitly delete customer_email if it somehow survived (extra defensive)
+    if ('customer_email' in finalizedPayload) {
+      delete (finalizedPayload as any).customer_email
+      console.error('🚨 DELETED customer_email that somehow appeared!')
+    }
+    if ('customerEmail' in finalizedPayload) {
+      delete (finalizedPayload as any).customerEmail
+      console.error('🚨 DELETED customerEmail that somehow appeared!')
+    }
+    
+    // Final JSON stringify/parse to ensure clean POJO
+    const cleanPayload = JSON.parse(JSON.stringify(finalizedPayload))
+    
+    // One more explicit deletion after JSON round-trip
+    if ('customer_email' in cleanPayload) {
+      delete (cleanPayload as any).customer_email
+    }
+    if ('customerEmail' in cleanPayload) {
+      delete (cleanPayload as any).customerEmail
+    }
+    
+    // Explicitly set customer_email to null in final payload
+    const finalOrderDoc = {
+      ...cleanPayload,
+      customer_email: null,
+    }
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📦 Final payload keys:', Object.keys(finalOrderDoc))
+      console.log('📦 Has customer_email?', 'customer_email' in finalOrderDoc)
+      console.log('📦 customer_email value:', finalOrderDoc.customer_email)
+    }
+    
     console.log('💾 Writing order to Firestore...')
-    const docRef = await addDoc(collection(db, 'orders'), orderDoc)
+    const docRef = await addDoc(collection(db!, 'orders'), finalOrderDoc)
     console.log('✅ Order created successfully:', docRef.id)
     
     return NextResponse.json({ orderId: docRef.id }, { status: 201 })
   } catch (err: any) {
     console.error('❌ ORDER CREATION FAILURE:', err)
+    if (err.message && err.message.includes('FORBIDDEN FIELD DETECTED')) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: 400 }
+      )
+    }
     return NextResponse.json(
       { error: err.message || 'Failed to create order' },
       { status: 500 }

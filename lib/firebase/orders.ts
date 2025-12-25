@@ -88,7 +88,7 @@ export async function createOrder(orderData: any): Promise<string> {
     delete cleanData.customerEmail
   }
   
-  const response = await fetch('/api/orders-TYPO', {
+  const response = await fetch('/api/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cleanData),
