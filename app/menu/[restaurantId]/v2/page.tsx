@@ -1,11 +1,8 @@
 'use client'
 
-// 🚀 VERSION STAMP: This confirms the new route is loaded
-console.log("🚀 [SYSTEM LIVE] Version 3.0 - New Route Loaded")
-
 export const dynamic = "force-dynamic"
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
@@ -17,7 +14,10 @@ import Link from 'next/link'
 import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 
-export default function MenuLandingPageV2() {
+function MenuLandingPageV2Content() {
+  // 🚀 VERSION STAMP: This confirms the new route is loaded
+  console.log("🚀 [SYSTEM LIVE] Version 3.0 - New Route Loaded")
+  
   const params = useParams()
   const searchParams = useSearchParams()
   const restaurantId = params.restaurantId as string
@@ -249,6 +249,21 @@ export default function MenuLandingPageV2() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function MenuLandingPageV2() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <MenuLandingPageV2Content />
+    </Suspense>
   )
 }
 

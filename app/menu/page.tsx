@@ -1,8 +1,8 @@
 'use client'
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic"
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getTableByNumber } from '@/lib/firebase/tables'
@@ -16,7 +16,7 @@ import Link from 'next/link'
 import { doc, onSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 
-export default function MenuLandingPage() {
+function MenuLandingPageContent() {
   const params = useParams()
   const searchParams = useSearchParams()
   const restaurantId = params.restaurantId as string
@@ -174,5 +174,17 @@ export default function MenuLandingPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function MenuLandingPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-orange-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      </div>
+    }>
+      <MenuLandingPageContent />
+    </Suspense>
   )
 }
