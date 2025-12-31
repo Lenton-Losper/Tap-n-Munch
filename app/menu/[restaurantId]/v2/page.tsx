@@ -20,14 +20,27 @@ function MenuLandingPageV2Content() {
   
   const params = useParams()
   const searchParams = useSearchParams()
-  const restaurantId = params.restaurantId as string
   
-  // Type Safety: Immediately convert table param to Number
-  const tableNumberParam = searchParams.get('table')
+  // Fix: Extract restaurantId from params (nested route: app/menu/[restaurantId]/v2/page.tsx)
+  // useParams() returns { restaurantId: string } for this route structure
+  const restaurantId = params?.restaurantId as string | undefined
+  
+  // Fix: Extract table parameter from searchParams
+  const tableNumberParam = searchParams?.get('table')
   const tableNum = tableNumberParam ? Number(tableNumberParam) : 0
   
+  // Debug logging with full params object
+  console.log("🔍 [V2 DEBUG] Full params object:", params)
+  console.log("🔍 [V2 DEBUG] Params keys:", Object.keys(params || {}))
+  console.log("🔍 [V2 DEBUG] Restaurant ID:", restaurantId, "Type:", typeof restaurantId)
   console.log("🔍 [V2 DEBUG] Table ID from URL:", tableNumberParam, "Type:", typeof tableNumberParam)
   console.log("🔍 [V2 DEBUG] Converted Table Number:", tableNum, "Type:", typeof tableNum)
+  
+  // Early error logging if restaurantId is missing
+  if (!restaurantId) {
+    console.error("❌ [V2 ERROR] restaurantId is undefined or empty")
+    console.error("❌ [V2 ERROR] Full params:", JSON.stringify(params))
+  }
   
   const [restaurant, setRestaurant] = useState<any>(null)
   const [table, setTable] = useState<any>(null)
@@ -38,7 +51,14 @@ function MenuLandingPageV2Content() {
 
   // Load restaurant data
   useEffect(() => {
-    if (!restaurantId || !db) return
+    if (!restaurantId || !db) {
+      if (!restaurantId) {
+        console.error("❌ [V2 ERROR] Cannot load restaurant - restaurantId is missing")
+        setError('Restaurant ID is missing from URL')
+        setLoading(false)
+      }
+      return
+    }
 
     const restaurantRef = doc(db, 'restaurants', restaurantId)
     const unsubscribe = onSnapshot(
@@ -176,6 +196,31 @@ function MenuLandingPageV2Content() {
         <div className="text-center max-w-md">
           <h1 className="text-2xl font-bold text-red-600 mb-2">Error</h1>
           <p className="text-gray-600 mb-2">Restaurant not found</p>
+          {!restaurantId && (
+            <div className="mt-4 p-3 bg-red-50 rounded text-left text-xs">
+              <p className="font-semibold text-red-800">Debug Info:</p>
+              <p>Restaurant ID: {restaurantId || 'MISSING'}</p>
+              <p>Params object: {JSON.stringify(params)}</p>
+              <p>URL: {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+  
+  // Early error if restaurantId is missing
+  if (!restaurantId) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
+        <div className="text-center max-w-md">
+          <h1 className="text-2xl font-bold text-red-600 mb-2">Error</h1>
+          <p className="text-gray-600 mb-2">Restaurant ID is missing from URL</p>
+          <div className="mt-4 p-3 bg-red-50 rounded text-left text-xs">
+            <p className="font-semibold text-red-800">Debug Info:</p>
+            <p>Params: {JSON.stringify(params)}</p>
+            <p>URL: {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
+          </div>
         </div>
       </div>
     )

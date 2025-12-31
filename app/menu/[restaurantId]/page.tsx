@@ -13,6 +13,18 @@ export default function MenuLandingPage({
   params: { restaurantId: string }
   searchParams: { table?: string }
 }) {
-  const tableParam = searchParams.table ? `?table=${searchParams.table}` : ''
-  redirect(`/menu/${params.restaurantId}/v2${tableParam}`)
+  // Ensure restaurantId exists
+  const restaurantId = params?.restaurantId || ''
+  
+  if (!restaurantId) {
+    // If restaurantId is missing, redirect to error or home
+    redirect('/')
+  }
+  
+  // Build table parameter correctly
+  const tableNumber = searchParams?.table || ''
+  const tableParam = tableNumber ? `?table=${tableNumber}` : ''
+  
+  // Redirect to v2 route with exact path
+  redirect(`/menu/${restaurantId}/v2${tableParam}`)
 }
