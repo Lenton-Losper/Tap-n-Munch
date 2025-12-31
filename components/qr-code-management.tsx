@@ -85,10 +85,21 @@ export function QRCodeManagement() {
       }
 
       // Use centralized base URL utility to ensure QR codes point to production
+      // Updated to use /v2 route for cache-busting
+      if (!restaurantId) {
+        toast({
+          title: 'Error',
+          description: 'Restaurant ID is missing. Please refresh the page and try again.',
+          variant: 'destructive',
+        })
+        return
+      }
+      
       const qrCodeUrl = buildMenuUrl(restaurantId, tableNumber)
       
-      console.log('Creating table with QR URL:', qrCodeUrl)
-      console.log('Restaurant ID:', restaurantId)
+      console.log('📌 [QR DEBUG] Creating table with QR URL:', qrCodeUrl)
+      console.log('📌 [QR DEBUG] Restaurant ID:', restaurantId)
+      console.log('📌 [QR DEBUG] Table Number:', tableNumber)
 
       await createTable({
         restaurant_id: restaurantId,
@@ -456,9 +467,7 @@ export function QRCodeManagement() {
     )
   }
 
-  // Use centralized base URL utility to ensure QR codes point to production
-  const mainMenuUrl = restaurantId ? buildMenuUrl(restaurantId) : ''
-  
+  // Ensure restaurantId exists before generating URLs
   if (!restaurantId) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -470,6 +479,14 @@ export function QRCodeManagement() {
       </div>
     )
   }
+  
+  // Use centralized base URL utility to ensure QR codes point to production
+  // Updated to use /v2 route for cache-busting
+  const mainMenuUrl = buildMenuUrl(restaurantId)
+  
+  console.log("📌 [QR DEBUG] Main Menu URL Generated:", mainMenuUrl)
+  
+  console.log("📌 [QR DEBUG] Main Menu URL Generated:", mainMenuUrl)
 
   return (
     <div className="min-h-screen bg-gray-50">

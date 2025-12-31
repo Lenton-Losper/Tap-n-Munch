@@ -69,15 +69,30 @@ export function getQRCodeBaseUrl(): string {
 
 /**
  * Build a menu URL for a restaurant
+ * Updated to use /v2 route for cache-busting
  * 
  * @param restaurantId - Restaurant ID
  * @param tableNumber - Optional table number
- * @returns Full menu URL
+ * @returns Full menu URL pointing to /v2 route
  */
 export function buildMenuUrl(restaurantId: string, tableNumber?: number): string {
+  if (!restaurantId) {
+    console.error('❌ [QR DEBUG] buildMenuUrl called with missing restaurantId')
+    return ''
+  }
+  
   const baseUrl = getQRCodeBaseUrl()
   const tableParam = tableNumber ? `?table=${tableNumber}` : ''
-  return `${baseUrl}/menu/${restaurantId}${tableParam}`
+  const fullUrl = `${baseUrl}/menu/${restaurantId}/v2${tableParam}`
+  
+  console.log("📌 [QR DEBUG] Generated Link:", {
+    restaurantId,
+    tableNumber: tableNumber || 'none',
+    baseUrl,
+    fullUrl
+  })
+  
+  return fullUrl
 }
 
 
