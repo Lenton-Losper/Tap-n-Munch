@@ -5,9 +5,27 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "restaurant_id",
+          "fieldPath": "table_number",
           "order": "ASCENDING"
         },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "table_closed",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "placed_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
         {
           "fieldPath": "status",
           "order": "ASCENDING"
@@ -23,12 +41,22 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "restaurant_id",
+          "fieldPath": "status",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "status",
+          "fieldPath": "placed_at",
           "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "order_number",
+          "order": "DESCENDING"
         }
       ]
     },
@@ -37,10 +65,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
           "fieldPath": "active",
           "order": "ASCENDING"
         },
@@ -51,89 +75,9 @@
       ]
     },
     {
-      "collectionGroup": "menu_items",
+      "collectionGroup": "items",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "category_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "name",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "menu_items",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "status",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "name",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "menu_categories",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "active",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "display_order",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "sub_categories",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "menu_category_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "active",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "display_order",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "menu_items",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
         {
           "fieldPath": "sub_category_id",
           "order": "ASCENDING"
@@ -145,23 +89,29 @@
       ]
     },
     {
-      "collectionGroup": "menu_items",
+      "collectionGroup": "items",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "menu_category_id",
-          "order": "ASCENDING"
-        },
         {
           "fieldPath": "status",
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "sub_category_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
           "order": "ASCENDING"
         },
         {
@@ -175,10 +125,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "restaurant_id",
-          "order": "ASCENDING"
-        },
-        {
           "fieldPath": "active",
           "order": "ASCENDING"
         },
@@ -187,8 +133,21 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "tables",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "table_number",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "active",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
 }
-

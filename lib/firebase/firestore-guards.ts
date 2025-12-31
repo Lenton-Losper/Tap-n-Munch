@@ -13,7 +13,7 @@
  */
 export function assertNoForbiddenFields(obj: any, path = ''): void {
   // Only check for customer email fields, not general 'email' (used for auth)
-  const forbidden = ['customer_email', 'customerEmail']
+  const forbidden: string[] = ['customer_email', 'customerEmail']
   
   if (obj === null || typeof obj !== 'object') {
     return
@@ -29,8 +29,15 @@ export function assertNoForbiddenFields(obj: any, path = ''): void {
   for (const key of Object.keys(obj)) {
     const currentPath = path ? `${path}.${key}` : key
     
-    // Check if key itself is forbidden
-    if (forbidden.includes(key)) {
+    // Check if key itself is forbidden (defensive guard)
+    // CRITICAL: Allow customer_email: null but reject any other value
+    if (Array.isArray(forbidden) && forbidden.includes(key)) {
+      // Special case: allow customer_email: null (required for Firestore schema)
+      if (key === 'customer_email' && obj[key] === null) {
+        // Allow it - this is the only acceptable value
+        continue
+      }
+      // Reject customerEmail in any form, or customer_email with non-null value
       throw new Error(`FORBIDDEN FIELD DETECTED: ${key} at path: ${currentPath}`)
     }
     
@@ -76,38 +83,98 @@ export function removeUndefinedDeep(obj: any): any {
  * 3. Returns clean object ready for Firestore
  */
 export function prepareForFirestore(obj: any): any {
+  // Defensive guard: handle null/undefined input
+  if (obj === null || obj === undefined) {
+    return null
+  }
+  
   // CRITICAL: Check for customer_email before anything else
-  const objJson = JSON.stringify(obj)
-  if (objJson.includes('customer_email') || objJson.includes('customerEmail')) {
-    console.error('🚨 CRITICAL: customer_email found in object JSON!')
-    console.error('🚨 Object:', objJson)
-    throw new Error('FORBIDDEN FIELD DETECTED: customer_email or customerEmail found in object')
+  // Defensive guard: JSON.stringify can throw on circular references, so wrap in try-catch
+  let objJson: string
+  try {
+    objJson = JSON.stringify(obj)
+  } catch (err) {
+    console.warn('⚠️ JSON.stringify failed, skipping JSON check:', err)
+    objJson = ''
+  }
+  
+  // CRITICAL: Check object directly for customer_email with non-null values
+  // We allow customer_email: null but reject any other value (string, undefined, etc.)
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    if ('customer_email' in obj && obj.customer_email !== null) {
+      console.error('🚨 CRITICAL: customer_email found with non-null value!')
+      console.error('🚨 Value:', obj.customer_email)
+      throw new Error('FORBIDDEN FIELD DETECTED: customer_email found with non-null value')
+    }
+    if ('customerEmail' in obj) {
+      // Reject customerEmail in any form (should not exist at all)
+      console.error('🚨 CRITICAL: customerEmail found!')
+      console.error('🚨 Value:', obj.customerEmail)
+      throw new Error('FORBIDDEN FIELD DETECTED: customerEmail found in object')
+    }
   }
   
   // First, assert no forbidden fields
-  assertNoForbiddenFields(obj)
+  try {
+    assertNoForbiddenFields(obj)
+  } catch (err) {
+    // Re-throw assertion errors
+    throw err
+  }
   
   // Then, remove undefined values
   const cleaned = removeUndefinedDeep(obj)
   
   // CRITICAL: Check again after cleaning
-  const cleanedJson = JSON.stringify(cleaned)
-  if (cleanedJson.includes('customer_email') || cleanedJson.includes('customerEmail')) {
-    console.error('🚨 CRITICAL: customer_email found AFTER cleaning!')
-    console.error('🚨 Cleaned object:', cleanedJson)
-    throw new Error('FORBIDDEN FIELD DETECTED: customer_email or customerEmail found after cleaning')
+  let cleanedJson: string
+  try {
+    cleanedJson = JSON.stringify(cleaned)
+  } catch (err) {
+    console.warn('⚠️ JSON.stringify failed on cleaned object, skipping JSON check:', err)
+    cleanedJson = ''
   }
   
-  // Final check: ensure no undefined values remain
-  if (cleanedJson.includes('undefined')) {
-    throw new Error('CRITICAL: Undefined values still exist after sanitization')
+  // CRITICAL: Check cleaned object directly for customer_email with non-null values
+  if (cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)) {
+    if ('customer_email' in cleaned && cleaned.customer_email !== null) {
+      console.error('🚨 CRITICAL: customer_email found AFTER cleaning with non-null value!')
+      console.error('🚨 Value:', cleaned.customer_email)
+      throw new Error('FORBIDDEN FIELD DETECTED: customer_email found after cleaning with non-null value')
+    }
+    if ('customerEmail' in cleaned) {
+      // Reject customerEmail in any form
+      console.error('🚨 CRITICAL: customerEmail found AFTER cleaning!')
+      console.error('🚨 Value:', cleaned.customerEmail)
+      throw new Error('FORBIDDEN FIELD DETECTED: customerEmail found after cleaning')
+    }
+  }
+  
+  // Final check: ensure no undefined values remain in JSON string
+  if (typeof cleanedJson === 'string' && cleanedJson.length > 0) {
+    // Check for undefined values (shouldn't appear in JSON but be defensive)
+    if (cleanedJson.includes(':undefined') || cleanedJson.includes(',undefined')) {
+      throw new Error('CRITICAL: Undefined values still exist after sanitization')
+    }
   }
   
   // CRITICAL: Explicitly check the object keys
-  if ('customer_email' in cleaned || 'customerEmail' in cleaned) {
-    console.error('🚨 CRITICAL: customer_email found in cleaned object keys!')
-    console.error('🚨 Keys:', Object.keys(cleaned))
-    throw new Error('FORBIDDEN FIELD DETECTED: customer_email or customerEmail in object keys')
+  // Allow customer_email: null but reject any other value
+  if (cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)) {
+    if ('customer_email' in cleaned) {
+      // Only allow if the value is explicitly null
+      if (cleaned.customer_email !== null) {
+        console.error('🚨 CRITICAL: customer_email found in cleaned object with non-null value!')
+        console.error('🚨 Keys:', Object.keys(cleaned))
+        console.error('🚨 Value:', cleaned.customer_email)
+        throw new Error('FORBIDDEN FIELD DETECTED: customer_email in object keys with non-null value')
+      }
+    }
+    if ('customerEmail' in cleaned) {
+      // Reject customerEmail in any form (should not exist at all)
+      console.error('🚨 CRITICAL: customerEmail found in cleaned object!')
+      console.error('🚨 Keys:', Object.keys(cleaned))
+      throw new Error('FORBIDDEN FIELD DETECTED: customerEmail in object keys')
+    }
   }
   
   return cleaned

@@ -1,6 +1,7 @@
 import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, doc, getDoc, onSnapshot, Timestamp } from 'firebase/firestore'
 import { db } from './config'
 import { sanitizeFirestoreData } from './firestore-utils'
+import { ordersPath, orderPath } from './paths'
 
 export interface OrderItem {
   menu_item_id: string
@@ -51,9 +52,9 @@ export async function getNextOrderNumber(restaurantId: string): Promise<number> 
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
+    // NEW: Use hierarchical path - restaurant_id is in the path
     const q = query(
-      collection(db, 'orders'),
-      where('restaurant_id', '==', restaurantId),
+      collection(db, ordersPath(restaurantId)),
       orderBy('order_number', 'desc'),
       limit(1)
     )
@@ -111,9 +112,9 @@ export async function getOrders(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
+    // NEW: Use hierarchical path - restaurant_id is in the path
     let q = query(
-      collection(db, 'orders'),
-      where('restaurant_id', '==', restaurantId),
+      collection(db, ordersPath(restaurantId)),
       orderBy('placed_at', 'desc')
     )
     
@@ -122,7 +123,14 @@ export async function getOrders(
     }
     
     const snapshot = await getDocs(q)
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order))
+    const { normalizeOrder } = require('@/lib/utils')
+    return snapshot.docs.map(doc => {
+      const data = doc.data()
+      return normalizeOrder({
+        id: doc.id,
+        ...data,
+      }) as Order
+    })
   } catch (error: any) {
     // Check if it's a missing index error
     if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
@@ -146,15 +154,21 @@ export async function getOrders(
 }
 
 // Get a single order
-export async function getOrder(orderId: string): Promise<Order | null> {
+export async function getOrder(restaurantId: string, orderId: string): Promise<Order | null> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'orders', orderId)
+    // NEW: Use hierarchical path
+    const docRef = doc(db, orderPath(restaurantId, orderId))
     const docSnap = await getDoc(docRef)
     
     if (docSnap.exists()) {
-      return { id: docSnap.id, ...docSnap.data() } as Order
+      const { normalizeOrder } = require('@/lib/utils')
+      const data = docSnap.data()
+      return normalizeOrder({
+        id: docSnap.id,
+        ...data,
+      }) as Order
     }
     return null
   } catch (error: any) {
@@ -170,7 +184,11 @@ export async function updateOrderStatus(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'orders', orderId)
+    // NEW: Use hierarchical path - need restaurantId
+    // Note: This function signature needs to be updated to include restaurantId
+    // For now, we'll need to find restaurantId from the order or pass it
+    // TODO: Update all callers to pass restaurantId
+    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
     const updates: any = {
       status,
       updated_at: new Date().toISOString(),
@@ -218,7 +236,11 @@ export async function updateOrderPayment(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'orders', orderId)
+    // NEW: Use hierarchical path - need restaurantId
+    // Note: This function signature needs to be updated to include restaurantId
+    // For now, we'll need to find restaurantId from the order or pass it
+    // TODO: Update all callers to pass restaurantId
+    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
     
     // Check if order is already paid
     const orderDoc = await getDoc(docRef)
@@ -250,6 +272,12 @@ export async function updateOrderPayment(
 }
 
 // Subscribe to orders (real-time)
+/**
+ * PART 5: Fix Dashboard Query (Restaurant View)
+ * 
+ * Dashboard must NOT filter by session.
+ * Query: restaurant_id + status in [pending, accepted, preparing, ready] + orderBy placed_at
+ */
 export function subscribeToOrders(
   restaurantId: string,
   status: Order['status'],
@@ -261,24 +289,88 @@ export function subscribeToOrders(
   }
   
   try {
+    // STEP 3: Fix Dashboard Query (Match Reality)
+    // Dashboard = restaurant-wide view, NO session filter
+    // NEW: Use hierarchical path - restaurant_id is in the path
     const q = query(
-      collection(db, 'orders'),
-      where('restaurant_id', '==', restaurantId),
+      collection(db, ordersPath(restaurantId)),
       where('status', '==', status),
-      orderBy('placed_at', 'desc')
+      orderBy('placed_at', 'asc') // Use 'asc' for chronological order (oldest first)
     )
+    
+    console.log('🔍 subscribeToOrders: Querying for restaurant_id:', restaurantId, 'status:', status)
+    
+    // DEBUG: Also check if ANY orders exist for this restaurant (regardless of status)
+    const debugQuery = query(
+      collection(db, ordersPath(restaurantId)),
+      limit(5)
+    )
+    
+    getDocs(debugQuery).then((debugSnapshot) => {
+      console.log('🔍 DEBUG: Total orders for restaurant', restaurantId, ':', debugSnapshot.docs.length)
+      if (debugSnapshot.docs.length > 0) {
+        debugSnapshot.docs.forEach((doc, idx) => {
+          const data = doc.data()
+          console.log(`🔍 DEBUG: Order ${idx + 1}:`, {
+            id: doc.id,
+            status: data.status,
+            restaurant_id: data.restaurant_id,
+            has_placed_at: !!data.placed_at,
+            has_created_at: !!data.created_at,
+            has_session_id: !!data.session_id,
+            order_number: data.order_number,
+          })
+        })
+      } else {
+        console.log('⚠️ DEBUG: No orders found for this restaurant at all. Either no orders exist, or restaurant_id mismatch.')
+      }
+    }).catch((err) => {
+      console.error('⚠️ DEBUG: Error checking all orders:', err)
+    })
     
     return onSnapshot(
       q,
       (snapshot) => {
-        const orders = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as Order))
+        console.log('📦 subscribeToOrders: Snapshot received,', snapshot.docs.length, 'orders found')
+        if (snapshot.docs.length > 0) {
+          const firstDoc = snapshot.docs[0]
+          const firstData = firstDoc.data()
+          console.log('📦 subscribeToOrders: First order sample:', {
+            id: firstDoc.id,
+            order_number: firstData.order_number,
+            status: firstData.status,
+            restaurant_id: firstData.restaurant_id,
+            table_id: firstData.table_id,
+            session_id: firstData.session_id,
+            created_at: firstData.created_at,
+            placed_at: firstData.placed_at,
+          })
+        } else {
+          // PART 5: Safety Logging - Log all statuses found for this restaurant
+          console.log('⚠️ subscribeToOrders: No orders found. Possible reasons:')
+          console.log('  1. No orders exist with status:', status)
+          console.log('  2. Orders exist but have different status')
+          console.log('  3. Orders exist but missing placed_at field')
+          console.log('  4. Orders exist but restaurant_id mismatch')
+          console.log('📊 Query parameters used:', {
+            restaurant_id: restaurantId,
+            status: status,
+            orderBy: 'placed_at',
+          })
+        }
+        
+        const { normalizeOrder } = require('@/lib/utils')
+        const orders = snapshot.docs.map(doc => {
+          const data = doc.data()
+          return normalizeOrder({
+            id: doc.id,
+            ...data,
+          }) as Order
+        })
         callback(orders)
       },
       (error: any) => {
-        console.error('Error in orders snapshot listener:', error)
+        console.error('❌ Error in orders snapshot listener:', error)
         
         // Check if it's a missing index error
         if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
@@ -324,11 +416,20 @@ export function subscribeToOrder(
   }
   
   try {
-    const docRef = doc(db, 'orders', orderId)
+    // NEW: Use hierarchical path - need restaurantId
+    // Note: This function signature needs to be updated to include restaurantId
+    // For now, we'll need to find restaurantId from the order or pass it
+    // TODO: Update all callers to pass restaurantId
+    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
     
     return onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
-        callback({ id: docSnap.id, ...docSnap.data() } as Order)
+        const { normalizeOrder } = require('@/lib/utils')
+        const data = docSnap.data()
+        callback(normalizeOrder({
+          id: docSnap.id,
+          ...data,
+        }) as Order)
       } else {
         callback(null)
       }

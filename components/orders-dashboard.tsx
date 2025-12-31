@@ -6,10 +6,12 @@ import { subscribeToOrders, updateOrderStatus, updateOrderPayment, Order } from 
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
+import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore'
+import { db } from '@/lib/firebase/config'
 import {
   Dialog,
   DialogContent,
@@ -19,10 +21,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
+// PART 2: Standardize Order Status Model
+// Use ONLY: new, accepted, preparing, ready, completed, cancelled
 type OrderStatus = 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
 
 const tabs: { id: OrderStatus; label: string }[] = [
-  { id: 'new', label: 'New' },
+  { id: 'new', label: 'New Orders' },
   { id: 'accepted', label: 'Accepted' },
   { id: 'preparing', label: 'Preparing' },
   { id: 'ready', label: 'Ready' },
@@ -38,18 +42,45 @@ export function OrdersDashboard() {
   const [loading, setLoading] = useState(true)
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
+  const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
+  const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
 
   useEffect(() => {
-    if (!restaurantId) return
+    if (!restaurantId) {
+      console.log('⚠️ Dashboard: No restaurantId available')
+      setLoading(false)
+      return
+    }
+
+    console.log('🔍 Dashboard: Subscribing to orders for restaurant:', restaurantId, 'status:', activeTab)
 
     // Subscribe to real-time orders
     const unsubscribe = subscribeToOrders(restaurantId, activeTab, (newOrders) => {
+      console.log('📦 Dashboard: Received', newOrders.length, 'orders for status:', activeTab)
+      if (newOrders.length > 0) {
+        console.log('📦 Dashboard: First order details:', {
+          id: newOrders[0].id,
+          order_number: newOrders[0].order_number,
+          status: newOrders[0].status,
+          restaurant_id: newOrders[0].restaurant_id,
+          table_number: newOrders[0].table_number,
+        })
+      }
       setOrders(newOrders)
       setLoading(false)
       
       // Play notification sound for new orders (optional)
       if (activeTab === 'new' && newOrders.length > 0) {
         // You can add a notification sound here
+      }
+      
+      // PART 5: Safety Logging - Log when 0 orders found
+      if (newOrders.length === 0) {
+        console.log('⚠️ Dashboard: No orders found for status:', activeTab)
+        console.log('⚠️ Dashboard: Query parameters:', {
+          restaurantId,
+          status: activeTab,
+        })
       }
     })
 
@@ -89,6 +120,120 @@ export function OrdersDashboard() {
         variant: 'destructive',
       })
       setMarkingPaidOrderId(null)
+    }
+  }
+
+  /**
+   * STEP 4: Close Table functionality
+   * 
+   * Staff action to close a table session:
+   * - Updates table_sessions/{id} status to "closed"
+   * - Sets closed_at timestamp
+   * - Once closed: Customer banner disappears, orders remain for audit
+   * - Next QR scan creates a NEW session
+   */
+  const handleCloseTable = async (tableNumber: number) => {
+    if (!db || !restaurantId) {
+      toast({
+        title: 'Error',
+        description: 'Unable to close table. Missing restaurant ID.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      setClosingTableNumber(tableNumber)
+      
+      // PART 4: Find table by table_number to get tableId
+      const { getTableByNumber } = require('@/lib/firebase/tables')
+      const table = await getTableByNumber(restaurantId, tableNumber)
+      if (!table) {
+        toast({
+          title: 'Table not found',
+          description: `Table ${tableNumber} not found.`,
+          variant: 'destructive',
+        })
+        setClosingTableNumber(null)
+        return
+      }
+      const tableId = table.id
+
+      // PART 4: Find active table session for this table
+      // NEW: Use hierarchical path
+      const { tableSessionsPath, tableSessionPath, ordersPath, orderPath } = require('@/lib/firebase/paths')
+      const sessionsRef = collection(db, tableSessionsPath(restaurantId, tableId))
+      const q = query(
+        sessionsRef,
+        where('status', '==', 'active')
+      )
+
+      const snapshot = await getDocs(q)
+      
+      if (snapshot.empty) {
+        toast({
+          title: 'No active session',
+          description: `Table ${tableNumber} doesn't have an active session.`,
+          variant: 'destructive',
+        })
+        setClosingTableNumber(null)
+        return
+      }
+
+      // PART 4: Close all active sessions for this table
+      // NEW: Use hierarchical path
+      const sessionUpdatePromises = snapshot.docs.map((sessionDoc) =>
+        updateDoc(doc(db, tableSessionPath(restaurantId, tableId, sessionDoc.id)), {
+          status: 'closed',
+          closed_at: serverTimestamp(),
+        })
+      )
+
+      // PART 4: Update all orders for this table
+      // Set table_closed = true and status = 'completed' to prevent order leakage
+      // NEW: Use hierarchical path - restaurant_id is in the path
+      const ordersRef = collection(db, ordersPath(restaurantId))
+      const ordersQuery = query(
+        ordersRef,
+        where('table_number', '==', tableNumber),
+        where('table_closed', '==', false)
+      )
+
+      const ordersSnapshot = await getDocs(ordersQuery)
+      
+      // NEW: Use hierarchical path
+      const orderUpdatePromises = ordersSnapshot.docs.map((orderDoc) =>
+        updateDoc(doc(db, orderPath(restaurantId, orderDoc.id)), {
+          table_closed: true,
+          status: 'completed',
+          completed_at: serverTimestamp(),
+          updated_at: serverTimestamp(),
+        })
+      )
+
+      // Execute all updates in parallel
+      await Promise.all([...sessionUpdatePromises, ...orderUpdatePromises])
+
+      console.log(`✅ PART 4: Closed table ${tableNumber}:`, {
+        sessionsClosed: sessionUpdatePromises.length,
+        ordersClosed: orderUpdatePromises.length,
+      })
+
+      toast({
+        title: 'Table closed',
+        description: `Table ${tableNumber} has been closed. ${orderUpdatePromises.length} order(s) marked as completed.`,
+      })
+      
+      setShowCloseTableDialog(false)
+      setClosingTableNumber(null)
+    } catch (error: any) {
+      console.error('Error closing table:', error)
+      toast({
+        title: 'Failed to close table',
+        description: error.message || 'Failed to close table session',
+        variant: 'destructive',
+      })
+      setClosingTableNumber(null)
     }
   }
 
@@ -247,7 +392,16 @@ export function OrdersDashboard() {
           </div>
         ) : (
           <div className="grid gap-4 lg:grid-cols-2">
-            {orders.map((order) => (
+            {orders.map((order) => {
+              // DEFENSIVE NORMALIZATION: Ensure items is always an array before rendering
+              // This prevents "Cannot read property 'length' of undefined" errors
+              const normalizedOrder = {
+                ...order,
+                items: Array.isArray(order.items) ? order.items : [],
+                customer: order.customer || {},
+              }
+
+              return (
               <div
                 key={order.id}
                 className={cn(
@@ -258,134 +412,152 @@ export function OrdersDashboard() {
                 {/* Order Header */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 flex-wrap">
-                    <span className="text-lg font-bold">#{order.order_number}</span>
-                    <Badge variant="secondary">Table {order.table_number}</Badge>
-                    {getStatusBadge(order.status)}
-                    {getPaymentStatusBadge(order)}
+                    <span className="text-lg font-bold">#{normalizedOrder.order_number || 'N/A'}</span>
+                    <Badge variant="secondary">Table {normalizedOrder.table_number || 0}</Badge>
+                    {getStatusBadge(normalizedOrder.status)}
+                    {getPaymentStatusBadge(normalizedOrder)}
                     <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                      {getPaymentMethodIcon(order.payment_method)}
-                      <span className="capitalize">{order.payment_method}</span>
+                      {getPaymentMethodIcon(normalizedOrder.payment_method)}
+                      <span className="capitalize">{normalizedOrder.payment_method || 'cash'}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />
-                    {formatTimeAgo(order.placed_at)}
+                    {formatTimeAgo(normalizedOrder.placed_at)}
                   </div>
                 </div>
 
                 <div className="text-right">
                   <span className="text-lg font-bold">
-                    {restaurant?.currency || 'N$'}{order.total.toFixed(2)}
+                    {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
                 </div>
 
-                {/* Order Items */}
+                {/* Order Items - DEFENSIVE: Use normalizedOrder.items which is guaranteed to be an array */}
                 <div className="space-y-2 border-t pt-3">
-                  {order.items.map((item, index) => (
-                    <div key={index} className="text-sm">
-                      <span className="font-medium">
-                        {item.quantity}× {item.name}
-                      </span>
-                      {item.selected_size && (
-                        <span className="text-muted-foreground ml-2">
-                          ({item.selected_size.name})
+                  {normalizedOrder.items.length > 0 ? (
+                    normalizedOrder.items.map((item: any, index: number) => (
+                      <div key={index} className="text-sm">
+                        <span className="font-medium">
+                          {item?.quantity ?? 1}× {item?.name ?? 'Unknown Item'}
                         </span>
-                      )}
-                      {item.selected_addons.length > 0 && (
-                        <span className="text-muted-foreground ml-2">
-                          +{item.selected_addons.map((a) => a.name).join(', ')}
-                        </span>
-                      )}
-                      {item.special_instructions && (
-                        <div className="text-xs text-muted-foreground italic mt-1">
-                          "{item.special_instructions}"
-                        </div>
-                      )}
+                        {item?.selected_size?.name && (
+                          <span className="text-muted-foreground ml-2">
+                            ({item.selected_size.name})
+                          </span>
+                        )}
+                        {Array.isArray(item?.selected_addons) && item.selected_addons.length > 0 && (
+                          <span className="text-muted-foreground ml-2">
+                            +{item.selected_addons.map((a: any) => a?.name ?? '').filter(Boolean).join(', ')}
+                          </span>
+                        )}
+                        {item?.special_instructions && (
+                          <div className="text-xs text-muted-foreground italic mt-1">
+                            "{item.special_instructions}"
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-muted-foreground italic">
+                      No items in this order
                     </div>
-                  ))}
+                  )}
                 </div>
 
                 {/* Order Instructions */}
-                {order.order_instructions && (
+                {normalizedOrder.order_instructions && (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
                     <p className="text-sm text-yellow-900 font-medium">Order Instructions:</p>
-                    <p className="text-sm text-yellow-800">{order.order_instructions}</p>
+                    <p className="text-sm text-yellow-800">{normalizedOrder.order_instructions}</p>
                   </div>
                 )}
 
-                {/* Customer Info */}
-                {order.customer ? (
+                {/* Table Session Info */}
+                {normalizedOrder.table_session_id && (
                   <div className="text-sm text-muted-foreground">
-                    Customer: {order.customer.name}
-                    {order.customer.phone ? ` • ${order.customer.phone}` : ''}
+                    Session: {normalizedOrder.table_session_id.slice(0, 12)}...
                   </div>
-                ) : (
-                  // Fallback for old orders that might not have customer object
-                  <div className="text-sm text-muted-foreground text-gray-400">
-                    Customer: Not available
+                )}
+
+                {/* Close Table Button - Only show for staff */}
+                {normalizedOrder.table_number && (
+                  <div className="pt-2">
+                    <Button
+                      variant="outline"
+                      className="w-full border-red-300 text-red-600 hover:bg-red-50"
+                      onClick={() => {
+                        setClosingTableNumber(normalizedOrder.table_number)
+                        setShowCloseTableDialog(true)
+                      }}
+                      disabled={closingTableNumber === normalizedOrder.table_number}
+                    >
+                      <DoorClosed className="h-4 w-4 mr-2" />
+                      {closingTableNumber === normalizedOrder.table_number ? 'Closing...' : 'Close Table'}
+                    </Button>
                   </div>
                 )}
 
                 {/* Payment Status Button */}
-                {order.payment_status === 'pending' && (
+                {normalizedOrder.payment_status === 'pending' && (
                   <div className="pt-2">
                     <Button
                       className="w-full bg-[#FF6B35] hover:bg-[#e55a28]"
                       onClick={() => {
-                        setMarkingPaidOrderId(order.id)
+                        setMarkingPaidOrderId(normalizedOrder.id)
                         setShowMarkPaidDialog(true)
                       }}
-                      disabled={markingPaidOrderId === order.id}
+                      disabled={markingPaidOrderId === normalizedOrder.id}
                     >
                       <DollarSign className="h-4 w-4 mr-2" />
-                      {markingPaidOrderId === order.id ? 'Marking as Paid...' : 'Mark as Paid'}
+                      {markingPaidOrderId === normalizedOrder.id ? 'Marking as Paid...' : 'Mark as Paid'}
                     </Button>
                   </div>
                 )}
 
                 {/* Action Buttons */}
                 <div className="flex gap-3 pt-2">
-                  {order.status === 'new' && (
+                  {normalizedOrder.status === 'new' && (
                     <>
                       <Button
                         variant="outline"
                         className="flex-1"
-                        onClick={() => handleStatusUpdate(order.id, 'cancelled')}
+                        onClick={() => handleStatusUpdate(normalizedOrder.id, 'cancelled')}
                       >
                         <XCircle className="h-4 w-4 mr-2" />
                         Decline
                       </Button>
                       <Button
                         className="flex-1 bg-[#FF6B35] hover:bg-[#e55a28]"
-                        onClick={() => handleStatusUpdate(order.id, 'accepted')}
+                        onClick={() => handleStatusUpdate(normalizedOrder.id, 'accepted')}
                       >
                         <CheckCircle2 className="h-4 w-4 mr-2" />
                         Accept & Start
                       </Button>
                     </>
                   )}
-                  {order.status === 'accepted' && (
+                  {normalizedOrder.status === 'accepted' && (
                     <Button
                       className="flex-1 bg-blue-500 hover:bg-blue-600"
-                      onClick={() => handleStatusUpdate(order.id, 'preparing')}
+                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'preparing')}
                     >
                       <ChefHat className="h-4 w-4 mr-2" />
                       Start Preparing
                     </Button>
                   )}
-                  {order.status === 'preparing' && (
+                  {normalizedOrder.status === 'preparing' && (
                     <Button
                       className="flex-1 bg-orange-500 hover:bg-orange-600"
-                      onClick={() => handleStatusUpdate(order.id, 'ready')}
+                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'ready')}
                     >
                       <Package className="h-4 w-4 mr-2" />
                       Mark as Ready
                     </Button>
                   )}
-                  {order.status === 'ready' && (
+                  {normalizedOrder.status === 'ready' && (
                     <Button
                       className="flex-1 bg-green-500 hover:bg-green-600"
-                      onClick={() => handleStatusUpdate(order.id, 'completed')}
+                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'completed')}
                     >
                       <CheckCircle2 className="h-4 w-4 mr-2" />
                       Complete Order
@@ -393,7 +565,7 @@ export function OrdersDashboard() {
                   )}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
       </div>
@@ -427,6 +599,42 @@ export function OrdersDashboard() {
               disabled={!markingPaidOrderId}
             >
               Mark as Paid
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Close Table Confirmation Dialog */}
+      <Dialog open={showCloseTableDialog} onOpenChange={setShowCloseTableDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close Table</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to close Table {closingTableNumber}? 
+              This will end the current session. Customers will need to scan the QR code again to start a new session.
+              Existing orders will remain for audit purposes.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCloseTableDialog(false)
+                setClosingTableNumber(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => {
+                if (closingTableNumber) {
+                  handleCloseTable(closingTableNumber)
+                }
+              }}
+              disabled={!closingTableNumber}
+            >
+              Close Table
             </Button>
           </DialogFooter>
         </DialogContent>

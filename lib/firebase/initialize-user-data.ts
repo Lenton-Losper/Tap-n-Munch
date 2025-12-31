@@ -66,6 +66,7 @@ export async function initializeUserData(
 
     const restaurantData: Omit<Restaurant, 'id'> = {
       owner_id: userId,
+      owner_uid: userId, // PART 1: Set owner_uid for Storage rules
       name: defaultRestaurantName,
       slug: slug,
       description: '',
@@ -180,6 +181,7 @@ async function createRestaurantForUser(
 
   const restaurantData: Omit<Restaurant, 'id'> = {
     owner_id: userId,
+    owner_uid: userId, // PART 1: Set owner_uid for Storage rules
     name: defaultRestaurantName,
     slug: slug,
     description: '',
@@ -221,6 +223,8 @@ async function createRestaurantForUser(
 
   return restaurantId
 }
+
+
 
 
 

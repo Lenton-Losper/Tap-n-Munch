@@ -49,7 +49,7 @@ export default function CartPage() {
   const handleEdit = async (index: number) => {
     const cartItem = items[index]
     try {
-      const menuItem = await getMenuItem(cartItem.menu_item_id)
+      const menuItem = await getMenuItem(cartItem.menu_item_id, restaurantId)
       if (menuItem) {
         setEditingItem(menuItem)
         setEditingIndex(index)

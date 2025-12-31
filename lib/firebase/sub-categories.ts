@@ -1,6 +1,29 @@
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, getDoc } from 'firebase/firestore'
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from './config'
 import { SubCategory } from './types'
+import { subCategoriesPath, subCategoryPath, menuDocumentPath } from './paths'
+
+// Ensure menu/data document exists (required for hierarchical structure)
+async function ensureMenuDocumentExists(restaurantId: string): Promise<void> {
+  if (!db) throw new Error('Firestore is not initialized')
+  
+  try {
+    const menuDocRef = doc(db, menuDocumentPath(restaurantId))
+    const menuDocSnap = await getDoc(menuDocRef)
+    
+    if (!menuDocSnap.exists()) {
+      // Create the menu/data document if it doesn't exist
+      await setDoc(menuDocRef, {
+        created_at: serverTimestamp(),
+        version: 1,
+      })
+      console.log('✅ Created menu/data document for restaurant:', restaurantId)
+    }
+  } catch (error: any) {
+    console.error('Error ensuring menu document exists:', error)
+    // Don't throw - allow the query to proceed even if document creation fails
+  }
+}
 
 // Get all sub-categories for a menu category
 export async function getSubCategories(
@@ -10,16 +33,23 @@ export async function getSubCategories(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
+    // Ensure menu/data document exists first
+    await ensureMenuDocumentExists(restaurantId)
+    
+    // NEW: Use hierarchical path - restaurant_id and menu_category_id are in the path
     const q = query(
-      collection(db, 'sub_categories'),
-      where('restaurant_id', '==', restaurantId),
-      where('menu_category_id', '==', menuCategoryId),
+      collection(db, subCategoriesPath(restaurantId, menuCategoryId)),
       where('active', '==', true),
       orderBy('display_order', 'asc')
     )
     
     const snapshot = await getDocs(q)
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SubCategory))
+    return snapshot.docs.map(doc => ({ 
+      id: doc.id, 
+      restaurant_id: restaurantId,
+      menu_category_id: menuCategoryId,
+      ...doc.data() 
+    } as SubCategory))
   } catch (error: any) {
     // Check if it's a missing index error
     if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
@@ -31,14 +61,17 @@ export async function getSubCategories(
       // Fallback: Query without orderBy (doesn't require index), then sort in memory
       try {
         const fallbackQuery = query(
-          collection(db, 'sub_categories'),
-          where('restaurant_id', '==', restaurantId),
-          where('menu_category_id', '==', menuCategoryId),
+          collection(db, subCategoriesPath(restaurantId, menuCategoryId)),
           where('active', '==', true)
         )
         
         const snapshot = await getDocs(fallbackQuery)
-        const subcategories = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SubCategory))
+        const subcategories = snapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          restaurant_id: restaurantId,
+          menu_category_id: menuCategoryId,
+          ...doc.data() 
+        } as SubCategory))
         
         // Sort by display_order in memory
         return subcategories.sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
@@ -85,6 +118,9 @@ export async function createSubCategory(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
+    // Ensure menu/data document exists first
+    await ensureMenuDocumentExists(restaurantId)
+    
     // Check for duplicate name within parent category
     const existing = await subCategoryExists(restaurantId, menuCategoryId, name)
     if (existing) {
@@ -97,15 +133,14 @@ export async function createSubCategory(
       ? Math.max(...subcategories.map(s => s.display_order))
       : 0
     
-    const docRef = await addDoc(collection(db, 'sub_categories'), {
-      restaurant_id: restaurantId,
-      menu_category_id: menuCategoryId,
+    // NEW: Use hierarchical path - restaurant_id and menu_category_id are in the path, not in document
+    const docRef = await addDoc(collection(db, subCategoriesPath(restaurantId, menuCategoryId)), {
       name: name.trim(),
       description: description?.trim() || null,
       display_order: maxOrder + 1,
       active: true,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
     })
     return docRef.id
   } catch (error: any) {
@@ -115,16 +150,19 @@ export async function createSubCategory(
 
 // Update a sub-category
 export async function updateSubCategory(
+  restaurantId: string,
+  menuCategoryId: string,
   subCategoryId: string,
   data: Partial<SubCategory>
 ): Promise<void> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'sub_categories', subCategoryId)
+    // NEW: Use hierarchical path
+    const docRef = doc(db, subCategoryPath(restaurantId, menuCategoryId, subCategoryId))
     await updateDoc(docRef, {
       ...data,
-      updated_at: new Date().toISOString(),
+      updated_at: serverTimestamp(),
     } as any)
   } catch (error: any) {
     throw new Error(error.message || 'Failed to update sub-category')
@@ -132,27 +170,41 @@ export async function updateSubCategory(
 }
 
 // Delete a sub-category (soft delete by setting active to false)
-export async function deleteSubCategory(subCategoryId: string): Promise<void> {
+export async function deleteSubCategory(
+  restaurantId: string,
+  menuCategoryId: string,
+  subCategoryId: string
+): Promise<void> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
     // Check if has menu items will be done in component
-    await updateSubCategory(subCategoryId, { active: false })
+    await updateSubCategory(restaurantId, menuCategoryId, subCategoryId, { active: false })
   } catch (error: any) {
     throw new Error(error.message || 'Failed to delete sub-category')
   }
 }
 
 // Get a single sub-category
-export async function getSubCategory(subCategoryId: string): Promise<SubCategory | null> {
+export async function getSubCategory(
+  restaurantId: string,
+  menuCategoryId: string,
+  subCategoryId: string
+): Promise<SubCategory | null> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'sub_categories', subCategoryId)
+    // NEW: Use hierarchical path
+    const docRef = doc(db, subCategoryPath(restaurantId, menuCategoryId, subCategoryId))
     const docSnap = await getDoc(docRef)
     
     if (docSnap.exists()) {
-      return { id: docSnap.id, ...docSnap.data() } as SubCategory
+      return { 
+        id: docSnap.id, 
+        restaurant_id: restaurantId,
+        menu_category_id: menuCategoryId,
+        ...docSnap.data() 
+      } as SubCategory
     }
     return null
   } catch (error: any) {

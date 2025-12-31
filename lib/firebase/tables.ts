@@ -1,5 +1,6 @@
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, getDoc } from 'firebase/firestore'
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, getDoc, deleteDoc } from 'firebase/firestore'
 import { db } from './config'
+import { tablesPath, tablePath } from './paths'
 
 export interface Table {
   id: string
@@ -18,76 +19,76 @@ export async function getTables(restaurantId: string): Promise<Table[]> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const q = query(
-      collection(db, 'tables'),
-      where('restaurant_id', '==', restaurantId),
-      where('active', '==', true),
-      orderBy('table_number', 'asc')
-    )
-    
+    // We use a simple query first. If it fails due to index, we fall back to manual sort.
+    const q = query(collection(db, tablesPath(restaurantId)), where('active', '==', true))
     const snapshot = await getDocs(q)
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Table))
+    
+    const tables = snapshot.docs.map(doc => ({
+      id: doc.id,
+      restaurant_id: restaurantId,
+      ...doc.data()
+    } as Table))
+
+    // Sort in memory to avoid needing a Composite Index
+    return tables.sort((a, b) => a.table_number - b.table_number)
   } catch (error: any) {
-    // Check if it's a missing index error
-    if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
-      const indexUrlMatch = error.message?.match(/https:\/\/[^\s]+/)
-      const indexUrl = indexUrlMatch ? indexUrlMatch[0] : null
-      console.warn(
-        'Firestore index not found. Using fallback query (slower but works without index). ' +
-        'Create the index for better performance: ' + (indexUrl || 'see console')
-      )
-      if (indexUrl) {
-        console.warn('Index creation URL:', indexUrl)
-      }
-      
-      // Fallback: fetch all tables without orderBy (works without index)
-      try {
-        const fallbackQuery = query(
-          collection(db, 'tables'),
-          where('restaurant_id', '==', restaurantId),
-          where('active', '==', true)
-        )
-        const snapshot = await getDocs(fallbackQuery)
-        let tables = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Table))
-        
-        // Sort in memory
-        tables.sort((a, b) => a.table_number - b.table_number)
-        
-        return tables
-      } catch (fallbackError: any) {
-        console.error('Fallback query also failed:', fallbackError)
-        // Return empty array instead of throwing - allows UI to show empty state
-        return []
-      }
-    }
-    console.error('Error fetching tables:', error)
-    // Return empty array instead of throwing - allows UI to show empty state
+    console.error('Error fetching tables:', error.message)
     return []
   }
 }
 
 // Get a table by restaurant ID and table number
+// SIMPLIFIED: Single query with no orderBy or complex filters to avoid index requirements
 export async function getTableByNumber(
   restaurantId: string,
-  tableNumber: number
+  tableNumber: number | string
 ): Promise<Table | null> {
   if (!db) throw new Error('Firestore is not initialized')
   
+  // Convert to Number immediately for type-safe query
+  const parsedNumber = typeof tableNumber === 'number' ? tableNumber : Number(tableNumber)
+  
+  if (isNaN(parsedNumber) || parsedNumber <= 0) {
+    console.error('❌ Invalid table number provided:', tableNumber)
+    return null
+  }
+
   try {
+    console.log(`🔍 [TABLE LOOKUP] Searching for table ${parsedNumber} (type: ${typeof parsedNumber})`)
+    
+    // SIMPLIFIED QUERY: Only query by table_number - no orderBy, no active filter
+    // This avoids composite index requirements that cause permission errors
     const q = query(
-      collection(db, 'tables'),
-      where('restaurant_id', '==', restaurantId),
-      where('table_number', '==', tableNumber),
-      where('active', '==', true)
+      collection(db, tablesPath(restaurantId)), 
+      where('table_number', '==', parsedNumber)
     )
     
     const snapshot = await getDocs(q)
-    if (snapshot.empty) return null
     
-    const doc = snapshot.docs[0]
-    return { id: doc.id, ...doc.data() } as Table
+    if (snapshot.empty) {
+      console.warn(`⚠️ No table found with number ${parsedNumber}`)
+      return null
+    }
+
+    // Check active status in memory (after fetch) to avoid index requirements
+    const tableDoc = snapshot.docs[0]
+    const data = tableDoc.data()
+    
+    if (data.active !== true) {
+      console.warn(`⚠️ Table ${parsedNumber} found but is INACTIVE`)
+      return null
+    }
+
+    return {
+      id: tableDoc.id,
+      restaurant_id: restaurantId,
+      ...data
+    } as Table
+
   } catch (error: any) {
-    throw new Error(error.message || 'Failed to fetch table')
+    // Return null instead of throwing - let caller handle gracefully
+    console.error(`❌ [TABLE LOOKUP] Error:`, error.code, error.message)
+    return null
   }
 }
 
@@ -95,54 +96,36 @@ export async function getTableByNumber(
 export async function createTable(data: Omit<Table, 'id' | 'created_at'>): Promise<string> {
   if (!db) throw new Error('Firestore is not initialized')
   
-  try {
-    // Remove undefined values (Firestore doesn't allow undefined)
-    const cleanData: any = {
-      restaurant_id: data.restaurant_id,
-      table_number: data.table_number,
-      table_name: data.table_name,
-      qr_code_url: data.qr_code_url,
-      active: data.active,
-      created_at: new Date().toISOString(),
-    }
-    
-    // Only include location if it's provided and not empty
-    if (data.location && data.location.trim() !== '') {
-      cleanData.location = data.location.trim()
-    }
-    
-    // Include qr_code_image if provided
-    if (data.qr_code_image) {
-      cleanData.qr_code_image = data.qr_code_image
-    }
-    
-    const docRef = await addDoc(collection(db, 'tables'), cleanData)
-    return docRef.id
-  } catch (error: any) {
-    throw new Error(error.message || 'Failed to create table')
+  const cleanData = {
+    table_number: Number(data.table_number), // Force Number type for DB consistency
+    table_name: data.table_name,
+    qr_code_url: data.qr_code_url,
+    active: data.active,
+    created_at: new Date().toISOString(),
+    location: data.location?.trim() || ""
   }
+  
+  const docRef = await addDoc(collection(db, 'restaurants', data.restaurant_id, 'tables'), cleanData)
+  return docRef.id
 }
 
 // Update a table
-export async function updateTable(tableId: string, data: Partial<Table>): Promise<void> {
+export async function updateTable(restaurantId: string, tableId: string, data: Partial<Table>): Promise<void> {
+  if (!db) throw new Error('Firestore is not initialized')
+  const docRef = doc(db, 'restaurants', restaurantId, 'tables', tableId)
+  await updateDoc(docRef, data as any)
+}
+
+// Delete a table (HARD DELETE)
+export async function deleteTable(restaurantId: string, tableId: string): Promise<void> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    const docRef = doc(db, 'tables', tableId)
-    await updateDoc(docRef, data as any)
+    const tableRef = doc(db, 'restaurants', restaurantId, 'tables', tableId)
+    await deleteDoc(tableRef)
+    console.log('✅ Table Hard Deleted:', tableId)
   } catch (error: any) {
-    throw new Error(error.message || 'Failed to update table')
+    console.error('❌ Delete failed:', error.message)
+    throw error
   }
 }
-
-// Delete a table (soft delete by setting active to false)
-export async function deleteTable(tableId: string): Promise<void> {
-  if (!db) throw new Error('Firestore is not initialized')
-  
-  try {
-    await updateTable(tableId, { active: false })
-  } catch (error: any) {
-    throw new Error(error.message || 'Failed to delete table')
-  }
-}
-

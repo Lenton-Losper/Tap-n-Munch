@@ -7,15 +7,15 @@ import { cn } from '@/lib/utils'
 type PaymentMethod = 'cash' | 'card'
 
 interface PaymentMethodSelectorProps {
-  selectedMethod: PaymentMethod | null
-  onSelect: (method: PaymentMethod) => void
-  enabledMethods: PaymentMethod[]
+  value: PaymentMethod | null
+  onChange: (method: PaymentMethod) => void
+  enabledMethods?: PaymentMethod[]
   disabled?: boolean
 }
 
 export function PaymentMethodSelector({
-  selectedMethod,
-  onSelect,
+  value: selectedMethod,
+  onChange: onSelect,
   enabledMethods,
   disabled = false,
 }: PaymentMethodSelectorProps) {
@@ -36,7 +36,12 @@ export function PaymentMethodSelector({
     },
   ]
 
-  const availableMethods = methods.filter((m) => enabledMethods.includes(m.value))
+  // Defensive guard: default to all methods if enabledMethods is undefined or not an array
+  const safeEnabledMethods = Array.isArray(enabledMethods) && enabledMethods.length > 0 
+    ? enabledMethods 
+    : ['cash', 'card'] as PaymentMethod[]
+
+  const availableMethods = methods.filter((m) => safeEnabledMethods.includes(m.value))
 
   if (availableMethods.length === 0) {
     return (

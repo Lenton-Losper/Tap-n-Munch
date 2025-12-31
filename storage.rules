@@ -27,6 +27,35 @@ service firebase.storage {
       allow delete: if request.auth != null && isRestaurantOwner(restaurantId);
     }
     
+    // PART 2: Restaurant logos - Simplified rules using owner_uid
+    match /restaurants/{restaurantId}/{fileName} {
+      // Allow read by anyone (for customer menus and QR landing pages)
+      allow read: if true;
+      
+      // Helper function to check restaurant ownership
+      // Checks owner_uid first (new restaurants), falls back to owner_id (existing restaurants)
+      function isRestaurantOwner(restaurantId) {
+        let restaurant = get(/databases/(default)/documents/restaurants/$(restaurantId));
+        return request.auth != null
+          && exists(/databases/(default)/documents/restaurants/$(restaurantId))
+          && (
+            (restaurant.data.owner_uid != null && restaurant.data.owner_uid == request.auth.uid) ||
+            (restaurant.data.owner_uid == null && restaurant.data.owner_id == request.auth.uid)
+          );
+      }
+      
+      // Allow write ONLY if:
+      // - User is authenticated
+      // - Restaurant document exists
+      // - User's UID matches restaurant's owner_uid (or owner_id for backward compatibility)
+      allow write: if isRestaurantOwner(restaurantId)
+        && request.resource.size < 2 * 1024 * 1024  // Max 2MB
+        && request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');  // Only jpg, png, webp
+      
+      // Allow delete by restaurant owner
+      allow delete: if isRestaurantOwner(restaurantId);
+    }
+    
     // Default: Deny all other access
     match /{allPaths=**} {
       allow read, write: if false;

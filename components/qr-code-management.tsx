@@ -24,6 +24,8 @@ export function QRCodeManagement() {
   const [newTableNumber, setNewTableNumber] = useState('')
   const [newTableLocation, setNewTableLocation] = useState('')
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
+  // CRITICAL: Prevent double execution (React Strict Mode + double clicks)
+  const [deletingTableId, setDeletingTableId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!restaurantId) return
@@ -122,22 +124,164 @@ export function QRCodeManagement() {
   const handleDeleteTable = async (table: Table) => {
     if (!confirm(`Delete ${table.table_name}? This cannot be undone.`)) return
 
-    if (!restaurantId) return
+    // CRITICAL: Prevent double execution (React Strict Mode + double clicks)
+    if (deletingTableId === table.id) {
+      console.warn('⚠️ [DELETE TABLE] Delete already in progress for table:', table.id)
+      return // Already deleting - safe no-op
+    }
+
+    // SECURITY: Check authentication and ownership before delete
+    console.log('🔍 [DELETE TABLE] Starting delete validation')
+    
+    // 1. Ensure auth is initialized
+    if (!user) {
+      console.error('❌ [DELETE TABLE] Authentication failed: user is null')
+      toast({
+        title: 'Authentication Required',
+        description: 'You must be signed in to delete tables. Please sign in and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    console.log('✅ [DELETE TABLE] User authenticated:', {
+      uid: user.uid,
+      email: user.email
+    })
+    
+    // 2. Check restaurant data is loaded
+    if (!restaurant) {
+      console.error('❌ [DELETE TABLE] Restaurant data not loaded')
+      toast({
+        title: 'Error',
+        description: 'Restaurant data is not available. Please refresh the page and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    if (!restaurantId) {
+      console.error('❌ [DELETE TABLE] Restaurant ID is missing')
+      toast({
+        title: 'Error',
+        description: 'Restaurant ID is missing. Please refresh the page and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    // 3. Verify ownership: user.uid must match restaurant.owner_id (underscore, not camelCase)
+    // CRITICAL: Database uses owner_id (underscore), not ownerId (camelCase)
+    const currentUserUid = user.uid
+    const restaurantOwnerId = restaurant.owner_id // Using owner_id (underscore) as per database schema
+    
+    console.log('🔍 [DELETE TABLE] Ownership check:', {
+      currentUserUid,
+      restaurantOwnerId,
+      match: currentUserUid === restaurantOwnerId,
+      restaurantHasOwnerId: 'owner_id' in restaurant,
+      restaurantOwnerIdType: typeof restaurantOwnerId
+    })
+    
+    // Verify restaurant has owner_id field
+    if (!restaurant.owner_id) {
+      console.error('❌ [DELETE TABLE] Restaurant missing owner_id field')
+      console.error('   Restaurant data:', restaurant)
+      toast({
+        title: 'Data Error',
+        description: 'Restaurant data is missing owner information. Please refresh the page and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    if (currentUserUid !== restaurantOwnerId) {
+      console.error('❌ [DELETE TABLE] Ownership verification failed')
+      console.error('   Current user UID:', currentUserUid)
+      console.error('   Restaurant owner_id:', restaurantOwnerId)
+      console.error('   Match:', currentUserUid === restaurantOwnerId)
+      toast({
+        title: 'Permission Denied',
+        description: 'You do not have permission to delete tables. Only the restaurant owner can delete tables.',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    console.log('✅ [DELETE TABLE] Ownership verified - user is restaurant owner')
+    
+    // 4. Set deleting state to prevent double execution
+    setDeletingTableId(table.id)
+    
+    // 5. Log table being deleted
+    console.log('🗑️ [DELETE TABLE] Deleting table:', {
+      tableId: table.id,
+      tableName: table.table_name,
+      tableNumber: table.table_number,
+      restaurantId: restaurantId
+    })
 
     try {
-      await deleteTable(table.id)
+      // 6. Call delete with restaurantId parameter (idempotent)
+      await deleteTable(restaurantId, table.id)
+      
+      console.log('✅ [DELETE TABLE] Table deleted successfully')
+      
+      // CRITICAL: Immediately update UI state to remove deleted table (no ghost tables)
+      setTables(prev => prev.filter(t => t.id !== table.id))
+      
       toast({
         title: 'Success',
         description: 'Table deleted successfully',
       })
-      const updatedTables = await getTables(restaurantId)
-      setTables(updatedTables)
+      
+      // Optional: Reload tables list to ensure consistency (but UI is already updated)
+      // This is a safety net, but the immediate filter above ensures no ghost tables
+      try {
+        const updatedTables = await getTables(restaurantId)
+        setTables(updatedTables)
+      } catch (reloadError: any) {
+        // If reload fails, UI is already updated, so just log
+        console.warn('⚠️ [DELETE TABLE] Failed to reload tables, but UI is already updated:', reloadError.message)
+      }
     } catch (err: any) {
-      toast({
-        title: 'Error',
-        description: err.message || 'Failed to delete table',
-        variant: 'destructive',
+      // Log full error details for debugging
+      console.error('❌ [DELETE TABLE] Delete operation failed:', {
+        error: err.message,
+        code: err.code,
+        stack: err.stack,
+        tableId: table.id,
+        restaurantId: restaurantId,
+        fullError: err
       })
+      
+      // Check if it's a permission error
+      if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+        console.error('❌ [DELETE TABLE] Permission denied - check Firestore rules')
+        console.error('   This may be due to:')
+        console.error('   1. Firestore rules not deployed yet (rules take time to propagate)')
+        console.error('   2. Restaurant document missing owner_id field')
+        console.error('   3. User UID does not match restaurant.owner_id')
+        console.error('   Current user UID:', user.uid)
+        console.error('   Restaurant owner_id:', restaurant.owner_id)
+        toast({
+          title: 'Permission Denied',
+          description: 'You do not have permission to delete this table. If you are the owner, wait a few seconds for Firestore rules to propagate, then try again.',
+          variant: 'destructive',
+        })
+      } else {
+        // Show the actual error message
+        const errorMessage = err.message || 'Failed to delete table'
+        console.error('❌ [DELETE TABLE] Error details:', errorMessage)
+        toast({
+          title: 'Error',
+          description: errorMessage,
+          variant: 'destructive',
+        })
+      }
+    } finally {
+      // CRITICAL: Always clear deleting state, even on error
+      setDeletingTableId(null)
     }
   }
 
@@ -446,9 +590,10 @@ export function QRCodeManagement() {
                       size="sm"
                       className="w-full text-red-600 hover:text-red-700"
                       onClick={() => handleDeleteTable(table)}
+                      disabled={deletingTableId === table.id || deletingTableId !== null}
                     >
                       <Trash2 className="w-4 h-4 mr-2" />
-                      Delete
+                      {deletingTableId === table.id ? 'Deleting...' : 'Delete'}
                     </Button>
                   </div>
                 </div>

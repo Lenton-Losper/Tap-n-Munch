@@ -14,6 +14,7 @@ export interface User {
 export interface Restaurant {
   id: string
   owner_id: string // FK to users.id
+  owner_uid: string // Firebase Auth UID (for Storage rules)
   name: string
   slug: string // URL-friendly: "tap-n-munch"
   description: string
@@ -169,6 +170,7 @@ export interface Order {
   
   // Order lifecycle
   status: 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
+  table_closed: boolean // PART 1: Track if table is closed (prevents order leakage)
   
   // Timestamps
   placed_at: string

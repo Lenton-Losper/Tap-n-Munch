@@ -357,7 +357,10 @@ export function MenuManagementV2() {
     if (!confirm(`Delete sub-category "${subCategory.name}"? This cannot be undone.`)) return
 
     try {
-      await deleteSubCategory(subCategory.id)
+      if (!subCategory.menu_category_id) {
+        throw new Error('Sub-category is missing menu_category_id')
+      }
+      await deleteSubCategory(restaurantId, subCategory.menu_category_id, subCategory.id)
       toast({
         title: 'Success',
         description: `Sub-category "${subCategory.name}" deleted successfully`,
@@ -530,20 +533,31 @@ export function MenuManagementV2() {
       }
 
       if (editingItem) {
-        await updateMenuItem(editingItem.id, {
-          name: itemForm.name,
-          description: itemForm.description,
-          base_price: price,
-          image_url: imageUrl || undefined,
-          imageFit: itemForm.imageFit,
-          imagePosition: itemForm.imagePosition,
-          has_sizes: itemForm.has_sizes,
-          sizes: itemForm.sizes,
-          has_addons: itemForm.has_addons,
-          addons: itemForm.addons,
-          allow_special_instructions: itemForm.allow_special_instructions,
-          status: itemForm.status,
-        })
+        // For update, we need the full path - extract from editingItem
+        if (!editingItem.menu_category_id || !editingItem.sub_category_id) {
+          throw new Error('Menu item missing category information')
+        }
+        
+        await updateMenuItem(
+          restaurantId,
+          editingItem.menu_category_id,
+          editingItem.sub_category_id,
+          editingItem.id,
+          {
+            name: itemForm.name,
+            description: itemForm.description,
+            base_price: price,
+            image_url: imageUrl || undefined,
+            imageFit: itemForm.imageFit,
+            imagePosition: itemForm.imagePosition,
+            has_sizes: itemForm.has_sizes,
+            sizes: itemForm.sizes,
+            has_addons: itemForm.has_addons,
+            addons: itemForm.addons,
+            allow_special_instructions: itemForm.allow_special_instructions,
+            status: itemForm.status,
+          }
+        )
         toast({
           title: 'Success',
           description: 'Menu item updated successfully',
@@ -607,7 +621,17 @@ export function MenuManagementV2() {
     if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return
 
     try {
-      await deleteMenuItem(item.id)
+      // For delete, we need the full path - extract from item
+      if (!item.menu_category_id || !item.sub_category_id) {
+        throw new Error('Menu item missing category information')
+      }
+      
+      await deleteMenuItem(
+        restaurantId,
+        item.menu_category_id,
+        item.sub_category_id,
+        item.id
+      )
       toast({
         title: 'Success',
         description: 'Menu item deleted successfully',
@@ -778,17 +802,28 @@ export function MenuManagementV2() {
                         <h3 className="text-lg sm:text-xl font-semibold">
                           {subcategory.name} ({items.length} {items.length === 1 ? 'item' : 'items'})
                         </h3>
-                        <Button
-                          onClick={() => {
-                            setSelectedMenuCategory(category)
-                            handleAddItemForSubCategory(subcategory)
-                          }}
-                          className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
-                          size="sm"
-                        >
-                          <Plus className="h-4 w-4 mr-2" />
-                          Add Item
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => {
+                              setSelectedMenuCategory(category)
+                              handleAddItemForSubCategory(subcategory)
+                            }}
+                            className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
+                            size="sm"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />
+                            Add Item
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDeleteSubCategory(subcategory)}
+                            className="h-11 sm:h-9 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200 w-full sm:w-auto"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete
+                          </Button>
+                        </div>
                       </div>
                       {items.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
@@ -919,14 +954,25 @@ export function MenuManagementV2() {
                       <h3 className="text-lg sm:text-xl font-semibold">
                         {subcategory.name} ({filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'})
                       </h3>
-                      <Button
-                        onClick={() => handleAddItemForSubCategory(subcategory)}
-                        className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
-                        size="sm"
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add Item
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => handleAddItemForSubCategory(subcategory)}
+                          className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
+                          size="sm"
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Add Item
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDeleteSubCategory(subcategory)}
+                          className="h-11 sm:h-9 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200 w-full sm:w-auto"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </Button>
+                      </div>
                     </div>
                     {filteredItems.length > 0 ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">

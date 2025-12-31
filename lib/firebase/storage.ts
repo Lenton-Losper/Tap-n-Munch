@@ -67,6 +67,35 @@ export async function uploadMenuItemImage(
 }
 
 /**
+ * Upload a restaurant logo
+ * @param file - The image file
+ * @param restaurantId - Restaurant ID
+ * @returns The download URL of the uploaded logo
+ */
+export async function uploadRestaurantLogo(
+  file: File,
+  restaurantId: string
+): Promise<string> {
+  // Validate file type (jpg, png, webp only)
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error('Logo must be a JPG, PNG, or WebP image')
+  }
+
+  // Validate file size (max 2MB)
+  const maxSize = 2 * 1024 * 1024 // 2MB
+  if (file.size > maxSize) {
+    throw new Error('Logo size must be less than 2MB')
+  }
+
+  // Use fixed path: restaurants/{restaurantId}/logo.png
+  // This ensures we replace the existing logo if re-uploaded
+  const path = `restaurants/${restaurantId}/logo.png`
+  
+  return uploadImage(file, path)
+}
+
+/**
  * Delete an image from Firebase Storage
  * @param imageUrl - The full URL of the image to delete
  */

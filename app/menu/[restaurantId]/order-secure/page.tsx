@@ -2,13 +2,12 @@
 
 export const dynamic = "force-dynamic"
 
-console.log('🛡️ SECURITY: Running SDK-Free Flow')
-
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getTableByNumber } from '@/lib/firebase/tables'
 import { useCart } from '@/contexts/cart-context'
+import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,15 +30,9 @@ export default function OrderSecurePage() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   
-  // Form state - both required
-  const [customerName, setCustomerName] = useState('')
-  const [customerPhone, setCustomerPhone] = useState('')
+  // Form state - NO customer fields required
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | null>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
-  
-  // Validation state
-  const [nameError, setNameError] = useState(false)
-  const [phoneError, setPhoneError] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -50,6 +43,11 @@ export default function OrderSecurePage() {
         ])
         setRestaurant(restaurantData)
         setTable(tableData)
+        
+        // Initialize session if table number is provided
+        if (tableNumber > 0) {
+          getOrCreateSession(String(tableNumber), restaurantId)
+        }
       } catch (err) {
         console.error('Failed to load data:', err)
         toast({
@@ -68,33 +66,8 @@ export default function OrderSecurePage() {
   }, [restaurantId, tableNumber])
 
   const submitOrder = async () => {
-    // Reset validation errors
-    setNameError(false)
-    setPhoneError(false)
-    
-    // VALIDATION: Customer name is required
-    if (!customerName || customerName.trim() === '') {
-      setNameError(true)
-      toast({
-        title: 'Customer name required',
-        description: 'Please enter your name.',
-        variant: 'destructive',
-      })
-      return
-    }
-    
-    // VALIDATION: Customer phone is required
-    if (!customerPhone || customerPhone.trim() === '') {
-      setPhoneError(true)
-      toast({
-        title: 'Customer phone required',
-        description: 'Please enter your phone number.',
-        variant: 'destructive',
-      })
-      return
-    }
-    
-    if (items.length === 0) {
+    // Defensive guard: ensure items is an array and not empty
+    if (!Array.isArray(items) || items.length === 0) {
       toast({
         title: 'Cart is empty',
         description: 'Please add items to your cart before placing an order.',
@@ -112,47 +85,122 @@ export default function OrderSecurePage() {
       return
     }
     
+    // PART 1: Get or create unique session_id (unique per scan)
+    // CRITICAL: Fetch session_id from localStorage to attach to order
+    // This ensures the Active Order Banner can find orders by session_id
+    let sessionId = getCurrentSession()
+    if (!sessionId) {
+      sessionId = getOrCreateSession(restaurantId, String(tableNumber))
+    }
+    
+    if (!sessionId) {
+      toast({
+        title: 'Session Error',
+        description: 'Unable to create session. Please try again.',
+        variant: 'destructive',
+      })
+      setSubmitting(false)
+      return
+    }
+    
+    console.log('📦 Submitting order with session_id:', sessionId)
+    console.log('📦 Order creation - Session ID type:', typeof sessionId)
+    
     setSubmitting(true)
     toast({ title: 'Processing your order...', description: 'Please wait while we process your order.' })
 
     try {
+
       const subtotal = getTotal()
       const taxRate = restaurant?.tax_rate || 0.15
       const tax = subtotal * taxRate
       const total = subtotal + tax
 
-      // Prepare order items
-      const orderItems = items.map(item => ({
-        menuItemId: item.menu_item_id,
-        name: item.name,
-        quantity: item.quantity,
-        basePrice: item.base_price,
-        size: item.selected_size?.name || null,
-        addons: item.selected_addons || [],
-        specialInstructions: item.special_instructions || '',
-        subtotal: item.subtotal,
-      }))
+      // Prepare order items with defensive guards
+      const orderItems = items
+        .filter(item => item != null) // Filter out null/undefined items
+        .map(item => ({
+          menuItemId: String(item?.menu_item_id || ''),
+          name: String(item?.name || ''),
+          quantity: Number(item?.quantity) || 1,
+          basePrice: Number(item?.base_price) || 0,
+          size: (item?.selected_size && typeof item.selected_size === 'object' && item.selected_size.name) 
+            ? String(item.selected_size.name) 
+            : null,
+          addons: Array.isArray(item?.selected_addons) 
+            ? item.selected_addons.filter(a => a != null).map(a => ({
+                name: String(a?.name || ''),
+                price: Number(a?.price) || 0,
+              }))
+            : [],
+          specialInstructions: (item?.special_instructions && typeof item.special_instructions === 'string')
+            ? String(item.special_instructions).trim()
+            : '',
+          subtotal: Number(item?.subtotal) || 0,
+        }))
+        .filter(item => item.menuItemId && item.name) // Filter out invalid items
 
-      // Construct payload object
-      const payload = {
-        restaurantId: String(restaurantId),
-        tableNumber: Number(tableNumber) || 0,
-        customerName: String(customerName).trim(),
-        customerPhone: String(customerPhone).trim(),
-        items: orderItems,
+      // STEP 2: Fix Frontend Checkout Payload
+      // Ensure session_id is always sent with correct field names
+      const payload: Record<string, any> = {
+        restaurantId: String(restaurantId), // Will be mapped to restaurant_id in API
+        tableNumber: Number(tableNumber) || 0, // Will be mapped to table_id in API
+        session_id: String(sessionId), // REQUIRED: Must match Firestore field name
+        items: orderItems, // Will be mapped to snake_case in API
         subtotal: Number(subtotal),
         tax: Number(tax),
         total: Number(total),
-        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
-        orderInstructions: orderInstructions && orderInstructions.trim() ? orderInstructions.trim() : null,
+        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash', // Will be mapped to payment_method
+        orderInstructions: orderInstructions && orderInstructions.trim() ? orderInstructions.trim() : null, // Will be mapped to order_instructions
       }
-
+      
       // CRITICAL: JSON Car Wash - physically strip undefined properties
       const cleanPayload = JSON.parse(JSON.stringify(payload))
       
-      console.log('🛡️ SECURITY: Sending order to API (SDK-Free)')
-      console.log('🛡️ SECURITY: Payload keys:', Object.keys(cleanPayload))
-      console.log('🛡️ SECURITY: Has customer_email?', 'customer_email' in cleanPayload)
+      // CRITICAL: Ensure session_id survives JSON Car Wash
+      if (payload.session_id !== undefined) {
+        cleanPayload.session_id = payload.session_id
+      }
+      
+      // Log final payload to verify session_id is included
+      console.log('📦 Final payload before API call:', {
+        hasSessionId: 'session_id' in cleanPayload,
+        sessionIdValue: cleanPayload.session_id,
+        restaurantId: cleanPayload.restaurantId,
+        payloadKeys: Object.keys(cleanPayload),
+      })
+      
+      // Also check nested objects (items array) - explicit whitelist, no spread
+      if (Array.isArray(cleanPayload.items)) {
+        cleanPayload.items = cleanPayload.items.map((item: any) => {
+          // Explicit whitelist - only include known safe fields
+          const cleanItem: Record<string, any> = {
+            menuItemId: item?.menuItemId || item?.menu_item_id || '',
+            name: item?.name || '',
+            quantity: item?.quantity || 1,
+            basePrice: item?.basePrice || item?.base_price || 0,
+            subtotal: item?.subtotal || 0,
+            size: item?.size || null,
+            addons: Array.isArray(item?.addons) ? item.addons : [],
+            specialInstructions: item?.specialInstructions || item?.special_instructions || '',
+          }
+          // Explicitly ensure no email fields exist
+          if ('customer_email' in cleanItem) delete cleanItem.customer_email
+          if ('customerEmail' in cleanItem) delete cleanItem.customerEmail
+          if ('email' in cleanItem) delete cleanItem.email
+          return cleanItem
+        })
+      }
+      
+      // Log final payload once for verification
+      console.log('ORDER PAYLOAD FINAL', JSON.stringify(cleanPayload, null, 2))
+      
+      // Verify no forbidden fields exist
+      const payloadStr = JSON.stringify(cleanPayload)
+      if (payloadStr.includes('customer_email') || payloadStr.includes('customerEmail')) {
+        console.error('🚨 CRITICAL: Forbidden field detected in final payload!')
+        throw new Error('Forbidden field detected: customer_email or customerEmail')
+      }
       
       // Send to API using fetch (NO Firebase SDK)
       const response = await fetch('/api/orders', {
@@ -191,8 +239,11 @@ export default function OrderSecurePage() {
     }
   }
 
-  const subtotal = getTotal()
-  const taxRate = restaurant?.tax_rate || 0.15
+  // Defensive guards for calculations
+  const subtotal = typeof getTotal === 'function' ? getTotal() : 0
+  const taxRate = (restaurant && typeof restaurant.tax_rate === 'number' && restaurant.tax_rate >= 0)
+    ? restaurant.tax_rate
+    : 0.15
   const tax = subtotal * taxRate
   const total = subtotal + tax
 
@@ -220,62 +271,13 @@ export default function OrderSecurePage() {
           </div>
         </div>
 
-        {/* Customer Information */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Customer Information</h2>
-          
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="name" className="mb-2 block">
-                Name <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="name"
-                value={customerName}
-                onChange={(e) => {
-                  setCustomerName(e.target.value)
-                  setNameError(false)
-                }}
-                placeholder="Your name"
-                required
-                className={nameError ? 'border-red-500' : ''}
-                autoComplete="name"
-              />
-              {nameError && (
-                <p className="text-sm text-red-500 mt-1">Name is required</p>
-              )}
-            </div>
-
-            <div>
-              <Label htmlFor="phone" className="mb-2 block">
-                Phone Number <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="phone"
-                type="tel"
-                value={customerPhone}
-                onChange={(e) => {
-                  setCustomerPhone(e.target.value)
-                  setPhoneError(false)
-                }}
-                placeholder="+264..."
-                required
-                className={phoneError ? 'border-red-500' : ''}
-                autoComplete="tel"
-              />
-              {phoneError && (
-                <p className="text-sm text-red-500 mt-1">Phone number is required</p>
-              )}
-            </div>
-          </div>
-        </div>
-
         {/* Payment Method */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4">Payment Method</h2>
           <PaymentMethodSelector
             value={paymentMethod}
             onChange={setPaymentMethod}
+            enabledMethods={['cash', 'card']}
           />
         </div>
 
@@ -319,16 +321,21 @@ export default function OrderSecurePage() {
         {/* Place Order Button */}
         <Button
           onClick={submitOrder}
-          disabled={submitting || items.length === 0 || !customerName.trim() || !customerPhone.trim() || !paymentMethod}
+          disabled={
+            submitting || 
+            !Array.isArray(items) || 
+            items.length === 0 || 
+            !paymentMethod
+          }
           className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white"
           size="lg"
         >
           {submitting ? 'Placing Order...' : 'Place Order 🎉'}
         </Button>
         
-        {(!customerName.trim() || !customerPhone.trim() || !paymentMethod) && (
+        {!paymentMethod && (
           <p className="text-sm text-red-500 text-center mt-2">
-            Please fill in all required fields to place the order.
+            Please select a payment method to place the order.
           </p>
         )}
       </div>

@@ -5,6 +5,7 @@ import {
   onAuthStateChanged,
   User,
   UserCredential,
+  fetchSignInMethodsForEmail,
 } from 'firebase/auth'
 import { auth, db, isFirebaseConfigValid } from './config'
 import { doc, setDoc, getDoc, serverTimestamp, collection, addDoc, writeBatch } from 'firebase/firestore'
@@ -68,6 +69,7 @@ export async function signUpRestaurant(
     
     const restaurantData: Omit<Restaurant, 'id'> = {
       owner_id: userId,
+      owner_uid: userId, // PART 1: Set owner_uid for Storage rules
       name: restaurantName,
       slug: slug,
       description: '',
@@ -132,6 +134,14 @@ export async function signUpRestaurant(
     // Create default menu structure (3-level hierarchy)
     // This is done after batch commit to avoid transaction size limits
     try {
+      // First, create the menu/data document (required for hierarchical structure)
+      const { menuDocumentPath } = await import('./paths')
+      const menuDocRef = doc(db!, menuDocumentPath(restaurantId))
+      await setDoc(menuDocRef, {
+        created_at: serverTimestamp(),
+        version: 1,
+      })
+      
       // Create menu categories
       const drinksId = await createMenuCategory(restaurantId, 'Drinks', 'All beverages')
       const foodId = await createMenuCategory(restaurantId, 'Food', 'All food items')
@@ -186,7 +196,42 @@ export async function signIn(
   try {
     return await signInWithEmailAndPassword(auth!, email, password)
   } catch (error: any) {
-    throw new Error(error.message || 'Failed to sign in')
+    // Provide user-friendly error messages
+    const errorCode = error.code
+    
+    if (errorCode === 'auth/invalid-credential' || errorCode === 'auth/wrong-password' || errorCode === 'auth/user-not-found') {
+      // Check if email exists to provide more specific error message
+      try {
+        const signInMethods = await fetchSignInMethodsForEmail(auth!, email)
+        if (signInMethods.length === 0) {
+          // Email doesn't exist
+          throw new Error('There is no account with this email address. Please check your email or create a new account.')
+        } else {
+          // Email exists but password is wrong
+          throw new Error('Incorrect password. Please try again or reset your password.')
+        }
+      } catch (checkError: any) {
+        // If fetchSignInMethodsForEmail fails, use the original error message
+        // But improve it if it's the generic invalid-credential error
+        if (checkError.message && !checkError.message.includes('There is no account') && !checkError.message.includes('Incorrect password')) {
+          // Check if it's the email check error or the original sign-in error
+          if (errorCode === 'auth/invalid-credential' || errorCode === 'auth/user-not-found') {
+            throw new Error('There is no account with this email address. Please check your email or create a new account.')
+          }
+          throw checkError
+        }
+        throw checkError
+      }
+    } else if (errorCode === 'auth/invalid-email') {
+      throw new Error('Please enter a valid email address.')
+    } else if (errorCode === 'auth/user-disabled') {
+      throw new Error('This account has been disabled. Please contact support.')
+    } else if (errorCode === 'auth/too-many-requests') {
+      throw new Error('Too many failed login attempts. Please try again later or reset your password.')
+    } else {
+      // For other errors, use a generic but helpful message
+      throw new Error(error.message || 'Failed to sign in. Please check your credentials and try again.')
+    }
   }
 }
 

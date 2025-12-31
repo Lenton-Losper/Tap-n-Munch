@@ -9,6 +9,9 @@ import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
 import { getMenuItemsByCategory, searchMenuItems, MenuItem } from '@/lib/firebase/menu-items'
 import { SubCategory } from '@/lib/firebase/sub-categories'
 import { useCart } from '@/contexts/cart-context'
+import { getOrCreateSession, getCurrentSession } from '@/lib/session'
+import { restoreSessionFromTable } from '@/lib/session-recovery'
+import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ShoppingCart, Search, ArrowLeft } from 'lucide-react'
@@ -48,6 +51,20 @@ export default function MenuBrowsePage() {
           setSelectedMenuCategory(categoriesData[0])
         }
         
+        // PART 1: Table-Based Session Recovery
+        // Initialize or recover session if table number is provided
+        if (tableNumber > 0) {
+          const existingSession = getCurrentSession()
+          if (!existingSession) {
+            // Try to recover from active table orders
+            const recoveredSession = await restoreSessionFromTable(restaurantId, tableNumber)
+            if (!recoveredSession) {
+              // No recovery possible - create new session
+              getOrCreateSession(restaurantId, String(tableNumber))
+            }
+          }
+        }
+        
         setLoading(false)
       } catch (err: any) {
         console.error('Failed to load data:', err)
@@ -58,7 +75,7 @@ export default function MenuBrowsePage() {
     if (restaurantId) {
       loadData()
     }
-  }, [restaurantId])
+  }, [restaurantId, tableNumber])
 
   useEffect(() => {
     const loadMenuItems = async () => {
@@ -121,6 +138,9 @@ export default function MenuBrowsePage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Sticky Active Order Banner */}
+      <ActiveOrderBanner />
+      
       {/* Sticky Header */}
       <div className="sticky top-0 z-40 bg-white border-b shadow-sm">
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -139,17 +159,26 @@ export default function MenuBrowsePage() {
               )}
             </div>
           </div>
-          <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
-            <Button variant="outline" className="relative">
-              <ShoppingCart className="w-5 h-5 mr-2" />
-              Cart
-              {getItemCount() > 0 && (
-                <span className="absolute -top-2 -right-2 bg-[#FF6B35] text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {getItemCount()}
-                </span>
-              )}
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            {tableNumber > 0 && (
+              <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
+                <Button variant="outline" className="text-orange-600 border-orange-600 hover:bg-orange-50">
+                  📋 Receipt
+                </Button>
+              </Link>
+            )}
+            <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
+              <Button variant="outline" className="relative">
+                <ShoppingCart className="w-5 h-5 mr-2" />
+                Cart
+                {getItemCount() > 0 && (
+                  <span className="absolute -top-2 -right-2 bg-[#FF6B35] text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                    {getItemCount()}
+                  </span>
+                )}
+              </Button>
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -292,6 +321,20 @@ export default function MenuBrowsePage() {
             setSelectedItem(null)
           }}
         />
+      )}
+
+      {/* Floating "Receipt" Button */}
+      {tableNumber > 0 && (
+        <div className="fixed bottom-6 right-6 z-50">
+          <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
+            <button
+              className="bg-orange-600 text-white w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-orange-700 transition-all hover:scale-110"
+              title="View Receipt"
+            >
+              📋
+            </button>
+          </Link>
+        </div>
       )}
     </div>
   )
