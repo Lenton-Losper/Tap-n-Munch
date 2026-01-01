@@ -134,15 +134,21 @@ function MenuLandingPageV2Content() {
             })
             
             // Initialize session
-            let session = getCurrentSession()
-            if (!session) {
-              session = getOrCreateSession(restaurantId, String(tableNum))
-            }
-            
-            if (session) {
-              setSessionId(session)
-              setSessionReady(true)
-            }
+                let session = getCurrentSession()
+                if (!session) {
+                  session = getOrCreateSession(restaurantId, String(tableNum))
+                }
+                
+                if (session) {
+                  setSessionId(session)
+                  setSessionReady(true)
+                  
+                  // Store restaurantId in localStorage for order confirmation page
+                  if (typeof window !== 'undefined') {
+                    localStorage.setItem('current_restaurant_id', restaurantId)
+                    console.log('📌 [V2] Stored restaurantId in localStorage:', restaurantId)
+                  }
+                }
           }
         }
       } catch (err: any) {

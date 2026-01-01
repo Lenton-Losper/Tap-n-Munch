@@ -154,7 +154,7 @@ export async function getOrders(
 }
 
 // Get a single order
-export async function getOrder(restaurantId: string, orderId: string): Promise<Order | null> {
+export async function getOrder(restaurantId: string, orderId: string, sessionId?: string): Promise<Order | null> {
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
@@ -165,14 +165,95 @@ export async function getOrder(restaurantId: string, orderId: string): Promise<O
     if (docSnap.exists()) {
       const { normalizeOrder } = require('@/lib/utils')
       const data = docSnap.data()
-      return normalizeOrder({
+      const order = normalizeOrder({
         id: docSnap.id,
         ...data,
       }) as Order
+      
+      // If sessionId is provided, verify it matches the order's session_id
+      if (sessionId && order.session_id && order.session_id !== sessionId) {
+        console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch:', {
+          providedSessionId: sessionId,
+          orderSessionId: order.session_id,
+          orderId: orderId
+        })
+        return null // Order exists but doesn't belong to this session
+      }
+      
+      return order
     }
     return null
   } catch (error: any) {
+    // Check for permission errors
+    if (error?.code === 'permission-denied' || error?.message?.includes('permission')) {
+      console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied:', {
+        error: error.message,
+        code: error.code,
+        restaurantId,
+        orderId,
+        sessionId: sessionId || 'not provided'
+      })
+      throw new Error('Permission denied: Order not found or session mismatch')
+    }
     throw new Error(error.message || 'Failed to fetch order')
+  }
+}
+
+// Get order by ID with session verification (query-based for security)
+export async function getOrderByIdWithSession(
+  restaurantId: string,
+  orderId: string,
+  sessionId: string
+): Promise<Order | null> {
+  if (!db) throw new Error('Firestore is not initialized')
+  if (!sessionId) {
+    console.error('❌ [CONFIRMATION ERROR] Session ID required for secure order lookup')
+    return null
+  }
+  
+  try {
+    // Query by orderId AND session_id to ensure security rules pass
+    const ordersRef = collection(db, ordersPath(restaurantId))
+    const q = query(
+      ordersRef,
+      where('__name__', '==', orderId), // Match document ID
+      where('session_id', '==', sessionId) // Match session
+    )
+    
+    const snapshot = await getDocs(q)
+    
+    if (snapshot.empty) {
+      console.warn('⚠️ [CONFIRMATION] Order not found or session mismatch:', {
+        orderId,
+        sessionId,
+        restaurantId
+      })
+      return null
+    }
+    
+    const { normalizeOrder } = require('@/lib/utils')
+    const orderDoc = snapshot.docs[0]
+    const data = orderDoc.data()
+    return normalizeOrder({
+      id: orderDoc.id,
+      ...data,
+    }) as Order
+  } catch (error: any) {
+    // Check for permission errors
+    if (error?.code === 'permission-denied' || error?.message?.includes('permission')) {
+      console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied:', {
+        error: error.message,
+        code: error.code,
+        restaurantId,
+        orderId,
+        sessionId
+      })
+      throw new Error('Permission denied: Order not found or session mismatch')
+    }
+    
+    // Fallback to direct document lookup if query fails (e.g., __name__ not supported)
+    console.warn('⚠️ [CONFIRMATION] Query-based lookup failed, falling back to direct lookup:', error.message)
+    return getOrder(restaurantId, orderId, sessionId)
   }
 }
 
