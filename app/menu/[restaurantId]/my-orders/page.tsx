@@ -42,18 +42,24 @@ export default function MyOrdersPage() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const ordersList = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
+        // Data Guard: Filter by is_closed for Table-Based approach
+        const ordersList = snapshot.docs
+          .map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+          .filter(order => order.is_closed !== true) // Only show non-closed orders
         setOrders(ordersList)
         setLoading(false)
-        console.log('Loaded orders for session:', sessionId, ordersList.length)
+        console.log('Loaded orders for session:', sessionId, ordersList.length, '(filtered by is_closed)')
       },
       (error) => {
         console.error('Error loading orders:', error)
-        // If index doesn't exist yet, show empty state
-        if (error.code === 'failed-precondition') {
+        // Handle permission denied gracefully
+        if (error.code === 'permission-denied' || error.message?.includes('permission')) {
+          console.warn('⚠️ Permission denied when loading orders - showing empty state')
+          setOrders([])
+        } else if (error.code === 'failed-precondition') {
           console.warn('Firestore index not created yet. Please create the index for session_id queries.')
         }
         setLoading(false)

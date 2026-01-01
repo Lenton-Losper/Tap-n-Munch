@@ -114,13 +114,14 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
             return
           }
 
-          // Filter in memory: status must be active AND table_closed must be false
+          // Filter in memory: status must be active AND is_closed must be false (Table-Based approach)
           // Also verify table_number matches (if provided)
           const activeOrders = snapshot.docs
             .map(doc => ({ id: doc.id, ...doc.data() } as ActiveOrder))
             .filter(order => {
               const statusMatch = ['new', 'accepted', 'preparing', 'ready'].includes(order.status)
-              const notClosed = order.table_closed !== true
+              // Data Guard: Check is_closed for Table-Based approach
+              const notClosed = order.is_closed !== true
               const tableMatch = !tableNumber || order.table_number === Number(tableNumber)
               return statusMatch && notClosed && tableMatch
             })
@@ -159,7 +160,11 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
       },
       (err) => {
         console.error('Error in useActiveOrders listener:', err)
-        if (err.code === 'failed-precondition') {
+        if (err.code === 'permission-denied' || err.message?.includes('permission')) {
+          console.warn('⚠️ Permission denied when loading active orders - banner will be hidden')
+          setActiveOrder(null)
+          setError(null) // Don't show error for permission denied - just hide banner
+        } else if (err.code === 'failed-precondition') {
           setError('Firestore index not created. Please deploy indexes.')
         } else {
           setError(err.message || 'Failed to load active orders')

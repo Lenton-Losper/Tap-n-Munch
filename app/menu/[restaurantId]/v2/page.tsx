@@ -77,12 +77,28 @@ function MenuLandingPageV2Content() {
       },
       (err) => {
         console.error('❌ Error listening to restaurant data:', err)
-        // Fallback to one-time fetch
+        
+        // Handle permission denied errors gracefully
+        if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+          console.error('❌ Permission denied when loading restaurant')
+          setError('Please scan a valid QR code to access this restaurant menu.')
+          setLoading(false)
+          return
+        }
+        
+        // Fallback to one-time fetch for other errors
         getRestaurant(restaurantId).then((data) => {
           if (data) {
             setRestaurant(data)
           } else {
-            setError(`Restaurant not found. ID: ${restaurantId}`)
+            setError(`Restaurant not found. Please scan a valid QR code.`)
+          }
+          setLoading(false)
+        }).catch((fetchErr: any) => {
+          if (fetchErr?.code === 'permission-denied' || fetchErr?.message?.includes('permission')) {
+            setError('Please scan a valid QR code to access this restaurant menu.')
+          } else {
+            setError(`Restaurant not found. Please scan a valid QR code.`)
           }
           setLoading(false)
         })
@@ -152,11 +168,19 @@ function MenuLandingPageV2Content() {
           }
         }
       } catch (err: any) {
-        // Failsafe: Log error but don't block menu
-        console.error("❌ [PERMISSION ERROR] Table check bypassed. Path: restaurants/" + restaurantId + "/tables. Error:", err.message)
-        console.warn('⚠️ [V2 TABLE FETCH] Table verification failed (non-blocking):', err.message)
-        setTable(null)
-        // Menu will still load - this is intentional
+        // Handle permission denied errors gracefully
+        if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+          console.error("❌ [PERMISSION ERROR] Permission denied when checking table. Path: restaurants/" + restaurantId + "/tables")
+          console.warn('⚠️ [V2 TABLE FETCH] Table verification failed due to permissions (non-blocking):', err.message)
+          setTable(null)
+          // Menu will still load - this is intentional
+        } else {
+          // Failsafe: Log error but don't block menu
+          console.error("❌ [PERMISSION ERROR] Table check bypassed. Path: restaurants/" + restaurantId + "/tables. Error:", err.message)
+          console.warn('⚠️ [V2 TABLE FETCH] Table verification failed (non-blocking):', err.message)
+          setTable(null)
+          // Menu will still load - this is intentional
+        }
       }
       
       setLoading(false)
@@ -166,12 +190,30 @@ function MenuLandingPageV2Content() {
     loadTableData()
   }, [restaurant, restaurantId, tableNum])
 
+  // Add timeout for loading state
+  useEffect(() => {
+    if (loading) {
+      const timeoutId = setTimeout(() => {
+        if (loading && !restaurant) {
+          console.warn('⚠️ Menu loading timeout after 5 seconds')
+          setError('Loading took too long. Please scan a valid QR code or refresh the page.')
+          setLoading(false)
+        }
+      }, 5000)
+
+      return () => clearTimeout(timeoutId)
+    }
+  }, [loading, restaurant])
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
           <p className="mt-4 text-gray-600">Loading...</p>
+          {error && (
+            <p className="mt-2 text-sm text-red-600">{error}</p>
+          )}
         </div>
       </div>
     )
@@ -181,9 +223,15 @@ function MenuLandingPageV2Content() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Error</h1>
-          <p className="text-gray-600 mb-2">{error || 'Restaurant not found'}</p>
+          <h1 className="text-2xl font-bold text-red-600 mb-2">Access Denied</h1>
+          <p className="text-gray-600 mb-2">{error || 'Please scan a valid QR code to access this restaurant menu.'}</p>
           <p className="text-sm text-gray-500 mb-4">Invalid QR code or restaurant link</p>
+          <Button
+            onClick={() => window.location.reload()}
+            className="mt-4 bg-[#FF6B35] hover:bg-[#e55a28]"
+          >
+            Retry
+          </Button>
           {restaurantId && (
             <div className="mt-4 p-3 bg-gray-100 rounded text-left text-xs font-mono break-all">
               <p className="font-semibold mb-1">Debug Info:</p>

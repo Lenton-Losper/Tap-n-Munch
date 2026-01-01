@@ -44,13 +44,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Load user data and restaurant when user changes
   useEffect(() => {
+    let timeoutId: NodeJS.Timeout | null = null
+    let isMounted = true
+
     const loadUserData = async (authUser: User | null) => {
       if (!authUser || !db) {
         setUserData(null)
         setRestaurant(null)
         setRestaurantId(null)
+        setLoading(false)
         return
       }
+
+      // Set timeout for loading (5 seconds)
+      timeoutId = setTimeout(() => {
+        if (isMounted) {
+          console.warn('⚠️ Auth data loading timeout after 5 seconds')
+          setLoading(false)
+        }
+      }, 5000)
 
       try {
         // Wait for auth token to be ready
@@ -60,6 +72,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUserData(null)
           setRestaurant(null)
           setRestaurantId(null)
+          if (timeoutId) clearTimeout(timeoutId)
+          if (isMounted) setLoading(false)
           return
         }
 
@@ -93,6 +107,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUserData(null)
             setRestaurant(null)
             setRestaurantId(null)
+            if (timeoutId) clearTimeout(timeoutId)
+            if (isMounted) setLoading(false)
             return
           }
         }
@@ -161,6 +177,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUserData(null)
         setRestaurant(null)
         setRestaurantId(null)
+      } finally {
+        // Clear timeout if data loaded successfully
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+        }
+        if (isMounted) {
+          setLoading(false)
+        }
       }
     }
 
@@ -170,6 +194,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUserData(null)
       setRestaurant(null)
       setRestaurantId(null)
+      setLoading(false)
+    }
+
+    return () => {
+      isMounted = false
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
     }
   }, [user])
 
