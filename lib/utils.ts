@@ -6,6 +6,34 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Helper function to convert Firestore Timestamp to Date
+ */
+function convertTimestamp(timestamp: any): Date | null {
+  if (!timestamp) return null
+  
+  // If it's already a Date, return it
+  if (timestamp instanceof Date) return timestamp
+  
+  // If it's a Firestore Timestamp, convert it
+  if (timestamp && typeof timestamp.toDate === 'function') {
+    return timestamp.toDate()
+  }
+  
+  // If it's a string, try to parse it
+  if (typeof timestamp === 'string') {
+    const parsed = new Date(timestamp)
+    return isNaN(parsed.getTime()) ? null : parsed
+  }
+  
+  // If it's a number (milliseconds), create Date from it
+  if (typeof timestamp === 'number') {
+    return new Date(timestamp)
+  }
+  
+  return null
+}
+
+/**
  * Normalize order data to ensure all required fields exist with safe defaults.
  * This prevents crashes when orders have missing or malformed data from old schemas.
  * 
@@ -65,5 +93,15 @@ export function normalizeOrder(data: any) {
     subtotal: typeof data.subtotal === 'number' ? data.subtotal : 0,
     tax: typeof data.tax === 'number' ? data.tax : 0,
     total: typeof data.total === 'number' ? data.total : 0,
+    // Convert Firestore Timestamps to Date objects for all timestamp fields
+    placed_at: convertTimestamp(data.placed_at),
+    accepted_at: convertTimestamp(data.accepted_at),
+    preparing_at: convertTimestamp(data.preparing_at),
+    ready_at: convertTimestamp(data.ready_at),
+    completed_at: convertTimestamp(data.completed_at),
+    cancelled_at: convertTimestamp(data.cancelled_at),
+    paid_at: convertTimestamp(data.paid_at),
+    created_at: convertTimestamp(data.created_at),
+    updated_at: convertTimestamp(data.updated_at),
   }
 }

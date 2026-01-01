@@ -88,13 +88,36 @@ export function OrdersDashboard() {
   }, [restaurantId, activeTab])
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
+    if (!restaurantId) {
+      toast({
+        title: 'Update failed',
+        description: 'Restaurant ID is missing',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    console.log('🔄 [DASHBOARD] Updating order status to:', newStatus, {
+      orderId,
+      restaurantId,
+    })
+    
     try {
-      await updateOrderStatus(orderId, newStatus)
+      await updateOrderStatus(restaurantId, orderId, newStatus)
+      console.log('✅ [DASHBOARD] Order status updated successfully')
       toast({
         title: 'Order updated',
         description: `Order status changed to ${newStatus}`,
       })
     } catch (error: any) {
+      console.error('❌ [DASHBOARD] Failed to update order status:', {
+        orderId,
+        restaurantId,
+        newStatus,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorStack: error.stack,
+      })
       toast({
         title: 'Update failed',
         description: error.message || 'Failed to update order status',
@@ -104,9 +127,18 @@ export function OrdersDashboard() {
   }
 
   const handleMarkAsPaid = async (orderId: string) => {
+    if (!restaurantId) {
+      toast({
+        title: 'Update failed',
+        description: 'Restaurant ID is missing',
+        variant: 'destructive',
+      })
+      return
+    }
+    
     try {
       setMarkingPaidOrderId(orderId)
-      await updateOrderPayment(orderId, 'paid', user?.id)
+      await updateOrderPayment(restaurantId, orderId, 'paid', user?.id)
       toast({
         title: 'Payment recorded',
         description: 'Order has been marked as paid',
@@ -114,6 +146,13 @@ export function OrdersDashboard() {
       setShowMarkPaidDialog(false)
       setMarkingPaidOrderId(null)
     } catch (error: any) {
+      console.error('❌ [DASHBOARD] Failed to mark order as paid:', {
+        orderId,
+        restaurantId,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorStack: error.stack,
+      })
       toast({
         title: 'Failed to mark as paid',
         description: error.message || 'Failed to update payment status',
@@ -267,9 +306,34 @@ export function OrdersDashboard() {
 
   const formatTimeAgo = (timestamp: any) => {
     if (!timestamp) return 'Just now'
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp)
+    
+    // Handle Firestore Timestamp objects
+    let date: Date
+    if (timestamp && typeof timestamp.toDate === 'function') {
+      date = timestamp.toDate()
+    } else if (timestamp instanceof Date) {
+      date = timestamp
+    } else if (typeof timestamp === 'string') {
+      date = new Date(timestamp)
+    } else if (typeof timestamp === 'number') {
+      date = new Date(timestamp)
+    } else {
+      console.warn('⚠️ [TIMER] Invalid timestamp format:', timestamp)
+      return 'Just now'
+    }
+    
+    // Validate the date
+    if (isNaN(date.getTime())) {
+      console.warn('⚠️ [TIMER] Invalid date value:', timestamp)
+      return 'Just now'
+    }
+    
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
+    
+    // Handle negative differences (future dates)
+    if (diffMs < 0) return 'Just now'
+    
     const diffMins = Math.floor(diffMs / 60000)
     
     if (diffMins < 1) return 'Just now'

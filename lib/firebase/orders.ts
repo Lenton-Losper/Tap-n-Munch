@@ -259,17 +259,16 @@ export async function getOrderByIdWithSession(
 
 // Update order status
 export async function updateOrderStatus(
+  restaurantId: string,
   orderId: string,
   status: Order['status']
 ): Promise<void> {
   if (!db) throw new Error('Firestore is not initialized')
+  if (!restaurantId) throw new Error('Restaurant ID is required')
   
   try {
-    // NEW: Use hierarchical path - need restaurantId
-    // Note: This function signature needs to be updated to include restaurantId
-    // For now, we'll need to find restaurantId from the order or pass it
-    // TODO: Update all callers to pass restaurantId
-    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
+    // Use hierarchical path: restaurants/{restaurantId}/orders/{orderId}
+    const docRef = doc(db, orderPath(restaurantId, orderId))
     const updates: any = {
       status,
       updated_at: new Date().toISOString(),
@@ -287,9 +286,11 @@ export async function updateOrderStatus(
       case 'ready':
         updates.ready_at = now
         // Calculate prep time if accepted_at exists
-        const order = await getOrder(orderId)
+        const order = await getOrder(restaurantId, orderId)
         if (order?.accepted_at) {
-          const acceptedTime = new Date(order.accepted_at).getTime()
+          const acceptedTime = order.accepted_at instanceof Date 
+            ? order.accepted_at.getTime() 
+            : new Date(order.accepted_at).getTime()
           const readyTime = new Date().getTime()
           updates.prep_time_minutes = Math.round((readyTime - acceptedTime) / 60000)
         }
@@ -304,24 +305,30 @@ export async function updateOrderStatus(
     
     await updateDoc(docRef, updates)
   } catch (error: any) {
+    console.error('❌ [updateOrderStatus] Error updating order:', {
+      restaurantId,
+      orderId,
+      status,
+      errorCode: error.code,
+      errorMessage: error.message,
+    })
     throw new Error(error.message || 'Failed to update order status')
   }
 }
 
 // Update order payment status
 export async function updateOrderPayment(
+  restaurantId: string,
   orderId: string,
   paymentStatus: Order['payment_status'],
   staffId?: string
 ): Promise<void> {
   if (!db) throw new Error('Firestore is not initialized')
+  if (!restaurantId) throw new Error('Restaurant ID is required')
   
   try {
-    // NEW: Use hierarchical path - need restaurantId
-    // Note: This function signature needs to be updated to include restaurantId
-    // For now, we'll need to find restaurantId from the order or pass it
-    // TODO: Update all callers to pass restaurantId
-    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
+    // Use hierarchical path: restaurants/{restaurantId}/orders/{orderId}
+    const docRef = doc(db, orderPath(restaurantId, orderId))
     
     // Check if order is already paid
     const orderDoc = await getDoc(docRef)
@@ -348,6 +355,13 @@ export async function updateOrderPayment(
     
     await updateDoc(docRef, updates)
   } catch (error: any) {
+    console.error('❌ [updateOrderPayment] Error updating payment:', {
+      restaurantId,
+      orderId,
+      paymentStatus,
+      errorCode: error.code,
+      errorMessage: error.message,
+    })
     throw new Error(error.message || 'Failed to update payment status')
   }
 }
