@@ -71,7 +71,8 @@ export default function MyOrdersPage() {
     ) {
       clearSession()
       alert('Session ended. Thank you!')
-      router.push('/')
+      // Task 2: Redirect to menu page instead of root
+      router.push(`/menu/${restaurantId}/v2?table=${tableNumber}`)
     }
   }
 

@@ -229,13 +229,13 @@ export function OrdersDashboard() {
       )
 
       // PART 4: Update all orders for this table
-      // Set table_closed = true and status = 'completed' to prevent order leakage
+      // Set table_closed = true, is_closed = true, and status = 'completed' to prevent order leakage
       // NEW: Use hierarchical path - restaurant_id is in the path
       const ordersRef = collection(db, ordersPath(restaurantId))
       const ordersQuery = query(
         ordersRef,
         where('table_number', '==', tableNumber),
-        where('table_closed', '==', false)
+        where('is_closed', '==', false)
       )
 
       const ordersSnapshot = await getDocs(ordersQuery)
@@ -244,6 +244,7 @@ export function OrdersDashboard() {
       const orderUpdatePromises = ordersSnapshot.docs.map((orderDoc) =>
         updateDoc(doc(db, orderPath(restaurantId, orderDoc.id)), {
           table_closed: true,
+          is_closed: true, // Task 1: Mark order as closed
           status: 'completed',
           completed_at: serverTimestamp(),
           updated_at: serverTimestamp(),

@@ -25,6 +25,8 @@ function OrderConfirmationContent() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let unsubscribe: (() => void) | null = null
+
     const loadOrder = async () => {
       try {
         setLoading(true)
@@ -38,249 +40,208 @@ function OrderConfirmationContent() {
           tableNumber: tableNumber || 'none'
         })
 
-        // If orderId is provided, use it with session verification
-        if (orderId && db) {
-          if (!sessionId) {
-            console.error('❌ [CONFIRMATION ERROR] No session ID available')
-            setError('No active session. Please scan the QR code again.')
-            setLoading(false)
-            return
-          }
+        // Task 1: Use table_number + is_closed filter instead of session_id
+        // Get restaurantId and tableNumber from URL or localStorage
+        let restaurantId: string | null = null
+        const tableNum = tableNumber ? Number(tableNumber) : null
+        
+        if (typeof window !== 'undefined') {
+          restaurantId = localStorage.getItem('current_restaurant_id')
+        }
 
-          try {
-            // Strategy: Query orders by session_id to find the order and extract restaurantId
-            // Since orders are hierarchical (restaurants/{restaurantId}/orders), we need restaurantId
-            // Try to get restaurantId from localStorage (stored during QR scan)
-            let restaurantId: string | null = null
-            if (typeof window !== 'undefined') {
-              restaurantId = localStorage.getItem('current_restaurant_id')
-            }
+        if (!restaurantId) {
+          console.error('❌ [CONFIRMATION ERROR] Restaurant ID not found. Please scan QR code again.')
+          setError('Restaurant ID not found. Please scan the QR code again to access your order.')
+          setLoading(false)
+          return
+        }
 
-            // If we have restaurantId, query directly using hierarchical path
-            if (restaurantId) {
-              console.log('🔍 [CONFIRMATION] Using restaurantId from localStorage:', restaurantId)
-              const { orderPath } = require('@/lib/firebase/paths')
-              const orderRef = doc(db, orderPath(restaurantId, orderId))
+        if (!tableNum || tableNum <= 0) {
+          console.error('❌ [CONFIRMATION ERROR] Table number not found in URL.')
+          setError('Table number not found. Please scan the QR code again.')
+          setLoading(false)
+          return
+        }
+
+        if (!db) {
+          console.error('Firestore not initialized')
+          setError('Database not available')
+          setLoading(false)
+          return
+        }
+
+        try {
+          const { orderPath, ordersPath } = require('@/lib/firebase/paths')
+          
+          // If orderId is provided, load that specific order
+          if (orderId) {
+            console.log('🔍 [CONFIRMATION] Loading order by ID:', orderId, 'table:', tableNum)
+            const orderRef = doc(db, orderPath(restaurantId, orderId))
+            
+            // Query orders by table_number and is_closed to find the matching order
+            const ordersRef = collection(db, ordersPath(restaurantId))
+            const tableQuery = query(
+              ordersRef,
+              where('table_number', '==', tableNum),
+              where('is_closed', '==', false),
+              limit(50) // Get recent orders to find the one matching orderId
+            )
+            
+            const tableSnapshot = await getDocs(tableQuery)
+            
+            // Find the order that matches orderId
+            const matchingOrder = tableSnapshot.docs.find(doc => doc.id === orderId)
+            
+            if (matchingOrder) {
+              const orderData = { id: matchingOrder.id, ...matchingOrder.data() }
+              console.log('✅ [CONFIRMATION] Order loaded with table verification:', orderData)
+              setOrder(orderData)
               
-              // Query orders by session_id to find the matching order
-              // This ensures security rules pass (query includes session_id)
-              const ordersRef = collection(db, `restaurants/${restaurantId}/orders`)
-              const sessionQuery = query(
-                ordersRef,
-                where('session_id', '==', sessionId),
-                limit(20) // Get recent orders to find the one matching orderId
-              )
+              // Load restaurant data
+              if (!restaurant) {
+                try {
+                  const restaurantData = await getRestaurant(restaurantId)
+                  setRestaurant(restaurantData)
+                } catch (err) {
+                  console.error('Failed to load restaurant:', err)
+                }
+              }
               
-              const sessionSnapshot = await getDocs(sessionQuery)
-              
-              // Find the order that matches orderId
-              const matchingOrder = sessionSnapshot.docs.find(doc => doc.id === orderId)
-              
-              if (matchingOrder) {
-                const orderData = { id: matchingOrder.id, ...matchingOrder.data() }
-                console.log('✅ [CONFIRMATION] Order loaded with session verification:', orderData)
-                setOrder(orderData)
-                
-                // Load restaurant data
-                if (!restaurant) {
-                  try {
-                    const restaurantData = await getRestaurant(restaurantId)
-                    setRestaurant(restaurantData)
-                  } catch (err) {
-                    console.error('Failed to load restaurant:', err)
+              // Set up real-time listener using hierarchical path
+              unsubscribe = onSnapshot(orderRef, (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                  const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
+                  // Verify table still matches and order is not closed
+                  if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
+                    setOrder(updatedOrder)
+                    console.log('✅ [CONFIRMATION] Order updated in real-time')
+                  } else {
+                    console.warn('⚠️ [CONFIRMATION] Order table mismatch or order closed in real-time update')
                   }
                 }
-                
-                // Set up real-time listener using hierarchical path
-                const unsubscribe = onSnapshot(orderRef, (docSnapshot) => {
-                  if (docSnapshot.exists()) {
-                    const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
-                    // Verify session still matches
-                    if (updatedOrder.session_id === sessionId) {
-                      setOrder(updatedOrder)
-                      console.log('✅ [CONFIRMATION] Order updated in real-time')
-                    } else {
-                      console.warn('⚠️ [CONFIRMATION] Order session mismatch in real-time update')
-                    }
-                  }
-                }, (error) => {
-                  console.error('Error in real-time listener:', error)
-                  if (error?.code === 'permission-denied') {
-                    console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied')
-                  }
-                })
-                
-                setLoading(false)
-                return () => unsubscribe()
-              } else {
-                // Order ID not found in session orders
-                console.error('❌ [CONFIRMATION ERROR] Order not found with this session')
-                setError('Order not found or session expired')
+              }, (error) => {
+                console.error('Error in real-time listener:', error)
+                if (error?.code === 'permission-denied') {
+                  console.error('❌ [CONFIRMATION ERROR] Permission Denied')
+                }
+              })
+              
+              setLoading(false)
+            } else {
+              // Order ID not found in table orders
+              console.error('❌ [CONFIRMATION ERROR] Order not found for this table')
+              setError('Order not found or table mismatch')
+              setLoading(false)
+            }
+          } 
+          // If no orderId, try to fetch most recent order from table
+          else {
+            console.log('🔍 [CONFIRMATION] Fetching most recent order for table:', tableNum, 'restaurant:', restaurantId)
+
+            // Query Firestore for most recent order for this table using hierarchical path
+            const ordersRef = collection(db, ordersPath(restaurantId))
+            const q = query(
+              ordersRef,
+              where('table_number', '==', tableNum),
+              where('is_closed', '==', false),
+              orderBy('placed_at', 'desc'),
+              limit(1)
+            )
+
+            try {
+              const snapshot = await getDocs(q)
+
+              if (snapshot.empty) {
+                console.log('No orders found for table')
+                setError('No orders yet')
                 setLoading(false)
                 return
               }
-            } else {
-              // No restaurantId - query by session_id across all restaurants (if collectionGroup allowed)
-              // For now, show error asking user to scan QR again
-              console.error('❌ [CONFIRMATION ERROR] Restaurant ID not found. Please scan QR code again.')
-              setError('Restaurant ID not found. Please scan the QR code again to access your order.')
-              setLoading(false)
-              return
-            }
-          } catch (err: any) {
-            console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied:', err)
-            if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-              setError('Permission denied: Order not found or session mismatch')
-            } else {
-              setError(err.message || 'Failed to load order')
-            }
-            setLoading(false)
-            return
-          }
-        } 
-        // If no orderId, try to fetch most recent order from session
-        else {
-          // sessionId is already declared at the top of the function
-          if (!sessionId) {
-            console.log('No session found')
-            setError('No active session')
-            setLoading(false)
-            return
-          }
 
-          if (!db) {
-            console.error('Firestore not initialized')
-            setError('Database not available')
-            setLoading(false)
-            return
-          }
+              // Get the most recent order
+              const orderDoc = snapshot.docs[0]
+              const orderData = { id: orderDoc.id, ...orderDoc.data() }
+              setOrder(orderData)
+              console.log('✅ [CONFIRMATION] Most recent order loaded from table:', orderData)
 
-          // Get restaurantId from localStorage
-          let restaurantId: string | null = null
-          if (typeof window !== 'undefined') {
-            restaurantId = localStorage.getItem('current_restaurant_id')
-          }
-
-          if (!restaurantId) {
-            console.error('❌ [CONFIRMATION ERROR] Restaurant ID not found. Please scan QR code again.')
-            setError('Restaurant ID not found. Please scan the QR code again to access your orders.')
-            setLoading(false)
-            return
-          }
-
-          console.log('🔍 [CONFIRMATION] Fetching most recent order for session:', sessionId, 'restaurant:', restaurantId)
-
-          // Query Firestore for most recent order in this session using hierarchical path
-          const ordersRef = collection(db, `restaurants/${restaurantId}/orders`)
-          const q = query(
-            ordersRef,
-            where('session_id', '==', sessionId),
-            orderBy('placed_at', 'desc'),
-            limit(1)
-          )
-
-          try {
-            const snapshot = await getDocs(q)
-
-            if (snapshot.empty) {
-              console.log('No orders found for session')
-              setError('No orders yet')
-              setLoading(false)
-              return
-            }
-
-            // Get the most recent order
-            const orderDoc = snapshot.docs[0]
-            const orderData = { id: orderDoc.id, ...orderDoc.data() }
-            setOrder(orderData)
-            console.log('✅ [CONFIRMATION] Most recent order loaded from session:', orderData)
-
-            // Load restaurant data
-            if (orderData.restaurant_id) {
+              // Load restaurant data
               try {
-                const restaurantData = await getRestaurant(orderData.restaurant_id)
+                const restaurantData = await getRestaurant(restaurantId)
                 setRestaurant(restaurantData)
               } catch (err) {
                 console.error('Failed to load restaurant:', err)
               }
-            }
 
-            // Set up real-time listener for this order using hierarchical path
-            const { orderPath } = require('@/lib/firebase/paths')
-            const unsubscribe = onSnapshot(
-              doc(db, orderPath(restaurantId, orderDoc.id)),
-              async (docSnapshot) => {
-                if (docSnapshot.exists()) {
-                  const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
-                  // Verify session still matches
-                  if (updatedOrder.session_id === sessionId) {
-                    setOrder(updatedOrder)
-                    console.log('✅ [CONFIRMATION] Order updated in real-time:', updatedOrder)
-                  } else {
-                    console.warn('⚠️ [CONFIRMATION] Order session mismatch in real-time update')
+              // Set up real-time listener for this order using hierarchical path
+              unsubscribe = onSnapshot(
+                doc(db, orderPath(restaurantId, orderDoc.id)),
+                async (docSnapshot) => {
+                  if (docSnapshot.exists()) {
+                    const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
+                    // Verify table still matches and order is not closed
+                    if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
+                      setOrder(updatedOrder)
+                      console.log('✅ [CONFIRMATION] Order updated in real-time:', updatedOrder)
+                    } else {
+                      console.warn('⚠️ [CONFIRMATION] Order table mismatch or order closed in real-time update')
+                    }
+                  }
+                },
+                (error) => {
+                  console.error('Error in real-time listener:', error)
+                  if (error?.code === 'permission-denied') {
+                    console.error('❌ [CONFIRMATION ERROR] Permission Denied')
                   }
                 }
-              },
-              (error) => {
-                console.error('Error in real-time listener:', error)
-                if (error?.code === 'permission-denied') {
-                  console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied')
-                }
-              }
-            )
+              )
 
-            setLoading(false)
-            return () => unsubscribe()
-          } catch (err: any) {
-            console.error('❌ [CONFIRMATION ERROR] Failed to fetch orders:', err)
-            if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-              console.error('❌ [CONFIRMATION ERROR] Session ID Mismatch or Permission Denied')
-              setError('Permission denied: Order not found or session mismatch')
-            } else if (err?.code === 'failed-precondition') {
-              // Missing index - filter in memory instead
-              console.warn('⚠️ [CONFIRMATION] Index missing, filtering in memory')
-              const allOrdersRef = collection(db, `restaurants/${restaurantId}/orders`)
-              const allSnapshot = await getDocs(query(allOrdersRef, where('session_id', '==', sessionId), limit(20)))
-              
-              if (allSnapshot.empty) {
-                setError('No orders yet')
-                setLoading(false)
-                return
-              }
-              
-              // Sort by placed_at in memory
-              const sortedOrders = allSnapshot.docs
-                .map(doc => ({ id: doc.id, ...doc.data() }))
-                .filter(order => order.session_id === sessionId)
-                .sort((a, b) => {
-                  const aTime = a.placed_at?.toMillis?.() || a.placed_at || 0
-                  const bTime = b.placed_at?.toMillis?.() || b.placed_at || 0
-                  return bTime - aTime
-                })
-              
-              if (sortedOrders.length > 0) {
-                const orderData = sortedOrders[0]
-                setOrder(orderData)
+              setLoading(false)
+            } catch (err: any) {
+              console.error('❌ [CONFIRMATION ERROR] Failed to fetch orders:', err)
+              if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+                console.error('❌ [CONFIRMATION ERROR] Permission Denied')
+                setError('Permission denied: Order not found or table mismatch')
+              } else if (err?.code === 'failed-precondition') {
+                // Missing index - filter in memory instead
+                console.warn('⚠️ [CONFIRMATION] Index missing, filtering in memory')
+                const allOrdersRef = collection(db, ordersPath(restaurantId))
+                const allSnapshot = await getDocs(query(allOrdersRef, where('table_number', '==', tableNum), limit(50)))
                 
-                if (orderData.restaurant_id && !restaurant) {
+                const filteredOrders = allSnapshot.docs
+                  .map(doc => ({ id: doc.id, ...doc.data() }))
+                  .filter(order => order.table_number === tableNum && !order.is_closed)
+                  .sort((a, b) => {
+                    const aTime = a.placed_at?.toMillis?.() || a.placed_at || 0
+                    const bTime = b.placed_at?.toMillis?.() || b.placed_at || 0
+                    return bTime - aTime
+                  })
+                
+                if (filteredOrders.length > 0) {
+                  const orderData = filteredOrders[0]
+                  setOrder(orderData)
+                  
                   try {
-                    const restaurantData = await getRestaurant(orderData.restaurant_id)
+                    const restaurantData = await getRestaurant(restaurantId)
                     setRestaurant(restaurantData)
                   } catch (restErr) {
                     console.error('Failed to load restaurant:', restErr)
                   }
+                  
+                  setLoading(false)
+                } else {
+                  setError('No orders yet')
+                  setLoading(false)
                 }
-                
-                setLoading(false)
               } else {
-                setError('No orders yet')
+                setError(err.message || 'Failed to load order')
                 setLoading(false)
               }
-            } else {
-              setError(err.message || 'Failed to load order')
-              setLoading(false)
             }
           }
+        } catch (err: any) {
+          console.error('Error in loadOrder:', err)
+          setError(err.message || 'Failed to load order')
+          setLoading(false)
         }
       } catch (err: any) {
         console.error('Error in loadOrder:', err)
@@ -289,13 +250,15 @@ function OrderConfirmationContent() {
       }
     }
 
-    const cleanup = loadOrder()
+    loadOrder()
+
+    // Cleanup function
     return () => {
-      if (cleanup && typeof cleanup.then) {
-        // If cleanup is a promise, we can't cancel it, but that's okay
+      if (unsubscribe) {
+        unsubscribe()
       }
     }
-  }, [orderId, restaurant])
+  }, [orderId, restaurant, tableNumber])
 
   if (loading) {
     return (
@@ -351,17 +314,13 @@ function OrderConfirmationContent() {
     )
   }
 
+  // Data safety guard: Check for null order before rendering order.total or mapping order.items
   if (!order) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Order Not Found</h1>
-          <p className="text-gray-600 mb-4">
-            We couldn't find that order. Please check with a staff member if you're unsure.
-          </p>
-          <Button onClick={() => router.back()} className="bg-[#FF6B35] hover:bg-[#e55a28]">
-            Go Back
-          </Button>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading order details...</p>
         </div>
       </div>
     )
@@ -397,20 +356,28 @@ function OrderConfirmationContent() {
     },
   }
 
-  const currentStatus = statusConfig[order.status] || statusConfig.new
+  // Task 3: Add optional chaining
+  const currentStatus = statusConfig[order?.status] || statusConfig.new
 
   const handleEndSession = () => {
     if (confirm('Are you sure you want to end your session? This will clear your session from this device.')) {
       clearSession()
       alert('Session ended. Thank you for dining with us!')
-      router.push('/')
+      // Task 2: Redirect to menu page instead of root
+      const restaurantId = order?.restaurant_id || (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
+      const tableNum = tableNumber || order?.table_number
+      if (restaurantId && tableNum) {
+        router.push(`/menu/${restaurantId}/v2?table=${tableNum}`)
+      } else {
+        router.push('/')
+      }
     }
   }
 
-  // Parse placed_at timestamp - handle both Firestore Timestamp and ISO string
-  const placedAtDate = order.placed_at?.toDate 
+  // Task 3: Parse placed_at timestamp with optional chaining - handle both Firestore Timestamp and ISO string
+  const placedAtDate = order?.placed_at?.toDate 
     ? order.placed_at.toDate() 
-    : order.placed_at 
+    : order?.placed_at 
     ? (typeof order.placed_at === 'string' ? new Date(order.placed_at) : new Date())
     : new Date()
 
@@ -437,18 +404,19 @@ function OrderConfirmationContent() {
         <div className="flex justify-between items-start mb-6">
           <div>
             <h2 className="text-2xl font-bold">
-              Order #{order.order_number || order.id.slice(-6).toUpperCase()}
+              Order #{order?.order_number || order?.id?.slice(-6)?.toUpperCase() || 'N/A'}
             </h2>
-            {order.table_number > 0 && (
+            {/* Task 3: Add optional chaining */}
+            {order?.table_number > 0 && (
               <p className="text-gray-600">Table {order.table_number}</p>
             )}
             <p className="text-sm text-gray-500 mt-1">
-              {placedAtDate.toLocaleString()}
+              {placedAtDate?.toLocaleString() || 'N/A'}
             </p>
           </div>
           <div className="text-right">
             <p className="text-3xl font-bold text-orange-600">
-              {restaurant?.currency || 'N$'}{order.total?.toFixed(2)}
+              {restaurant?.currency || 'N$'}{order && typeof order.total === 'number' ? order.total.toFixed(2) : '0.00'}
             </p>
           </div>
         </div>
@@ -458,19 +426,21 @@ function OrderConfirmationContent() {
           <div className="flex items-center justify-between mb-2 text-sm">
             <span className="text-gray-700">Method:</span>
             <div className="flex items-center gap-2">
-              {order.payment_method === 'cash' ? (
+              {/* Task 3: Add optional chaining */}
+              {order?.payment_method === 'cash' ? (
                 <Banknote className="h-4 w-4 text-gray-600" />
               ) : (
                 <CreditCard className="h-4 w-4 text-gray-600" />
               )}
               <span className="font-semibold capitalize">
-                {order.payment_method}
+                {order?.payment_method || 'cash'}
               </span>
             </div>
           </div>
           <div className="flex items-center justify-between text-sm">
             <span className="text-gray-700">Status:</span>
-            {order.payment_status === 'paid' ? (
+            {/* Task 3: Add optional chaining */}
+            {order?.payment_status === 'paid' ? (
               <Badge className="bg-green-500 text-white">
                 <CheckCircle2 className="h-3 w-3 mr-1" />
                 Paid
@@ -488,14 +458,15 @@ function OrderConfirmationContent() {
         <div className="border-t border-b py-4 my-4">
           <h3 className="font-semibold mb-3 text-lg">Order Summary</h3>
           <div className="space-y-2">
-            {order.items && Array.isArray(order.items) && order.items.length > 0 ? (
+            {/* Data safety guard: Check order and items before mapping */}
+            {order && order.items && Array.isArray(order.items) && order.items.length > 0 ? (
               order.items.map((item: any, index: number) => (
                 <div key={index} className="flex justify-between items-center">
                   <span className="text-gray-700">
-                    {item.quantity || 1}× {item.name || 'Unknown Item'}
+                    {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
                   </span>
                   <span className="font-semibold">
-                    {restaurant?.currency || 'N$'}{(item.subtotal || (item.price || 0) * (item.quantity || 1) || 0).toFixed(2)}
+                    {restaurant?.currency || 'N$'}{((item?.subtotal || (item?.price || 0) * (item?.quantity || 1) || 0)).toFixed(2)}
                   </span>
                 </div>
               ))
@@ -529,7 +500,8 @@ function OrderConfirmationContent() {
         </div>
 
         {/* Special Instructions */}
-        {order.order_instructions && (
+        {/* Task 3: Add optional chaining */}
+        {order?.order_instructions && (
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-4">
             <p className="text-sm font-semibold text-yellow-800 mb-1">
               📝 Special Instructions:
@@ -543,7 +515,8 @@ function OrderConfirmationContent() {
 
       {/* Actions */}
       <div className="space-y-3 mb-6">
-        {order.restaurant_id && (
+        {/* Task 3: Add optional chaining */}
+        {order?.restaurant_id && (
           <Link 
             href={`/menu/${order.restaurant_id}/browse${tableNumber ? `?table=${tableNumber}` : ''}`}
             className="block"
@@ -555,7 +528,7 @@ function OrderConfirmationContent() {
         )}
 
         {/* View All My Orders Button */}
-        {order.restaurant_id && order.table_number && (
+        {order?.restaurant_id && order?.table_number && (
           <button
             onClick={() =>
               router.push(`/menu/${order.restaurant_id}/my-orders?table=${order.table_number}`)

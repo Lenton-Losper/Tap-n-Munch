@@ -126,6 +126,7 @@ export async function POST(req: Request) {
       status: 'new' as const, // Initial status when order is placed
       payment_status: 'pending' as const,
       table_closed: false, // PART 1: Track if table is closed (prevents order leakage)
+      is_closed: false, // Task 1: Track if order is closed (table-based ordering)
       
       // ORDER CONTENT - Explicit mapping from camelCase
       items: (body.items || []).map((item: any) => ({

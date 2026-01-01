@@ -13,8 +13,10 @@ export default function HomePage() {
   const router = useRouter()
 
   useEffect(() => {
+    // Task 2: Redirect unauthenticated users to menu instead of showing dashboard
     if (!loading && !user) {
-      router.push('/signin')
+      // Redirect to menu (public view) instead of showing management dashboard
+      router.push('/menu')
     }
   }, [user, loading, router])
 
@@ -38,8 +40,9 @@ export default function HomePage() {
     )
   }
 
+  // Task 2: Don't show dashboard if user is not logged in
   if (!user) {
-    return null // Will redirect to signin
+    return null // Will redirect to welcome
   }
 
   return (
