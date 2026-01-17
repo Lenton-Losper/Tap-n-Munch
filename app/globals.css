@@ -3,52 +3,63 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* <CHANGE> Updated theme with orange (#FF6B35) primary color and clean neutrals */
+/* Luxury Monochrome Theme - Premium Black & White Design System */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.2 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0 0);
-  --primary: oklch(0.68 0.18 35);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.2 0 0);
-  --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.55 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.2 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(1 0 0);
-  --border: oklch(0.92 0 0);
-  --input: oklch(0.92 0 0);
-  --ring: oklch(0.68 0.18 35);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.5rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* Primary Colors */
+  --rich-black: #0A0A0A;
+  --warm-cream: #FDFCF8;
+  --pure-white: #FFFFFF;
+  --charcoal: #1A1A1A;
+  
+  /* Accent & UI Colors */
+  --border-gray: #E5E5E5;
+  --text-secondary: #666666;
+  
+  /* Core Variables */
+  --background: #FDFCF8; /* Warm cream */
+  --foreground: #0A0A0A; /* Rich black */
+  --card: #FFFFFF; /* Pure white for cards */
+  --card-foreground: #0A0A0A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0A0A0A;
+  --primary: #0A0A0A; /* Rich black */
+  --primary-foreground: #FFFFFF;
+  --secondary: #F5F5F5; /* Light gray for badges/secondary */
+  --secondary-foreground: #0A0A0A;
+  --muted: #F5F5F5;
+  --muted-foreground: #666666; /* Text secondary */
+  --accent: #F5F5F5;
+  --accent-foreground: #0A0A0A;
+  --destructive: #DC2626;
+  --destructive-foreground: #FFFFFF;
+  --border: #E5E5E5; /* Light gray border for cards */
+  --input: #FFFFFF;
+  --ring: #0A0A0A;
+  --chart-1: #0A0A0A;
+  --chart-2: #1A1A1A;
+  --chart-3: #333333;
+  --chart-4: #4A4A4A;
+  --chart-5: #666666;
+  --radius: 0px; /* Sharp corners - 0px everywhere */
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #0A0A0A;
+  --sidebar-primary: #0A0A0A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F5F5F5;
+  --sidebar-accent-foreground: #0A0A0A;
+  --sidebar-border: #E5E5E5;
+  --sidebar-ring: #0A0A0A;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
+  --background: oklch(0.145 0 0); /* Dark background */
+  --foreground: oklch(0.985 0 0); /* White text */
   --card: oklch(0.145 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.145 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.68 0.18 35);
-  --primary-foreground: oklch(1 0 0);
+  --primary: oklch(0.985 0 0); /* White in dark mode */
+  --primary-foreground: oklch(0.2 0 0); /* Black text on white */
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -59,16 +70,16 @@
   --destructive-foreground: oklch(1 0 0);
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
-  --ring: oklch(0.68 0.18 35);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
+  --ring: oklch(0.985 0 0); /* White ring in dark mode */
+  --chart-1: oklch(0.7 0 0);
+  --chart-2: oklch(0.8 0 0);
+  --chart-3: oklch(0.6 0 0);
+  --chart-4: oklch(0.5 0 0);
+  --chart-5: oklch(0.65 0 0);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.985 0 0);
+  --sidebar-primary-foreground: oklch(0.2 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.269 0 0);
@@ -76,7 +87,8 @@
 }
 
 @theme inline {
-  --font-sans: "Geist", "Geist Fallback";
+  --font-sans: "Inter", "Geist", "Geist Fallback";
+  --font-serif: "Playfair Display", serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback";
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -116,12 +128,65 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* Luxury Monochrome Base Styles */
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+    /* Subtle paper texture - very light */
+    background-image: 
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.015) 2px,
+        rgba(0, 0, 0, 0.015) 4px
+      ),
+      repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.015) 2px,
+        rgba(0, 0, 0, 0.015) 4px
+      );
+    background-size: 20px 20px;
+  }
+  
+  /* Typography - Serif for headings, Sans for body */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    color: var(--foreground);
+    letter-spacing: -0.02em;
+  }
+  
+  /* Sharp corners everywhere */
+  * {
+    border-radius: 0px;
+  }
+}
+
+/* Typography utilities */
+@layer utilities {
+  .font-serif {
+    font-family: var(--font-serif);
+  }
+  .font-sans {
+    font-family: var(--font-sans);
+  }
+  
+  /* Typography scale */
+  .text-hero {
+    font-size: 3rem;
+    line-height: 1.1;
+    font-weight: 700;
+  }
+  .text-display {
+    font-size: 2.25rem;
+    line-height: 1.2;
+    font-weight: 700;
   }
 }
 
@@ -133,4 +198,48 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+  
+  /* Image grayscale effect with saturation on hover */
+  .menu-image {
+    filter: grayscale(30%);
+    transition: filter 0.3s ease;
+  }
+  .menu-image:hover,
+  .menu-image:active {
+    filter: grayscale(0%);
+  }
+  
+  /* Sharp corners utility */
+  .sharp {
+    border-radius: 0px !important;
+  }
+  
+  /* Luxury card styling */
+  .luxury-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: none;
+  }
+  
+  /* Hover lift effect */
+  .hover-lift {
+    transition: transform 0.2s ease;
+  }
+  .hover-lift:hover {
+    transform: translateY(-2px);
+  }
+}
+
+/* Shimmer animation for image loading */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
 }

@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 
 import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
+import { useAuth } from '@/components/auth/auth-provider'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getTableByNumber } from '@/lib/firebase/tables'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
@@ -19,9 +20,10 @@ import { db } from '@/lib/firebase/config'
 function MenuLandingPageContent() {
   const params = useParams()
   const searchParams = useSearchParams()
+  const router = useRouter()
+  const { loading: authLoading } = useAuth()
   const restaurantId = params.restaurantId as string
   
-  // 1. FIXED: Convert URL string to Number immediately to match Database type
   const tableNumberParam = searchParams.get('table')
   const tableNum = tableNumberParam ? Number(tableNumberParam.replace(/\D/g, '')) : 0
   
@@ -31,45 +33,87 @@ function MenuLandingPageContent() {
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
+  const [permissionError, setPermissionError] = useState(false)
+  const [initialized, setInitialized] = useState(false)
 
-  // Real-time Restaurant Listener
   useEffect(() => {
-    if (!restaurantId || !db) return
+    if (typeof window === 'undefined') return
+    
+    const oldKeys = [
+      'table_session_id',
+      'table_session_restaurant',
+      'table_session_table',
+      'session_id',
+    ]
+    
+    oldKeys.forEach(key => {
+      if (localStorage.getItem(key)) {
+        localStorage.removeItem(key)
+      }
+    })
+    
+    setInitialized(true)
+  }, [])
+
+  useEffect(() => {
+    if (!authLoading && initialized && !restaurantId) {
+      setError('Invalid menu URL. Please scan a valid QR code or use a valid menu link.')
+      setLoading(false)
+    }
+  }, [restaurantId, initialized, authLoading])
+
+  useEffect(() => {
+    if (!restaurantId || !db) {
+      setLoading(false)
+      return
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (loading && !restaurant) {
+        setError('Loading took too long. Please scan a valid QR code or refresh the page.')
+        setLoading(false)
+      }
+    }, 5000)
 
     const restaurantRef = doc(db, 'restaurants', restaurantId)
     const unsubscribe = onSnapshot(restaurantRef, (docSnap) => {
+      clearTimeout(timeoutId)
       if (docSnap.exists()) {
         setRestaurant({ id: docSnap.id, ...docSnap.data() })
         setLoading(false)
+        setError(null)
       } else {
         setError(`Restaurant not found`)
         setLoading(false)
       }
     }, (err) => {
-      console.error('Snapshot error:', err)
+      clearTimeout(timeoutId)
+      if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+        setPermissionError(true)
+        setError('Please ask staff to open this table.')
+      } else {
+        setError('Failed to load restaurant. Please try again.')
+      }
       setLoading(false)
     })
 
-    return () => unsubscribe()
-  }, [restaurantId])
+    return () => {
+      clearTimeout(timeoutId)
+      unsubscribe()
+    }
+  }, [restaurantId, loading, restaurant])
 
-  // Table Verification and Session Logic
   useEffect(() => {
     if (!restaurant || !restaurantId) return
 
     const loadTableData = async () => {
       if (tableNum > 0) {
         try {
-          // Debugging log to confirm types
-          console.log('🔍 [LOOKUP] Searching for Table:', tableNum, 'Type:', typeof tableNum)
-          
           const tableData = await getTableByNumber(restaurantId, tableNum)
           
           if (tableData) {
-            console.log('✅ [LOOKUP] Table verified:', tableData.id)
             setTable(tableData)
             
-            // Session Recovery/Initialization
             let session = getCurrentSession()
             if (!session) {
               const recovered = await restoreSessionFromTable(restaurantId, tableNum)
@@ -80,12 +124,12 @@ function MenuLandingPageContent() {
               setSessionId(session)
               setSessionReady(true)
             }
-          } else {
-            console.warn('⚠️ [LOOKUP] Table', tableNum, 'not found in DB collection.')
           }
         } catch (err: any) {
-          // Non-blocking error: Log permission issues but don't crash the menu
-          console.error('❌ [LOOKUP] Permission or Query error:', err.message)
+          if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+            setPermissionError(true)
+            setError('Please ask staff to open this table.')
+          }
         }
       }
       setLoading(false)
@@ -94,36 +138,100 @@ function MenuLandingPageContent() {
     loadTableData()
   }, [restaurant, restaurantId, tableNum])
 
-  if (loading) {
+  if (authLoading || !initialized) {
     return (
-      <div className="min-h-screen bg-orange-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+          <p className="mt-6 text-muted-foreground font-sans">Loading...</p>
+        </div>
       </div>
     )
   }
 
-  // Fatal Error: Restaurant doesn't exist
+  if (!restaurantId) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
+        <AlertCircle className="w-12 h-12 text-foreground mb-6 stroke-[1.5]" />
+        <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Invalid Menu URL</h1>
+        <p className="text-muted-foreground font-sans mb-6">
+          This menu page requires a restaurant ID in the URL.
+        </p>
+        <p className="text-sm text-muted-foreground font-sans mb-8">
+          Please scan a valid QR code or use a menu link with the format: /menu/[restaurantId]
+        </p>
+        <Button
+          onClick={() => router.push('/signin')}
+          className="bg-foreground text-background hover:bg-foreground/90 font-sans"
+        >
+          Go to Sign In
+        </Button>
+      </div>
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+          <p className="mt-6 text-muted-foreground font-sans">Scanning...</p>
+          {error && (
+            <p className="mt-3 text-sm text-destructive font-sans">{error}</p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (error || !restaurant) {
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 text-center">
-        <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-        <h1 className="text-2xl font-bold text-gray-900">Restaurant Not Found</h1>
-        <p className="text-gray-600 mt-2">The link you followed may be invalid or expired.</p>
-        <div className="mt-6 p-4 bg-gray-100 rounded text-xs font-mono text-left">
-          <p>Restaurant ID: {restaurantId}</p>
-          <p>Table Found: {table ? 'Yes' : 'No'}</p>
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
+        <AlertCircle className="w-12 h-12 text-foreground mb-6 stroke-[1.5]" />
+        <h1 className="text-2xl font-serif font-bold text-foreground mb-4">
+          {permissionError ? 'Access Restricted' : 'Restaurant Not Found'}
+        </h1>
+        <p className="text-muted-foreground font-sans mb-6">
+          {error || 'The link you followed may be invalid or expired.'}
+        </p>
+        {permissionError && (
+          <div className="p-4 bg-muted border border-border max-w-md mb-6">
+            <p className="text-sm text-muted-foreground font-sans">
+              This table may not be open yet. Please ask a staff member to open the table for you.
+            </p>
+          </div>
+        )}
+        <div className="space-y-3">
+          <Button
+            onClick={() => window.location.reload()}
+            className="bg-foreground text-background hover:bg-foreground/90 font-sans"
+          >
+            Retry
+          </Button>
+          <Button
+            onClick={() => router.push('/')}
+            variant="outline"
+            className="w-full border-border font-sans"
+          >
+            Go Home
+          </Button>
+        </div>
+        <div className="mt-8 p-4 bg-muted border border-border text-xs font-mono text-left max-w-md">
+          <p className="text-muted-foreground">Restaurant ID: {restaurantId}</p>
+          <p className="text-muted-foreground">Table Number: {tableNum > 0 ? tableNum : 'Not provided'}</p>
+          <p className="text-muted-foreground">Table Found: {table ? 'Yes' : 'No'}</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col">
       <ActiveOrderBanner />
       
       <div className="flex flex-col items-center justify-center p-8 flex-1">
         <div className="w-full max-w-md text-center space-y-8">
-          {/* Logo Section */}
+          {/* Logo */}
           <div className="flex justify-center">
             {restaurant.logo_url ? (
               <Image
@@ -131,42 +239,45 @@ function MenuLandingPageContent() {
                 alt={restaurant.name}
                 width={120}
                 height={120}
-                className="rounded-full shadow-lg object-cover"
+                className="object-cover border border-border"
               />
             ) : (
-              <div className="w-24 h-24 rounded-full bg-[#FF6B35] flex items-center justify-center text-white text-3xl font-bold shadow-lg">
+              <div className="w-24 h-24 bg-foreground flex items-center justify-center text-background text-3xl font-serif font-bold">
                 {restaurant.name?.charAt(0)}
               </div>
             )}
           </div>
 
-          <div className="space-y-2">
-            <h1 className="text-4xl font-extrabold text-gray-900">{restaurant.name}</h1>
-            <p className="text-gray-500 italic">{restaurant.description || 'Welcome to our menu'}</p>
+          {/* Restaurant Info */}
+          <div className="space-y-3">
+            <h1 className="text-5xl font-serif font-bold text-foreground tracking-tight">{restaurant.name}</h1>
+            <p className="text-sm font-sans text-muted-foreground italic">{restaurant.description || 'Welcome to our menu'}</p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-orange-100">
+          {/* Table Card */}
+          <div className="bg-card p-6 border border-border">
             {tableNum > 0 ? (
               <div className="mb-6">
-                <span className="text-sm uppercase tracking-widest text-orange-500 font-bold">Your Location</span>
-                <p className="text-2xl font-bold text-gray-800">Table {tableNum}</p>
-                {!table && <p className="text-xs text-red-500 mt-1">Note: Table not verified, ordering may be limited.</p>}
+                <span className="text-xs font-sans uppercase tracking-widest text-muted-foreground font-semibold">Your Location</span>
+                <p className="text-2xl font-serif font-bold text-foreground mt-1">Table {tableNum}</p>
+                {!table && <p className="text-xs font-sans text-destructive mt-1">Note: Table not verified, ordering may be limited.</p>}
               </div>
             ) : (
-              <p className="text-gray-600 mb-6">Scan a QR code at your table to start ordering.</p>
+              <p className="text-sm font-sans text-muted-foreground mb-6">Scan a QR code at your table to start ordering.</p>
             )}
 
             <Link href={`/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`}>
-              <Button size="lg" className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white py-7 text-xl rounded-xl shadow-md transition-all active:scale-95">
-                <ShoppingCart className="w-6 h-6 mr-2" />
+              <Button size="lg" className="w-full bg-foreground text-background hover:bg-foreground/90 py-7 text-xl transition-all active:scale-95 font-sans">
+                <ShoppingCart className="w-6 h-6 mr-2 stroke-[1.5]" />
                 View Full Menu
               </Button>
             </Link>
           </div>
 
+          {/* Receipt Link */}
           {sessionReady && sessionId && tableNum > 0 && (
             <Link href={`/menu/${restaurantId}/receipt?table=${tableNum}`}>
-              <Button variant="ghost" className="w-full text-orange-600 hover:bg-orange-50 text-lg">
+              <Button variant="ghost" className="w-full text-foreground hover:bg-muted text-lg font-sans">
                 📋 View My Current Receipt
               </Button>
             </Link>
@@ -180,8 +291,8 @@ function MenuLandingPageContent() {
 export default function MenuLandingPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-orange-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
       </div>
     }>
       <MenuLandingPageContent />

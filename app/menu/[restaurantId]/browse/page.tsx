@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
-import { getMenuItemsByCategory, searchMenuItems, MenuItem } from '@/lib/firebase/menu-items'
+import { getMenuItemsByCategory, MenuItem } from '@/lib/firebase/menu-items'
 import { SubCategory } from '@/lib/firebase/sub-categories'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
@@ -14,7 +14,7 @@ import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ShoppingCart, Search, ArrowLeft } from 'lucide-react'
+import { ShoppingCart, Search, ArrowLeft, UtensilsCrossed, Receipt } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
@@ -51,15 +51,11 @@ export default function MenuBrowsePage() {
           setSelectedMenuCategory(categoriesData[0])
         }
         
-        // PART 1: Table-Based Session Recovery
-        // Initialize or recover session if table number is provided
         if (tableNumber > 0) {
           const existingSession = getCurrentSession()
           if (!existingSession) {
-            // Try to recover from active table orders
             const recoveredSession = await restoreSessionFromTable(restaurantId, tableNumber)
             if (!recoveredSession) {
-              // No recovery possible - create new session
               getOrCreateSession(restaurantId, String(tableNumber))
             }
           }
@@ -85,21 +81,10 @@ export default function MenuBrowsePage() {
       }
       
       try {
-        console.log('Loading menu items for restaurant:', restaurantId, 'category:', selectedMenuCategory.id, selectedMenuCategory.name)
         const grouped = await getMenuItemsByCategory(restaurantId, selectedMenuCategory.id)
-        console.log('Menu items loaded, grouped by', Object.keys(grouped).length, 'sub-categories')
-        console.log('Grouped items:', Object.keys(grouped).map(key => ({
-          subcategory: grouped[key].subcategory.name,
-          itemCount: grouped[key].items.length
-        })))
         setGroupedItems(grouped)
       } catch (err: any) {
         console.error('Failed to load menu items:', err)
-        console.error('Error details:', {
-          message: err.message,
-          code: err.code,
-          stack: err.stack
-        })
         setGroupedItems({})
       }
     }
@@ -108,7 +93,6 @@ export default function MenuBrowsePage() {
   }, [restaurantId, selectedMenuCategory, searchQuery])
 
   const handleAddToCart = (item: MenuItem) => {
-    // If item has no customizations, add directly
     if (!item.has_sizes && !item.has_addons) {
       const cartItem = {
         menu_item_id: item.id,
@@ -123,185 +107,252 @@ export default function MenuBrowsePage() {
       }
       addItem(cartItem)
     } else {
-      // Open detail modal for customization
       setSelectedItem(item)
     }
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Sticky Active Order Banner */}
+    <div className="min-h-screen bg-background">
+      {/* Active Order Banner */}
       <ActiveOrderBanner />
       
       {/* Sticky Header */}
-      <div className="sticky top-0 z-40 bg-white border-b shadow-sm">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => router.back()}
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-            <div>
-              <h1 className="font-semibold">{restaurant?.name || 'Menu'}</h1>
-              {tableNumber > 0 && (
-                <p className="text-sm text-gray-500">Table {tableNumber}</p>
-              )}
+      <header className="sticky top-0 z-40 bg-white border-b border-border">
+        <div className="max-w-4xl mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            {/* Left: Back + Restaurant Info */}
+            <div className="flex items-center gap-3">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => router.back()}
+                className="w-10 h-10"
+              >
+                <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
+              </Button>
+              
+              <div className="flex items-center gap-3">
+                {/* Logo */}
+                {restaurant?.logo_url ? (
+                  <div className="w-10 h-10 border border-border overflow-hidden flex-shrink-0">
+                    <Image
+                      src={restaurant.logo_url}
+                      alt={restaurant.name || 'Restaurant'}
+                      width={40}
+                      height={40}
+                      className="object-cover w-full h-full"
+                      unoptimized
+                    />
+                  </div>
+                ) : (
+                  <div className="w-10 h-10 bg-foreground flex items-center justify-center text-background text-sm font-bold flex-shrink-0">
+                    {restaurant?.name?.charAt(0) || 'M'}
+                  </div>
+                )}
+                
+                <div>
+                  <h1 className="font-serif font-bold text-lg text-foreground leading-tight">
+                    {restaurant?.name || 'Menu'}
+                  </h1>
+                  {tableNumber > 0 && (
+                    <p className="text-xs font-sans text-muted-foreground">
+                      Table {tableNumber}
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {tableNumber > 0 && (
-              <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
-                <Button variant="outline" className="text-orange-600 border-orange-600 hover:bg-orange-50">
-                  📋 Receipt
+            
+            {/* Right: Action Buttons */}
+            <div className="flex items-center gap-2">
+              {tableNumber > 0 && (
+                <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
+                  <Button variant="outline" size="sm" className="font-sans border-border">
+                    <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
+                    Receipt
+                  </Button>
+                </Link>
+              )}
+              <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
+                <Button variant="outline" size="sm" className="relative font-sans border-border">
+                  <ShoppingCart className="w-4 h-4 mr-1.5 stroke-[1.5]" />
+                  Cart
+                  {getItemCount() > 0 && (
+                    <span className="absolute -top-2 -right-2 bg-foreground text-background text-xs w-5 h-5 flex items-center justify-center font-semibold">
+                      {getItemCount()}
+                    </span>
+                  )}
                 </Button>
               </Link>
-            )}
-            <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
-              <Button variant="outline" className="relative">
-                <ShoppingCart className="w-5 h-5 mr-2" />
-                Cart
-                {getItemCount() > 0 && (
-                  <span className="absolute -top-2 -right-2 bg-[#FF6B35] text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {getItemCount()}
-                  </span>
-                )}
-              </Button>
-            </Link>
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
       <div className="max-w-4xl mx-auto px-4 py-6">
-        {/* Menu Category Tabs */}
+        {/* Category Navigation - Horizontal Scroll */}
         {menuCategories.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-4 mb-4 scrollbar-hide">
+          <div className="flex gap-2 overflow-x-auto pb-4 mb-6 scrollbar-hide">
             {menuCategories.map((category) => (
-              <Button
+              <button
                 key={category.id}
-                variant={selectedMenuCategory?.id === category.id ? 'default' : 'outline'}
                 onClick={() => {
                   setSelectedMenuCategory(category)
                   setSearchQuery('')
                 }}
-                className={`whitespace-nowrap ${
+                className={`whitespace-nowrap px-6 py-3 text-sm font-semibold font-sans transition-colors ${
                   selectedMenuCategory?.id === category.id
-                    ? 'bg-[#FF6B35] hover:bg-[#e55a28]'
-                    : ''
+                    ? 'bg-foreground text-background'
+                    : 'bg-transparent text-foreground border border-border hover:bg-muted'
                 }`}
               >
                 {category.name}
-              </Button>
+              </button>
             ))}
           </div>
         )}
 
         {/* Search Bar */}
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+        <div className="relative mb-8">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground stroke-[1.5]" />
           <Input
             type="text"
             placeholder="Search menu items..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10"
+            className="pl-12 py-3 bg-muted border-border font-sans"
           />
         </div>
 
-        {/* Menu Items Grouped by Sub-category */}
+        {/* Menu Items */}
         {Object.keys(groupedItems).length > 0 ? (
-          <div className="space-y-8">
+          <div className="space-y-12">
             {Object.values(groupedItems).map(({ subcategory, items }) => (
-              <div key={subcategory.id} className="space-y-4">
+              <section key={subcategory.id} className="space-y-6">
                 {/* Sub-category Header */}
-                <div>
-                  <h2 className="text-2xl font-semibold text-gray-900">{subcategory.name}</h2>
+                <div className="border-b border-border pb-3">
+                  <h2 className="text-2xl font-serif font-bold text-foreground">
+                    {subcategory.name}
+                  </h2>
                   {subcategory.description && (
-                    <p className="text-sm text-gray-600 mt-1">{subcategory.description}</p>
+                    <p className="text-sm font-sans text-muted-foreground mt-1">
+                      {subcategory.description}
+                    </p>
                   )}
                 </div>
                 
                 {/* Items Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {items.map((item) => (
-                    <div
+                    <article
                       key={item.id}
-                      className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow"
+                      className="bg-card border border-border overflow-hidden hover-lift"
                     >
-                      {item.image_url && (
-                        <div className="relative w-full h-48 bg-gray-50">
-                          <Image
-                            src={item.image_url}
-                            alt={item.name}
-                            fill
-                            style={{
-                              objectFit: item.imageFit || 'contain',
-                              objectPosition: item.imagePosition || 'center',
-                            }}
-                          />
+                      {/* Image */}
+                      <div className="relative w-full aspect-[4/3] bg-muted overflow-hidden">
+                        {item.image_url ? (
+                          <>
+                            <Image
+                              src={item.image_url}
+                              alt={item.name}
+                              fill
+                              loading="lazy"
+                              style={{
+                                objectFit: item.imageFit || 'cover',
+                                objectPosition: item.imagePosition || 'center',
+                              }}
+                              unoptimized
+                              className="menu-image transition-opacity duration-300"
+                              onLoad={(e) => {
+                                e.currentTarget.style.opacity = '1'
+                                const container = e.currentTarget.closest('.relative')
+                                const shimmer = container?.querySelector('.image-shimmer')
+                                if (shimmer) shimmer.classList.add('hidden')
+                              }}
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none'
+                                const container = e.currentTarget.closest('.relative')
+                                const placeholder = container?.querySelector('.image-placeholder')
+                                const shimmer = container?.querySelector('.image-shimmer')
+                                if (placeholder) placeholder.classList.remove('hidden')
+                                if (shimmer) shimmer.classList.add('hidden')
+                              }}
+                            />
+                            <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer pointer-events-none" />
+                          </>
+                        ) : null}
+                        <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-muted ${item.image_url ? 'hidden' : ''}`}>
+                          <UtensilsCrossed className="w-12 h-12 text-muted-foreground" />
                         </div>
-                      )}
+                      </div>
+                      
+                      {/* Content */}
                       <div className="p-4">
-                        <h3 className="font-semibold text-lg mb-1">{item.name}</h3>
+                        <h3 className="font-sans font-semibold text-lg text-foreground mb-1">
+                          {item.name}
+                        </h3>
                         {item.description && (
-                          <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+                          <p className="text-sm font-sans text-muted-foreground mb-4 line-clamp-2 leading-relaxed">
                             {item.description}
                           </p>
                         )}
-                        <div className="flex items-center justify-between">
+                        
+                        {/* Price + Add Button */}
+                        <div className="flex items-center justify-between pt-2 border-t border-border">
                           <div>
-                            <p className="text-lg font-bold text-[#FF6B35]">
-                              {restaurant?.currency || 'N$'}{item.base_price.toFixed(2)}
+                            <p className="text-lg font-sans font-bold text-foreground">
+                              <span className="text-sm font-normal text-muted-foreground mr-0.5">
+                                {restaurant?.currency || 'N$'}
+                              </span>
+                              {item.base_price.toFixed(2)}
                             </p>
                             {item.status === 'out_of_stock' && (
-                              <p className="text-xs text-red-600">Out of Stock</p>
+                              <p className="text-xs font-sans text-destructive mt-0.5">Out of Stock</p>
                             )}
                           </div>
                           <Button
                             onClick={() => handleAddToCart(item)}
                             disabled={item.status === 'out_of_stock'}
-                            className="bg-[#FF6B35] hover:bg-[#e55a28]"
                             size="sm"
+                            className="bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold px-4"
                           >
                             {item.status === 'out_of_stock' ? 'Unavailable' : 'Add +'}
                           </Button>
                         </div>
                       </div>
-                    </div>
+                    </article>
                   ))}
                 </div>
-              </div>
+              </section>
             ))}
           </div>
         ) : (
           !loading && (
-            <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
-              <div className="max-w-md mx-auto">
-                <div className="text-6xl mb-4">🍽️</div>
-                <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            <div className="text-center py-16 bg-card border border-border">
+              <div className="max-w-md mx-auto px-6">
+                <div className="text-6xl mb-6">🍽️</div>
+                <h3 className="text-xl font-serif font-bold text-foreground mb-2">
                   {searchQuery ? 'No items found' : 'Menu coming soon!'}
                 </h3>
-                <p className="text-gray-600 mb-2">
+                <p className="text-muted-foreground font-sans mb-2">
                   {searchQuery 
-                    ? `No items match "${searchQuery}". Try a different search term.`
+                    ? `No items match "${searchQuery}". Try a different search.`
                     : selectedMenuCategory
                     ? `No items in "${selectedMenuCategory.name}" yet.`
-                    : 'This restaurant hasn\'t added any menu items yet.'
+                    : 'This restaurant hasn\'t added menu items yet.'
                   }
                 </p>
                 {!searchQuery && (
-                  <p className="text-sm text-gray-500 mt-2">
-                    Please ask staff for assistance or check back later.
+                  <p className="text-sm text-muted-foreground font-sans">
+                    Please ask staff for assistance.
                   </p>
                 )}
               </div>
@@ -323,15 +374,15 @@ export default function MenuBrowsePage() {
         />
       )}
 
-      {/* Floating "Receipt" Button */}
+      {/* Floating Receipt Button */}
       {tableNumber > 0 && (
         <div className="fixed bottom-6 right-6 z-50">
           <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
             <button
-              className="bg-orange-600 text-white w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-orange-700 transition-all hover:scale-110"
+              className="bg-foreground text-background w-14 h-14 flex items-center justify-center text-xl hover:bg-foreground/90 transition-all shadow-lg"
               title="View Receipt"
             >
-              📋
+              <Receipt className="w-6 h-6 stroke-[1.5]" />
             </button>
           </Link>
         </div>
@@ -339,4 +390,3 @@ export default function MenuBrowsePage() {
     </div>
   )
 }
-

@@ -17,7 +17,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route'
 import Image from 'next/image'
 
 function SettingsContent() {
-  const { restaurantId, restaurant: initialRestaurant } = useAuth()
+  const { user, restaurantId, restaurant: initialRestaurant } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
   const [restaurant, setRestaurant] = useState(initialRestaurant)
@@ -42,7 +42,16 @@ function SettingsContent() {
 
   useEffect(() => {
     const loadRestaurant = async () => {
-      if (!restaurantId) return
+      // Don't run if user is null (prevents fetching when signed out)
+      if (!user) {
+        setLoading(false)
+        return
+      }
+
+      if (!restaurantId) {
+        setLoading(false)
+        return
+      }
       
       try {
         setLoading(true)
@@ -71,7 +80,7 @@ function SettingsContent() {
     if (restaurantId) {
       loadRestaurant()
     }
-  }, [restaurantId, toast])
+  }, [user, restaurantId, toast])
 
   // Track changes to restaurant details
   useEffect(() => {

@@ -9,7 +9,6 @@ import { getTableByNumber } from '@/lib/firebase/tables'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft } from 'lucide-react'
@@ -30,7 +29,6 @@ export default function OrderSecurePage() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   
-  // Form state - NO customer fields required
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | null>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
 
@@ -44,7 +42,6 @@ export default function OrderSecurePage() {
         setRestaurant(restaurantData)
         setTable(tableData)
         
-        // Initialize session if table number is provided
         if (tableNumber > 0) {
           getOrCreateSession(String(tableNumber), restaurantId)
         }
@@ -66,7 +63,6 @@ export default function OrderSecurePage() {
   }, [restaurantId, tableNumber])
 
   const submitOrder = async () => {
-    // Defensive guard: ensure items is an array and not empty
     if (!Array.isArray(items) || items.length === 0) {
       toast({
         title: 'Cart is empty',
@@ -85,9 +81,6 @@ export default function OrderSecurePage() {
       return
     }
     
-    // PART 1: Get or create unique session_id (unique per scan)
-    // CRITICAL: Fetch session_id from localStorage to attach to order
-    // This ensures the Active Order Banner can find orders by session_id
     let sessionId = getCurrentSession()
     if (!sessionId) {
       sessionId = getOrCreateSession(restaurantId, String(tableNumber))
@@ -103,111 +96,52 @@ export default function OrderSecurePage() {
       return
     }
     
-    console.log('📦 Submitting order with session_id:', sessionId)
-    console.log('📦 Order creation - Session ID type:', typeof sessionId)
-    
     setSubmitting(true)
-    toast({ title: 'Processing your order...', description: 'Please wait while we process your order.' })
+    toast({ title: 'Processing your order...', description: 'Please wait.' })
 
     try {
-
       const subtotal = getTotal()
       const taxRate = restaurant?.tax_rate || 0.15
       const tax = subtotal * taxRate
       const total = subtotal + tax
 
-      // Prepare order items with defensive guards
       const orderItems = items
-        .filter(item => item != null) // Filter out null/undefined items
+        .filter(item => item != null)
         .map(item => ({
           menuItemId: String(item?.menu_item_id || ''),
           name: String(item?.name || ''),
           quantity: Number(item?.quantity) || 1,
           basePrice: Number(item?.base_price) || 0,
-          size: (item?.selected_size && typeof item.selected_size === 'object' && item.selected_size.name) 
-            ? String(item.selected_size.name) 
-            : null,
+          size: (item?.selected_size?.name) ? String(item.selected_size.name) : null,
           addons: Array.isArray(item?.selected_addons) 
             ? item.selected_addons.filter(a => a != null).map(a => ({
                 name: String(a?.name || ''),
                 price: Number(a?.price) || 0,
               }))
             : [],
-          specialInstructions: (item?.special_instructions && typeof item.special_instructions === 'string')
-            ? String(item.special_instructions).trim()
-            : '',
+          specialInstructions: item?.special_instructions?.trim() || '',
           subtotal: Number(item?.subtotal) || 0,
         }))
-        .filter(item => item.menuItemId && item.name) // Filter out invalid items
+        .filter(item => item.menuItemId && item.name)
 
-      // STEP 2: Fix Frontend Checkout Payload
-      // Ensure session_id is always sent with correct field names
       const payload: Record<string, any> = {
-        restaurantId: String(restaurantId), // Will be mapped to restaurant_id in API
-        tableNumber: Number(tableNumber) || 0, // Will be mapped to table_id in API
-        session_id: String(sessionId), // REQUIRED: Must match Firestore field name
-        items: orderItems, // Will be mapped to snake_case in API
+        restaurantId: String(restaurantId),
+        tableNumber: Number(tableNumber) || 0,
+        session_id: String(sessionId),
+        items: orderItems,
         subtotal: Number(subtotal),
         tax: Number(tax),
         total: Number(total),
-        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash', // Will be mapped to payment_method
-        orderInstructions: orderInstructions && orderInstructions.trim() ? orderInstructions.trim() : null, // Will be mapped to order_instructions
+        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
+        orderInstructions: orderInstructions?.trim() || null,
       }
       
-      // CRITICAL: JSON Car Wash - physically strip undefined properties
       const cleanPayload = JSON.parse(JSON.stringify(payload))
+      if (payload.session_id) cleanPayload.session_id = payload.session_id
       
-      // CRITICAL: Ensure session_id survives JSON Car Wash
-      if (payload.session_id !== undefined) {
-        cleanPayload.session_id = payload.session_id
-      }
-      
-      // Log final payload to verify session_id is included
-      console.log('📦 Final payload before API call:', {
-        hasSessionId: 'session_id' in cleanPayload,
-        sessionIdValue: cleanPayload.session_id,
-        restaurantId: cleanPayload.restaurantId,
-        payloadKeys: Object.keys(cleanPayload),
-      })
-      
-      // Also check nested objects (items array) - explicit whitelist, no spread
-      if (Array.isArray(cleanPayload.items)) {
-        cleanPayload.items = cleanPayload.items.map((item: any) => {
-          // Explicit whitelist - only include known safe fields
-          const cleanItem: Record<string, any> = {
-            menuItemId: item?.menuItemId || item?.menu_item_id || '',
-            name: item?.name || '',
-            quantity: item?.quantity || 1,
-            basePrice: item?.basePrice || item?.base_price || 0,
-            subtotal: item?.subtotal || 0,
-            size: item?.size || null,
-            addons: Array.isArray(item?.addons) ? item.addons : [],
-            specialInstructions: item?.specialInstructions || item?.special_instructions || '',
-          }
-          // Explicitly ensure no email fields exist
-          if ('customer_email' in cleanItem) delete cleanItem.customer_email
-          if ('customerEmail' in cleanItem) delete cleanItem.customerEmail
-          if ('email' in cleanItem) delete cleanItem.email
-          return cleanItem
-        })
-      }
-      
-      // Log final payload once for verification
-      console.log('ORDER PAYLOAD FINAL', JSON.stringify(cleanPayload, null, 2))
-      
-      // Verify no forbidden fields exist
-      const payloadStr = JSON.stringify(cleanPayload)
-      if (payloadStr.includes('customer_email') || payloadStr.includes('customerEmail')) {
-        console.error('🚨 CRITICAL: Forbidden field detected in final payload!')
-        throw new Error('Forbidden field detected: customer_email or customerEmail')
-      }
-      
-      // Send to API using fetch (NO Firebase SDK)
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanPayload),
       })
 
@@ -219,17 +153,12 @@ export default function OrderSecurePage() {
       const data = await response.json()
       const orderId = data.orderId
 
-      if (!orderId) {
-        throw new Error('Order was created but no order ID was returned')
-      }
+      if (!orderId) throw new Error('Order was created but no order ID was returned')
 
-      // Clear cart
       clearCart()
-
-      // Redirect to confirmation
       router.push(`/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`)
     } catch (error: any) {
-      console.error('❌ ORDER FAILURE:', error)
+      console.error('Order failure:', error)
       toast({
         title: 'Order failed',
         description: error.message || 'Failed to place order. Please try again.',
@@ -239,41 +168,38 @@ export default function OrderSecurePage() {
     }
   }
 
-  // Defensive guards for calculations
   const subtotal = typeof getTotal === 'function' ? getTotal() : 0
-  const taxRate = (restaurant && typeof restaurant.tax_rate === 'number' && restaurant.tax_rate >= 0)
-    ? restaurant.tax_rate
-    : 0.15
+  const taxRate = restaurant?.tax_rate || 0.15
   const tax = subtotal * taxRate
   const total = subtotal + tax
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-4 py-6">
         {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-8">
           <Button variant="ghost" size="icon" onClick={() => router.back()}>
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">Secure Checkout</h1>
+            <h1 className="text-2xl font-serif font-bold text-foreground">Secure Checkout</h1>
             {tableNumber > 0 && (
-              <p className="text-sm text-gray-500">Table {tableNumber}</p>
+              <p className="text-sm text-muted-foreground font-sans">Table {tableNumber}</p>
             )}
           </div>
         </div>
 
         {/* Payment Method */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Payment Method</h2>
+        <div className="bg-card border border-border p-6 mb-6">
+          <h2 className="text-lg font-serif font-bold text-foreground mb-4">Payment Method</h2>
           <PaymentMethodSelector
             value={paymentMethod}
             onChange={setPaymentMethod}
@@ -282,8 +208,8 @@ export default function OrderSecurePage() {
         </div>
 
         {/* Order Instructions */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <Label htmlFor="instructions" className="mb-2 block">
+        <div className="bg-card border border-border p-6 mb-6">
+          <Label htmlFor="instructions" className="mb-3 block font-sans text-foreground font-semibold">
             Order Instructions (Optional)
           </Label>
           <Textarea
@@ -292,25 +218,26 @@ export default function OrderSecurePage() {
             value={orderInstructions}
             onChange={(e) => setOrderInstructions(e.target.value)}
             rows={3}
+            className="font-sans border-border"
           />
         </div>
 
         {/* Order Summary */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Order Summary</h2>
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>Subtotal</span>
-              <span>{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
+        <div className="bg-card border border-border p-6 mb-6">
+          <h2 className="text-lg font-serif font-bold text-foreground mb-4">Order Summary</h2>
+          <div className="space-y-3">
+            <div className="flex justify-between text-sm font-sans">
+              <span className="text-muted-foreground">Subtotal</span>
+              <span className="text-foreground">{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between text-sm">
-              <span>Tax ({Math.round(taxRate * 100)}%)</span>
-              <span>{restaurant?.currency || 'N$'}{tax.toFixed(2)}</span>
+            <div className="flex justify-between text-sm font-sans">
+              <span className="text-muted-foreground">Tax ({Math.round(taxRate * 100)}%)</span>
+              <span className="text-foreground">{restaurant?.currency || 'N$'}{tax.toFixed(2)}</span>
             </div>
-            <div className="border-t pt-2 mt-2">
-              <div className="flex justify-between text-lg font-bold">
-                <span>Total</span>
-                <span className="text-[#FF6B35]">
+            <div className="border-t border-border pt-4 mt-4">
+              <div className="flex justify-between items-center">
+                <span className="text-lg font-semibold font-sans text-foreground">Total</span>
+                <span className="text-2xl font-bold font-sans text-foreground">
                   {restaurant?.currency || 'N$'}{total.toFixed(2)}
                 </span>
               </div>
@@ -321,20 +248,15 @@ export default function OrderSecurePage() {
         {/* Place Order Button */}
         <Button
           onClick={submitOrder}
-          disabled={
-            submitting || 
-            !Array.isArray(items) || 
-            items.length === 0 || 
-            !paymentMethod
-          }
-          className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white"
+          disabled={submitting || !Array.isArray(items) || items.length === 0 || !paymentMethod}
+          className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
           size="lg"
         >
-          {submitting ? 'Placing Order...' : 'Place Order 🎉'}
+          {submitting ? 'Placing Order...' : 'Place Order'}
         </Button>
         
         {!paymentMethod && (
-          <p className="text-sm text-red-500 text-center mt-2">
+          <p className="text-sm text-destructive text-center mt-3 font-sans">
             Please select a payment method to place the order.
           </p>
         )}
@@ -342,4 +264,3 @@ export default function OrderSecurePage() {
     </div>
   )
 }
-

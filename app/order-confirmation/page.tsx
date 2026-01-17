@@ -1,4 +1,4 @@
- 'use client'
+'use client'
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +9,7 @@ import { db } from '@/lib/firebase/config'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getCurrentSession, clearSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { CheckCircle2, Clock, Banknote, CreditCard } from 'lucide-react'
+import { CheckCircle2, Clock, Banknote, CreditCard, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 
 function OrderConfirmationContent() {
@@ -32,16 +31,7 @@ function OrderConfirmationContent() {
         setLoading(true)
         setError(null)
 
-        // Get session_id from localStorage for security verification
         const sessionId = getCurrentSession()
-        console.log('🔍 [CONFIRMATION] Loading order with session:', {
-          orderId: orderId || 'none',
-          sessionId: sessionId || 'none',
-          tableNumber: tableNumber || 'none'
-        })
-
-        // Task 1: Use table_number + is_closed filter instead of session_id
-        // Get restaurantId and tableNumber from URL or localStorage
         let restaurantId: string | null = null
         const tableNum = tableNumber ? Number(tableNumber) : null
         
@@ -50,21 +40,18 @@ function OrderConfirmationContent() {
         }
 
         if (!restaurantId) {
-          console.error('❌ [CONFIRMATION ERROR] Restaurant ID not found. Please scan QR code again.')
-          setError('Restaurant ID not found. Please scan the QR code again to access your order.')
+          setError('Restaurant ID not found. Please scan the QR code again.')
           setLoading(false)
           return
         }
 
         if (!tableNum || tableNum <= 0) {
-          console.error('❌ [CONFIRMATION ERROR] Table number not found in URL.')
           setError('Table number not found. Please scan the QR code again.')
           setLoading(false)
           return
         }
 
         if (!db) {
-          console.error('Firestore not initialized')
           setError('Database not available')
           setLoading(false)
           return
@@ -73,31 +60,23 @@ function OrderConfirmationContent() {
         try {
           const { orderPath, ordersPath } = require('@/lib/firebase/paths')
           
-          // If orderId is provided, load that specific order
           if (orderId) {
-            console.log('🔍 [CONFIRMATION] Loading order by ID:', orderId, 'table:', tableNum)
             const orderRef = doc(db, orderPath(restaurantId, orderId))
-            
-            // Query orders by table_number and is_closed to find the matching order
             const ordersRef = collection(db, ordersPath(restaurantId))
             const tableQuery = query(
               ordersRef,
               where('table_number', '==', tableNum),
               where('is_closed', '==', false),
-              limit(50) // Get recent orders to find the one matching orderId
+              limit(50)
             )
             
             const tableSnapshot = await getDocs(tableQuery)
-            
-            // Find the order that matches orderId
             const matchingOrder = tableSnapshot.docs.find(doc => doc.id === orderId)
             
             if (matchingOrder) {
               const orderData = { id: matchingOrder.id, ...matchingOrder.data() }
-              console.log('✅ [CONFIRMATION] Order loaded with table verification:', orderData)
               setOrder(orderData)
               
-              // Load restaurant data
               if (!restaurant) {
                 try {
                   const restaurantData = await getRestaurant(restaurantId)
@@ -107,38 +86,21 @@ function OrderConfirmationContent() {
                 }
               }
               
-              // Set up real-time listener using hierarchical path
               unsubscribe = onSnapshot(orderRef, (docSnapshot) => {
                 if (docSnapshot.exists()) {
                   const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
-                  // Verify table still matches and order is not closed
                   if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
                     setOrder(updatedOrder)
-                    console.log('✅ [CONFIRMATION] Order updated in real-time')
-                  } else {
-                    console.warn('⚠️ [CONFIRMATION] Order table mismatch or order closed in real-time update')
                   }
-                }
-              }, (error) => {
-                console.error('Error in real-time listener:', error)
-                if (error?.code === 'permission-denied') {
-                  console.error('❌ [CONFIRMATION ERROR] Permission Denied')
                 }
               })
               
               setLoading(false)
             } else {
-              // Order ID not found in table orders
-              console.error('❌ [CONFIRMATION ERROR] Order not found for this table')
               setError('Order not found or table mismatch')
               setLoading(false)
             }
-          } 
-          // If no orderId, try to fetch most recent order from table
-          else {
-            console.log('🔍 [CONFIRMATION] Fetching most recent order for table:', tableNum, 'restaurant:', restaurantId)
-
-            // Query Firestore for most recent order for this table using hierarchical path
+          } else {
             const ordersRef = collection(db, ordersPath(restaurantId))
             const q = query(
               ordersRef,
@@ -152,19 +114,15 @@ function OrderConfirmationContent() {
               const snapshot = await getDocs(q)
 
               if (snapshot.empty) {
-                console.log('No orders found for table')
                 setError('No orders yet')
                 setLoading(false)
                 return
               }
 
-              // Get the most recent order
               const orderDoc = snapshot.docs[0]
               const orderData = { id: orderDoc.id, ...orderDoc.data() }
               setOrder(orderData)
-              console.log('✅ [CONFIRMATION] Most recent order loaded from table:', orderData)
 
-              // Load restaurant data
               try {
                 const restaurantData = await getRestaurant(restaurantId)
                 setRestaurant(restaurantData)
@@ -172,38 +130,21 @@ function OrderConfirmationContent() {
                 console.error('Failed to load restaurant:', err)
               }
 
-              // Set up real-time listener for this order using hierarchical path
               unsubscribe = onSnapshot(
                 doc(db, orderPath(restaurantId, orderDoc.id)),
                 async (docSnapshot) => {
                   if (docSnapshot.exists()) {
                     const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
-                    // Verify table still matches and order is not closed
                     if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
                       setOrder(updatedOrder)
-                      console.log('✅ [CONFIRMATION] Order updated in real-time:', updatedOrder)
-                    } else {
-                      console.warn('⚠️ [CONFIRMATION] Order table mismatch or order closed in real-time update')
                     }
-                  }
-                },
-                (error) => {
-                  console.error('Error in real-time listener:', error)
-                  if (error?.code === 'permission-denied') {
-                    console.error('❌ [CONFIRMATION ERROR] Permission Denied')
                   }
                 }
               )
 
               setLoading(false)
             } catch (err: any) {
-              console.error('❌ [CONFIRMATION ERROR] Failed to fetch orders:', err)
-              if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-                console.error('❌ [CONFIRMATION ERROR] Permission Denied')
-                setError('Permission denied: Order not found or table mismatch')
-              } else if (err?.code === 'failed-precondition') {
-                // Missing index - filter in memory instead
-                console.warn('⚠️ [CONFIRMATION] Index missing, filtering in memory')
+              if (err?.code === 'failed-precondition') {
                 const allOrdersRef = collection(db, ordersPath(restaurantId))
                 const allSnapshot = await getDocs(query(allOrdersRef, where('table_number', '==', tableNum), limit(50)))
                 
@@ -217,16 +158,13 @@ function OrderConfirmationContent() {
                   })
                 
                 if (filteredOrders.length > 0) {
-                  const orderData = filteredOrders[0]
-                  setOrder(orderData)
-                  
+                  setOrder(filteredOrders[0])
                   try {
                     const restaurantData = await getRestaurant(restaurantId)
                     setRestaurant(restaurantData)
                   } catch (restErr) {
                     console.error('Failed to load restaurant:', restErr)
                   }
-                  
                   setLoading(false)
                 } else {
                   setError('No orders yet')
@@ -239,12 +177,10 @@ function OrderConfirmationContent() {
             }
           }
         } catch (err: any) {
-          console.error('Error in loadOrder:', err)
           setError(err.message || 'Failed to load order')
           setLoading(false)
         }
       } catch (err: any) {
-        console.error('Error in loadOrder:', err)
         setError(err.message || 'Failed to load order')
         setLoading(false)
       }
@@ -252,59 +188,53 @@ function OrderConfirmationContent() {
 
     loadOrder()
 
-    // Cleanup function
     return () => {
-      if (unsubscribe) {
-        unsubscribe()
-      }
+      if (unsubscribe) unsubscribe()
     }
   }, [orderId, restaurant, tableNumber])
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading your receipt...</p>
+          <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+          <p className="mt-6 text-muted-foreground font-sans">Loading your receipt...</p>
         </div>
       </div>
     )
   }
 
-  // Handle error states
   if (error && !order) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-card border border-border p-12 text-center">
           {error === 'No active session' ? (
             <>
-              <div className="text-6xl mb-4">🍽️</div>
-              <h1 className="text-2xl font-bold text-gray-800 mb-2">No Active Order</h1>
-              <p className="text-gray-600 mb-4">
-                You don't have an active session. Please scan the QR code to start ordering.
+              <div className="text-6xl mb-6">🍽️</div>
+              <h1 className="text-2xl font-serif font-bold text-foreground mb-4">No Active Order</h1>
+              <p className="text-muted-foreground font-sans mb-6">
+                Please scan the QR code to start ordering.
               </p>
-              <Button onClick={() => router.push('/')} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+              <Button onClick={() => router.push('/')} className="bg-foreground text-background hover:bg-foreground/90 font-sans">
                 Go to Home
               </Button>
             </>
           ) : error === 'No orders yet' ? (
             <>
-              <div className="text-6xl mb-4">📋</div>
-              <h1 className="text-2xl font-bold text-gray-800 mb-2">No Orders Yet</h1>
-              <p className="text-gray-600 mb-4">
-                You haven't placed any orders in this session yet.
+              <div className="text-6xl mb-6">📋</div>
+              <h1 className="text-2xl font-serif font-bold text-foreground mb-4">No Orders Yet</h1>
+              <p className="text-muted-foreground font-sans mb-6">
+                You haven't placed any orders yet.
               </p>
-              <Button onClick={() => router.back()} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+              <Button onClick={() => router.back()} className="bg-foreground text-background hover:bg-foreground/90 font-sans">
                 Go Back
               </Button>
             </>
           ) : (
             <>
-              <h1 className="text-2xl font-bold text-red-600 mb-2">Order Not Found</h1>
-              <p className="text-gray-600 mb-4">
-                {error || 'We couldn\'t find that order. Please check with a staff member if you\'re unsure.'}
-              </p>
-              <Button onClick={() => router.back()} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+              <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Order Not Found</h1>
+              <p className="text-muted-foreground font-sans mb-6">{error}</p>
+              <Button onClick={() => router.back()} className="bg-foreground text-background hover:bg-foreground/90 font-sans">
                 Go Back
               </Button>
             </>
@@ -314,25 +244,22 @@ function OrderConfirmationContent() {
     )
   }
 
-  // Data safety guard: Check for null order before rendering order.total or mapping order.items
   if (!order) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading order details...</p>
+          <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+          <p className="mt-6 text-muted-foreground font-sans">Loading order details...</p>
         </div>
       </div>
     )
   }
 
-  // PART 2: Standardize Order Status Model
-  // Status messages and emojis
   const statusConfig: Record<string, { emoji: string; title: string; message: string }> = {
     new: {
       emoji: '🎉',
       title: 'Order Received',
-      message: 'Your order has been received by the restaurant. A staff member will start preparing it shortly.',
+      message: 'Your order has been received. A staff member will start preparing it shortly.',
     },
     accepted: {
       emoji: '👨‍🍳',
@@ -356,25 +283,22 @@ function OrderConfirmationContent() {
     },
   }
 
-  // Task 3: Add optional chaining
   const currentStatus = statusConfig[order?.status] || statusConfig.new
 
   const handleEndSession = () => {
-    if (confirm('Are you sure you want to end your session? This will clear your session from this device.')) {
+    if (confirm('Are you sure you want to end your session?')) {
       clearSession()
-      alert('Session ended. Thank you for dining with us!')
-      // Task 2: Redirect to menu page instead of root
-      const restaurantId = order?.restaurant_id || (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
+      alert('Session ended. Thank you!')
+      const restId = order?.restaurant_id || (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
       const tableNum = tableNumber || order?.table_number
-      if (restaurantId && tableNum) {
-        router.push(`/menu/${restaurantId}/v2?table=${tableNum}`)
+      if (restId && tableNum) {
+        router.push(`/menu/${restId}/v2?table=${tableNum}`)
       } else {
         router.push('/')
       }
     }
   }
 
-  // Task 3: Parse placed_at timestamp with optional chaining - handle both Firestore Timestamp and ISO string
   const placedAtDate = order?.placed_at?.toDate 
     ? order.placed_at.toDate() 
     : order?.placed_at 
@@ -382,201 +306,131 @@ function OrderConfirmationContent() {
     : new Date()
 
   return (
-    <div className="max-w-2xl mx-auto p-6 min-h-screen bg-gray-50">
-      {/* Status Banner */}
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6 text-center">
-        <div className="text-6xl mb-4">{currentStatus.emoji}</div>
-        <h1 className="text-3xl font-bold mb-2">{currentStatus.title}</h1>
-        <p className="text-gray-600">{currentStatus.message}</p>
-      </div>
-
-      {/* Order Details Card */}
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        {/* Show indicator if loaded from session (no orderId in URL) */}
-        {!orderId && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-            <p className="text-sm text-blue-800">
-              📋 Showing your most recent order from this session
-            </p>
-          </div>
-        )}
-        
-        <div className="flex justify-between items-start mb-6">
-          <div>
-            <h2 className="text-2xl font-bold">
-              Order #{order?.order_number || order?.id?.slice(-6)?.toUpperCase() || 'N/A'}
-            </h2>
-            {/* Task 3: Add optional chaining */}
-            {order?.table_number > 0 && (
-              <p className="text-gray-600">Table {order.table_number}</p>
-            )}
-            <p className="text-sm text-gray-500 mt-1">
-              {placedAtDate?.toLocaleString() || 'N/A'}
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-3xl font-bold text-orange-600">
-              {restaurant?.currency || 'N$'}{order && typeof order.total === 'number' ? order.total.toFixed(2) : '0.00'}
-            </p>
-          </div>
+    <div className="min-h-screen bg-background">
+      <div className="max-w-2xl mx-auto p-6">
+        {/* Status Banner */}
+        <div className="bg-card border border-border p-8 mb-6 text-center">
+          <div className="text-6xl mb-4">{currentStatus.emoji}</div>
+          <h1 className="text-3xl font-serif font-bold text-foreground mb-2">{currentStatus.title}</h1>
+          <p className="text-muted-foreground font-sans">{currentStatus.message}</p>
         </div>
 
-        <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
-          <h3 className="font-semibold mb-2">Payment</h3>
-          <div className="flex items-center justify-between mb-2 text-sm">
-            <span className="text-gray-700">Method:</span>
-            <div className="flex items-center gap-2">
-              {/* Task 3: Add optional chaining */}
-              {order?.payment_method === 'cash' ? (
-                <Banknote className="h-4 w-4 text-gray-600" />
-              ) : (
-                <CreditCard className="h-4 w-4 text-gray-600" />
+        {/* Order Details */}
+        <div className="bg-card border border-border p-6 mb-6">
+          {!orderId && (
+            <div className="bg-muted border border-border p-3 mb-6">
+              <p className="text-sm text-muted-foreground font-sans">
+                📋 Showing your most recent order
+              </p>
+            </div>
+          )}
+          
+          <div className="flex justify-between items-start mb-6 pb-6 border-b border-border">
+            <div>
+              <h2 className="text-2xl font-sans font-bold text-foreground">
+                Order #{order?.order_number || order?.id?.slice(-6)?.toUpperCase() || 'N/A'}
+              </h2>
+              {order?.table_number > 0 && (
+                <p className="text-muted-foreground font-sans text-sm">Table {order.table_number}</p>
               )}
-              <span className="font-semibold capitalize">
-                {order?.payment_method || 'cash'}
-              </span>
+              <p className="text-sm text-muted-foreground font-sans mt-1">
+                {placedAtDate?.toLocaleString() || 'N/A'}
+              </p>
+            </div>
+            <p className="text-3xl font-bold text-foreground font-sans">
+              {restaurant?.currency || 'N$'}{order?.total?.toFixed(2) || '0.00'}
+            </p>
+          </div>
+
+          {/* Payment Info */}
+          <div className="bg-muted p-4 mb-6">
+            <h3 className="font-semibold font-sans text-foreground mb-3">Payment</h3>
+            <div className="flex items-center justify-between mb-2 text-sm font-sans">
+              <span className="text-muted-foreground">Method:</span>
+              <div className="flex items-center gap-2 text-foreground font-semibold">
+                {order?.payment_method === 'card' ? (
+                  <CreditCard className="h-4 w-4 stroke-[1.5]" />
+                ) : (
+                  <Banknote className="h-4 w-4 stroke-[1.5]" />
+                )}
+                <span className="capitalize">{order?.payment_method || 'cash'}</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between text-sm font-sans">
+              <span className="text-muted-foreground">Status:</span>
+              {order?.payment_status === 'paid' ? (
+                <span className="inline-flex items-center px-2 py-1 bg-foreground text-background text-xs font-semibold uppercase">
+                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                  Paid
+                </span>
+              ) : (
+                <span className="inline-flex items-center px-2 py-1 bg-muted border border-border text-foreground text-xs font-semibold uppercase">
+                  <Clock className="h-3 w-3 mr-1" />
+                  Pending
+                </span>
+              )}
             </div>
           </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-700">Status:</span>
-            {/* Task 3: Add optional chaining */}
-            {order?.payment_status === 'paid' ? (
-              <Badge className="bg-green-500 text-white">
-                <CheckCircle2 className="h-3 w-3 mr-1" />
-                Paid
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50">
-                <Clock className="h-3 w-3 mr-1" />
-                Pending
-              </Badge>
-            )}
+
+          {/* Order Items */}
+          <div className="border-t border-border pt-6">
+            <h3 className="font-semibold font-sans text-foreground mb-4">Order Summary</h3>
+            <div className="space-y-3">
+              {order?.items?.length > 0 ? (
+                order.items.map((item: any, index: number) => (
+                  <div key={index} className="flex justify-between items-center text-sm font-sans">
+                    <span className="text-muted-foreground">
+                      {item?.quantity || 1}× {item?.name || 'Unknown Item'}
+                    </span>
+                    <span className="font-semibold text-foreground">
+                      {restaurant?.currency || 'N$'}{(item?.subtotal || 0).toFixed(2)}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-muted-foreground font-sans text-sm">No items found.</p>
+              )}
+            </div>
           </div>
+
+          {/* Special Instructions */}
+          {order?.order_instructions && (
+            <div className="bg-muted border border-border p-4 mt-6">
+              <p className="text-sm font-semibold text-foreground font-sans mb-1">📝 Special Instructions:</p>
+              <p className="text-sm text-muted-foreground font-sans">{order.order_instructions}</p>
+            </div>
+          )}
         </div>
 
-        {/* Order Items */}
-        <div className="border-t border-b py-4 my-4">
-          <h3 className="font-semibold mb-3 text-lg">Order Summary</h3>
-          <div className="space-y-2">
-            {/* Data safety guard: Check order and items before mapping */}
-            {order && order.items && Array.isArray(order.items) && order.items.length > 0 ? (
-              order.items.map((item: any, index: number) => (
-                <div key={index} className="flex justify-between items-center">
-                  <span className="text-gray-700">
-                    {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
-                  </span>
-                  <span className="font-semibold">
-                    {restaurant?.currency || 'N$'}{((item?.subtotal || (item?.price || 0) * (item?.quantity || 1) || 0)).toFixed(2)}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <p className="text-gray-500 text-sm">No items found in this order.</p>
-            )}
-          </div>
-        </div>
-
-        {/* Payment Info */}
-        <div className="space-y-2 mb-4">
-          <div className="flex justify-between items-center">
-            <span className="text-gray-600">Payment Method:</span>
-            <span className="font-semibold capitalize flex items-center gap-2">
-              {order.payment_method === 'card' ? '💳' : '💵'}
-              {order.payment_method}
-            </span>
-          </div>
-          <div className="flex justify-between items-center">
-            <span className="text-gray-600">Payment Status:</span>
-            <span
-              className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                order.payment_status === 'paid'
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-yellow-100 text-yellow-800'
-              }`}
+        {/* Actions */}
+        <div className="space-y-3">
+          {order?.restaurant_id && (
+            <Link 
+              href={`/menu/${order.restaurant_id}/browse${tableNumber ? `?table=${tableNumber}` : ''}`}
+              className="block"
             >
-              {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
-            </span>
-          </div>
-        </div>
+              <Button className="w-full bg-foreground text-background hover:bg-foreground/90 py-6 font-semibold text-base font-sans">
+                Order More
+              </Button>
+            </Link>
+          )}
 
-        {/* Special Instructions */}
-        {/* Task 3: Add optional chaining */}
-        {order?.order_instructions && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-4">
-            <p className="text-sm font-semibold text-yellow-800 mb-1">
-              📝 Special Instructions:
-            </p>
-            <p className="text-sm text-yellow-700">
-              {order.order_instructions}
-            </p>
-          </div>
-        )}
-      </div>
+          {order?.restaurant_id && order?.table_number && (
+            <button
+              onClick={() => router.push(`/menu/${order.restaurant_id}/my-orders?table=${order.table_number}`)}
+              className="w-full bg-card border border-border text-foreground py-4 font-semibold text-base hover:bg-muted transition font-sans"
+            >
+              📋 View All My Orders
+            </button>
+          )}
 
-      {/* Actions */}
-      <div className="space-y-3 mb-6">
-        {/* Task 3: Add optional chaining */}
-        {order?.restaurant_id && (
-          <Link 
-            href={`/menu/${order.restaurant_id}/browse${tableNumber ? `?table=${tableNumber}` : ''}`}
-            className="block"
-          >
-            <Button className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white py-4 rounded-lg font-semibold text-lg">
-              Order More
-            </Button>
-          </Link>
-        )}
-
-        {/* View All My Orders Button */}
-        {order?.restaurant_id && order?.table_number && (
           <button
-            onClick={() =>
-              router.push(`/menu/${order.restaurant_id}/my-orders?table=${order.table_number}`)
-            }
-            className="w-full bg-white border-2 border-orange-600 text-orange-600 py-4 rounded-lg font-semibold text-lg hover:bg-orange-50 transition"
+            onClick={handleEndSession}
+            className="w-full bg-card border border-destructive text-destructive py-3 font-semibold hover:bg-destructive/10 transition font-sans"
           >
-            📋 View All My Orders
+            End My Session
           </button>
-        )}
-
-        <button
-          onClick={handleEndSession}
-          className="w-full bg-white border-2 border-red-300 text-red-600 py-3 rounded-lg font-semibold hover:bg-red-50 transition"
-        >
-          End My Session
-        </button>
-      </div>
-
-      {/* Helpful Tips */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-        <p className="font-semibold text-blue-900 mb-2">💡 Helpful Tips:</p>
-        <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
-          <li>Bookmark this page to check your order status anytime</li>
-          <li>This page updates automatically - no need to refresh</li>
-          <li>Visit "My Orders" to see all your orders from this session</li>
-        </ul>
-      </div>
-
-      {/* Bookmark Reminder */}
-      <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4">
-        <p className="font-semibold text-yellow-900 mb-2">⭐ Important!</p>
-        <p className="text-sm text-yellow-800 mb-3">
-          Bookmark this page or save this link to check your order anytime:
-        </p>
-        <div className="bg-white border border-yellow-300 rounded p-2 text-xs break-all mb-2">
-          {typeof window !== 'undefined' ? window.location.href : ''}
         </div>
-        <button
-          onClick={() => {
-            if (typeof window !== 'undefined') {
-              navigator.clipboard.writeText(window.location.href)
-              alert('Link copied! Paste it in your notes app.')
-            }
-          }}
-          className="bg-yellow-600 text-white px-4 py-2 rounded text-sm font-semibold hover:bg-yellow-700 transition"
-        >
-          📋 Copy Link
-        </button>
       </div>
     </div>
   )
@@ -586,10 +440,10 @@ export default function OrderConfirmationPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="min-h-screen bg-background flex items-center justify-center">
           <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-            <p className="mt-4 text-gray-600">Loading order confirmation...</p>
+            <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+            <p className="mt-6 text-muted-foreground font-sans">Loading order confirmation...</p>
           </div>
         </div>
       }
@@ -598,7 +452,3 @@ export default function OrderConfirmationPage() {
     </Suspense>
   )
 }
-
-
-
-

@@ -7,7 +7,6 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getOrder, subscribeToOrder, Order } from '@/lib/firebase/orders'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { CheckCircle2, Clock, ChefHat, Package, XCircle, Banknote, CreditCard } from 'lucide-react'
 import Link from 'next/link'
 
@@ -54,7 +53,6 @@ export default function OrderConfirmationPage() {
   useEffect(() => {
     if (!orderId) return
 
-    // Subscribe to real-time order updates
     const unsubscribe = subscribeToOrder(orderId, (updatedOrder) => {
       if (updatedOrder) {
         setOrder(updatedOrder)
@@ -69,56 +67,42 @@ export default function OrderConfirmationPage() {
       case 'new':
         return {
           icon: Clock,
-          color: 'text-red-600',
-          bgColor: 'bg-red-50',
           text: 'New Order',
           description: 'Your order has been received',
         }
       case 'accepted':
         return {
           icon: CheckCircle2,
-          color: 'text-blue-600',
-          bgColor: 'bg-blue-50',
           text: 'Order Accepted',
           description: 'The kitchen has accepted your order',
         }
       case 'preparing':
         return {
           icon: ChefHat,
-          color: 'text-orange-600',
-          bgColor: 'bg-orange-50',
           text: 'Being Prepared',
           description: 'Your order is being prepared',
         }
       case 'ready':
         return {
           icon: Package,
-          color: 'text-green-600',
-          bgColor: 'bg-green-50',
           text: 'Ready!',
           description: 'Your order is ready for pickup',
         }
       case 'completed':
         return {
           icon: CheckCircle2,
-          color: 'text-green-600',
-          bgColor: 'bg-green-50',
           text: 'Completed',
           description: 'Thank you for your order!',
         }
       case 'cancelled':
         return {
           icon: XCircle,
-          color: 'text-red-600',
-          bgColor: 'bg-red-50',
           text: 'Cancelled',
           description: 'This order has been cancelled',
         }
       default:
         return {
           icon: Clock,
-          color: 'text-gray-600',
-          bgColor: 'bg-gray-50',
           text: 'Processing',
           description: 'Your order is being processed',
         }
@@ -127,20 +111,20 @@ export default function OrderConfirmationPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
       </div>
     )
   }
 
   if (!order) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Order Not Found</h1>
-          <p className="text-gray-600 mb-4">The order you're looking for doesn't exist.</p>
+          <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Order Not Found</h1>
+          <p className="text-muted-foreground font-sans mb-6">The order you're looking for doesn't exist.</p>
           <Link href={`/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
-            <Button>Back to Menu</Button>
+            <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans">Back to Menu</Button>
           </Link>
         </div>
       </div>
@@ -151,91 +135,91 @@ export default function OrderConfirmationPage() {
   const StatusIcon = statusInfo.icon
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
-        {/* Success Icon */}
-        <div className={`w-16 h-16 ${statusInfo.bgColor} rounded-full flex items-center justify-center mx-auto mb-4`}>
-          <StatusIcon className={`w-8 h-8 ${statusInfo.color}`} />
+    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+      <div className="max-w-md w-full bg-card border border-border p-8 text-center">
+        {/* Status Icon */}
+        <div className="w-16 h-16 bg-muted flex items-center justify-center mx-auto mb-6">
+          <StatusIcon className="w-8 h-8 text-foreground stroke-[1.5]" />
         </div>
 
         {/* Title */}
-        <h1 className="text-2xl font-bold mb-2">Order Placed!</h1>
+        <h1 className="text-2xl font-serif font-bold text-foreground mb-2">Order Placed!</h1>
         
         {/* Order Details */}
         <div className="space-y-2 mb-6">
-          <p className="text-lg">
-            Order <span className="font-semibold">#{order.order_number}</span>
+          <p className="text-lg font-sans text-foreground">
+            Order <span className="font-bold">#{order.order_number}</span>
           </p>
           {tableNumber > 0 && (
-            <p className="text-gray-600">Table {tableNumber}</p>
+            <p className="text-muted-foreground font-sans">Table {tableNumber}</p>
           )}
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground font-sans">
             {new Date(order.placed_at).toLocaleString()}
           </p>
         </div>
 
         {/* Status Badge */}
-        <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full ${statusInfo.bgColor} mb-4`}>
-          <StatusIcon className={`w-5 h-5 ${statusInfo.color}`} />
-          <span className={`font-semibold ${statusInfo.color}`}>
+        <div className="inline-flex items-center gap-2 px-4 py-2 bg-muted mb-4">
+          <StatusIcon className="w-5 h-5 text-foreground stroke-[1.5]" />
+          <span className="font-semibold text-foreground font-sans uppercase text-sm tracking-wide">
             {statusInfo.text}
           </span>
         </div>
 
-        <p className="text-gray-600 mb-4">{statusInfo.description}</p>
+        <p className="text-muted-foreground font-sans mb-6">{statusInfo.description}</p>
 
         {/* Payment Information */}
-        <div className="bg-gray-50 rounded-lg p-4 mb-6">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-700">Payment Method:</span>
+        <div className="bg-muted p-4 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-sans text-muted-foreground">Payment Method:</span>
             <div className="flex items-center gap-2">
               {order.payment_method === 'cash' ? (
-                <Banknote className="h-4 w-4 text-gray-600" />
+                <Banknote className="h-4 w-4 text-foreground stroke-[1.5]" />
               ) : (
-                <CreditCard className="h-4 w-4 text-gray-600" />
+                <CreditCard className="h-4 w-4 text-foreground stroke-[1.5]" />
               )}
-              <span className="text-sm font-semibold capitalize">{order.payment_method}</span>
+              <span className="text-sm font-sans font-semibold text-foreground capitalize">{order.payment_method}</span>
             </div>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">Payment Status:</span>
+            <span className="text-sm font-sans text-muted-foreground">Payment Status:</span>
             {order.payment_status === 'paid' ? (
-              <Badge className="bg-green-500 text-white">
+              <span className="inline-flex items-center px-2 py-1 bg-foreground text-background text-xs font-semibold uppercase">
                 <CheckCircle2 className="h-3 w-3 mr-1" />
                 Paid
-              </Badge>
+              </span>
             ) : (
-              <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50">
+              <span className="inline-flex items-center px-2 py-1 border border-border text-foreground text-xs font-semibold uppercase">
                 <Clock className="h-3 w-3 mr-1" />
                 Pending
-              </Badge>
+              </span>
             )}
           </div>
           {order.payment_status === 'pending' && (
-            <p className="text-xs text-gray-600 mt-2">
+            <p className="text-xs text-muted-foreground font-sans mt-3">
               {order.payment_method === 'cash'
-                ? 'Your order has been placed! A waiter will bring your bill when your order is ready. Please have cash ready.'
-                : 'Your order has been placed! A waiter will bring the card machine to your table when your order is ready.'}
+                ? 'A waiter will bring your bill when your order is ready.'
+                : 'A waiter will bring the card machine to your table.'}
             </p>
           )}
         </div>
 
         {/* Order Summary */}
-        <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
-          <h3 className="font-semibold mb-2">Order Summary</h3>
-          <div className="space-y-1 text-sm">
+        <div className="bg-muted p-4 mb-6 text-left">
+          <h3 className="font-semibold font-sans text-foreground mb-3">Order Summary</h3>
+          <div className="space-y-2 text-sm font-sans">
             {order.items.map((item, index) => (
               <div key={index} className="flex justify-between">
-                <span>
+                <span className="text-muted-foreground">
                   {item.quantity}× {item.name}
                 </span>
-                <span>{restaurant?.currency || 'N$'}{item.subtotal.toFixed(2)}</span>
+                <span className="text-foreground font-semibold">{restaurant?.currency || 'N$'}{item.subtotal.toFixed(2)}</span>
               </div>
             ))}
           </div>
-          <div className="border-t mt-2 pt-2 flex justify-between font-semibold">
-            <span>Total</span>
-            <span className="text-[#FF6B35]">
+          <div className="border-t border-border mt-3 pt-3 flex justify-between font-semibold font-sans">
+            <span className="text-foreground">Total</span>
+            <span className="text-foreground">
               {restaurant?.currency || 'N$'}{order.total.toFixed(2)}
             </span>
           </div>
@@ -244,23 +228,23 @@ export default function OrderConfirmationPage() {
         {/* Action Buttons */}
         <div className="space-y-3">
           <Link href={`/menu/${restaurantId}/browse${tableNumber > 0 ? `?table=${tableNumber}` : ''}`} className="block">
-            <Button className="w-full bg-[#FF6B35] hover:bg-[#e55a28]">
-              Order More 🍽️
+            <Button className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6">
+              Order More
             </Button>
           </Link>
           <Button
             variant="outline"
-            className="w-full"
+            className="w-full border-border font-sans"
             onClick={() => window.print()}
           >
             View Receipt
           </Button>
         </div>
 
-        {/* Real-time status updates will appear here automatically */}
+        {/* Ready notification */}
         {order.status === 'ready' && (
-          <div className="mt-4 p-3 bg-green-50 rounded-lg">
-            <p className="text-sm text-green-800 font-medium">
+          <div className="mt-6 p-4 bg-muted border border-border">
+            <p className="text-sm text-foreground font-sans font-semibold">
               🎉 Your order is ready! A staff member will come to your table shortly.
             </p>
           </div>
@@ -269,4 +253,3 @@ export default function OrderConfirmationPage() {
     </div>
   )
 }
-

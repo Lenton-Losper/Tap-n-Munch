@@ -301,9 +301,13 @@ export function MenuScreen() {
             className="w-full bg-card border border-border rounded-lg p-4 flex gap-4 hover:shadow-md transition-shadow text-left"
           >
             <img
-              src={item.image || "/placeholder.svg"}
+              src={item.image_url || "/placeholder.svg"}
               alt={item.name}
               className="w-[100px] h-[100px] rounded-md object-cover flex-shrink-0"
+              onError={(e) => {
+                // Fallback to placeholder if image fails to load
+                e.currentTarget.src = "/placeholder.svg"
+              }}
             />
             <div className="flex-1 min-w-0">
               <h3 className="font-bold text-base mb-1 line-clamp-1">{item.name}</h3>
@@ -441,6 +445,10 @@ export function MenuScreen() {
                         src={item.image || "/placeholder.svg"}
                         alt={item.name}
                         className="w-20 h-20 rounded-md object-cover flex-shrink-0"
+                        onError={(e) => {
+                          // Fallback to placeholder if image fails to load
+                          e.currentTarget.src = "/placeholder.svg"
+                        }}
                       />
                       <div className="flex-1 min-w-0">
                         <h3 className="font-semibold text-base mb-1">{item.name}</h3>

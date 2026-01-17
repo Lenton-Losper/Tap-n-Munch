@@ -19,18 +19,56 @@ export default function SignInPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // Diagnostic logging: Login component mounted
   useEffect(() => {
+    console.log("✅ LOGIN: Component mounted successfully")
+    console.log("🛠️ DEBUG: Login - Auth State Changed. User:", user ? user.uid : "Logged Out")
+    console.log("🛠️ DEBUG: Login - Current Path:", typeof window !== 'undefined' ? window.location.pathname : 'SSR')
+    console.log("🛠️ DEBUG: Login - Restaurant ID in Storage:", typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A (SSR)')
+    console.log("🛠️ DEBUG: Login - Auth Loading:", authLoading)
+    console.log("🛠️ DEBUG: Login - Firebase Configured:", isFirebaseConfigured)
+  }, [])
+
+  useEffect(() => {
+    console.log("🛠️ DEBUG: Login - Auth state update:", {
+      authLoading,
+      user: user ? user.uid : null,
+      willRedirect: !authLoading && user,
+    })
     if (!authLoading && user) {
+      console.log("🛠️ DEBUG: Login - User authenticated, redirecting to /")
       router.push('/')
     }
   }, [user, authLoading, router])
 
-  if (authLoading) {
+  // Only show loading spinner if we're NOT already on /signin
+  // If we're on /signin and authLoading is true, it means auth is still initializing
+  // but we should show the login form anyway to prevent infinite loading
+  const isOnSignInPage = typeof window !== 'undefined' && window.location.pathname === '/signin'
+  
+  if (authLoading && !isOnSignInPage) {
+    console.log("⚠️ DEBUG: Login - Showing loading spinner (not on /signin page)", {
+      authLoading,
+      pathname: typeof window !== 'undefined' ? window.location.pathname : 'SSR',
+      isOnSignInPage,
+    })
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black"></div>
       </div>
     )
+  }
+
+  // If we're on /signin and still loading, log but don't block the UI
+  if (authLoading && isOnSignInPage) {
+    console.log("⚠️ DEBUG: Login - Auth still loading but showing login form (already on /signin)", {
+      authLoading,
+      user: user ? user.uid : null,
+      pathname: typeof window !== 'undefined' ? window.location.pathname : 'SSR',
+      localStorageRestaurantId: typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A',
+      isFirebaseConfigured,
+    })
+    // Continue to render the login form instead of blocking with a spinner
   }
 
   if (!isFirebaseConfigured) {
@@ -127,7 +165,7 @@ export default function SignInPage() {
 
             <Button
               type="submit"
-              className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white"
+              className="w-full bg-black hover:bg-black/90 text-white"
               disabled={loading}
             >
               {loading ? 'Signing in...' : 'Sign In'}
@@ -139,7 +177,7 @@ export default function SignInPage() {
               Don't have an account?{' '}
               <Link
                 href="/signup"
-                className="font-medium text-[#FF6B35] hover:text-[#e55a28]"
+                className="font-medium text-black hover:text-black/80"
               >
                 Create Account
               </Link>

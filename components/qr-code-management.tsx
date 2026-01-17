@@ -28,7 +28,16 @@ export function QRCodeManagement() {
   const [deletingTableId, setDeletingTableId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!restaurantId) return
+    // Don't run if user is null (prevents fetching when signed out)
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
+    if (!restaurantId) {
+      setLoading(false)
+      return
+    }
 
     const loadData = async () => {
       try {
@@ -50,7 +59,7 @@ export function QRCodeManagement() {
     }
 
     loadData()
-  }, [restaurantId, toast])
+  }, [user, restaurantId, toast])
 
   const handleAddTable = async () => {
     if (!restaurantId || !newTableNumber.trim()) {

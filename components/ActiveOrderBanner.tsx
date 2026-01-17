@@ -76,15 +76,22 @@ export function ActiveOrderBanner() {
   const statusInfo = getStatusInfo(activeOrder.status)
 
   const handleClick = () => {
-    // Route to order confirmation page
-    router.push(`/order-confirmation?orderId=${activeOrder.id}`)
+    // Cross-Device Receipt: Route to table-based receipt page instead of order-specific confirmation
+    // This ensures any device at the table can see all orders, not just the specific order ID
+    if (restaurantId && tableNumber) {
+      router.push(`/menu/${restaurantId}/receipt?table=${tableNumber}`)
+    } else {
+      // Fallback: If restaurantId or tableNumber is missing, try order confirmation
+      console.warn('⚠️ Missing restaurantId or tableNumber, falling back to order confirmation')
+      router.push(`/order-confirmation?orderId=${activeOrder.id}`)
+    }
   }
 
   return (
     <div
       onClick={handleClick}
       className={cn(
-        'sticky top-0 z-[60] bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg cursor-pointer transition-all hover:shadow-xl',
+        'sticky top-0 z-[60] bg-black text-white cursor-pointer transition-all border-b border-border',
         statusInfo.pulse && 'animate-pulse'
       )}
     >

@@ -58,8 +58,15 @@ export function MenuManagement() {
   })
 
   useEffect(() => {
+    // Don't run if user is null (prevents fetching when signed out)
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
     if (!restaurantId) {
       console.warn('MenuManagement: restaurantId is missing')
+      setLoading(false)
       return
     }
 
@@ -115,9 +122,12 @@ export function MenuManagement() {
     }
 
     loadData()
-  }, [restaurantId, toast])
+  }, [user, restaurantId, toast])
 
   useEffect(() => {
+    // Don't run if user is null (prevents fetching when signed out)
+    if (!user) return
+
     if (!restaurantId || !selectedCategory) return
 
     const loadItems = async () => {
@@ -130,7 +140,7 @@ export function MenuManagement() {
     }
 
     loadItems()
-  }, [restaurantId, selectedCategory])
+  }, [user, restaurantId, selectedCategory])
 
   const filteredItems = menuItems.filter(item => {
     if (searchQuery) {

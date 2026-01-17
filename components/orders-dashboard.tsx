@@ -45,7 +45,14 @@ export function OrdersDashboard() {
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
 
+  // Don't run if user is null (prevents fetching when signed out)
   useEffect(() => {
+    if (!user) {
+      console.log('⚠️ Dashboard: User not authenticated')
+      setLoading(false)
+      return
+    }
+
     if (!restaurantId) {
       console.log('⚠️ Dashboard: No restaurantId available')
       setLoading(false)
@@ -85,7 +92,7 @@ export function OrdersDashboard() {
     })
 
     return () => unsubscribe()
-  }, [restaurantId, activeTab])
+  }, [user, restaurantId, activeTab])
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     if (!restaurantId) {
@@ -184,67 +191,70 @@ export function OrdersDashboard() {
     try {
       setClosingTableNumber(tableNumber)
       
-      // PART 4: Find table by table_number to get tableId
+      // Type Safety: Ensure table number is converted correctly
+      const tableNum = Number(tableNumber)
+      if (isNaN(tableNum) || tableNum <= 0) {
+        console.error('❌ [CLOSE TABLE] Invalid table number:', tableNumber)
+        toast({
+          title: 'Invalid table number',
+          description: `Table number ${tableNumber} is invalid.`,
+          variant: 'destructive',
+        })
+        setClosingTableNumber(null)
+        return
+      }
+
+      console.log(`🔍 [CLOSE TABLE] Looking up table ${tableNum} (type: ${typeof tableNum})`)
+      
+      // Table ID Lookup: Query tables collection where table_number == tableNum
+      // This finds the document by the number field, then we use the document's actual ID
       const { getTableByNumber } = require('@/lib/firebase/tables')
-      const table = await getTableByNumber(restaurantId, tableNumber)
+      const { tablePath, ordersPath, orderPath } = require('@/lib/firebase/paths')
+      
+      const table = await getTableByNumber(restaurantId, tableNum)
+      
+      // Error Handling: If no table document is found, log and return
       if (!table) {
+        console.error('❌ [CLOSE TABLE] Table document not found in Firestore', {
+          restaurantId,
+          tableNumber: tableNum,
+        })
         toast({
           title: 'Table not found',
-          description: `Table ${tableNumber} not found.`,
+          description: `Table ${tableNum} not found in the database. Please verify the table exists.`,
           variant: 'destructive',
         })
         setClosingTableNumber(null)
         return
       }
+
+      // Use the document's actual ID (e.g., "JH7y...") from the query result
       const tableId = table.id
+      console.log(`✅ [CLOSE TABLE] Found table document: ${tableId} for table number ${tableNum}`)
 
-      // PART 4: Find active table session for this table
-      // NEW: Use hierarchical path
-      const { tableSessionsPath, tableSessionPath, ordersPath, orderPath } = require('@/lib/firebase/paths')
-      const sessionsRef = collection(db, tableSessionsPath(restaurantId, tableId))
-      const q = query(
-        sessionsRef,
-        where('status', '==', 'active')
-      )
+      // The Batch Update:
+      // 1. Update the Table document status to "available" (active: true)
+      // Using the actual document ID from the query result
+      const tableUpdatePromise = updateDoc(doc(db, tablePath(restaurantId, tableId)), {
+        active: true, // Set table back to available for next customer
+        updated_at: serverTimestamp(),
+      })
 
-      const snapshot = await getDocs(q)
-      
-      if (snapshot.empty) {
-        toast({
-          title: 'No active session',
-          description: `Table ${tableNumber} doesn't have an active session.`,
-          variant: 'destructive',
-        })
-        setClosingTableNumber(null)
-        return
-      }
-
-      // PART 4: Close all active sessions for this table
-      // NEW: Use hierarchical path
-      const sessionUpdatePromises = snapshot.docs.map((sessionDoc) =>
-        updateDoc(doc(db, tableSessionPath(restaurantId, tableId, sessionDoc.id)), {
-          status: 'closed',
-          closed_at: serverTimestamp(),
-        })
-      )
-
-      // PART 4: Update all orders for this table
-      // Set table_closed = true, is_closed = true, and status = 'completed' to prevent order leakage
-      // NEW: Use hierarchical path - restaurant_id is in the path
+      // 2. Update ALL orders for that table where is_closed == false to is_closed: true
       const ordersRef = collection(db, ordersPath(restaurantId))
       const ordersQuery = query(
         ordersRef,
-        where('table_number', '==', tableNumber),
+        where('table_number', '==', tableNum), // Use the converted number
         where('is_closed', '==', false)
       )
 
       const ordersSnapshot = await getDocs(ordersQuery)
+      console.log(`📦 [CLOSE TABLE] Found ${ordersSnapshot.docs.length} open orders for table ${tableNum}`)
       
-      // NEW: Use hierarchical path
       const orderUpdatePromises = ordersSnapshot.docs.map((orderDoc) =>
         updateDoc(doc(db, orderPath(restaurantId, orderDoc.id)), {
           table_closed: true,
-          is_closed: true, // Task 1: Mark order as closed
+          is_closed: true, // Mark order as closed
           status: 'completed',
           completed_at: serverTimestamp(),
           updated_at: serverTimestamp(),
@@ -252,25 +262,48 @@ export function OrdersDashboard() {
       )
 
       // Execute all updates in parallel
-      await Promise.all([...sessionUpdatePromises, ...orderUpdatePromises])
+      await Promise.all([tableUpdatePromise, ...orderUpdatePromises])
 
-      console.log(`✅ PART 4: Closed table ${tableNumber}:`, {
-        sessionsClosed: sessionUpdatePromises.length,
+      console.log(`✅ [CLOSE TABLE] Successfully closed table ${tableNum}:`, {
+        tableId,
         ordersClosed: orderUpdatePromises.length,
       })
 
       toast({
         title: 'Table closed',
-        description: `Table ${tableNumber} has been closed. ${orderUpdatePromises.length} order(s) marked as completed.`,
+        description: `Table ${tableNum} has been closed. ${orderUpdatePromises.length} order(s) marked as completed.`,
       })
       
       setShowCloseTableDialog(false)
       setClosingTableNumber(null)
     } catch (error: any) {
-      console.error('Error closing table:', error)
+      // Comprehensive error catching with permission denied logging
+      console.error('❌ [CLOSE TABLE] Error closing table:', {
+        error: error.message,
+        code: error.code,
+        tableNumber,
+        restaurantId,
+      })
+
+      // If permission denied, log auth.currentUser.uid and restaurant.owner_id for comparison
+      if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
+        const currentUserUid = user?.uid || 'NO_USER'
+        const restaurantOwnerId = restaurant?.owner_id || 'NO_OWNER_ID'
+        const restaurantOwnerUid = restaurant?.owner_uid || 'NO_OWNER_UID'
+        
+        console.error('🔒 [CLOSE TABLE] Permission Denied - Auth Comparison:', {
+          'auth.currentUser.uid': currentUserUid,
+          'restaurant.owner_id': restaurantOwnerId,
+          'restaurant.owner_uid': restaurantOwnerUid,
+          'Match (uid === owner_uid)': currentUserUid === restaurantOwnerUid,
+          'Match (uid === owner_id)': currentUserUid === restaurantOwnerId,
+          note: 'User must match restaurant owner to close tables',
+        })
+      }
+
       toast({
         title: 'Failed to close table',
-        description: error.message || 'Failed to close table session',
+        description: error.message || 'Failed to close table. Please check console for details.',
         variant: 'destructive',
       })
       setClosingTableNumber(null)

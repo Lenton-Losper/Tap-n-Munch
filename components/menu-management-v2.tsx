@@ -27,15 +27,16 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2 } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, UtensilsCrossed } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import Image from 'next/image'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { uploadMenuItemImage } from '@/lib/firebase/storage'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export function MenuManagementV2() {
-  const { restaurantId } = useAuth()
+  const { user, restaurantId } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
   
@@ -81,22 +82,35 @@ export function MenuManagementV2() {
   const [uploadingImage, setUploadingImage] = useState(false)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
 
-  // Load all data
+  // Load all data - Pre-fetch using localStorage restaurantId for faster loading
   useEffect(() => {
-    if (!restaurantId) return
+    // Check localStorage first for faster initial load
+    const cachedRestaurantId = typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : null
+    const effectiveRestaurantId = restaurantId || cachedRestaurantId
+
+    // Don't run if user is null (prevents fetching when signed out)
+    if (!user && !cachedRestaurantId) {
+      setLoading(false)
+      return
+    }
+
+    if (!effectiveRestaurantId) {
+      setLoading(false)
+      return
+    }
 
     const loadAllData = async () => {
       try {
         setLoading(true)
         
         // Load categories first
-        const categories = await getMenuCategories(restaurantId)
+        const categories = await getMenuCategories(effectiveRestaurantId)
         setMenuCategories(categories)
         
         // Load menu items (with error handling for missing index)
         let allItems: MenuItem[] = []
         try {
-          allItems = await getMenuItems(restaurantId)
+          allItems = await getMenuItems(effectiveRestaurantId)
         } catch (err: any) {
           console.warn('Could not load menu items (index may be missing):', err.message)
           // Continue without items - they'll show empty states
@@ -107,7 +121,7 @@ export function MenuManagementV2() {
         const allSubcats: SubCategory[] = []
         for (const category of categories) {
           try {
-            const subcats = await getSubCategories(restaurantId, category.id)
+            const subcats = await getSubCategories(effectiveRestaurantId, category.id)
             allSubcats.push(...subcats)
           } catch (err) {
             console.warn(`Failed to load sub-categories for ${category.name}:`, err)
@@ -146,7 +160,7 @@ export function MenuManagementV2() {
     }
 
     loadAllData()
-  }, [restaurantId, toast]) // Removed selectedMenuCategory from dependencies to prevent reset
+  }, [user, restaurantId, toast]) // Removed selectedMenuCategory from dependencies to prevent reset
 
   // Group items by sub-category when category is selected or items change
   useEffect(() => {
@@ -673,10 +687,54 @@ export function MenuManagementV2() {
     return allSubCategories
   }
 
+  // Skeleton loading UI
   if (loading) {
     return (
-      <div className="min-h-screen bg-muted/30 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+      <div className="min-h-screen bg-muted/30">
+        {/* Header Skeleton */}
+        <header className="bg-card border-b border-border">
+          <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center gap-2 sm:gap-4">
+                <Skeleton className="h-10 w-10" />
+                <Skeleton className="h-8 w-48" />
+              </div>
+              <div className="flex gap-2">
+                <Skeleton className="h-10 w-32" />
+                <Skeleton className="h-10 w-36" />
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
+          {/* Category Tabs Skeleton */}
+          <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-10 w-24" />
+            ))}
+          </div>
+
+          {/* Search Bar Skeleton */}
+          <div className="mb-6">
+            <Skeleton className="h-10 w-full" />
+          </div>
+
+          {/* Menu Items Grid Skeleton */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+              <div key={i} className="bg-card border rounded-lg overflow-hidden">
+                <Skeleton className="w-full h-32" />
+                <div className="p-3 space-y-2">
+                  <Skeleton className="h-5 w-3/4" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-2/3" />
+                  <Skeleton className="h-6 w-20 mt-2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     )
   }
@@ -832,19 +890,58 @@ export function MenuManagementV2() {
                               key={item.id}
                               className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                             >
-                              {item.image_url && (
-                                <div className="relative w-full h-32 bg-gray-50">
-                                  <Image
-                                    src={item.image_url}
-                                    alt={item.name}
-                                    fill
-                                    style={{
-                                      objectFit: item.imageFit || 'contain',
-                                      objectPosition: item.imagePosition || 'center',
-                                    }}
-                                  />
+                              <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
+                                {item.image_url ? (
+                                  <>
+                                    <Image
+                                      src={item.image_url}
+                                      alt={item.name}
+                                      fill
+                                      loading="lazy"
+                                      style={{
+                                        objectFit: item.imageFit || 'cover',
+                                        objectPosition: item.imagePosition || 'center',
+                                      }}
+                                      className="transition-opacity duration-300"
+                                      onLoad={(e) => {
+                                        e.currentTarget.style.opacity = '1'
+                                        // Hide shimmer when image loads
+                                        const container = e.currentTarget.closest('.relative')
+                                        if (container) {
+                                          const shimmer = container.querySelector('.image-shimmer')
+                                          if (shimmer) {
+                                            shimmer.classList.add('hidden')
+                                          }
+                                        }
+                                      }}
+                                      onError={(e) => {
+                                        // Hide image on error, show placeholder
+                                        e.currentTarget.style.display = 'none'
+                                        const container = e.currentTarget.closest('.relative')
+                                        if (container) {
+                                          const placeholder = container.querySelector('.image-placeholder')
+                                          const shimmer = container.querySelector('.image-shimmer')
+                                          if (placeholder) {
+                                            placeholder.classList.remove('hidden')
+                                          }
+                                          if (shimmer) {
+                                            shimmer.classList.add('hidden')
+                                          }
+                                        }
+                                      }}
+                                    />
+                                    {/* Shimmer effect while loading */}
+                                    <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer pointer-events-none" />
+                                  </>
+                                ) : null}
+                                {/* Food placeholder - shown when image fails or is missing */}
+                                <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 ${item.image_url ? 'hidden' : ''}`}>
+                                  <div className="text-center">
+                                    <UtensilsCrossed className="w-12 h-12 text-gray-400 mx-auto mb-1" />
+                                    <p className="text-xs text-gray-500">No image</p>
+                                  </div>
                                 </div>
-                              )}
+                              </div>
                               <div className="p-3">
                                 <div className="flex items-start justify-between mb-1 gap-2">
                                   <h4 className="font-semibold text-sm sm:text-sm line-clamp-1 flex-1">{item.name}</h4>
@@ -981,19 +1078,58 @@ export function MenuManagementV2() {
                             key={item.id}
                             className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                           >
-                            {item.image_url && (
-                              <div className="relative w-full h-32 bg-gray-50">
-                                <Image
-                                  src={item.image_url}
-                                  alt={item.name}
-                                  fill
-                                  style={{
-                                    objectFit: item.imageFit || 'contain',
-                                    objectPosition: item.imagePosition || 'center',
-                                  }}
-                                />
+                            <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
+                              {item.image_url ? (
+                                <>
+                                  <Image
+                                    src={item.image_url}
+                                    alt={item.name}
+                                    fill
+                                    loading="lazy"
+                                    style={{
+                                      objectFit: item.imageFit || 'cover',
+                                      objectPosition: item.imagePosition || 'center',
+                                    }}
+                                    className="transition-opacity duration-300"
+                                    onLoad={(e) => {
+                                      e.currentTarget.style.opacity = '1'
+                                      // Hide shimmer when image loads
+                                      const container = e.currentTarget.closest('.relative')
+                                      if (container) {
+                                        const shimmer = container.querySelector('.image-shimmer')
+                                        if (shimmer) {
+                                          shimmer.classList.add('hidden')
+                                        }
+                                      }
+                                    }}
+                                    onError={(e) => {
+                                      // Hide image on error, show placeholder
+                                      e.currentTarget.style.display = 'none'
+                                      const container = e.currentTarget.closest('.relative')
+                                      if (container) {
+                                        const placeholder = container.querySelector('.image-placeholder')
+                                        const shimmer = container.querySelector('.image-shimmer')
+                                        if (placeholder) {
+                                          placeholder.classList.remove('hidden')
+                                        }
+                                        if (shimmer) {
+                                          shimmer.classList.add('hidden')
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  {/* Shimmer effect while loading */}
+                                  <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer pointer-events-none" />
+                                </>
+                              ) : null}
+                              {/* Food placeholder - shown when image fails or is missing */}
+                              <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 ${item.image_url ? 'hidden' : ''}`}>
+                                <div className="text-center">
+                                  <UtensilsCrossed className="w-12 h-12 text-gray-400 mx-auto mb-1" />
+                                  <p className="text-xs text-gray-500">No image</p>
+                                </div>
                               </div>
-                            )}
+                            </div>
                               <div className="p-3">
                                 <div className="flex items-start justify-between mb-1 gap-2">
                                   <h4 className="font-semibold text-sm sm:text-sm line-clamp-1 flex-1">{item.name}</h4>
@@ -1387,11 +1523,19 @@ function SubCategorySelect({
   value: string
   onChange: (value: string) => void
 }) {
+  // Get user from auth context to ensure component has access to it
+  const { user } = useAuth()
   const [subCategories, setSubCategories] = useState<Array<{ id: string; name: string; menuCategoryName: string }>>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const loadSubCategories = async () => {
+      // Don't run if user is null (prevents fetching when signed out)
+      if (!user) {
+        setLoading(false)
+        return
+      }
+
       if (!restaurantId || menuCategories.length === 0) {
         setLoading(false)
         return
@@ -1424,7 +1568,7 @@ function SubCategorySelect({
     }
 
     loadSubCategories()
-  }, [restaurantId, menuCategories])
+  }, [user, restaurantId, menuCategories])
 
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading sub-categories...</div>

@@ -48,7 +48,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let isMounted = true
 
     const loadUserData = async (authUser: User | null) => {
+      console.log("🛠️ DEBUG: AuthProvider - loadUserData called", {
+        hasAuthUser: !!authUser,
+        authUserUid: authUser?.uid,
+        hasDb: !!db,
+      })
+      
       if (!authUser || !db) {
+        console.log("🛠️ DEBUG: AuthProvider - loadUserData: Missing authUser or db, clearing data")
         setUserData(null)
         setRestaurant(null)
         setRestaurantId(null)
@@ -123,6 +130,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (restaurantData) {
             setRestaurant(restaurantData)
             setRestaurantId(restaurantData.id)
+            // Save restaurantId to localStorage for faster loading on next visit
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('restaurantId', restaurantData.id)
+            }
           } else {
             // Restaurant document missing - data was deleted
             console.warn('⚠️ User has restaurant_id but restaurant document not found. Firestore data may have been deleted.')
@@ -146,6 +157,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if (newRestaurantData) {
                   setRestaurant(newRestaurantData)
                   setRestaurantId(newRestaurantData.id)
+                  // Save restaurantId to localStorage for faster loading on next visit
+                  if (typeof window !== 'undefined') {
+                    localStorage.setItem('restaurantId', newRestaurantData.id)
+                  }
                   console.log('✅ Restaurant recreated successfully!')
                 }
               }
@@ -160,9 +175,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setRestaurantId(null)
         }
       } catch (error: any) {
+        console.error("🛠️ DEBUG: AuthProvider - Error in loadUserData:", {
+          error: error.message,
+          code: error.code,
+          stack: error.stack,
+          userId: authUser.uid,
+        })
+        
         // Check if it's a permissions error
         if (error?.code === 'permission-denied' || error?.message?.includes('permission')) {
-          console.error('Permission denied when loading user data. This usually means:', {
+          console.error('❌ Permission denied when loading user data. This usually means:', {
             error: error.message,
             userId: authUser.uid,
             possibleCauses: [
@@ -172,7 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ],
           })
         } else {
-          console.error('Error loading user data:', error)
+          console.error('❌ Error loading user data:', error)
         }
         setUserData(null)
         setRestaurant(null)
@@ -189,8 +211,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (user) {
+      console.log("🛠️ DEBUG: AuthProvider - User exists, loading user data. UID:", user.uid)
       loadUserData(user)
     } else {
+      console.log("🛠️ DEBUG: AuthProvider - User is null, clearing data and setting loading to false")
       setUserData(null)
       setRestaurant(null)
       setRestaurantId(null)
@@ -206,26 +230,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user])
 
   useEffect(() => {
+    console.log("🛠️ DEBUG: AuthProvider - Initializing auth state listener")
     const configured = isFirebaseConfigValid()
     setIsFirebaseConfigured(configured)
+    console.log("🛠️ DEBUG: AuthProvider - Firebase configured:", configured)
 
     if (!configured) {
+      console.log("⚠️ DEBUG: AuthProvider - Firebase not configured, setting loading to false")
       setLoading(false)
       return
     }
 
+    // Set initial loading state - keep it true until auth state is confirmed
+    setLoading(true)
+    console.log("🛠️ DEBUG: AuthProvider - Set loading to true, checking initial auth state")
+
     // Check initial auth state
     const currentUser = getCurrentUser()
+    console.log("🛠️ DEBUG: AuthProvider - Initial currentUser:", currentUser ? currentUser.uid : "null")
     setUser(currentUser)
-    setLoading(false)
+    
+    // Note: We don't set loading to false here because onAuthStateChanged will fire immediately
+    // with the current state, and that callback will set loading to false
 
     // Listen for auth state changes
+    // onAuthStateChanged fires immediately with current state, then on changes
     const unsubscribe = onAuthChange((authUser) => {
+      console.log("🛠️ DEBUG: AuthProvider - onAuthChange fired. User:", authUser ? authUser.uid : "null")
+      console.log("🛠️ DEBUG: AuthProvider - Current Path:", typeof window !== 'undefined' ? window.location.pathname : 'SSR')
+      console.log("🛠️ DEBUG: AuthProvider - Restaurant ID in Storage:", typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A (SSR)')
       setUser(authUser)
+      // CRITICAL: Set loading to false immediately to break the loading screen
+      // This MUST run regardless of whether user is found or is null
       setLoading(false)
+      console.log("🛠️ DEBUG: Auth state finalized. Loading set to false.")
     })
 
-    return () => unsubscribe()
+    return () => {
+      console.log("🛠️ DEBUG: AuthProvider - Cleaning up auth listener")
+      unsubscribe()
+    }
   }, [])
 
   const signUp = async (email: string, password: string, restaurantName: string, phone?: string) => {
@@ -242,11 +286,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     const { signOutUser } = await import('@/lib/firebase/auth')
-    await signOutUser()
+    // Immediately clear all state and set loading to false to prevent loops
     setUser(null)
     setUserData(null)
     setRestaurant(null)
     setRestaurantId(null)
+    setLoading(false)
+    // Clear localStorage on sign out
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('restaurantId')
+    }
+    // Then sign out from Firebase (this will trigger onAuthChange which is fine)
+    await signOutUser()
   }
 
   return (

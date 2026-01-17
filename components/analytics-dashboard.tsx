@@ -45,7 +45,7 @@ function StatCard({ value, label, change, prefix = '' }: StatCardProps) {
 }
 
 export function AnalyticsDashboard() {
-  const { restaurantId, restaurant } = useAuth()
+  const { user, restaurantId, restaurant } = useAuth()
   const router = useRouter()
   const [dateRange, setDateRange] = useState('last-7-days')
   const [analytics, setAnalytics] = useState<DailyAnalytics[]>([])
@@ -53,7 +53,16 @@ export function AnalyticsDashboard() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!restaurantId) return
+    // Don't run if user is null (prevents fetching when signed out)
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
+    if (!restaurantId) {
+      setLoading(false)
+      return
+    }
 
     const loadData = async () => {
       try {
@@ -104,7 +113,7 @@ export function AnalyticsDashboard() {
     }
 
     loadData()
-  }, [restaurantId, dateRange])
+  }, [user, restaurantId, dateRange])
 
   // Calculate aggregated stats
   const totalSales = analytics.reduce((sum, day) => sum + day.total_revenue, 0)

@@ -13,26 +13,41 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const [initializing, setInitializing] = useState(false)
   const [initError, setInitError] = useState<string | null>(null)
+  const [hasRedirected, setHasRedirected] = useState(false)
 
   useEffect(() => {
-    if (!loading && !user) {
+    // Only redirect once auth has finished loading and user is not authenticated
+    // Prevent redirect loops by checking hasRedirected flag
+    if (!loading && !user && !hasRedirected) {
+      setHasRedirected(true)
       router.push('/signin')
     }
-  }, [user, loading, router])
+  }, [user, loading, router, hasRedirected])
 
+  // If user is null, immediately return null (don't wait for loading to finish)
+  // This prevents components from trying to access restaurantId when user is signed out
+  if (!user) {
+    return null
+  }
+
+  // Only show loading if user exists but we're still loading their data
   if (loading) {
+    console.log("⚠️ DEBUG: ProtectedRoute - Stuck in Loading branch. Checking dependencies...", {
+      loading,
+      user: user ? user.uid : null,
+      userData: userData ? userData.id : null,
+      restaurantId,
+      pathname: typeof window !== 'undefined' ? window.location.pathname : 'SSR',
+      localStorageRestaurantId: typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A',
+    })
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center">
+      <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black mx-auto"></div>
+          <p className="mt-4 text-muted-foreground">Loading...</p>
         </div>
       </div>
     )
-  }
-
-  if (!user) {
-    return null
   }
 
   // Check if user is authenticated but Firestore data is missing
@@ -63,8 +78,8 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     }
 
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-lg shadow-lg border border-gray-200 p-8 text-center">
+      <div className="min-h-screen bg-white flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-sm border border-border p-8 text-center">
           <div className="text-6xl mb-4">⚠️</div>
           <h2 className="text-2xl font-bold text-gray-900 mb-4">
             Account Data Missing
@@ -84,7 +99,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
             <Button
               onClick={handleInitialize}
               disabled={initializing}
-              className="w-full bg-[#FF6B35] hover:bg-[#e55a28]"
+              className="w-full bg-black hover:bg-black/90"
             >
               {initializing ? 'Initializing Account...' : '🔄 Initialize Account Data'}
             </Button>
@@ -116,7 +131,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
             <Link 
               href="/FIREBASE_CLEANUP.md" 
               target="_blank"
-              className="text-[#FF6B35] hover:underline font-medium"
+              className="text-black hover:underline font-medium"
             >
               FIREBASE_CLEANUP.md
             </Link>

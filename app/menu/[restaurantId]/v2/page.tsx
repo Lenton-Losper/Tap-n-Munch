@@ -8,39 +8,20 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
-import { ShoppingCart } from 'lucide-react'
+import { Receipt, ChevronRight } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 
 function MenuLandingPageV2Content() {
-  // 🚀 VERSION STAMP: This confirms the new route is loaded
-  console.log("🚀 [SYSTEM LIVE] Version 3.0 - New Route Loaded")
+  console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
   
   const params = useParams()
   const searchParams = useSearchParams()
-  
-  // Fix: Extract restaurantId from params (nested route: app/menu/[restaurantId]/v2/page.tsx)
-  // useParams() returns { restaurantId: string } for this route structure
   const restaurantId = params?.restaurantId as string | undefined
-  
-  // Fix: Extract table parameter from searchParams
   const tableNumberParam = searchParams?.get('table')
   const tableNum = tableNumberParam ? Number(tableNumberParam) : 0
-  
-  // Debug logging with full params object
-  console.log("🔍 [V2 DEBUG] Full params object:", params)
-  console.log("🔍 [V2 DEBUG] Params keys:", Object.keys(params || {}))
-  console.log("🔍 [V2 DEBUG] Restaurant ID:", restaurantId, "Type:", typeof restaurantId)
-  console.log("🔍 [V2 DEBUG] Table ID from URL:", tableNumberParam, "Type:", typeof tableNumberParam)
-  console.log("🔍 [V2 DEBUG] Converted Table Number:", tableNum, "Type:", typeof tableNum)
-  
-  // Early error logging if restaurantId is missing
-  if (!restaurantId) {
-    console.error("❌ [V2 ERROR] restaurantId is undefined or empty")
-    console.error("❌ [V2 ERROR] Full params:", JSON.stringify(params))
-  }
   
   const [restaurant, setRestaurant] = useState<any>(null)
   const [table, setTable] = useState<any>(null)
@@ -53,7 +34,6 @@ function MenuLandingPageV2Content() {
   useEffect(() => {
     if (!restaurantId || !db) {
       if (!restaurantId) {
-        console.error("❌ [V2 ERROR] Cannot load restaurant - restaurantId is missing")
         setError('Restaurant ID is missing from URL')
         setLoading(false)
       }
@@ -66,27 +46,20 @@ function MenuLandingPageV2Content() {
       (docSnap) => {
         if (docSnap.exists()) {
           const restaurantData = { id: docSnap.id, ...docSnap.data() } as any
-          console.log('✅ Restaurant loaded:', restaurantData.name)
           setRestaurant(restaurantData)
           setLoading(false)
         } else {
-          console.error('❌ Restaurant not found with ID:', restaurantId)
           setError(`Restaurant not found. ID: ${restaurantId}`)
           setLoading(false)
         }
       },
       (err) => {
-        console.error('❌ Error listening to restaurant data:', err)
-        
-        // Handle permission denied errors gracefully
         if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-          console.error('❌ Permission denied when loading restaurant')
           setError('Please scan a valid QR code to access this restaurant menu.')
           setLoading(false)
           return
         }
         
-        // Fallback to one-time fetch for other errors
         getRestaurant(restaurantId).then((data) => {
           if (data) {
             setRestaurant(data)
@@ -108,7 +81,7 @@ function MenuLandingPageV2Content() {
     return () => unsubscribe()
   }, [restaurantId])
 
-  // Hierarchical Table Fetch - Simplified, no index requirements
+  // Table fetch
   useEffect(() => {
     if (!restaurant || !restaurantId || !db) return
     if (tableNum <= 0) {
@@ -119,68 +92,38 @@ function MenuLandingPageV2Content() {
 
     const loadTableData = async () => {
       try {
-        console.log('🔍 [V2 TABLE FETCH] Fetching table:', tableNum, 'Type:', typeof tableNum)
-        
-        // Simplified query: Only table_number, no orderBy, no active filter
-        // Check active status in memory after fetch
         const tablesRef = collection(db, 'restaurants', restaurantId, 'tables')
-        const q = query(
-          tablesRef,
-          where('table_number', '==', tableNum)
-        )
-        
+        const q = query(tablesRef, where('table_number', '==', tableNum))
         const snapshot = await getDocs(q)
         
         if (snapshot.empty) {
-          console.warn('⚠️ [V2 TABLE FETCH] No table found with number:', tableNum)
           setTable(null)
         } else {
           const tableDoc = snapshot.docs[0]
           const tableData = tableDoc.data()
           
-          // Check active status in memory (not in query)
           if (tableData.active !== true) {
-            console.warn('⚠️ [V2 TABLE FETCH] Table found but is INACTIVE:', tableNum)
             setTable(null)
           } else {
-            console.log('✅ [V2 TABLE FETCH] Table verified:', tableDoc.id)
-            setTable({
-              id: tableDoc.id,
-              ...tableData
-            })
+            setTable({ id: tableDoc.id, ...tableData })
             
-            // Initialize session
-                let session = getCurrentSession()
-                if (!session) {
-                  session = getOrCreateSession(restaurantId, String(tableNum))
-                }
-                
-                if (session) {
-                  setSessionId(session)
-                  setSessionReady(true)
-                  
-                  // Store restaurantId in localStorage for order confirmation page
-                  if (typeof window !== 'undefined') {
-                    localStorage.setItem('current_restaurant_id', restaurantId)
-                    console.log('📌 [V2] Stored restaurantId in localStorage:', restaurantId)
-                  }
-                }
+            let session = getCurrentSession()
+            if (!session) {
+              session = getOrCreateSession(restaurantId, String(tableNum))
+            }
+            
+            if (session) {
+              setSessionId(session)
+              setSessionReady(true)
+              
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('current_restaurant_id', restaurantId)
+              }
+            }
           }
         }
       } catch (err: any) {
-        // Handle permission denied errors gracefully
-        if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-          console.error("❌ [PERMISSION ERROR] Permission denied when checking table. Path: restaurants/" + restaurantId + "/tables")
-          console.warn('⚠️ [V2 TABLE FETCH] Table verification failed due to permissions (non-blocking):', err.message)
-          setTable(null)
-          // Menu will still load - this is intentional
-        } else {
-          // Failsafe: Log error but don't block menu
-          console.error("❌ [PERMISSION ERROR] Table check bypassed. Path: restaurants/" + restaurantId + "/tables. Error:", err.message)
-          console.warn('⚠️ [V2 TABLE FETCH] Table verification failed (non-blocking):', err.message)
-          setTable(null)
-          // Menu will still load - this is intentional
-        }
+        setTable(null)
       }
       
       setLoading(false)
@@ -190,55 +133,44 @@ function MenuLandingPageV2Content() {
     loadTableData()
   }, [restaurant, restaurantId, tableNum])
 
-  // Add timeout for loading state
+  // Loading timeout
   useEffect(() => {
     if (loading) {
       const timeoutId = setTimeout(() => {
         if (loading && !restaurant) {
-          console.warn('⚠️ Menu loading timeout after 5 seconds')
           setError('Loading took too long. Please scan a valid QR code or refresh the page.')
           setLoading(false)
         }
       }, 5000)
-
       return () => clearTimeout(timeoutId)
     }
   }, [loading, restaurant])
 
+  // Loading state
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center">
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-          {error && (
-            <p className="mt-2 text-sm text-red-600">{error}</p>
-          )}
+          <div className="w-12 h-12 border-2 border-white/30 border-t-white animate-spin mx-auto" />
+          <p className="mt-6 text-white/60 font-sans text-sm tracking-wide">Loading...</p>
         </div>
       </div>
     )
   }
 
+  // Error states
   if (error && !restaurant) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Access Denied</h1>
-          <p className="text-gray-600 mb-2">{error || 'Please scan a valid QR code to access this restaurant menu.'}</p>
-          <p className="text-sm text-gray-500 mb-4">Invalid QR code or restaurant link</p>
+          <h1 className="text-2xl font-serif font-bold text-white mb-4">Access Denied</h1>
+          <p className="text-white/60 font-sans mb-6">{error}</p>
           <Button
             onClick={() => window.location.reload()}
-            className="mt-4 bg-[#FF6B35] hover:bg-[#e55a28]"
+            className="bg-white text-[#0A0A0A] hover:bg-white/90 font-sans px-8 py-3"
           >
             Retry
           </Button>
-          {restaurantId && (
-            <div className="mt-4 p-3 bg-gray-100 rounded text-left text-xs font-mono break-all">
-              <p className="font-semibold mb-1">Debug Info:</p>
-              <p>Restaurant ID: {restaurantId}</p>
-              <p>URL: {typeof window !== 'undefined' ? window.location.href : ''}</p>
-            </div>
-          )}
         </div>
       </div>
     )
@@ -246,105 +178,141 @@ function MenuLandingPageV2Content() {
 
   if (!restaurant && !loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Error</h1>
-          <p className="text-gray-600 mb-2">Restaurant not found</p>
-          {!restaurantId && (
-            <div className="mt-4 p-3 bg-red-50 rounded text-left text-xs">
-              <p className="font-semibold text-red-800">Debug Info:</p>
-              <p>Restaurant ID: {restaurantId || 'MISSING'}</p>
-              <p>Params object: {JSON.stringify(params)}</p>
-              <p>URL: {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
-            </div>
-          )}
+          <h1 className="text-2xl font-serif font-bold text-white mb-4">Restaurant Not Found</h1>
+          <p className="text-white/60 font-sans">Please scan a valid QR code.</p>
         </div>
       </div>
     )
   }
   
-  // Early error if restaurantId is missing
   if (!restaurantId) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Error</h1>
-          <p className="text-gray-600 mb-2">Restaurant ID is missing from URL</p>
-          <div className="mt-4 p-3 bg-red-50 rounded text-left text-xs">
-            <p className="font-semibold text-red-800">Debug Info:</p>
-            <p>Params: {JSON.stringify(params)}</p>
-            <p>URL: {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
-          </div>
+          <h1 className="text-2xl font-serif font-bold text-white mb-4">Error</h1>
+          <p className="text-white/60 font-sans">Restaurant ID is missing from URL</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex flex-col">
+    <div className="min-h-screen bg-[#0A0A0A] relative overflow-hidden">
+      {/* Active Order Banner */}
       <ActiveOrderBanner />
       
-      <div className="flex flex-col items-center justify-center p-8 flex-1">
-        <div className="w-full max-w-md text-center space-y-6">
+      {/* Hero Background - Dark moody overlay */}
+      <div className="absolute inset-0">
+        {/* Dark gradient overlay */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/80 z-10" />
+        
+        {/* Optional: Background image if restaurant has one */}
+        {restaurant.hero_image_url && (
+          <Image
+            src={restaurant.hero_image_url}
+            alt=""
+            fill
+            className="object-cover"
+            priority
+          />
+        )}
+        
+        {/* Fallback gradient background */}
+        <div className="absolute inset-0 bg-gradient-to-br from-[#0A0A0A] via-[#1A1A1A] to-[#0A0A0A]" />
+      </div>
+      
+      {/* Main Content */}
+      <div className="relative z-20 flex flex-col items-center justify-center min-h-screen px-6 py-12">
+        <div className="w-full max-w-md text-center space-y-8">
+          
           {/* Restaurant Logo */}
-          {restaurant.logo_url ? (
-            <div className="flex justify-center mb-4">
-              <Image
-                src={restaurant.logo_url}
-                alt={restaurant.name}
-                width={120}
-                height={120}
-                className="rounded-full object-cover"
-              />
-            </div>
-          ) : (
-            <div className="flex justify-center mb-4">
-              <div className="w-24 h-24 rounded-full bg-[#FF6B35] flex items-center justify-center">
-                <span className="text-3xl font-bold text-white">
-                  {restaurant.name.charAt(0)}
+          <div className="flex justify-center mb-8">
+            {restaurant.logo_url ? (
+              <div className="w-28 h-28 border-2 border-white/20 overflow-hidden bg-white/10 backdrop-blur-sm">
+                <Image
+                  src={restaurant.logo_url}
+                  alt={restaurant.name}
+                  width={112}
+                  height={112}
+                  className="object-cover w-full h-full"
+                  priority
+                />
+              </div>
+            ) : (
+              <div className="w-28 h-28 border-2 border-white/20 flex items-center justify-center bg-white/10 backdrop-blur-sm">
+                <span className="text-5xl font-serif font-bold text-white">
+                  {restaurant.name?.charAt(0) || 'R'}
                 </span>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Restaurant Name */}
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-[#FF6B35] to-orange-600 bg-clip-text text-transparent">
-            {restaurant.name}
-          </h1>
-
-          {/* Welcome Message */}
-          <div className="space-y-2">
-            <p className="text-xl text-gray-700">Welcome!</p>
-            {tableNum > 0 && (
-              <p className="text-lg text-gray-600">
-                You're at <span className="font-semibold">Table {tableNum}</span>
+          {/* Welcome Text */}
+          <div className="space-y-4">
+            <p className="text-white/60 font-sans text-sm uppercase tracking-[0.3em]">
+              Welcome to
+            </p>
+            <h1 className="text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
+              {restaurant.name}
+            </h1>
+            {restaurant.description && (
+              <p className="text-white/50 font-sans text-base max-w-xs mx-auto leading-relaxed">
+                {restaurant.description}
               </p>
             )}
           </div>
 
-          {/* View Menu Button */}
-          <Link href={`/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`}>
-            <Button
-              size="lg"
-              className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white text-lg py-6"
-            >
-              <ShoppingCart className="w-5 h-5 mr-2" />
-              View Menu
-            </Button>
-          </Link>
+          {/* Table Indicator */}
+          {tableNum > 0 && (
+            <div className="pt-4">
+              <p className="text-white/40 font-sans text-xs uppercase tracking-[0.2em]">
+                Table {tableNum}
+              </p>
+            </div>
+          )}
 
-          {/* View Receipt Button */}
-          {sessionReady && sessionId && tableNum > 0 && (
-            <Link href={`/menu/${restaurantId}/receipt?table=${tableNum}`}>
+          {/* CTA Buttons */}
+          <div className="space-y-4 pt-8">
+            {/* Primary: View Menu */}
+            <Link 
+              href={`/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`}
+              className="block"
+            >
               <Button
-                variant="outline"
                 size="lg"
-                className="w-full text-orange-600 border-orange-600 hover:bg-orange-50 text-lg py-6"
+                className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
               >
-                📋 View Receipt
+                View Menu & Order
+                <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
               </Button>
             </Link>
-          )}
+
+            {/* Secondary: View Receipt */}
+            {sessionReady && sessionId && tableNum > 0 && (
+              <Link 
+                href={`/menu/${restaurantId}/receipt?table=${tableNum}`}
+                className="block"
+              >
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full border-white/30 text-white hover:bg-white/10 hover:border-white/50 text-base py-6 font-sans"
+                >
+                  <Receipt className="w-5 h-5 mr-2 stroke-[1.5]" />
+                  View Receipt
+                </Button>
+              </Link>
+            )}
+          </div>
+
+          {/* Powered by Footer */}
+          <div className="pt-12">
+            <p className="text-white/20 font-sans text-xs tracking-wide">
+              Powered by Tap n Munch
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -354,10 +322,10 @@ function MenuLandingPageV2Content() {
 export default function MenuLandingPageV2() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white flex items-center justify-center">
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+          <div className="w-12 h-12 border-2 border-white/30 border-t-white animate-spin mx-auto" />
+          <p className="mt-6 text-white/60 font-sans text-sm tracking-wide">Loading...</p>
         </div>
       </div>
     }>
@@ -365,4 +333,3 @@ export default function MenuLandingPageV2() {
     </Suspense>
   )
 }
-

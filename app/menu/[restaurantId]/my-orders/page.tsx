@@ -7,6 +7,8 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
+import { Button } from '@/components/ui/button'
+import { ArrowLeft } from 'lucide-react'
 
 export default function MyOrdersPage() {
   const params = useParams()
@@ -31,7 +33,6 @@ export default function MyOrdersPage() {
       return
     }
 
-    // Real-time listener for all orders in this session
     const ordersRef = collection(db, 'orders')
     const q = query(
       ordersRef,
@@ -42,25 +43,19 @@ export default function MyOrdersPage() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        // Data Guard: Filter by is_closed for Table-Based approach
         const ordersList = snapshot.docs
           .map((doc) => ({
             id: doc.id,
             ...doc.data(),
           }))
-          .filter(order => order.is_closed !== true) // Only show non-closed orders
+          .filter(order => order.is_closed !== true)
         setOrders(ordersList)
         setLoading(false)
-        console.log('Loaded orders for session:', sessionId, ordersList.length, '(filtered by is_closed)')
       },
       (error) => {
         console.error('Error loading orders:', error)
-        // Handle permission denied gracefully
-        if (error.code === 'permission-denied' || error.message?.includes('permission')) {
-          console.warn('⚠️ Permission denied when loading orders - showing empty state')
+        if (error.code === 'permission-denied') {
           setOrders([])
-        } else if (error.code === 'failed-precondition') {
-          console.warn('Firestore index not created yet. Please create the index for session_id queries.')
         }
         setLoading(false)
       }
@@ -70,25 +65,20 @@ export default function MyOrdersPage() {
   }, [sessionId, restaurantId, tableNumber, router])
 
   const handleEndSession = () => {
-    if (
-      confirm(
-        'Are you sure you want to end your session? This will clear all your orders from this device.'
-      )
-    ) {
+    if (confirm('Are you sure you want to end your session?')) {
       clearSession()
       alert('Session ended. Thank you!')
-      // Task 2: Redirect to menu page instead of root
       router.push(`/menu/${restaurantId}/v2?table=${tableNumber}`)
     }
   }
 
   const getStatusConfig = (status: string) => {
     const configs: any = {
-      new: { emoji: '🎉', label: 'New', color: 'bg-blue-100 text-blue-800' },
-      accepted: { emoji: '👨‍🍳', label: 'Accepted', color: 'bg-purple-100 text-purple-800' },
-      preparing: { emoji: '🔥', label: 'Preparing', color: 'bg-orange-100 text-orange-800' },
-      ready: { emoji: '✅', label: 'Ready', color: 'bg-green-100 text-green-800' },
-      completed: { emoji: '✨', label: 'Completed', color: 'bg-gray-100 text-gray-800' },
+      new: { emoji: '🎉', label: 'New' },
+      accepted: { emoji: '👨‍🍳', label: 'Accepted' },
+      preparing: { emoji: '🔥', label: 'Preparing' },
+      ready: { emoji: '✅', label: 'Ready' },
+      completed: { emoji: '✨', label: 'Completed' },
     }
     return configs[status] || configs.new
   }
@@ -97,183 +87,172 @@ export default function MyOrdersPage() {
     return orders.reduce((sum, order) => sum + (order.total || 0), 0)
   }
 
+  function getTimeAgo(date: Date): string {
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
+    if (seconds < 60) return 'Just now'
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} mins ago`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`
+    return `${Math.floor(seconds / 86400)} days ago`
+  }
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading your orders...</p>
+          <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+          <p className="mt-6 text-muted-foreground font-sans">Loading your orders...</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <button
-            onClick={() => router.back()}
-            className="text-orange-600 font-semibold flex items-center gap-2"
-          >
-            ← Back
-          </button>
-          <button
-            onClick={handleEndSession}
-            className="text-red-600 font-semibold text-sm"
-          >
-            End Session
-          </button>
-        </div>
-
-        <h1 className="text-3xl font-bold mb-2">My Orders</h1>
-        <p className="text-gray-600">
-          Table {sessionInfo.table} • Session active since{' '}
-          {sessionInfo.created
-            ? new Date(sessionInfo.created).toLocaleTimeString()
-            : 'N/A'}
-        </p>
-
-        {orders.length > 0 && (
-          <div className="mt-4 pt-4 border-t">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-600">Total Orders:</span>
-              <span className="font-bold text-xl">{orders.length}</span>
-            </div>
-            <div className="flex justify-between items-center mt-2">
-              <span className="text-gray-600">Total Spent:</span>
-              <span className="font-bold text-2xl text-orange-600">
-                N${getTotalSpent().toFixed(2)}
-              </span>
-            </div>
+    <div className="min-h-screen bg-background">
+      <div className="max-w-2xl mx-auto p-6">
+        {/* Header */}
+        <div className="bg-card border border-border p-6 mb-6">
+          <div className="flex items-center justify-between mb-6">
+            <button
+              onClick={() => router.back()}
+              className="flex items-center gap-2 text-foreground font-sans font-semibold hover:opacity-70 transition"
+            >
+              <ArrowLeft className="w-4 h-4 stroke-[1.5]" />
+              Back
+            </button>
+            <button
+              onClick={handleEndSession}
+              className="text-destructive font-sans font-semibold text-sm hover:opacity-70 transition"
+            >
+              End Session
+            </button>
           </div>
-        )}
-      </div>
 
-      {/* Orders List */}
-      {orders.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-12 text-center">
-          <div className="text-6xl mb-4">🍽️</div>
-          <p className="text-xl text-gray-600 mb-2">No orders yet</p>
-          <p className="text-gray-500 mb-6">
-            Start by browsing the menu and placing your first order
+          <h1 className="text-3xl font-serif font-bold text-foreground mb-2">My Orders</h1>
+          <p className="text-muted-foreground font-sans text-sm">
+            Table {sessionInfo.table} • Session active since{' '}
+            {sessionInfo.created
+              ? new Date(sessionInfo.created).toLocaleTimeString()
+              : 'N/A'}
           </p>
-          <button
-            onClick={() =>
-              router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)
-            }
-            className="bg-orange-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-orange-700 transition"
-          >
-            Browse Menu
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {orders.map((order, index) => {
-            const statusConfig = getStatusConfig(order.status)
-            // Handle both Firestore Timestamp and ISO string
-            const placedAt = order.placed_at?.toDate
-              ? order.placed_at.toDate()
-              : order.placed_at
-              ? (typeof order.placed_at === 'string' ? new Date(order.placed_at) : new Date())
-              : new Date()
-            const timeAgo = getTimeAgo(placedAt)
 
-            return (
-              <div
-                key={order.id}
-                className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition cursor-pointer"
-                onClick={() =>
-                  router.push(`/order-confirmation?orderId=${order.id}${tableNumber ? `&table=${tableNumber}` : ''}`)
-                }
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h3 className="text-xl font-bold">
-                      Order #{order.order_number || order.id.slice(-6).toUpperCase()}
-                    </h3>
-                    <p className="text-sm text-gray-500">{timeAgo}</p>
+          {orders.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-border space-y-3">
+              <div className="flex justify-between items-center font-sans">
+                <span className="text-muted-foreground">Total Orders</span>
+                <span className="font-bold text-foreground">{orders.length}</span>
+              </div>
+              <div className="flex justify-between items-center font-sans">
+                <span className="text-muted-foreground">Total Spent</span>
+                <span className="text-2xl font-bold text-foreground">
+                  N${getTotalSpent().toFixed(2)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Orders List */}
+        {orders.length === 0 ? (
+          <div className="bg-card border border-border p-16 text-center">
+            <div className="text-6xl mb-6">🍽️</div>
+            <h2 className="text-xl font-serif font-bold text-foreground mb-2">No orders yet</h2>
+            <p className="text-muted-foreground font-sans mb-8">
+              Start by browsing the menu and placing your first order
+            </p>
+            <Button
+              onClick={() => router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)}
+              className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8"
+            >
+              Browse Menu
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {orders.map((order) => {
+              const statusConfig = getStatusConfig(order.status)
+              const placedAt = order.placed_at?.toDate
+                ? order.placed_at.toDate()
+                : order.placed_at
+                ? (typeof order.placed_at === 'string' ? new Date(order.placed_at) : new Date())
+                : new Date()
+              const timeAgo = getTimeAgo(placedAt)
+
+              return (
+                <div
+                  key={order.id}
+                  className="bg-card border border-border p-6 cursor-pointer hover:border-foreground/30 transition"
+                  onClick={() =>
+                    router.push(`/order-confirmation?orderId=${order.id}${tableNumber ? `&table=${tableNumber}` : ''}`)
+                  }
+                >
+                  {/* Order Header */}
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="font-sans font-bold text-foreground text-lg">
+                        Order #{order.order_number || order.id.slice(-6).toUpperCase()}
+                      </h3>
+                      <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-bold text-foreground font-sans">
+                        N${order.total?.toFixed(2)}
+                      </p>
+                      <span className="inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide bg-muted text-foreground mt-2">
+                        {statusConfig.emoji} {statusConfig.label}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-orange-600">
-                      N${order.total?.toFixed(2)}
+
+                  {/* Order Items Preview */}
+                  <div className="border-t border-border pt-4">
+                    <p className="text-sm text-muted-foreground font-sans mb-2">
+                      {order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}:
                     </p>
-                    <span
-                      className={`inline-block px-3 py-1 rounded-full text-sm font-semibold mt-2 ${statusConfig.color}`}
-                    >
-                      {statusConfig.emoji} {statusConfig.label}
+                    <div className="space-y-1">
+                      {order.items?.slice(0, 3).map((item: any, idx: number) => (
+                        <p key={idx} className="text-sm text-foreground font-sans">
+                          {item.quantity}× {item.name}
+                        </p>
+                      ))}
+                      {order.items?.length > 3 && (
+                        <p className="text-sm text-muted-foreground font-sans italic">
+                          +{order.items.length - 3} more item{order.items.length - 3 !== 1 ? 's' : ''}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Payment Status */}
+                  <div className="mt-4 flex items-center gap-4 text-sm font-sans">
+                    <span className="text-muted-foreground">
+                      Payment: {order.payment_method === 'card' ? '💳' : '💵'} {order.payment_method}
+                    </span>
+                    <span className={`px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                      order.payment_status === 'paid'
+                        ? 'bg-foreground text-background'
+                        : 'bg-muted text-foreground'
+                    }`}>
+                      {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
                     </span>
                   </div>
                 </div>
+              )
+            })}
+          </div>
+        )}
 
-                {/* Order Items Preview */}
-                <div className="border-t pt-3">
-                  <p className="text-sm text-gray-600 mb-2">
-                    {order.items?.length || 0} item
-                    {order.items?.length !== 1 ? 's' : ''}:
-                  </p>
-                  <div className="space-y-1">
-                    {order.items?.slice(0, 3).map((item: any, idx: number) => (
-                      <p key={idx} className="text-sm text-gray-700">
-                        {item.quantity}× {item.name}
-                      </p>
-                    ))}
-                    {order.items?.length > 3 && (
-                      <p className="text-sm text-gray-500 italic">
-                        +{order.items.length - 3} more item
-                        {order.items.length - 3 !== 1 ? 's' : ''}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Payment Status */}
-                <div className="mt-3 flex items-center gap-4 text-sm">
-                  <span className="text-gray-600">
-                    Payment: {order.payment_method === 'card' ? '💳' : '💵'}{' '}
-                    {order.payment_method}
-                  </span>
-                  <span
-                    className={`px-2 py-1 rounded text-xs font-semibold ${
-                      order.payment_status === 'paid'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-yellow-100 text-yellow-800'
-                    }`}
-                  >
-                    {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Order More Button */}
-      {orders.length > 0 && (
-        <div className="mt-6">
-          <button
-            onClick={() =>
-              router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)
-            }
-            className="w-full bg-orange-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-orange-700 transition"
-          >
-            Order More Items
-          </button>
-        </div>
-      )}
+        {/* Order More Button */}
+        {orders.length > 0 && (
+          <div className="mt-8">
+            <Button
+              onClick={() => router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)}
+              className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+            >
+              Order More Items
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
-
-// Helper function to calculate time ago
-function getTimeAgo(date: Date): string {
-  const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
-
-  if (seconds < 60) return 'Just now'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} mins ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`
-  return `${Math.floor(seconds / 86400)} days ago`
-}
-

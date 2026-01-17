@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { MenuItem, MenuItemSize, MenuItemAddon } from '@/lib/firebase/menu-items'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Checkbox } from '@/components/ui/checkbox'
-import { X, Plus, Minus, ShoppingCart } from 'lucide-react'
+import { X, Plus, Minus, ShoppingCart, UtensilsCrossed } from 'lucide-react'
 import Image from 'next/image'
 import { CartItem } from '@/contexts/cart-context'
 
@@ -68,45 +68,68 @@ export function ItemDetailModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-card border border-border max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="sticky top-0 bg-white border-b flex items-center justify-between p-4 z-10">
-          <h2 className="text-xl font-bold">Customize Item</h2>
+        <div className="sticky top-0 bg-card border-b border-border flex items-center justify-between p-4 z-10">
+          <h2 className="text-xl font-serif font-bold text-foreground">Customize Item</h2>
           <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5 stroke-[1.5]" />
           </Button>
         </div>
 
         {/* Content */}
         <div className="p-6 space-y-6">
           {/* Image */}
-          {item.image_url && (
-            <div className="relative w-full h-64 rounded-lg overflow-hidden bg-gray-50">
-              <Image
-                src={item.image_url}
-                alt={item.name}
-                fill
-                style={{
-                  objectFit: item.imageFit || 'contain',
-                  objectPosition: item.imagePosition || 'center',
-                }}
-              />
+          <div className="relative w-full aspect-[4/3] overflow-hidden bg-muted">
+            {item.image_url ? (
+              <>
+                <Image
+                  src={item.image_url}
+                  alt={item.name}
+                  fill
+                  loading="lazy"
+                  style={{
+                    objectFit: item.imageFit || 'cover',
+                    objectPosition: item.imagePosition || 'center',
+                  }}
+                  unoptimized
+                  className="menu-image"
+                  onLoad={(e) => {
+                    e.currentTarget.style.opacity = '1'
+                    const container = e.currentTarget.closest('.relative')
+                    const shimmer = container?.querySelector('.image-shimmer')
+                    if (shimmer) shimmer.classList.add('hidden')
+                  }}
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none'
+                    const container = e.currentTarget.closest('.relative')
+                    const placeholder = container?.querySelector('.image-placeholder')
+                    const shimmer = container?.querySelector('.image-shimmer')
+                    if (placeholder) placeholder.classList.remove('hidden')
+                    if (shimmer) shimmer.classList.add('hidden')
+                  }}
+                />
+                <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer pointer-events-none" />
+              </>
+            ) : null}
+            <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-muted ${item.image_url ? 'hidden' : ''}`}>
+              <UtensilsCrossed className="w-16 h-16 text-muted-foreground" />
             </div>
-          )}
+          </div>
 
           {/* Item Name & Description */}
           <div>
-            <h3 className="text-2xl font-bold mb-2">{item.name}</h3>
+            <h3 className="text-2xl font-serif font-bold text-foreground mb-2">{item.name}</h3>
             {item.description && (
-              <p className="text-gray-600">{item.description}</p>
+              <p className="text-sm font-sans text-muted-foreground leading-relaxed">{item.description}</p>
             )}
           </div>
 
           {/* Size Selection */}
           {item.has_sizes && item.sizes.length > 0 && (
             <div>
-              <Label className="text-base font-semibold mb-3 block">Size</Label>
+              <Label className="text-base font-semibold mb-4 block font-sans text-foreground">Size</Label>
               <RadioGroup
                 value={selectedSize?.name || ''}
                 onValueChange={(value) => {
@@ -115,14 +138,14 @@ export function ItemDetailModal({
                 }}
               >
                 {item.sizes.map((size) => (
-                  <div key={size.name} className="flex items-center space-x-2 py-2">
+                  <div key={size.name} className="flex items-center space-x-3 py-3 border-b border-border last:border-b-0">
                     <RadioGroupItem value={size.name} id={size.name} />
                     <Label
                       htmlFor={size.name}
-                      className="flex-1 cursor-pointer flex items-center justify-between"
+                      className="flex-1 cursor-pointer flex items-center justify-between font-sans"
                     >
-                      <span>{size.name}</span>
-                      <span className="text-sm text-gray-600">
+                      <span className="text-foreground">{size.name}</span>
+                      <span className="text-muted-foreground text-sm">
                         {size.price_modifier > 0 && '+'}
                         {size.price_modifier === 0 ? 'Included' : `${restaurant?.currency || 'N$'}${size.price_modifier.toFixed(2)}`}
                       </span>
@@ -136,10 +159,10 @@ export function ItemDetailModal({
           {/* Add-ons */}
           {item.has_addons && item.addons.length > 0 && (
             <div>
-              <Label className="text-base font-semibold mb-3 block">Add-ons</Label>
-              <div className="space-y-2">
+              <Label className="text-base font-semibold mb-4 block font-sans text-foreground">Add-ons</Label>
+              <div className="space-y-0">
                 {item.addons.map((addon) => (
-                  <div key={addon.name} className="flex items-center space-x-2 py-2">
+                  <div key={addon.name} className="flex items-center space-x-3 py-3 border-b border-border last:border-b-0">
                     <Checkbox
                       id={addon.name}
                       checked={selectedAddons.some(a => a.name === addon.name)}
@@ -147,10 +170,10 @@ export function ItemDetailModal({
                     />
                     <Label
                       htmlFor={addon.name}
-                      className="flex-1 cursor-pointer flex items-center justify-between"
+                      className="flex-1 cursor-pointer flex items-center justify-between font-sans"
                     >
-                      <span>{addon.name}</span>
-                      <span className="text-sm text-[#FF6B35]">
+                      <span className="text-foreground">{addon.name}</span>
+                      <span className="text-muted-foreground text-sm">
                         +{restaurant?.currency || 'N$'}{addon.price.toFixed(2)}
                       </span>
                     </Label>
@@ -163,7 +186,7 @@ export function ItemDetailModal({
           {/* Special Instructions */}
           {item.allow_special_instructions && (
             <div>
-              <Label htmlFor="instructions" className="text-base font-semibold mb-2 block">
+              <Label htmlFor="instructions" className="text-base font-semibold mb-3 block font-sans text-foreground">
                 Special Instructions
               </Label>
               <Textarea
@@ -172,47 +195,51 @@ export function ItemDetailModal({
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
                 rows={3}
+                className="font-sans border-border"
               />
             </div>
           )}
 
           {/* Quantity */}
           <div>
-            <Label className="text-base font-semibold mb-2 block">Quantity</Label>
+            <Label className="text-base font-semibold mb-3 block font-sans text-foreground">Quantity</Label>
             <div className="flex items-center gap-4">
               <Button
                 variant="outline"
                 size="icon"
                 onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                className="w-10 h-10 border-border"
               >
-                <Minus className="w-4 h-4" />
+                <Minus className="w-4 h-4 stroke-[1.5]" />
               </Button>
-              <span className="text-lg font-semibold w-8 text-center">{quantity}</span>
+              <span className="text-lg font-semibold w-8 text-center font-sans text-foreground">{quantity}</span>
               <Button
                 variant="outline"
                 size="icon"
                 onClick={() => setQuantity(quantity + 1)}
+                className="w-10 h-10 border-border"
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-4 h-4 stroke-[1.5]" />
               </Button>
             </div>
           </div>
         </div>
 
-        {/* Footer with Price and Add Button */}
-        <div className="sticky bottom-0 bg-white border-t p-4 flex items-center justify-between">
+        {/* Footer */}
+        <div className="sticky bottom-0 bg-card border-t border-border p-4 flex items-center justify-between">
           <div>
-            <p className="text-sm text-gray-600">Total</p>
-            <p className="text-2xl font-bold text-[#FF6B35]">
-              {restaurant?.currency || 'N$'}{calculatePrice().toFixed(2)}
+            <p className="text-xs font-sans text-muted-foreground uppercase tracking-wide mb-1">Total</p>
+            <p className="text-2xl font-sans font-bold text-foreground">
+              <span className="text-sm font-normal text-muted-foreground mr-0.5">{restaurant?.currency || 'N$'}</span>
+              {calculatePrice().toFixed(2)}
             </p>
           </div>
           <Button
             onClick={handleAddToCart}
-            className="bg-[#FF6B35] hover:bg-[#e55a28] text-white px-8"
+            className="bg-foreground text-background hover:bg-foreground/90 px-8 font-sans font-semibold"
             size="lg"
           >
-            <ShoppingCart className="w-5 h-5 mr-2" />
+            <ShoppingCart className="w-5 h-5 mr-2 stroke-[1.5]" />
             Add to Cart
           </Button>
         </div>
@@ -220,4 +247,3 @@ export function ItemDetailModal({
     </div>
   )
 }
-

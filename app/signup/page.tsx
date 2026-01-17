@@ -35,7 +35,7 @@ export default function SignUpPage() {
   if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black"></div>
       </div>
     )
   }
@@ -291,7 +291,7 @@ export default function SignUpPage() {
 
             <Button
               type="submit"
-              className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white"
+              className="w-full bg-black hover:bg-black/90 text-white"
               disabled={loading || !isPasswordValid || !passwordsMatch}
             >
               {loading ? 'Creating Account...' : 'Start Free Trial'}
@@ -303,7 +303,7 @@ export default function SignUpPage() {
               Already have an account?{' '}
               <Link
                 href="/signin"
-                className="font-medium text-[#FF6B35] hover:text-[#e55a28]"
+                className="font-medium text-black hover:text-black/80"
               >
                 Sign In
               </Link>
