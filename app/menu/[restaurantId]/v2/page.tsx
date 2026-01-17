@@ -298,7 +298,7 @@ function MenuLandingPageV2Content() {
                 <Button
                   variant="outline"
                   size="lg"
-                  className="w-full border-white/30 text-white hover:bg-white/10 hover:border-white/50 text-base py-6 font-sans"
+                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
                   <Receipt className="w-5 h-5 mr-2 stroke-[1.5]" />
                   View Receipt
