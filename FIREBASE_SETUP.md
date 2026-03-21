@@ -3,12 +3,12 @@
 ## Step 1: Get Your Firebase Configuration
 
 1. Go to [Firebase Console](https://console.firebase.google.com/)
-2. Select your **TapnMunch** project
+2. Select your **FlashTap** project
 3. Click the **⚙️ Settings** icon (gear) → **Project settings**
 4. Scroll down to **Your apps** section
 5. If you don't have a web app yet:
    - Click **Add app** → Select **Web** (</> icon)
-   - Register your app (nickname: "Tap n Munch Web")
+   - Register your app (nickname: "FlashTap Web")
    - Click **Register app**
 6. Copy the `firebaseConfig` object values
 
@@ -29,9 +29,9 @@ NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
 **Example:**
 ```env
 NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyBxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=tapnmunch-fa58f.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=tapnmunch-fa58f
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=tapnmunch-fa58f.appspot.com
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=flashtap-fa58f.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=flashtap-fa58f
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=flashtap-fa58f.appspot.com
 NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=123456789012
 NEXT_PUBLIC_FIREBASE_APP_ID=1:123456789012:web:abcdef123456
 ```

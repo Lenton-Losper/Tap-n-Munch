@@ -1,9 +1,10 @@
 import { db } from '@/lib/firebase/config'
-import { collection, addDoc } from 'firebase/firestore'
+import { collection, addDoc, updateDoc, doc } from 'firebase/firestore'
 import { NextResponse } from 'next/server'
 import { getNextOrderNumber } from '@/lib/firebase/orders'
-import { assertNoForbiddenFields, removeUndefinedDeep, prepareForFirestore } from '@/lib/firebase/firestore-guards'
-import { ordersPath } from '@/lib/firebase/paths'
+import { prepareForFirestore } from '@/lib/firebase/firestore-guards'
+import { orderPath, ordersPath } from '@/lib/firebase/paths'
+import { createPaymentRequest } from '@/payments/paycloud'
 
 /**
  * SECURE ORDER CREATION API - STRICT VALIDATOR
@@ -160,6 +161,7 @@ export async function POST(req: Request) {
       
       source: 'qr_menu' as const,
       order_number: Number(orderNumber),
+      payment_provider: body.paymentMethod === 'card' ? 'paycloud' : null,
     }
     
     // STEP 1: JSON CAR WASH - NO UNDEFINED FIELDS
@@ -221,7 +223,63 @@ export async function POST(req: Request) {
       placed_at: cleanOrder.placed_at ? 'present' : 'MISSING',
     })
     
-    return NextResponse.json({ orderId: docRef.id }, { status: 201 })
+    let payment: any = null
+    if (cleanOrder.payment_method === 'card') {
+      if (!body.card || !body.card.cardNo || !body.card.cvv || !body.card.expireMonth || !body.card.expireYear) {
+        return NextResponse.json(
+          {
+            orderId: docRef.id,
+            error: 'Card details are required for Merchant Hosted Checkout',
+          },
+          { status: 400 }
+        )
+      }
+
+      const origin = new URL(req.url).origin
+      const merchantOrderNo = `${restaurantId}:${docRef.id}`
+      try {
+        payment = await createPaymentRequest({
+          amount: cleanOrder.total,
+          orderId: merchantOrderNo,
+          merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
+          storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
+          description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
+          card: body.card,
+          termIp: body.termIp,
+          attach: {
+            tableNumber: String(tableNumber),
+            source: 'restaurant',
+          },
+          notifyUrl: `${origin}/api/webhooks/paycloud`,
+          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRef.id)}&table=${encodeURIComponent(tableNumber)}`,
+        })
+
+        await updateDoc(doc(db!, orderPath(restaurantId, docRef.id)), {
+          payment_reference: merchantOrderNo,
+          payment_checkout_url: payment.checkoutUrl,
+          payment_qr_base64: payment.qr?.base64Png || null,
+          payment_qr_svg: payment.qr?.svg || null,
+          payment_qr_expires_at: payment.qr?.expiresAt || null,
+          payment_status: 'pending',
+        })
+      } catch (paymentError: any) {
+        console.error('❌ PAYCLOUD PAYMENT FAILURE:', paymentError)
+        await updateDoc(doc(db!, orderPath(restaurantId, docRef.id)), {
+          payment_status: 'failed',
+          payment_error: paymentError?.message || 'PayCloud payment initialization failed',
+        })
+        return NextResponse.json(
+          {
+            orderId: docRef.id,
+            error: 'Order created but payment initialization failed',
+            paymentError: paymentError?.message || 'Unknown PayCloud error',
+          },
+          { status: 502 }
+        )
+      }
+    }
+
+    return NextResponse.json({ orderId: docRef.id, payment }, { status: 201 })
   } catch (err: any) {
     console.error('❌ ORDER CREATION FAILURE:', err)
     if (err.message && err.message.includes('FORBIDDEN FIELD DETECTED')) {

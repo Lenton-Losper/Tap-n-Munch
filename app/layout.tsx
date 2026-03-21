@@ -1,8 +1,7 @@
 import type { Metadata } from 'next'
 import { Inter, Playfair_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
-import { AuthProvider } from '@/components/auth/auth-provider'
-import { CartProvider } from '@/contexts/cart-context'
+import { AppProviders } from './providers'
 import './globals.css'
 
 // Typography: Inter for body/UI, Playfair Display for headings/brand
@@ -20,8 +19,8 @@ const playfairDisplay = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: 'Tap n Munch',
-  description: 'Tap n Munch - Restaurant Ordering System',
+  title: 'FlashTap',
+  description: 'FlashTap - Restaurant Ordering System',
   generator: 'v0.app',
 }
 
@@ -33,11 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${playfairDisplay.variable}`}>
       <body>
-        <AuthProvider>
-          <CartProvider>
-            {children}
-          </CartProvider>
-        </AuthProvider>
+        <AppProviders>{children}</AppProviders>
         <Analytics />
       </body>
     </html>

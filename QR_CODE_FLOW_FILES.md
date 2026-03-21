@@ -149,7 +149,7 @@ This document lists all files responsible for handling QR code scanning and the 
 - **`lib/session.ts`** ⭐ **CRITICAL**
   - `getOrCreateSession()` - Creates unique session ID
   - `getCurrentSession()` - Gets session from localStorage
-  - Stores in `localStorage` as `tapnmunch_session_v1`
+  - Stores in `localStorage` as `flashtap_session_v1`
   - **Used to tag orders** so banner can find them
 
 **Key Features:**

@@ -310,7 +310,7 @@ function MenuLandingPageV2Content() {
           {/* Powered by Footer */}
           <div className="pt-12">
             <p className="text-white/20 font-sans text-xs tracking-wide">
-              Powered by Tap n Munch
+              Powered by FlashTap
             </p>
           </div>
         </div>

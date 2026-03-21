@@ -20,7 +20,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     // Prevent redirect loops by checking hasRedirected flag
     if (!loading && !user && !hasRedirected) {
       setHasRedirected(true)
-      router.push('/signin')
+      router.replace('/signin')
     }
   }, [user, loading, router, hasRedirected])
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the complete database architecture for the Tap n Munch restaurant QR ordering platform, with emphasis on user-specific data isolation.
+This document describes the complete database architecture for the FlashTap restaurant QR ordering platform, with emphasis on user-specific data isolation.
 
 ## Database Schema
 

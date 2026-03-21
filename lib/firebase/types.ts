@@ -16,7 +16,7 @@ export interface Restaurant {
   owner_id: string // FK to users.id
   owner_uid: string // Firebase Auth UID (for Storage rules)
   name: string
-  slug: string // URL-friendly: "tap-n-munch"
+  slug: string // URL-friendly: "flash-tap"
   description: string
   email: string
   phone: string

@@ -3,7 +3,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Luxury Monochrome Theme - Premium Black & White Design System */
+/* Minimal Notion-style design tokens */
 :root {
   /* Primary Colors */
   --rich-black: #0A0A0A;
@@ -16,13 +16,13 @@
   --text-secondary: #666666;
   
   /* Core Variables */
-  --background: #FDFCF8; /* Warm cream */
-  --foreground: #0A0A0A; /* Rich black */
+  --background: #F7F6F3; /* Notion off-white */
+  --foreground: #37352F; /* Notion charcoal */
   --card: #FFFFFF; /* Pure white for cards */
   --card-foreground: #0A0A0A;
   --popover: #FFFFFF;
   --popover-foreground: #0A0A0A;
-  --primary: #0A0A0A; /* Rich black */
+  --primary: #37352F;
   --primary-foreground: #FFFFFF;
   --secondary: #F5F5F5; /* Light gray for badges/secondary */
   --secondary-foreground: #0A0A0A;
@@ -34,13 +34,13 @@
   --destructive-foreground: #FFFFFF;
   --border: #E5E5E5; /* Light gray border for cards */
   --input: #FFFFFF;
-  --ring: #0A0A0A;
+  --ring: #37352F;
   --chart-1: #0A0A0A;
   --chart-2: #1A1A1A;
   --chart-3: #333333;
   --chart-4: #4A4A4A;
   --chart-5: #666666;
-  --radius: 0px; /* Sharp corners - 0px everywhere */
+  --radius: 8px;
   --sidebar: #FFFFFF;
   --sidebar-foreground: #0A0A0A;
   --sidebar-primary: #0A0A0A;
@@ -128,7 +128,7 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Luxury Monochrome Base Styles */
+/* Base typography and surfaces */
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -162,10 +162,6 @@
     letter-spacing: -0.02em;
   }
   
-  /* Sharp corners everywhere */
-  * {
-    border-radius: 0px;
-  }
 }
 
 /* Typography utilities */
@@ -209,7 +205,7 @@
     filter: grayscale(0%);
   }
   
-  /* Sharp corners utility */
+  /* Sharp corners utility (opt-in) */
   .sharp {
     border-radius: 0px !important;
   }
@@ -242,4 +238,18 @@
 
 .animate-shimmer {
   animation: shimmer 2s infinite;
+}
+
+@keyframes hero-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-hero-float {
+  animation: hero-float 6s ease-in-out infinite;
+  will-change: transform;
 }

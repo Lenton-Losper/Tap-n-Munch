@@ -1,16 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { 
   getMenuCategories, 
   createMenuCategory, 
+  updateMenuCategory,
   deleteMenuCategory,
   MenuCategory 
 } from '@/lib/firebase/menu-categories'
 import { 
   getSubCategories, 
   createSubCategory, 
+  updateSubCategory,
   deleteSubCategory,
   SubCategory 
 } from '@/lib/firebase/sub-categories'
@@ -27,13 +29,25 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, UtensilsCrossed } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, UtensilsCrossed, Pencil } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import Image from 'next/image'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { uploadMenuItemImage } from '@/lib/firebase/storage'
 import { Skeleton } from '@/components/ui/skeleton'
+
+const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
+const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
+const INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY = 24
+
+type MenuManagementCachePayload = {
+  menuCategories: MenuCategory[]
+  allSubCategories: SubCategory[]
+  allMenuItems: MenuItem[]
+  selectedMenuCategoryId: string | null
+  timestamp: number
+}
 
 export function MenuManagementV2() {
   const { user, restaurantId } = useAuth()
@@ -44,25 +58,28 @@ export function MenuManagementV2() {
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [allSubCategories, setAllSubCategories] = useState<SubCategory[]>([])
   const [allMenuItems, setAllMenuItems] = useState<MenuItem[]>([])
-  const [groupedData, setGroupedData] = useState<Record<string, {
-    subcategory: SubCategory
-    items: MenuItem[]
-  }>>({})
   
   // View state
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [visibleItemsBySubcategory, setVisibleItemsBySubcategory] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   
   // Modal state
   const [showMenuCategoryModal, setShowMenuCategoryModal] = useState(false)
   const [showSubCategoryModal, setShowSubCategoryModal] = useState(false)
   const [showItemModal, setShowItemModal] = useState(false)
+  const [showEditMenuCategoryModal, setShowEditMenuCategoryModal] = useState(false)
+  const [showEditSubCategoryModal, setShowEditSubCategoryModal] = useState(false)
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null)
+  const [editingMenuCategory, setEditingMenuCategory] = useState<MenuCategory | null>(null)
+  const [editingSubCategory, setEditingSubCategory] = useState<SubCategory | null>(null)
   
   // Form state
   const [menuCategoryForm, setMenuCategoryForm] = useState({ name: '', description: '' })
   const [subCategoryForm, setSubCategoryForm] = useState({ name: '', description: '' })
+  const [editMenuCategoryForm, setEditMenuCategoryForm] = useState({ name: '', description: '', display_order: '' })
+  const [editSubCategoryForm, setEditSubCategoryForm] = useState({ name: '', description: '', display_order: '' })
   const [itemForm, setItemForm] = useState({
     name: '',
     description: '',
@@ -81,6 +98,49 @@ export function MenuManagementV2() {
   })
   const [uploadingImage, setUploadingImage] = useState(false)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
+
+  const cacheKey = useMemo(
+    () => (restaurantId ? `${MENU_MGMT_CACHE_PREFIX}:${restaurantId}` : null),
+    [restaurantId]
+  )
+
+  const readCache = useCallback((): MenuManagementCachePayload | null => {
+    if (!cacheKey || typeof window === 'undefined') return null
+
+    try {
+      const cachedRaw = sessionStorage.getItem(cacheKey)
+      if (!cachedRaw) return null
+      const parsed = JSON.parse(cachedRaw) as MenuManagementCachePayload
+
+      if (Date.now() - parsed.timestamp > MENU_MGMT_CACHE_TTL_MS) {
+        sessionStorage.removeItem(cacheKey)
+        return null
+      }
+
+      return parsed
+    } catch {
+      return null
+    }
+  }, [cacheKey])
+
+  const writeCache = useCallback(
+    (payload: Omit<MenuManagementCachePayload, 'timestamp'>) => {
+      if (!cacheKey || typeof window === 'undefined') return
+
+      try {
+        sessionStorage.setItem(
+          cacheKey,
+          JSON.stringify({
+            ...payload,
+            timestamp: Date.now(),
+          } satisfies MenuManagementCachePayload)
+        )
+      } catch {
+        // Ignore quota/storage errors.
+      }
+    },
+    [cacheKey]
+  )
 
   // Load all data - Pre-fetch using localStorage restaurantId for faster loading
   useEffect(() => {
@@ -101,51 +161,62 @@ export function MenuManagementV2() {
 
     const loadAllData = async () => {
       try {
-        setLoading(true)
-        
-        // Load categories first
-        const categories = await getMenuCategories(effectiveRestaurantId)
-        setMenuCategories(categories)
-        
-        // Load menu items (with error handling for missing index)
-        let allItems: MenuItem[] = []
-        try {
-          allItems = await getMenuItems(effectiveRestaurantId)
-        } catch (err: any) {
-          console.warn('Could not load menu items (index may be missing):', err.message)
-          // Continue without items - they'll show empty states
+        const cached = readCache()
+        if (cached) {
+          setMenuCategories(cached.menuCategories)
+          setAllSubCategories(cached.allSubCategories)
+          setAllMenuItems(cached.allMenuItems)
+          setSelectedMenuCategory(
+            cached.selectedMenuCategoryId
+              ? cached.menuCategories.find((category) => category.id === cached.selectedMenuCategoryId) || null
+              : null
+          )
+          setLoading(false)
+        } else {
+          setLoading(true)
         }
-        setAllMenuItems(allItems)
-        
-        // Load all sub-categories for all categories
-        const allSubcats: SubCategory[] = []
-        for (const category of categories) {
-          try {
-            const subcats = await getSubCategories(effectiveRestaurantId, category.id)
-            allSubcats.push(...subcats)
-          } catch (err) {
-            console.warn(`Failed to load sub-categories for ${category.name}:`, err)
-          }
-        }
-        setAllSubCategories(allSubcats)
-        
-        // Preserve selection if it still exists, otherwise auto-select first category
-        // Use functional update to get current state value
-        setSelectedMenuCategory(current => {
-          if (categories.length > 0) {
-            if (current) {
-              // Check if selected category still exists
-              const stillExists = categories.some(cat => cat.id === current.id)
-              if (stillExists) {
-                return current // Keep current selection
-              }
+
+        // Fetch categories and items in parallel.
+        const [categories, itemsResult] = await Promise.all([
+          getMenuCategories(effectiveRestaurantId),
+          getMenuItems(effectiveRestaurantId).catch((err: any) => {
+            console.warn('Could not load menu items (index may be missing):', err?.message || err)
+            return [] as MenuItem[]
+          }),
+        ])
+
+        // Fetch sub-categories in parallel per category.
+        const subCategoryResults = await Promise.allSettled(
+          categories.map(async (category) => {
+            try {
+              const subcats = await getSubCategories(effectiveRestaurantId, category.id)
+              return subcats
+            } catch (err) {
+              console.warn(`Failed to load sub-categories for ${category.name}:`, err)
+              return [] as SubCategory[]
             }
-            // No selection or selected category was deleted, select first available
-            return categories[0]
-          } else {
-            // No categories, clear selection
-            return null
-          }
+          })
+        )
+
+        const allSubcats: SubCategory[] = subCategoryResults.flatMap((result) =>
+          result.status === 'fulfilled' ? result.value : []
+        )
+
+        setMenuCategories(categories)
+        setAllMenuItems(itemsResult)
+        setAllSubCategories(allSubcats)
+
+        setSelectedMenuCategory((current) => {
+          if (!categories.length) return null
+          if (current && categories.some((category) => category.id === current.id)) return current
+          return categories[0]
+        })
+
+        writeCache({
+          menuCategories: categories,
+          allSubCategories: allSubcats,
+          allMenuItems: itemsResult,
+          selectedMenuCategoryId: selectedMenuCategory?.id || (categories[0]?.id ?? null),
         })
       } catch (err: any) {
         console.error('Error loading data:', err)
@@ -160,52 +231,98 @@ export function MenuManagementV2() {
     }
 
     loadAllData()
-  }, [user, restaurantId, toast]) // Removed selectedMenuCategory from dependencies to prevent reset
+  }, [user, restaurantId, toast, readCache, writeCache]) // Removed selectedMenuCategory from dependencies to prevent reset
 
-  // Group items by sub-category when category is selected or items change
-  useEffect(() => {
-    if (!selectedMenuCategory) {
-      setGroupedData({})
-      return
+  const searchableQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery])
+
+  const visibleMenuItems = useMemo(
+    () => allMenuItems.filter((item) => item.status !== 'hidden'),
+    [allMenuItems]
+  )
+
+  const subCategoriesByMenuCategory = useMemo(() => {
+    const map: Record<string, SubCategory[]> = {}
+    for (const subCategory of allSubCategories) {
+      if (!map[subCategory.menu_category_id]) {
+        map[subCategory.menu_category_id] = []
+      }
+      map[subCategory.menu_category_id].push(subCategory)
     }
+    return map
+  }, [allSubCategories])
 
-    // Get sub-categories for selected category
-    const categorySubcats = allSubCategories.filter(sc => sc.menu_category_id === selectedMenuCategory.id)
-    
-    // Group items by sub-category
+  const itemsBySubCategory = useMemo(() => {
+    const map: Record<string, MenuItem[]> = {}
+    for (const item of visibleMenuItems) {
+      if (!map[item.sub_category_id]) {
+        map[item.sub_category_id] = []
+      }
+      map[item.sub_category_id].push(item)
+    }
+    for (const key of Object.keys(map)) {
+      map[key].sort((a, b) => a.name.localeCompare(b.name))
+    }
+    return map
+  }, [visibleMenuItems])
+
+  const categoryItemCountMap = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const item of visibleMenuItems) {
+      counts[item.menu_category_id] = (counts[item.menu_category_id] || 0) + 1
+    }
+    return counts
+  }, [visibleMenuItems])
+
+  const groupedData = useMemo(() => {
+    if (!selectedMenuCategory) return {}
+
+    const categorySubcategories = subCategoriesByMenuCategory[selectedMenuCategory.id] || []
     const grouped: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
-    
-    for (const subcat of categorySubcats) {
-      const items = allMenuItems.filter(item => 
-        item.sub_category_id === subcat.id && 
-        item.menu_category_id === selectedMenuCategory.id &&
-        item.status !== 'hidden'
-      )
-      
-      grouped[subcat.id] = {
-        subcategory: subcat,
-        items: items.sort((a, b) => a.name.localeCompare(b.name))
+
+    for (const subCategory of categorySubcategories) {
+      grouped[subCategory.id] = {
+        subcategory: subCategory,
+        items: itemsBySubCategory[subCategory.id] || [],
       }
     }
-    
-    setGroupedData(grouped)
-  }, [selectedMenuCategory, allMenuItems, allSubCategories])
 
-  // Calculate item counts for each category
-  const getCategoryItemCount = (categoryId: string | null): number => {
-    if (!categoryId) {
-      // All items count
-      return allMenuItems.filter(item => item.status !== 'hidden').length
-    }
-    return allMenuItems.filter(item => 
-      item.menu_category_id === categoryId && item.status !== 'hidden'
-    ).length
-  }
+    return grouped
+  }, [itemsBySubCategory, selectedMenuCategory, subCategoriesByMenuCategory])
+
+  const allSubCategoryOptions = useMemo(() => {
+    const categoryNameById = Object.fromEntries(
+      menuCategories.map((menuCategory) => [menuCategory.id, menuCategory.name])
+    )
+
+    return allSubCategories
+      .map((subCategory) => ({
+        id: subCategory.id,
+        name: subCategory.name,
+        menuCategoryName: categoryNameById[subCategory.menu_category_id] || 'Uncategorized',
+      }))
+      .sort((a, b) => {
+        const categoryCompare = a.menuCategoryName.localeCompare(b.menuCategoryName)
+        if (categoryCompare !== 0) return categoryCompare
+        return a.name.localeCompare(b.name)
+      })
+  }, [allSubCategories, menuCategories])
+
+  useEffect(() => {
+    if (loading) return
+
+    writeCache({
+      menuCategories,
+      allSubCategories,
+      allMenuItems,
+      selectedMenuCategoryId: selectedMenuCategory?.id || null,
+    })
+  }, [allMenuItems, allSubCategories, loading, menuCategories, selectedMenuCategory?.id, writeCache])
 
   // Navigation handlers
   const handleSelectMenuCategory = (category: MenuCategory | null) => {
     setSelectedMenuCategory(category)
     setSearchQuery('')
+    setVisibleItemsBySubcategory({})
   }
 
   // Handle add item for specific sub-category
@@ -230,6 +347,18 @@ export function MenuManagementV2() {
     setImagePreview(null)
     setShowItemModal(true)
   }
+
+  const getVisibleLimit = useCallback(
+    (subCategoryId: string) => visibleItemsBySubcategory[subCategoryId] ?? INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY,
+    [visibleItemsBySubcategory]
+  )
+
+  const handleLoadMoreItems = useCallback((subCategoryId: string) => {
+    setVisibleItemsBySubcategory((prev) => ({
+      ...prev,
+      [subCategoryId]: (prev[subCategoryId] ?? INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY) + INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY,
+    }))
+  }, [])
 
   // Menu Category handlers
   const handleCreateMenuCategory = async () => {
@@ -301,6 +430,71 @@ export function MenuManagementV2() {
       toast({
         title: 'Error',
         description: err.message || 'Failed to delete category',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleOpenEditMenuCategory = (category: MenuCategory) => {
+    setEditingMenuCategory(category)
+    setEditMenuCategoryForm({
+      name: category.name || '',
+      description: category.description || '',
+      display_order: String(category.display_order ?? ''),
+    })
+    setShowEditMenuCategoryModal(true)
+  }
+
+  const handleSaveMenuCategoryEdit = async () => {
+    if (!restaurantId || !editingMenuCategory) return
+
+    const nextName = editMenuCategoryForm.name.trim()
+    const nextDisplayOrder = Number(editMenuCategoryForm.display_order)
+
+    if (!nextName) {
+      toast({
+        title: 'Validation Error',
+        description: 'Category name is required',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (isNaN(nextDisplayOrder) || nextDisplayOrder < 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Display order must be a valid non-negative number',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      await updateMenuCategory(restaurantId, editingMenuCategory.id, {
+        name: nextName,
+        description: editMenuCategoryForm.description.trim() || null,
+        display_order: nextDisplayOrder,
+      } as Partial<MenuCategory>)
+
+      const categories = await getMenuCategories(restaurantId)
+      setMenuCategories(categories)
+      setSelectedMenuCategory((current) =>
+        current?.id === editingMenuCategory.id
+          ? categories.find((category) => category.id === editingMenuCategory.id) || current
+          : current
+      )
+
+      toast({
+        title: 'Success',
+        description: `Category "${nextName}" updated`,
+      })
+
+      setShowEditMenuCategoryModal(false)
+      setEditingMenuCategory(null)
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to update category',
         variant: 'destructive',
       })
     }
@@ -391,6 +585,75 @@ export function MenuManagementV2() {
       toast({
         title: 'Error',
         description: err.message || 'Failed to delete sub-category',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleOpenEditSubCategory = (subCategory: SubCategory) => {
+    setEditingSubCategory(subCategory)
+    setEditSubCategoryForm({
+      name: subCategory.name || '',
+      description: subCategory.description || '',
+      display_order: String(subCategory.display_order ?? ''),
+    })
+    setShowEditSubCategoryModal(true)
+  }
+
+  const handleSaveSubCategoryEdit = async () => {
+    if (!restaurantId || !editingSubCategory || !editingSubCategory.menu_category_id) return
+
+    const nextName = editSubCategoryForm.name.trim()
+    const nextDisplayOrder = Number(editSubCategoryForm.display_order)
+
+    if (!nextName) {
+      toast({
+        title: 'Validation Error',
+        description: 'Sub-category name is required',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (isNaN(nextDisplayOrder) || nextDisplayOrder < 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Display order must be a valid non-negative number',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      await updateSubCategory(
+        restaurantId,
+        editingSubCategory.menu_category_id,
+        editingSubCategory.id,
+        {
+          name: nextName,
+          description: editSubCategoryForm.description.trim() || null,
+          display_order: nextDisplayOrder,
+        } as Partial<SubCategory>
+      )
+
+      const subcats = await getSubCategories(restaurantId, editingSubCategory.menu_category_id)
+      const updatedAllSubcats = allSubCategories.filter(
+        (sc) => sc.menu_category_id !== editingSubCategory.menu_category_id
+      )
+      updatedAllSubcats.push(...subcats)
+      setAllSubCategories(updatedAllSubcats)
+
+      toast({
+        title: 'Success',
+        description: `Sub-category "${nextName}" updated`,
+      })
+
+      setShowEditSubCategoryModal(false)
+      setEditingSubCategory(null)
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to update sub-category',
         variant: 'destructive',
       })
     }
@@ -663,30 +926,6 @@ export function MenuManagementV2() {
     }
   }
 
-  // Get all sub-categories for hierarchical dropdown
-  const getAllSubCategories = async (): Promise<Array<{ id: string; name: string; menuCategoryName: string }>> => {
-    if (!restaurantId) return []
-    
-    const allSubCategories: Array<{ id: string; name: string; menuCategoryName: string }> = []
-    
-    for (const menuCat of menuCategories) {
-      try {
-        const subcats = await getSubCategories(restaurantId, menuCat.id)
-        subcats.forEach(subcat => {
-          allSubCategories.push({
-            id: subcat.id,
-            name: subcat.name,
-            menuCategoryName: menuCat.name,
-          })
-        })
-      } catch (err) {
-        console.warn(`Failed to load sub-categories for ${menuCat.name}:`, err)
-      }
-    }
-    
-    return allSubCategories
-  }
-
   // Skeleton loading UI
   if (loading) {
     return (
@@ -746,7 +985,7 @@ export function MenuManagementV2() {
         <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex items-center gap-2 sm:gap-4">
-              <Button variant="ghost" size="icon" onClick={() => router.push('/')} className="h-11 w-11 sm:h-10 sm:w-10">
+              <Button variant="ghost" size="icon" onClick={() => router.push('/dashboard')} className="h-11 w-11 sm:h-10 sm:w-10">
                 <ArrowLeft className="h-5 w-5" />
               </Button>
               <h1 className="text-2xl sm:text-3xl font-bold">Menu Management</h1>
@@ -781,7 +1020,7 @@ export function MenuManagementV2() {
             onClick={() => handleSelectMenuCategory(null)}
             className={`${selectedMenuCategory === null ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap min-w-[100px] sm:min-w-0`}
           >
-            All Items ({getCategoryItemCount(null)})
+            All Items ({visibleMenuItems.length})
           </Button>
           {menuCategories.map((category) => (
             <div key={category.id} className="flex items-center gap-1 group flex-shrink-0">
@@ -790,7 +1029,19 @@ export function MenuManagementV2() {
                 onClick={() => handleSelectMenuCategory(category)}
                 className={`${selectedMenuCategory?.id === category.id ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap`}
               >
-                {category.name} ({getCategoryItemCount(category.id)})
+                {category.name} ({categoryItemCountMap[category.id] || 0})
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleOpenEditMenuCategory(category)
+                }}
+                className="h-11 w-11 sm:h-8 sm:w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                title={`Edit ${category.name}`}
+              >
+                <Pencil className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -799,7 +1050,7 @@ export function MenuManagementV2() {
                   e.stopPropagation()
                   handleDeleteMenuCategory(category)
                 }}
-                className="h-11 w-11 sm:h-8 sm:w-8 p-0 opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 text-red-500 hover:text-red-700 hover:bg-red-50"
+                className="h-11 w-11 sm:h-8 sm:w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -825,31 +1076,28 @@ export function MenuManagementV2() {
           <div className="space-y-8">
             {menuCategories.map((category) => {
               // Get all sub-categories for this category
-              const categorySubcats = allSubCategories.filter(sc => sc.menu_category_id === category.id)
+              const categorySubcats = subCategoriesByMenuCategory[category.id] || []
               
               // Group items by sub-category
               const categoryGrouped: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
               
               for (const subcat of categorySubcats) {
-                const items = allMenuItems.filter(item => 
-                  item.sub_category_id === subcat.id && 
-                  item.menu_category_id === category.id &&
-                  item.status !== 'hidden' &&
-                  (!searchQuery || 
-                    item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    item.description?.toLowerCase().includes(searchQuery.toLowerCase()))
+                const items = (itemsBySubCategory[subcat.id] || []).filter((item) =>
+                  !searchableQuery ||
+                  item.name.toLowerCase().includes(searchableQuery) ||
+                  item.description?.toLowerCase().includes(searchableQuery)
                 )
                 
-                if (items.length > 0 || !searchQuery) {
+                if (items.length > 0 || !searchableQuery) {
                   categoryGrouped[subcat.id] = {
                     subcategory: subcat,
-                    items: items.sort((a, b) => a.name.localeCompare(b.name))
+                    items,
                   }
                 }
               }
               
               // Only show category if it has sub-categories with items (or if no search query)
-              if (Object.keys(categoryGrouped).length === 0 && searchQuery) return null
+              if (Object.keys(categoryGrouped).length === 0 && searchableQuery) return null
               
               return (
                 <div key={category.id} className="space-y-6">
@@ -861,6 +1109,15 @@ export function MenuManagementV2() {
                           {subcategory.name} ({items.length} {items.length === 1 ? 'item' : 'items'})
                         </h3>
                         <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenEditSubCategory(subcategory)}
+                            className="h-11 sm:h-9 w-full sm:w-auto"
+                          >
+                            <Pencil className="h-4 w-4 mr-2" />
+                            Edit
+                          </Button>
                           <Button
                             onClick={() => {
                               setSelectedMenuCategory(category)
@@ -885,7 +1142,7 @@ export function MenuManagementV2() {
                       </div>
                       {items.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
-                          {items.map((item) => (
+                          {items.slice(0, getVisibleLimit(subcategory.id)).map((item) => (
                             <div
                               key={item.id}
                               className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
@@ -986,6 +1243,16 @@ export function MenuManagementV2() {
                       ) : (
                         <p className="text-sm text-muted-foreground italic">No items in this sub-category</p>
                       )}
+                      {items.length > getVisibleLimit(subcategory.id) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleLoadMoreItems(subcategory.id)}
+                          className="h-9 text-sm"
+                        >
+                          Load More ({items.length - getVisibleLimit(subcategory.id)} remaining)
+                        </Button>
+                      )}
                     </div>
                   ))}
                   {categorySubcats.length === 0 && (
@@ -1039,10 +1306,9 @@ export function MenuManagementV2() {
               Object.values(groupedData).map(({ subcategory, items }) => {
                 // Filter items by search query
                 const filteredItems = items.filter(item => {
-                  if (!searchQuery) return true
-                  const query = searchQuery.toLowerCase()
-                  return item.name.toLowerCase().includes(query) || 
-                         item.description?.toLowerCase().includes(query)
+                  if (!searchableQuery) return true
+                  return item.name.toLowerCase().includes(searchableQuery) || 
+                         item.description?.toLowerCase().includes(searchableQuery)
                 })
                 
                 return (
@@ -1052,6 +1318,15 @@ export function MenuManagementV2() {
                         {subcategory.name} ({filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'})
                       </h3>
                       <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleOpenEditSubCategory(subcategory)}
+                          className="h-11 sm:h-9 w-full sm:w-auto"
+                        >
+                          <Pencil className="h-4 w-4 mr-2" />
+                          Edit
+                        </Button>
                         <Button
                           onClick={() => handleAddItemForSubCategory(subcategory)}
                           className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
@@ -1073,7 +1348,7 @@ export function MenuManagementV2() {
                     </div>
                     {filteredItems.length > 0 ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
-                        {filteredItems.map((item) => (
+                        {filteredItems.slice(0, getVisibleLimit(subcategory.id)).map((item) => (
                           <div
                             key={item.id}
                             className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
@@ -1173,8 +1448,18 @@ export function MenuManagementV2() {
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground italic">
-                        {searchQuery ? `No items match "${searchQuery}"` : 'No items in this sub-category'}
+                        {searchableQuery ? `No items match "${searchQuery}"` : 'No items in this sub-category'}
                       </p>
+                    )}
+                    {filteredItems.length > getVisibleLimit(subcategory.id) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleLoadMoreItems(subcategory.id)}
+                        className="h-9 text-sm"
+                      >
+                        Load More ({filteredItems.length - getVisibleLimit(subcategory.id)} remaining)
+                      </Button>
                     )}
                   </div>
                 )
@@ -1215,6 +1500,66 @@ export function MenuManagementV2() {
               </Button>
               <Button onClick={handleCreateMenuCategory} className="bg-[#FF6B35] hover:bg-[#e55a28]">
                 Create
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Menu Category Modal */}
+      <Dialog
+        open={showEditMenuCategoryModal}
+        onOpenChange={(open) => {
+          setShowEditMenuCategoryModal(open)
+          if (!open) {
+            setEditingMenuCategory(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Menu Category</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Category Name *</Label>
+              <Input
+                value={editMenuCategoryForm.name}
+                onChange={(e) => setEditMenuCategoryForm({ ...editMenuCategoryForm, name: e.target.value })}
+                placeholder="e.g., Drinks, Food, Specials"
+              />
+            </div>
+            <div>
+              <Label>Description (Optional)</Label>
+              <Textarea
+                value={editMenuCategoryForm.description}
+                onChange={(e) => setEditMenuCategoryForm({ ...editMenuCategoryForm, description: e.target.value })}
+                placeholder="Describe this category..."
+                rows={3}
+              />
+            </div>
+            <div>
+              <Label>Display Order</Label>
+              <Input
+                type="number"
+                min={0}
+                value={editMenuCategoryForm.display_order}
+                onChange={(e) => setEditMenuCategoryForm({ ...editMenuCategoryForm, display_order: e.target.value })}
+                placeholder="0"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowEditMenuCategoryModal(false)
+                  setEditingMenuCategory(null)
+                }}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleSaveMenuCategoryEdit} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+                Save
               </Button>
             </div>
           </div>
@@ -1265,6 +1610,66 @@ export function MenuManagementV2() {
         </DialogContent>
       </Dialog>
 
+      {/* Edit Sub-Category Modal */}
+      <Dialog
+        open={showEditSubCategoryModal}
+        onOpenChange={(open) => {
+          setShowEditSubCategoryModal(open)
+          if (!open) {
+            setEditingSubCategory(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Sub-category</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Sub-category Name *</Label>
+              <Input
+                value={editSubCategoryForm.name}
+                onChange={(e) => setEditSubCategoryForm({ ...editSubCategoryForm, name: e.target.value })}
+                placeholder="e.g., Alcoholic drinks, Soft drinks"
+              />
+            </div>
+            <div>
+              <Label>Description (Optional)</Label>
+              <Textarea
+                value={editSubCategoryForm.description}
+                onChange={(e) => setEditSubCategoryForm({ ...editSubCategoryForm, description: e.target.value })}
+                placeholder="Describe this sub-category..."
+                rows={3}
+              />
+            </div>
+            <div>
+              <Label>Display Order</Label>
+              <Input
+                type="number"
+                min={0}
+                value={editSubCategoryForm.display_order}
+                onChange={(e) => setEditSubCategoryForm({ ...editSubCategoryForm, display_order: e.target.value })}
+                placeholder="0"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowEditSubCategoryModal(false)
+                  setEditingSubCategory(null)
+                }}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleSaveSubCategoryEdit} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+                Save
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Add/Edit Menu Item Modal */}
       <Dialog open={showItemModal} onOpenChange={setShowItemModal}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -1275,8 +1680,7 @@ export function MenuManagementV2() {
             <div>
               <Label>Sub-category *</Label>
               <SubCategorySelect
-                restaurantId={restaurantId || ''}
-                menuCategories={menuCategories}
+                subCategories={allSubCategoryOptions}
                 value={itemForm.sub_category_id}
                 onChange={(value) => setItemForm({ ...itemForm, sub_category_id: value })}
               />
@@ -1513,67 +1917,14 @@ export function MenuManagementV2() {
 
 // Helper component for hierarchical sub-category selection
 function SubCategorySelect({ 
-  restaurantId, 
-  menuCategories, 
+  subCategories,
   value, 
   onChange 
 }: { 
-  restaurantId: string
-  menuCategories: MenuCategory[]
+  subCategories: Array<{ id: string; name: string; menuCategoryName: string }>
   value: string
   onChange: (value: string) => void
 }) {
-  // Get user from auth context to ensure component has access to it
-  const { user } = useAuth()
-  const [subCategories, setSubCategories] = useState<Array<{ id: string; name: string; menuCategoryName: string }>>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const loadSubCategories = async () => {
-      // Don't run if user is null (prevents fetching when signed out)
-      if (!user) {
-        setLoading(false)
-        return
-      }
-
-      if (!restaurantId || menuCategories.length === 0) {
-        setLoading(false)
-        return
-      }
-
-      try {
-        const allSubCategories: Array<{ id: string; name: string; menuCategoryName: string }> = []
-        
-        for (const menuCat of menuCategories) {
-          try {
-            const subcats = await getSubCategories(restaurantId, menuCat.id)
-            subcats.forEach(subcat => {
-              allSubCategories.push({
-                id: subcat.id,
-                name: subcat.name,
-                menuCategoryName: menuCat.name,
-              })
-            })
-          } catch (err) {
-            console.warn(`Failed to load sub-categories for ${menuCat.name}:`, err)
-          }
-        }
-        
-        setSubCategories(allSubCategories)
-      } catch (err) {
-        console.error('Error loading sub-categories:', err)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadSubCategories()
-  }, [user, restaurantId, menuCategories])
-
-  if (loading) {
-    return <div className="text-sm text-muted-foreground">Loading sub-categories...</div>
-  }
-
   if (subCategories.length === 0) {
     return (
       <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md">

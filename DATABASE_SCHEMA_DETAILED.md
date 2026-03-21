@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a comprehensive description of the Tap n Munch restaurant QR ordering platform database architecture. The system uses **Firebase Firestore** (NoSQL document database) as the primary data store, with **Firebase Storage** for file uploads (images).
+This document provides a comprehensive description of the FlashTap restaurant QR ordering platform database architecture. The system uses **Firebase Firestore** (NoSQL document database) as the primary data store, with **Firebase Storage** for file uploads (images).
 
 ---
 
@@ -96,7 +96,7 @@ The database consists of **9 main collections**:
   owner_id: string              // FK to users.id (Firebase Auth UID)
   owner_uid: string             // Firebase Auth UID (for Storage rules)
   name: string                  // Restaurant name
-  slug: string                  // URL-friendly: "tap-n-munch"
+  slug: string                  // URL-friendly: "flash-tap"
   description: string           // Restaurant description
   email: string                 // Restaurant contact email
   phone: string                 // Restaurant phone number

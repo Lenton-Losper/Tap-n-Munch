@@ -31,6 +31,11 @@ export default function OrderSecurePage() {
   
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | null>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
+  const [cardNo, setCardNo] = useState('')
+  const [cardHolder, setCardHolder] = useState('')
+  const [expiryMonth, setExpiryMonth] = useState('')
+  const [expiryYear, setExpiryYear] = useState('')
+  const [cvv, setCvv] = useState('')
 
   useEffect(() => {
     const loadData = async () => {
@@ -79,6 +84,17 @@ export default function OrderSecurePage() {
         variant: 'destructive',
       })
       return
+    }
+
+    if (paymentMethod === 'card') {
+      if (!cardNo.trim() || !expiryMonth.trim() || !expiryYear.trim() || !cvv.trim()) {
+        toast({
+          title: 'Card details required',
+          description: 'Please enter card number, expiry month/year, and CVV.',
+          variant: 'destructive',
+        })
+        return
+      }
     }
     
     let sessionId = getCurrentSession()
@@ -135,6 +151,16 @@ export default function OrderSecurePage() {
         paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
         orderInstructions: orderInstructions?.trim() || null,
       }
+
+      if (paymentMethod === 'card') {
+        payload.card = {
+          cardNo: cardNo.trim(),
+          cardHolder: cardHolder.trim() || 'FLASHTAP CUSTOMER',
+          expireMonth: expiryMonth.trim(),
+          expireYear: expiryYear.trim(),
+          cvv: cvv.trim(),
+        }
+      }
       
       const cleanPayload = JSON.parse(JSON.stringify(payload))
       if (payload.session_id) cleanPayload.session_id = payload.session_id
@@ -182,15 +208,20 @@ export default function OrderSecurePage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-2xl mx-auto px-4 py-6">
+    <div className="min-h-screen max-w-full overflow-x-hidden bg-background">
+      <div className="mx-auto max-w-2xl px-4 py-6">
         {/* Header */}
-        <div className="flex items-center gap-3 mb-8">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+        <div className="mb-6 flex items-center gap-3 sm:mb-8">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => router.push(`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)}
+            className="h-11 w-11"
+          >
             <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
           </Button>
           <div>
-            <h1 className="text-2xl font-serif font-bold text-foreground">Secure Checkout</h1>
+            <h1 className="text-xl font-serif font-bold text-foreground sm:text-2xl">Secure Checkout</h1>
             {tableNumber > 0 && (
               <p className="text-sm text-muted-foreground font-sans">Table {tableNumber}</p>
             )}
@@ -198,7 +229,7 @@ export default function OrderSecurePage() {
         </div>
 
         {/* Payment Method */}
-        <div className="bg-card border border-border p-6 mb-6">
+        <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-serif font-bold text-foreground mb-4">Payment Method</h2>
           <PaymentMethodSelector
             value={paymentMethod}
@@ -208,7 +239,7 @@ export default function OrderSecurePage() {
         </div>
 
         {/* Order Instructions */}
-        <div className="bg-card border border-border p-6 mb-6">
+        <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <Label htmlFor="instructions" className="mb-3 block font-sans text-foreground font-semibold">
             Order Instructions (Optional)
           </Label>
@@ -218,12 +249,50 @@ export default function OrderSecurePage() {
             value={orderInstructions}
             onChange={(e) => setOrderInstructions(e.target.value)}
             rows={3}
-            className="font-sans border-border"
+            className="w-full max-w-full font-sans border-border text-sm sm:text-base"
           />
         </div>
 
+        {paymentMethod === 'card' && (
+          <div className="mb-6 border border-border bg-card p-4 sm:p-6">
+            <h2 className="text-lg font-serif font-bold text-foreground mb-4">Card Details</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <input
+                className="w-full border border-border bg-background p-3 text-sm"
+                placeholder="Card Number"
+                value={cardNo}
+                onChange={(e) => setCardNo(e.target.value)}
+              />
+              <input
+                className="w-full border border-border bg-background p-3 text-sm"
+                placeholder="Card Holder Name"
+                value={cardHolder}
+                onChange={(e) => setCardHolder(e.target.value)}
+              />
+              <input
+                className="w-full border border-border bg-background p-3 text-sm"
+                placeholder="Expiry Month (MM)"
+                value={expiryMonth}
+                onChange={(e) => setExpiryMonth(e.target.value)}
+              />
+              <input
+                className="w-full border border-border bg-background p-3 text-sm"
+                placeholder="Expiry Year (YYYY)"
+                value={expiryYear}
+                onChange={(e) => setExpiryYear(e.target.value)}
+              />
+              <input
+                className="w-full border border-border bg-background p-3 text-sm sm:col-span-2"
+                placeholder="CVV"
+                value={cvv}
+                onChange={(e) => setCvv(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Order Summary */}
-        <div className="bg-card border border-border p-6 mb-6">
+        <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-serif font-bold text-foreground mb-4">Order Summary</h2>
           <div className="space-y-3">
             <div className="flex justify-between text-sm font-sans">
@@ -237,7 +306,7 @@ export default function OrderSecurePage() {
             <div className="border-t border-border pt-4 mt-4">
               <div className="flex justify-between items-center">
                 <span className="text-lg font-semibold font-sans text-foreground">Total</span>
-                <span className="text-2xl font-bold font-sans text-foreground">
+                <span className="text-xl font-bold font-sans text-foreground sm:text-2xl">
                   {restaurant?.currency || 'N$'}{total.toFixed(2)}
                 </span>
               </div>
@@ -249,7 +318,7 @@ export default function OrderSecurePage() {
         <Button
           onClick={submitOrder}
           disabled={submitting || !Array.isArray(items) || items.length === 0 || !paymentMethod}
-          className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+          className="h-11 w-full bg-foreground py-6 text-base font-semibold font-sans text-background hover:bg-foreground/90"
           size="lg"
         >
           {submitting ? 'Placing Order...' : 'Place Order'}

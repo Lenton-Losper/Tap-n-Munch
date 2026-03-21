@@ -28,7 +28,7 @@ export default function SignUpPage() {
 
   useEffect(() => {
     if (!authLoading && user) {
-      router.push('/')
+      router.replace('/dashboard')
     }
   }, [user, authLoading, router])
 
@@ -105,7 +105,7 @@ export default function SignUpPage() {
       
       // Wait a moment for auth state to update
       setTimeout(() => {
-        router.push('/dashboard')
+        router.replace('/dashboard')
       }, 500)
     } catch (err: any) {
       console.error('❌ Signup error:', {
@@ -133,7 +133,7 @@ export default function SignUpPage() {
               <Input
                 id="restaurantName"
                 type="text"
-                placeholder="e.g., Tap n Munch"
+                placeholder="e.g., FlashTap"
                 value={formData.restaurantName}
                 onChange={(e) => handleChange('restaurantName', e.target.value)}
                 required

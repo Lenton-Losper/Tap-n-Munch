@@ -1,4 +1,4 @@
-# Tap n Munch - Authentication & Firebase Integration Plan
+# FlashTap - Authentication & Firebase Integration Plan
 
 ## 🎯 Overview
 This document outlines the plan for implementing restaurant authentication and Firebase database integration to make the system dynamic and multi-tenant.
@@ -11,7 +11,7 @@ This document outlines the plan for implementing restaurant authentication and F
 Restaurants will register once with:
 - **Email** (used as username)
 - **Password** (min 8 characters)
-- **Restaurant Name** (e.g., "Tap n Munch")
+- **Restaurant Name** (e.g., "FlashTap")
 - **Phone Number**
 - **Address** (optional)
 
@@ -37,8 +37,8 @@ Restaurants will register once with:
 ```
 restaurants/
   {restaurantId}/
-    - name: "Tap n Munch"
-    - email: "owner@tapnmunch.com"
+    - name: "FlashTap"
+    - email: "owner@flashtap.com"
     - phone: "+264..."
     - address: "..."
     - createdAt: timestamp

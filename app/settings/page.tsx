@@ -268,7 +268,7 @@ function SettingsContent() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => router.push('/')}
+            onClick={() => router.push('/dashboard')}
             className="h-11 w-11"
           >
             <ArrowLeft className="h-5 w-5" />

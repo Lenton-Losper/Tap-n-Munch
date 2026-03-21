@@ -7,9 +7,9 @@ In Firebase Console, the config looks like this:
 ```javascript
 const firebaseConfig = {
   apiKey: "AIzaSyB...",           // Copy this
-  authDomain: "tapnmunch-fa58f.firebaseapp.com",  // Copy this
-  projectId: "tapnmunch-fa58f",  // Copy this
-  storageBucket: "tapnmunch-fa58f.appspot.com",   // Copy this
+  authDomain: "flashtap-fa58f.firebaseapp.com",  // Copy this
+  projectId: "flashtap-fa58f",  // Copy this
+  storageBucket: "flashtap-fa58f.appspot.com",   // Copy this
   messagingSenderId: "123456789012",  // Copy this
   appId: "1:123456789012:web:abc..."   // Copy this
 };

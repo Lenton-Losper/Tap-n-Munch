@@ -1,176 +1,209 @@
-'use client'
+import type { Metadata } from 'next'
+import { existsSync } from 'fs'
+import path from 'path'
+import Link from 'next/link'
+import Image from 'next/image'
+import { ArrowRight, CheckCircle2, Sparkles } from 'lucide-react'
+import { Nav } from './components/Nav'
+import { Footer } from './components/Footer'
+import { ContactForm } from './components/ContactForm'
+import { Button } from '@/components/ui/button'
 
-import { useEffect } from "react"
-import { useRouter } from "next/navigation"
-import Link from "next/link"
-import { useAuth } from "@/components/auth/auth-provider"
-import { Button } from "@/components/ui/button"
-import { ShoppingCart, ClipboardList, BarChart3, QrCode, UtensilsCrossed, LogOut, Settings } from "lucide-react"
-import { signOutUser } from "@/lib/firebase/auth"
+export const metadata: Metadata = {
+  title: 'FlashTap | QR Ordering for Restaurants',
+  description:
+    'FlashTap helps restaurants launch seamless table-side QR ordering with fast setup and clear analytics.',
+}
 
 export default function HomePage() {
-  const { user, loading } = useAuth()
-  const router = useRouter()
-
-  // Diagnostic logging for auth state changes
-  useEffect(() => {
-    console.log("🛠️ DEBUG: Auth State Changed. User:", user ? user.uid : "Logged Out")
-    console.log("🛠️ DEBUG: Current Path:", typeof window !== 'undefined' ? window.location.pathname : 'SSR')
-    console.log("🛠️ DEBUG: Restaurant ID in Storage:", typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A (SSR)')
-    console.log("🛠️ DEBUG: Loading State:", loading)
-    console.log("🛠️ DEBUG: User Object:", user ? { uid: user.uid, email: user.email } : null)
-  }, [user, loading])
-
-  useEffect(() => {
-    // Redirect immediately if user is null (don't wait for loading to finish)
-    // This prevents infinite loading screens when user is not authenticated
-    if (!user) {
-      console.log("🛠️ DEBUG: User is null, redirecting to /signin")
-      router.push('/signin')
-    }
-  }, [user, router])
-
-  const handleSignOut = async () => {
-    try {
-      await signOutUser()
-      router.push('/signin')
-    } catch (error) {
-      console.error('Error signing out:', error)
-    }
-  }
-
-  // Only show loading spinner while auth.currentUser is being determined
-  // If user is null, we've already redirected, so don't show loading
-  if (loading && user === null) {
-    console.log("⚠️ DEBUG: Stuck in Loading branch. Checking dependencies...", {
-      loading,
-      user: user ? user.uid : null,
-      pathname: typeof window !== 'undefined' ? window.location.pathname : 'SSR',
-      localStorageRestaurantId: typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : 'N/A',
-    })
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black mx-auto"></div>
-          <p className="mt-4 text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    )
-  }
-
-  // If user is null, return null (redirect is happening via useEffect)
-  if (!user) {
-    return null
-  }
+  const heroMockupSrc = existsSync(path.join(process.cwd(), 'public', 'image_ccac55.jpg'))
+    ? '/image_ccac55.jpg'
+    : existsSync(path.join(process.cwd(), 'public', 'image_ce10fc.jpg'))
+      ? '/image_ce10fc.jpg'
+      : '/placeholder.jpg'
 
   return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-8 p-8">
-      <div className="w-full max-w-4xl">
-        <div className="flex items-center justify-between mb-6">
-          <div className="text-center flex-1">
-            <h1 className="text-5xl font-bold text-balance text-black">
-              Tap n Munch
-            </h1>
-            <p className="text-muted-foreground text-lg">Complete restaurant management solution</p>
-          </div>
-          <Button
-            variant="outline"
-            onClick={handleSignOut}
-            className="flex items-center gap-2"
-          >
-            <LogOut className="w-4 h-4" />
-            Sign Out
-          </Button>
-        </div>
+    <div className="min-h-screen bg-[#F7F6F3] text-[#37352F]">
+      <Nav />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Customer Section */}
-          <div className="bg-white rounded-sm border border-border p-8 transition-shadow">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-3 bg-muted rounded-sm">
-                <ShoppingCart className="w-6 h-6 text-black stroke-[1.5]" />
+      <main className="pt-20">
+        <section className="relative overflow-visible border-b border-[#E9E9E7] px-4 py-32 sm:px-6 lg:px-8">
+          <div className="mx-auto grid max-w-7xl gap-14 lg:grid-cols-12 lg:items-center">
+            <div className="max-w-3xl space-y-8 lg:col-span-5 lg:self-center lg:pr-12 xl:pr-16">
+              <p className="inline-flex items-center gap-2 rounded-lg border border-[#E9E9E7] bg-white px-3 py-1 text-xs uppercase tracking-[0.2em] text-[#6B675F] shadow-sm">
+                <Sparkles className="h-3.5 w-3.5" />
+                Built for modern venues
+              </p>
+              <h1 className="font-serif text-balance text-4xl font-semibold leading-tight text-[#37352F] sm:text-5xl lg:text-6xl">
+                Speed up service with elegant QR ordering.
+              </h1>
+              <p className="max-w-2xl text-base text-[#6B675F] sm:text-lg">
+                FlashTap turns every table into a fast digital ordering station. No app downloads, no clutter,
+                just a clean flow from scan to payment.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button asChild size="lg" className="rounded-lg bg-[#37352F] text-white hover:bg-[#2f2d27]">
+                  <Link href="#contact">
+                    Request Demo <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </Button>
+                <Button
+                  asChild
+                  size="lg"
+                  variant="outline"
+                  className="rounded-lg border-[#D9D7D3] bg-white text-[#37352F] hover:bg-[#EFEDE8]"
+                >
+                  <Link href="#contact">Start Free Trial</Link>
+                </Button>
               </div>
-              <h2 className="text-2xl font-bold">Customer View</h2>
             </div>
-            <p className="text-muted-foreground mb-6">Browse menu, customize items, and place orders</p>
-            <Button 
-              asChild 
-              size="lg" 
-              className="w-full bg-black hover:bg-black/90"
-              onClick={(e) => {
-                // Customer menu requires restaurantId from URL
-                // This button should only be used for testing
-                // In production, customers access via QR code
-                e.preventDefault()
-                alert('Customer menu is accessed via QR code. The menu URL format is: /menu/[restaurantId]?table=7')
-              }}
-            >
-              <Link href="#" onClick={(e) => e.preventDefault()}>
-                View Customer Menu (QR Code)
-              </Link>
-            </Button>
-            <p className="text-xs text-gray-500 mt-2 text-center">
-              Customers access menu via QR code at their table
+
+            <div className="mx-auto w-full max-w-2xl overflow-visible lg:col-span-7 lg:mx-0 lg:justify-self-end">
+              <div className="animate-hero-float overflow-visible rounded-[28px] border border-[#E9E9E7] bg-white p-3 shadow-[0_24px_60px_rgba(55,53,47,0.12)]">
+                <div className="relative aspect-square w-full overflow-hidden rounded-2xl bg-[#EFEDE8]">
+                  <Image
+                    src={heroMockupSrc}
+                    alt="FlashTap mobile ordering screens"
+                    fill
+                    priority
+                    className="h-full w-full object-contain"
+                    sizes="(min-width: 1280px) 52vw, (min-width: 1024px) 46vw, 92vw"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="features" className="border-b border-[#E9E9E7] px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">Features in a glance</h2>
+            <p className="mt-4 max-w-2xl text-[#6B675F]">
+              A focused toolkit designed to improve speed, service quality, and revenue.
             </p>
-          </div>
-
-          {/* Management Section */}
-          <div className="bg-white rounded-sm border border-border p-8 transition-shadow">
-            <h2 className="text-2xl font-bold mb-6">Restaurant Management</h2>
-            <div className="space-y-3">
-              <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
-                <Link href="/dashboard" className="flex items-start gap-3">
-                  <ClipboardList className="w-5 h-5 text-black stroke-[1.5] mt-0.5" />
-                  <div className="text-left">
-                    <div className="font-semibold">Live Orders</div>
-                    <div className="text-sm text-gray-600">Manage incoming orders</div>
+            <div className="mt-12 grid gap-6 md:grid-cols-3">
+              {[
+                'Mobile-first menu with instant load times',
+                'Real-time kitchen and floor updates',
+                'Built-in upsells and smart recommendations',
+                'Live order timeline for each table',
+                'Simple analytics and revenue snapshots',
+              ].map((item, index) => (
+                <article
+                  key={item}
+                  className={`${index === 0 || index === 3 ? 'md:col-span-2' : ''} rounded-2xl border border-[#E9E9E7] bg-white p-7 shadow-[0_8px_30px_rgba(55,53,47,0.04)]`}
+                >
+                  <div className="flex items-start gap-2 text-sm leading-7 text-[#4F4A42]">
+                    <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-[#37352F]" />
+                    {item}
                   </div>
-                </Link>
-              </Button>
-
-              <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
-                <Link href="/menu-management" className="flex items-start gap-3">
-                  <UtensilsCrossed className="w-5 h-5 text-black stroke-[1.5] mt-0.5" />
-                  <div className="text-left">
-                    <div className="font-semibold">Menu Management</div>
-                    <div className="text-sm text-gray-600">Create and edit your menu</div>
-                  </div>
-                </Link>
-              </Button>
-
-              <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
-                <Link href="/analytics" className="flex items-start gap-3">
-                  <BarChart3 className="w-5 h-5 text-black stroke-[1.5] mt-0.5" />
-                  <div className="text-left">
-                    <div className="font-semibold">Analytics</div>
-                    <div className="text-sm text-gray-600">View performance metrics</div>
-                  </div>
-                </Link>
-              </Button>
-
-              <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
-                <Link href="/settings" className="flex items-start gap-3">
-                  <Settings className="w-5 h-5 text-black stroke-[1.5] mt-0.5" />
-                  <div className="text-left">
-                    <div className="font-semibold">Settings</div>
-                    <div className="text-sm text-gray-600">Manage payment methods</div>
-                  </div>
-                </Link>
-              </Button>
-
-              <Button asChild variant="outline" className="w-full justify-start h-auto py-4 bg-transparent">
-                <Link href="/qr-codes" className="flex items-start gap-3">
-                  <QrCode className="w-5 h-5 text-black stroke-[1.5] mt-0.5" />
-                  <div className="text-left">
-                    <div className="font-semibold">QR Codes</div>
-                    <div className="text-sm text-gray-600">Generate table QR codes</div>
-                  </div>
-                </Link>
-              </Button>
+                </article>
+              ))}
             </div>
           </div>
-        </div>
-      </div>
+        </section>
+
+        <section className="border-b border-[#E9E9E7] px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">The problem with traditional table service.</h2>
+            <div className="mt-10 grid gap-6 md:grid-cols-3">
+              {[
+                'Long wait times frustrate guests and reduce repeat visits.',
+                'Missed orders and manual entry lead to costly mistakes.',
+                'No visibility into what is selling in real time.',
+              ].map((item) => (
+                <div key={item} className="rounded-xl border border-[#E9E9E7] bg-white p-6 shadow-[0_8px_30px_rgba(55,53,47,0.03)]">
+                  <p className="text-sm leading-7 text-[#4F4A42]">{item}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="how-it-works" className="border-b border-[#E9E9E7] px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">How It Works</h2>
+            <div className="mt-10 grid gap-6 md:grid-cols-3">
+              {[
+                { title: '1. Guests Scan', description: 'Customers scan a table QR code to open your live menu.' },
+                { title: '2. Orders Flow', description: 'Orders route instantly to your kitchen and service staff.' },
+                { title: '3. You Grow', description: 'Track performance and optimize menus with built-in analytics.' },
+              ].map((step) => (
+                <article key={step.title} className="rounded-xl border border-[#E9E9E7] bg-white p-7 shadow-[0_8px_30px_rgba(55,53,47,0.03)]">
+                  <h3 className="text-lg font-medium">{step.title}</h3>
+                  <p className="mt-3 text-sm leading-7 text-[#6B675F]">{step.description}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="border-b border-[#E9E9E7] px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">Why FlashTap</h2>
+            <div className="mt-10 grid gap-6 md:grid-cols-3">
+              {[
+                'Serve more tables with the same team size.',
+                'Reduce ordering errors and payment friction.',
+                'Increase average order value with smart prompts.',
+                'Keep full brand control with a clean white-label look.',
+              ].map((benefit, index) => (
+                <div
+                  key={benefit}
+                  className={`${index === 1 ? 'md:col-span-2' : ''} rounded-2xl border border-[#E9E9E7] bg-white p-6 shadow-[0_8px_30px_rgba(55,53,47,0.04)]`}
+                >
+                  <div className="flex items-start gap-3">
+                    <CheckCircle2 className="mt-1 h-5 w-5 shrink-0 text-[#37352F]" />
+                    <p className="text-sm leading-7 text-[#4F4A42]">{benefit}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="pricing" className="border-b border-[#E9E9E7] px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">Simple pricing for growing restaurants.</h2>
+            <div className="mt-10 grid gap-6 md:grid-cols-3">
+              {[
+                { tier: 'Starter', price: '$49/mo', note: 'Perfect for cafes and small venues.' },
+                { tier: 'Growth', price: '$99/mo', note: 'Advanced tools for busy multi-shift teams.' },
+                { tier: 'Scale', price: 'Custom', note: 'Enterprise support for multi-location brands.' },
+              ].map((plan) => (
+                <article
+                  key={plan.tier}
+                  className={`${plan.tier === 'Growth' ? 'border-[#DCCEF8] bg-[#F8F4FF]' : 'border-[#E9E9E7] bg-white'} rounded-2xl border p-7 shadow-[0_10px_35px_rgba(55,53,47,0.06)]`}
+                >
+                  <h3 className="text-lg font-medium">{plan.tier}</h3>
+                  <p className="mt-4 text-3xl font-semibold">{plan.price}</p>
+                  <p className="mt-3 text-sm text-[#6B675F]">{plan.note}</p>
+                  <Button
+                    asChild
+                    className={`${plan.tier === 'Growth' ? 'bg-[#7C5CC4] hover:bg-[#6C4DB4]' : 'bg-[#37352F] hover:bg-[#2f2d27]'} mt-6 w-full rounded-lg text-white`}
+                  >
+                    <Link href="#contact">Request Demo</Link>
+                  </Button>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="contact" className="px-4 py-28 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="font-serif text-3xl font-semibold sm:text-4xl">Ready to launch FlashTap?</h2>
+            <p className="mx-auto mt-4 max-w-xl text-[#6B675F]">
+                Tell us about your venue and we will set up a tailored demo. No pressure, no lengthy setup call.
+            </p>
+            <div className="mt-10 rounded-2xl border border-[#E9E9E7] bg-white p-6 text-left shadow-[0_10px_35px_rgba(55,53,47,0.05)] sm:p-8">
+              <ContactForm submitLabel="Request Demo" />
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <Footer />
     </div>
   )
 }

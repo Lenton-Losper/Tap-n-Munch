@@ -179,7 +179,7 @@ export function AnalyticsDashboard() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => router.push('/')}
+                  onClick={() => router.push('/dashboard')}
                 >
                   <ArrowLeft className="w-5 h-5" />
                 </Button>
@@ -212,7 +212,7 @@ export function AnalyticsDashboard() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => router.push('/')}
+                onClick={() => router.push('/dashboard')}
               >
                 <ArrowLeft className="w-5 h-5" />
               </Button>

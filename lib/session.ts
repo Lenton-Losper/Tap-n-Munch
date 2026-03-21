@@ -7,7 +7,7 @@
  * - Do NOT reuse sessions per table
  */
 
-const SESSION_KEY = 'tapnmunch_session_v1'
+const SESSION_KEY = 'flashtap_session_v1'
 
 /**
  * Get or create a unique session ID

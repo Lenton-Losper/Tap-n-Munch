@@ -504,7 +504,7 @@ export function QRCodeManagement() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-3">
-              <Button variant="ghost" size="icon" onClick={() => router.push('/')}>
+              <Button variant="ghost" size="icon" onClick={() => router.push('/dashboard')}>
                 <ArrowLeft className="w-5 h-5" />
               </Button>
               <h1 className="text-2xl font-bold text-gray-900">QR Codes & Tables</h1>

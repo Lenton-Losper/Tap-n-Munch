@@ -1,4 +1,4 @@
-# Testing Guide - Tap n Munch
+# Testing Guide - FlashTap
 
 ## 🚀 Quick Start Testing
 

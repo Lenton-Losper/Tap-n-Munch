@@ -28,90 +28,86 @@ export async function getMenuItems(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    // Get all categories
-    const categories = await getMenuCategories(restaurantId)
-    const allItems: MenuItem[] = []
-    
-    // Iterate through each category
-    for (const category of categories) {
-      if (!category.active) continue
-      
-      // Get all subcategories for this category
-      const subcategories = await getSubCategories(restaurantId, category.id)
-      
+    const categories = (await getMenuCategories(restaurantId)).filter((category) => category.active)
+
+    const subCategoryResults = await Promise.all(
+      categories.map(async (category) => {
+        const subcategories = await getSubCategories(restaurantId, category.id)
+        return {
+          categoryId: category.id,
+          subcategories: subcategories.filter((subcat) => subcat.active),
+        }
+      })
+    )
+
+    const queryTasks: Promise<MenuItem[]>[] = []
+
+    for (const { categoryId, subcategories } of subCategoryResults) {
       for (const subcat of subcategories) {
-        if (!subcat.active) continue
-        
-        // Filter by subCategoryId if provided
         if (subCategoryId && subcat.id !== subCategoryId) continue
-        
-        try {
-          // Query items for this subcategory using hierarchical path
-          const itemsRef = collection(db, menuItemsPath(restaurantId, category.id, subcat.id))
-          const constraints: any[] = []
-          
-          if (status) {
-            constraints.push(where('status', '==', status))
-          } else {
-            // Exclude hidden items if no status filter
-            constraints.push(where('status', '!=', 'hidden'))
-          }
-          
-          constraints.push(orderBy('name', 'asc'))
-          
-          const q = query(itemsRef, ...constraints)
-          const snapshot = await getDocs(q)
-          
-          const items = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            // Ensure these fields are set for backward compatibility
-            restaurant_id: restaurantId,
-            menu_category_id: category.id,
-            sub_category_id: subcat.id,
-          } as MenuItem))
-          
-          allItems.push(...items)
-        } catch (error: any) {
-          // If query fails (e.g., missing index), try without orderBy
-          if (error?.code === 'failed-precondition') {
+
+        queryTasks.push(
+          (async () => {
+            const itemsRef = collection(db, menuItemsPath(restaurantId, categoryId, subcat.id))
+            const constraints: any[] = []
+
+            if (status) {
+              constraints.push(where('status', '==', status))
+            } else {
+              constraints.push(where('status', '!=', 'hidden'))
+            }
+
+            constraints.push(orderBy('name', 'asc'))
+
             try {
-              const itemsRef = collection(db, menuItemsPath(restaurantId, category.id, subcat.id))
-              const fallbackConstraints: any[] = []
-              
-              if (status) {
-                fallbackConstraints.push(where('status', '==', status))
-              } else {
-                fallbackConstraints.push(where('status', '!=', 'hidden'))
-              }
-              
-              const fallbackQuery = query(itemsRef, ...fallbackConstraints)
-              const snapshot = await getDocs(fallbackQuery)
-              
-              let items = snapshot.docs.map(doc => ({
+              const q = query(itemsRef, ...constraints)
+              const snapshot = await getDocs(q)
+              return snapshot.docs.map((doc) => ({
                 id: doc.id,
                 ...doc.data(),
                 restaurant_id: restaurantId,
-                menu_category_id: category.id,
+                menu_category_id: categoryId,
                 sub_category_id: subcat.id,
               } as MenuItem))
-              
-              // Sort in memory
-              items.sort((a, b) => a.name.localeCompare(b.name))
-              allItems.push(...items)
-            } catch (fallbackError: any) {
-              console.warn(`Error fetching items for subcategory ${subcat.id}:`, fallbackError.message)
+            } catch (error: any) {
+              if (error?.code !== 'failed-precondition') {
+                console.warn(`Error fetching items for subcategory ${subcat.id}:`, error?.message || error)
+                return []
+              }
+
+              try {
+                const fallbackConstraints: any[] = []
+                if (status) {
+                  fallbackConstraints.push(where('status', '==', status))
+                } else {
+                  fallbackConstraints.push(where('status', '!=', 'hidden'))
+                }
+
+                const fallbackQuery = query(itemsRef, ...fallbackConstraints)
+                const snapshot = await getDocs(fallbackQuery)
+                const items = snapshot.docs.map((doc) => ({
+                  id: doc.id,
+                  ...doc.data(),
+                  restaurant_id: restaurantId,
+                  menu_category_id: categoryId,
+                  sub_category_id: subcat.id,
+                } as MenuItem))
+                items.sort((a, b) => a.name.localeCompare(b.name))
+                return items
+              } catch (fallbackError: any) {
+                console.warn(`Error fetching items for subcategory ${subcat.id}:`, fallbackError?.message || fallbackError)
+                return []
+              }
             }
-          } else {
-            console.warn(`Error fetching items for subcategory ${subcat.id}:`, error.message)
-          }
-        }
+          })()
+        )
       }
     }
-    
-    // Final sort by name
+
+    const settledItems = await Promise.allSettled(queryTasks)
+    const allItems = settledItems.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+
     allItems.sort((a, b) => a.name.localeCompare(b.name))
-    
     return allItems
   } catch (error: any) {
     console.error('Error fetching menu items:', error)
@@ -128,63 +124,56 @@ export async function getMenuItemsBySubCategory(
   if (!db) throw new Error('Firestore is not initialized')
   
   try {
-    // Get all categories to find which one contains this subcategory
-    const categories = await getMenuCategories(restaurantId)
-    
-    for (const category of categories) {
-      if (!category.active) continue
-      
-      // Get subcategories for this category
-      const subcategories = await getSubCategories(restaurantId, category.id)
-      const subcat = subcategories.find(sc => sc.id === subCategoryId)
-      
-      if (subcat && subcat.active) {
-        // Found the subcategory, now query its items using hierarchical path
-        const itemsRef = collection(db, menuItemsPath(restaurantId, category.id, subCategoryId))
-        
-        try {
-          const q = query(
-            itemsRef,
-            where('status', '!=', 'hidden'),
-            orderBy('name', 'asc')
-          )
-          
-          const snapshot = await getDocs(q)
-          return snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            restaurant_id: restaurantId,
-            menu_category_id: category.id,
-            sub_category_id: subCategoryId,
-          } as MenuItem))
-        } catch (error: any) {
-          // If query fails (e.g., missing index), try without orderBy
-          if (error?.code === 'failed-precondition') {
-            const fallbackQuery = query(
-              itemsRef,
-              where('status', '!=', 'hidden')
-            )
-            
-            const snapshot = await getDocs(fallbackQuery)
-            const items = snapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data(),
-              restaurant_id: restaurantId,
-              menu_category_id: category.id,
-              sub_category_id: subCategoryId,
-            } as MenuItem))
-            
-            // Sort in memory
-            items.sort((a, b) => a.name.localeCompare(b.name))
-            return items
-          }
-          throw error
-        }
-      }
+    const categories = (await getMenuCategories(restaurantId)).filter((category) => category.active)
+
+    const subCategorySearch = await Promise.all(
+      categories.map(async (category) => {
+        const subcategories = await getSubCategories(restaurantId, category.id)
+        const found = subcategories.find((subcat) => subcat.id === subCategoryId && subcat.active)
+        return found ? category.id : null
+      })
+    )
+
+    const parentCategoryId = subCategorySearch.find((value): value is string => Boolean(value))
+    if (!parentCategoryId) return []
+
+    const itemsRef = collection(db, menuItemsPath(restaurantId, parentCategoryId, subCategoryId))
+
+    try {
+      const q = query(
+        itemsRef,
+        where('status', '!=', 'hidden'),
+        orderBy('name', 'asc')
+      )
+
+      const snapshot = await getDocs(q)
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        restaurant_id: restaurantId,
+        menu_category_id: parentCategoryId,
+        sub_category_id: subCategoryId,
+      } as MenuItem))
+    } catch (error: any) {
+      if (error?.code !== 'failed-precondition') throw error
+
+      const fallbackQuery = query(
+        itemsRef,
+        where('status', '!=', 'hidden')
+      )
+
+      const snapshot = await getDocs(fallbackQuery)
+      const items = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        restaurant_id: restaurantId,
+        menu_category_id: parentCategoryId,
+        sub_category_id: subCategoryId,
+      } as MenuItem))
+
+      items.sort((a, b) => a.name.localeCompare(b.name))
+      return items
     }
-    
-    // Subcategory not found
-    return []
   } catch (error: any) {
     console.error('Error fetching menu items by subcategory:', error)
     throw new Error(error.message || 'Failed to fetch menu items')

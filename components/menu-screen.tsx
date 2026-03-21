@@ -261,7 +261,7 @@ export function MenuScreen() {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <div className="flex flex-col">
-              <h1 className="text-xl font-bold">Tap n Munch</h1>
+              <h1 className="text-xl font-bold">FlashTap</h1>
               <p className="text-xs text-muted-foreground">Table 7</p>
             </div>
           </div>

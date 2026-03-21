@@ -68,18 +68,18 @@ export function ItemDetailModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-card border border-border max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-2 sm:items-center sm:p-4">
+      <div className="max-h-[95vh] w-full max-w-2xl overflow-y-auto border border-border bg-card sm:max-h-[90vh]">
         {/* Header */}
-        <div className="sticky top-0 bg-card border-b border-border flex items-center justify-between p-4 z-10">
-          <h2 className="text-xl font-serif font-bold text-foreground">Customize Item</h2>
-          <Button variant="ghost" size="icon" onClick={onClose}>
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card p-4">
+          <h2 className="text-lg font-serif font-bold text-foreground sm:text-xl">Customize Item</h2>
+          <Button variant="ghost" size="icon" onClick={onClose} className="h-11 w-11">
             <X className="w-5 h-5 stroke-[1.5]" />
           </Button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6">
+        <div className="space-y-5 p-4 sm:space-y-6 sm:p-6">
           {/* Image */}
           <div className="relative w-full aspect-[4/3] overflow-hidden bg-muted">
             {item.image_url ? (
@@ -120,7 +120,7 @@ export function ItemDetailModal({
 
           {/* Item Name & Description */}
           <div>
-            <h3 className="text-2xl font-serif font-bold text-foreground mb-2">{item.name}</h3>
+            <h3 className="mb-2 break-words font-serif text-xl font-bold text-foreground sm:text-2xl">{item.name}</h3>
             {item.description && (
               <p className="text-sm font-sans text-muted-foreground leading-relaxed">{item.description}</p>
             )}
@@ -138,7 +138,7 @@ export function ItemDetailModal({
                 }}
               >
                 {item.sizes.map((size) => (
-                  <div key={size.name} className="flex items-center space-x-3 py-3 border-b border-border last:border-b-0">
+                  <div key={size.name} className="flex min-h-[44px] items-center space-x-3 border-b border-border py-3 last:border-b-0">
                     <RadioGroupItem value={size.name} id={size.name} />
                     <Label
                       htmlFor={size.name}
@@ -162,7 +162,7 @@ export function ItemDetailModal({
               <Label className="text-base font-semibold mb-4 block font-sans text-foreground">Add-ons</Label>
               <div className="space-y-0">
                 {item.addons.map((addon) => (
-                  <div key={addon.name} className="flex items-center space-x-3 py-3 border-b border-border last:border-b-0">
+                  <div key={addon.name} className="flex min-h-[44px] items-center space-x-3 border-b border-border py-3 last:border-b-0">
                     <Checkbox
                       id={addon.name}
                       checked={selectedAddons.some(a => a.name === addon.name)}
@@ -208,7 +208,7 @@ export function ItemDetailModal({
                 variant="outline"
                 size="icon"
                 onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                className="w-10 h-10 border-border"
+                className="h-11 w-11 border-border"
               >
                 <Minus className="w-4 h-4 stroke-[1.5]" />
               </Button>
@@ -217,7 +217,7 @@ export function ItemDetailModal({
                 variant="outline"
                 size="icon"
                 onClick={() => setQuantity(quantity + 1)}
-                className="w-10 h-10 border-border"
+                className="h-11 w-11 border-border"
               >
                 <Plus className="w-4 h-4 stroke-[1.5]" />
               </Button>
@@ -226,8 +226,8 @@ export function ItemDetailModal({
         </div>
 
         {/* Footer */}
-        <div className="sticky bottom-0 bg-card border-t border-border p-4 flex items-center justify-between">
-          <div>
+        <div className="sticky bottom-0 border-t border-border bg-card p-4">
+          <div className="mb-3">
             <p className="text-xs font-sans text-muted-foreground uppercase tracking-wide mb-1">Total</p>
             <p className="text-2xl font-sans font-bold text-foreground">
               <span className="text-sm font-normal text-muted-foreground mr-0.5">{restaurant?.currency || 'N$'}</span>
@@ -236,7 +236,7 @@ export function ItemDetailModal({
           </div>
           <Button
             onClick={handleAddToCart}
-            className="bg-foreground text-background hover:bg-foreground/90 px-8 font-sans font-semibold"
+            className="h-11 w-full bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90 sm:h-10 sm:px-8"
             size="lg"
           >
             <ShoppingCart className="w-5 h-5 mr-2 stroke-[1.5]" />

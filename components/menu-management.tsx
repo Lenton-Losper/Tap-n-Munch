@@ -686,7 +686,7 @@ export function MenuManagement() {
       <header className="bg-card border-b border-border">
         <div className="container mx-auto px-6 py-6 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => router.push('/')}>
+            <Button variant="ghost" size="icon" onClick={() => router.push('/dashboard')}>
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <h1 className="text-3xl font-bold">Menu Management</h1>

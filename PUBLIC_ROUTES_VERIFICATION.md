@@ -86,7 +86,7 @@ NEXT_PUBLIC_BASE_URL=https://your-production-domain.vercel.app
 **Important**: 
 - Must be set to production domain
 - Should NOT include trailing slash
-- Example: `https://tap-n-munch.vercel.app`
+- Example: `https://flash-tap.vercel.app`
 
 ### Verification
 

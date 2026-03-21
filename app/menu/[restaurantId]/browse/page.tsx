@@ -120,29 +120,29 @@ export default function MenuBrowsePage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen max-w-full overflow-x-hidden bg-background">
       {/* Active Order Banner */}
       <ActiveOrderBanner />
       
       {/* Sticky Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-border">
-        <div className="max-w-4xl mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
+      <header className="sticky top-0 z-40 border-b border-border bg-white">
+        <div className="mx-auto max-w-4xl px-4 py-3 sm:py-4">
+          <div className="flex items-center justify-between gap-2">
             {/* Left: Back + Restaurant Info */}
-            <div className="flex items-center gap-3">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => router.back()}
-                className="w-10 h-10"
+                onClick={() => router.push(`/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)}
+                className="h-11 w-11"
               >
                 <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
               </Button>
               
-              <div className="flex items-center gap-3">
+              <div className="flex min-w-0 items-center gap-2 sm:gap-3">
                 {/* Logo */}
                 {restaurant?.logo_url ? (
-                  <div className="w-10 h-10 border border-border overflow-hidden flex-shrink-0">
+                  <div className="h-10 w-10 shrink-0 overflow-hidden border border-border">
                     <Image
                       src={restaurant.logo_url}
                       alt={restaurant.name || 'Restaurant'}
@@ -158,12 +158,12 @@ export default function MenuBrowsePage() {
                   </div>
                 )}
                 
-                <div>
-                  <h1 className="font-serif font-bold text-lg text-foreground leading-tight">
+                <div className="min-w-0">
+                  <h1 className="truncate font-serif text-base font-bold leading-tight text-foreground sm:text-lg">
                     {restaurant?.name || 'Menu'}
                   </h1>
                   {tableNumber > 0 && (
-                    <p className="text-xs font-sans text-muted-foreground">
+                    <p className="truncate text-xs font-sans text-muted-foreground">
                       Table {tableNumber}
                     </p>
                   )}
@@ -172,19 +172,19 @@ export default function MenuBrowsePage() {
             </div>
             
             {/* Right: Action Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               {tableNumber > 0 && (
                 <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
-                  <Button variant="outline" size="sm" className="font-sans border-border">
+                  <Button variant="outline" size="sm" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
                     <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
-                    Receipt
+                    <span className="hidden sm:inline">Receipt</span>
                   </Button>
                 </Link>
               )}
               <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
-                <Button variant="outline" size="sm" className="relative font-sans border-border">
+                <Button variant="outline" size="sm" className="relative h-11 border-border px-3 font-sans text-xs sm:text-sm">
                   <ShoppingCart className="w-4 h-4 mr-1.5 stroke-[1.5]" />
-                  Cart
+                  <span className="hidden sm:inline">Cart</span>
                   {getItemCount() > 0 && (
                     <span className="absolute -top-2 -right-2 bg-foreground text-background text-xs w-5 h-5 flex items-center justify-center font-semibold">
                       {getItemCount()}
@@ -197,7 +197,7 @@ export default function MenuBrowsePage() {
         </div>
       </header>
 
-      <div className="max-w-4xl mx-auto px-4 py-6">
+      <div className="mx-auto max-w-4xl px-4 py-6">
         {/* Category Navigation - Horizontal Scroll */}
         {menuCategories.length > 0 && (
           <div className="flex gap-2 overflow-x-auto pb-4 mb-6 scrollbar-hide">
@@ -221,14 +221,14 @@ export default function MenuBrowsePage() {
         )}
 
         {/* Search Bar */}
-        <div className="relative mb-8">
+        <div className="relative mb-6 sm:mb-8">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground stroke-[1.5]" />
           <Input
             type="text"
             placeholder="Search menu items..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-12 py-3 bg-muted border-border font-sans"
+            className="h-11 border-border bg-muted pl-12 font-sans text-base sm:text-sm"
           />
         </div>
 
@@ -250,7 +250,7 @@ export default function MenuBrowsePage() {
                 </div>
                 
                 {/* Items Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   {items.map((item) => (
                     <article
                       key={item.id}
@@ -296,7 +296,7 @@ export default function MenuBrowsePage() {
                       
                       {/* Content */}
                       <div className="p-4">
-                        <h3 className="font-sans font-semibold text-lg text-foreground mb-1">
+                        <h3 className="mb-1 line-clamp-2 font-sans text-base font-semibold text-foreground sm:text-lg">
                           {item.name}
                         </h3>
                         {item.description && (
@@ -306,7 +306,7 @@ export default function MenuBrowsePage() {
                         )}
                         
                         {/* Price + Add Button */}
-                        <div className="flex items-center justify-between pt-2 border-t border-border">
+                        <div className="flex items-center justify-between border-t border-border pt-2">
                           <div>
                             <p className="text-lg font-sans font-bold text-foreground">
                               <span className="text-sm font-normal text-muted-foreground mr-0.5">
@@ -322,7 +322,7 @@ export default function MenuBrowsePage() {
                             onClick={() => handleAddToCart(item)}
                             disabled={item.status === 'out_of_stock'}
                             size="sm"
-                            className="bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold px-4"
+                            className="h-11 bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90"
                           >
                             {item.status === 'out_of_stock' ? 'Unavailable' : 'Add +'}
                           </Button>
@@ -376,7 +376,7 @@ export default function MenuBrowsePage() {
 
       {/* Floating Receipt Button */}
       {tableNumber > 0 && (
-        <div className="fixed bottom-6 right-6 z-50">
+        <div className="fixed bottom-5 right-4 z-50 sm:bottom-6 sm:right-6">
           <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
             <button
               className="bg-foreground text-background w-14 h-14 flex items-center justify-center text-xl hover:bg-foreground/90 transition-all shadow-lg"

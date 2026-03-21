@@ -370,6 +370,33 @@ function OrderConfirmationContent() {
                 </span>
               )}
             </div>
+            {order?.payment_method === 'card' && order?.payment_status === 'pending' && order?.payment_qr_base64 && (
+              <div className="mt-4 border border-border bg-card p-3">
+                <p className="text-xs text-muted-foreground mb-2">
+                  Scan to pay instantly with PayCloud.
+                </p>
+                <img
+                  src={order.payment_qr_base64}
+                  alt="PayCloud payment QR"
+                  className="w-52 h-52 border border-border bg-white"
+                />
+                {order?.payment_checkout_url && (
+                  <a
+                    href={order.payment_checkout_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs underline mt-2 inline-block"
+                  >
+                    Open payment link
+                  </a>
+                )}
+                {order?.payment_qr_expires_at && (
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Expires: {new Date(order.payment_qr_expires_at).toLocaleTimeString()}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Order Items */}

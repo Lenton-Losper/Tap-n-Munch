@@ -8,7 +8,7 @@
 import { collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 
-const SESSION_KEY = 'tapnmunch_session_v1'
+const SESSION_KEY = 'flashtap_session_v1'
 
 /**
  * Restore session from active table orders

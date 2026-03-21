@@ -23,7 +23,7 @@ When you delete all Firestore data:
 ### Option 1: Delete from Firebase Console (Recommended)
 
 1. Go to [Firebase Console](https://console.firebase.google.com/)
-2. Select your project: **TapnMunch**
+2. Select your project: **FlashTap**
 3. Click **Authentication** in the left menu
 4. Click the **Users** tab
 5. Find the user you want to delete
