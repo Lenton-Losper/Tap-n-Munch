@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
 import { orderPath } from '@/lib/firebase/paths'
 import { enforceWebhookRateLimit, handlePaycloudWebhook } from '@/payments/webhook'
+import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
+
+const ADMIN_NOT_CONFIGURED =
+  'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
 
 function getClientIp(req: Request) {
   return req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown'
@@ -33,7 +35,31 @@ function parseMerchantOrderNo(merchantOrderNo: string): ParsedMerchantOrder | nu
   return { mode: 'single', restaurantId, orderId: rest }
 }
 
+async function markOrdersPaid(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  restaurantId: string,
+  orderIds: string[],
+  transactionId: string | null
+) {
+  const patch = {
+    payment_status: 'paid' as const,
+    paid_at: FieldValue.serverTimestamp(),
+    payment_provider: 'paycloud',
+    paycloud_transaction_id: transactionId || null,
+    updated_at: FieldValue.serverTimestamp(),
+  }
+
+  for (const orderId of orderIds) {
+    await fs.doc(orderPath(restaurantId, orderId)).update(patch)
+  }
+}
+
 export async function POST(req: Request) {
+  const fs = adminDb()
+  if (!fs) {
+    return NextResponse.json({ ok: false, error: ADMIN_NOT_CONFIGURED }, { status: 503 })
+  }
+
   const rate = enforceWebhookRateLimit(getClientIp(req))
   if (!rate.allowed) {
     return NextResponse.json({ ok: false, error: 'Rate limit exceeded' }, { status: 429 })
@@ -47,27 +73,17 @@ export async function POST(req: Request) {
   const result = await handlePaycloudWebhook(rawBody, headers, {
     onPaid: async (_payload: any, ref: any) => {
       const parsedRef = parseMerchantOrderNo(ref.orderId)
-      if (!parsedRef || !db) return
-
-      const patch = {
-        payment_status: 'paid' as const,
-        paid_at: serverTimestamp(),
-        payment_provider: 'paycloud',
-        paycloud_transaction_id: ref.transactionId || null,
-        updated_at: serverTimestamp(),
-      }
+      if (!parsedRef) return
 
       if (parsedRef.mode === 'receipt') {
-        for (const orderId of parsedRef.orderIds) {
-          await updateDoc(doc(db, orderPath(parsedRef.restaurantId, orderId)), patch)
-        }
+        await markOrdersPaid(fs, parsedRef.restaurantId, parsedRef.orderIds, ref.transactionId || null)
         console.log('[PayCloud webhook] Receipt payment — orders marked paid:', {
           restaurantId: parsedRef.restaurantId,
           orderIds: parsedRef.orderIds,
           transactionId: ref.transactionId,
         })
       } else {
-        await updateDoc(doc(db, orderPath(parsedRef.restaurantId, parsedRef.orderId)), patch)
+        await markOrdersPaid(fs, parsedRef.restaurantId, [parsedRef.orderId], ref.transactionId || null)
         console.log('[PayCloud webhook] Payment confirmed and order updated:', {
           restaurantId: parsedRef.restaurantId,
           orderId: parsedRef.orderId,

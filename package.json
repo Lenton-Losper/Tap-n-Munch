@@ -12,7 +12,8 @@
     "test:orders": "node test-orders.js",
     "test:order": "tsx scripts/test-order.ts",
     "test:order-schema": "tsx scripts/test-order-schema.ts",
-    "test:payment": "node test-payment.js"
+    "test:payment": "node test-payment.js",
+    "vercel:env:push": "node scripts/push-env-to-vercel.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -52,6 +53,7 @@
     "dotenv": "^17.2.3",
     "embla-carousel-react": "8.5.1",
     "firebase": "^12.6.0",
+    "firebase-admin": "^13.7.0",
     "html-to-image": "^1.11.13",
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",

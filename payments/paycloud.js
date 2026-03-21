@@ -7,7 +7,7 @@ function requiredEnv(name) {
   return value
 }
 
-function maskSecrets(data) {
+export function maskSecrets(data) {
   const raw = JSON.stringify(data || {})
   return raw.replace(/(token|secret|password|key)"\s*:\s*"[^"]+"/gi, '$1":"***"')
 }
@@ -25,11 +25,46 @@ export function getPaycloudConfig() {
   }
 }
 
-function mapPaycloudError(status, payload) {
+/** Rich error for server logging (HTTP status + parsed body + raw text). Never log card fields from payload. */
+export class PaycloudRequestError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ httpStatus?: number, responseBody?: unknown, rawText?: string, phase?: string }} [meta]
+   */
+  constructor(message, meta = {}) {
+    super(message)
+    this.name = 'PaycloudRequestError'
+    this.httpStatus = meta.httpStatus
+    this.responseBody = meta.responseBody
+    this.rawText = meta.rawText
+    this.phase = meta.phase
+  }
+}
+
+function mapPaycloudError(status, payload, rawText) {
   const message = payload?.msg || payload?.message || 'PayCloud request failed'
-  if (status === 401 || status === 403) return new Error(`Invalid PayCloud credentials: ${message}`)
-  if (status >= 500) return new Error(`PayCloud service unavailable: ${message}`)
-  return new Error(`PayCloud rejected request (${status}): ${message}`)
+  if (status === 401 || status === 403) {
+    return new PaycloudRequestError(`Invalid PayCloud credentials: ${message}`, {
+      httpStatus: status,
+      responseBody: payload,
+      rawText,
+      phase: 'http',
+    })
+  }
+  if (status >= 500) {
+    return new PaycloudRequestError(`PayCloud service unavailable: ${message}`, {
+      httpStatus: status,
+      responseBody: payload,
+      rawText,
+      phase: 'http',
+    })
+  }
+  return new PaycloudRequestError(`PayCloud rejected request (${status}): ${message}`, {
+    httpStatus: status,
+    responseBody: payload,
+    rawText,
+    phase: 'http',
+  })
 }
 
 export async function createPaymentRequest(input, options = {}) {
@@ -37,10 +72,10 @@ export async function createPaymentRequest(input, options = {}) {
   const amount = Number(input.amount)
 
   if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('amount must be a positive number')
+    throw new PaycloudRequestError('amount must be a positive number', { phase: 'validation' })
   }
   if (!input.orderId) {
-    throw new Error('orderId is required')
+    throw new PaycloudRequestError('orderId is required', { phase: 'validation' })
   }
 
   const payload = {
@@ -85,9 +120,12 @@ export async function createPaymentRequest(input, options = {}) {
   } catch (error) {
     clearTimeout(timeout)
     if (error?.name === 'AbortError') {
-      throw new Error('PayCloud request timed out')
+      throw new PaycloudRequestError('PayCloud request timed out', { phase: 'network' })
     }
-    throw new Error(`Network failure calling PayCloud: ${error.message}`)
+    throw new PaycloudRequestError(`Network failure calling PayCloud: ${error.message}`, {
+      phase: 'network',
+      responseBody: { cause: error?.name },
+    })
   }
   clearTimeout(timeout)
 
@@ -96,25 +134,39 @@ export async function createPaymentRequest(input, options = {}) {
   try {
     body = JSON.parse(raw)
   } catch {
-    throw new Error(`Invalid PayCloud response format: ${raw.slice(0, 200)}`)
+    throw new PaycloudRequestError(`Invalid PayCloud response format: ${raw.slice(0, 200)}`, {
+      httpStatus: response.status,
+      rawText: raw,
+      phase: 'parse',
+    })
   }
 
   if (!response.ok) {
-    throw mapPaycloudError(response.status, body)
+    throw mapPaycloudError(response.status, body, raw)
   }
 
   const signature = body.sign
   if (signature) {
     const signatureOk = verifyPayloadSignature(body, signature)
     if (!signatureOk) {
-      throw new Error('PayCloud response signature verification failed')
+      throw new PaycloudRequestError('PayCloud response signature verification failed', {
+        httpStatus: response.status,
+        responseBody: body,
+        rawText: raw,
+        phase: 'signature',
+      })
     }
   }
 
   const successCode = String(body.code || '').toUpperCase()
   if (successCode && !['0', 'SUCCESS', '200'].includes(successCode)) {
     const failReason = body.msg || body.sub_msg || 'declined'
-    throw new Error(`Payment declined by PayCloud: ${failReason}`)
+    throw new PaycloudRequestError(`Payment declined by PayCloud: ${failReason}`, {
+      httpStatus: response.status,
+      responseBody: body,
+      rawText: raw,
+      phase: 'business',
+    })
   }
 
   const paymentUrl = body.pay_url || body.checkout_url || body.payment_url || body.redirect_url || null

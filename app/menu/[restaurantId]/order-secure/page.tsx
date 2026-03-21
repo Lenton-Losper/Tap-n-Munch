@@ -1,11 +1,10 @@
 'use client'
 
-export const dynamic = "force-dynamic"
+export const dynamic = 'force-dynamic'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
-import { getTableByNumber } from '@/lib/firebase/tables'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
@@ -14,6 +13,16 @@ import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { PaymentMethodSelector } from '@/components/payment-method-selector'
+import {
+  formatCardNumberInput,
+  formatExpiryMmYyInput,
+  normalizeCardDigits,
+  validateCardNumberDigits,
+  validateCardholderName,
+  validateCvv,
+  validateExpiryMmYy,
+} from '@/lib/card-validation'
+import { cn } from '@/lib/utils'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -22,31 +31,34 @@ export default function OrderSecurePage() {
   const { toast } = useToast()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
-  
+
   const { items, getTotal, clearCart } = useCart()
   const [restaurant, setRestaurant] = useState<any>(null)
-  const [table, setTable] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-  
+
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | null>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
   const [cardNo, setCardNo] = useState('')
   const [cardHolder, setCardHolder] = useState('')
-  const [expiryMonth, setExpiryMonth] = useState('')
-  const [expiryYear, setExpiryYear] = useState('')
+  const [expiryMmYy, setExpiryMmYy] = useState('')
   const [cvv, setCvv] = useState('')
+
+  const [blurred, setBlurred] = useState({
+    cardNo: false,
+    cardHolder: false,
+    expiry: false,
+    cvv: false,
+  })
+  const [submitAttempted, setSubmitAttempted] = useState(false)
+  /** Set when PayCloud failed but order exists — retry uses resumeOrderId (no duplicate order). */
+  const [awaitingPaymentOrderId, setAwaitingPaymentOrderId] = useState<string | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [restaurantData, tableData] = await Promise.all([
-          getRestaurant(restaurantId),
-          tableNumber > 0 ? getTableByNumber(restaurantId, tableNumber) : Promise.resolve(null),
-        ])
+        const restaurantData = await getRestaurant(restaurantId)
         setRestaurant(restaurantData)
-        setTable(tableData)
-        
         if (tableNumber > 0) {
           getOrCreateSession(String(tableNumber), restaurantId)
         }
@@ -61,14 +73,59 @@ export default function OrderSecurePage() {
         setLoading(false)
       }
     }
-    
+
     if (restaurantId) {
       loadData()
     }
-  }, [restaurantId, tableNumber])
+  }, [restaurantId, tableNumber, toast])
+
+  const cardDigits = useMemo(() => normalizeCardDigits(cardNo), [cardNo])
+
+  const cardFieldsFilled =
+    cardDigits.length > 0 &&
+    cardHolder.trim().length > 0 &&
+    expiryMmYy.trim().length > 0 &&
+    cvv.trim().length > 0
+
+  const cardFormValid =
+    paymentMethod !== 'card' ||
+    (validateCardNumberDigits(cardDigits) === null &&
+      validateCardholderName(cardHolder) === null &&
+      validateExpiryMmYy(expiryMmYy) === null &&
+      validateCvv(cvv, cardDigits) === null)
+
+  const showCardIncompleteHint =
+    paymentMethod === 'card' && submitAttempted && !cardFieldsFilled
+
+  const cardNoError =
+    (blurred.cardNo || submitAttempted) && cardDigits.length > 0
+      ? validateCardNumberDigits(cardDigits)
+      : null
+
+  const cardHolderError =
+    (blurred.cardHolder || submitAttempted) && cardHolder.trim().length > 0
+      ? validateCardholderName(cardHolder)
+      : null
+
+  const expiryError =
+    (blurred.expiry || submitAttempted) && expiryMmYy.trim().length > 0
+      ? validateExpiryMmYy(expiryMmYy)
+      : null
+
+  const cvvError =
+    (blurred.cvv || submitAttempted) && cvv.trim().length > 0 ? validateCvv(cvv, cardDigits) : null
+
+  const placeOrderEnabled =
+    !!paymentMethod &&
+    (paymentMethod === 'cash' || cardFormValid) &&
+    !submitting &&
+    (awaitingPaymentOrderId != null ||
+      (Array.isArray(items) && items.length > 0))
 
   const submitOrder = async () => {
-    if (!Array.isArray(items) || items.length === 0) {
+    setSubmitAttempted(true)
+
+    if (!awaitingPaymentOrderId && (!Array.isArray(items) || items.length === 0)) {
       toast({
         title: 'Cart is empty',
         description: 'Please add items to your cart before placing an order.',
@@ -76,7 +133,7 @@ export default function OrderSecurePage() {
       })
       return
     }
-    
+
     if (!paymentMethod) {
       toast({
         title: 'Payment method required',
@@ -87,31 +144,28 @@ export default function OrderSecurePage() {
     }
 
     if (paymentMethod === 'card') {
-      if (!cardNo.trim() || !expiryMonth.trim() || !expiryYear.trim() || !cvv.trim()) {
-        toast({
-          title: 'Card details required',
-          description: 'Please enter card number, expiry month/year, and CVV.',
-          variant: 'destructive',
-        })
+      if (!cardFieldsFilled) {
+        return
+      }
+      if (!cardFormValid) {
         return
       }
     }
-    
+
     let sessionId = getCurrentSession()
     if (!sessionId) {
       sessionId = getOrCreateSession(restaurantId, String(tableNumber))
     }
-    
+
     if (!sessionId) {
       toast({
         title: 'Session Error',
         description: 'Unable to create session. Please try again.',
         variant: 'destructive',
       })
-      setSubmitting(false)
       return
     }
-    
+
     setSubmitting(true)
     toast({ title: 'Processing your order...', description: 'Please wait.' })
 
@@ -122,67 +176,106 @@ export default function OrderSecurePage() {
       const total = subtotal + tax
 
       const orderItems = items
-        .filter(item => item != null)
-        .map(item => ({
+        .filter((item) => item != null)
+        .map((item) => ({
           menuItemId: String(item?.menu_item_id || ''),
           name: String(item?.name || ''),
           quantity: Number(item?.quantity) || 1,
           basePrice: Number(item?.base_price) || 0,
-          size: (item?.selected_size?.name) ? String(item.selected_size.name) : null,
-          addons: Array.isArray(item?.selected_addons) 
-            ? item.selected_addons.filter(a => a != null).map(a => ({
-                name: String(a?.name || ''),
-                price: Number(a?.price) || 0,
-              }))
+          size: item?.selected_size?.name ? String(item.selected_size.name) : null,
+          addons: Array.isArray(item?.selected_addons)
+            ? item.selected_addons
+                .filter((a) => a != null)
+                .map((a) => ({
+                  name: String(a?.name || ''),
+                  price: Number(a?.price) || 0,
+                }))
             : [],
           specialInstructions: item?.special_instructions?.trim() || '',
           subtotal: Number(item?.subtotal) || 0,
         }))
-        .filter(item => item.menuItemId && item.name)
+        .filter((item) => item.menuItemId && item.name)
 
-      const payload: Record<string, any> = {
-        restaurantId: String(restaurantId),
-        tableNumber: Number(tableNumber) || 0,
-        session_id: String(sessionId),
-        items: orderItems,
-        subtotal: Number(subtotal),
-        tax: Number(tax),
-        total: Number(total),
-        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
-        orderInstructions: orderInstructions?.trim() || null,
-      }
+      let cleanPayload: Record<string, any>
 
-      if (paymentMethod === 'card') {
-        payload.card = {
-          cardNo: cardNo.trim(),
-          cardHolder: cardHolder.trim() || 'FLASHTAP CUSTOMER',
-          expireMonth: expiryMonth.trim(),
-          expireYear: expiryYear.trim(),
-          cvv: cvv.trim(),
+      if (awaitingPaymentOrderId && paymentMethod === 'card') {
+        const exp = expiryMmYy.trim().match(/^(\d{2})\/(\d{2})$/)
+        const yy = exp ? exp[2]! : ''
+        const expireYear = yy.length === 2 ? `20${yy}` : yy
+        cleanPayload = {
+          restaurantId: String(restaurantId),
+          tableNumber: Number(tableNumber) || 0,
+          session_id: String(sessionId),
+          paymentMethod: 'card',
+          resumeOrderId: awaitingPaymentOrderId,
+          card: {
+            cardNo: cardDigits,
+            cardHolder: cardHolder.trim(),
+            expireMonth: exp ? exp[1]! : '',
+            expireYear,
+            cvv: cvv.trim(),
+          },
         }
+      } else {
+        const payload: Record<string, any> = {
+          restaurantId: String(restaurantId),
+          tableNumber: Number(tableNumber) || 0,
+          session_id: String(sessionId),
+          items: orderItems,
+          subtotal: Number(subtotal),
+          tax: Number(tax),
+          total: Number(total),
+          paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
+          orderInstructions: orderInstructions?.trim() || null,
+        }
+
+        if (paymentMethod === 'card') {
+          const exp = expiryMmYy.trim().match(/^(\d{2})\/(\d{2})$/)
+          const yy = exp ? exp[2]! : ''
+          const expireYear = yy.length === 2 ? `20${yy}` : yy
+          payload.card = {
+            cardNo: cardDigits,
+            cardHolder: cardHolder.trim(),
+            expireMonth: exp ? exp[1]! : '',
+            expireYear,
+            cvv: cvv.trim(),
+          }
+        }
+
+        cleanPayload = JSON.parse(JSON.stringify(payload))
+        if (payload.session_id) cleanPayload.session_id = payload.session_id
       }
-      
-      const cleanPayload = JSON.parse(JSON.stringify(payload))
-      if (payload.session_id) cleanPayload.session_id = payload.session_id
-      
+
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanPayload),
       })
 
+      const data = await response.json().catch(() => ({}))
+
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || `Failed to place order (${response.status})`)
+        throw new Error(data.error || `Failed to place order (${response.status})`)
       }
 
-      const data = await response.json()
-      const orderId = data.orderId
-
+      const orderId = data.orderId as string | undefined
       if (!orderId) throw new Error('Order was created but no order ID was returned')
 
+      if (data.paymentPending === true) {
+        setAwaitingPaymentOrderId(orderId)
+        setSubmitting(false)
+        toast({
+          title: 'Order placed',
+          description: 'Your order was placed. Please complete payment below.',
+        })
+        return
+      }
+
+      setAwaitingPaymentOrderId(null)
       clearCart()
-      router.push(`/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`)
+      router.push(
+        `/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`
+      )
     } catch (error: any) {
       console.error('Order failure:', error)
       toast({
@@ -210,35 +303,48 @@ export default function OrderSecurePage() {
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-background">
       <div className="mx-auto max-w-2xl px-4 py-6">
-        {/* Header */}
         <div className="mb-6 flex items-center gap-3 sm:mb-8">
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => router.push(`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)}
+            onClick={() =>
+              router.push(`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)
+            }
             className="h-11 w-11"
           >
             <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
           </Button>
           <div>
             <h1 className="text-xl font-serif font-bold text-foreground sm:text-2xl">Secure Checkout</h1>
-            {tableNumber > 0 && (
-              <p className="text-sm text-muted-foreground font-sans">Table {tableNumber}</p>
-            )}
+            {tableNumber > 0 && <p className="text-sm text-muted-foreground font-sans">Table {tableNumber}</p>}
           </div>
         </div>
 
-        {/* Payment Method */}
+        {awaitingPaymentOrderId && (
+          <div
+            className="mb-6 rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm font-sans text-foreground"
+            role="status"
+          >
+            <p className="font-semibold">Your order was placed. Please complete payment below.</p>
+            <p className="mt-1 text-muted-foreground text-xs">
+              Order ID: {awaitingPaymentOrderId.slice(0, 8)}… — if payment keeps failing, tell staff this reference.
+            </p>
+          </div>
+        )}
+
         <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-serif font-bold text-foreground mb-4">Payment Method</h2>
           <PaymentMethodSelector
             value={paymentMethod}
-            onChange={setPaymentMethod}
+            onChange={(m) => {
+              setPaymentMethod(m)
+              setSubmitAttempted(false)
+              if (m !== 'card') setAwaitingPaymentOrderId(null)
+            }}
             enabledMethods={['cash', 'card']}
           />
         </div>
 
-        {/* Order Instructions */}
         <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <Label htmlFor="instructions" className="mb-3 block font-sans text-foreground font-semibold">
             Order Instructions (Optional)
@@ -254,44 +360,83 @@ export default function OrderSecurePage() {
         </div>
 
         {paymentMethod === 'card' && (
-          <div className="mb-6 border border-border bg-card p-4 sm:p-6">
-            <h2 className="text-lg font-serif font-bold text-foreground mb-4">Card Details</h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <input
-                className="w-full border border-border bg-background p-3 text-sm"
-                placeholder="Card Number"
-                value={cardNo}
-                onChange={(e) => setCardNo(e.target.value)}
-              />
-              <input
-                className="w-full border border-border bg-background p-3 text-sm"
-                placeholder="Card Holder Name"
-                value={cardHolder}
-                onChange={(e) => setCardHolder(e.target.value)}
-              />
-              <input
-                className="w-full border border-border bg-background p-3 text-sm"
-                placeholder="Expiry Month (MM)"
-                value={expiryMonth}
-                onChange={(e) => setExpiryMonth(e.target.value)}
-              />
-              <input
-                className="w-full border border-border bg-background p-3 text-sm"
-                placeholder="Expiry Year (YYYY)"
-                value={expiryYear}
-                onChange={(e) => setExpiryYear(e.target.value)}
-              />
-              <input
-                className="w-full border border-border bg-background p-3 text-sm sm:col-span-2"
-                placeholder="CVV"
-                value={cvv}
-                onChange={(e) => setCvv(e.target.value)}
-              />
+          <div className="mb-6 border border-border bg-card p-4 sm:p-6 space-y-4">
+            <h2 className="text-lg font-serif font-bold text-foreground">Card Details</h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Label htmlFor="card-no" className="text-foreground font-sans text-sm">
+                  Card number
+                </Label>
+                <input
+                  id="card-no"
+                  inputMode="numeric"
+                  autoComplete="cc-number"
+                  className="mt-1 w-full border border-border bg-background p-3 text-sm font-sans rounded-md"
+                  placeholder="1234 5678 9012 3456"
+                  value={cardNo}
+                  onChange={(e) => setCardNo(formatCardNumberInput(e.target.value))}
+                  onBlur={() => setBlurred((b) => ({ ...b, cardNo: true }))}
+                />
+                {cardNoError && <p className="mt-1 text-sm text-destructive font-sans">{cardNoError}</p>}
+              </div>
+              <div className="sm:col-span-2">
+                <Label htmlFor="card-holder" className="text-foreground font-sans text-sm">
+                  Cardholder name
+                </Label>
+                <input
+                  id="card-holder"
+                  autoComplete="cc-name"
+                  className="mt-1 w-full border border-border bg-background p-3 text-sm font-sans rounded-md"
+                  placeholder="Name on card"
+                  value={cardHolder}
+                  onChange={(e) => setCardHolder(e.target.value)}
+                  onBlur={() => setBlurred((b) => ({ ...b, cardHolder: true }))}
+                />
+                {cardHolderError && (
+                  <p className="mt-1 text-sm text-destructive font-sans">{cardHolderError}</p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="card-expiry" className="text-foreground font-sans text-sm">
+                  Expiry (MM/YY)
+                </Label>
+                <input
+                  id="card-expiry"
+                  autoComplete="cc-exp"
+                  className="mt-1 w-full border border-border bg-background p-3 text-sm font-sans rounded-md"
+                  placeholder="MM/YY"
+                  value={expiryMmYy}
+                  onChange={(e) => setExpiryMmYy(formatExpiryMmYyInput(expiryMmYy, e.target.value))}
+                  onBlur={() => setBlurred((b) => ({ ...b, expiry: true }))}
+                />
+                {expiryError && <p className="mt-1 text-sm text-destructive font-sans">{expiryError}</p>}
+              </div>
+              <div>
+                <Label htmlFor="card-cvv" className="text-foreground font-sans text-sm">
+                  CVV
+                </Label>
+                <input
+                  id="card-cvv"
+                  inputMode="numeric"
+                  autoComplete="cc-csc"
+                  className="mt-1 w-full border border-border bg-background p-3 text-sm font-sans rounded-md"
+                  placeholder="123 or 1234"
+                  maxLength={4}
+                  value={cvv}
+                  onChange={(e) => setCvv(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onBlur={() => setBlurred((b) => ({ ...b, cvv: true }))}
+                />
+                {cvvError && <p className="mt-1 text-sm text-destructive font-sans">{cvvError}</p>}
+              </div>
             </div>
+            {showCardIncompleteHint && (
+              <p className="text-sm text-destructive font-sans font-medium">
+                Please complete your card details to continue
+              </p>
+            )}
           </div>
         )}
 
-        {/* Order Summary */}
         <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-serif font-bold text-foreground mb-4">Order Summary</h2>
           <div className="space-y-3">
@@ -314,16 +459,26 @@ export default function OrderSecurePage() {
           </div>
         </div>
 
-        {/* Place Order Button */}
         <Button
           onClick={submitOrder}
-          disabled={submitting || !Array.isArray(items) || items.length === 0 || !paymentMethod}
-          className="h-11 w-full bg-foreground py-6 text-base font-semibold font-sans text-background hover:bg-foreground/90"
+          disabled={!placeOrderEnabled}
+          className={cn(
+            'h-11 w-full py-6 text-base font-semibold font-sans',
+            placeOrderEnabled
+              ? 'bg-foreground text-background hover:bg-foreground/90'
+              : 'bg-muted text-muted-foreground cursor-not-allowed opacity-70 hover:bg-muted'
+          )}
           size="lg"
         >
-          {submitting ? 'Placing Order...' : 'Place Order'}
+          {submitting
+            ? awaitingPaymentOrderId
+              ? 'Retrying payment...'
+              : 'Placing Order...'
+            : awaitingPaymentOrderId
+              ? 'Retry payment'
+              : 'Place Order'}
         </Button>
-        
+
         {!paymentMethod && (
           <p className="text-sm text-destructive text-center mt-3 font-sans">
             Please select a payment method to place the order.

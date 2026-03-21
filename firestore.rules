@@ -1,80 +1,75 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
     /* ---------- USERS ---------- */
     match /users/{userId} {
       allow read, create, update: if request.auth != null && request.auth.uid == userId;
       allow delete: if false;
     }
-    
+
     /* ---------- RESTAURANTS ---------- */
     match /restaurants/{restaurantId} {
-      // Public read for customer menus
+
+      // Step 1: Anyone can read restaurant docs — customers browse menus without login
       allow read: if true;
-      
-      // Only authenticated users can create
+
       allow create: if request.auth != null;
-      
-      // Only owner can update (simple check - no helper function)
-      allow update: if request.auth != null && 
+
+      allow update: if request.auth != null &&
                        request.auth.uid == resource.data.owner_id;
-      
+
       allow delete: if false;
-      
-      /* ---------- MENU CATEGORIES ---------- */
+
+      /* ---------- MENU (nested) ---------- */
       match /menu/data {
-        allow read: if true; // Public
+        allow read: if true;
         allow write: if request.auth != null;
-        
+
         match /categories/{categoryId} {
-          allow read: if true; // Public
+          allow read: if true;
           allow write: if request.auth != null;
-          
+
           match /subcategories/{subcategoryId} {
-            allow read: if true; // Public
+            allow read: if true;
             allow write: if request.auth != null;
-            
+
             match /items/{itemId} {
-              allow read: if true; // Public
+              allow read: if true;
               allow write: if request.auth != null;
             }
           }
         }
       }
-      
-      /* ---------- TABLES - MUST BE PUBLIC ---------- */
+
+      /* ---------- TABLES ---------- */
       match /tables/{tableId} {
-        // CRITICAL: Unconditionally public for QR codes - NO helper functions
         allow read: if true;
-        
-        // Write requires authentication only
         allow create, update, delete: if request.auth != null;
-        
+
         match /current_session/{sessionId} {
           allow read, create, update: if true;
           allow delete: if false;
         }
       }
-      
-      /* ---------- ORDERS ---------- */
+
+      /* ---------- ORDERS ----------
+       * - Anyone can create orders (unauthenticated QR customers; optional direct client create).
+       * - Anyone can read orders under a restaurant (confirmation, receipt, table listeners).
+       *   Note: Firestore cannot express "only this customer's order" without auth; use session_id
+       *   in app logic. Server writes/updates from Next.js API use Firebase Admin and bypass rules.
+       * - Only the restaurant owner (authenticated) may update orders (dashboard).
+       * - Deletes denied (audit); use Admin SDK if you ever need server-side delete.
+       */
       match /orders/{orderId} {
-        // Anyone can create (customers)
         allow create: if true;
-        
-        // Only authenticated users can read
-        allow read: if request.auth != null;
-        
-        // Only authenticated users can update
-        // Owner of the restaurant can always update orders
-        // restaurantId is available from the parent path: restaurants/{restaurantId}/orders/{orderId}
-        allow update: if request.auth != null && 
-                       exists(/databases/$(database)/documents/restaurants/$(restaurantId)) &&
-                       request.auth.uid == get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.owner_id;
-        
+        allow read: if true;
+        allow update: if request.auth != null &&
+                         exists(/databases/$(database)/documents/restaurants/$(restaurantId)) &&
+                         request.auth.uid == get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.owner_id;
         allow delete: if false;
       }
-      
+
       /* ---------- ANALYTICS ---------- */
       match /analytics/daily/{date} {
         allow read, write: if request.auth != null;

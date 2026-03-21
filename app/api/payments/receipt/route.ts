@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
-import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
 import { orderPath } from '@/lib/firebase/paths'
 import { createPaymentRequest } from '@/payments/paycloud'
+import { adminDb } from '@/lib/firebase/admin-firestore'
+
+const ADMIN_NOT_CONFIGURED =
+  'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
 
 function getTermIp(req: Request) {
   const forwarded = req.headers.get('x-forwarded-for')
@@ -10,12 +12,23 @@ function getTermIp(req: Request) {
   return req.headers.get('x-real-ip') || '127.0.0.1'
 }
 
-export async function POST(req: Request) {
-  try {
-    if (!db) {
-      return NextResponse.json({ ok: false, error: 'Database not configured' }, { status: 503 })
-    }
+async function fetchOrderData(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  restaurantId: string,
+  orderId: string
+) {
+  const snap = await fs.doc(orderPath(restaurantId, orderId)).get()
+  if (!snap.exists) return null
+  return snap.data() as Record<string, unknown>
+}
 
+export async function POST(req: Request) {
+  const fs = adminDb()
+  if (!fs) {
+    return NextResponse.json({ ok: false, error: ADMIN_NOT_CONFIGURED }, { status: 503 })
+  }
+
+  try {
     const body = await req.json()
     const restaurantId = String(body.restaurantId || '').trim()
     const tableNumber = Number(body.tableNumber)
@@ -37,11 +50,10 @@ export async function POST(req: Request) {
 
     let sum = 0
     for (const orderId of orderIds) {
-      const snap = await getDoc(doc(db, orderPath(restaurantId, orderId)))
-      if (!snap.exists()) {
+      const data = await fetchOrderData(fs, restaurantId, orderId)
+      if (!data) {
         return NextResponse.json({ ok: false, error: `Order not found: ${orderId}` }, { status: 404 })
       }
-      const data = snap.data() as Record<string, unknown>
       const tn = Number(data.table_number)
       if (tn !== tableNumber) {
         return NextResponse.json({ ok: false, error: 'Order does not match this table' }, { status: 400 })

@@ -201,6 +201,21 @@ The Firebase connection should now be working! 🎉
 - Click **Publish**
 - Make sure you're signed in when trying to upload images
 
+## Server / API routes: Firebase Admin (recommended)
+
+Order creation (`/api/orders`), PayCloud webhooks, and receipt payment verification use **Firestore from the server**. The client SDK is unauthenticated there, so you should use a **service account** to avoid permission errors and to keep payment updates secure.
+
+1. Firebase Console → **Project settings** → **Service accounts** → **Generate new private key**.
+2. In Vercel (or `.env.local` for local API routes), add:
+
+```env
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...", ... }
+```
+
+Paste the **entire JSON on one line** (or minified). The app reads this in `lib/firebase/admin-firestore.ts`.
+
+If this variable is **not** set, `/api/orders` falls back to the browser Firebase config (still subject to security rules).
+
 ## Next Steps
 
 - ✅ Firebase is now installed and configured

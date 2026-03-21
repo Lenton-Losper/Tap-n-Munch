@@ -1,27 +1,56 @@
-import { db } from '@/lib/firebase/config'
-import { collection, addDoc, updateDoc, doc } from 'firebase/firestore'
 import { NextResponse } from 'next/server'
-import { getNextOrderNumber } from '@/lib/firebase/orders'
 import { prepareForFirestore } from '@/lib/firebase/firestore-guards'
 import { orderPath, ordersPath } from '@/lib/firebase/paths'
-import { createPaymentRequest } from '@/payments/paycloud'
+import { createPaymentRequest, maskSecrets } from '@/payments/paycloud'
+import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
+
+const ADMIN_NOT_CONFIGURED =
+  'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
+
+async function getNextOrderNumberAdmin(restaurantId: string, fs: NonNullable<ReturnType<typeof adminDb>>): Promise<number> {
+  const snap = await fs.collection(ordersPath(restaurantId)).orderBy('order_number', 'desc').limit(1).get()
+  if (snap.empty) return 1
+  const n = snap.docs[0]!.data().order_number
+  return (typeof n === 'number' ? n : 0) + 1
+}
+
+function logPayCloudInitFailure(ctx: { docRefId: string; merchantOrderNo: string }, err: unknown) {
+  const e = err as {
+    message?: string
+    name?: string
+    phase?: string
+    httpStatus?: number
+    responseBody?: unknown
+    rawText?: string
+  }
+  console.error('[PayCloud] Payment initialization failed — detailed log', {
+    orderDocId: ctx.docRefId,
+    merchantOrderNo: ctx.merchantOrderNo,
+    errorMessage: e?.message,
+    errorName: e?.name,
+    phase: e?.phase,
+    httpStatus: e?.httpStatus ?? null,
+    responseBodyMasked: e?.responseBody != null ? maskSecrets(e.responseBody) : null,
+    responseBodyFull: e?.responseBody ?? null,
+    rawTextLength: e?.rawText != null ? e.rawText.length : null,
+    rawTextFull: e?.rawText ?? null,
+  })
+}
 
 /**
- * SECURE ORDER CREATION API - STRICT VALIDATOR
- * 
- * This API route uses a whitelist approach:
- * - Only explicitly defined fields are included
- * - No spread operators
- * - Explicitly sets customer_email: null
- * - Server-side Firestore only
+ * SECURE ORDER CREATION — Firestore access ONLY via Firebase Admin (bypasses client rules).
  */
 export async function POST(req: Request) {
+  const fs = adminDb()
+  if (!fs) {
+    return NextResponse.json({ error: ADMIN_NOT_CONFIGURED }, { status: 503 })
+  }
+
   try {
     console.log('🛡️ SECURITY: API Route - Order creation request received')
-    
+
     const body = await req.json()
-    
-    // SECURITY CHECK: Reject if customer_email is in the request body
+
     if ('customer_email' in body || 'customerEmail' in body) {
       console.error('🚨 SECURITY: Malicious field detected in request body')
       return NextResponse.json(
@@ -29,217 +58,60 @@ export async function POST(req: Request) {
         { status: 400 }
       )
     }
-    
-    // STEP 5: HARD GUARD - Prevent Silent Failure
-    // Reject invalid orders immediately
-    // PART 1: session_id is now optional, but restaurantId and tableNumber are required
-    if (!body.restaurantId || !body.items?.length) {
-      console.error('🚨 ORDER REJECTED: Invalid order payload', {
-        hasRestaurantId: !!body.restaurantId,
-        hasTableNumber: !!body.tableNumber,
-        hasItems: !!body.items?.length,
-      })
-      return NextResponse.json(
-        { error: 'Invalid order payload: restaurantId, tableNumber, and items are required' },
-        { status: 400 }
-      )
-    }
-    
-    // STEP 1: Fix Order Creation API - Explicit camelCase to snake_case mapping
-    // PART 1: session_id is fetched from localStorage and attached to order
-    // CRITICAL: Use Number() for table_number to ensure type matches database
-    const sessionId = body.session_id ? String(body.session_id).trim() : undefined
-    const restaurantId = String(body.restaurantId).trim()
-    // CRITICAL: Use Number() to ensure table_number is stored as number (not string)
-    const tableNumber = Number(body.tableNumber) || 0
-    
-    // Debugging: Add console logs that specify the type (e.g., typeof tableNumber) of the variables being used
-    console.log('📦 API: Order payload received:', {
-      sessionId: sessionId || 'none',
-      sessionIdType: typeof sessionId,
-      tableNumber,
-      tableNumberType: typeof tableNumber,
-      tableNumberValue: tableNumber,
-      restaurantId,
-      restaurantIdType: typeof restaurantId
-    })
-    
-    // Validate tableNumber is provided and valid
-    if (!body.tableNumber || tableNumber <= 0) {
-      console.error('🚨 ORDER REJECTED: tableNumber is required and must be > 0')
-      return NextResponse.json(
-        { error: 'tableNumber is required and must be a positive number' },
-        { status: 400 }
-      )
-    }
-    
-    // Validate required fields
-    if (!restaurantId) {
-      console.error('🚨 ORDER REJECTED: restaurantId is empty')
-      return NextResponse.json(
-        { error: 'restaurantId cannot be empty' },
-        { status: 400 }
-      )
-    }
-    
-    if (!Array.isArray(body.items) || body.items.length === 0) {
-      return NextResponse.json(
-        { error: 'items is required and must be a non-empty array' },
-        { status: 400 }
-      )
-    }
-    
-    if (typeof body.total !== 'number' || body.total <= 0) {
-      return NextResponse.json(
-        { error: 'total is required and must be a positive number' },
-        { status: 400 }
-      )
-    }
-    
-    console.log('📦 API: Received order payload:', {
-      restaurantId,
-      sessionId,
-      tableNumber,
-      itemsCount: body.items.length,
-      total: body.total,
-    })
-    
-    // Get next order number for this restaurant
-    const orderNumber = await getNextOrderNumber(restaurantId)
-    
-    // STEP 1: Fix Order Creation API - Explicit camelCase to snake_case mapping
-    // Replace ALL usage of camelCase fields and explicitly map to Firestore snake_case
-    const { serverTimestamp } = await import('firebase/firestore')
-    
-    const orderData = {
-      // NEW: Remove restaurant_id from document (it's in the path)
-      // restaurant_id: restaurantId, // REMOVED - now in path: restaurants/{id}/orders
-      table_id: `table_${tableNumber}`, // Format: table_1, table_2, etc.
-      // CRITICAL: Use Number() to ensure table_number is stored as number (not string)
-      // Fix Order Saving: Ensure table_number is saved as a Number
-      table_number: Number(tableNumber), // PART 1: Table number for banner queries
-      // CRITICAL: Attach session_id to order so Active Order Banner can find it
-      // Fix Order Saving: Ensure session_id is explicitly included in the order document so the banner works
-      session_id: sessionId || null, // Attached from localStorage for banner queries
-      
-      // PART 2: Standardize Order Status Model
-      // Use ONLY: new, accepted, preparing, ready, completed, cancelled
-      status: 'new' as const, // Initial status when order is placed
-      payment_status: 'pending' as const,
-      table_closed: false, // PART 1: Track if table is closed (prevents order leakage)
-      is_closed: false, // Task 1: Track if order is closed (table-based ordering)
-      
-      // ORDER CONTENT - Explicit mapping from camelCase
-      items: (body.items || []).map((item: any) => ({
-        menu_item_id: String(item.menuItemId || item.menu_item_id || ''),
-        name: String(item.name || ''),
-        quantity: Number(item.quantity) || 1,
-        base_price: Number(item.basePrice || item.base_price || 0),
-        subtotal: Number(item.subtotal || 0),
-        size: item.size ? String(item.size) : null,
-        addons: Array.isArray(item.addons) ? item.addons.map((a: any) => ({
-          name: String(a.name || ''),
-          price: Number(a.price || 0),
-        })) : [],
-        special_instructions: item.specialInstructions || item.special_instructions 
-          ? String(item.specialInstructions || item.special_instructions).trim() 
-          : null,
-      })),
-      
-      // CRITICAL: Use Number() to ensure all numeric fields are stored as numbers
-      subtotal: Number(body.subtotal) || 0,
-      tax: Number(body.tax) || 0,
-      total: Number(body.total), // Defensive: Ensure total is a number
-      payment_method: (body.paymentMethod === 'card' ? 'card' : 'cash') as 'cash' | 'card' | 'mobile_money',
-      order_instructions: body.orderInstructions && String(body.orderInstructions).trim() 
-        ? String(body.orderInstructions).trim() 
-        : null,
-      
-      // REQUIRED TIMESTAMPS - Both must exist
-      created_at: serverTimestamp(),
-      placed_at: serverTimestamp(), // REQUIRED for banner + dashboard queries
-      
-      source: 'qr_menu' as const,
-      order_number: Number(orderNumber),
-      payment_provider: body.paymentMethod === 'card' ? 'paycloud' : null,
-    }
-    
-    // STEP 1: JSON CAR WASH - NO UNDEFINED FIELDS
-    // Apply Firestore guards: assert no forbidden fields and remove undefined
-    const finalizedPayload = prepareForFirestore(orderData)
-    
-    // JSON Car Wash: Final stringify/parse to strip undefined values and ensure clean POJO
-    const cleanOrder = JSON.parse(JSON.stringify(finalizedPayload))
-    
-    // STEP 5: HARD GUARD - Final validation before write
-    // PART 1: Orders must have table_number and placed_at (restaurant_id is in path now)
-    // session_id is optional (not required for banner logic)
-    if (!cleanOrder.table_number || !cleanOrder.placed_at) {
-      console.error('🚨 ORDER REJECTED: Missing required fields after sanitization', {
-        hasTableNumber: !!cleanOrder.table_number,
-        hasPlacedAt: !!cleanOrder.placed_at,
-      })
-      return NextResponse.json(
-        { error: 'Order is missing required fields (table_number, placed_at)' },
-        { status: 400 }
-      )
-    }
-    
-    // Validate status is canonical
-    if (cleanOrder.status !== 'new') {
-      console.error('🚨 ORDER REJECTED: Invalid status', cleanOrder.status)
-      return NextResponse.json(
-        { error: 'Order status must be "new"' },
-        { status: 400 }
-      )
-    }
-    
-    // Debugging: Add console logs that specify the type of the variables being used
-    console.log('💾 Writing canonical order to Firestore:', {
-      restaurantId, // From variable, not document
-      table_id: cleanOrder.table_id,
-      table_number: cleanOrder.table_number,
-      table_numberType: typeof cleanOrder.table_number,
-      table_closed: cleanOrder.table_closed,
-      session_id: cleanOrder.session_id || 'none (optional)',
-      session_idType: typeof cleanOrder.session_id,
-      status: cleanOrder.status,
-      order_number: cleanOrder.order_number,
-      order_numberType: typeof cleanOrder.order_number,
-      has_placed_at: !!cleanOrder.placed_at,
-      has_created_at: !!cleanOrder.created_at,
-      items_count: cleanOrder.items?.length || 0,
-    })
-    
-    // NEW: Use hierarchical path - restaurant_id is in the path
-    const docRef = await addDoc(collection(db!, ordersPath(restaurantId)), cleanOrder)
-    console.log('✅ Order created successfully:', docRef.id)
-    console.log('✅ Order fields verified:', {
-      restaurantId, // From variable
-      table_number: cleanOrder.table_number,
-      table_closed: cleanOrder.table_closed,
-      session_id: cleanOrder.session_id || 'none (optional)',
-      status: cleanOrder.status,
-      placed_at: cleanOrder.placed_at ? 'present' : 'MISSING',
-    })
-    
-    let payment: any = null
-    if (cleanOrder.payment_method === 'card') {
-      if (!body.card || !body.card.cardNo || !body.card.cvv || !body.card.expireMonth || !body.card.expireYear) {
+
+    const resumeOrderId = body.resumeOrderId ? String(body.resumeOrderId).trim() : ''
+
+    if (resumeOrderId) {
+      if (!body.restaurantId || !body.tableNumber) {
         return NextResponse.json(
-          {
-            orderId: docRef.id,
-            error: 'Card details are required for Merchant Hosted Checkout',
-          },
+          { error: 'resumeOrderId requires restaurantId and tableNumber' },
           { status: 400 }
         )
       }
+      const restaurantId = String(body.restaurantId).trim()
+      const tableNumber = Number(body.tableNumber) || 0
+      if (tableNumber <= 0) {
+        return NextResponse.json({ error: 'Invalid tableNumber' }, { status: 400 })
+      }
+      if (body.paymentMethod !== 'card') {
+        return NextResponse.json({ error: 'resumeOrderId is only valid for card payments' }, { status: 400 })
+      }
+      if (!body.card?.cardNo || !body.card?.cvv || !body.card?.expireMonth || !body.card?.expireYear) {
+        return NextResponse.json({ error: 'Card details are required to retry payment' }, { status: 400 })
+      }
 
+      const snap = await fs.doc(orderPath(restaurantId, resumeOrderId)).get()
+      if (!snap.exists) {
+        return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+      }
+      const d = snap.data() as Record<string, unknown>
+      if (Number(d.table_number) !== tableNumber) {
+        return NextResponse.json({ error: 'Order does not match this table' }, { status: 403 })
+      }
+      if (d.payment_method !== 'card') {
+        return NextResponse.json({ error: 'Order is not a card payment' }, { status: 400 })
+      }
+      if (d.payment_status !== 'pending') {
+        return NextResponse.json({ error: 'Order payment is not pending' }, { status: 400 })
+      }
+
+      const docRefId = resumeOrderId
+      const orderNumber = Number(d.order_number) || 0
+      const total = Number(d.total)
+      if (!Number.isFinite(total) || total <= 0) {
+        return NextResponse.json({ error: 'Invalid order total' }, { status: 400 })
+      }
+
+      const merchantOrderNo = `${restaurantId}:${docRefId}`
       const origin = new URL(req.url).origin
-      const merchantOrderNo = `${restaurantId}:${docRef.id}`
+
+      const patchPayment = async (data: Record<string, unknown>) => {
+        await fs.doc(orderPath(restaurantId, docRefId)).update(data)
+      }
+
       try {
-        payment = await createPaymentRequest({
-          amount: cleanOrder.total,
+        const payment = await createPaymentRequest({
+          amount: total,
           orderId: merchantOrderNo,
           merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
           storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
@@ -251,10 +123,180 @@ export async function POST(req: Request) {
             source: 'restaurant',
           },
           notifyUrl: `${origin}/api/webhooks/paycloud`,
-          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRef.id)}&table=${encodeURIComponent(tableNumber)}`,
+          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
         })
 
-        await updateDoc(doc(db!, orderPath(restaurantId, docRef.id)), {
+        await patchPayment({
+          payment_reference: merchantOrderNo,
+          payment_checkout_url: payment.checkoutUrl,
+          payment_qr_base64: payment.qr?.base64Png || null,
+          payment_qr_svg: payment.qr?.svg || null,
+          payment_qr_expires_at: payment.qr?.expiresAt || null,
+          payment_status: 'pending',
+          payment_init_error: FieldValue.delete(),
+        })
+
+        return NextResponse.json(
+          { orderId: docRefId, payment, paymentPending: false },
+          { status: 201 }
+        )
+      } catch (paymentError: unknown) {
+        logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
+        const msg =
+          paymentError instanceof Error ? paymentError.message : 'PayCloud payment initialization failed'
+        await patchPayment({
+          payment_status: 'pending',
+          payment_error: msg,
+          payment_init_failed_at: FieldValue.serverTimestamp(),
+        })
+        return NextResponse.json(
+          {
+            orderId: docRefId,
+            payment: null,
+            paymentPending: true,
+          },
+          { status: 200 }
+        )
+      }
+    }
+
+    if (!body.restaurantId || !body.items?.length) {
+      console.error('🚨 ORDER REJECTED: Invalid order payload', {
+        hasRestaurantId: !!body.restaurantId,
+        hasTableNumber: !!body.tableNumber,
+        hasItems: !!body.items?.length,
+      })
+      return NextResponse.json(
+        { error: 'Invalid order payload: restaurantId, tableNumber, and items are required' },
+        { status: 400 }
+      )
+    }
+
+    const sessionId = body.session_id ? String(body.session_id).trim() : undefined
+    const restaurantId = String(body.restaurantId).trim()
+    const tableNumber = Number(body.tableNumber) || 0
+
+    if (!body.tableNumber || tableNumber <= 0) {
+      console.error('🚨 ORDER REJECTED: tableNumber is required and must be > 0')
+      return NextResponse.json(
+        { error: 'tableNumber is required and must be a positive number' },
+        { status: 400 }
+      )
+    }
+
+    if (!restaurantId) {
+      return NextResponse.json({ error: 'restaurantId cannot be empty' }, { status: 400 })
+    }
+
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return NextResponse.json(
+        { error: 'items is required and must be a non-empty array' },
+        { status: 400 }
+      )
+    }
+
+    if (typeof body.total !== 'number' || body.total <= 0) {
+      return NextResponse.json(
+        { error: 'total is required and must be a positive number' },
+        { status: 400 }
+      )
+    }
+
+    if (body.paymentMethod === 'card') {
+      if (!body.card?.cardNo || !body.card?.cvv || !body.card?.expireMonth || !body.card?.expireYear) {
+        return NextResponse.json(
+          { error: 'Card details are required for card payment' },
+          { status: 400 }
+        )
+      }
+    }
+
+    const orderNumber = await getNextOrderNumberAdmin(restaurantId, fs)
+
+    const orderPayloadBase = {
+      table_id: `table_${tableNumber}`,
+      table_number: Number(tableNumber),
+      session_id: sessionId || null,
+      status: 'new' as const,
+      payment_status: 'pending' as const,
+      table_closed: false,
+      is_closed: false,
+      items: (body.items || []).map((item: any) => ({
+        menu_item_id: String(item.menuItemId || item.menu_item_id || ''),
+        name: String(item.name || ''),
+        quantity: Number(item.quantity) || 1,
+        base_price: Number(item.basePrice || item.base_price || 0),
+        subtotal: Number(item.subtotal || 0),
+        size: item.size ? String(item.size) : null,
+        addons: Array.isArray(item.addons)
+          ? item.addons.map((a: any) => ({
+              name: String(a.name || ''),
+              price: Number(a.price || 0),
+            }))
+          : [],
+        special_instructions:
+          item.specialInstructions || item.special_instructions
+            ? String(item.specialInstructions || item.special_instructions).trim()
+            : null,
+      })),
+      subtotal: Number(body.subtotal) || 0,
+      tax: Number(body.tax) || 0,
+      total: Number(body.total),
+      payment_method: (body.paymentMethod === 'card' ? 'card' : 'cash') as 'cash' | 'card' | 'mobile_money',
+      order_instructions:
+        body.orderInstructions && String(body.orderInstructions).trim()
+          ? String(body.orderInstructions).trim()
+          : null,
+      source: 'qr_menu' as const,
+      order_number: Number(orderNumber),
+      payment_provider: body.paymentMethod === 'card' ? 'paycloud' : null,
+    }
+
+    const finalizedPayload = prepareForFirestore(orderPayloadBase)
+    if (!finalizedPayload.table_number) {
+      return NextResponse.json(
+        { error: 'Order is missing required fields (table_number)' },
+        { status: 400 }
+      )
+    }
+    if (finalizedPayload.status !== 'new') {
+      return NextResponse.json({ error: 'Order status must be "new"' }, { status: 400 })
+    }
+
+    const ref = await fs.collection(ordersPath(restaurantId)).add({
+      ...finalizedPayload,
+      created_at: FieldValue.serverTimestamp(),
+      placed_at: FieldValue.serverTimestamp(),
+    })
+    const docRefId = ref.id
+    console.log('✅ Order created (Firebase Admin):', docRefId)
+
+    const patchPayment = async (data: Record<string, unknown>) => {
+      await fs.doc(orderPath(restaurantId, docRefId)).update(data)
+    }
+
+    let payment: any = null
+    if (body.paymentMethod === 'card') {
+      const origin = new URL(req.url).origin
+      const merchantOrderNo = `${restaurantId}:${docRefId}`
+      try {
+        payment = await createPaymentRequest({
+          amount: orderPayloadBase.total,
+          orderId: merchantOrderNo,
+          merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
+          storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
+          description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
+          card: body.card,
+          termIp: body.termIp,
+          attach: {
+            tableNumber: String(tableNumber),
+            source: 'restaurant',
+          },
+          notifyUrl: `${origin}/api/webhooks/paycloud`,
+          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
+        })
+
+        await patchPayment({
           payment_reference: merchantOrderNo,
           payment_checkout_url: payment.checkoutUrl,
           payment_qr_base64: payment.qr?.base64Png || null,
@@ -262,36 +304,57 @@ export async function POST(req: Request) {
           payment_qr_expires_at: payment.qr?.expiresAt || null,
           payment_status: 'pending',
         })
-      } catch (paymentError: any) {
-        console.error('❌ PAYCLOUD PAYMENT FAILURE:', paymentError)
-        await updateDoc(doc(db!, orderPath(restaurantId, docRef.id)), {
-          payment_status: 'failed',
-          payment_error: paymentError?.message || 'PayCloud payment initialization failed',
+      } catch (paymentError: unknown) {
+        logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
+        const msg =
+          paymentError instanceof Error ? paymentError.message : 'PayCloud payment initialization failed'
+        await patchPayment({
+          payment_status: 'pending',
+          payment_error: msg,
+          payment_init_failed_at: FieldValue.serverTimestamp(),
         })
         return NextResponse.json(
           {
-            orderId: docRef.id,
-            error: 'Order created but payment initialization failed',
-            paymentError: paymentError?.message || 'Unknown PayCloud error',
+            orderId: docRefId,
+            payment: null,
+            paymentPending: true,
           },
-          { status: 502 }
+          { status: 200 }
         )
       }
     }
 
-    return NextResponse.json({ orderId: docRef.id, payment }, { status: 201 })
+    return NextResponse.json(
+      { orderId: docRefId, payment, paymentPending: false },
+      { status: 201 }
+    )
   } catch (err: any) {
     console.error('❌ ORDER CREATION FAILURE:', err)
     if (err.message && err.message.includes('FORBIDDEN FIELD DETECTED')) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+
+    const msg = String(err?.message || err || '')
+    const code = err?.code
+    const isPermissionDenied =
+      code === 7 ||
+      code === 'permission-denied' ||
+      msg.includes('PERMISSION_DENIED') ||
+      msg.includes('permission denied')
+
+    if (isPermissionDenied) {
       return NextResponse.json(
-        { error: err.message },
-        { status: 400 }
+        {
+          error:
+            'Server Firestore permission denied. Use FIREBASE_SERVICE_ACCOUNT_JSON from the same Firebase project as NEXT_PUBLIC_FIREBASE_PROJECT_ID, add it on Vercel (Production + Preview), redeploy, and ensure the service account has Firestore access in Google Cloud IAM (e.g. roles include Cloud Datastore User).',
+        },
+        { status: 503 }
       )
     }
+
     return NextResponse.json(
       { error: err.message || 'Failed to create order' },
       { status: 500 }
     )
   }
 }
-
