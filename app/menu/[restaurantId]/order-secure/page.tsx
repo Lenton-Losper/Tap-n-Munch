@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { PaymentMethodSelector } from '@/components/payment-method-selector'
 import { cn } from '@/lib/utils'
 
@@ -22,6 +23,8 @@ export default function OrderSecurePage() {
   const { toast } = useToast()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
+
+  useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, getTotal, clearCart } = useCart()
   const [restaurant, setRestaurant] = useState<any>(null)
@@ -37,7 +40,7 @@ export default function OrderSecurePage() {
         const restaurantData = await getRestaurant(restaurantId)
         setRestaurant(restaurantData)
         if (tableNumber > 0) {
-          getOrCreateSession(String(tableNumber), restaurantId)
+          getOrCreateSession(restaurantId, String(tableNumber))
         }
       } catch (err) {
         console.error('Failed to load data:', err)

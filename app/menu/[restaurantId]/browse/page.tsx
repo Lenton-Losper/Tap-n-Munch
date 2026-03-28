@@ -9,6 +9,7 @@ import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
 import { getMenuItemsByCategory, MenuItem } from '@/lib/firebase/menu-items'
 import { SubCategory } from '@/lib/firebase/sub-categories'
 import { useCart } from '@/contexts/cart-context'
+import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
@@ -25,7 +26,9 @@ export default function MenuBrowsePage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
-  
+
+  useClearCartOnTableChange(restaurantId, tableNumber)
+
   const { items: cartItems, getItemCount, addItem } = useCart()
   const [restaurant, setRestaurant] = useState<any>(null)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])

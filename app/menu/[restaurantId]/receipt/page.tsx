@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { collection, query, where, orderBy, onSnapshot, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
@@ -167,7 +167,79 @@ export default function ReceiptPage() {
   }, [restaurantId, tableNumber, restaurant])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
-  
+
+  const total = useMemo(
+    () => (Array.isArray(orders) ? orders.reduce((sum, order) => sum + (order?.total || 0), 0) : 0),
+    [orders]
+  )
+  const unpaidOrders = useMemo(
+    () => (Array.isArray(orders) ? orders.filter((o) => o && o.payment_status !== 'paid') : []),
+    [orders]
+  )
+  const payableTotal = useMemo(
+    () => unpaidOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0),
+    [unpaidOrders]
+  )
+  const allPaid = useMemo(
+    () => Array.isArray(orders) && orders.length > 0 && unpaidOrders.length === 0,
+    [orders, unpaidOrders]
+  )
+
+  // Reconcile card payments (must run every render path — hooks before any return)
+  useEffect(() => {
+    if (!restaurantId || unpaidOrders.length === 0) return
+    const hasCardPending = unpaidOrders.some((o) => o?.payment_method === 'card')
+    if (!hasCardPending) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const FIRST_WINDOW_MS = 60_000
+    const SECOND_WINDOW_MS = 15 * 60_000
+
+    const run = async () => {
+      if (cancelled) return
+      const elapsed = Date.now() - reconcileStartedAt
+      if (elapsed > SECOND_WINDOW_MS) return
+      const cardOrderIds = unpaidOrders
+        .filter((o) => o?.payment_method === 'card')
+        .map((o) => String(o.id))
+        .filter(Boolean)
+        .sort()
+      if (!cardOrderIds.length) return
+
+      try {
+        await fetch('/api/payments/reconcile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            restaurantId,
+            orderIds: cardOrderIds,
+            merchantOrderNo: `${restaurantId}:receipt:${cardOrderIds.join(',')}`,
+          }),
+        })
+      } catch {
+        // best-effort polling; Firestore listener still reflects webhook success
+      }
+      const next = elapsed < FIRST_WINDOW_MS ? 5000 : 30000
+      timer = setTimeout(run, next)
+    }
+    run()
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [restaurantId, unpaidOrders, reconcileStartedAt])
+
+  useEffect(() => {
+    if (allPaid && (paymentSubmitting || showPaymentForm)) {
+      setPaymentSuccess(true)
+      setPaymentSubmitting(false)
+      setShowPaymentForm(false)
+      setPaymentError(null)
+    }
+  }, [allPaid, paymentSubmitting, showPaymentForm])
+
   // No table number
   if (!loading && (!tableNum || tableNum <= 0)) {
     return (
@@ -237,67 +309,6 @@ export default function ReceiptPage() {
       </div>
     )
   }
-
-  const total = orders.reduce((sum, order) => sum + (order?.total || 0), 0)
-
-  const unpaidOrders = orders.filter((o) => o && o.payment_status !== 'paid')
-  const payableTotal = unpaidOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0)
-  const allPaid = orders.length > 0 && unpaidOrders.length === 0
-
-  useEffect(() => {
-    if (!restaurantId || unpaidOrders.length === 0) return
-    const hasCardPending = unpaidOrders.some((o) => o?.payment_method === 'card')
-    if (!hasCardPending) return
-
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const FIRST_WINDOW_MS = 60_000
-    const SECOND_WINDOW_MS = 15 * 60_000
-
-    const run = async () => {
-      if (cancelled) return
-      const elapsed = Date.now() - reconcileStartedAt
-      if (elapsed > SECOND_WINDOW_MS) return
-      const cardOrderIds = unpaidOrders
-        .filter((o) => o?.payment_method === 'card')
-        .map((o) => String(o.id))
-        .filter(Boolean)
-        .sort()
-      if (!cardOrderIds.length) return
-
-      try {
-        await fetch('/api/payments/reconcile', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            restaurantId,
-            orderIds: cardOrderIds,
-            merchantOrderNo: `${restaurantId}:receipt:${cardOrderIds.join(',')}`,
-          }),
-        })
-      } catch {
-        // best-effort polling; Firestore listener still reflects webhook success
-      }
-      const next = elapsed < FIRST_WINDOW_MS ? 5000 : 30000
-      timer = setTimeout(run, next)
-    }
-    run()
-
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [restaurantId, unpaidOrders, reconcileStartedAt])
-
-  // If PayCloud webhook updates Firestore before the API response returns, treat as success.
-  useEffect(() => {
-    if (allPaid && (paymentSubmitting || showPaymentForm)) {
-      setPaymentSuccess(true)
-      setPaymentSubmitting(false)
-      setShowPaymentForm(false)
-      setPaymentError(null)
-    }
-  }, [allPaid, paymentSubmitting, showPaymentForm])
 
   const submitPayment = async () => {
     setPaymentError(null)

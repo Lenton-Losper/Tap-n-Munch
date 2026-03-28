@@ -95,7 +95,8 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
           const activeOrders = snapshot.docs
             .map(doc => ({ id: doc.id, ...doc.data() } as ActiveOrder))
             .filter(order => {
-              // Only show orders with active status
+              const tn = Number(order.table_number)
+              if (!Number.isFinite(tn) || tn !== tableNumber) return false
               const statusMatch = ['new', 'accepted', 'preparing', 'ready'].includes(order.status)
               return statusMatch
             })

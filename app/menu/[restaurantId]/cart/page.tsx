@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { useCart } from '@/contexts/cart-context'
+import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -21,7 +22,9 @@ export default function CartPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
-  
+
+  useClearCartOnTableChange(restaurantId, tableNumber)
+
   const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
   const [restaurant, setRestaurant] = useState<any>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
