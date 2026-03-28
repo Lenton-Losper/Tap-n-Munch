@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { collection, query, where, orderBy, onSnapshot, limit } from 'firebase/firestore'
+import { collection, query, where, onSnapshot, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
@@ -45,6 +45,15 @@ function formatOrderTimestamp(value: unknown): string {
   return '—'
 }
 
+function placedAtMillis(order: { placed_at?: unknown }): number {
+  const p = order?.placed_at as { toMillis?: () => number } | number | undefined
+  if (p && typeof p === 'object' && typeof (p as { toMillis?: () => number }).toMillis === 'function') {
+    return (p as { toMillis: () => number }).toMillis()
+  }
+  if (typeof p === 'number' && Number.isFinite(p)) return p
+  return 0
+}
+
 export default function ReceiptPage() {
   const params = useParams()
   const searchParams = useSearchParams()
@@ -63,6 +72,13 @@ export default function ReceiptPage() {
   const [reconcileStartedAt] = useState(() => Date.now())
 
   useEffect(() => {
+    if (!restaurantId) return
+    getRestaurant(restaurantId)
+      .then((restaurantData) => setRestaurant(restaurantData))
+      .catch((err) => console.error('Failed to load restaurant:', err))
+  }, [restaurantId])
+
+  useEffect(() => {
     const tableNum = tableNumber ? Number(tableNumber) : null
 
     if (!tableNum || tableNum <= 0) {
@@ -75,96 +91,39 @@ export default function ReceiptPage() {
       return
     }
 
-    // Load restaurant data
-    if (restaurantId && !restaurant) {
-      getRestaurant(restaurantId).then((restaurantData) => {
-        setRestaurant(restaurantData)
-      }).catch((err) => {
-        console.error('Failed to load restaurant:', err)
-      })
-    }
-
-    // Real-time listener for orders
+    // Real-time listener — same shape as useActiveOrders (no orderBy) so no composite index
+    // is required; sort by placed_at in memory.
     const { ordersPath } = require('@/lib/firebase/paths')
     const ordersRef = collection(db, ordersPath(restaurantId))
-    
-    let q = query(
+
+    const q = query(
       ordersRef,
       where('table_number', '==', tableNum),
       where('is_closed', '==', false),
-      orderBy('placed_at', 'desc')
+      limit(100)
     )
 
-    let unsubscribeFn: (() => void) | null = null
-
-    const setupListener = () => {
-      const unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const ordersList = snapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }))
-          setOrders(ordersList)
-          setLoading(false)
-        },
-        (error: any) => {
-          console.error('Error loading receipt:', error)
-          
-          if (error?.code === 'failed-precondition') {
-            try {
-              const fallbackQuery = query(
-                ordersRef,
-                where('table_number', '==', tableNum),
-                where('is_closed', '==', false),
-                limit(50)
-              )
-              
-              const fallbackUnsubscribe = onSnapshot(
-                fallbackQuery,
-                (fallbackSnapshot) => {
-                  const filteredOrders = fallbackSnapshot.docs
-                    .map(doc => ({ id: doc.id, ...doc.data() }))
-                    .filter(order => order.table_number === tableNum && !order.is_closed)
-                    .sort((a, b) => {
-                      const aTime = a.placed_at?.toMillis?.() || a.placed_at || 0
-                      const bTime = b.placed_at?.toMillis?.() || b.placed_at || 0
-                      return bTime - aTime
-                    })
-                  
-                  setOrders(filteredOrders)
-                  setLoading(false)
-                },
-                (fallbackErr: any) => {
-                  if (fallbackErr?.code === 'permission-denied') {
-                    setOrders([])
-                  }
-                  setLoading(false)
-                }
-              )
-              
-              unsubscribeFn = fallbackUnsubscribe
-            } catch (fallbackErr) {
-              setLoading(false)
-            }
-          } else if (error?.code === 'permission-denied') {
-            setOrders([])
-            setLoading(false)
-          } else {
-            setLoading(false)
-          }
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const ordersList = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .filter((order: { table_number?: unknown }) => Number(order.table_number) === tableNum)
+          .sort((a, b) => placedAtMillis(b) - placedAtMillis(a))
+        setOrders(ordersList)
+        setLoading(false)
+      },
+      (error: any) => {
+        console.error('Error loading receipt:', error)
+        if (error?.code === 'permission-denied') {
+          setOrders([])
         }
-      )
-      
-      unsubscribeFn = unsubscribe
-    }
+        setLoading(false)
+      }
+    )
 
-    setupListener()
-
-    return () => {
-      if (unsubscribeFn) unsubscribeFn()
-    }
-  }, [restaurantId, tableNumber, restaurant])
+    return () => unsubscribe()
+  }, [restaurantId, tableNumber])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
 
