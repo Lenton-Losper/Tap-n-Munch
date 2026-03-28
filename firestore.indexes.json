@@ -69,16 +69,6 @@
       ]
     },
     {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "order_number",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "categories",
       "queryScope": "COLLECTION",
       "fields": [

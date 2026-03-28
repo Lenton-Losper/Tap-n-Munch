@@ -2,6 +2,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isOwner(restaurantId) {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/restaurants/$(restaurantId)) &&
+        request.auth.uid == get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.owner_id;
+    }
+
     /* ---------- USERS ---------- */
     match /users/{userId} {
       allow read, create, update: if request.auth != null && request.auth.uid == userId;
@@ -55,15 +61,14 @@ service cloud.firestore {
 
       /* ---------- ORDERS ----------
        * - Anyone can create orders (unauthenticated QR customers; optional direct client create).
-       * - Anyone can read orders under a restaurant (confirmation, receipt, table listeners).
-       *   Note: Firestore cannot express "only this customer's order" without auth; use session_id
-       *   in app logic. Server writes/updates from Next.js API use Firebase Admin and bypass rules.
+       * - Read: owner may read all orders; others may read only orders where is_closed == false.
        * - Only the restaurant owner (authenticated) may update orders (dashboard).
        * - Deletes denied (audit); use Admin SDK if you ever need server-side delete.
        */
       match /orders/{orderId} {
         allow create: if true;
-        allow read: if true;
+        allow read: if isOwner(restaurantId)
+          || (resource != null && resource.data.is_closed == false);
         allow update: if request.auth != null &&
                          exists(/databases/$(database)/documents/restaurants/$(restaurantId)) &&
                          request.auth.uid == get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.owner_id;
