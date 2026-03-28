@@ -309,7 +309,7 @@ export async function createPaymentRequest(input, options = {}) {
     charset: 'UTF-8',
     version: FINATIC_PROTOCOL_FIELDS.version,
     method: FINATIC_PROTOCOL_FIELDS.methodHostedCheckout,
-    timestamp: String(Date.now() - PAYCLOUD_CLOCK_OFFSET_MS),
+    timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
     merchant_order_no: String(input.orderId),
     order_amount: amount.toFixed(2),
     price_currency: 'NAD',
@@ -469,7 +469,7 @@ export async function queryPaymentOrder(input, options = {}) {
     charset: 'UTF-8',
     version: FINATIC_PROTOCOL_FIELDS.version,
     method: cfg.queryOrderMethod,
-    timestamp: String(Date.now() - PAYCLOUD_CLOCK_OFFSET_MS),
+    timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
     merchant_order_no: String(input.orderId),
   }
   const unsignedPayload = { ...payload }
