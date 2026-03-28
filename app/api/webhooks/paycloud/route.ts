@@ -54,6 +54,57 @@ async function markOrdersPaid(
   }
 }
 
+async function loadOrders(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  restaurantId: string,
+  orderIds: string[]
+) {
+  const rows: Array<{ orderId: string; data: Record<string, unknown> }> = []
+  for (const orderId of orderIds) {
+    const snap = await fs.doc(orderPath(restaurantId, orderId)).get()
+    if (!snap.exists) {
+      throw new Error(`Order not found: ${orderId}`)
+    }
+    rows.push({ orderId, data: (snap.data() || {}) as Record<string, unknown> })
+  }
+  return rows
+}
+
+function toMoney(value: unknown) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return Math.round(n * 100) / 100
+}
+
+async function verifyAmountAndMarkPaid(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  parsedRef: ParsedMerchantOrder,
+  ref: any
+) {
+  const orderIds = parsedRef.mode === 'receipt' ? parsedRef.orderIds : [parsedRef.orderId]
+  const rows = await loadOrders(fs, parsedRef.restaurantId, orderIds)
+
+  const allPaid = rows.every((r) => r.data.payment_status === 'paid')
+  if (allPaid) {
+    return { alreadyPaid: true }
+  }
+
+  const expectedAmount = Math.round(
+    rows.reduce((sum, r) => sum + (Number(r.data.total) || 0), 0) * 100
+  ) / 100
+  const webhookAmount = toMoney(ref.paidAmount)
+  if (webhookAmount === null || Math.abs(expectedAmount - webhookAmount) > 0.02) {
+    throw new Error(
+      `Webhook amount mismatch for ${ref.orderId}: expected ${expectedAmount.toFixed(2)}, got ${String(
+        ref.paidAmount
+      )}`
+    )
+  }
+
+  await markOrdersPaid(fs, parsedRef.restaurantId, orderIds, ref.transactionId || null)
+  return { alreadyPaid: false, expectedAmount, webhookAmount }
+}
+
 export async function POST(req: Request) {
   const fs = adminDb()
   if (!fs) {
@@ -67,34 +118,45 @@ export async function POST(req: Request) {
 
   const rawBody = await req.text()
   const headers = Object.fromEntries(req.headers.entries())
-
-  console.log('[PayCloud webhook] Incoming payload:', rawBody)
-
-  const result = await handlePaycloudWebhook(rawBody, headers, {
+  const processing = handlePaycloudWebhook(rawBody, headers, {
     onPaid: async (_payload: any, ref: any) => {
       const parsedRef = parseMerchantOrderNo(ref.orderId)
       if (!parsedRef) return
 
-      if (parsedRef.mode === 'receipt') {
-        await markOrdersPaid(fs, parsedRef.restaurantId, parsedRef.orderIds, ref.transactionId || null)
-        console.log('[PayCloud webhook] Receipt payment — orders marked paid:', {
-          restaurantId: parsedRef.restaurantId,
-          orderIds: parsedRef.orderIds,
+      const processed = await verifyAmountAndMarkPaid(fs, parsedRef, ref)
+      if (processed.alreadyPaid) {
+        console.log('[PayCloud webhook] Duplicate paid notification acknowledged', {
+          merchantOrderNo: ref.orderId,
           transactionId: ref.transactionId,
         })
-      } else {
-        await markOrdersPaid(fs, parsedRef.restaurantId, [parsedRef.orderId], ref.transactionId || null)
-        console.log('[PayCloud webhook] Payment confirmed and order updated:', {
-          restaurantId: parsedRef.restaurantId,
-          orderId: parsedRef.orderId,
-          transactionId: ref.transactionId,
-        })
+        return
       }
+
+      console.log('[PayCloud webhook] Payment confirmed and orders updated', {
+        merchantOrderNo: ref.orderId,
+        mode: parsedRef.mode,
+        transactionId: ref.transactionId,
+        amount: processed.webhookAmount,
+      })
     },
     onEvent: async (_payload: any, ref: any) => {
-      console.log('[PayCloud webhook] Event received:', ref)
+      console.log('[PayCloud webhook] Event received', {
+        orderId: ref.orderId,
+        status: ref.status,
+        transactionId: ref.transactionId,
+      })
     },
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : 'Webhook processing failed'
+    console.error('[PayCloud webhook] Processing failed', { message })
+    return { status: 500, body: { ok: false, error: message } }
   })
 
+  const FAST_ACK_MS = 4500
+  const timeout = new Promise<{ status: number; body: Record<string, unknown> }>((resolve) => {
+    setTimeout(() => resolve({ status: 200, body: { ok: true, accepted: true, deferred: true } }), FAST_ACK_MS)
+  })
+
+  const result = await Promise.race([processing, timeout])
   return NextResponse.json(result.body, { status: result.status })
 }

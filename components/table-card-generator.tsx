@@ -157,7 +157,6 @@ export function TableCardGenerator() {
         backgroundColor: '#FDF5E6',
         cacheBust: true, // Helps with CORS by adding cache-busting query params
         includeQueryParams: true, // Includes query params in image requests
-        useCORS: true, // Attempts to use CORS for cross-origin images
       })
 
       // Create download link

@@ -76,9 +76,6 @@ export async function POST(req: Request) {
       if (body.paymentMethod !== 'card') {
         return NextResponse.json({ error: 'resumeOrderId is only valid for card payments' }, { status: 400 })
       }
-      if (!body.card?.cardNo || !body.card?.cvv || !body.card?.expireMonth || !body.card?.expireYear) {
-        return NextResponse.json({ error: 'Card details are required to retry payment' }, { status: 400 })
-      }
 
       const snap = await fs.doc(orderPath(restaurantId, resumeOrderId)).get()
       if (!snap.exists) {
@@ -116,12 +113,6 @@ export async function POST(req: Request) {
           merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
           storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
-          card: body.card,
-          termIp: body.termIp,
-          attach: {
-            tableNumber: String(tableNumber),
-            source: 'restaurant',
-          },
           notifyUrl: `${origin}/api/webhooks/paycloud`,
           returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
         })
@@ -129,17 +120,12 @@ export async function POST(req: Request) {
         await patchPayment({
           payment_reference: merchantOrderNo,
           payment_checkout_url: payment.checkoutUrl,
-          payment_qr_base64: payment.qr?.base64Png || null,
-          payment_qr_svg: payment.qr?.svg || null,
-          payment_qr_expires_at: payment.qr?.expiresAt || null,
           payment_status: 'pending',
+          payment_pending_since: FieldValue.serverTimestamp(),
           payment_init_error: FieldValue.delete(),
         })
 
-        return NextResponse.json(
-          { orderId: docRefId, payment, paymentPending: false },
-          { status: 201 }
-        )
+        return NextResponse.json({ orderId: docRefId, payment, checkoutUrl: payment.checkoutUrl }, { status: 201 })
       } catch (paymentError: unknown) {
         logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
         const msg =
@@ -153,7 +139,7 @@ export async function POST(req: Request) {
           {
             orderId: docRefId,
             payment: null,
-            paymentPending: true,
+            checkoutUrl: null,
           },
           { status: 200 }
         )
@@ -200,15 +186,6 @@ export async function POST(req: Request) {
         { error: 'total is required and must be a positive number' },
         { status: 400 }
       )
-    }
-
-    if (body.paymentMethod === 'card') {
-      if (!body.card?.cardNo || !body.card?.cvv || !body.card?.expireMonth || !body.card?.expireYear) {
-        return NextResponse.json(
-          { error: 'Card details are required for card payment' },
-          { status: 400 }
-        )
-      }
     }
 
     const orderNumber = await getNextOrderNumberAdmin(restaurantId, fs)
@@ -286,12 +263,6 @@ export async function POST(req: Request) {
           merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
           storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
-          card: body.card,
-          termIp: body.termIp,
-          attach: {
-            tableNumber: String(tableNumber),
-            source: 'restaurant',
-          },
           notifyUrl: `${origin}/api/webhooks/paycloud`,
           returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
         })
@@ -299,10 +270,8 @@ export async function POST(req: Request) {
         await patchPayment({
           payment_reference: merchantOrderNo,
           payment_checkout_url: payment.checkoutUrl,
-          payment_qr_base64: payment.qr?.base64Png || null,
-          payment_qr_svg: payment.qr?.svg || null,
-          payment_qr_expires_at: payment.qr?.expiresAt || null,
           payment_status: 'pending',
+          payment_pending_since: FieldValue.serverTimestamp(),
         })
       } catch (paymentError: unknown) {
         logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
@@ -317,17 +286,14 @@ export async function POST(req: Request) {
           {
             orderId: docRefId,
             payment: null,
-            paymentPending: true,
+            checkoutUrl: null,
           },
           { status: 200 }
         )
       }
     }
 
-    return NextResponse.json(
-      { orderId: docRefId, payment, paymentPending: false },
-      { status: 201 }
-    )
+    return NextResponse.json({ orderId: docRefId, payment, checkoutUrl: payment?.checkoutUrl || null }, { status: 201 })
   } catch (err: any) {
     console.error('❌ ORDER CREATION FAILURE:', err)
     if (err.message && err.message.includes('FORBIDDEN FIELD DETECTED')) {

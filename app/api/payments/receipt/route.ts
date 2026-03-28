@@ -6,12 +6,6 @@ import { adminDb } from '@/lib/firebase/admin-firestore'
 const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
 
-function getTermIp(req: Request) {
-  const forwarded = req.headers.get('x-forwarded-for')
-  if (forwarded) return forwarded.split(',')[0].trim()
-  return req.headers.get('x-real-ip') || '127.0.0.1'
-}
-
 async function fetchOrderData(
   fs: NonNullable<ReturnType<typeof adminDb>>,
   restaurantId: string,
@@ -35,8 +29,8 @@ export async function POST(req: Request) {
     const orderIds: string[] = Array.isArray(body.orderIds)
       ? body.orderIds.map((id: unknown) => String(id).trim()).filter(Boolean)
       : []
+    const sortedOrderIds = [...orderIds].sort()
     const clientAmount = Number(body.amount)
-    const card = body.card
 
     if (!restaurantId || !Number.isFinite(tableNumber) || tableNumber <= 0) {
       return NextResponse.json({ ok: false, error: 'Invalid restaurant or table' }, { status: 400 })
@@ -44,12 +38,8 @@ export async function POST(req: Request) {
     if (orderIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'No orders to pay' }, { status: 400 })
     }
-    if (!card?.cardNo || !card?.cvv || !card?.expireMonth || !card?.expireYear) {
-      return NextResponse.json({ ok: false, error: 'Complete card details are required' }, { status: 400 })
-    }
-
     let sum = 0
-    for (const orderId of orderIds) {
+    for (const orderId of sortedOrderIds) {
       const data = await fetchOrderData(fs, restaurantId, orderId)
       if (!data) {
         return NextResponse.json({ ok: false, error: `Order not found: ${orderId}` }, { status: 404 })
@@ -77,22 +67,12 @@ export async function POST(req: Request) {
     }
 
     const origin = new URL(req.url).origin
-    const merchantOrderNo = `${restaurantId}:receipt:${orderIds.join(',')}`
+    const merchantOrderNo = `${restaurantId}:receipt:${sortedOrderIds.join(',')}`
 
     const payment = await createPaymentRequest({
       amount: roundedSum,
       orderId: merchantOrderNo,
-      description: `FlashTap receipt — Table ${tableNumber} (${orderIds.length} order${orderIds.length > 1 ? 's' : ''})`,
-      card: {
-        cardNo: String(card.cardNo).replace(/\s+/g, ''),
-        cvv: String(card.cvv),
-        expireMonth: String(card.expireMonth).padStart(2, '0'),
-        expireYear: String(card.expireYear),
-        cardHolder: String(card.cardHolder || 'Customer').trim(),
-        termIp: getTermIp(req),
-      },
-      termIp: getTermIp(req),
-      attach: { source: 'receipt', tableNumber: String(tableNumber), orderIds },
+      description: `FlashTap receipt — Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
       notifyUrl: `${origin}/api/webhooks/paycloud`,
       returnUrl: `${origin}/menu/${restaurantId}/receipt?table=${encodeURIComponent(String(tableNumber))}`,
     })

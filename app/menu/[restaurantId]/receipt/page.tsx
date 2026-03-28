@@ -8,7 +8,6 @@ import { collection, query, where, orderBy, onSnapshot, limit } from 'firebase/f
 import { db } from '@/lib/firebase/config'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -61,11 +60,7 @@ export default function ReceiptPage() {
   const [paymentSubmitting, setPaymentSubmitting] = useState(false)
   const [paymentSuccess, setPaymentSuccess] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
-
-  const [cardHolder, setCardHolder] = useState('')
-  const [cardNo, setCardNo] = useState('')
-  const [expiryMmYy, setExpiryMmYy] = useState('')
-  const [cvv, setCvv] = useState('')
+  const [reconcileStartedAt] = useState(() => Date.now())
 
   useEffect(() => {
     const tableNum = tableNumber ? Number(tableNumber) : null
@@ -249,6 +244,51 @@ export default function ReceiptPage() {
   const payableTotal = unpaidOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0)
   const allPaid = orders.length > 0 && unpaidOrders.length === 0
 
+  useEffect(() => {
+    if (!restaurantId || unpaidOrders.length === 0) return
+    const hasCardPending = unpaidOrders.some((o) => o?.payment_method === 'card')
+    if (!hasCardPending) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const FIRST_WINDOW_MS = 60_000
+    const SECOND_WINDOW_MS = 15 * 60_000
+
+    const run = async () => {
+      if (cancelled) return
+      const elapsed = Date.now() - reconcileStartedAt
+      if (elapsed > SECOND_WINDOW_MS) return
+      const cardOrderIds = unpaidOrders
+        .filter((o) => o?.payment_method === 'card')
+        .map((o) => String(o.id))
+        .filter(Boolean)
+        .sort()
+      if (!cardOrderIds.length) return
+
+      try {
+        await fetch('/api/payments/reconcile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            restaurantId,
+            orderIds: cardOrderIds,
+            merchantOrderNo: `${restaurantId}:receipt:${cardOrderIds.join(',')}`,
+          }),
+        })
+      } catch {
+        // best-effort polling; Firestore listener still reflects webhook success
+      }
+      const next = elapsed < FIRST_WINDOW_MS ? 5000 : 30000
+      timer = setTimeout(run, next)
+    }
+    run()
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [restaurantId, unpaidOrders, reconcileStartedAt])
+
   // If PayCloud webhook updates Firestore before the API response returns, treat as success.
   useEffect(() => {
     if (allPaid && (paymentSubmitting || showPaymentForm)) {
@@ -259,31 +299,11 @@ export default function ReceiptPage() {
     }
   }, [allPaid, paymentSubmitting, showPaymentForm])
 
-  const parseExpiryMmYy = (raw: string) => {
-    const cleaned = raw.replace(/\s/g, '')
-    const parts = cleaned.split('/').map((p) => p.trim()).filter(Boolean)
-    if (parts.length < 2) return null
-    const mm = parts[0].padStart(2, '0').slice(-2)
-    let yy = parts[1]
-    if (yy.length === 2) yy = `20${yy}`
-    if (!/^\d{2}$/.test(mm) || !/^\d{4}$/.test(yy)) return null
-    return { expireMonth: mm, expireYear: yy }
-  }
-
   const submitPayment = async () => {
     setPaymentError(null)
     const tableNum = tableNumber ? Number(tableNumber) : 0
     if (!restaurantId || !tableNum) {
       setPaymentError('Missing table or restaurant.')
-      return
-    }
-    if (!cardHolder.trim() || !cardNo.trim() || !expiryMmYy.trim() || !cvv.trim()) {
-      setPaymentError('Please fill in all card fields.')
-      return
-    }
-    const expiry = parseExpiryMmYy(expiryMmYy)
-    if (!expiry) {
-      setPaymentError('Use expiry as MM/YY (e.g. 03/29).')
       return
     }
 
@@ -297,27 +317,17 @@ export default function ReceiptPage() {
           tableNumber: tableNum,
           orderIds: unpaidOrders.map((o) => o.id),
           amount: payableTotal,
-          card: {
-            cardHolder: cardHolder.trim(),
-            cardNo: cardNo.replace(/\s+/g, ''),
-            expireMonth: expiry.expireMonth,
-            expireYear: expiry.expireYear,
-            cvv: cvv.trim(),
-          },
         }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         throw new Error(data.error || `Payment failed (${res.status})`)
       }
-      if (data.requires3ds && data.checkoutUrl) {
+      if (data.checkoutUrl) {
         window.location.href = data.checkoutUrl
         return
       }
-      setPaymentSuccess(true)
-      setShowPaymentForm(false)
-      setCardNo('')
-      setCvv('')
+      throw new Error('Hosted checkout URL was not returned')
     } catch (e: unknown) {
       setPaymentError(e instanceof Error ? e.message : 'Payment failed')
     } finally {
@@ -450,12 +460,15 @@ export default function ReceiptPage() {
                 }}
                 className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
               >
-                Pay Now — {restaurant?.currency || 'N$'}
+                Proceed to Payment — {restaurant?.currency || 'N$'}
                 {payableTotal.toFixed(2)}
               </Button>
             ) : (
               <div className="bg-card border border-border p-5 sm:p-6 space-y-4">
-                <h2 className="text-lg font-serif font-bold text-foreground">Pay with card</h2>
+                <h2 className="text-lg font-serif font-bold text-foreground">Proceed to PayCloud</h2>
+                <p className="text-sm text-muted-foreground font-sans">
+                  You will be redirected to PayCloud Hosted Checkout to enter your card details securely.
+                </p>
                 <p className="text-sm text-muted-foreground font-sans">
                   Total due:{' '}
                   <span className="font-semibold text-foreground">
@@ -463,66 +476,6 @@ export default function ReceiptPage() {
                     {payableTotal.toFixed(2)}
                   </span>
                 </p>
-
-                <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="rcpt-cardholder" className="text-foreground font-sans text-sm">
-                      Cardholder name
-                    </Label>
-                    <input
-                      id="rcpt-cardholder"
-                      autoComplete="cc-name"
-                      className="mt-1 w-full border border-border bg-background px-3 py-3 text-base font-sans rounded-md"
-                      value={cardHolder}
-                      onChange={(e) => setCardHolder(e.target.value)}
-                      placeholder="Name on card"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="rcpt-cardno" className="text-foreground font-sans text-sm">
-                      Card number
-                    </Label>
-                    <input
-                      id="rcpt-cardno"
-                      inputMode="numeric"
-                      autoComplete="cc-number"
-                      className="mt-1 w-full border border-border bg-background px-3 py-3 text-base font-sans rounded-md"
-                      value={cardNo}
-                      onChange={(e) => setCardNo(e.target.value)}
-                      placeholder="1234 5678 9012 3456"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <Label htmlFor="rcpt-expiry" className="text-foreground font-sans text-sm">
-                        Expiry (MM/YY)
-                      </Label>
-                      <input
-                        id="rcpt-expiry"
-                        autoComplete="cc-exp"
-                        className="mt-1 w-full border border-border bg-background px-3 py-3 text-base font-sans rounded-md"
-                        value={expiryMmYy}
-                        onChange={(e) => setExpiryMmYy(e.target.value)}
-                        placeholder="MM/YY"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="rcpt-cvv" className="text-foreground font-sans text-sm">
-                        CVV
-                      </Label>
-                      <input
-                        id="rcpt-cvv"
-                        inputMode="numeric"
-                        autoComplete="cc-csc"
-                        className="mt-1 w-full border border-border bg-background px-3 py-3 text-base font-sans rounded-md"
-                        value={cvv}
-                        onChange={(e) => setCvv(e.target.value)}
-                        placeholder="123"
-                        maxLength={4}
-                      />
-                    </div>
-                  </div>
-                </div>
 
                 {paymentError && (
                   <div className="space-y-2">
@@ -552,7 +505,7 @@ export default function ReceiptPage() {
                       onClick={submitPayment}
                       className="flex-1 bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6"
                     >
-                      Pay {restaurant?.currency || 'N$'}
+                      Proceed to Payment {restaurant?.currency || 'N$'}
                       {payableTotal.toFixed(2)}
                     </Button>
                     <Button

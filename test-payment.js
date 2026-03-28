@@ -4,7 +4,7 @@ require('dotenv').config()
 async function run() {
   const { createPaymentRequest } = await import('./payments/paycloud.js')
   const { handlePaycloudWebhook } = await import('./payments/webhook.js')
-  const useLiveSandbox = process.env.PAYCLOUD_TEST_LIVE === 'true'
+  const useLiveGateway = process.env.PAYCLOUD_TEST_LIVE === 'true'
 
   const mockOrder = {
     id: 'order_test_001',
@@ -19,28 +19,20 @@ async function run() {
       orderId: `${mockOrder.restaurantId}:${mockOrder.id}`,
       merchantNo: process.env.PAYCLOUD_MERCHANT_NO,
       storeNo: process.env.PAYCLOUD_STORE_NO,
-      description: 'Sandbox order',
-      card: {
-        cardNo: process.env.PAYCLOUD_TEST_CARD_NO || '4111111111111111',
-        cvv: process.env.PAYCLOUD_TEST_CARD_CVV || '123',
-        expireMonth: process.env.PAYCLOUD_TEST_CARD_EXP_MONTH || '12',
-        expireYear: process.env.PAYCLOUD_TEST_CARD_EXP_YEAR || '2030',
-        cardHolder: process.env.PAYCLOUD_TEST_CARD_HOLDER || 'SANDBOX USER',
-      },
+      description: 'Hosted checkout order',
       notifyUrl: 'https://localhost/webhooks/paycloud',
       returnUrl: 'https://localhost/order-confirmation',
-      attach: { test: true },
     },
-    useLiveSandbox
+    useLiveGateway
       ? {}
       : {
           transport: async () => {
             const responsePayload = {
               code: 'SUCCESS',
               msg: 'ok',
-              pay_url: 'https://sandbox.paycloud/checkout/abc123',
+              pay_url: 'https://open.finatic.africa/api/entry/checkout/mock',
               merchant_order_no: `${mockOrder.restaurantId}:${mockOrder.id}`,
-              psn: 'sandbox-psn-001',
+              psn: 'mock-psn-001',
               status: 'paid',
             }
             return {
@@ -58,18 +50,18 @@ async function run() {
     qrHasBase64: Boolean(payment.qr?.base64Png),
     qrHasSvg: Boolean(payment.qr?.svg),
     status: payment.paymentStatus,
-    liveMode: useLiveSandbox,
+    liveMode: useLiveGateway,
   })
 
   const webhookPayload = {
     merchant_order_no: `${mockOrder.restaurantId}:${mockOrder.id}`,
     amount: '129.50',
     status: 'paid',
-    psn: 'sandbox-psn-001',
+    psn: 'mock-psn-001',
   }
   const webhookRaw = JSON.stringify(webhookPayload)
   const webhookSignature = require('crypto')
-    .createHmac('sha256', process.env.PAYCLOUD_WEBHOOK_SECRET || 'SANDBOX_WEBHOOK_SECRET')
+    .createHmac('sha256', process.env.PAYCLOUD_WEBHOOK_SECRET || 'PAYCLOUD_WEBHOOK_SECRET')
     .update(webhookRaw, 'utf8')
     .digest('hex')
 
@@ -92,7 +84,7 @@ async function run() {
     throw new Error('Test failed: order was not marked paid')
   }
 
-  console.log('PASS: End-to-end sandbox simulation succeeded')
+  console.log('PASS: End-to-end hosted checkout simulation succeeded')
 }
 
 run().catch((error) => {

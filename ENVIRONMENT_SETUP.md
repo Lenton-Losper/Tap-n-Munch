@@ -3,6 +3,8 @@
 Set these in **Vercel → Project → Settings → Environment Variables** (and in `.env.local` for local dev).  
 Restart / redeploy after changing values.
 
+For a complete per-variable paste guide and live-test checklist, see `CREDENTIALS_SETUP.md`.
+
 ### Push from local file (CLI)
 
 With the project [linked](https://vercel.com/docs/cli/link) (`vercel link`) and logged in (`vercel login`):
@@ -60,19 +62,19 @@ If this variable is missing, API routes return **503** with:
 
 ---
 
-## PayCloud (Finatic) — sandbox / production
+## PayCloud (Finatic) — production gateway
 
 | Variable | Description |
 |----------|-------------|
-| `PAYCLOUD_ENDPOINT` | API base, e.g. sandbox `https://wiseasy-open.sg.wisepaycloud.com/api/entry`. |
+| `PAYCLOUD_ENDPOINT` | API base, fixed to `https://open.finatic.africa/api/entry`. |
 | `PAYCLOUD_APP_ID` | App ID from PayCloud merchant portal. |
 | `PAYCLOUD_MERCHANT_NO` | Merchant number. |
 | `PAYCLOUD_STORE_NO` | Store number. |
 | `PAYCLOUD_GATEWAY_PUBLIC_KEY` | Gateway RSA public key (PEM body or base64; app wraps if needed). |
 | `PAYCLOUD_PRIVATE_KEY` | Your app RSA private key (PKCS#8), PEM or one-line with `\n`. |
 | `PAYCLOUD_WEBHOOK_SECRET` | Optional shared secret if you verify HMAC webhooks. |
-| `PAYCLOUD_MERCHANT_CHECKOUT_PATH` | Optional; default `/mcheckout` for merchant-hosted checkout. |
-| `PAYCLOUD_QUERY_ORDER_PATH` | Optional; default `/query`. |
+| `PAYCLOUD_HOSTED_CHECKOUT_PATH` | Optional; default `/checkout`. |
+| `PAYCLOUD_QUERY_ORDER_PATH` | Optional; default `/orderquery`. |
 | `PAYCLOUD_TIMEOUT_MS` | Optional; default `15000`. |
 | `PAYCLOUD_SIGN_TYPE` | Optional; default `RSA2`. |
 

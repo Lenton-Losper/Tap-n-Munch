@@ -3,15 +3,38 @@ import { verifyPayloadSignature } from './signature.js'
 
 const webhookRateBuckets = new Map()
 const RATE_WINDOW_MS = 60 * 1000
-const RATE_MAX = 60
+const RATE_MAX = Number(process.env.PAYCLOUD_WEBHOOK_RATE_MAX || 300)
+const DEFAULT_PAYCLOUD_IPS = [
+  '8.208.97.72',
+  '8.208.116.200',
+  '8.208.86.91',
+  '8.208.115.19',
+  '8.208.9.143',
+  '52.76.234.70',
+  '52.74.154.164',
+]
 
 function normalizeIp(rawIp = 'unknown') {
-  return String(rawIp).split(',')[0].trim() || 'unknown'
+  const value = String(rawIp).split(',')[0].trim()
+  return value.replace(/^::ffff:/, '').replace(/:\d+$/, '') || 'unknown'
+}
+
+function getTrustedWebhookIps() {
+  const fromEnv = String(process.env.PAYCLOUD_WEBHOOK_ALLOWED_IPS || '')
+    .split(',')
+    .map((v) => normalizeIp(v))
+    .filter(Boolean)
+  return new Set(fromEnv.length ? fromEnv : DEFAULT_PAYCLOUD_IPS)
 }
 
 export function enforceWebhookRateLimit(ip) {
   const now = Date.now()
   const key = normalizeIp(ip)
+  const trustedIps = getTrustedWebhookIps()
+  if (trustedIps.has(key)) {
+    return { allowed: true, remaining: RATE_MAX, bypass: true }
+  }
+
   const bucket = webhookRateBuckets.get(key) || { count: 0, start: now }
 
   if (now - bucket.start > RATE_WINDOW_MS) {

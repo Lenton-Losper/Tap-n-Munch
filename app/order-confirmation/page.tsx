@@ -22,6 +22,7 @@ function OrderConfirmationContent() {
   const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [reconcileStartedAt] = useState(() => Date.now())
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null
@@ -88,7 +89,7 @@ function OrderConfirmationContent() {
               
               unsubscribe = onSnapshot(orderRef, (docSnapshot) => {
                 if (docSnapshot.exists()) {
-                  const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
+                  const updatedOrder: any = { id: docSnapshot.id, ...docSnapshot.data() }
                   if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
                     setOrder(updatedOrder)
                   }
@@ -134,7 +135,7 @@ function OrderConfirmationContent() {
                 doc(db, orderPath(restaurantId, orderDoc.id)),
                 async (docSnapshot) => {
                   if (docSnapshot.exists()) {
-                    const updatedOrder = { id: docSnapshot.id, ...docSnapshot.data() }
+                    const updatedOrder: any = { id: docSnapshot.id, ...docSnapshot.data() }
                     if (updatedOrder.table_number === tableNum && !updatedOrder.is_closed) {
                       setOrder(updatedOrder)
                     }
@@ -149,9 +150,9 @@ function OrderConfirmationContent() {
                 const allSnapshot = await getDocs(query(allOrdersRef, where('table_number', '==', tableNum), limit(50)))
                 
                 const filteredOrders = allSnapshot.docs
-                  .map(doc => ({ id: doc.id, ...doc.data() }))
-                  .filter(order => order.table_number === tableNum && !order.is_closed)
-                  .sort((a, b) => {
+                  .map((doc): any => ({ id: doc.id, ...doc.data() }))
+                  .filter((order: any) => order.table_number === tableNum && !order.is_closed)
+                  .sort((a: any, b: any) => {
                     const aTime = a.placed_at?.toMillis?.() || a.placed_at || 0
                     const bTime = b.placed_at?.toMillis?.() || b.placed_at || 0
                     return bTime - aTime
@@ -192,6 +193,46 @@ function OrderConfirmationContent() {
       if (unsubscribe) unsubscribe()
     }
   }, [orderId, restaurant, tableNumber])
+
+  useEffect(() => {
+    if (!order?.id || order?.payment_method !== 'card' || order?.payment_status === 'paid') return
+    const restaurantId =
+      order?.restaurant_id ||
+      (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
+    if (!restaurantId) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const FIRST_WINDOW_MS = 60_000
+    const SECOND_WINDOW_MS = 15 * 60_000
+
+    const run = async () => {
+      if (cancelled) return
+      const elapsed = Date.now() - reconcileStartedAt
+      if (elapsed > SECOND_WINDOW_MS) return
+      try {
+        await fetch('/api/payments/reconcile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            restaurantId,
+            orderIds: [String(order.id)],
+            merchantOrderNo: String(order.payment_reference || `${restaurantId}:${order.id}`),
+          }),
+        })
+      } catch {
+        // best-effort polling; Firestore listener still reflects webhook success
+      }
+      const next = elapsed < FIRST_WINDOW_MS ? 5000 : 30000
+      timer = setTimeout(run, next)
+    }
+    run()
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [order, reconcileStartedAt])
 
   if (loading) {
     return (
@@ -370,32 +411,10 @@ function OrderConfirmationContent() {
                 </span>
               )}
             </div>
-            {order?.payment_method === 'card' && order?.payment_status === 'pending' && order?.payment_qr_base64 && (
-              <div className="mt-4 border border-border bg-card p-3">
-                <p className="text-xs text-muted-foreground mb-2">
-                  Scan to pay instantly with PayCloud.
-                </p>
-                <img
-                  src={order.payment_qr_base64}
-                  alt="PayCloud payment QR"
-                  className="w-52 h-52 border border-border bg-white"
-                />
-                {order?.payment_checkout_url && (
-                  <a
-                    href={order.payment_checkout_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs underline mt-2 inline-block"
-                  >
-                    Open payment link
-                  </a>
-                )}
-                {order?.payment_qr_expires_at && (
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    Expires: {new Date(order.payment_qr_expires_at).toLocaleTimeString()}
-                  </p>
-                )}
-              </div>
+            {order?.payment_method === 'card' && order?.payment_status === 'pending' && (
+              <p className="mt-3 text-xs text-muted-foreground font-sans">
+                Waiting for payment confirmation. This page checks status automatically.
+              </p>
             )}
           </div>
 
