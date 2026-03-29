@@ -6,7 +6,7 @@ import {
   verifyPayloadSignature,
 } from './signature.js'
 
-/** Local/dev only when your system clock skews vs Finatic; leave unset on Vercel (defaults to 0). */
+/** Local/dev only for clock skew vs Finatic; omit `PAYCLOUD_CLOCK_OFFSET_MS` in .env to match Vercel (defaults to 0). */
 const PAYCLOUD_CLOCK_OFFSET_MS = Number(process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
 
 /** Exact header Finatic expects; no space before charset (some stacks reject variants). */
