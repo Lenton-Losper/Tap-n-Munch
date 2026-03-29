@@ -116,6 +116,22 @@ export function buildSignContent(payload) {
 }
 
 /**
+ * RSA-SHA256 PKCS#1 v1.5 over UTF-8 sign string (Finatic / Postman-compatible).
+ * Private key must be PKCS#1 PEM: -----BEGIN RSA PRIVATE KEY-----
+ */
+export function signUtf8WithForgePkcs1RsaSha256(signStr, privateKeyPem) {
+  const pem = String(privateKeyPem || '').trim()
+  if (!pem.includes('BEGIN RSA PRIVATE KEY')) {
+    throw new Error('PayCloud signing expects PKCS#1 PEM (-----BEGIN RSA PRIVATE KEY-----)')
+  }
+  const prk = forge.pki.privateKeyFromPem(pem)
+  const md = forge.md.sha256.create()
+  md.update(signStr, 'utf8')
+  const signByte = prk.sign(md)
+  return forge.util.encode64(signByte)
+}
+
+/**
  * PayCloud (non-Java SDKs): PKCS#1 PEM from env via deep-normalized key material (`payments/config.js`).
  */
 export function loadPrivateKey() {
@@ -145,11 +161,7 @@ export function signPayload(payload, privateKey = loadPrivateKey()) {
       requestSignatureUsesBase64Url() ? 'base64url (PAYCLOUD_SIGNATURE_BASE64URL)' : 'standard_base64 (default)'
     )
   }
-  const prk = forge.pki.privateKeyFromPem(privateKey)
-  const md = forge.md.sha256.create()
-  md.update(content, 'utf8')
-  const signByte = prk.sign(md)
-  const standardBase64 = forge.util.encode64(signByte)
+  const standardBase64 = signUtf8WithForgePkcs1RsaSha256(content, privateKey)
   return formatPaycloudRequestSignature(standardBase64)
 }
 
@@ -206,8 +218,8 @@ export async function testFullFieldCanonical() {
     'attach',
   ]
 
-  const now = Date.now()
-  const merchantOrderNo = `TESTFULL-${now}`
+  const nowSec = Math.floor(Date.now() / 1000)
+  const merchantOrderNo = `TESTFULL-${nowSec}`
   const amount = 1
   const orderAmountStr = String(Number(amount).toFixed(2))
 
@@ -217,7 +229,7 @@ export async function testFullFieldCanonical() {
     charset: 'UTF-8',
     sign_type: process.env.PAYCLOUD_SIGN_TYPE || 'RSA2',
     version: '1.0',
-    timestamp: now,
+    timestamp: nowSec,
     method: 'pay.paycloud.checkout',
     merchant_no: merchantNo,
     store_no: storeNo,
@@ -240,10 +252,7 @@ export async function testFullFieldCanonical() {
   console.log('[TEST_FULL_CANON] SIGN_STRING_BYTES:', Buffer.from(canonical, 'utf8').toString('hex'))
 
   const privatePem = loadPrivateKey()
-  const signer = crypto.createSign('RSA-SHA256')
-  signer.update(canonical, 'utf8')
-  signer.end()
-  const signature = formatPaycloudRequestSignature(signer.sign(privatePem, 'base64'))
+  const signature = formatPaycloudRequestSignature(signUtf8WithForgePkcs1RsaSha256(canonical, privatePem))
 
   console.log('[TEST_FULL_CANON] checkoutUrl:', checkoutUrl)
   console.log('[TEST_FULL_CANON] canonical_string_full_fields=', canonical)
@@ -314,10 +323,7 @@ const PAYCLOUD_DOC_123456789_SIGNATURE_BASE64URL_EXPECTED =
   'F1kKldW4u0xdSzMqehHLtrX6ntK6gjlZ1Nu1IwcCYAvGe-K9_-9VZymbyNjw038ZcxGspnDqcz7-UnqqJ8gBPpMZ4yZb_NdS5TNqruuSooj2jgPk_PlM-uFH97NlMDuUdGVaflujhcaG9irkq48PHQ1-swaELq7mKov7NU155k7bRPWjNzIggxF5Sgh3qcOBpeWVxp_WghRsjfO4O0tRohiOK5pdcAPkj5VlunUgW0_Yv_uC9sV8dodLloUNWG6W'
 
 export function runPaycloudSign123456789DocTest(privateKeyPem = loadPrivateKey()) {
-  const signer = crypto.createSign('RSA-SHA256')
-  signer.update('123456789', 'utf8')
-  signer.end()
-  const rawStandardB64 = signer.sign(privateKeyPem, 'base64')
+  const rawStandardB64 = signUtf8WithForgePkcs1RsaSha256('123456789', privateKeyPem)
   const onTheWire = formatPaycloudRequestSignature(rawStandardB64)
   const expectedRawStandardB64 = fromBase64Url(PAYCLOUD_DOC_123456789_SIGNATURE_BASE64URL_EXPECTED)
   const matchesDocPrivateKey = rawStandardB64 === expectedRawStandardB64
