@@ -370,6 +370,17 @@ export async function createPaymentRequest(input, options = {}) {
     console.log('[PayCloud][CHECKOUT][FULL] Payload after sign:', JSON.stringify(payload, null, 2))
   }
 
+  console.log('[PayCloud][WIRE] exact_timestamp_sent:', payload.timestamp)
+  console.log('[PayCloud][WIRE] timestamp_type:', typeof payload.timestamp)
+  console.log(
+    '[PayCloud][WIRE] timestamp_as_date:',
+    new Date(
+      typeof payload.timestamp === 'number' && payload.timestamp < 9999999999
+        ? payload.timestamp * 1000
+        : payload.timestamp
+    ).toISOString()
+  )
+
   let response
   try {
     response = await transport(requestUrl, {
