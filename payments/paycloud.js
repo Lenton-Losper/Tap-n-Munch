@@ -287,6 +287,35 @@ function mapPaycloudError(status, payload, rawText) {
   })
 }
 
+/**
+ * Wire `merchant_order_no`: Firebase order id only — strip `restaurantId:` prefix or
+ * `restaurantId:receipt:` before comma-separated ids (no colons in single-id form).
+ */
+export function paycloudWireMerchantOrderNo(orderId) {
+  const s = String(orderId || '').trim()
+  if (!s) return s
+  const receiptMarker = ':receipt:'
+  const ri = s.indexOf(receiptMarker)
+  if (ri !== -1) {
+    return s.slice(ri + receiptMarker.length)
+  }
+  const c = s.indexOf(':')
+  if (c !== -1) return s.slice(c + 1)
+  return s
+}
+
+/** Hosted checkout `return_url`: `{origin}/order-confirmation` with no query string. */
+export function paycloudCheckoutReturnUrl(returnUrlInput) {
+  if (returnUrlInput == null || returnUrlInput === '') return returnUrlInput
+  const s = String(returnUrlInput).trim()
+  try {
+    const u = new URL(s)
+    return `${u.origin}/order-confirmation`
+  } catch {
+    return s
+  }
+}
+
 export async function createPaymentRequest(input, options = {}) {
   const cfg = getPaycloudConfig()
   const amount = Number(input.amount)
@@ -310,12 +339,15 @@ export async function createPaymentRequest(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     method: FINATIC_PROTOCOL_FIELDS.methodHostedCheckout,
     timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
-    merchant_order_no: String(input.orderId),
+    merchant_order_no: paycloudWireMerchantOrderNo(input.orderId),
     order_amount: amount.toFixed(2),
     price_currency: 'NAD',
     description: input.description || `FlashTap order ${input.orderId}`,
     notify_url: input.notifyUrl,
-    return_url: input.returnUrl,
+    return_url:
+      input.returnUrl != null && input.returnUrl !== ''
+        ? paycloudCheckoutReturnUrl(input.returnUrl)
+        : input.returnUrl,
     expires: Number(input.expiresSeconds || 600),
   }
 
@@ -470,7 +502,7 @@ export async function queryPaymentOrder(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     method: cfg.queryOrderMethod,
     timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
-    merchant_order_no: String(input.orderId),
+    merchant_order_no: paycloudWireMerchantOrderNo(input.orderId),
   }
   const unsignedPayload = { ...payload }
   payload.sign = signPayload(payload)

@@ -34,7 +34,19 @@ function OrderConfirmationContent() {
 
         const sessionId = getCurrentSession()
         let restaurantId: string | null = null
-        const tableNum = tableNumber ? Number(tableNumber) : null
+        let effectiveOrderId = orderId
+        let effectiveTable = tableNumber
+        if (typeof window !== 'undefined') {
+          if (!effectiveOrderId) {
+            effectiveOrderId = sessionStorage.getItem('flashtap_return_order_id')
+            if (effectiveOrderId) sessionStorage.removeItem('flashtap_return_order_id')
+          }
+          if (!effectiveTable) {
+            effectiveTable = sessionStorage.getItem('flashtap_return_table')
+            if (effectiveTable) sessionStorage.removeItem('flashtap_return_table')
+          }
+        }
+        const tableNum = effectiveTable ? Number(effectiveTable) : null
         
         if (typeof window !== 'undefined') {
           restaurantId = localStorage.getItem('current_restaurant_id')
@@ -61,8 +73,8 @@ function OrderConfirmationContent() {
         try {
           const { orderPath, ordersPath } = require('@/lib/firebase/paths')
           
-          if (orderId) {
-            const orderRef = doc(db, orderPath(restaurantId, orderId))
+          if (effectiveOrderId) {
+            const orderRef = doc(db, orderPath(restaurantId, effectiveOrderId))
             const ordersRef = collection(db, ordersPath(restaurantId))
             const tableQuery = query(
               ordersRef,
@@ -72,7 +84,7 @@ function OrderConfirmationContent() {
             )
             
             const tableSnapshot = await getDocs(tableQuery)
-            const matchingOrder = tableSnapshot.docs.find(doc => doc.id === orderId)
+            const matchingOrder = tableSnapshot.docs.find(doc => doc.id === effectiveOrderId)
             
             if (matchingOrder) {
               const orderData = { id: matchingOrder.id, ...matchingOrder.data() }
@@ -192,7 +204,7 @@ function OrderConfirmationContent() {
     return () => {
       if (unsubscribe) unsubscribe()
     }
-  }, [orderId, restaurant, tableNumber])
+  }, [orderId, restaurant, tableNumber, searchParams])
 
   useEffect(() => {
     if (!order?.id || order?.payment_method !== 'card' || order?.payment_status === 'paid') return

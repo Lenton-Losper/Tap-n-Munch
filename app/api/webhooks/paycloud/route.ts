@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { FieldPath } from 'firebase-admin/firestore'
 import { orderPath } from '@/lib/firebase/paths'
 import { enforceWebhookRateLimit, handlePaycloudWebhook } from '@/payments/webhook'
 import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
@@ -33,6 +34,42 @@ function parseMerchantOrderNo(merchantOrderNo: string): ParsedMerchantOrder | nu
   }
 
   return { mode: 'single', restaurantId, orderId: rest }
+}
+
+async function resolveRestaurantForOrderId(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  orderId: string
+): Promise<{ restaurantId: string } | null> {
+  const snap = await fs.collectionGroup('orders').where(FieldPath.documentId(), '==', orderId).limit(5).get()
+  if (snap.empty) return null
+  const parent = snap.docs[0].ref.parent.parent
+  const restaurantId = parent?.id
+  if (!restaurantId) return null
+  return { restaurantId }
+}
+
+/** Resolves gateway `merchant_order_no` (wire format: bare id or comma-separated receipt ids). */
+async function resolveMerchantOrderForWebhook(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  merchantOrderNo: string
+): Promise<ParsedMerchantOrder | null> {
+  const colonFormat = parseMerchantOrderNo(merchantOrderNo)
+  if (colonFormat) return colonFormat
+
+  const s = String(merchantOrderNo || '').trim()
+  if (!s) return null
+
+  if (s.includes(',')) {
+    const orderIds = s.split(',').map((x) => x.trim()).filter(Boolean)
+    if (orderIds.length === 0) return null
+    const resolved = await resolveRestaurantForOrderId(fs, orderIds[0])
+    if (!resolved) return null
+    return { mode: 'receipt', restaurantId: resolved.restaurantId, orderIds }
+  }
+
+  const resolved = await resolveRestaurantForOrderId(fs, s)
+  if (!resolved) return null
+  return { mode: 'single', restaurantId: resolved.restaurantId, orderId: s }
 }
 
 async function markOrdersPaid(
@@ -120,7 +157,7 @@ export async function POST(req: Request) {
   const headers = Object.fromEntries(req.headers.entries())
   const processing = handlePaycloudWebhook(rawBody, headers, {
     onPaid: async (_payload: any, ref: any) => {
-      const parsedRef = parseMerchantOrderNo(ref.orderId)
+      const parsedRef = await resolveMerchantOrderForWebhook(fs, ref.orderId)
       if (!parsedRef) return
 
       const processed = await verifyAmountAndMarkPaid(fs, parsedRef, ref)
