@@ -10,7 +10,7 @@ import { getMenuItemsByCategory, MenuItem } from '@/lib/firebase/menu-items'
 import { SubCategory } from '@/lib/firebase/sub-categories'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
-import { getOrCreateSession, getCurrentSession } from '@/lib/session'
+import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
@@ -56,7 +56,13 @@ export default function MenuBrowsePage() {
         
         if (tableNumber > 0) {
           const existingSession = getCurrentSession()
-          if (!existingSession) {
+          const sessionInfo = getSessionInfo()
+          const sessionMatches =
+            existingSession &&
+            sessionInfo.table === String(tableNumber) &&
+            sessionInfo.restaurant === restaurantId
+
+          if (!sessionMatches) {
             const recoveredSession = await restoreSessionFromTable(restaurantId, tableNumber)
             if (!recoveredSession) {
               getOrCreateSession(restaurantId, String(tableNumber))

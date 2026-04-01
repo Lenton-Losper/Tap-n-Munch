@@ -115,10 +115,9 @@ async function main() {
     base,
     `${base}/checkout`,
     `${base}/hostedcheckout`,
-    `${base}/mcheckout`,
     `${base}/orderquery`,
   ]
-  const methods = ['pay.paycloud.checkout', 'checkout', 'hostedcheckout', 'mcheckout', 'order.query']
+  const methods = ['pay.paycloud.checkout', 'checkout', 'hostedcheckout', 'order.query']
   const includeStoreModes = [false, true]
 
   const out = []

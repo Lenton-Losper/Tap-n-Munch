@@ -47,6 +47,10 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
       return
     }
 
+    // Prevent stale banner from showing when table changes (or becomes invalid).
+    setActiveOrder(null)
+    setError(null)
+
     if (!restaurantId) {
       console.log('⚠️ useActiveOrders: No restaurantId provided')
       setLoading(false)
@@ -55,6 +59,8 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
 
     if (!tableNumber || tableNumber <= 0) {
       console.log('🔍 Banner hidden - No table number provided')
+      setActiveOrder(null)
+      setError(null)
       setLoading(false)
       return
     }

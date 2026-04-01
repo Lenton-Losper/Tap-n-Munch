@@ -27,9 +27,27 @@ export async function restoreSessionFromTable(
 
   // Check if session already exists
   const existingSession = localStorage.getItem(SESSION_KEY)
+  const existingTable = localStorage.getItem('flashtap_session_table_v1')
+  const existingRestaurant = localStorage.getItem('flashtap_session_restaurant_v1')
+
   if (existingSession) {
-    console.log('✅ Session already exists, skipping recovery:', existingSession)
-    return existingSession
+    // If the existing session is tied to the same table/restaurant, keep it.
+    // Otherwise clear and allow recovery/new session to be created.
+    if (existingTable === String(tableNumber) && existingRestaurant === restaurantId) {
+      console.log('✅ Session already exists, skipping recovery:', existingSession)
+      return existingSession
+    }
+
+    console.log('🔁 Existing session/table mismatch; clearing before recovery', {
+      existingSession,
+      existingRestaurant,
+      existingTable,
+      requestedRestaurant: restaurantId,
+      requestedTable: tableNumber,
+    })
+    localStorage.removeItem(SESSION_KEY)
+    localStorage.removeItem('flashtap_session_table_v1')
+    localStorage.removeItem('flashtap_session_restaurant_v1')
   }
 
   if (!db) {

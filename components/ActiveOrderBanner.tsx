@@ -3,6 +3,7 @@
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { cn } from '@/lib/utils'
+import { getSessionInfo } from '@/lib/session'
 
 /**
  * PART 3: Active Order Banner
@@ -22,7 +23,17 @@ export function ActiveOrderBanner() {
   const searchParams = useSearchParams()
   const restaurantId = params?.restaurantId as string | undefined
   const tableNumberParam = searchParams?.get('table')
-  const tableNumber = tableNumberParam ? parseInt(tableNumberParam, 10) : undefined
+
+  // Prefer session-tied table number (prevents any stale URL/query from showing wrong table orders).
+  const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
+  const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : undefined
+
+  const tableNumber =
+    sessionTableNumber && Number.isFinite(sessionTableNumber) && sessionTableNumber > 0
+      ? sessionTableNumber
+      : tableNumberParam
+        ? parseInt(tableNumberParam, 10)
+        : undefined
   
   // PART 3: Use table-based active orders hook
   const { activeOrder, loading, error } = useActiveOrders(restaurantId, tableNumber)

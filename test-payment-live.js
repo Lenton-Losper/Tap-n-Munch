@@ -1,13 +1,20 @@
 import {
   getPaycloudConfig,
   createPaymentRequest,
+  createMerchantHostedCheckoutRequest,
   queryPaymentOrder,
   PaycloudRequestError,
   maskSecrets,
   PAYCLOUD_JSON_HEADERS,
   logPaycloudSignedWireDiagnostics,
 } from './payments/paycloud.js'
-import { signPayload, verifyPayloadSignature, loadPrivateKey, formatPaycloudRequestSignature } from './payments/signature.js'
+import {
+  signPayload,
+  verifyPayloadSignature,
+  loadPrivateKey,
+  formatPaycloudRequestSignature,
+  runLocalSignVerifySelfTest,
+} from './payments/signature.js'
 import { testFullFieldCanonical } from './payments/signature.js'
 import { verifyWebhook } from './payments/webhook.js'
 import crypto from 'crypto'
@@ -102,6 +109,8 @@ async function main() {
   const baseOrderId = `TEST001-${Date.now()}`
 
   logKeyUsageDiagOnce()
+  const localSignVerifyOk = runLocalSignVerifySelfTest()
+  log('INIT', 'Local sign/verify self-test', { ok: localSignVerifyOk })
 
   try {
     await testFullFieldCanonical()
@@ -124,19 +133,19 @@ async function main() {
       app_id: cfg.appId,
       merchant_no: cfg.merchantNo,
       store_no: cfg.storeNo,
-      sign_type: 'RSA2',
-      format: 'JSON',
       charset: 'UTF-8',
-      version: '1.0',
+      expires: 300,
       method: 'pay.paycloud.checkout',
-      timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
-      merchant_order_no: `${baseOrderId}-CONNECT`,
-      order_amount: '1.00',
-      price_currency: 'NAD',
+      format: 'JSON',
       description: `FlashTap STEP1 connectivity ${baseOrderId}`,
       notify_url: 'https://example.com/api/webhooks/paycloud',
+      version: '1.0',
+      merchant_order_no: `${baseOrderId}-CONNECT`,
+      order_amount: '1.00',
       return_url: 'https://example.com/order-confirmation',
-      expires: 600,
+      sign_type: 'RSA2',
+      price_currency: 'NAD',
+      timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
     }
     const url = cfg.endpoint
     log('STEP1', 'Request URL', url)
@@ -188,6 +197,32 @@ async function main() {
       lastCheckoutGatewayBody = error.responseBody
     }
     process.exitCode = 1
+  }
+
+  // Step 3: Query order status
+  try {
+    const merchantCheckoutOrderId = `${baseOrderId}-MC`
+    log('STEP2B', 'Merchant-hosted checkout request started (pay.merchant.checkout)')
+    const merchantCheckout = await createMerchantHostedCheckoutRequest({
+      amount: 1.0,
+      orderId: merchantCheckoutOrderId,
+      description: `FlashTap merchant-hosted test ${merchantCheckoutOrderId}`,
+      merchantNo: cfg.merchantNo,
+      storeNo: cfg.storeNo,
+      notifyUrl: 'https://example.com/api/webhooks/paycloud',
+      returnUrl: 'https://example.com/order-confirmation',
+      termIp: '127.0.0.1',
+      card: {
+        card_type: 'CREDIT',
+        pan: '4895749143709709',
+        expiry: '1224',
+        cvv: '1224',
+        holder: 'jack',
+      },
+    })
+    log('STEP2B', 'Merchant-hosted response', JSON.parse(maskSecrets(merchantCheckout)))
+  } catch (error) {
+    logDetailedError('STEP2B', error)
   }
 
   // Step 3: Query order status

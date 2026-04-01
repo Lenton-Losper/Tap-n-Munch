@@ -48,11 +48,39 @@ async function resolveRestaurantForOrderId(
   return { restaurantId }
 }
 
+async function resolveOrdersByPaycloudMerchantOrderNo(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  paycloudMerchantOrderNo: string
+): Promise<ParsedMerchantOrder | null> {
+  // Fallback for attempt-specific `merchant_order_no` values.
+  // We persist `paycloud_merchant_order_no` alongside orders when initiating payment.
+  const snap = await fs
+    .collectionGroup('orders')
+    .where('paycloud_merchant_order_no', '==', paycloudMerchantOrderNo)
+    .limit(20)
+    .get()
+
+  if (snap.empty) return null
+
+  const parent = snap.docs[0].ref.parent.parent
+  const restaurantId = parent?.id
+  if (!restaurantId) return null
+
+  const orderIds = snap.docs.map((d) => d.id)
+  if (orderIds.length > 1) {
+    return { mode: 'receipt', restaurantId, orderIds }
+  }
+  return { mode: 'single', restaurantId, orderId: orderIds[0] }
+}
+
 /** Resolves gateway `merchant_order_no` (wire format: bare id or comma-separated receipt ids). */
 async function resolveMerchantOrderForWebhook(
   fs: NonNullable<ReturnType<typeof adminDb>>,
   merchantOrderNo: string
 ): Promise<ParsedMerchantOrder | null> {
+  const byWire = await resolveOrdersByPaycloudMerchantOrderNo(fs, merchantOrderNo)
+  if (byWire) return byWire
+
   const colonFormat = parseMerchantOrderNo(merchantOrderNo)
   if (colonFormat) return colonFormat
 

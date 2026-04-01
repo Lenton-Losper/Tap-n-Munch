@@ -21,7 +21,10 @@ import {
 
 function requestSignatureUsesBase64Url() {
   const v = process.env.PAYCLOUD_SIGNATURE_BASE64URL
-  return v === 'true' || v === '1'
+  if (v === 'true' || v === '1') {
+    console.warn('[PayCloud][SIGN] PAYCLOUD_SIGNATURE_BASE64URL is ignored; forcing standard base64 output.')
+  }
+  return false
 }
 
 /** Standard base64 from crypto.sign → value placed in JSON `sign` for outbound API requests. */
@@ -84,27 +87,35 @@ function canonicalValueToString(value) {
   return str
 }
 
-function buildCanonicalString(requestObj) {
+function getCanonicalEntries(requestObj) {
   if (!requestObj || typeof requestObj !== 'object' || Array.isArray(requestObj)) {
     throw new Error('Signature payload must be an object')
   }
 
-  // PHP SDK behavior: remove only `sign`, ksort remaining keys, include empty strings.
+  // Canonicalization for this integration: remove `sign`, sort keys, skip null/undefined/empty strings.
   const keys = Object.keys(requestObj)
     .filter((k) => k !== 'sign')
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
 
   const pairs = []
+  const includedKeys = []
   for (const key of keys) {
     const value = requestObj[key]
+    if (value === null || value === undefined) continue
+    if (typeof value === 'string' && value.length === 0) continue
     // Skip values that start with '@' (SDK treats them as special placeholders).
     if (typeof value === 'string' && value.startsWith('@')) continue
 
     const str = canonicalValueToString(value)
     pairs.push(`${key}=${str}`)
+    includedKeys.push(key)
   }
 
-  return pairs.join('&')
+  return { pairs, includedKeys }
+}
+
+function buildCanonicalString(requestObj) {
+  return getCanonicalEntries(requestObj).pairs.join('&')
 }
 
 export function exportCanonicalString(fields) {
@@ -149,8 +160,12 @@ export function loadGatewayPublicKey() {
 
 export function signPayload(payload, privateKey = loadPrivateKey()) {
   applyPaycloudSigningStrictFields(payload)
-  const content = buildSignContent(payload)
+  const { pairs, includedKeys } = getCanonicalEntries(payload)
+  const content = pairs.join('&')
   const byteLength = Buffer.byteLength(content, 'utf8')
+  const signingPublicKeyPrefix = getDerivedPublicKeyPrefixFromPrivateKey(privateKey)
+  console.log('[PayCloud][SIGN] included_fields=', includedKeys.join(','))
+  console.log('[PayCloud][SIGN] signing_public_key_prefix20=', signingPublicKeyPrefix)
   console.log('[PayCloud][SIGN] canonical_string=', content)
   console.log('[PayCloud][SIGN] canonical_string_utf8_bytes=', byteLength)
   console.log('SIGN_STRING_BYTES:', Buffer.from(content, 'utf8').toString('hex'))
@@ -162,6 +177,7 @@ export function signPayload(payload, privateKey = loadPrivateKey()) {
     )
   }
   const standardBase64 = signUtf8WithForgePkcs1RsaSha256(content, privateKey)
+  console.log('[PayCloud][SIGN] generated_signature_base64=', standardBase64)
   return formatPaycloudRequestSignature(standardBase64)
 }
 
@@ -179,9 +195,8 @@ export function verifyPayloadSignature(payload, signature, publicKey = loadGatew
   return verifier.verify(publicKey, sigB64, 'base64')
 }
 
-// Test-only alternative canonicalization for checkout:
-// Include ALL checkout schema fields (docs list) even if missing, using "" for omitted values.
-// Then sign the full canonical string and send the request to checkout endpoint.
+// Test-only canonicalization for checkout:
+// Include only non-empty values (matching runtime signing behavior).
 export async function testFullFieldCanonical() {
   const endpointRaw = String(process.env.PAYCLOUD_ENDPOINT || '').trim()
   const endpoint = normalizePaycloudEndpoint(endpointRaw)
@@ -194,32 +209,8 @@ export async function testFullFieldCanonical() {
     throw new Error('Missing required PayCloud env vars for testFullFieldCanonical')
   }
 
-  const fieldsList = [
-    'app_id',
-    'format',
-    'charset',
-    'sign_type',
-    'version',
-    'timestamp',
-    'method',
-    'merchant_no',
-    'store_no',
-    'pay_options',
-    'merchant_order_no',
-    'price_currency',
-    'order_amount',
-    'expires',
-    'description',
-    'term_ip',
-    'longitude',
-    'latitude',
-    'return_url',
-    'notify_url',
-    'attach',
-  ]
-
-  const nowSec = Math.floor(Date.now() / 1000)
-  const merchantOrderNo = `TESTFULL-${nowSec}`
+  const nowMs = Date.now() - Number(process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
+  const merchantOrderNo = `TESTFULL-${nowMs}`
   const amount = 1
   const orderAmountStr = String(Number(amount).toFixed(2))
 
@@ -229,26 +220,21 @@ export async function testFullFieldCanonical() {
     charset: 'UTF-8',
     sign_type: process.env.PAYCLOUD_SIGN_TYPE || 'RSA2',
     version: '1.0',
-    timestamp: nowSec,
+    timestamp: nowMs,
     method: 'pay.paycloud.checkout',
     merchant_no: merchantNo,
     store_no: storeNo,
-    pay_options: '', // docs field (optional)
     merchant_order_no: merchantOrderNo,
     price_currency: 'NAD',
     order_amount: orderAmountStr,
     expires: 600, // docs: integer
     description: `FlashTap full-field canonical ${merchantOrderNo}`,
-    term_ip: '',
-    longitude: '',
-    latitude: '',
     return_url: 'https://example.com/order-confirmation',
     notify_url: 'https://example.com/api/webhooks/paycloud',
-    attach: '',
   }
 
   applyPaycloudSigningStrictFields(values)
-  const canonical = buildFullFieldCanonicalString(fieldsList, values)
+  const canonical = buildSignContent(values)
   console.log('[TEST_FULL_CANON] SIGN_STRING_BYTES:', Buffer.from(canonical, 'utf8').toString('hex'))
 
   const privatePem = loadPrivateKey()
@@ -273,17 +259,6 @@ export async function testFullFieldCanonical() {
   console.log('[TEST_FULL_CANON] gateway_response_status:', response.status)
   console.log('[TEST_FULL_CANON] gateway_response_body:', json ?? text)
   return { checkoutUrl, canonical, signature, responseStatus: response.status, responseJson: json, responseText: text }
-}
-
-function buildFullFieldCanonicalString(fieldsList, valuesByKey) {
-  const sortedKeys = [...fieldsList].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  const pairs = []
-  for (const key of sortedKeys) {
-    const v = valuesByKey[key]
-    const str = canonicalValueToString(v)
-    pairs.push(`${key}=${str}`)
-  }
-  return pairs.join('&')
 }
 
 function normalizePaycloudEndpoint(endpoint) {
@@ -346,4 +321,36 @@ export function getDerivedPublicKeyFingerprintFromPrivateKey(privateKeyPemOrBase
     .createPublicKey(crypto.createPrivateKey(pem))
     .export({ type: 'spki', format: 'der' })
   return crypto.createHash('sha256').update(derivedPublicDer).digest('hex')
+}
+
+function getDerivedPublicKeyPrefixFromPrivateKey(privateKeyPemOrBase64 = loadPrivateKey()) {
+  const pem = String(privateKeyPemOrBase64 || '').replace(/\\n/g, '\n').trim()
+  const derivedPublicPem = crypto.createPublicKey(crypto.createPrivateKey(pem)).export({ type: 'spki', format: 'pem' })
+  const b64 = String(derivedPublicPem)
+    .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+    .replace(/-----END PUBLIC KEY-----/g, '')
+    .replace(/\s+/g, '')
+  return b64.slice(0, 20)
+}
+
+export function runLocalSignVerifySelfTest() {
+  const payload = {
+    app_id: 'selftest_app',
+    merchant_no: 'selftest_merchant',
+    store_no: 'selftest_store',
+    sign_type: 'RSA2',
+    format: 'JSON',
+    charset: 'UTF-8',
+    version: '1.0',
+    method: 'self.test',
+    timestamp: Date.now(),
+    merchant_order_no: `SELFTEST-${Date.now()}`,
+    order_amount: '1.00',
+    price_currency: 'NAD',
+    description: 'local sign verify self test',
+  }
+  const signature = signPayload({ ...payload })
+  const ok = verifyPayloadSignature(payload, signature)
+  console.log('[PayCloud][SELFTEST] local_sign_verify=', ok)
+  return ok
 }

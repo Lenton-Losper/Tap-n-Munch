@@ -5,6 +5,8 @@ import {
   signPayload,
   verifyPayloadSignature,
 } from './signature.js'
+import { normalizeGatewayPublicKeyEnvToPem } from './config.js'
+import crypto from 'crypto'
 
 /** Local/dev only for clock skew vs Finatic; omit `PAYCLOUD_CLOCK_OFFSET_MS` in .env to match Vercel (defaults to 0). */
 const PAYCLOUD_CLOCK_OFFSET_MS = Number(process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
@@ -26,13 +28,15 @@ const FINATIC_PROTOCOL_FIELDS = {
   charset: 'UTF-8',
   version: '1.0',
   methodHostedCheckout: 'pay.paycloud.checkout',
+  methodMerchantCheckout: 'pay.merchant.checkout',
   methodQuery: 'order.query',
 }
 
 /**
- * Finatic PayCloud uses one HTTPS entry for every operation; the JSON `method` field
- * selects checkout vs order query, etc. Normalize host-only URLs to …/api/entry.
- * Do not append /checkout or /orderquery — those are not used.
+ * Finatic PayCloud: `PAYCLOUD_ENDPOINT` is the entry base (…/api/entry). Hosted checkout
+ * POSTs to …/api/entry/checkout; order query POSTs to …/api/entry/orderquery. The JSON
+ * `method` field (e.g. pay.paycloud.checkout) selects the operation. Normalize host-only
+ * URLs to …/api/entry via normalizePaycloudEndpoint().
  */
 function normalizePaycloudEndpoint(endpoint) {
   const raw = String(endpoint || '').trim().replace(/\/+$/, '')
@@ -42,6 +46,9 @@ function normalizePaycloudEndpoint(endpoint) {
     const host = u.hostname.toLowerCase()
     const path = (u.pathname || '/').replace(/\/$/, '') || ''
     if (host === 'open.finatic.africa' && !path.includes('api/entry')) {
+      return `${u.origin}/api/entry`
+    }
+    if (host.endsWith('wisepaycloud.com') && !path.includes('api/entry')) {
       return `${u.origin}/api/entry`
     }
     return raw
@@ -95,8 +102,13 @@ export function getPaycloudConfig() {
     queryOrderMethod: FINATIC_PROTOCOL_FIELDS.methodQuery,
     requestTimeoutMs: Number(process.env.PAYCLOUD_TIMEOUT_MS || 15000),
   }
-  if (!cfg.endpoint.includes('open.finatic.africa')) {
-    throw new Error('Invalid PayCloud endpoint: must use Finatic gateway')
+  const epLower = cfg.endpoint.toLowerCase()
+  const allowsPaycloud =
+    epLower.includes('open.finatic.africa') || epLower.includes('wisepaycloud.com')
+  if (!allowsPaycloud) {
+    throw new Error(
+      'Invalid PayCloud endpoint: must use Finatic or Wiseasy PayCloud gateway (e.g. open.finatic.africa or *.wisepaycloud.com)'
+    )
   }
   if (!cfg.appId.startsWith('wz663')) {
     console.warn('[PayCloud] Unexpected App ID — verify Finatic credentials')
@@ -295,14 +307,53 @@ function mapPaycloudError(status, payload, rawText) {
 export function paycloudWireMerchantOrderNo(orderId) {
   const s = String(orderId || '').trim()
   if (!s) return s
+
+  // Strip app-specific prefixes so gateway sees the "wire format".
+  // Examples:
+  // - `restaurantId:docId` -> `docId`
+  // - `restaurantId:receipt:id1,id2` -> `id1,id2` (caller must ensure it fits PayCloud constraints)
   const receiptMarker = ':receipt:'
   const ri = s.indexOf(receiptMarker)
+  let candidate = ''
   if (ri !== -1) {
-    return s.slice(ri + receiptMarker.length)
+    candidate = s.slice(ri + receiptMarker.length)
+  } else {
+    const c = s.indexOf(':')
+    candidate = c !== -1 ? s.slice(c + 1) : s
   }
-  const c = s.indexOf(':')
-  if (c !== -1) return s.slice(c + 1)
-  return s
+
+  candidate = String(candidate || '').trim()
+  if (!candidate) return candidate
+
+  const PAYCLOUD_MERCHANT_ORDER_NO_MAX_LEN = 32
+  // PayCloud allowed charset: numbers, lowercase/uppercase letters, and _-|*@.
+  // Intentionally excludes `:` and `,`.
+  const PAYCLOUD_MERCHANT_ORDER_NO_ALLOWED_RE = /^[0-9A-Za-z_\-\*@]+$/
+  if (candidate.length <= PAYCLOUD_MERCHANT_ORDER_NO_MAX_LEN && PAYCLOUD_MERCHANT_ORDER_NO_ALLOWED_RE.test(candidate)) {
+    return candidate
+  }
+
+  // If the candidate violates PayCloud constraints, produce a deterministic short code.
+  // Note: This means webhook resolution by Firestore `documentId()` won't work for long/invalid ids.
+  const digits = (candidate.match(/\d+/g) || []).join('')
+  const last10 = digits.slice(-10)
+  const last8 = digits.slice(-8).padStart(8, '0')
+  const first8 = candidate.replace(/[^0-9A-Za-z_\-\*@]/g, '').slice(0, 8)
+
+  let short
+  if (last10.length === 10) {
+    short = `FT-${last10}` // FT- + 10 digits => 14 chars
+  } else if (first8) {
+    short = `FT${first8}${last8}` // FT + 0..8 + 8 => <= 18 chars
+  } else {
+    // Deterministic fallback using hex (only 0-9a-f).
+    const hashHex = crypto.createHash('sha256').update(candidate, 'utf8').digest('hex')
+    short = `FT${hashHex.slice(-30)}` // FT + 30 hex => 32 chars
+  }
+
+  short = short.replace(/[^0-9A-Za-z_\-\*@]/g, '')
+  if (short.length > PAYCLOUD_MERCHANT_ORDER_NO_MAX_LEN) short = short.slice(0, PAYCLOUD_MERCHANT_ORDER_NO_MAX_LEN)
+  return short
 }
 
 /** Hosted checkout `return_url`: `{origin}/order-confirmation` with no query string. */
@@ -315,6 +366,19 @@ export function paycloudCheckoutReturnUrl(returnUrlInput) {
   } catch {
     return s
   }
+}
+
+function encryptMerchantCardPayload(cardPayload) {
+  if (!cardPayload || typeof cardPayload !== 'object' || Array.isArray(cardPayload)) {
+    throw new PaycloudRequestError('card payload must be an object', { phase: 'validation' })
+  }
+  const publicKeyPem = normalizeGatewayPublicKeyEnvToPem()
+  const plaintext = Buffer.from(JSON.stringify(cardPayload), 'utf8')
+  const encrypted = crypto.publicEncrypt(
+    { key: publicKeyPem, padding: crypto.constants.RSA_PKCS1_PADDING },
+    plaintext
+  )
+  return encrypted.toString('base64')
 }
 
 export async function createPaymentRequest(input, options = {}) {
@@ -330,26 +394,44 @@ export async function createPaymentRequest(input, options = {}) {
 
   // Hosted checkout: business params are top-level JSON fields (same shape as official
   // PHP sample on developers.finatic.africa — no biz_content wrapper for these APIs).
+  const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
+  console.log('[PayCloud][MERCHANT_ORDER_NO][checkout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
   const payload = {
     app_id: cfg.appId,
     merchant_no: input.merchantNo || cfg.merchantNo,
     store_no: input.storeNo || cfg.storeNo,
-    sign_type: 'RSA2',
-    format: FINATIC_PROTOCOL_FIELDS.format,
     charset: 'UTF-8',
-    version: FINATIC_PROTOCOL_FIELDS.version,
+    expires: Number(input.expiresSeconds || 300),
     method: FINATIC_PROTOCOL_FIELDS.methodHostedCheckout,
-    timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
-    merchant_order_no: paycloudWireMerchantOrderNo(input.orderId),
+    format: FINATIC_PROTOCOL_FIELDS.format,
+    version: FINATIC_PROTOCOL_FIELDS.version,
+    merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    price_currency: 'NAD',
-    description: input.description || `FlashTap order ${input.orderId}`,
-    notify_url: input.notifyUrl,
     return_url:
       input.returnUrl != null && input.returnUrl !== ''
         ? paycloudCheckoutReturnUrl(input.returnUrl)
         : input.returnUrl,
-    expires: Number(input.expiresSeconds || 600),
+    sign_type: 'RSA2',
+    price_currency: input.priceCurrency || 'NAD',
+    timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
+    description: input.description || `FlashTap order ${input.orderId}`,
+    notify_url: input.notifyUrl,
+  }
+  const optionalWireFields = {
+    pay_options: input.payOptions,
+    term_ip: input.termIp,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    attach: input.attach,
+  }
+  for (const [key, rawValue] of Object.entries(optionalWireFields)) {
+    if (rawValue == null) continue
+    if (typeof rawValue === 'string' && rawValue === '') continue
+    if (key === 'attach' && typeof rawValue === 'object') {
+      payload[key] = JSON.stringify(rawValue)
+      continue
+    }
+    payload[key] = rawValue
   }
 
   const unsignedPayload = { ...payload }
@@ -498,11 +580,141 @@ export async function createPaymentRequest(input, options = {}) {
   }
 }
 
+export async function createMerchantHostedCheckoutRequest(input, options = {}) {
+  const cfg = getPaycloudConfig()
+  const amount = Number(input.amount)
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new PaycloudRequestError('amount must be a positive number', { phase: 'validation' })
+  }
+  if (!input?.orderId) {
+    throw new PaycloudRequestError('orderId is required', { phase: 'validation' })
+  }
+  if (!input?.card || typeof input.card !== 'object') {
+    throw new PaycloudRequestError('card is required for pay.merchant.checkout', { phase: 'validation' })
+  }
+
+  const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
+  console.log('[PayCloud][MERCHANT_ORDER_NO][mcheckout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
+  const payload = {
+    app_id: cfg.appId,
+    merchant_no: input.merchantNo || cfg.merchantNo,
+    store_no: input.storeNo || cfg.storeNo,
+    charset: 'UTF-8',
+    expires: Number(input.expiresSeconds || 300),
+    method: FINATIC_PROTOCOL_FIELDS.methodMerchantCheckout,
+    format: FINATIC_PROTOCOL_FIELDS.format,
+    version: FINATIC_PROTOCOL_FIELDS.version,
+    merchant_order_no: merchantOrderNo,
+    order_amount: amount.toFixed(2),
+    return_url:
+      input.returnUrl != null && input.returnUrl !== ''
+        ? paycloudCheckoutReturnUrl(input.returnUrl)
+        : input.returnUrl,
+    sign_type: 'RSA2',
+    price_currency: input.priceCurrency || 'NAD',
+    timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
+    description: input.description || `FlashTap merchant checkout ${input.orderId}`,
+    notify_url: input.notifyUrl,
+    card: encryptMerchantCardPayload(input.card),
+  }
+  const optionalWireFields = {
+    pay_options: input.payOptions,
+    term_ip: input.termIp,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    attach: input.attach,
+  }
+  for (const [key, rawValue] of Object.entries(optionalWireFields)) {
+    if (rawValue == null) continue
+    if (typeof rawValue === 'string' && rawValue === '') continue
+    if (key === 'attach' && typeof rawValue === 'object') {
+      payload[key] = JSON.stringify(rawValue)
+      continue
+    }
+    payload[key] = rawValue
+  }
+
+  const unsignedPayload = { ...payload }
+  payload.sign = signPayload(payload)
+  logPaycloudSignedWireDiagnostics('mcheckout', payload)
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), cfg.requestTimeoutMs)
+  const transport = options.transport || fetch
+  const requestUrl = buildPaycloudOperationUrl(cfg.endpoint, 'mcheckout')
+
+  debugLog('Merchant checkout URL', { requestUrl })
+  debugLog('Merchant checkout body before signing', unsignedPayload)
+  debugLog('Merchant checkout signed body', payload)
+
+  let response
+  try {
+    response = await transport(requestUrl, {
+      method: 'POST',
+      headers: PAYCLOUD_JSON_HEADERS,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    clearTimeout(timeout)
+    if (error?.name === 'AbortError') {
+      throw new PaycloudRequestError('PayCloud merchant checkout request timed out', { phase: 'network' })
+    }
+    throw new PaycloudRequestError(`Network failure calling PayCloud merchant checkout: ${error.message}`, {
+      phase: 'network',
+      responseBody: { cause: error?.name },
+    })
+  }
+  clearTimeout(timeout)
+
+  const raw = await response.text()
+  debugLog('Merchant checkout response status', { status: response.status, ok: response.ok })
+  debugLog('Merchant checkout response headers', Object.fromEntries(response.headers.entries()))
+  debugLog('Merchant checkout response body', raw)
+
+  let body
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    throw new PaycloudRequestError(`Invalid PayCloud merchant checkout response format: ${raw.slice(0, 200)}`, {
+      httpStatus: response.status,
+      rawText: raw,
+      phase: 'parse',
+    })
+  }
+
+  if (!response.ok) throw mapPaycloudError(response.status, body, raw)
+  const successCode = String(body.code || '').toUpperCase()
+  if (successCode && !['0', 'SUCCESS', '200'].includes(successCode)) {
+    const failReason = body.msg || body.sub_msg || 'declined'
+    throw new PaycloudRequestError(`Merchant checkout declined by PayCloud: ${failReason}`, {
+      httpStatus: response.status,
+      responseBody: body,
+      rawText: raw,
+      phase: 'business',
+    })
+  }
+
+  return {
+    status: response.status,
+    rawResponse: body,
+    gatewayResponse: {
+      code: body.code,
+      msg: body.msg,
+      psn: body.psn,
+      merchant_order_no: body.merchant_order_no || payload.merchant_order_no,
+    },
+  }
+}
+
 export async function queryPaymentOrder(input, options = {}) {
   const cfg = getPaycloudConfig()
   if (!input?.orderId) {
     throw new PaycloudRequestError('orderId is required', { phase: 'validation' })
   }
+  const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
+  console.log('[PayCloud][MERCHANT_ORDER_NO][query] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
 
   const payload = {
     app_id: cfg.appId,
@@ -513,8 +725,8 @@ export async function queryPaymentOrder(input, options = {}) {
     charset: 'UTF-8',
     version: FINATIC_PROTOCOL_FIELDS.version,
     method: cfg.queryOrderMethod,
-    timestamp: Math.floor((Date.now() - PAYCLOUD_CLOCK_OFFSET_MS) / 1000),
-    merchant_order_no: paycloudWireMerchantOrderNo(input.orderId),
+    timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
+    merchant_order_no: merchantOrderNo,
   }
   const unsignedPayload = { ...payload }
   payload.sign = signPayload(payload)

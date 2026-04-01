@@ -1,6 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect } from 'react'
+import { getCurrentSession } from '@/lib/session'
 
 export interface CartItem {
   menu_item_id: string
@@ -31,19 +32,31 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   // Load cart from localStorage on mount
   useEffect(() => {
+    const sessionId = getCurrentSession()
     const saved = localStorage.getItem('cart')
-    if (saved) {
+    const savedSessionId = localStorage.getItem('cart_session_id')
+
+    if (saved && sessionId && savedSessionId === sessionId) {
       try {
         setItems(JSON.parse(saved))
+        return
       } catch (e) {
         console.error('Failed to load cart from localStorage', e)
       }
     }
+
+    // Cart is tied to a session id; if the session changed (new QR scan) we must start empty.
+    localStorage.removeItem('cart')
+    localStorage.removeItem('cart_session_id')
+    setItems([])
   }, [])
 
   // Save cart to localStorage whenever it changes
   useEffect(() => {
+    const sessionId = getCurrentSession()
+    if (!sessionId) return
     localStorage.setItem('cart', JSON.stringify(items))
+    localStorage.setItem('cart_session_id', sessionId)
   }, [items])
 
   const addItem = (item: CartItem) => {
@@ -65,6 +78,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const clearCart = () => {
     setItems([])
     localStorage.removeItem('cart')
+    localStorage.removeItem('cart_session_id')
   }
 
   const getTotal = () => {

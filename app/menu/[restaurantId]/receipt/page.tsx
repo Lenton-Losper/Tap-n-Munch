@@ -10,6 +10,7 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
+import { getSessionInfo } from '@/lib/session'
 
 /** Firestore Timestamp, plain object, ISO string, or millis — never pass invalid values to `new Date` alone. */
 function formatOrderTimestamp(value: unknown): string {
@@ -59,7 +60,12 @@ export default function ReceiptPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const restaurantId = params.restaurantId as string
-  const tableNumber = searchParams.get('table') || ''
+  const tableNumberFromUrl = searchParams.get('table') || ''
+
+  // Prefer the session's table number (prevents stale URL from showing the wrong table).
+  const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
+  const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : null
+  const tableNumber = sessionTableNumber && Number.isFinite(sessionTableNumber) && sessionTableNumber > 0 ? String(sessionTableNumber) : tableNumberFromUrl
   
   const [orders, setOrders] = useState<any[]>([])
   const [restaurant, setRestaurant] = useState<any>(null)
@@ -80,6 +86,8 @@ export default function ReceiptPage() {
 
   useEffect(() => {
     const tableNum = tableNumber ? Number(tableNumber) : null
+    // Prevent stale orders from a previous table render.
+    setOrders([])
 
     if (!tableNum || tableNum <= 0) {
       setLoading(false)

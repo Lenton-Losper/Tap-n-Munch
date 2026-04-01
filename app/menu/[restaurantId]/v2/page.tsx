@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic"
 import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
-import { getOrCreateSession, getCurrentSession } from '@/lib/session'
+import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
 import { Receipt, ChevronRight } from 'lucide-react'
@@ -13,6 +13,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
+import { useCart } from '@/contexts/cart-context'
 
 function MenuLandingPageV2Content() {
   console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
@@ -29,6 +30,7 @@ function MenuLandingPageV2Content() {
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
+  const { clearCart } = useCart()
 
   // Load restaurant data
   useEffect(() => {
@@ -107,18 +109,18 @@ function MenuLandingPageV2Content() {
           } else {
             setTable({ id: tableDoc.id, ...tableData })
             
-            let session = getCurrentSession()
-            if (!session) {
-              session = getOrCreateSession(restaurantId, String(tableNum))
-            }
-            
+            // Treat QR landing as a fresh scan session start.
+            const session = createFreshSession(restaurantId, String(tableNum))
             if (session) {
               setSessionId(session)
               setSessionReady(true)
-              
+
               if (typeof window !== 'undefined') {
                 localStorage.setItem('current_restaurant_id', restaurantId)
               }
+
+              // Ensure cart starts empty for each fresh QR session.
+              clearCart()
             }
           }
         }

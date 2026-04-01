@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { orderPath } from '@/lib/firebase/paths'
 import { createPaymentRequest } from '@/payments/paycloud'
-import { adminDb } from '@/lib/firebase/admin-firestore'
+import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
 
 const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
@@ -67,7 +67,14 @@ export async function POST(req: Request) {
     }
 
     const origin = new URL(req.url).origin
-    const merchantOrderNo = `${restaurantId}:receipt:${sortedOrderIds.join(',')}`
+    // PayCloud "Try again" requires a unique merchant_order_no per payment attempt.
+    // We keep the order-id portion for debugging/webhook mapping, and append a short nonce.
+    // NOTE: webhook mapping relies on `paycloud_merchant_order_no` persisted below.
+    const attemptNonce = String(Date.now()).slice(-8)
+    const merchantOrderNo = `${restaurantId}:receipt:${sortedOrderIds.join(',')}@${attemptNonce}`
+
+    console.log('[PayCloud][receipt] PAYCLOUD_CLOCK_OFFSET_MS=', process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
+    console.log('[PayCloud][receipt] merchantOrderNo(input)=', merchantOrderNo)
 
     const payment = await createPaymentRequest({
       amount: roundedSum,
@@ -77,6 +84,33 @@ export async function POST(req: Request) {
       returnUrl: `${origin}/menu/${restaurantId}/receipt?table=${encodeURIComponent(String(tableNumber))}`,
     })
 
+    // This is the exact URL PayCloud should redirect to.
+    // We'll log the extracted `tn` so we can match it against the browser URL.
+    let tn: string | null = null
+    try {
+      tn = new URL(payment.checkoutUrl).searchParams.get('tn')
+    } catch {
+      tn = null
+    }
+    console.log('[PayCloud][receipt] checkoutUrl=', payment.checkoutUrl)
+    console.log('[PayCloud][receipt] checkout tn=', tn)
+
+    // Persist the PayCloud wire merchant order id so the webhook can map back even if
+    // `merchantOrderNo` is attempt-specific.
+    if (tn) {
+      const patch = {
+        payment_status: 'pending' as const,
+        payment_provider: 'paycloud',
+        payment_reference: merchantOrderNo,
+        paycloud_merchant_order_no: tn,
+        payment_checkout_url: payment.checkoutUrl,
+        payment_pending_since: FieldValue.serverTimestamp(),
+        payment_init_error: FieldValue.delete(),
+        updated_at: FieldValue.serverTimestamp(),
+      }
+      await Promise.all(sortedOrderIds.map((orderId) => fs.doc(orderPath(restaurantId, orderId)).update(patch)))
+    }
+
     return NextResponse.json(
       {
         ok: true,
@@ -85,7 +119,12 @@ export async function POST(req: Request) {
         checkoutUrl: payment.checkoutUrl,
         merchantOrderNo,
       },
-      { status: 201 }
+      {
+        status: 201,
+        headers: {
+          'Cache-Control': 'no-store, max-age=0',
+        },
+      }
     )
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Payment failed'
