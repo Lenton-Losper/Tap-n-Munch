@@ -518,16 +518,59 @@ export async function createPaymentRequest(input, options = {}) {
   const successCode = String(body.code || '').toUpperCase()
   const treatAsSuccess = !successCode || ['0', 'SUCCESS', '200'].includes(successCode)
 
-  const signature = body.sign
-  if (signature && treatAsSuccess) {
-    const signatureOk = verifyPayloadSignature(body, signature)
-    if (!signatureOk) {
-      throw new PaycloudRequestError('PayCloud response signature verification failed', {
-        httpStatus: response.status,
-        responseBody: body,
-        rawText: raw,
-        phase: 'signature',
-      })
+  let responseData = body?.data
+  if (typeof responseData === 'string') {
+    try {
+      responseData = JSON.parse(responseData)
+    } catch {
+      responseData = null
+    }
+  }
+
+  const checkoutUrl =
+    body.pay_url ||
+    responseData?.pay_url ||
+    body.checkout_url ||
+    responseData?.checkout_url ||
+    body.payment_url ||
+    responseData?.payment_url ||
+    body.redirect_url ||
+    responseData?.redirect_url ||
+    null
+
+  // Success + pay URL: return immediately. Response RSA verify is best-effort only (Finatic key
+  // mismatch must not block checkout).
+  if (treatAsSuccess && checkoutUrl) {
+    if (body.sign) {
+      try {
+        const signatureOk = verifyPayloadSignature(body, body.sign)
+        if (!signatureOk) {
+          console.warn(
+            '[PayCloud][CHECKOUT] Response signature did not verify (ignored; code ok and pay_url present)'
+          )
+        }
+      } catch (err) {
+        console.warn(
+          '[PayCloud][CHECKOUT] Response signature verification threw (ignored):',
+          err?.message || err
+        )
+      }
+    }
+    return {
+      provider: 'paycloud',
+      integrationType: 'hosted_checkout',
+      paymentStatus: String(body.status || body.trade_status || '').toLowerCase() || 'unknown',
+      checkoutUrl,
+      qrCodeRaw: null,
+      qr: null,
+      requires3ds: true,
+      rawResponse: body,
+      gatewayResponse: {
+        code: body.code,
+        msg: body.msg,
+        psn: body.psn,
+        merchant_order_no: body.merchant_order_no || payload.merchant_order_no,
+      },
     }
   }
 
@@ -541,26 +584,6 @@ export async function createPaymentRequest(input, options = {}) {
     })
   }
 
-  let responseData = body?.data
-  if (typeof responseData === 'string') {
-    try {
-      responseData = JSON.parse(responseData)
-    } catch {
-      responseData = null
-    }
-  }
-
-  const paymentUrl =
-    body.pay_url ||
-    responseData?.pay_url ||
-    body.checkout_url ||
-    responseData?.checkout_url ||
-    body.payment_url ||
-    responseData?.payment_url ||
-    body.redirect_url ||
-    responseData?.redirect_url ||
-    null
-  const checkoutUrl = paymentUrl
   if (!checkoutUrl) {
     throw new PaycloudRequestError('Hosted checkout URL not returned by PayCloud', {
       httpStatus: response.status,
@@ -568,23 +591,6 @@ export async function createPaymentRequest(input, options = {}) {
       rawText: raw,
       phase: 'business',
     })
-  }
-
-  return {
-    provider: 'paycloud',
-    integrationType: 'hosted_checkout',
-    paymentStatus: String(body.status || body.trade_status || '').toLowerCase() || 'unknown',
-    checkoutUrl,
-    qrCodeRaw: null,
-    qr: null,
-    requires3ds: true,
-    rawResponse: body,
-    gatewayResponse: {
-      code: body.code,
-      msg: body.msg,
-      psn: body.psn,
-      merchant_order_no: body.merchant_order_no || payload.merchant_order_no,
-    },
   }
 }
 

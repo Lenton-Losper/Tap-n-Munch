@@ -10,7 +10,48 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
-import { getSessionInfo } from '@/lib/session'
+import { getCurrentSession, getSessionInfo } from '@/lib/session'
+
+const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
+
+function placedAtMillis(order: { placed_at?: unknown }): number {
+  const p = order?.placed_at as { toMillis?: () => number } | number | undefined
+  if (p && typeof p === 'object' && typeof (p as { toMillis?: () => number }).toMillis === 'function') {
+    return (p as { toMillis: () => number }).toMillis()
+  }
+  if (typeof p === 'number' && Number.isFinite(p)) return p
+  return 0
+}
+
+function isCancelledStatus(status: unknown): boolean {
+  const s = String(status ?? '')
+    .trim()
+    .toLowerCase()
+  return s === 'cancelled' || s === 'canceled'
+}
+
+/**
+ * Current QR session: orders with `session_id` must match. Legacy orders without `session_id`
+ * only count if placed within the last 24h (avoids charging for ancient table history).
+ */
+function isOrderInActiveReceiptSession(
+  order: { session_id?: unknown; placed_at?: unknown },
+  clientSessionId: string | null,
+  nowMs: number
+): boolean {
+  const sidRaw = order.session_id
+  const hasSessionField =
+    sidRaw != null && String(sidRaw).trim() !== '' && String(sidRaw).trim() !== 'null'
+
+  if (hasSessionField) {
+    if (!clientSessionId) return false
+    return String(sidRaw) === clientSessionId
+  }
+
+  const placed = placedAtMillis(order)
+  if (!placed) return false
+  return placed >= nowMs - RECEIPT_LOOKBACK_MS
+}
 
 /** Firestore Timestamp, plain object, ISO string, or millis — never pass invalid values to `new Date` alone. */
 function formatOrderTimestamp(value: unknown): string {
@@ -46,15 +87,6 @@ function formatOrderTimestamp(value: unknown): string {
   return '—'
 }
 
-function placedAtMillis(order: { placed_at?: unknown }): number {
-  const p = order?.placed_at as { toMillis?: () => number } | number | undefined
-  if (p && typeof p === 'object' && typeof (p as { toMillis?: () => number }).toMillis === 'function') {
-    return (p as { toMillis: () => number }).toMillis()
-  }
-  if (typeof p === 'number' && Number.isFinite(p)) return p
-  return 0
-}
-
 export default function ReceiptPage() {
   const params = useParams()
   const searchParams = useSearchParams()
@@ -66,6 +98,8 @@ export default function ReceiptPage() {
   const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
   const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : null
   const tableNumber = sessionTableNumber && Number.isFinite(sessionTableNumber) && sessionTableNumber > 0 ? String(sessionTableNumber) : tableNumberFromUrl
+  /** Re-subscribe when QR session changes so receipt list matches current session */
+  const sessionIdKey = typeof window !== 'undefined' ? getCurrentSession() ?? '' : ''
   
   const [orders, setOrders] = useState<any[]>([])
   const [restaurant, setRestaurant] = useState<any>(null)
@@ -99,8 +133,8 @@ export default function ReceiptPage() {
       return
     }
 
-    // Real-time listener — same shape as useActiveOrders (no orderBy) so no composite index
-    // is required; sort by placed_at in memory.
+    // Firestore: table + open orders only. Session, cancelled, and 24h legacy rules are applied
+    // client-side (single query avoids composite indexes for session_id / placed_at OR logic).
     const { ordersPath } = require('@/lib/firebase/paths')
     const ordersRef = collection(db, ordersPath(restaurantId))
 
@@ -114,9 +148,13 @@ export default function ReceiptPage() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
+        const clientSessionId = typeof window !== 'undefined' ? getCurrentSession() : null
+        const nowMs = Date.now()
         const ordersList = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() }))
           .filter((order: { table_number?: unknown }) => Number(order.table_number) === tableNum)
+          .filter((order: { status?: unknown }) => !isCancelledStatus(order.status))
+          .filter((order) => isOrderInActiveReceiptSession(order, clientSessionId, nowMs))
           .sort((a, b) => placedAtMillis(b) - placedAtMillis(a))
         setOrders(ordersList)
         setLoading(false)
@@ -131,7 +169,7 @@ export default function ReceiptPage() {
     )
 
     return () => unsubscribe()
-  }, [restaurantId, tableNumber])
+  }, [restaurantId, tableNumber, sessionIdKey])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
 
