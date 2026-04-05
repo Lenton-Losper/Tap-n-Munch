@@ -5,6 +5,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "session_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "placed_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "is_closed",
           "order": "ASCENDING"
         },

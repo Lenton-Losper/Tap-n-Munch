@@ -23,6 +23,7 @@ export function createFreshSession(restaurantId: string, tableId: string): strin
   localStorage.setItem(SESSION_KEY, sessionId)
   localStorage.setItem(SESSION_TABLE_KEY, tableId)
   localStorage.setItem(SESSION_RESTAURANT_KEY, restaurantId)
+  sessionStorage.setItem(SESSION_KEY, sessionId)
   console.log('🆕 Created fresh session:', sessionId, 'for restaurant:', restaurantId, 'table:', tableId)
   return sessionId
 }
@@ -39,6 +40,7 @@ export function getOrCreateSession(restaurantId: string, tableId: string): strin
   const existingRestaurant = localStorage.getItem(SESSION_RESTAURANT_KEY)
 
   if (existing && existingTable === tableId && existingRestaurant === restaurantId) {
+    sessionStorage.setItem(SESSION_KEY, existing)
     console.log('✅ Restoring existing session:', existing, 'for table:', tableId)
     return existing
   }
@@ -80,6 +82,7 @@ export function clearSession(): void {
   localStorage.removeItem(SESSION_KEY)
   localStorage.removeItem(SESSION_TABLE_KEY)
   localStorage.removeItem(SESSION_RESTAURANT_KEY)
+  sessionStorage.removeItem(SESSION_KEY)
   console.log('🗑️ Session cleared')
 }
 
