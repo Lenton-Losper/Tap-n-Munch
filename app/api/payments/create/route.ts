@@ -19,8 +19,6 @@ export async function POST(req: Request) {
       merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
       storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
       description: note || `FlashTap Pay - ${merchantName}`,
-      notifyUrl: `${new URL(req.url).origin}/api/webhooks/paycloud`,
-      returnUrl: `${new URL(req.url).origin}/flashtap-pay/success`,
     })
 
     const shareUrl = `${new URL(req.url).origin}/flashtap-pay/checkout?merchant=${encodeURIComponent(

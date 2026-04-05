@@ -100,7 +100,6 @@ export async function POST(req: Request) {
       }
 
       const merchantOrderNo = `${restaurantId}:${docRefId}`
-      const origin = new URL(req.url).origin
 
       const patchPayment = async (data: Record<string, unknown>) => {
         await fs.doc(orderPath(restaurantId, docRefId)).update(data)
@@ -113,8 +112,6 @@ export async function POST(req: Request) {
           merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
           storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
-          notifyUrl: `${origin}/api/webhooks/paycloud`,
-          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
         })
 
         await patchPayment({
@@ -254,7 +251,6 @@ export async function POST(req: Request) {
 
     let payment: any = null
     if (body.paymentMethod === 'card') {
-      const origin = new URL(req.url).origin
       const merchantOrderNo = `${restaurantId}:${docRefId}`
       try {
         payment = await createPaymentRequest({
@@ -263,8 +259,6 @@ export async function POST(req: Request) {
           merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
           storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
-          notifyUrl: `${origin}/api/webhooks/paycloud`,
-          returnUrl: `${origin}/order-confirmation?orderId=${encodeURIComponent(docRefId)}&table=${encodeURIComponent(tableNumber)}`,
         })
 
         await patchPayment({

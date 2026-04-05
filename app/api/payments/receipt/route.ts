@@ -66,7 +66,6 @@ export async function POST(req: Request) {
       )
     }
 
-    const origin = new URL(req.url).origin
     // PayCloud "Try again" requires a unique merchant_order_no per payment attempt.
     // We keep the order-id portion for debugging/webhook mapping, and append a short nonce.
     // NOTE: webhook mapping relies on `paycloud_merchant_order_no` persisted below.
@@ -80,8 +79,6 @@ export async function POST(req: Request) {
       amount: roundedSum,
       orderId: merchantOrderNo,
       description: `FlashTap receipt — Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
-      notifyUrl: `${origin}/api/webhooks/paycloud`,
-      returnUrl: `${origin}/menu/${restaurantId}/receipt?table=${encodeURIComponent(String(tableNumber))}`,
     })
 
     // This is the exact URL PayCloud should redirect to.

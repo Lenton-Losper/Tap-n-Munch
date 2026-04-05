@@ -71,6 +71,16 @@ function requiredEnv(name) {
   return value
 }
 
+/** Hosted / merchant checkout only — absolute URLs for Finatic (not request origin). */
+function getPaycloudCheckoutUrls() {
+  const notifyUrl = String(requiredEnv('PAYCLOUD_NOTIFY_URL')).trim()
+  const returnRaw = String(requiredEnv('PAYCLOUD_RETURN_URL')).trim()
+  return {
+    notifyUrl,
+    returnUrl: paycloudCheckoutReturnUrl(returnRaw),
+  }
+}
+
 export function maskSecrets(data) {
   const raw = JSON.stringify(data || {})
   return raw
@@ -396,6 +406,7 @@ export async function createPaymentRequest(input, options = {}) {
   // PHP sample on developers.finatic.africa — no biz_content wrapper for these APIs).
   const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
   console.log('[PayCloud][MERCHANT_ORDER_NO][checkout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
+  const { notifyUrl, returnUrl } = getPaycloudCheckoutUrls()
   const payload = {
     app_id: cfg.appId,
     merchant_no: input.merchantNo || cfg.merchantNo,
@@ -407,15 +418,12 @@ export async function createPaymentRequest(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url:
-      input.returnUrl != null && input.returnUrl !== ''
-        ? paycloudCheckoutReturnUrl(input.returnUrl)
-        : input.returnUrl,
+    return_url: returnUrl,
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
     description: input.description || `FlashTap order ${input.orderId}`,
-    notify_url: input.notifyUrl,
+    notify_url: notifyUrl,
   }
   const optionalWireFields = {
     pay_options: input.payOptions,
@@ -596,6 +604,7 @@ export async function createMerchantHostedCheckoutRequest(input, options = {}) {
 
   const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
   console.log('[PayCloud][MERCHANT_ORDER_NO][mcheckout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
+  const { notifyUrl, returnUrl } = getPaycloudCheckoutUrls()
   const payload = {
     app_id: cfg.appId,
     merchant_no: input.merchantNo || cfg.merchantNo,
@@ -607,15 +616,12 @@ export async function createMerchantHostedCheckoutRequest(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url:
-      input.returnUrl != null && input.returnUrl !== ''
-        ? paycloudCheckoutReturnUrl(input.returnUrl)
-        : input.returnUrl,
+    return_url: returnUrl,
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
     description: input.description || `FlashTap merchant checkout ${input.orderId}`,
-    notify_url: input.notifyUrl,
+    notify_url: notifyUrl,
     card: encryptMerchantCardPayload(input.card),
   }
   const optionalWireFields = {
