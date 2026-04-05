@@ -65,6 +65,27 @@ function formatWhen(v: unknown): string {
 
 type ReceiptView = OrderDoc & { merged?: boolean; orderDisplay?: string }
 
+/**
+ * Finatic PayCloud return redirect usually appends `?tn=<merchant_order_no>` (see checkout URL `tn=`).
+ * Also accept aliases some gateways use.
+ */
+function getFinaticReturnOrderRef(searchParams: URLSearchParams): string {
+  const keys = [
+    'tn',
+    'merchant_order_no',
+    'merchantOrderNo',
+    'out_trade_no',
+    'outTradeNo',
+    'order_id',
+    'orderId',
+  ] as const
+  for (const key of keys) {
+    const v = searchParams.get(key)?.trim()
+    if (v) return v
+  }
+  return ''
+}
+
 function aggregateOrders(rows: OrderDoc[]): ReceiptView {
   if (rows.length === 0) return { id: '', items: [], subtotal: 0, tax: 0, total: 0 }
   if (rows.length === 1) {
@@ -160,7 +181,10 @@ async function resolveOrdersByTn(
 function OrderConfirmationContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
-  const tn = searchParams.get('tn')?.trim() || ''
+  const orderRef = useMemo(
+    () => getFinaticReturnOrderRef(searchParams),
+    [searchParams.toString()]
+  )
   const restaurantIdParam = searchParams.get('restaurantId')?.trim() || ''
 
   const [loading, setLoading] = useState(true)
@@ -173,7 +197,7 @@ function OrderConfirmationContent() {
     let cancelled = false
 
     const run = async () => {
-      if (!tn) {
+      if (!orderRef) {
         setLoading(false)
         setNotFound(true)
         setReceipt(null)
@@ -191,7 +215,7 @@ function OrderConfirmationContent() {
         (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
 
       try {
-        const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(tn, hint)
+        const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(orderRef, hint)
         if (cancelled) return
 
         if (rows.length === 0) {
@@ -220,7 +244,7 @@ function OrderConfirmationContent() {
     return () => {
       cancelled = true
     }
-  }, [tn, restaurantIdParam])
+  }, [orderRef, restaurantIdParam])
 
   useEffect(() => {
     const rid = resolvedRestaurantId || restaurantIdParam
@@ -268,11 +292,14 @@ function OrderConfirmationContent() {
     )
   }
 
-  if (!tn) {
+  if (!orderRef) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-6">
-          <p className="text-muted-foreground font-sans">No payment reference in the link.</p>
+          <p className="text-muted-foreground font-sans">
+            No payment reference in the link (expected <code className="text-xs">tn</code> or{' '}
+            <code className="text-xs">merchant_order_no</code> from Finatic).
+          </p>
           <Button
             type="button"
             onClick={goBackToMenu}
@@ -295,7 +322,7 @@ function OrderConfirmationContent() {
             Your payment was received. We couldn&apos;t load the full receipt.
           </p>
           <p className="text-foreground font-sans text-sm break-all">
-            Order reference: <span className="font-semibold">{tn}</span>
+            Order reference: <span className="font-semibold">{orderRef}</span>
           </p>
           <Button
             type="button"

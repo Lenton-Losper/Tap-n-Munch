@@ -12,7 +12,7 @@ import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { getCurrentSession, getSessionInfo } from '@/lib/session'
 
-const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
+const RECEIPT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
 
 function placedAtMillis(order: { placed_at?: unknown }): number {
   const p = order?.placed_at as { toMillis?: () => number } | number | undefined
@@ -23,16 +23,10 @@ function placedAtMillis(order: { placed_at?: unknown }): number {
   return 0
 }
 
-function isCancelledStatus(status: unknown): boolean {
-  const s = String(status ?? '')
-    .trim()
-    .toLowerCase()
-  return s === 'cancelled' || s === 'canceled'
-}
-
 /**
  * Current QR session: orders with `session_id` must match. Legacy orders without `session_id`
- * only count if placed within the last 24h (avoids charging for ancient table history).
+ * only count if placed within the last 7 days (avoids ancient table history).
+ * Cancelled-status filter temporarily disabled for debugging visibility.
  */
 function isOrderInActiveReceiptSession(
   order: { session_id?: unknown; placed_at?: unknown },
@@ -133,8 +127,7 @@ export default function ReceiptPage() {
       return
     }
 
-    // Firestore: table + open orders only. Session, cancelled, and 24h legacy rules are applied
-    // client-side (single query avoids composite indexes for session_id / placed_at OR logic).
+    // Firestore: table + open orders only. Session + 7d legacy rules applied client-side.
     const { ordersPath } = require('@/lib/firebase/paths')
     const ordersRef = collection(db, ordersPath(restaurantId))
 
@@ -153,7 +146,6 @@ export default function ReceiptPage() {
         const ordersList = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() }))
           .filter((order: { table_number?: unknown }) => Number(order.table_number) === tableNum)
-          .filter((order: { status?: unknown }) => !isCancelledStatus(order.status))
           .filter((order) => isOrderInActiveReceiptSession(order, clientSessionId, nowMs))
           .sort((a, b) => placedAtMillis(b) - placedAtMillis(a))
         setOrders(ordersList)

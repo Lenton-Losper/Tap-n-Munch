@@ -366,7 +366,13 @@ export function paycloudWireMerchantOrderNo(orderId) {
   return short
 }
 
-/** Hosted checkout `return_url`: `{origin}/order-confirmation` with no query string. */
+/**
+ * Hosted checkout return URL on the merchant origin.
+ * Finatic redirects the customer here after payment and appends query params — typically `tn`
+ * (same value as checkout `tn` / wire `merchant_order_no`). Other gateways may send
+ * `merchant_order_no`, `out_trade_no`, etc.; the order-confirmation page reads all common keys.
+ * We normalize to `{origin}/order-confirmation` so the path is fixed; Finatic adds its own query string.
+ */
 export function paycloudCheckoutReturnUrl(returnUrlInput) {
   if (returnUrlInput == null || returnUrlInput === '') return returnUrlInput
   const s = String(returnUrlInput).trim()

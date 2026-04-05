@@ -5,6 +5,20 @@ import { collection, query, where, onSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { ordersPath } from '@/lib/firebase/paths'
 
+/** Ignore banner orders older than this (stale visits / previous days). */
+const BANNER_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+function orderPlacedAtMs(order: ActiveOrder): number {
+  const p = order.placed_at
+  if (p && typeof p.toMillis === 'function') return p.toMillis()
+  if (typeof p === 'number' && Number.isFinite(p)) return p
+  if (p && typeof p === 'object' && 'seconds' in p) {
+    const sec = Number((p as { seconds: number }).seconds)
+    if (Number.isFinite(sec)) return sec * 1000
+  }
+  return 0
+}
+
 export interface ActiveOrder {
   id: string
   order_number?: number
@@ -98,11 +112,14 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
 
           // Filter in memory: status must be active (Table-Based approach)
           // All orders are already filtered by is_closed == false in the query
+          const placedCutoff = Date.now() - BANNER_ORDER_MAX_AGE_MS
           const activeOrders = snapshot.docs
             .map(doc => ({ id: doc.id, ...doc.data() } as ActiveOrder))
             .filter(order => {
               const tn = Number(order.table_number)
               if (!Number.isFinite(tn) || tn !== tableNumber) return false
+              const placedMs = orderPlacedAtMs(order)
+              if (!placedMs || placedMs < placedCutoff) return false
               const statusMatch = ['new', 'accepted', 'preparing', 'ready'].includes(order.status)
               return statusMatch
             })
