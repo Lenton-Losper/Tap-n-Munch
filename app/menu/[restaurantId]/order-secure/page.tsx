@@ -8,13 +8,9 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
-import { PaymentMethodSelector } from '@/components/payment-method-selector'
-import { cn } from '@/lib/utils'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -30,9 +26,6 @@ export default function OrderSecurePage() {
   const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | null>(null)
-  const [orderInstructions, setOrderInstructions] = useState('')
 
   useEffect(() => {
     const loadData = async () => {
@@ -59,22 +52,13 @@ export default function OrderSecurePage() {
     }
   }, [restaurantId, tableNumber, toast])
 
-  const placeOrderEnabled = !!paymentMethod && !submitting && Array.isArray(items) && items.length > 0
+  const placeOrderEnabled = !submitting && Array.isArray(items) && items.length > 0
 
   const submitOrder = async () => {
     if (!Array.isArray(items) || items.length === 0) {
       toast({
         title: 'Cart is empty',
         description: 'Please add items to your cart before placing an order.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    if (!paymentMethod) {
-      toast({
-        title: 'Payment method required',
-        description: 'Please select a payment method.',
         variant: 'destructive',
       })
       return
@@ -132,8 +116,7 @@ export default function OrderSecurePage() {
         subtotal: Number(subtotal),
         tax: Number(tax),
         total: Number(total),
-        paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
-        orderInstructions: orderInstructions?.trim() || null,
+        paymentMethod: 'card',
       }
 
       const cleanPayload = JSON.parse(JSON.stringify(payload))
@@ -154,24 +137,17 @@ export default function OrderSecurePage() {
       const orderId = data.orderId as string | undefined
       if (!orderId) throw new Error('Order was created but no order ID was returned')
 
-      if (paymentMethod === 'card') {
-        const checkoutUrl = data.checkoutUrl as string | undefined
-        if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('flashtap_return_order_id', orderId)
-          if (tableNumber > 0) {
-            sessionStorage.setItem('flashtap_return_table', String(tableNumber))
-          }
+      const checkoutUrl = data.checkoutUrl as string | undefined
+      if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('flashtap_return_order_id', orderId)
+        if (tableNumber > 0) {
+          sessionStorage.setItem('flashtap_return_table', String(tableNumber))
         }
-        clearCart()
-        window.location.href = checkoutUrl
-        return
       }
-
       clearCart()
-      router.push(
-        `/order-confirmation?orderId=${encodeURIComponent(orderId)}${tableNumber > 0 ? `&table=${tableNumber}` : ''}`
-      )
+      window.location.href = checkoutUrl
+      return
     } catch (error: any) {
       console.error('Order failure:', error)
       toast({
@@ -217,40 +193,21 @@ export default function OrderSecurePage() {
         </div>
 
         <div className="mb-6 border border-border bg-card p-4 sm:p-6">
-          <h2 className="text-lg font-serif font-bold text-foreground mb-4">Payment Method</h2>
-          <PaymentMethodSelector
-            value={paymentMethod}
-            onChange={(m) => {
-              setPaymentMethod(m)
-            }}
-            enabledMethods={['cash', 'card']}
-          />
-        </div>
-
-        <div className="mb-6 border border-border bg-card p-4 sm:p-6">
-          <Label htmlFor="instructions" className="mb-3 block font-sans text-foreground font-semibold">
-            Order Instructions (Optional)
-          </Label>
-          <Textarea
-            id="instructions"
-            placeholder="Any special requests for your order?"
-            value={orderInstructions}
-            onChange={(e) => setOrderInstructions(e.target.value)}
-            rows={3}
-            className="w-full max-w-full font-sans border-border text-sm sm:text-base"
-          />
-        </div>
-
-        {paymentMethod === 'card' && (
-          <div className="mb-6 border border-border bg-card p-4 sm:p-6">
-            <p className="text-sm text-muted-foreground font-sans">
-              You will be redirected to PayCloud Hosted Checkout to enter your card details securely.
-            </p>
-          </div>
-        )}
-
-        <div className="mb-6 border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-serif font-bold text-foreground mb-4">Order Summary</h2>
+          <div className="space-y-2 mb-5">
+            {items.map((item, idx) => (
+              <div key={`${item.menu_item_id || item.name}-${idx}`} className="flex justify-between text-sm font-sans">
+                <span className="text-foreground">
+                  <span className="text-muted-foreground mr-2">{item.quantity}x</span>
+                  {item.name}
+                </span>
+                <span className="text-foreground">
+                  {restaurant?.currency || 'N$'}
+                  {(Number(item.subtotal) || 0).toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
           <div className="space-y-3">
             <div className="flex justify-between text-sm font-sans">
               <span className="text-muted-foreground">Subtotal</span>
@@ -274,28 +231,15 @@ export default function OrderSecurePage() {
         <Button
           onClick={submitOrder}
           disabled={!placeOrderEnabled}
-          className={cn(
-            'h-11 w-full py-6 text-base font-semibold font-sans',
-            placeOrderEnabled
-              ? 'bg-foreground text-background hover:bg-foreground/90'
-              : 'bg-muted text-muted-foreground cursor-not-allowed opacity-70 hover:bg-muted'
-          )}
+          className="h-11 w-full py-6 text-base font-semibold font-sans bg-foreground text-background hover:bg-foreground/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-muted"
           size="lg"
         >
-          {submitting
-            ? paymentMethod === 'card'
-              ? 'Redirecting to payment...'
-              : 'Placing Order...'
-            : paymentMethod === 'card'
-              ? 'Place Order & Proceed to Payment'
-              : 'Place Order'}
+          {submitting ? 'Redirecting to payment...' : 'Continue to Payment'}
         </Button>
-
-        {!paymentMethod && (
-          <p className="text-sm text-destructive text-center mt-3 font-sans">
-            Please select a payment method to place the order.
-          </p>
-        )}
+        <p className="mt-3 text-xs text-muted-foreground font-sans text-center flex items-center justify-center gap-1.5">
+          <ShieldCheck className="w-3.5 h-3.5" aria-hidden />
+          Secured by Finatic
+        </p>
       </div>
     </div>
   )
