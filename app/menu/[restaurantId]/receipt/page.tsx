@@ -10,9 +10,9 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
-import { getCurrentSession, getSessionInfo } from '@/lib/session'
+import { getSessionInfo } from '@/lib/session'
 
-const RECEIPT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
 function placedAtMillis(order: { placed_at?: unknown }): number {
   const p = order?.placed_at as { toMillis?: () => number } | number | undefined
@@ -23,25 +23,42 @@ function placedAtMillis(order: { placed_at?: unknown }): number {
   return 0
 }
 
-/**
- * Current QR session: orders with `session_id` must match. Legacy orders without `session_id`
- * only count if placed within the last 7 days (avoids ancient table history).
- * Cancelled-status filter temporarily disabled for debugging visibility.
- */
-function isOrderInActiveReceiptSession(
-  order: { session_id?: unknown; placed_at?: unknown },
-  clientSessionId: string | null,
+/** Testing mode: show open table orders from the last 24 hours regardless of session_id. */
+function isOrderInReceiptTimeWindow(
+  order: { placed_at?: unknown; created_at?: unknown },
   nowMs: number
 ): boolean {
-  const sidRaw = order.session_id
-  const hasSessionField =
-    sidRaw != null && String(sidRaw).trim() !== '' && String(sidRaw).trim() !== 'null'
-
-  if (hasSessionField) {
-    if (!clientSessionId) return false
-    return String(sidRaw) === clientSessionId
+  const placed = placedAtMillis(order)
+  if (!placed) {
+    const fallback = placedAtMillis({ placed_at: order.created_at })
+    return fallback >= nowMs - RECEIPT_LOOKBACK_MS
   }
+  return placed >= nowMs - RECEIPT_LOOKBACK_MS
+}
 
+type OrderRecord = {
+  id: string
+  order_number?: number
+  placed_at?: unknown
+  created_at?: unknown
+  table_number?: unknown
+  total?: number
+  status?: string
+  payment_status?: string
+  items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
+}
+
+function isOrderPaid(order: OrderRecord): boolean {
+  return String(order.payment_status || '').toLowerCase() === 'paid'
+}
+
+function isOrderClosed(order: OrderRecord): boolean {
+  return order.status === 'completed' || order.status === 'cancelled'
+}
+
+function shouldShowInReceipt(order: OrderRecord, nowMs: number): boolean {
+  if (isOrderPaid(order)) return true
+  if (isOrderClosed(order)) return false
   const placed = placedAtMillis(order)
   if (!placed) return false
   return placed >= nowMs - RECEIPT_LOOKBACK_MS
@@ -92,14 +109,10 @@ export default function ReceiptPage() {
   const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
   const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : null
   const tableNumber = sessionTableNumber && Number.isFinite(sessionTableNumber) && sessionTableNumber > 0 ? String(sessionTableNumber) : tableNumberFromUrl
-  /** Re-subscribe when QR session changes so receipt list matches current session */
-  const sessionIdKey = typeof window !== 'undefined' ? getCurrentSession() ?? '' : ''
-  
-  const [orders, setOrders] = useState<any[]>([])
+  const [orders, setOrders] = useState<OrderRecord[]>([])
   const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
-  const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [paymentSubmitting, setPaymentSubmitting] = useState(false)
   const [paymentSuccess, setPaymentSuccess] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
@@ -127,7 +140,7 @@ export default function ReceiptPage() {
       return
     }
 
-    // Firestore: table + open orders only. Session + 7d legacy rules applied client-side.
+    // Firestore: table + open orders only; session_id is intentionally ignored for testing.
     const { ordersPath } = require('@/lib/firebase/paths')
     const ordersRef = collection(db, ordersPath(restaurantId))
 
@@ -141,12 +154,11 @@ export default function ReceiptPage() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const clientSessionId = typeof window !== 'undefined' ? getCurrentSession() : null
         const nowMs = Date.now()
         const ordersList = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .map((doc) => ({ id: doc.id, ...doc.data() } as OrderRecord))
           .filter((order: { table_number?: unknown }) => Number(order.table_number) === tableNum)
-          .filter((order) => isOrderInActiveReceiptSession(order, clientSessionId, nowMs))
+          .filter((order) => shouldShowInReceipt(order, nowMs))
           .sort((a, b) => placedAtMillis(b) - placedAtMillis(a))
         setOrders(ordersList)
         setLoading(false)
@@ -161,7 +173,7 @@ export default function ReceiptPage() {
     )
 
     return () => unsubscribe()
-  }, [restaurantId, tableNumber, sessionIdKey])
+  }, [restaurantId, tableNumber])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
 
@@ -169,10 +181,7 @@ export default function ReceiptPage() {
     () => (Array.isArray(orders) ? orders.reduce((sum, order) => sum + (order?.total || 0), 0) : 0),
     [orders]
   )
-  const unpaidOrders = useMemo(
-    () => (Array.isArray(orders) ? orders.filter((o) => o && o.payment_status !== 'paid') : []),
-    [orders]
-  )
+  const unpaidOrders = useMemo(() => (Array.isArray(orders) ? orders.filter((o) => !isOrderPaid(o)) : []), [orders])
   const payableTotal = useMemo(
     () => unpaidOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0),
     [unpaidOrders]
@@ -229,13 +238,12 @@ export default function ReceiptPage() {
   }, [restaurantId, unpaidOrders, reconcileStartedAt])
 
   useEffect(() => {
-    if (allPaid && (paymentSubmitting || showPaymentForm)) {
+    if (allPaid && paymentSubmitting) {
       setPaymentSuccess(true)
       setPaymentSubmitting(false)
-      setShowPaymentForm(false)
       setPaymentError(null)
     }
-  }, [allPaid, paymentSubmitting, showPaymentForm])
+  }, [allPaid, paymentSubmitting])
 
   // No table number
   if (!loading && (!tableNum || tableNum <= 0)) {
@@ -456,80 +464,40 @@ export default function ReceiptPage() {
           })}
         </div>
 
-        {/* Pay — unpaid table total */}
+        {/* Pay — only when there are unpaid orders */}
         {unpaidOrders.length > 0 && (
           <div className="mt-8 space-y-4">
-            {!showPaymentForm ? (
+            {paymentError && (
+              <div className="space-y-2 bg-card border border-border p-4">
+                <p className="text-sm text-destructive font-sans" role="alert">
+                  {paymentError}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full border-border font-sans"
+                  onClick={() => setPaymentError(null)}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            )}
+            {paymentSubmitting ? (
+              <div className="bg-card border border-border p-5 sm:p-6">
+                <div className="flex flex-col items-center justify-center gap-3 py-6">
+                  <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin rounded-full" />
+                  <p className="text-sm font-sans text-muted-foreground">Processing payment...</p>
+                </div>
+              </div>
+            ) : (
               <Button
                 type="button"
-                onClick={() => {
-                  setShowPaymentForm(true)
-                  setPaymentError(null)
-                }}
+                onClick={submitPayment}
                 className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
               >
                 Proceed to Payment — {restaurant?.currency || 'N$'}
                 {payableTotal.toFixed(2)}
               </Button>
-            ) : (
-              <div className="bg-card border border-border p-5 sm:p-6 space-y-4">
-                <h2 className="text-lg font-serif font-bold text-foreground">Proceed to PayCloud</h2>
-                <p className="text-sm text-muted-foreground font-sans">
-                  You will be redirected to PayCloud Hosted Checkout to enter your card details securely.
-                </p>
-                <p className="text-sm text-muted-foreground font-sans">
-                  Total due:{' '}
-                  <span className="font-semibold text-foreground">
-                    {restaurant?.currency || 'N$'}
-                    {payableTotal.toFixed(2)}
-                  </span>
-                </p>
-
-                {paymentError && (
-                  <div className="space-y-2">
-                    <p className="text-sm text-destructive font-sans" role="alert">
-                      {paymentError}
-                    </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full border-border font-sans"
-                      onClick={() => setPaymentError(null)}
-                    >
-                      Try again
-                    </Button>
-                  </div>
-                )}
-
-                {paymentSubmitting ? (
-                  <div className="flex flex-col items-center justify-center gap-3 py-6">
-                    <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin rounded-full" />
-                    <p className="text-sm font-sans text-muted-foreground">Processing payment...</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <Button
-                      type="button"
-                      onClick={submitPayment}
-                      className="flex-1 bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6"
-                    >
-                      Proceed to Payment {restaurant?.currency || 'N$'}
-                      {payableTotal.toFixed(2)}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        setShowPaymentForm(false)
-                        setPaymentError(null)
-                      }}
-                      className="sm:w-auto border-border font-sans py-6"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                )}
-              </div>
             )}
           </div>
         )}

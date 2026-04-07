@@ -372,18 +372,17 @@ function OrderConfirmationContent() {
     if (typeof window === 'undefined') return
     const restaurantId =
       resolvedRestaurantId || restaurantIdParam || localStorage.getItem('current_restaurant_id')
-    const tableFromQuery = searchParams.get('table')
     const tableFromSession = sessionStorage.getItem('flashtap_return_table')
-    const table = tableFromQuery || tableFromSession || ''
+    const table = tableFromSession || ''
     if (restaurantId && table) {
       router.push(`/menu/${restaurantId}/v2?table=${encodeURIComponent(table)}`)
       return
     }
     if (restaurantId) {
-      router.push(`/menu/${restaurantId}/browse`)
+      router.push(`/menu/${restaurantId}/v2`)
       return
     }
-    router.push('/')
+    router.push('/menu')
   }
 
   const displayOrderNumber = useMemo(() => {
