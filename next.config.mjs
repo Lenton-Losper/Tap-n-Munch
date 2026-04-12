@@ -6,7 +6,8 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
- 
+  // Ensure selected dependencies are transpiled to match older browsers from browserslist.
+  transpilePackages: ['lucide-react', 'sonner', 'recharts'],
 }
 
 export default nextConfig

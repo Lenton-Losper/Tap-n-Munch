@@ -9,6 +9,13 @@ import type { DocumentReference } from 'firebase-admin/firestore'
 const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
 
+function webhookAck() {
+  return new Response('success', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  })
+}
+
 function getClientIp(req: Request) {
   return req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown'
 }
@@ -90,7 +97,7 @@ export async function POST(req: Request) {
     payload = JSON.parse(rawBody) as Record<string, unknown>
   } catch {
     console.warn('[PayCloud webhook] Invalid JSON body')
-    return NextResponse.json({ success: true }, { status: 200 })
+    return webhookAck()
   }
 
   const sign = extractSign(payload, req.headers)
@@ -117,7 +124,7 @@ export async function POST(req: Request) {
     payload.trans_no ?? payload.transaction_id ?? payload.tn ?? payload.psn ?? null
 
   if (!merchant_order_no) {
-    return NextResponse.json({ success: true }, { status: 200 })
+    return webhookAck()
   }
 
   if (typeof order_amount !== 'undefined') {
@@ -125,13 +132,13 @@ export async function POST(req: Request) {
   }
 
   if (!isPaidTransStatus(trans_status)) {
-    return NextResponse.json({ success: true }, { status: 200 })
+    return webhookAck()
   }
 
   const refs = await resolveOrderRefs(fs, merchant_order_no)
   if (refs.length === 0) {
     console.warn('[PayCloud webhook] No Firestore order for merchant_order_no', merchant_order_no)
-    return NextResponse.json({ success: true }, { status: 200 })
+    return webhookAck()
   }
 
   const paidAt = Timestamp.fromDate(new Date())
@@ -156,5 +163,5 @@ export async function POST(req: Request) {
     refs: refs.length,
   })
 
-  return NextResponse.json({ success: true }, { status: 200 })
+  return webhookAck()
 }

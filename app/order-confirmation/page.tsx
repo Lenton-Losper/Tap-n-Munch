@@ -13,6 +13,7 @@ import {
   limit,
   orderBy,
   query,
+  updateDoc,
   where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
@@ -271,6 +272,8 @@ function OrderConfirmationContent() {
   const [restaurant, setRestaurant] = useState<{ name?: string; currency?: string } | null>(null)
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
+  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  const [paymentConfirmed, setPaymentConfirmed] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -366,6 +369,61 @@ function OrderConfirmationContent() {
       .catch(() => setRestaurant(null))
   }, [resolvedRestaurantId, restaurantIdParam])
 
+  useEffect(() => {
+    if (receipt?.payment_status === 'paid') {
+      setPaymentConfirmed(true)
+    }
+  }, [receipt?.payment_status])
+
+  // Poll reconcile when opened from Finatic return URL with tn.
+  useEffect(() => {
+    if (!orderRef || paymentConfirmed) return
+    const restaurantId =
+      resolvedRestaurantId ||
+      restaurantIdParam ||
+      (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
+    if (!restaurantId) return
+
+    const orderIds = String(receipt?.id || orderRef)
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+    if (orderIds.length === 0) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const run = async () => {
+      if (cancelled || paymentConfirmed) return
+      try {
+        const res = await fetch('/api/payments/reconcile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            restaurantId,
+            orderIds,
+            merchantOrderNo: orderRef,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (data?.paid === true) {
+          setPaymentConfirmed(true)
+          setReceipt((prev) => (prev ? { ...prev, payment_status: 'paid' } : prev))
+          return
+        }
+      } catch {
+        // best-effort polling
+      }
+      timer = setTimeout(run, 10000)
+    }
+
+    void run()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [orderRef, resolvedRestaurantId, restaurantIdParam, receipt?.id, paymentConfirmed])
+
   const currency = restaurant?.currency || 'N$'
 
   const goBackToMenu = () => {
@@ -391,6 +449,40 @@ function OrderConfirmationContent() {
     if (typeof receipt.order_number === 'number') return `#${receipt.order_number}`
     return receipt.id ? receipt.id.slice(-8).toUpperCase() : null
   }, [receipt])
+
+  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !paymentConfirmed
+
+  const confirmPayment = async () => {
+    if (!db || !receipt || !shouldShowConfirmPayment || confirmingPayment) return
+    const restaurantId = resolvedRestaurantId || restaurantIdParam
+    if (!restaurantId) return
+
+    const orderIds = String(receipt.id || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+
+    if (orderIds.length === 0) return
+
+    setConfirmingPayment(true)
+    try {
+      await Promise.all(
+        orderIds.map((orderId) =>
+          updateDoc(doc(db, orderPath(restaurantId, orderId)), {
+            payment_status: 'paid',
+            payment_confirmed_by: 'customer',
+            payment_confirmed_at: new Date(),
+          })
+        )
+      )
+      setPaymentConfirmed(true)
+      setReceipt((prev) => (prev ? { ...prev, payment_status: 'paid' } : prev))
+    } catch (error) {
+      console.error('[order-confirmation] payment confirm failed', error)
+    } finally {
+      setConfirmingPayment(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -427,7 +519,7 @@ function OrderConfirmationContent() {
           ) : (
             <>
               <p className="text-muted-foreground font-sans text-sm">
-                Your payment was received. We couldn&apos;t load the full receipt.
+                Payment confirmed! Show this screen to your waiter.
               </p>
               {orderRef ? (
                 <p className="text-foreground font-sans text-sm break-all">
@@ -536,6 +628,22 @@ function OrderConfirmationContent() {
                 </span>
               </div>
             </div>
+
+            {shouldShowConfirmPayment ? (
+              <Button
+                type="button"
+                onClick={confirmPayment}
+                disabled={confirmingPayment}
+                className="w-full bg-green-600 text-white hover:bg-green-700 py-6 font-semibold font-sans text-base"
+              >
+                {confirmingPayment ? 'Confirming...' : 'Confirm Payment'}
+              </Button>
+            ) : paymentConfirmed ? (
+              <div className="w-full border border-green-200 bg-green-50 text-green-700 py-4 px-4 flex items-center justify-center gap-2 font-semibold">
+                <CheckCircle2 className="w-5 h-5" aria-hidden />
+                <span>Payment Confirmed</span>
+              </div>
+            ) : null}
 
             <p className="text-sm text-muted-foreground text-center bg-muted/50 border border-border px-4 py-3 rounded-none">
               Show this to your waiter if needed

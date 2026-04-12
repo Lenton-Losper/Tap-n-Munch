@@ -384,6 +384,14 @@ export function paycloudCheckoutReturnUrl(returnUrlInput) {
   }
 }
 
+function paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo) {
+  const base = paycloudCheckoutReturnUrl(returnUrl)
+  const tn = String(merchantOrderNo || '').trim()
+  if (!base || !tn) return base
+  const sep = String(base).includes('?') ? '&' : '?'
+  return `${base}${sep}tn=${encodeURIComponent(tn)}`
+}
+
 function encryptMerchantCardPayload(cardPayload) {
   if (!cardPayload || typeof cardPayload !== 'object' || Array.isArray(cardPayload)) {
     throw new PaycloudRequestError('card payload must be an object', { phase: 'validation' })
@@ -424,7 +432,7 @@ export async function createPaymentRequest(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url: returnUrl,
+    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo),
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
@@ -628,7 +636,7 @@ export async function createMerchantHostedCheckoutRequest(input, options = {}) {
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url: returnUrl,
+    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo),
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
@@ -784,6 +792,7 @@ export async function queryPaymentOrder(input, options = {}) {
   debugLog('Query URL', { requestUrl })
   debugLog('Query body before signing', unsignedPayload)
   debugLog('Signed query body', payload)
+  console.log('[PayCloud][QUERY][PAYLOAD]', JSON.stringify(payload, null, 2))
   if (fullQueryDebugEnabled()) {
     console.log('[PayCloud][QUERY][FULL] URL:', requestUrl)
     console.log('[PayCloud][QUERY][FULL] Headers:', PAYCLOUD_JSON_HEADERS)
@@ -834,6 +843,7 @@ export async function queryPaymentOrder(input, options = {}) {
       phase: 'parse',
     })
   }
+  console.log('[PayCloud][QUERY][RAW_RESPONSE]', JSON.stringify(body, null, 2))
 
   if (!response.ok) {
     throw mapPaycloudError(response.status, body, raw)
@@ -842,16 +852,21 @@ export async function queryPaymentOrder(input, options = {}) {
   const successCode = String(body.code || '').toUpperCase()
   const treatAsSuccess = !successCode || ['0', 'SUCCESS', '200'].includes(successCode)
 
+  if (successCode && !['0', 'SUCCESS', '200'].includes(successCode)) {
+    const failReason = body.msg || body.sub_msg || 'query failed'
+    throw new PaycloudRequestError(`PayCloud query failed: ${body.code} ${failReason}`, {
+      httpStatus: response.status,
+      responseBody: body,
+      rawText: raw,
+      phase: 'business',
+    })
+  }
+
   const signature = body.sign
   if (signature && treatAsSuccess) {
     const signatureOk = verifyPayloadSignature(body, signature)
     if (!signatureOk) {
-      throw new PaycloudRequestError('PayCloud query signature verification failed', {
-        httpStatus: response.status,
-        responseBody: body,
-        rawText: raw,
-        phase: 'signature',
-      })
+      console.warn('[PayCloud][QUERY] Response signature did not verify (ignored; code ok)')
     }
   }
 

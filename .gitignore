@@ -25,12 +25,17 @@ yarn-error.log*
 # Local env files
 .env*.local
 .env
+.env.*
 PAYCLOUD_ENDPOINT
 PAYCLOUD_APP_ID
 PAYCLOUD_MERCHANT_NO
 PAYCLOUD_STORE_NO
 PAYCLOUD_GATEWAY_PUBLIC_KEY
 PAYCLOUD_PRIVATE_KEY
+serviceAccountKey.json
+
+# Local generated auth payload dumps
+uat-auth-request-payload.json
 
 # Vercel
 .vercel

@@ -20,9 +20,15 @@ import { verifyWebhook } from './payments/webhook.js'
 import crypto from 'crypto'
 
 const PAYCLOUD_CLOCK_OFFSET_MS = Number(process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
+const PAYCLOUD_TIMESTAMP_AS_STRING = process.env.PAYCLOUD_TIMESTAMP_AS_STRING === 'true'
 
 function ts() {
   return new Date().toISOString()
+}
+
+function wireTimestamp() {
+  const v = Date.now() - PAYCLOUD_CLOCK_OFFSET_MS
+  return PAYCLOUD_TIMESTAMP_AS_STRING ? String(v) : v
 }
 
 function log(step, message, data) {
@@ -134,7 +140,7 @@ async function main() {
       merchant_no: cfg.merchantNo,
       store_no: cfg.storeNo,
       charset: 'UTF-8',
-      expires: 300,
+      expires: 900,
       method: 'pay.paycloud.checkout',
       format: 'JSON',
       description: `FlashTap STEP1 connectivity ${baseOrderId}`,
@@ -145,7 +151,7 @@ async function main() {
       return_url: 'https://example.com/order-confirmation',
       sign_type: 'RSA2',
       price_currency: 'NAD',
-      timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
+      timestamp: wireTimestamp(),
     }
     const url = cfg.endpoint
     log('STEP1', 'Request URL', url)

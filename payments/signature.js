@@ -21,10 +21,7 @@ import {
 
 function requestSignatureUsesBase64Url() {
   const v = process.env.PAYCLOUD_SIGNATURE_BASE64URL
-  if (v === 'true' || v === '1') {
-    console.warn('[PayCloud][SIGN] PAYCLOUD_SIGNATURE_BASE64URL is ignored; forcing standard base64 output.')
-  }
-  return false
+  return v === 'true' || v === '1'
 }
 
 /** Standard base64 from crypto.sign → value placed in JSON `sign` for outbound API requests. */
@@ -102,7 +99,6 @@ function getCanonicalEntries(requestObj) {
   for (const key of keys) {
     const value = requestObj[key]
     if (value === null || value === undefined) continue
-    if (typeof value === 'string' && value.length === 0) continue
     // Skip values that start with '@' (SDK treats them as special placeholders).
     if (typeof value === 'string' && value.startsWith('@')) continue
 

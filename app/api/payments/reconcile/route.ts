@@ -58,17 +58,63 @@ export async function POST(req: Request) {
 
     const query = await queryPaymentOrder({ orderId: merchantOrderNo })
     const raw = query.rawResponse || {}
-    const status = String(raw.trade_status || raw.status || '').toLowerCase()
-    const paid = ['paid', 'success', 'succeeded'].includes(status)
+
+    // Finatic returns `data` as a JSON string; parse before checking trans_status.
+    let orderData: unknown = (raw as Record<string, unknown>)?.data
+    if (typeof orderData === 'string') {
+      try {
+        orderData = JSON.parse(orderData)
+      } catch {
+        console.warn('[RECONCILE] Failed to parse order data string')
+      }
+    }
+
+    const transStatus =
+      (orderData as Record<string, unknown> | null)?.trans_status ??
+      (raw as Record<string, unknown>)?.trans_status
+    console.log(
+      '[RECONCILE] trans_status=',
+      transStatus,
+      'orderData=',
+      JSON.stringify(orderData ?? null)
+    )
+
+    const paid =
+      transStatus === 2 ||
+      transStatus === '2' ||
+      ['paid', 'success', 'succeeded'].includes(
+        String(
+          (orderData as Record<string, unknown> | null)?.trade_status ??
+            (orderData as Record<string, unknown> | null)?.status ??
+            (raw as Record<string, unknown>)?.trade_status ??
+            (raw as Record<string, unknown>)?.status ??
+            ''
+        ).toLowerCase()
+      )
 
     if (!paid) {
+      const statusText = String(
+        (orderData as Record<string, unknown> | null)?.trade_status ??
+          (orderData as Record<string, unknown> | null)?.status ??
+          (raw as Record<string, unknown>)?.trade_status ??
+          (raw as Record<string, unknown>)?.status ??
+          transStatus ??
+          'unknown'
+      ).toLowerCase()
       return NextResponse.json(
-        { ok: true, paid: false, source: 'query', status: status || 'unknown', merchantOrderNo },
+        { ok: true, paid: false, source: 'query', status: statusText || 'unknown', merchantOrderNo },
         { status: 200 }
       )
     }
 
-    const paidAmount = toMoney(raw.amount ?? raw.order_amount ?? raw.paid_amount)
+    const paidAmount = toMoney(
+      (orderData as Record<string, unknown> | null)?.amount ??
+        (orderData as Record<string, unknown> | null)?.order_amount ??
+        (orderData as Record<string, unknown> | null)?.paid_amount ??
+        (raw as Record<string, unknown>)?.amount ??
+        (raw as Record<string, unknown>)?.order_amount ??
+        (raw as Record<string, unknown>)?.paid_amount
+    )
     if (paidAmount !== null && Math.abs(paidAmount - expectedAmount) > 0.02) {
       return NextResponse.json(
         {
