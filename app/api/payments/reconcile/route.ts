@@ -52,8 +52,12 @@ export async function POST(req: Request) {
     }
 
     const expectedAmount = Math.round(rows.reduce((s, r) => s + (Number(r.data.total) || 0), 0) * 100) / 100
+    const merchantOrderNoFromOrders = rows
+      .map((r) => String(r.data.paycloud_merchant_order_no || '').trim())
+      .find(Boolean)
     const merchantOrderNo =
       merchantOrderNoRaw ||
+      merchantOrderNoFromOrders ||
       (orderIds.length === 1 ? `${restaurantId}:${orderIds[0]}` : `${restaurantId}:receipt:${orderIds.join(',')}`)
 
     const query = await queryPaymentOrder({ orderId: merchantOrderNo })

@@ -45,6 +45,8 @@ type OrderRecord = {
   total?: number
   status?: string
   payment_status?: string
+  payment_method?: string
+  paycloud_merchant_order_no?: string
   items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
 }
 
@@ -213,6 +215,11 @@ export default function ReceiptPage() {
         .sort()
       if (!cardOrderIds.length) return
 
+      const merchantOrderNo = unpaidOrders
+        .filter((o) => o?.payment_method === 'card')
+        .map((o) => String(o.paycloud_merchant_order_no || '').trim())
+        .find(Boolean)
+
       try {
         await fetch('/api/payments/reconcile', {
           method: 'POST',
@@ -220,7 +227,7 @@ export default function ReceiptPage() {
           body: JSON.stringify({
             restaurantId,
             orderIds: cardOrderIds,
-            merchantOrderNo: `${restaurantId}:receipt:${cardOrderIds.join(',')}`,
+            ...(merchantOrderNo ? { merchantOrderNo } : {}),
           }),
         })
       } catch {
