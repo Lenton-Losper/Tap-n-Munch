@@ -6,10 +6,12 @@ import { getCurrentSession } from '@/lib/session'
 export interface CartItem {
   menu_item_id: string
   name: string
+  display_name?: string
   quantity: number
   base_price: number
   selected_size: { name: string; price_modifier: number } | null
   selected_addons: { name: string; price: number }[]
+  selected_variants?: Record<string, string>
   special_instructions: string
   subtotal: number
   image_url?: string

@@ -3,7 +3,7 @@
 export const dynamic = "force-dynamic"
 
 import { useEffect, useState, Suspense } from 'react'
-import { useParams, useSearchParams } from 'next/navigation'
+import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
@@ -14,12 +14,15 @@ import Link from 'next/link'
 import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { useCart } from '@/contexts/cart-context'
+import { useTab } from '@/contexts/tab-context'
+import { tabsPath } from '@/lib/firebase/paths'
 
 function MenuLandingPageV2Content() {
   console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
   
   const params = useParams()
   const searchParams = useSearchParams()
+  const router = useRouter()
   const restaurantId = params?.restaurantId as string | undefined
   const tableNumberParam = searchParams?.get('table')
   const tableNum = tableNumberParam ? Number(tableNumberParam) : 0
@@ -30,7 +33,11 @@ function MenuLandingPageV2Content() {
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
+  const [openTab, setOpenTab] = useState<{ id: string; total: number; members: number } | null>(null)
+  const [tabLoading, setTabLoading] = useState(false)
+  const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
   const { clearCart } = useCart()
+  const { createOrJoinOpenTab, joinExistingTab, clearTab } = useTab()
 
   // Load restaurant data
   useEffect(() => {
@@ -147,6 +154,85 @@ function MenuLandingPageV2Content() {
       return () => clearTimeout(timeoutId)
     }
   }, [loading, restaurant])
+
+  useEffect(() => {
+    const loadOpenTab = async () => {
+      if (!restaurantId || !db || tableNum <= 0) {
+        setOpenTab(null)
+        return
+      }
+      try {
+        setTabLoading(true)
+        const tabsRef = collection(db, tabsPath(restaurantId))
+        const openTabQuery = query(
+          tabsRef,
+          where('status', '==', 'open'),
+          where('table_number', '==', String(tableNum))
+        )
+        const snapshot = await getDocs(openTabQuery)
+        if (snapshot.empty) {
+          setOpenTab(null)
+          return
+        }
+        const tabDoc = snapshot.docs[0]
+        const tabData = tabDoc.data() as Record<string, any>
+        setOpenTab({
+          id: tabDoc.id,
+          total: Number(tabData.total) || 0,
+          members: Array.isArray(tabData.members) ? tabData.members.length : 0,
+        })
+      } catch (tabErr) {
+        console.error('Failed to load open tab:', tabErr)
+        setOpenTab(null)
+      } finally {
+        setTabLoading(false)
+      }
+    }
+    loadOpenTab()
+  }, [restaurantId, tableNum])
+
+  const browseHref = `/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`
+
+  const handleOrderSeparately = () => {
+    clearTab()
+    router.push(browseHref)
+  }
+
+  const handleCreateTab = async () => {
+    if (!restaurantId || !table || tableNum <= 0) {
+      router.push(browseHref)
+      return
+    }
+    try {
+      setTabActionLoading('create')
+      await createOrJoinOpenTab({
+        restaurantId,
+        tableNumber: String(tableNum),
+        tableId: String(table.id || `table_${tableNum}`),
+      })
+      router.push(browseHref)
+    } catch (err) {
+      console.error('Failed to create tab:', err)
+    } finally {
+      setTabActionLoading(null)
+    }
+  }
+
+  const handleJoinTab = async () => {
+    if (!restaurantId || !openTab?.id) {
+      router.push(browseHref)
+      return
+    }
+    try {
+      setTabActionLoading('join')
+      await joinExistingTab({ restaurantId, tabId: openTab.id })
+      router.push(browseHref)
+    } catch (err) {
+      console.error('Failed to join tab:', err)
+    } finally {
+      setTabActionLoading(null)
+    }
+  }
 
   // Loading state
   if (loading) {
@@ -277,19 +363,59 @@ function MenuLandingPageV2Content() {
 
           {/* CTA Buttons */}
           <div className="space-y-4 pt-8">
-            {/* Primary: View Menu */}
-            <Link 
-              href={`/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`}
-              className="block"
-            >
-              <Button
-                size="lg"
-                className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
-              >
-                View Menu & Order
-                <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
-              </Button>
-            </Link>
+            {tableNum > 0 && !tabLoading && openTab && (
+              <div className="rounded-lg border border-white/20 bg-white/10 p-3 text-left">
+                <p className="font-sans text-sm text-white">
+                  Tab running: {(restaurant?.currency || 'N$')}
+                  {(openTab.total || 0).toFixed(2)}
+                </p>
+                <p className="font-sans text-xs text-white/70">{openTab.members} people currently in tab</p>
+              </div>
+            )}
+
+            {tableNum > 0 ? (
+              <>
+                {!openTab ? (
+                  <Button
+                    size="lg"
+                    onClick={handleCreateTab}
+                    disabled={tabActionLoading !== null}
+                    className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                  >
+                    {tabActionLoading === 'create' ? 'Creating tab...' : 'Create Tab'}
+                    <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="lg"
+                    onClick={handleJoinTab}
+                    disabled={tabActionLoading !== null}
+                    className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                  >
+                    {tabActionLoading === 'join' ? 'Joining tab...' : 'Join Tab'}
+                    <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="lg"
+                  onClick={handleOrderSeparately}
+                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                >
+                  {openTab ? 'Order Separately' : 'Order Now'}
+                </Button>
+              </>
+            ) : (
+              <Link href={browseHref} className="block">
+                <Button
+                  size="lg"
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                >
+                  View Menu & Order
+                  <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                </Button>
+              </Link>
+            )}
 
             {/* Secondary: View Receipt */}
             {sessionReady && sessionId && tableNum > 0 && (
@@ -297,15 +423,15 @@ function MenuLandingPageV2Content() {
                 href={`/menu/${restaurantId}/receipt?table=${tableNum}`}
                 className="block"
               >
-                <Button
-                  variant="outline"
-                  size="lg"
-                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
-                >
-                  <Receipt className="w-5 h-5 mr-2 stroke-[1.5]" />
-                  View Receipt
-                </Button>
-              </Link>
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+              >
+                <Receipt className="w-5 h-5 mr-2 stroke-[1.5]" />
+                View Receipt
+              </Button>
+            </Link>
             )}
           </div>
 

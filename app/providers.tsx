@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic'
 import { usePathname } from 'next/navigation'
 import { CartProvider } from '@/contexts/cart-context'
+import { TabProvider } from '@/contexts/tab-context'
 
 const DynamicAuthProvider = dynamic(
   () => import('@/components/auth/auth-provider').then((mod) => mod.AuthProvider),
@@ -23,7 +24,9 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   return (
     <DynamicAuthProvider>
-      <CartProvider>{children}</CartProvider>
+      <TabProvider>
+        <CartProvider>{children}</CartProvider>
+      </TabProvider>
     </DynamicAuthProvider>
   )
 }

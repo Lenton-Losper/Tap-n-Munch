@@ -6,18 +6,15 @@ import {
   getMenuCategories, 
   createMenuCategory, 
   updateMenuCategory,
-  deleteMenuCategory,
   MenuCategory 
 } from '@/lib/firebase/menu-categories'
 import { 
   getSubCategories, 
   createSubCategory, 
   updateSubCategory,
-  deleteSubCategory,
   SubCategory 
 } from '@/lib/firebase/sub-categories'
 import { 
-  getMenuItemsBySubCategory, 
   getMenuItems,
   createMenuItem, 
   updateMenuItem, 
@@ -36,6 +33,9 @@ import Image from 'next/image'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { uploadMenuItemImage } from '@/lib/firebase/storage'
 import { Skeleton } from '@/components/ui/skeleton'
+import { db } from '@/lib/firebase/config'
+import { menuCategoryPath, subCategoriesPath, subCategoryPath, menuItemsPath } from '@/lib/firebase/paths'
+import { collection, deleteDoc, doc, getDocs, writeBatch } from 'firebase/firestore'
 
 const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
 const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
@@ -91,6 +91,13 @@ export function MenuManagementV2() {
     imagePosition: 'center' as 'center' | 'top' | 'bottom',
     has_sizes: false,
     sizes: [] as Array<{ name: string; price_modifier: number }>,
+    variants: [] as Array<{ size: string; label: string; price: number }>,
+    variantGroups: [] as Array<{
+      name: string
+      required: boolean
+      type: 'text' | 'price'
+      options: Array<string | { label: string; price: number }>
+    }>,
     has_addons: false,
     addons: [] as Array<{ name: string; price: number }>,
     allow_special_instructions: true,
@@ -338,6 +345,8 @@ export function MenuManagementV2() {
       imagePosition: 'center',
       has_sizes: false,
       sizes: [],
+      variants: [],
+      variantGroups: [],
       has_addons: false,
       addons: [],
       allow_special_instructions: true,
@@ -359,6 +368,19 @@ export function MenuManagementV2() {
       [subCategoryId]: (prev[subCategoryId] ?? INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY) + INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY,
     }))
   }, [])
+
+  const deleteCollectionDocsInBatches = async (docsToDelete: Array<{ ref: any }>) => {
+    if (!db || docsToDelete.length === 0) return
+    const CHUNK_SIZE = 450
+    for (let i = 0; i < docsToDelete.length; i += CHUNK_SIZE) {
+      const chunk = docsToDelete.slice(i, i + CHUNK_SIZE)
+      const batch = writeBatch(db)
+      for (const d of chunk) {
+        batch.delete(d.ref)
+      }
+      await batch.commit()
+    }
+  }
 
   // Menu Category handlers
   const handleCreateMenuCategory = async () => {
@@ -397,36 +419,65 @@ export function MenuManagementV2() {
 
   const handleDeleteMenuCategory = async (category: MenuCategory) => {
     if (!restaurantId) return
-
-    // Check if has sub-categories
-    const subcats = await getSubCategories(restaurantId, category.id)
-    if (subcats.length > 0) {
-      toast({
-        title: 'Cannot Delete',
-        description: `Cannot delete category "${category.name}" because it has ${subcats.length} sub-category/sub-categories. Delete sub-categories first.`,
-        variant: 'destructive',
-      })
+    if (
+      !confirm('Are you sure you want to delete this? All items inside will also be deleted.')
+    ) {
       return
     }
 
-    if (!confirm(`Delete category "${category.name}"? This cannot be undone.`)) return
-
     try {
-      await deleteMenuCategory(category.id)
+      const categoryDocPath = menuCategoryPath(restaurantId, category.id)
+      console.log('[menu-delete][category] deleting categoryId=', category.id)
+      console.log('[menu-delete][category] category path=', categoryDocPath)
+
+      const subCollectionPath = subCategoriesPath(restaurantId, category.id)
+      console.log('[menu-delete][category] subcategories path=', subCollectionPath)
+      const subSnapshot = await getDocs(collection(db!, subCollectionPath))
+      console.log('[menu-delete][category] subcategories found=', subSnapshot.size)
+
+      for (const subDoc of subSnapshot.docs) {
+        const subId = subDoc.id
+        const itemCollectionPath = menuItemsPath(restaurantId, category.id, subId)
+        console.log('[menu-delete][category] deleting subcategoryId=', subId)
+        console.log('[menu-delete][category] items path=', itemCollectionPath)
+        const itemsSnapshot = await getDocs(collection(db!, itemCollectionPath))
+        console.log(
+          '[menu-delete][category] items found in subcategory',
+          subId,
+          '=',
+          itemsSnapshot.size
+        )
+        await deleteCollectionDocsInBatches(itemsSnapshot.docs)
+        await deleteDoc(doc(db!, subCategoryPath(restaurantId, category.id, subId)))
+      }
+
+      await deleteDoc(doc(db!, categoryDocPath))
       toast({
         title: 'Success',
-        description: `Category "${category.name}" deleted successfully`,
+        description: `Category "${category.name}" and nested data deleted successfully`,
       })
       
-      // Reload categories
-      const categories = await getMenuCategories(restaurantId)
+      const [categories, items] = await Promise.all([
+        getMenuCategories(restaurantId),
+        getMenuItems(restaurantId),
+      ])
       setMenuCategories(categories)
+      setAllMenuItems(items)
+      const subCategoryResults = await Promise.all(
+        categories.map((cat) => getSubCategories(restaurantId, cat.id).catch(() => [] as SubCategory[]))
+      )
+      setAllSubCategories(subCategoryResults.flat())
       
       // Reset selection if deleted category was selected
       if (selectedMenuCategory?.id === category.id) {
         setSelectedMenuCategory(categories.length > 0 ? categories[0] : null)
       }
     } catch (err: any) {
+      console.error('[menu-delete][category] failed', {
+        categoryId: category.id,
+        categoryPath: menuCategoryPath(restaurantId, category.id),
+        error: err?.message || err,
+      })
       toast({
         title: 'Error',
         description: err.message || 'Failed to delete category',
@@ -550,38 +601,57 @@ export function MenuManagementV2() {
 
   const handleDeleteSubCategory = async (subCategory: SubCategory) => {
     if (!restaurantId) return
-
-    // Check if has menu items
-    const items = await getMenuItemsBySubCategory(restaurantId, subCategory.id)
-    if (items.length > 0) {
-      toast({
-        title: 'Cannot Delete',
-        description: `Cannot delete sub-category "${subCategory.name}" because it has ${items.length} menu item(s). Delete items first.`,
-        variant: 'destructive',
-      })
+    if (
+      !confirm('Are you sure you want to delete this? All items inside will also be deleted.')
+    ) {
       return
     }
-
-    if (!confirm(`Delete sub-category "${subCategory.name}"? This cannot be undone.`)) return
 
     try {
       if (!subCategory.menu_category_id) {
         throw new Error('Sub-category is missing menu_category_id')
       }
-      await deleteSubCategory(restaurantId, subCategory.menu_category_id, subCategory.id)
+      const itemCollectionPath = menuItemsPath(
+        restaurantId,
+        subCategory.menu_category_id,
+        subCategory.id
+      )
+      const subDocPath = subCategoryPath(restaurantId, subCategory.menu_category_id, subCategory.id)
+      console.log('[menu-delete][subcategory] deleting subCategoryId=', subCategory.id)
+      console.log('[menu-delete][subcategory] subcategory path=', subDocPath)
+      console.log('[menu-delete][subcategory] items path=', itemCollectionPath)
+
+      const itemSnapshot = await getDocs(collection(db!, itemCollectionPath))
+      console.log('[menu-delete][subcategory] items found=', itemSnapshot.size)
+      await deleteCollectionDocsInBatches(itemSnapshot.docs)
+      await deleteDoc(doc(db!, subDocPath))
       toast({
         title: 'Success',
-        description: `Sub-category "${subCategory.name}" deleted successfully`,
+        description: `Sub-category "${subCategory.name}" and its items deleted successfully`,
       })
       
       // Reload sub-categories
       if (selectedMenuCategory) {
-        const subcats = await getSubCategories(restaurantId, selectedMenuCategory.id)
-        const updatedAllSubcats = allSubCategories.filter(sc => sc.menu_category_id !== selectedMenuCategory.id)
+        const [items, subcats] = await Promise.all([
+          getMenuItems(restaurantId),
+          getSubCategories(restaurantId, selectedMenuCategory.id),
+        ])
+        setAllMenuItems(items)
+        const updatedAllSubcats = allSubCategories.filter(
+          (sc) => sc.menu_category_id !== selectedMenuCategory.id
+        )
         updatedAllSubcats.push(...subcats)
         setAllSubCategories(updatedAllSubcats)
       }
     } catch (err: any) {
+      console.error('[menu-delete][subcategory] failed', {
+        subCategoryId: subCategory.id,
+        categoryId: subCategory.menu_category_id,
+        subCategoryPath: subCategory.menu_category_id
+          ? subCategoryPath(restaurantId, subCategory.menu_category_id, subCategory.id)
+          : null,
+        error: err?.message || err,
+      })
       toast({
         title: 'Error',
         description: err.message || 'Failed to delete sub-category',
@@ -685,6 +755,8 @@ export function MenuManagementV2() {
         imagePosition: 'center',
         has_sizes: false,
         sizes: [],
+        variants: [],
+        variantGroups: [],
         has_addons: false,
         addons: [],
         allow_special_instructions: true,
@@ -709,6 +781,22 @@ export function MenuManagementV2() {
       imagePosition: item.imagePosition || 'center',
       has_sizes: item.has_sizes,
       sizes: item.sizes || [],
+      variants: Array.isArray((item as MenuItem & { variants?: Array<{ size: string; label: string; price: number }> }).variants)
+        ? (item as MenuItem & { variants?: Array<{ size: string; label: string; price: number }> }).variants || []
+        : [],
+      variantGroups: Array.isArray((item as MenuItem & { variantGroups?: Array<{
+        name: string
+        required: boolean
+        type: 'text' | 'price'
+        options: Array<string | { label: string; price: number }>
+      }> }).variantGroups)
+        ? (item as MenuItem & { variantGroups?: Array<{
+            name: string
+            required: boolean
+            type: 'text' | 'price'
+            options: Array<string | { label: string; price: number }>
+          }> }).variantGroups || []
+        : [],
       has_addons: item.has_addons,
       addons: item.addons || [],
       allow_special_instructions: item.allow_special_instructions,
@@ -758,6 +846,115 @@ export function MenuManagementV2() {
     setImagePreview(null)
   }
 
+  const handleAddVariantRow = () => {
+    setItemForm((prev) => ({
+      ...prev,
+      variants: [...prev.variants, { size: '', label: '', price: Number(prev.base_price) || 0 }],
+    }))
+  }
+
+  const handleUpdateVariantRow = (
+    index: number,
+    field: 'size' | 'label' | 'price',
+    value: string
+  ) => {
+    setItemForm((prev) => {
+      const next = [...prev.variants]
+      if (!next[index]) return prev
+      if (field === 'price') {
+        next[index] = { ...next[index], price: Number(value) || 0 }
+      } else {
+        next[index] = { ...next[index], [field]: value }
+      }
+      return { ...prev, variants: next }
+    })
+  }
+
+  const handleRemoveVariantRow = (index: number) => {
+    setItemForm((prev) => ({
+      ...prev,
+      variants: prev.variants.filter((_, idx) => idx !== index),
+    }))
+  }
+
+  const handleAddVariantGroup = () => {
+    setItemForm((prev) => ({
+      ...prev,
+      variantGroups: [
+        ...prev.variantGroups,
+        { name: '', required: true, type: 'text', options: [''] },
+      ],
+    }))
+  }
+
+  const handleUpdateVariantGroup = (
+    groupIndex: number,
+    field: 'name' | 'required' | 'type',
+    value: string | boolean
+  ) => {
+    setItemForm((prev) => {
+      const next = [...prev.variantGroups]
+      if (!next[groupIndex]) return prev
+      next[groupIndex] = { ...next[groupIndex], [field]: value } as typeof next[number]
+      return { ...prev, variantGroups: next }
+    })
+  }
+
+  const handleRemoveVariantGroup = (groupIndex: number) => {
+    setItemForm((prev) => ({
+      ...prev,
+      variantGroups: prev.variantGroups.filter((_, idx) => idx !== groupIndex),
+    }))
+  }
+
+  const handleAddVariantGroupOption = (groupIndex: number) => {
+    setItemForm((prev) => {
+      const next = [...prev.variantGroups]
+      if (!next[groupIndex]) return prev
+      const group = next[groupIndex]
+      const newOption = group.type === 'price' ? { label: '', price: Number(prev.base_price) || 0 } : ''
+      next[groupIndex] = { ...group, options: [...group.options, newOption] }
+      return { ...prev, variantGroups: next }
+    })
+  }
+
+  const handleUpdateVariantGroupOption = (
+    groupIndex: number,
+    optionIndex: number,
+    field: 'label' | 'price' | 'value',
+    value: string
+  ) => {
+    setItemForm((prev) => {
+      const next = [...prev.variantGroups]
+      const group = next[groupIndex]
+      if (!group || !group.options[optionIndex]) return prev
+      const nextOptions = [...group.options]
+      const existing = nextOptions[optionIndex]
+      if (group.type === 'price') {
+        const obj = typeof existing === 'string' ? { label: existing, price: 0 } : existing
+        nextOptions[optionIndex] =
+          field === 'price' ? { ...obj, price: Number(value) || 0 } : { ...obj, label: value }
+      } else {
+        nextOptions[optionIndex] = value
+      }
+      next[groupIndex] = { ...group, options: nextOptions }
+      return { ...prev, variantGroups: next }
+    })
+  }
+
+  const handleRemoveVariantGroupOption = (groupIndex: number, optionIndex: number) => {
+    setItemForm((prev) => {
+      const next = [...prev.variantGroups]
+      const group = next[groupIndex]
+      if (!group) return prev
+      next[groupIndex] = {
+        ...group,
+        options: group.options.filter((_, idx) => idx !== optionIndex),
+      }
+      return { ...prev, variantGroups: next }
+    })
+  }
+
   const handleSaveItem = async () => {
     if (!restaurantId) return
 
@@ -779,6 +976,40 @@ export function MenuManagementV2() {
       })
       return
     }
+
+    const sanitizedVariants = itemForm.variants
+      .map((variant) => ({
+        size: String(variant.size || '').trim(),
+        label: String(variant.label || '').trim(),
+        price: Number(variant.price),
+      }))
+      .filter((variant) => variant.size && variant.label && Number.isFinite(variant.price) && variant.price > 0)
+
+    const sanitizedVariantGroups = itemForm.variantGroups
+      .map((group) => {
+        const cleanedName = String(group.name || '').trim()
+        const cleanedOptions =
+          group.type === 'price'
+            ? group.options
+                .map((opt) => {
+                  if (typeof opt === 'string') return null
+                  return {
+                    label: String(opt.label || '').trim(),
+                    price: Number(opt.price),
+                  }
+                })
+                .filter((opt) => opt && opt.label && Number.isFinite(opt.price) && opt.price > 0)
+            : group.options
+                .map((opt) => (typeof opt === 'string' ? String(opt).trim() : String(opt?.label || '').trim()))
+                .filter(Boolean)
+        return {
+          name: cleanedName,
+          required: Boolean(group.required),
+          type: group.type,
+          options: cleanedOptions,
+        }
+      })
+      .filter((group) => group.name && group.options.length > 0)
 
     try {
       let imageUrl = itemForm.image_url
@@ -829,6 +1060,8 @@ export function MenuManagementV2() {
             imagePosition: itemForm.imagePosition,
             has_sizes: itemForm.has_sizes,
             sizes: itemForm.sizes,
+            variants: sanitizedVariants.length > 0 ? sanitizedVariants : undefined,
+            variantGroups: sanitizedVariantGroups.length > 0 ? sanitizedVariantGroups : undefined,
             has_addons: itemForm.has_addons,
             addons: itemForm.addons,
             allow_special_instructions: itemForm.allow_special_instructions,
@@ -851,6 +1084,8 @@ export function MenuManagementV2() {
           imagePosition: itemForm.imagePosition,
           has_sizes: itemForm.has_sizes,
           sizes: itemForm.sizes,
+          variants: sanitizedVariants.length > 0 ? sanitizedVariants : undefined,
+          variantGroups: sanitizedVariantGroups.length > 0 ? sanitizedVariantGroups : undefined,
           has_addons: itemForm.has_addons,
           addons: itemForm.addons,
           allow_special_instructions: itemForm.allow_special_instructions,
@@ -874,6 +1109,8 @@ export function MenuManagementV2() {
         imagePosition: 'center',
         has_sizes: false,
         sizes: [],
+        variants: [],
+        variantGroups: [],
         has_addons: false,
         addons: [],
         allow_special_instructions: true,
@@ -1711,6 +1948,192 @@ export function MenuManagementV2() {
                 onChange={(e) => setItemForm({ ...itemForm, base_price: e.target.value })}
                 placeholder="25.00"
               />
+            </div>
+            <div className="space-y-3 border border-border rounded-md p-3">
+              <div className="flex items-center justify-between">
+                <Label>Add Variants (Optional)</Label>
+                <Button type="button" variant="outline" size="sm" onClick={handleAddVariantRow}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Variant
+                </Button>
+              </div>
+              {itemForm.variants.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Leave empty to use a single default price only.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {itemForm.variants.map((variant, index) => (
+                    <div key={`variant-${index}`} className="grid grid-cols-12 gap-2 items-center">
+                      <Input
+                        className="col-span-2"
+                        placeholder="S"
+                        value={variant.size}
+                        onChange={(e) => handleUpdateVariantRow(index, 'size', e.target.value)}
+                      />
+                      <Input
+                        className="col-span-5"
+                        placeholder="Small"
+                        value={variant.label}
+                        onChange={(e) => handleUpdateVariantRow(index, 'label', e.target.value)}
+                      />
+                      <Input
+                        className="col-span-4"
+                        type="number"
+                        step="0.01"
+                        placeholder="25.00"
+                        value={Number.isFinite(variant.price) ? variant.price : ''}
+                        onChange={(e) => handleUpdateVariantRow(index, 'price', e.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="col-span-1"
+                        onClick={() => handleRemoveVariantRow(index)}
+                      >
+                        <Trash2 className="h-4 w-4 text-red-500" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-3 border border-border rounded-md p-3">
+              <div className="flex items-center justify-between">
+                <Label>Variant Groups (Optional)</Label>
+                <Button type="button" variant="outline" size="sm" onClick={handleAddVariantGroup}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Group
+                </Button>
+              </div>
+              {itemForm.variantGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No groups configured.</p>
+              ) : (
+                <div className="space-y-3">
+                  {itemForm.variantGroups.map((group, groupIndex) => (
+                    <div key={`variant-group-${groupIndex}`} className="rounded-md border p-3 space-y-2">
+                      <div className="grid grid-cols-12 gap-2 items-center">
+                        <Input
+                          className="col-span-4"
+                          placeholder="Group name (e.g. Size)"
+                          value={group.name}
+                          onChange={(e) => handleUpdateVariantGroup(groupIndex, 'name', e.target.value)}
+                        />
+                        <Select
+                          value={group.type}
+                          onValueChange={(value: 'text' | 'price') =>
+                            handleUpdateVariantGroup(groupIndex, 'type', value)
+                          }
+                        >
+                          <SelectTrigger className="col-span-3">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="text">text</SelectItem>
+                            <SelectItem value="price">price</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <label className="col-span-3 flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={group.required}
+                            onChange={(e) =>
+                              handleUpdateVariantGroup(groupIndex, 'required', e.target.checked)
+                            }
+                          />
+                          Required
+                        </label>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="col-span-2"
+                          onClick={() => handleRemoveVariantGroup(groupIndex)}
+                        >
+                          <Trash2 className="h-4 w-4 text-red-500" />
+                        </Button>
+                      </div>
+                      <div className="space-y-2">
+                        {group.options.map((opt, optionIndex) => (
+                          <div key={`group-${groupIndex}-opt-${optionIndex}`} className="grid grid-cols-12 gap-2">
+                            {group.type === 'price' ? (
+                              <>
+                                <Input
+                                  className="col-span-7"
+                                  placeholder="Option label"
+                                  value={typeof opt === 'string' ? opt : opt.label}
+                                  onChange={(e) =>
+                                    handleUpdateVariantGroupOption(
+                                      groupIndex,
+                                      optionIndex,
+                                      'label',
+                                      e.target.value
+                                    )
+                                  }
+                                />
+                                <Input
+                                  className="col-span-4"
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="Price"
+                                  value={
+                                    typeof opt === 'string'
+                                      ? ''
+                                      : Number.isFinite(opt.price)
+                                        ? opt.price
+                                        : ''
+                                  }
+                                  onChange={(e) =>
+                                    handleUpdateVariantGroupOption(
+                                      groupIndex,
+                                      optionIndex,
+                                      'price',
+                                      e.target.value
+                                    )
+                                  }
+                                />
+                              </>
+                            ) : (
+                              <Input
+                                className="col-span-11"
+                                placeholder="Option value"
+                                value={typeof opt === 'string' ? opt : opt.label}
+                                onChange={(e) =>
+                                  handleUpdateVariantGroupOption(
+                                    groupIndex,
+                                    optionIndex,
+                                    'value',
+                                    e.target.value
+                                  )
+                                }
+                              />
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="col-span-1"
+                              onClick={() => handleRemoveVariantGroupOption(groupIndex, optionIndex)}
+                            >
+                              <X className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleAddVariantGroupOption(groupIndex)}
+                        >
+                          <Plus className="h-4 w-4 mr-1" />
+                          Add Option
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div>
               <Label>Image</Label>

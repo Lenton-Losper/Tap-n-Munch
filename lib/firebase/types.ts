@@ -80,6 +80,19 @@ export interface MenuItemAddon {
   price: number // 15
 }
 
+export interface MenuItemVariant {
+  size: string // "S", "M", "L"
+  label: string // "Small", "Medium", "Large"
+  price: number // absolute price for the variant
+}
+
+export interface MenuItemVariantGroup {
+  name: string
+  required: boolean
+  type: 'text' | 'price'
+  options: Array<string | { label: string; price: number }>
+}
+
 export interface MenuItem {
   id: string
   restaurant_id: string // FK to restaurants.id
@@ -91,6 +104,8 @@ export interface MenuItem {
   description: string
   image_url: string | null
   base_price: number
+  variants?: MenuItemVariant[]
+  variantGroups?: MenuItemVariantGroup[]
   
   // Image display options
   imageFit?: 'contain' | 'cover' | 'fill' | 'scale-down' // How the image should be displayed

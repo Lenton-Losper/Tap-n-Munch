@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prepareForFirestore } from '@/lib/firebase/firestore-guards'
-import { orderPath, ordersPath } from '@/lib/firebase/paths'
+import { orderPath, ordersPath, tabPath } from '@/lib/firebase/paths'
 import { createPaymentRequest, maskSecrets } from '@/payments/paycloud'
 import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
 
@@ -158,6 +158,11 @@ export async function POST(req: Request) {
     const sessionId = body.session_id ? String(body.session_id).trim() : undefined
     const restaurantId = String(body.restaurantId).trim()
     const tableNumber = Number(body.tableNumber) || 0
+    const tabId = body.tab_id ? String(body.tab_id).trim() : null
+    const memberSessionId = body.member_session_id ? String(body.member_session_id).trim() : null
+    const tabSettlementForTabId = body.tab_settlement_for_tab_id
+      ? String(body.tab_settlement_for_tab_id).trim()
+      : null
 
     if (!body.tableNumber || tableNumber <= 0) {
       console.error('🚨 ORDER REJECTED: tableNumber is required and must be > 0')
@@ -195,13 +200,21 @@ export async function POST(req: Request) {
       payment_status: 'pending' as const,
       table_closed: false,
       is_closed: false,
+      tab_id: tabId || null,
+      member_session_id: memberSessionId || null,
+      tab_settlement_for_tab_id: tabSettlementForTabId || null,
       items: (body.items || []).map((item: any) => ({
         menu_item_id: String(item.menuItemId || item.menu_item_id || ''),
         name: String(item.name || ''),
+        display_name: item.displayName ? String(item.displayName) : String(item.name || ''),
         quantity: Number(item.quantity) || 1,
         base_price: Number(item.basePrice || item.base_price || 0),
         subtotal: Number(item.subtotal || 0),
         size: item.size ? String(item.size) : null,
+        selected_variants:
+          item.selectedVariants && typeof item.selectedVariants === 'object'
+            ? item.selectedVariants
+            : {},
         addons: Array.isArray(item.addons)
           ? item.addons.map((a: any) => ({
               name: String(a.name || ''),
@@ -214,7 +227,6 @@ export async function POST(req: Request) {
             : null,
       })),
       subtotal: Number(body.subtotal) || 0,
-      tax: Number(body.tax) || 0,
       total: Number(body.total),
       payment_method: (body.paymentMethod === 'card' ? 'card' : 'cash') as 'cash' | 'card' | 'mobile_money',
       order_instructions:
@@ -285,6 +297,13 @@ export async function POST(req: Request) {
           { status: 200 }
         )
       }
+    }
+
+    if (tabId) {
+      await fs.doc(tabPath(restaurantId, tabId)).update({
+        total: FieldValue.increment(Number(orderPayloadBase.total) || 0),
+        updated_at: FieldValue.serverTimestamp(),
+      })
     }
 
     return NextResponse.json({ orderId: docRefId, payment, checkoutUrl: payment?.checkoutUrl || null }, { status: 201 })

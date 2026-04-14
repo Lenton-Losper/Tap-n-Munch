@@ -99,6 +99,20 @@ export function orderPath(restaurantId: string, orderId: string): string {
 }
 
 /**
+ * Get collection path for tabs under a restaurant
+ */
+export function tabsPath(restaurantId: string): string {
+  return `restaurants/${restaurantId}/tabs`
+}
+
+/**
+ * Get document path for a specific tab
+ */
+export function tabPath(restaurantId: string, tabId: string): string {
+  return `restaurants/${restaurantId}/tabs/${tabId}`
+}
+
+/**
  * Get collection path for tables under a restaurant
  */
 export function tablesPath(restaurantId: string): string {

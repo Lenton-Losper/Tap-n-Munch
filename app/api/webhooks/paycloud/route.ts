@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { FieldPath, Timestamp } from 'firebase-admin/firestore'
+import { Timestamp } from 'firebase-admin/firestore'
 import { orderPath } from '@/lib/firebase/paths'
 import { enforceWebhookRateLimit } from '@/payments/webhook'
 import { verifyPayloadSignature } from '@/payments/signature'
@@ -10,6 +10,7 @@ const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
 
 function webhookAck() {
+  console.log('[WEBHOOK] Sending response: success')
   return new Response('success', {
     status: 200,
     headers: { 'Content-Type': 'text/plain' },
@@ -44,15 +45,28 @@ async function resolveOrderRefs(
   const m = String(merchantOrderNo || '').trim()
   if (!m) return []
 
-  const byId = await fs.collectionGroup('orders').where(FieldPath.documentId(), '==', m).limit(10).get()
-  if (!byId.empty) return byId.docs.map((d) => d.ref)
+  const restaurantsSnap = await fs.collection('restaurants').get()
+  const restaurantIds = restaurantsSnap.docs.map((d) => d.id)
 
-  const byPaycloud = await fs
-    .collectionGroup('orders')
-    .where('paycloud_merchant_order_no', '==', m)
-    .limit(25)
-    .get()
-  if (!byPaycloud.empty) return byPaycloud.docs.map((d) => d.ref)
+  const results = await Promise.all(
+    restaurantIds.map(async (restaurantId) => {
+      const directRef = fs.doc(`restaurants/${restaurantId}/orders/${m}`)
+      const directSnap = await directRef.get()
+      if (directSnap.exists) return [directRef]
+
+      const byMerchantOrderNo = await fs
+        .collection(`restaurants/${restaurantId}/orders`)
+        .where('paycloud_merchant_order_no', '==', m)
+        .limit(5)
+        .get()
+      if (!byMerchantOrderNo.empty) return byMerchantOrderNo.docs.map((d) => d.ref)
+
+      return [] as DocumentReference[]
+    })
+  )
+
+  const firstNonEmpty = results.find((refs) => refs.length > 0)
+  if (firstNonEmpty && firstNonEmpty.length > 0) return firstNonEmpty
 
   const colon = m.indexOf(':')
   if (colon <= 0) return []
@@ -86,15 +100,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: false, error: ADMIN_NOT_CONFIGURED }, { status: 503 })
   }
 
+  console.log('[WEBHOOK] Headers:', Object.fromEntries(req.headers.entries()))
+
   const rate = enforceWebhookRateLimit(getClientIp(req))
   if (!rate.allowed) {
     return NextResponse.json({ success: false, error: 'Rate limit exceeded' }, { status: 429 })
   }
 
   const rawBody = await req.text()
+  console.log('[WEBHOOK] Raw body:', rawBody)
   let payload: Record<string, unknown>
   try {
     payload = JSON.parse(rawBody) as Record<string, unknown>
+    console.log('[WEBHOOK] Parsed body:', JSON.stringify(payload, null, 2))
   } catch {
     console.warn('[PayCloud webhook] Invalid JSON body')
     return webhookAck()
@@ -132,6 +150,12 @@ export async function POST(req: Request) {
   }
 
   if (!isPaidTransStatus(trans_status)) {
+    console.log(
+      '[WEBHOOK] Not a paid status, ignoring. trans_status=',
+      trans_status,
+      'full payload=',
+      JSON.stringify(payload)
+    )
     return webhookAck()
   }
 
@@ -164,4 +188,14 @@ export async function POST(req: Request) {
   })
 
   return webhookAck()
+}
+
+export async function GET(req: Request) {
+  console.log('[WEBHOOK] GET request received - URL verification')
+  console.log('[WEBHOOK] GET headers:', Object.fromEntries(req.headers.entries()))
+  console.log('[WEBHOOK] GET url:', req.url)
+  return new Response('success', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  })
 }

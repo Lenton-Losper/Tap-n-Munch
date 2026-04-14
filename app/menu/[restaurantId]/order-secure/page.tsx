@@ -83,17 +83,17 @@ export default function OrderSecurePage() {
 
     try {
       const subtotal = getTotal()
-      const taxRate = restaurant?.tax_rate || 0.15
-      const tax = subtotal * taxRate
-      const total = subtotal + tax
+      const total = subtotal
 
       const orderItems = items
         .filter((item) => item != null)
         .map((item) => ({
           menuItemId: String(item?.menu_item_id || ''),
-          name: String(item?.name || ''),
+          name: String(item?.display_name || item?.name || ''),
+          displayName: String(item?.display_name || item?.name || ''),
           quantity: Number(item?.quantity) || 1,
           basePrice: Number(item?.base_price) || 0,
+          selectedVariants: item?.selected_variants || {},
           size: item?.selected_size?.name ? String(item.selected_size.name) : null,
           addons: Array.isArray(item?.selected_addons)
             ? item.selected_addons
@@ -114,7 +114,6 @@ export default function OrderSecurePage() {
         session_id: String(sessionId),
         items: orderItems,
         subtotal: Number(subtotal),
-        tax: Number(tax),
         total: Number(total),
         paymentMethod: 'card',
       }
@@ -160,9 +159,7 @@ export default function OrderSecurePage() {
   }
 
   const subtotal = typeof getTotal === 'function' ? getTotal() : 0
-  const taxRate = restaurant?.tax_rate || 0.15
-  const tax = subtotal * taxRate
-  const total = subtotal + tax
+  const total = subtotal
 
   if (loading) {
     return (
@@ -199,7 +196,7 @@ export default function OrderSecurePage() {
               <div key={`${item.menu_item_id || item.name}-${idx}`} className="flex justify-between text-sm font-sans">
                 <span className="text-foreground">
                   <span className="text-muted-foreground mr-2">{item.quantity}x</span>
-                  {item.name}
+                  {item.display_name || item.name}
                 </span>
                 <span className="text-foreground">
                   {restaurant?.currency || 'N$'}
@@ -212,10 +209,6 @@ export default function OrderSecurePage() {
             <div className="flex justify-between text-sm font-sans">
               <span className="text-muted-foreground">Subtotal</span>
               <span className="text-foreground">{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-sm font-sans">
-              <span className="text-muted-foreground">Tax ({Math.round(taxRate * 100)}%)</span>
-              <span className="text-foreground">{restaurant?.currency || 'N$'}{tax.toFixed(2)}</span>
             </div>
             <div className="border-t border-border pt-4 mt-4">
               <div className="flex justify-between items-center">

@@ -45,6 +45,36 @@ export function OrdersDashboard() {
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
 
+  const toDate = (timestamp: unknown): Date | null => {
+    if (!timestamp) return null
+    if (timestamp instanceof Date) return Number.isNaN(timestamp.getTime()) ? null : timestamp
+    if (typeof (timestamp as { toDate?: unknown })?.toDate === 'function') {
+      const date = (timestamp as { toDate: () => Date }).toDate()
+      return Number.isNaN(date.getTime()) ? null : date
+    }
+    if (typeof timestamp === 'string' || typeof timestamp === 'number') {
+      const date = new Date(timestamp)
+      return Number.isNaN(date.getTime()) ? null : date
+    }
+    return null
+  }
+
+  const isRecentCardPendingOrder = (order: Order) => {
+    if (order.payment_method !== 'card' || order.payment_status !== 'pending') return false
+    const createdDate = toDate((order as Order & { created_at?: unknown }).created_at) || toDate(order.placed_at)
+    if (!createdDate) return true
+    return Date.now() - createdDate.getTime() < 5 * 60 * 1000
+  }
+
+  const shouldDisplayOrder = (order: Order) => {
+    if (order.payment_method === 'cash') return true
+    if (order.payment_method === 'card') {
+      if (order.payment_status === 'paid') return true
+      return isRecentCardPendingOrder(order)
+    }
+    return true
+  }
+
   // Don't run if user is null (prevents fetching when signed out)
   useEffect(() => {
     if (!user) {
@@ -63,26 +93,35 @@ export function OrdersDashboard() {
 
     // Subscribe to real-time orders
     const unsubscribe = subscribeToOrders(restaurantId, activeTab, (newOrders) => {
+      const visibleOrders = newOrders.filter((order) => {
+        if (!shouldDisplayOrder(order)) return false
+        if (activeTab === 'new') {
+          if (order.payment_method === 'cash') return true
+          return order.payment_method === 'card' && order.payment_status === 'pending' && isRecentCardPendingOrder(order)
+        }
+        return true
+      })
+
       console.log('📦 Dashboard: Received', newOrders.length, 'orders for status:', activeTab)
-      if (newOrders.length > 0) {
+      if (visibleOrders.length > 0) {
         console.log('📦 Dashboard: First order details:', {
-          id: newOrders[0].id,
-          order_number: newOrders[0].order_number,
-          status: newOrders[0].status,
-          restaurant_id: newOrders[0].restaurant_id,
-          table_number: newOrders[0].table_number,
+          id: visibleOrders[0].id,
+          order_number: visibleOrders[0].order_number,
+          status: visibleOrders[0].status,
+          restaurant_id: visibleOrders[0].restaurant_id,
+          table_number: visibleOrders[0].table_number,
         })
       }
-      setOrders(newOrders)
+      setOrders(visibleOrders)
       setLoading(false)
       
       // Play notification sound for new orders (optional)
-      if (activeTab === 'new' && newOrders.length > 0) {
+      if (activeTab === 'new' && visibleOrders.length > 0) {
         // You can add a notification sound here
       }
       
       // PART 5: Safety Logging - Log when 0 orders found
-      if (newOrders.length === 0) {
+      if (visibleOrders.length === 0) {
         console.log('⚠️ Dashboard: No orders found for status:', activeTab)
         console.log('⚠️ Dashboard: Query parameters:', {
           restaurantId,
@@ -512,6 +551,11 @@ export function OrdersDashboard() {
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-lg font-bold">#{normalizedOrder.order_number || 'N/A'}</span>
                     <Badge variant="secondary">Table {normalizedOrder.table_number || 0}</Badge>
+                    {normalizedOrder.tab_id && (
+                      <Badge className="bg-purple-600 text-white">
+                        TAB {String(normalizedOrder.tab_id).slice(-6)}
+                      </Badge>
+                    )}
                     {getStatusBadge(normalizedOrder.status)}
                     {getPaymentStatusBadge(normalizedOrder)}
                     <div className="flex items-center gap-1 text-sm text-muted-foreground">
@@ -537,8 +581,13 @@ export function OrdersDashboard() {
                     normalizedOrder.items.map((item: any, index: number) => (
                       <div key={index} className="text-sm">
                         <span className="font-medium">
-                          {item?.quantity ?? 1}× {item?.name ?? 'Unknown Item'}
+                          {item?.quantity ?? 1}× {item?.display_name || item?.name || 'Unknown Item'}
                         </span>
+                        {item?.selected_variants && typeof item.selected_variants === 'object' && (
+                          <span className="text-muted-foreground ml-2">
+                            {Object.values(item.selected_variants).filter(Boolean).join(' / ')}
+                          </span>
+                        )}
                         {item?.selected_size?.name && (
                           <span className="text-muted-foreground ml-2">
                             ({item.selected_size.name})

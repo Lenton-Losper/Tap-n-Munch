@@ -7,6 +7,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
+import { useTab } from '@/contexts/tab-context'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -15,6 +16,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { getMenuItem } from '@/lib/firebase/menu-items'
+import { useToast } from '@/hooks/use-toast'
 
 export default function CartPage() {
   const params = useParams()
@@ -22,10 +24,12 @@ export default function CartPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
+  const { toast } = useToast()
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
+  const { isInTab, tabId, sessionId } = useTab()
   const [restaurant, setRestaurant] = useState<any>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -71,9 +75,52 @@ export default function CartPage() {
   }
 
   const subtotal = getTotal()
-  const taxRate = restaurant?.tax_rate || 0.15
-  const tax = subtotal * taxRate
-  const total = subtotal + tax
+  const total = subtotal
+
+  const handleAddToTab = async () => {
+    if (!isInTab || !tabId) return
+    try {
+      const payload = {
+        restaurantId: String(restaurantId),
+        tableNumber: Number(tableNumber) || 0,
+        session_id: String(sessionId || ''),
+        tab_id: String(tabId),
+        member_session_id: String(sessionId || ''),
+        items: items.map((item) => ({
+          menuItemId: item.menu_item_id,
+          name: item.display_name || item.name,
+          displayName: item.display_name || item.name,
+          quantity: item.quantity,
+          basePrice: item.base_price,
+          selectedVariants: item.selected_variants || {},
+          size: item.selected_size?.name || null,
+          addons: item.selected_addons || [],
+          specialInstructions: item.special_instructions || '',
+          subtotal: item.subtotal,
+        })),
+        subtotal: Number(subtotal),
+        total: Number(total),
+        paymentMethod: 'cash',
+        orderInstructions: orderInstructions?.trim() || '',
+      }
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
+      clearCart()
+      toast({ title: 'Added to tab!', description: 'Your items were added to the shared tab.' })
+      router.replace(`/menu/${restaurantId}/browse${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)
+    } catch (err: any) {
+      toast({
+        title: 'Could not add to tab',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    }
+  }
 
   if (loading) {
     return (
@@ -157,7 +204,9 @@ export default function CartPage() {
                   
                   {/* Content */}
                   <div className="min-w-0 flex-1">
-                    <h3 className="mb-1 break-words font-sans text-base font-semibold text-foreground">{item.name}</h3>
+                    <h3 className="mb-1 break-words font-sans text-base font-semibold text-foreground">
+                      {item.display_name || item.name}
+                    </h3>
                     {item.selected_size && (
                       <p className="font-sans text-sm text-muted-foreground">
                         Size: {item.selected_size.name}
@@ -225,10 +274,6 @@ export default function CartPage() {
                   <span className="text-muted-foreground">Subtotal</span>
                   <span className="text-foreground">{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between font-sans text-sm">
-                  <span className="text-muted-foreground">Tax ({Math.round(taxRate * 100)}%)</span>
-                  <span className="text-foreground">{restaurant?.currency || 'N$'}{tax.toFixed(2)}</span>
-                </div>
               </div>
               
               <div className="mb-6 border-t border-border pt-4">
@@ -256,17 +301,27 @@ export default function CartPage() {
               </div>
 
               {/* Checkout Button */}
-              <Link
-                href={`/menu/${restaurantId}/order-secure${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
-                className="block"
-              >
+              {isInTab ? (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
+                  onClick={handleAddToTab}
                 >
-                  Proceed to Checkout
+                  Add to Tab
                 </Button>
-              </Link>
+              ) : (
+                <Link
+                  href={`/menu/${restaurantId}/order-secure${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
+                  className="block"
+                >
+                  <Button
+                    className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                    size="lg"
+                  >
+                    Proceed to Checkout
+                  </Button>
+                </Link>
+              )}
             </div>
           </div>
         </div>

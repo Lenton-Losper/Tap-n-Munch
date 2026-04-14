@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { orderPath } from '@/lib/firebase/paths'
+import { orderPath, ordersPath, tabPath } from '@/lib/firebase/paths'
 import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
 import { queryPaymentOrder } from '@/payments/paycloud'
 
@@ -130,15 +130,47 @@ export async function POST(req: Request) {
       )
     }
 
-    const patch = {
+    const basePatch = {
       payment_status: 'paid' as const,
       paid_at: FieldValue.serverTimestamp(),
       payment_provider: 'paycloud',
       paycloud_transaction_id: String(raw.psn || raw.transaction_id || '') || null,
       updated_at: FieldValue.serverTimestamp(),
     }
-    for (const { orderId } of rows) {
+    for (const { orderId, data } of rows) {
+      const currentStatus = String(data.status || '').toLowerCase()
+      const patch =
+        currentStatus === 'new' || !currentStatus
+          ? {
+              ...basePatch,
+              status: 'accepted' as const,
+              accepted_at: FieldValue.serverTimestamp(),
+            }
+          : basePatch
       await fs.doc(orderPath(restaurantId, orderId)).update(patch)
+    }
+
+    const settlementTabId = rows
+      .map((r) => String(r.data.tab_settlement_for_tab_id || '').trim())
+      .find(Boolean)
+    if (settlementTabId) {
+      await fs.doc(tabPath(restaurantId, settlementTabId)).update({
+        status: 'settled',
+        settled_at: FieldValue.serverTimestamp(),
+        settlement_type: 'full',
+        updated_at: FieldValue.serverTimestamp(),
+      })
+      const tabOrdersSnapshot = await fs
+        .collection(ordersPath(restaurantId))
+        .where('tab_id', '==', settlementTabId)
+        .get()
+      for (const tabOrderDoc of tabOrdersSnapshot.docs) {
+        await tabOrderDoc.ref.update({
+          payment_status: 'paid',
+          paid_at: FieldValue.serverTimestamp(),
+          updated_at: FieldValue.serverTimestamp(),
+        })
+      }
     }
 
     return NextResponse.json({ ok: true, paid: true, source: 'query', merchantOrderNo }, { status: 200 })

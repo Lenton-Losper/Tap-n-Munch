@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
@@ -15,10 +15,31 @@ import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ShoppingCart, Search, ArrowLeft, UtensilsCrossed, Receipt } from 'lucide-react'
+import { ShoppingCart, Search, ArrowLeft, UtensilsCrossed, Receipt, CheckCircle2, Loader2 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { useTab } from '@/contexts/tab-context'
+
+type ItemVariant = {
+  size: string
+  label: string
+  price: number
+}
+
+type VariantGroup = {
+  name: string
+  required: boolean
+  type: 'text' | 'price'
+  options: Array<string | { label: string; price: number }>
+}
+
+type RawVariantGroup = {
+  name?: unknown
+  required?: unknown
+  type?: unknown
+  options?: unknown
+}
 
 export default function MenuBrowsePage() {
   const params = useParams()
@@ -30,6 +51,7 @@ export default function MenuBrowsePage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem } = useCart()
+  const { isInTab, tabTotal, tabMembers } = useTab()
   const [restaurant, setRestaurant] = useState<any>(null)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -37,6 +59,141 @@ export default function MenuBrowsePage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
+  const [addingItemId, setAddingItemId] = useState<string | null>(null)
+  const [toasts, setToasts] = useState<Array<{ id: number; name: string; leaving: boolean }>>([])
+  const [selectedVariantGroupsByItem, setSelectedVariantGroupsByItem] = useState<
+    Record<string, Record<string, string>>
+  >({})
+  const toastTimersRef = useRef<number[]>([])
+
+  useEffect(() => {
+    return () => {
+      toastTimersRef.current.forEach((timerId) => window.clearTimeout(timerId))
+      toastTimersRef.current = []
+    }
+  }, [])
+
+  const pushCartToast = (name: string) => {
+    const id = Date.now() + Math.floor(Math.random() * 1000)
+    const safeName = String(name || 'Item')
+    setToasts((prev) => [...prev, { id, name: safeName, leaving: false }])
+
+    const fadeTimer = window.setTimeout(() => {
+      setToasts((prev) => prev.map((toast) => (toast.id === id ? { ...toast, leaving: true } : toast)))
+    }, 1800)
+    const removeTimer = window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id))
+    }, 2000)
+    toastTimersRef.current.push(fadeTimer, removeTimer)
+  }
+
+  const getItemVariants = (item: MenuItem): ItemVariant[] =>
+    Array.isArray((item as MenuItem & { variants?: ItemVariant[] }).variants)
+      ? ((item as MenuItem & { variants?: ItemVariant[] }).variants || []).filter(
+          (variant) =>
+            variant &&
+            typeof variant.size === 'string' &&
+            typeof variant.label === 'string' &&
+            Number.isFinite(Number(variant.price))
+        )
+      : []
+
+  const normalizeVariantGroups = (groups: unknown): VariantGroup[] => {
+    if (!Array.isArray(groups)) return []
+    return groups
+      .map((group) => {
+        const raw = (group || {}) as RawVariantGroup
+        const groupName = String(raw.name || '').trim()
+        const groupType = raw.type === 'price' ? 'price' : raw.type === 'text' ? 'text' : null
+        const rawOptions = Array.isArray(raw.options) ? raw.options : []
+        if (!groupName || !groupType || rawOptions.length === 0) return null
+
+        const options = rawOptions
+          .map((opt) => {
+            if (typeof opt === 'string') return opt
+            if (!opt || typeof opt !== 'object') return null
+            const optionLabel = String((opt as { label?: unknown; name?: unknown }).label || (opt as { name?: unknown }).name || '').trim()
+            if (!optionLabel) return null
+            if (groupType === 'text') return optionLabel
+            const priceValue = Number((opt as { price?: unknown }).price)
+            if (!Number.isFinite(priceValue)) return null
+            return { label: optionLabel, price: priceValue }
+          })
+          .filter(Boolean) as Array<string | { label: string; price: number }>
+
+        if (options.length === 0) return null
+        return {
+          name: groupName,
+          required: Boolean(raw.required),
+          type: groupType,
+          options,
+        } as VariantGroup
+      })
+      .filter(Boolean) as VariantGroup[]
+  }
+
+  const getVariantGroups = (item: MenuItem): VariantGroup[] => {
+    const itemWithVariants = item as MenuItem & { variantGroups?: unknown; variant_groups?: unknown }
+    const groups = normalizeVariantGroups(itemWithVariants.variantGroups)
+    if (groups.length > 0) return groups
+    const snakeCaseGroups = normalizeVariantGroups(itemWithVariants.variant_groups)
+    if (snakeCaseGroups.length > 0) return snakeCaseGroups
+
+    const legacyVariants = getItemVariants(item)
+    if (legacyVariants.length > 0) {
+      return [
+        {
+          name: 'Size',
+          required: true,
+          type: 'price',
+          options: legacyVariants.map((v) => ({ label: v.label, price: Number(v.price) })),
+        },
+      ]
+    }
+    return []
+  }
+
+  const getDefaultGroupSelection = (item: MenuItem) => {
+    const result = {}
+    for (const group of getVariantGroups(item)) {
+      const first = group.options[0]
+      if (typeof first === 'string') {
+        result[group.name] = first
+      } else if (first && typeof first === 'object') {
+        result[group.name] = String(first.label || '')
+      }
+    }
+    return result
+  }
+
+  const getSelectedVariantLabel = (option: string | { label: string; price: number }) =>
+    typeof option === 'string' ? option : String(option.label || '')
+
+  const getResolvedVariantSelection = (item: MenuItem) => ({
+    ...getDefaultGroupSelection(item),
+    ...(selectedVariantGroupsByItem[item.id] || {}),
+  })
+
+  const getItemDisplayPrice = (item: MenuItem, selection: Record<string, string>) => {
+    const variantGroups = getVariantGroups(item)
+    for (const group of variantGroups) {
+      if (group.type !== 'price') continue
+      for (const option of group.options) {
+        if (typeof option === 'string') continue
+        if (String(option.label || '') === String(selection[group.name] || '')) {
+          return Number(option.price)
+        }
+      }
+    }
+    return item.base_price
+  }
+
+  const isRequiredVariantMissing = (item: MenuItem, selection: Record<string, string>) =>
+    getVariantGroups(item).some((group) => {
+      if (!group.required) return false
+      const selected = String(selection[group.name] || '').trim()
+      return !selected
+    })
 
   useEffect(() => {
     const loadData = async () => {
@@ -101,20 +258,49 @@ export default function MenuBrowsePage() {
     loadMenuItems()
   }, [restaurantId, selectedMenuCategory, searchQuery])
 
-  const handleAddToCart = (item: MenuItem) => {
-    if (!item.has_sizes && !item.has_addons) {
-      const cartItem = {
-        menu_item_id: item.id,
-        name: item.name,
-        quantity: 1,
-        base_price: item.base_price,
-        selected_size: null,
-        selected_addons: [],
-        special_instructions: '',
-        subtotal: item.base_price,
-        image_url: item.image_url,
+  useEffect(() => {
+    const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
+    for (const item of allItems) {
+      const name = String(item?.name || '')
+      if (name === 'Tea' || name === 'Tea (Rooibos / Five Roses / Green Tea)' || name === 'Americano') {
+        console.log('[browse][variantGroups-debug] item=', name, item)
       }
-      addItem(cartItem)
+    }
+  }, [groupedItems])
+
+  const handleAddToCart = async (item: MenuItem) => {
+    const hasInlineVariantGroups = getVariantGroups(item).length > 0
+    if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
+      setAddingItemId(item.id)
+      try {
+        const resolvedSelection = getResolvedVariantSelection(item)
+        const effectivePrice = getItemDisplayPrice(item, resolvedSelection)
+        const variantParts = Object.values(resolvedSelection).filter(Boolean)
+        const effectiveDisplayName =
+          variantParts.length > 0 ? `${item.name} - ${variantParts.join(' / ')}` : item.name
+        const selectedSizeName = resolvedSelection.Size || null
+
+        const cartItem = {
+          menu_item_id: item.id,
+          name: item.name,
+          display_name: effectiveDisplayName,
+          quantity: 1,
+          base_price: effectivePrice,
+          selected_size: selectedSizeName
+            ? { name: selectedSizeName, price_modifier: 0 }
+            : null,
+          selected_addons: [],
+          selected_variants: resolvedSelection,
+          special_instructions: '',
+          subtotal: effectivePrice,
+          image_url: item.image_url,
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        addItem(cartItem)
+        pushCartToast(effectiveDisplayName)
+      } finally {
+        setAddingItemId(null)
+      }
     } else {
       setSelectedItem(item)
     }
@@ -142,7 +328,7 @@ export default function MenuBrowsePage() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => router.push(`/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)}
+                onClick={() => router.replace(`/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)}
                 className="h-11 w-11"
               >
                 <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
@@ -206,7 +392,22 @@ export default function MenuBrowsePage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-4xl px-4 py-6">
+      {isInTab && (
+        <div className="border-b border-border bg-foreground text-background">
+          <Link href={`/menu/${restaurantId}/tab${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
+            <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-2 text-sm">
+              <span>Tab open</span>
+              <span>
+                {(restaurant?.currency || 'N$')}
+                {(Number(tabTotal) || 0).toFixed(2)} accumulated
+              </span>
+              <span>{tabMembers.length} people</span>
+            </div>
+          </Link>
+        </div>
+      )}
+
+      <div className="mx-auto max-w-4xl px-4 pt-6 pb-28 sm:pb-32">
         {/* Category Navigation - Horizontal Scroll */}
         {menuCategories.length > 0 && (
           <div className="flex gap-2 overflow-x-auto pb-4 mb-6 scrollbar-hide">
@@ -313,27 +514,91 @@ export default function MenuBrowsePage() {
                             {item.description}
                           </p>
                         )}
+                        {getVariantGroups(item).length > 0 && (
+                          <div className="mb-3 space-y-2">
+                            {getVariantGroups(item).map((group) => {
+                              const resolvedSelection = getResolvedVariantSelection(item)
+                              return (
+                                <div key={`${item.id}-${group.name}`}>
+                                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                    {group.name}
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {group.options.map((option, optionIndex) => {
+                                      const optionLabel = getSelectedVariantLabel(option)
+                                      const isSelected = resolvedSelection[group.name] === optionLabel
+                                      return (
+                                        <button
+                                          key={`${item.id}-${group.name}-${optionLabel}-${optionIndex}`}
+                                          type="button"
+                                          onClick={() =>
+                                            setSelectedVariantGroupsByItem((prev) => ({
+                                              ...prev,
+                                              [item.id]: {
+                                                ...getDefaultGroupSelection(item),
+                                                ...(prev[item.id] || {}),
+                                                [group.name]: optionLabel,
+                                              },
+                                            }))
+                                          }
+                                          className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                                            isSelected
+                                              ? 'border-foreground bg-foreground text-background'
+                                              : 'border-border bg-transparent text-foreground'
+                                          }`}
+                                        >
+                                          {group.type === 'price' && typeof option !== 'string'
+                                            ? `${optionLabel} (${restaurant?.currency || 'N$'}${Number(option.price).toFixed(0)})`
+                                            : optionLabel}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                         
                         {/* Price + Add Button */}
                         <div className="flex items-center justify-between border-t border-border pt-2">
                           <div>
+                            {(() => {
+                              const resolvedSelection = getResolvedVariantSelection(item)
+                              const displayPrice = getItemDisplayPrice(item, resolvedSelection)
+                              return (
                             <p className="text-lg font-sans font-bold text-foreground">
                               <span className="text-sm font-normal text-muted-foreground mr-0.5">
                                 {restaurant?.currency || 'N$'}
                               </span>
-                              {item.base_price.toFixed(2)}
+                              {displayPrice.toFixed(2)}
                             </p>
+                              )
+                            })()}
                             {item.status === 'out_of_stock' && (
                               <p className="text-xs font-sans text-destructive mt-0.5">Out of Stock</p>
                             )}
                           </div>
                           <Button
                             onClick={() => handleAddToCart(item)}
-                            disabled={item.status === 'out_of_stock'}
+                            disabled={
+                              item.status === 'out_of_stock' ||
+                              addingItemId === item.id ||
+                              isRequiredVariantMissing(item, getResolvedVariantSelection(item))
+                            }
                             size="sm"
                             className="h-11 bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90"
                           >
-                            {item.status === 'out_of_stock' ? 'Unavailable' : 'Add +'}
+                            {item.status === 'out_of_stock' ? (
+                              'Unavailable'
+                            ) : addingItemId === item.id ? (
+                              <span className="inline-flex items-center gap-2">
+                                <Loader2 className="h-4 w-4 animate-spin stroke-[1.5]" />
+                                Adding...
+                              </span>
+                            ) : (
+                              'Add +'
+                            )}
                           </Button>
                         </div>
                       </div>
@@ -378,10 +643,27 @@ export default function MenuBrowsePage() {
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
             addItem(cartItem)
+            pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)
           }}
         />
       )}
+
+      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4 sm:top-4">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`transition-all duration-300 ${
+              toast.leaving ? 'translate-y-[-8px] opacity-0' : 'translate-y-0 opacity-100'
+            }`}
+          >
+            <div className="inline-flex items-center gap-2 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background shadow-lg">
+              <CheckCircle2 className="h-4 w-4 text-green-400 stroke-[2]" />
+              <span>{toast.name} added to cart</span>
+            </div>
+          </div>
+        ))}
+      </div>
 
       {/* Floating Receipt Button */}
       {tableNumber > 0 && (
