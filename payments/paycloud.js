@@ -91,6 +91,16 @@ export function maskSecrets(data) {
     .replace(/("Authorization"\s*:\s*"Bearer\s+)[^"]+"/gi, '$1***"')
 }
 
+/**
+ * Generic signer for Cloud API payloads.
+ * Returns the original params plus RSA2 `sign` field.
+ */
+export function signRequest(params = {}) {
+  const payload = { ...params }
+  payload.sign = signPayload(payload)
+  return payload
+}
+
 let startupEnvLogged = false
 
 function maskId(value) {

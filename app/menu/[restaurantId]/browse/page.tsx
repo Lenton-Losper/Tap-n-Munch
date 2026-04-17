@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
@@ -47,11 +47,20 @@ export default function MenuBrowsePage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
+  const tabIdParam = searchParams.get('tabId')?.trim() || ''
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem } = useCart()
-  const { isInTab, tabTotal, tabMembers } = useTab()
+  const { isInTab, tabId, tabTotal, tabMembers } = useTab()
+
+  const browseQuery = useMemo(() => {
+    const q = new URLSearchParams()
+    if (tableNumber > 0) q.set('table', String(tableNumber))
+    if (tabIdParam || tabId) q.set('tabId', tabIdParam || tabId || '')
+    const s = q.toString()
+    return s ? `?${s}` : ''
+  }, [tableNumber, tabIdParam, tabId])
   const [restaurant, setRestaurant] = useState<any>(null)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -376,7 +385,7 @@ export default function MenuBrowsePage() {
                   </Button>
                 </Link>
               )}
-              <Link href={`/menu/${restaurantId}/cart${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
+              <Link href={`/menu/${restaurantId}/cart${browseQuery}`}>
                 <Button variant="outline" size="sm" className="relative h-11 border-border px-3 font-sans text-xs sm:text-sm">
                   <ShoppingCart className="w-4 h-4 mr-1.5 stroke-[1.5]" />
                   <span className="hidden sm:inline">Cart</span>
@@ -394,14 +403,11 @@ export default function MenuBrowsePage() {
 
       {isInTab && (
         <div className="border-b border-border bg-foreground text-background">
-          <Link href={`/menu/${restaurantId}/tab${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
-            <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-2 text-sm">
-              <span>Tab open</span>
-              <span>
-                {(restaurant?.currency || 'N$')}
-                {(Number(tabTotal) || 0).toFixed(2)} accumulated
-              </span>
-              <span>{tabMembers.length} people</span>
+          <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
+            <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
+              Tab open • {(restaurant?.currency || 'N$')}
+              {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
+              {tabMembers.length === 1 ? 'person' : 'people'}
             </div>
           </Link>
         </div>

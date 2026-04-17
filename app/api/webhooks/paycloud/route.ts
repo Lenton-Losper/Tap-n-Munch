@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { Timestamp } from 'firebase-admin/firestore'
 import { orderPath } from '@/lib/firebase/paths'
+import { applyTabSettlementSideEffects, buildWebhookPaidPatch } from '@/lib/firebase/apply-tab-settlement'
 import { enforceWebhookRateLimit } from '@/payments/webhook'
 import { verifyPayloadSignature } from '@/payments/signature'
-import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
+import { adminDb } from '@/lib/firebase/admin-firestore'
 import type { DocumentReference } from 'firebase-admin/firestore'
 
 const ADMIN_NOT_CONFIGURED =
@@ -94,6 +94,51 @@ async function resolveOrderRefs(
   return snap.exists ? [ref] : []
 }
 
+async function resolveOrderRefsForRestaurant(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  restaurantId: string,
+  merchantOrderNo: string
+): Promise<DocumentReference[]> {
+  const m = String(merchantOrderNo || '').trim()
+  if (!m || !restaurantId) return []
+
+  const directRef = fs.doc(`restaurants/${restaurantId}/orders/${m}`)
+  const directSnap = await directRef.get()
+  if (directSnap.exists) return [directRef]
+
+  const byMerchantOrderNo = await fs
+    .collection(`restaurants/${restaurantId}/orders`)
+    .where('paycloud_merchant_order_no', '==', m)
+    .limit(10)
+    .get()
+  if (!byMerchantOrderNo.empty) return byMerchantOrderNo.docs.map((d) => d.ref)
+  return []
+}
+
+function restaurantIdFromOrderRef(ref: DocumentReference | null | undefined): string {
+  const path = String(ref?.path || '')
+  const parts = path.split('/')
+  // restaurants/{restaurantId}/orders/{orderId}
+  return parts.length >= 2 && parts[0] === 'restaurants' ? String(parts[1] || '').trim() : ''
+}
+
+async function resolveRestaurantIdFromCredentials(
+  fs: NonNullable<ReturnType<typeof adminDb>>,
+  merchantNo: string,
+  storeNo: string
+): Promise<string> {
+  const merchant = String(merchantNo || '').trim()
+  const store = String(storeNo || '').trim()
+  if (!merchant || !store) return ''
+  const snapshot = await fs
+    .collection('restaurants')
+    .where('finatic_merchant_no', '==', merchant)
+    .where('finatic_store_no', '==', store)
+    .limit(1)
+    .get()
+  return snapshot.empty ? '' : snapshot.docs[0]!.id
+}
+
 export async function POST(req: Request) {
   const fs = adminDb()
   if (!fs) {
@@ -136,6 +181,8 @@ export async function POST(req: Request) {
   const merchant_order_no = String(
     payload.merchant_order_no ?? payload.out_trade_no ?? payload.order_id ?? ''
   ).trim()
+  const merchant_no = String(payload.merchant_no ?? '').trim()
+  const store_no = String(payload.store_no ?? '').trim()
   const trans_status = payload.trans_status ?? payload.trade_status ?? payload.status
   const order_amount = payload.order_amount ?? payload.amount ?? payload.paid_amount
   const trans_no =
@@ -159,27 +206,47 @@ export async function POST(req: Request) {
     return webhookAck()
   }
 
-  const refs = await resolveOrderRefs(fs, merchant_order_no)
+  const restaurantIdFromCredentials = await resolveRestaurantIdFromCredentials(fs, merchant_no, store_no)
+  const refs = restaurantIdFromCredentials
+    ? await resolveOrderRefsForRestaurant(fs, restaurantIdFromCredentials, merchant_order_no)
+    : await resolveOrderRefs(fs, merchant_order_no)
   if (refs.length === 0) {
     console.warn('[PayCloud webhook] No Firestore order for merchant_order_no', merchant_order_no)
     return webhookAck()
   }
 
-  const paidAt = Timestamp.fromDate(new Date())
   const transNoStr = trans_no != null ? String(trans_no) : null
 
-  await Promise.all(
-    refs.map((ref) =>
-      ref.update({
-        payment_status: 'paid',
-        payment_trans_no: transNoStr,
-        is_closed: false,
-        paid_at: paidAt,
-        payment_provider: 'paycloud',
-        updated_at: FieldValue.serverTimestamp(),
-      })
-    )
-  )
+  for (const ref of refs) {
+    const snap = await ref.get()
+    if (!snap.exists) continue
+    const data = snap.data() as Record<string, unknown>
+    const currentStatus = String(data.status || '')
+    const patch = buildWebhookPaidPatch(currentStatus, transNoStr)
+    await ref.update(patch)
+  }
+
+  const colonIdx = merchant_order_no.indexOf(':')
+  const restaurantIdFromMerchant =
+    colonIdx > 0 ? merchant_order_no.slice(0, colonIdx).trim() : ''
+  const restaurantIdForSideEffects =
+    restaurantIdFromCredentials || restaurantIdFromMerchant || restaurantIdFromOrderRef(refs[0])
+  if (restaurantIdForSideEffects && refs[0]) {
+    try {
+      const snap = await refs[0].get()
+      if (snap.exists) {
+        const kind = await applyTabSettlementSideEffects(
+          restaurantIdForSideEffects,
+          snap.data() as Record<string, unknown>
+        )
+        if (kind !== 'none') {
+          console.log('[PayCloud webhook] Tab settlement side-effect:', kind)
+        }
+      }
+    } catch (e) {
+      console.warn('[PayCloud webhook] Tab settlement side-effect failed', e)
+    }
+  }
 
   console.log('[PayCloud webhook] Marked paid', {
     merchant_order_no,

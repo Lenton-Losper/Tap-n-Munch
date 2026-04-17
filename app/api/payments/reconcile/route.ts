@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { orderPath, ordersPath, tabPath } from '@/lib/firebase/paths'
-import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
+import { orderPath } from '@/lib/firebase/paths'
+import { applyTabSettlementSideEffects, markPaidAndAcceptPatch } from '@/lib/firebase/apply-tab-settlement'
+import { adminDb } from '@/lib/firebase/admin-firestore'
 import { queryPaymentOrder } from '@/payments/paycloud'
 
 const ADMIN_NOT_CONFIGURED =
@@ -46,7 +47,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'restaurantId and orderIds are required' }, { status: 400 })
     }
 
+    console.log('[RECONCILE] start', {
+      restaurantId,
+      orderIds,
+    })
+
     const rows = await loadOrders(fs, restaurantId, orderIds)
+    for (const r of rows) {
+      console.log('[RECONCILE] loaded order', {
+        orderId: r.orderId,
+        status: r.data.status,
+        payment_status: r.data.payment_status,
+        payment_method: r.data.payment_method,
+        tab_id: r.data.tab_id ?? null,
+        tab_settlement_for_tab_id: r.data.tab_settlement_for_tab_id ?? null,
+        tab_settlement_member_session_id: r.data.tab_settlement_member_session_id ?? null,
+        member_session_id: r.data.member_session_id ?? null,
+      })
+    }
     if (rows.every((r) => r.data.payment_status === 'paid')) {
       return NextResponse.json({ ok: true, paid: true, source: 'firestore' }, { status: 200 })
     }
@@ -130,47 +148,25 @@ export async function POST(req: Request) {
       )
     }
 
-    const basePatch = {
-      payment_status: 'paid' as const,
-      paid_at: FieldValue.serverTimestamp(),
-      payment_provider: 'paycloud',
-      paycloud_transaction_id: String(raw.psn || raw.transaction_id || '') || null,
-      updated_at: FieldValue.serverTimestamp(),
-    }
+    const transId = String(raw.psn || raw.transaction_id || '') || null
     for (const { orderId, data } of rows) {
-      const currentStatus = String(data.status || '').toLowerCase()
-      const patch =
-        currentStatus === 'new' || !currentStatus
-          ? {
-              ...basePatch,
-              status: 'accepted' as const,
-              accepted_at: FieldValue.serverTimestamp(),
-            }
-          : basePatch
+      const currentStatusRaw = String(data.status || '')
+      const patch = {
+        ...markPaidAndAcceptPatch(currentStatusRaw),
+        paycloud_transaction_id: transId,
+      }
       await fs.doc(orderPath(restaurantId, orderId)).update(patch)
     }
 
-    const settlementTabId = rows
-      .map((r) => String(r.data.tab_settlement_for_tab_id || '').trim())
-      .find(Boolean)
-    if (settlementTabId) {
-      await fs.doc(tabPath(restaurantId, settlementTabId)).update({
-        status: 'settled',
-        settled_at: FieldValue.serverTimestamp(),
-        settlement_type: 'full',
-        updated_at: FieldValue.serverTimestamp(),
-      })
-      const tabOrdersSnapshot = await fs
-        .collection(ordersPath(restaurantId))
-        .where('tab_id', '==', settlementTabId)
-        .get()
-      for (const tabOrderDoc of tabOrdersSnapshot.docs) {
-        await tabOrderDoc.ref.update({
-          payment_status: 'paid',
-          paid_at: FieldValue.serverTimestamp(),
-          updated_at: FieldValue.serverTimestamp(),
-        })
-      }
+    const settlementRow = rows.find((r) => String(r.data.tab_settlement_for_tab_id || '').trim())
+    if (settlementRow) {
+      const kind = await applyTabSettlementSideEffects(restaurantId, settlementRow.data)
+      console.log('[RECONCILE] tab settlement side-effect:', kind)
+    } else {
+      console.log(
+        '[RECONCILE] standalone / no tab settlement row in batch (orders still patched above)',
+        orderIds
+      )
     }
 
     return NextResponse.json({ ok: true, paid: true, source: 'query', merchantOrderNo }, { status: 200 })

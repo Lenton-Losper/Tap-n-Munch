@@ -96,18 +96,25 @@ function getCanonicalEntries(requestObj) {
 
   const pairs = []
   const includedKeys = []
+  const excluded = []
   for (const key of keys) {
     const value = requestObj[key]
-    if (value === null || value === undefined) continue
+    if (value === null || value === undefined) {
+      excluded.push(`${key}:null_or_undefined`)
+      continue
+    }
     // Skip values that start with '@' (SDK treats them as special placeholders).
-    if (typeof value === 'string' && value.startsWith('@')) continue
+    if (typeof value === 'string' && value.startsWith('@')) {
+      excluded.push(`${key}:at_placeholder`)
+      continue
+    }
 
     const str = canonicalValueToString(value)
     pairs.push(`${key}=${str}`)
     includedKeys.push(key)
   }
 
-  return { pairs, includedKeys }
+  return { pairs, includedKeys, excluded }
 }
 
 function buildCanonicalString(requestObj) {
@@ -156,15 +163,30 @@ export function loadGatewayPublicKey() {
 
 export function signPayload(payload, privateKey = loadPrivateKey()) {
   applyPaycloudSigningStrictFields(payload)
-  const { pairs, includedKeys } = getCanonicalEntries(payload)
+  const { pairs, includedKeys, excluded } = getCanonicalEntries(payload)
   const content = pairs.join('&')
   const byteLength = Buffer.byteLength(content, 'utf8')
   const signingPublicKeyPrefix = getDerivedPublicKeyPrefixFromPrivateKey(privateKey)
   console.log('[PayCloud][SIGN] included_fields=', includedKeys.join(','))
+  console.log('[PayCloud][SIGN] excluded_fields=', excluded.join(','))
   console.log('[PayCloud][SIGN] signing_public_key_prefix20=', signingPublicKeyPrefix)
   console.log('[PayCloud][SIGN] canonical_string=', content)
   console.log('[PayCloud][SIGN] canonical_string_utf8_bytes=', byteLength)
   console.log('SIGN_STRING_BYTES:', Buffer.from(content, 'utf8').toString('hex'))
+  if (String(payload?.method || '').trim() === 'wisehub.cloud.pay.order') {
+    const terminalSignFields = [
+      'api_version',
+      'message_receiving_application',
+      'pay_scenario',
+      'terminal_sn',
+      'trans_type',
+    ]
+    const missingTerminalSignFields = terminalSignFields.filter((k) => !includedKeys.includes(k))
+    console.log(
+      '[PayCloud][SIGN] terminal_method_required_fields_check=',
+      missingTerminalSignFields.length === 0 ? 'ok' : `missing:${missingTerminalSignFields.join(',')}`
+    )
+  }
   if (!signPayload._encodingLogged) {
     signPayload._encodingLogged = true
     console.log(

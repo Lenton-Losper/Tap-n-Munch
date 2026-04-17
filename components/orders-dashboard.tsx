@@ -10,7 +10,7 @@ import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, B
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
-import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore'
+import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import {
   Dialog,
@@ -44,6 +44,9 @@ export function OrdersDashboard() {
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
+  const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
+  const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
+  const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -67,7 +70,18 @@ export function OrdersDashboard() {
   }
 
   const shouldDisplayOrder = (order: Order) => {
+    const isPaidCompleted =
+      String(order.status || '').toLowerCase() === 'completed' &&
+      String(order.payment_status || '').toLowerCase() === 'paid'
+    if (isPaidCompleted) return false
+
+    const isPaidSettlementOrder =
+      String((order as Order & { tab_settlement_for_tab_id?: string | null }).tab_settlement_for_tab_id || '').trim() !== '' &&
+      String(order.payment_status || '').toLowerCase() === 'paid'
+    if (isPaidSettlementOrder) return false
+
     if (order.payment_method === 'cash') return true
+    if (order.payment_method === 'card_terminal') return true
     if (order.payment_method === 'card') {
       if (order.payment_status === 'paid') return true
       return isRecentCardPendingOrder(order)
@@ -93,11 +107,49 @@ export function OrdersDashboard() {
 
     // Subscribe to real-time orders
     const unsubscribe = subscribeToOrders(restaurantId, activeTab, (newOrders) => {
+      newOrders.forEach((order) => {
+        const tabId = (order as Order & { tab_id?: string }).tab_id
+        if (order.payment_status === 'paid' && order.status === 'new') {
+          console.warn('[OrdersDashboard] PAID but workflow status still NEW (e.g. webhook missed accepted):', {
+            id: order.id,
+            order_number: order.order_number,
+            payment_method: order.payment_method,
+            tab_id: tabId ?? null,
+            has_tab: Boolean(tabId),
+          })
+        }
+        if (Number(order.order_number) === 64) {
+          console.log('[OrdersDashboard] trace order #64:', {
+            id: order.id,
+            order_number: order.order_number,
+            status: order.status,
+            payment_status: order.payment_status,
+            tab_id: tabId ?? null,
+            activeTab,
+            passes_shouldDisplay: shouldDisplayOrder(order),
+          })
+        }
+      })
+
       const visibleOrders = newOrders.filter((order) => {
-        if (!shouldDisplayOrder(order)) return false
+        if (!shouldDisplayOrder(order)) {
+          return false
+        }
         if (activeTab === 'new') {
           if (order.payment_method === 'cash') return true
-          return order.payment_method === 'card' && order.payment_status === 'pending' && isRecentCardPendingOrder(order)
+          if (order.payment_method === 'card_terminal' && order.payment_status === 'terminal_pending') return true
+          if (
+            order.payment_method === 'card' &&
+            order.payment_status === 'pending' &&
+            isRecentCardPendingOrder(order)
+          ) {
+            return true
+          }
+          // Standalone (or any) card charge that posted paid but never left NEW — show in New so staff can accept.
+          if (order.payment_method === 'card' && order.payment_status === 'paid' && order.status === 'new') {
+            return true
+          }
+          return false
         }
         return true
       })
@@ -208,6 +260,108 @@ export function OrdersDashboard() {
     }
   }
 
+  const handleSendToTerminal = async (order: Order) => {
+    if (!restaurantId) return
+    try {
+      setSendingToTerminalOrderId(order.id)
+      const response = await fetch('/api/payments/push-to-terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.id,
+          amount: Number(order.total) || 0,
+          tableNumber: order.table_number,
+          orderNumber: order.order_number,
+          restaurantId,
+        }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || 'Failed to send payment to terminal')
+      }
+      setTerminalPollingOrderIds((prev) => (prev.includes(order.id) ? prev : [...prev, order.id]))
+      toast({ title: 'Payment sent to terminal' })
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Please try again.'
+      toast({
+        title: 'Failed to send to terminal',
+        description: message,
+        variant: 'destructive',
+      })
+    } finally {
+      setSendingToTerminalOrderId(null)
+    }
+  }
+
+  const handleCancelTerminalPayment = async (order: Order) => {
+    if (!restaurantId) return
+    try {
+      setCancelingTerminalOrderId(order.id)
+      const response = await fetch('/api/payments/cancel-terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.id, restaurantId }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || 'Failed to cancel terminal payment')
+      }
+      setTerminalPollingOrderIds((prev) => prev.filter((id) => id !== order.id))
+      toast({
+        title: 'Terminal payment cancelled',
+        description: 'Order reverted to cash pending.',
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Cancel failed',
+        description: error?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCancelingTerminalOrderId(null)
+    }
+  }
+
+  useEffect(() => {
+    if (!db || !restaurantId || terminalPollingOrderIds.length === 0) return
+    const timer = setInterval(async () => {
+      const doneIds: string[] = []
+      for (const orderId of terminalPollingOrderIds) {
+        try {
+          const row = await getDoc(doc(db, `restaurants/${restaurantId}/orders/${orderId}`))
+          const data = row.exists() ? (row.data() as Record<string, any>) : undefined
+          const status = String(data?.payment_status || '').toLowerCase()
+          if (status === 'paid') {
+            doneIds.push(orderId)
+            toast({
+              title: 'Payment confirmed',
+              description: `Order #${data?.order_number || orderId.slice(-6)} was paid on terminal.`,
+            })
+          } else if (status !== 'terminal_pending') {
+            doneIds.push(orderId)
+          }
+        } catch (e) {
+          // keep polling on transient failures
+        }
+      }
+      if (doneIds.length > 0) {
+        setTerminalPollingOrderIds((prev) => prev.filter((id) => !doneIds.includes(id)))
+      }
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [db, restaurantId, terminalPollingOrderIds, toast])
+
+  useEffect(() => {
+    const terminalPendingIds = orders
+      .filter((o) => o.payment_status === 'terminal_pending')
+      .map((o) => o.id)
+    if (terminalPendingIds.length === 0) return
+    setTerminalPollingOrderIds((prev) => {
+      const next = new Set([...prev, ...terminalPendingIds])
+      return Array.from(next)
+    })
+  }, [orders])
+
   /**
    * STEP 4: Close Table functionality
    * 
@@ -248,7 +402,7 @@ export function OrdersDashboard() {
       // Table ID Lookup: Query tables collection where table_number == tableNum
       // This finds the document by the number field, then we use the document's actual ID
       const { getTableByNumber } = require('@/lib/firebase/tables')
-      const { tablePath, ordersPath, orderPath } = require('@/lib/firebase/paths')
+      const { tablePath, ordersPath, orderPath, tabsPath } = require('@/lib/firebase/paths')
       
       const table = await getTableByNumber(restaurantId, tableNum)
       
@@ -289,6 +443,19 @@ export function OrdersDashboard() {
 
       const ordersSnapshot = await getDocs(ordersQuery)
       console.log(`📦 [CLOSE TABLE] Found ${ordersSnapshot.docs.length} open orders for table ${tableNum}`)
+
+      // 3. Settle any open tabs for this table so stale tab sessions don't linger.
+      const tabsRef = collection(db, tabsPath(restaurantId))
+      const openTabsByString = await getDocs(
+        query(tabsRef, where('status', '==', 'open'), where('table_number', '==', String(tableNum)))
+      )
+      const openTabsByNumber = await getDocs(
+        query(tabsRef, where('status', '==', 'open'), where('table_number', '==', tableNum))
+      )
+      const openTabDocs = new Map<string, any>()
+      openTabsByString.docs.forEach((d) => openTabDocs.set(d.id, d))
+      openTabsByNumber.docs.forEach((d) => openTabDocs.set(d.id, d))
+      console.log(`🧾 [CLOSE TABLE] Found ${openTabDocs.size} open tab(s) for table ${tableNum}`)
       
       const orderUpdatePromises = ordersSnapshot.docs.map((orderDoc) =>
         updateDoc(doc(db, orderPath(restaurantId, orderDoc.id)), {
@@ -299,18 +466,27 @@ export function OrdersDashboard() {
           updated_at: serverTimestamp(),
         })
       )
+      const tabUpdatePromises = Array.from(openTabDocs.values()).map((tabDoc) =>
+        updateDoc(tabDoc.ref, {
+          status: 'settled',
+          settled_at: serverTimestamp(),
+          settlement_type: 'closed_by_staff',
+          updated_at: serverTimestamp(),
+        })
+      )
 
       // Execute all updates in parallel
-      await Promise.all([tableUpdatePromise, ...orderUpdatePromises])
+      await Promise.all([tableUpdatePromise, ...orderUpdatePromises, ...tabUpdatePromises])
 
       console.log(`✅ [CLOSE TABLE] Successfully closed table ${tableNum}:`, {
         tableId,
         ordersClosed: orderUpdatePromises.length,
+        tabsSettled: tabUpdatePromises.length,
       })
 
       toast({
         title: 'Table closed',
-        description: `Table ${tableNum} has been closed. ${orderUpdatePromises.length} order(s) marked as completed.`,
+        description: `Table ${tableNum} closed. ${orderUpdatePromises.length} order(s) completed and ${tabUpdatePromises.length} tab(s) settled.`,
       })
       
       setShowCloseTableDialog(false)
@@ -366,6 +542,14 @@ export function OrdersDashboard() {
         <Badge className="bg-green-500 text-white">
           <CheckCircle2 className="h-3 w-3 mr-1" />
           Paid
+        </Badge>
+      )
+    }
+    if (order.payment_status === 'terminal_pending') {
+      return (
+        <Badge className="bg-amber-500 text-white">
+          <Clock className="h-3 w-3 mr-1" />
+          Terminal Payment Pending
         </Badge>
       )
     }
@@ -645,11 +829,23 @@ export function OrdersDashboard() {
                   </div>
                 )}
 
-                {/* Payment Status Button */}
-                {normalizedOrder.payment_status === 'pending' && (
-                  <div className="pt-2">
+                {/* Send to terminal (card-present) */}
+                {(normalizedOrder.payment_status === 'pending' || normalizedOrder.payment_status === 'cash_pending') &&
+                  normalizedOrder.payment_method !== 'card_terminal' && (
+                  <div className="pt-2 space-y-2">
                     <Button
                       className="w-full bg-[#FF6B35] hover:bg-[#e55a28]"
+                      onClick={() => handleSendToTerminal(normalizedOrder)}
+                      disabled={sendingToTerminalOrderId === normalizedOrder.id}
+                    >
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      {sendingToTerminalOrderId === normalizedOrder.id
+                        ? 'Sending to terminal...'
+                        : 'Send to Terminal'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full"
                       onClick={() => {
                         setMarkingPaidOrderId(normalizedOrder.id)
                         setShowMarkPaidDialog(true)
@@ -658,6 +854,28 @@ export function OrdersDashboard() {
                     >
                       <DollarSign className="h-4 w-4 mr-2" />
                       {markingPaidOrderId === normalizedOrder.id ? 'Marking as Paid...' : 'Mark as Paid'}
+                    </Button>
+                  </div>
+                )}
+
+                {normalizedOrder.payment_status === 'terminal_pending' && (
+                  <div className="pt-2 space-y-2">
+                    <Button
+                      className="w-full bg-amber-600 hover:bg-amber-700"
+                      disabled
+                    >
+                      <Clock className="h-4 w-4 mr-2" />
+                      Waiting for payment...
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full border-red-300 text-red-600 hover:bg-red-50"
+                      onClick={() => handleCancelTerminalPayment(normalizedOrder)}
+                      disabled={cancelingTerminalOrderId === normalizedOrder.id}
+                    >
+                      {cancelingTerminalOrderId === normalizedOrder.id
+                        ? 'Canceling terminal payment...'
+                        : 'Cancel Terminal Payment'}
                     </Button>
                   </div>
                 )}

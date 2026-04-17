@@ -8,7 +8,7 @@ import { collection, query, where, onSnapshot, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo } from '@/lib/session'
 
@@ -46,6 +46,7 @@ type OrderRecord = {
   status?: string
   payment_status?: string
   payment_method?: string
+  tab_settlement_for_tab_id?: string | null
   paycloud_merchant_order_no?: string
   items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
 }
@@ -64,6 +65,33 @@ function shouldShowInReceipt(order: OrderRecord, nowMs: number): boolean {
   const placed = placedAtMillis(order)
   if (!placed) return false
   return placed >= nowMs - RECEIPT_LOOKBACK_MS
+}
+
+function isTabSettlementOrder(order: OrderRecord): boolean {
+  return Boolean(String(order.tab_settlement_for_tab_id || '').trim())
+}
+
+function isUnpaidNonSettlementOrder(order: OrderRecord): boolean {
+  return !isOrderPaid(order) && !isTabSettlementOrder(order)
+}
+
+function getReceiptStatusBadge(order: OrderRecord): { label: string; className: string } {
+  const payment = String(order.payment_status || '').toLowerCase()
+  const status = String(order.status || '').toLowerCase()
+
+  if (payment === 'paid') {
+    return { label: 'PAID', className: 'bg-green-100 text-green-800' }
+  }
+  if (payment === 'pending') {
+    return { label: 'PENDING', className: 'bg-yellow-100 text-yellow-800' }
+  }
+  if (status === 'accepted' || status === 'preparing') {
+    return { label: status.toUpperCase(), className: 'bg-orange-100 text-orange-800' }
+  }
+  if (status === 'new') {
+    return { label: 'NEW', className: 'bg-muted text-foreground' }
+  }
+  return { label: (order.status || 'unknown').toUpperCase(), className: 'bg-muted text-foreground' }
 }
 
 /** Firestore Timestamp, plain object, ISO string, or millis — never pass invalid values to `new Date` alone. */
@@ -179,24 +207,24 @@ export default function ReceiptPage() {
 
   const tableNum = tableNumber ? Number(tableNumber) : null
 
-  const total = useMemo(
-    () => (Array.isArray(orders) ? orders.reduce((sum, order) => sum + (order?.total || 0), 0) : 0),
+  // Keep summary and payment CTA totals identical.
+  const payableOrders = useMemo(
+    () => (Array.isArray(orders) ? orders.filter(isUnpaidNonSettlementOrder) : []),
     [orders]
   )
-  const unpaidOrders = useMemo(() => (Array.isArray(orders) ? orders.filter((o) => !isOrderPaid(o)) : []), [orders])
   const payableTotal = useMemo(
-    () => unpaidOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0),
-    [unpaidOrders]
+    () => payableOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0),
+    [payableOrders]
   )
   const allPaid = useMemo(
-    () => Array.isArray(orders) && orders.length > 0 && unpaidOrders.length === 0,
-    [orders, unpaidOrders]
+    () => Array.isArray(orders) && orders.length > 0 && payableOrders.length === 0,
+    [orders, payableOrders]
   )
 
   // Reconcile card payments (must run every render path — hooks before any return)
   useEffect(() => {
-    if (!restaurantId || unpaidOrders.length === 0) return
-    const hasCardPending = unpaidOrders.some((o) => o?.payment_method === 'card')
+    if (!restaurantId || payableOrders.length === 0) return
+    const hasCardPending = payableOrders.some((o) => o?.payment_method === 'card')
     if (!hasCardPending) return
 
     let cancelled = false
@@ -208,14 +236,14 @@ export default function ReceiptPage() {
       if (cancelled) return
       const elapsed = Date.now() - reconcileStartedAt
       if (elapsed > SECOND_WINDOW_MS) return
-      const cardOrderIds = unpaidOrders
+      const cardOrderIds = payableOrders
         .filter((o) => o?.payment_method === 'card')
         .map((o) => String(o.id))
         .filter(Boolean)
         .sort()
       if (!cardOrderIds.length) return
 
-      const merchantOrderNo = unpaidOrders
+      const merchantOrderNo = payableOrders
         .filter((o) => o?.payment_method === 'card')
         .map((o) => String(o.paycloud_merchant_order_no || '').trim())
         .find(Boolean)
@@ -242,7 +270,7 @@ export default function ReceiptPage() {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [restaurantId, unpaidOrders, reconcileStartedAt])
+  }, [restaurantId, payableOrders, reconcileStartedAt])
 
   useEffect(() => {
     if (allPaid && paymentSubmitting) {
@@ -257,7 +285,9 @@ export default function ReceiptPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-12 text-center">
-          <div className="text-6xl mb-6">📋</div>
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
+            <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
+          </div>
           <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Table Number Required</h1>
           <p className="text-muted-foreground font-sans mb-6">
             Please scan the QR code at your table to view your receipt.
@@ -303,7 +333,9 @@ export default function ReceiptPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-12 text-center">
-          <div className="text-6xl mb-6">📋</div>
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
+            <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
+          </div>
           <h1 className="text-2xl font-serif font-bold text-foreground mb-4">No Orders Yet</h1>
           <p className="text-muted-foreground font-sans mb-6">
             {tableNumber 
@@ -338,7 +370,7 @@ export default function ReceiptPage() {
         body: JSON.stringify({
           restaurantId,
           tableNumber: tableNum,
-          orderIds: unpaidOrders.map((o) => o.id),
+          orderIds: payableOrders.map((o) => o.id),
           amount: payableTotal,
         }),
       })
@@ -365,7 +397,7 @@ export default function ReceiptPage() {
           <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto stroke-[1.5]" aria-hidden />
           <h1 className="text-2xl font-serif font-bold text-foreground">Payment successful!</h1>
           <p className="text-muted-foreground font-sans">
-            Your order is being prepared.
+            Payment confirmed - Thank you!
           </p>
           {restaurantId && tableNumber && (
             <Link href={`/menu/${restaurantId}/browse?table=${tableNumber}`}>
@@ -412,7 +444,7 @@ export default function ReceiptPage() {
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
               <span className="text-lg font-semibold text-foreground">Total Amount</span>
               <span className="text-2xl font-bold text-foreground">
-                {restaurant?.currency || 'N$'}{total.toFixed(2)}
+                {restaurant?.currency || 'N$'}{payableTotal.toFixed(2)}
               </span>
             </div>
           </div>
@@ -443,9 +475,14 @@ export default function ReceiptPage() {
                     <p className="text-xl font-bold text-foreground font-sans">
                       {restaurant?.currency || 'N$'}{orderTotal.toFixed(2)}
                     </p>
-                    <span className="inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide bg-muted text-foreground mt-2">
-                      {order.status || 'unknown'}
-                    </span>
+                    {(() => {
+                      const badge = getReceiptStatusBadge(order)
+                      return (
+                        <span className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                      )
+                    })()}
                   </div>
                 </div>
 
@@ -472,7 +509,7 @@ export default function ReceiptPage() {
         </div>
 
         {/* Pay — only when there are unpaid orders */}
-        {unpaidOrders.length > 0 && (
+        {payableOrders.length > 0 && (
           <div className="mt-8 space-y-4">
             {paymentError && (
               <div className="space-y-2 bg-card border border-border p-4">

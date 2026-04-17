@@ -1,28 +1,27 @@
 'use client'
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import {
   addDoc,
   arrayUnion,
   collection,
   doc,
-  getDocs,
+  getDoc,
   onSnapshot,
-  query,
   serverTimestamp,
   updateDoc,
-  where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { tabPath, tabsPath } from '@/lib/firebase/paths'
 
 const TAB_ID_KEY = 'flashtap_tab_id'
-const TAB_SESSION_KEY = 'flashtap_tab_session_id'
+const TAB_SESSION_KEY = 'tab_session_id'
+const LEGACY_TAB_SESSION_KEY = 'flashtap_tab_session_id'
 
 export type TabMember = {
   session_id: string
-  joined_at: string
+  joined_at: string | { toMillis?: () => number }
   display_name?: string
 }
 
@@ -36,11 +35,10 @@ type TabContextType = {
   tableNumber: string | null
   setTabFromJoin: (nextTabId: string) => void
   clearTab: () => void
-  createOrJoinOpenTab: (params: {
+  createNewTab: (params: {
     restaurantId: string
     tableNumber: string
     tableId: string
-    displayName?: string
   }) => Promise<string>
   joinExistingTab: (params: { restaurantId: string; tabId: string; displayName?: string }) => Promise<void>
 }
@@ -49,9 +47,15 @@ const TabContext = createContext<TabContextType | undefined>(undefined)
 
 function ensureTabSessionId() {
   if (typeof window === 'undefined') return ''
-  const existing = sessionStorage.getItem(TAB_SESSION_KEY)
+  const existing = sessionStorage.getItem(TAB_SESSION_KEY)?.trim()
   if (existing) return existing
-  const generated = `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+  const legacy = sessionStorage.getItem(LEGACY_TAB_SESSION_KEY)?.trim()
+  if (legacy) {
+    sessionStorage.setItem(TAB_SESSION_KEY, legacy)
+    sessionStorage.removeItem(LEGACY_TAB_SESSION_KEY)
+    return legacy
+  }
+  const generated = `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
   sessionStorage.setItem(TAB_SESSION_KEY, generated)
   return generated
 }
@@ -72,13 +76,23 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
 
   const restaurantId = useMemo(() => getRestaurantIdFromPath(pathname || ''), [pathname])
   const tableNumber = searchParams?.get('table') || null
+  const tabIdFromUrl = searchParams?.get('tabId')?.trim() || null
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSessionId(ensureTabSessionId())
-    if (typeof window === 'undefined') return
-    const storedTabId = sessionStorage.getItem(TAB_ID_KEY)
-    if (storedTabId) setTabId(storedTabId)
   }, [])
+
+  // URL tabId wins when present; otherwise restore from sessionStorage.
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return
+    if (tabIdFromUrl) {
+      sessionStorage.setItem(TAB_ID_KEY, tabIdFromUrl)
+      setTabId(tabIdFromUrl)
+      return
+    }
+    const storedTabId = sessionStorage.getItem(TAB_ID_KEY)?.trim() || null
+    if (storedTabId) setTabId(storedTabId)
+  }, [tabIdFromUrl])
 
   useEffect(() => {
     if (!pathname?.startsWith('/menu/')) {
@@ -131,49 +145,47 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     displayName?: string
   }) => {
     if (!db) throw new Error('Firestore is not initialized')
+    const tabRef = doc(db, tabPath(rid, targetTabId))
+    const tabSnap = await getDoc(tabRef)
+    if (!tabSnap.exists()) throw new Error('Tab not found')
+
     const sid = sessionId || ensureTabSessionId()
+    const data = tabSnap.data() as Record<string, any>
+    const members = Array.isArray(data.members) ? (data.members as TabMember[]) : []
+    if (members.some((m) => String(m.session_id) === sid)) {
+      persistTabId(targetTabId)
+      return
+    }
+
+    const nextN = members.length + 1
     const member = {
       session_id: sid,
-      joined_at: new Date().toISOString(),
-      ...(displayName ? { display_name: displayName } : {}),
+      joined_at: new Date(),
+      display_name: displayName || `Person ${nextN}`,
     }
-    await updateDoc(doc(db, tabPath(rid, targetTabId)), {
+    await updateDoc(tabRef, {
       members: arrayUnion(member),
       updated_at: serverTimestamp(),
     })
     persistTabId(targetTabId)
   }
 
-  const createOrJoinOpenTab = async ({
+  const createNewTab = async ({
     restaurantId: rid,
     tableNumber: tableNum,
     tableId,
-    displayName,
   }: {
     restaurantId: string
     tableNumber: string
     tableId: string
-    displayName?: string
   }) => {
     if (!db) throw new Error('Firestore is not initialized')
     const tabsRef = collection(db, tabsPath(rid))
-    const openTabsQuery = query(
-      tabsRef,
-      where('status', '==', 'open'),
-      where('table_number', '==', String(tableNum))
-    )
-    const openTabsSnap = await getDocs(openTabsQuery)
-    if (!openTabsSnap.empty) {
-      const existingTabId = openTabsSnap.docs[0].id
-      await joinExistingTab({ restaurantId: rid, tabId: existingTabId, displayName })
-      return existingTabId
-    }
-
     const sid = sessionId || ensureTabSessionId()
     const member = {
       session_id: sid,
-      joined_at: new Date().toISOString(),
-      ...(displayName ? { display_name: displayName } : {}),
+      joined_at: new Date(),
+      display_name: 'Person 1',
     }
     const newTab = await addDoc(tabsRef, {
       table_number: String(tableNum),
@@ -204,7 +216,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     tableNumber,
     setTabFromJoin,
     clearTab,
-    createOrJoinOpenTab,
+    createNewTab,
     joinExistingTab,
   }
 
@@ -216,4 +228,3 @@ export function useTab() {
   if (!context) throw new Error('useTab must be used within a TabProvider')
   return context
 }
-

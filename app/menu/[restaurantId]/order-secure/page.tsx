@@ -139,6 +139,7 @@ export default function OrderSecurePage() {
       const checkoutUrl = data.checkoutUrl as string | undefined
       if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
       if (typeof window !== 'undefined') {
+        sessionStorage.setItem('last_order_id', orderId)
         sessionStorage.setItem('flashtap_return_order_id', orderId)
         if (tableNumber > 0) {
           sessionStorage.setItem('flashtap_return_table', String(tableNumber))

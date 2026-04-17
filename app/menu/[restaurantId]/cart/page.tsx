@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { useCart } from '@/contexts/cart-context'
@@ -24,17 +24,29 @@ export default function CartPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
+  const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
   const { toast } = useToast()
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
   const { isInTab, tabId, sessionId } = useTab()
+  const effectiveTabId = tabIdFromUrl || tabId || ''
+  const inTabFlow = Boolean(isInTab || effectiveTabId)
   const [restaurant, setRestaurant] = useState<any>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingItem, setEditingItem] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [addingToTab, setAddingToTab] = useState(false)
+
+  const menuQuery = useMemo(() => {
+    const q = new URLSearchParams()
+    if (tableNumber > 0) q.set('table', String(tableNumber))
+    if (effectiveTabId) q.set('tabId', effectiveTabId)
+    const s = q.toString()
+    return s ? `?${s}` : ''
+  }, [tableNumber, effectiveTabId])
 
   useEffect(() => {
     const loadRestaurant = async () => {
@@ -78,13 +90,14 @@ export default function CartPage() {
   const total = subtotal
 
   const handleAddToTab = async () => {
-    if (!isInTab || !tabId) return
+    if (!inTabFlow || !effectiveTabId) return
     try {
+      setAddingToTab(true)
       const payload = {
         restaurantId: String(restaurantId),
         tableNumber: Number(tableNumber) || 0,
         session_id: String(sessionId || ''),
-        tab_id: String(tabId),
+        tab_id: String(effectiveTabId),
         member_session_id: String(sessionId || ''),
         items: items.map((item) => ({
           menuItemId: item.menu_item_id,
@@ -110,15 +123,23 @@ export default function CartPage() {
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
+      if (typeof window !== 'undefined' && data?.orderId) {
+        sessionStorage.setItem('last_order_id', String(data.orderId))
+      }
       clearCart()
-      toast({ title: 'Added to tab!', description: 'Your items were added to the shared tab.' })
-      router.replace(`/menu/${restaurantId}/browse${tableNumber > 0 ? `?table=${tableNumber}` : ''}`)
+      toast({
+        title: 'Added to tab!',
+        description: 'Keep ordering or settle when ready.',
+      })
+      router.replace(`/menu/${restaurantId}/browse${menuQuery}`)
     } catch (err: any) {
       toast({
         title: 'Could not add to tab',
         description: err?.message || 'Please try again.',
         variant: 'destructive',
       })
+    } finally {
+      setAddingToTab(false)
     }
   }
 
@@ -148,7 +169,7 @@ export default function CartPage() {
             <ShoppingCart className="w-16 h-16 text-muted-foreground mx-auto mb-6" />
             <h2 className="text-xl font-serif font-bold text-foreground mb-2">Your cart is empty</h2>
             <p className="text-muted-foreground font-sans mb-8">Add some items to get started!</p>
-            <Link href={`/menu/${restaurantId}/browse${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
+            <Link href={`/menu/${restaurantId}/browse${menuQuery}`}>
               <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8">
                 Browse Menu
               </Button>
@@ -301,13 +322,14 @@ export default function CartPage() {
               </div>
 
               {/* Checkout Button */}
-              {isInTab ? (
+              {inTabFlow ? (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
                   onClick={handleAddToTab}
+                  disabled={addingToTab}
                 >
-                  Add to Tab
+                  {addingToTab ? 'Adding…' : 'Add to Tab'}
                 </Button>
               ) : (
                 <Link

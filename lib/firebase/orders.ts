@@ -20,6 +20,7 @@ export interface Order {
   restaurant_id: string
   table_id: string
   table_number: number
+  session_id?: string | null
   customer: {
     name: string
     phone: string
@@ -32,8 +33,8 @@ export interface Order {
   discount: number
   tip: number
   total: number
-  payment_method: 'cash' | 'card' | 'mobile_money'
-  payment_status: 'pending' | 'paid' | 'failed'
+  payment_method: 'cash' | 'card' | 'mobile_money' | 'card_terminal'
+  payment_status: 'pending' | 'cash_pending' | 'terminal_pending' | 'paid' | 'failed'
   paid_at?: any
   status: 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
   placed_at: any

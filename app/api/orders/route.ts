@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { prepareForFirestore } from '@/lib/firebase/firestore-guards'
 import { orderPath, ordersPath, tabPath } from '@/lib/firebase/paths'
 import { createPaymentRequest, maskSecrets } from '@/payments/paycloud'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
 
 const ADMIN_NOT_CONFIGURED =
@@ -35,6 +36,17 @@ function logPayCloudInitFailure(ctx: { docRefId: string; merchantOrderNo: string
     rawTextLength: e?.rawText != null ? e.rawText.length : null,
     rawTextFull: e?.rawText ?? null,
   })
+}
+
+function buildMerchantOrderNo(restaurantId: string, orderDocId: string): string {
+  const rest = String(restaurantId || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8)
+  const order = String(orderDocId || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+  // Finatic constraint: <= 32 chars and alphanumeric only.
+  return `FT${rest}${order}`.slice(0, 32)
+}
+
+function settlementMemberKey(data: Record<string, unknown>): string {
+  return String(data.tab_settlement_member_session_id || '').trim()
 }
 
 /**
@@ -99,30 +111,38 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Invalid order total' }, { status: 400 })
       }
 
-      const merchantOrderNo = `${restaurantId}:${docRefId}`
+      const merchantOrderNo = buildMerchantOrderNo(restaurantId, docRefId)
+      const finatic = await getRestaurantFinaticCredentials(fs, restaurantId)
 
       const patchPayment = async (data: Record<string, unknown>) => {
         await fs.doc(orderPath(restaurantId, docRefId)).update(data)
       }
 
       try {
+        console.log('[PayCloud] Sending merchant_order_no', {
+          merchant_order_no: merchantOrderNo,
+          length: merchantOrderNo.length,
+          orderId: docRefId,
+          flow: 'resume',
+        })
         const payment = await createPaymentRequest({
           amount: total,
           orderId: merchantOrderNo,
-          merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
-          storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
+          merchantNo: finatic.merchantNo || body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
+          storeNo: finatic.storeNo || body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
         })
 
         await patchPayment({
           payment_reference: merchantOrderNo,
-          payment_checkout_url: payment.checkoutUrl,
+          paycloud_merchant_order_no: merchantOrderNo,
+          payment_checkout_url: payment?.checkoutUrl || null,
           payment_status: 'pending',
           payment_pending_since: FieldValue.serverTimestamp(),
           payment_init_error: FieldValue.delete(),
         })
 
-        return NextResponse.json({ orderId: docRefId, payment, checkoutUrl: payment.checkoutUrl }, { status: 201 })
+        return NextResponse.json({ orderId: docRefId, payment, checkoutUrl: payment?.checkoutUrl || null }, { status: 201 })
       } catch (paymentError: unknown) {
         logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
         const msg =
@@ -163,6 +183,9 @@ export async function POST(req: Request) {
     const tabSettlementForTabId = body.tab_settlement_for_tab_id
       ? String(body.tab_settlement_for_tab_id).trim()
       : null
+    const tabSettlementMemberSessionId = body.tab_settlement_member_session_id
+      ? String(body.tab_settlement_member_session_id).trim()
+      : null
 
     if (!body.tableNumber || tableNumber <= 0) {
       console.error('🚨 ORDER REJECTED: tableNumber is required and must be > 0')
@@ -191,18 +214,58 @@ export async function POST(req: Request) {
     }
 
     const orderNumber = await getNextOrderNumberAdmin(restaurantId, fs)
+    const resolvedPaymentMethod =
+      body.paymentMethod === 'card' ? 'card' : body.paymentMethod === 'mobile_money' ? 'mobile_money' : 'cash'
+    const initialPaymentStatus = resolvedPaymentMethod === 'cash' ? 'cash_pending' : 'pending'
+
+    if (tabSettlementForTabId && resolvedPaymentMethod === 'card') {
+      const pendingSettlementRows = await fs
+        .collection(ordersPath(restaurantId))
+        .where('tab_settlement_for_tab_id', '==', tabSettlementForTabId)
+        .where('payment_status', '==', 'pending')
+        .limit(10)
+        .get()
+
+      const desiredMemberKey = tabSettlementMemberSessionId || ''
+      const existingPending = pendingSettlementRows.docs.find((row) => {
+        const data = row.data() as Record<string, unknown>
+        const checkoutUrl = String(data.payment_checkout_url || '').trim()
+        if (!checkoutUrl) return false
+        return settlementMemberKey(data) === desiredMemberKey
+      })
+
+      if (existingPending) {
+        const data = existingPending.data() as Record<string, unknown>
+        const checkoutUrl = String(data.payment_checkout_url || '').trim()
+        console.log('[ORDER] Reusing pending settlement order', {
+          tab_id: tabSettlementForTabId,
+          settlement_order_id: existingPending.id,
+          member_session_id: desiredMemberKey || null,
+        })
+        return NextResponse.json(
+          {
+            orderId: existingPending.id,
+            payment: { checkoutUrl },
+            checkoutUrl,
+            reusedSettlement: true,
+          },
+          { status: 200 }
+        )
+      }
+    }
 
     const orderPayloadBase = {
       table_id: `table_${tableNumber}`,
       table_number: Number(tableNumber),
       session_id: sessionId || null,
       status: 'new' as const,
-      payment_status: 'pending' as const,
+      payment_status: initialPaymentStatus as 'pending' | 'cash_pending',
       table_closed: false,
       is_closed: false,
       tab_id: tabId || null,
       member_session_id: memberSessionId || null,
       tab_settlement_for_tab_id: tabSettlementForTabId || null,
+      tab_settlement_member_session_id: tabSettlementMemberSessionId || null,
       items: (body.items || []).map((item: any) => ({
         menu_item_id: String(item.menuItemId || item.menu_item_id || ''),
         name: String(item.name || ''),
@@ -228,7 +291,7 @@ export async function POST(req: Request) {
       })),
       subtotal: Number(body.subtotal) || 0,
       total: Number(body.total),
-      payment_method: (body.paymentMethod === 'card' ? 'card' : 'cash') as 'cash' | 'card' | 'mobile_money',
+      payment_method: resolvedPaymentMethod as 'cash' | 'card' | 'mobile_money',
       order_instructions:
         body.orderInstructions && String(body.orderInstructions).trim()
           ? String(body.orderInstructions).trim()
@@ -262,20 +325,28 @@ export async function POST(req: Request) {
     }
 
     let payment: any = null
-    if (body.paymentMethod === 'card') {
-      const merchantOrderNo = `${restaurantId}:${docRefId}`
+    if (resolvedPaymentMethod === 'card') {
+      const merchantOrderNo = buildMerchantOrderNo(restaurantId, docRefId)
+      const finatic = await getRestaurantFinaticCredentials(fs, restaurantId)
       try {
+        console.log('[PayCloud] Sending merchant_order_no', {
+          merchant_order_no: merchantOrderNo,
+          length: merchantOrderNo.length,
+          orderId: docRefId,
+          flow: 'create',
+        })
         payment = await createPaymentRequest({
           amount: orderPayloadBase.total,
           orderId: merchantOrderNo,
-          merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
-          storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
+          merchantNo: finatic.merchantNo || body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
+          storeNo: finatic.storeNo || body.storeNo || process.env.PAYCLOUD_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
         })
 
         await patchPayment({
           payment_reference: merchantOrderNo,
-          payment_checkout_url: payment.checkoutUrl,
+          paycloud_merchant_order_no: merchantOrderNo,
+          payment_checkout_url: payment?.checkoutUrl || null,
           payment_status: 'pending',
           payment_pending_since: FieldValue.serverTimestamp(),
         })
@@ -299,7 +370,8 @@ export async function POST(req: Request) {
       }
     }
 
-    if (tabId) {
+    // Do not bump tab total for "pay full tab" settlement orders (they pay the balance, not add to it).
+    if (tabId && !tabSettlementForTabId) {
       await fs.doc(tabPath(restaurantId, tabId)).update({
         total: FieldValue.increment(Number(orderPayloadBase.total) || 0),
         updated_at: FieldValue.serverTimestamp(),

@@ -31,6 +31,8 @@ export interface Restaurant {
   service_fee: number
   subscription_tier: 'starter' | 'professional' | 'enterprise'
   subscription_status: 'active' | 'inactive' | 'trial'
+  finatic_merchant_no?: string
+  finatic_store_no?: string
   created_at: string
   updated_at: string
 }

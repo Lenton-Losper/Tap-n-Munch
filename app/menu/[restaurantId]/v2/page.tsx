@@ -37,7 +37,7 @@ function MenuLandingPageV2Content() {
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
   const { clearCart } = useCart()
-  const { createOrJoinOpenTab, joinExistingTab, clearTab } = useTab()
+  const { createNewTab, joinExistingTab, clearTab } = useTab()
 
   // Load restaurant data
   useEffect(() => {
@@ -163,18 +163,33 @@ function MenuLandingPageV2Content() {
       }
       try {
         setTabLoading(true)
+        console.log('[TAB CHECK] Querying for open tab at table:', tableNum)
+        console.log('[TAB CHECK] restaurantId:', restaurantId)
         const tabsRef = collection(db, tabsPath(restaurantId))
-        const openTabQuery = query(
-          tabsRef,
-          where('status', '==', 'open'),
-          where('table_number', '==', String(tableNum))
-        )
-        const snapshot = await getDocs(openTabQuery)
-        if (snapshot.empty) {
+        const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000)
+        const openTabsQuery = query(tabsRef, where('status', '==', 'open'))
+        const snapshot = await getDocs(openTabsQuery)
+        const candidates = snapshot.docs.filter((d) => {
+          const data = d.data() as Record<string, any>
+          const tableVal = data.table_number
+          const createdAtRaw = data.created_at
+          const createdAt =
+            createdAtRaw && typeof createdAtRaw.toDate === 'function'
+              ? createdAtRaw.toDate()
+              : createdAtRaw instanceof Date
+              ? createdAtRaw
+              : null
+          const tableMatches = String(tableVal) === String(tableNum)
+          const within12Hours = createdAt ? createdAt >= cutoff : false
+          return tableMatches && within12Hours
+        })
+        console.log('[TAB CHECK] Result:', candidates.length, 'tabs found')
+
+        if (candidates.length === 0) {
           setOpenTab(null)
           return
         }
-        const tabDoc = snapshot.docs[0]
+        const tabDoc = candidates[0]
         const tabData = tabDoc.data() as Record<string, any>
         setOpenTab({
           id: tabDoc.id,
@@ -189,28 +204,39 @@ function MenuLandingPageV2Content() {
       }
     }
     loadOpenTab()
+    const onFocus = () => loadOpenTab()
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onFocus)
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus)
+      }
+    }
   }, [restaurantId, tableNum])
 
-  const browseHref = `/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`
+  const browseBase = `/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`
+  const browseWithTab = (tid: string) =>
+    `${browseBase}${browseBase.includes('?') ? '&' : '?'}tabId=${encodeURIComponent(tid)}`
 
   const handleOrderSeparately = () => {
     clearTab()
-    router.push(browseHref)
+    router.push(browseBase)
   }
 
   const handleCreateTab = async () => {
     if (!restaurantId || !table || tableNum <= 0) {
-      router.push(browseHref)
+      router.push(browseBase)
       return
     }
     try {
       setTabActionLoading('create')
-      await createOrJoinOpenTab({
+      const tid = await createNewTab({
         restaurantId,
         tableNumber: String(tableNum),
         tableId: String(table.id || `table_${tableNum}`),
       })
-      router.push(browseHref)
+      router.push(browseWithTab(tid))
     } catch (err) {
       console.error('Failed to create tab:', err)
     } finally {
@@ -220,13 +246,13 @@ function MenuLandingPageV2Content() {
 
   const handleJoinTab = async () => {
     if (!restaurantId || !openTab?.id) {
-      router.push(browseHref)
+      router.push(browseBase)
       return
     }
     try {
       setTabActionLoading('join')
       await joinExistingTab({ restaurantId, tabId: openTab.id })
-      router.push(browseHref)
+      router.push(browseWithTab(openTab.id))
     } catch (err) {
       console.error('Failed to join tab:', err)
     } finally {
@@ -392,7 +418,9 @@ function MenuLandingPageV2Content() {
                     disabled={tabActionLoading !== null}
                     className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
                   >
-                    {tabActionLoading === 'join' ? 'Joining tab...' : 'Join Tab'}
+                    {tabActionLoading === 'join'
+                      ? 'Joining tab...'
+                      : `Join Tab • ${restaurant?.currency || 'N$'}${(openTab.total || 0).toFixed(2)}`}
                     <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
                   </Button>
                 )}
@@ -406,7 +434,7 @@ function MenuLandingPageV2Content() {
                 </Button>
               </>
             ) : (
-              <Link href={browseHref} className="block">
+              <Link href={browseBase} className="block">
                 <Button
                   size="lg"
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"

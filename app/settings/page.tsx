@@ -36,6 +36,8 @@ function SettingsContent() {
   const [savingPayment, setSavingPayment] = useState(false)
   const [cashEnabled, setCashEnabled] = useState(true)
   const [cardEnabled, setCardEnabled] = useState(false)
+  const [finaticMerchantNo, setFinaticMerchantNo] = useState('')
+  const [finaticStoreNo, setFinaticStoreNo] = useState('')
   
   // Track if details have changed
   const [detailsChanged, setDetailsChanged] = useState(false)
@@ -63,6 +65,8 @@ function SettingsContent() {
           setLogoUrl(data.logo_url || null)
           setCashEnabled(data.payment_methods?.includes('cash') ?? true)
           setCardEnabled(data.payment_methods?.includes('card') ?? false)
+          setFinaticMerchantNo(String((data as any).finatic_merchant_no || ''))
+          setFinaticStoreNo(String((data as any).finatic_store_no || ''))
           setDetailsChanged(false)
         }
       } catch (err) {
@@ -90,10 +94,12 @@ function SettingsContent() {
       name !== (restaurant.name || '') ||
       phone !== (restaurant.phone || '') ||
       logoUrl !== (restaurant.logo_url || null) ||
+      finaticMerchantNo !== String((restaurant as any).finatic_merchant_no || '') ||
+      finaticStoreNo !== String((restaurant as any).finatic_store_no || '') ||
       logoPreview !== null
     
     setDetailsChanged(hasChanged)
-  }, [name, phone, logoUrl, logoPreview, restaurant])
+  }, [name, phone, logoUrl, finaticMerchantNo, finaticStoreNo, logoPreview, restaurant])
 
   const handleLogoUpload = async (file: File) => {
     if (!restaurantId) return
@@ -188,11 +194,22 @@ function SettingsContent() {
         name: name.trim(),
         phone: phone.trim(),
         logo_url: logoUrl,
+        finatic_merchant_no: finaticMerchantNo.trim() || null,
+        finatic_store_no: finaticStoreNo.trim() || null,
       })
 
       // Update local state
       setRestaurant((prev) => 
-        prev ? { ...prev, name: name.trim(), phone: phone.trim(), logo_url: logoUrl } : null
+        prev
+          ? {
+              ...prev,
+              name: name.trim(),
+              phone: phone.trim(),
+              logo_url: logoUrl,
+              finatic_merchant_no: finaticMerchantNo.trim() || '',
+              finatic_store_no: finaticStoreNo.trim() || '',
+            }
+          : null
       )
       setDetailsChanged(false)
 
@@ -382,6 +399,28 @@ function SettingsContent() {
                 </p>
               </div>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="finatic_merchant_no">Finatic Merchant Number</Label>
+            <Input
+              id="finatic_merchant_no"
+              value={finaticMerchantNo}
+              onChange={(e) => setFinaticMerchantNo(e.target.value)}
+              placeholder="e.g. 342600032359"
+              disabled={savingDetails}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="finatic_store_no">Finatic Store Number</Label>
+            <Input
+              id="finatic_store_no"
+              value={finaticStoreNo}
+              onChange={(e) => setFinaticStoreNo(e.target.value)}
+              placeholder="e.g. 4426012791"
+              disabled={savingDetails}
+            />
           </div>
 
           {/* Save Button */}
