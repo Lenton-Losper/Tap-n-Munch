@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { cn } from '@/lib/utils'
-import { getSessionInfo } from '@/lib/session'
+import { getSessionInfo, getCurrentSession } from '@/lib/session'
+import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
 import { doc, onSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase/config'
 import { orderPath } from '@/lib/firebase/paths'
@@ -117,11 +118,20 @@ export function ActiveOrderBanner() {
 
   const orderNumber = currentOrder.order_number || currentOrder.id.slice(-6).toUpperCase()
 
-  const getStatusInfo = (status: string, paymentStatus: string) => {
+  const payChannel = String(currentOrder.payment_channel || '').toLowerCase()
+
+  const getStatusInfo = (status: string, paymentStatus: string, channel: string) => {
     const s = String(status || '').toLowerCase()
     const p = String(paymentStatus || '').toLowerCase()
+    const ch = String(channel || '').toLowerCase()
+    if (p === 'pending' && s === 'new' && ch === 'terminal') {
+      return { text: 'Order received — tap below when ready for card machine', pulse: true, tone: 'neutral' as const }
+    }
     if (p === 'pending' && s === 'new') {
       return { text: 'Order received - Awaiting payment', pulse: true, tone: 'neutral' as const }
+    }
+    if (p === 'pending' && s === 'ready_for_terminal') {
+      return { text: 'Waiter notified — card machine on the way', pulse: true, tone: 'preparing' as const }
     }
     if (p === 'cash_pending' && s === 'new') {
       return { text: 'Order received - Pay at counter', pulse: true, tone: 'neutral' as const }
@@ -141,7 +151,13 @@ export function ActiveOrderBanner() {
     return { text: 'Order in progress', pulse: false, tone: 'neutral' as const }
   }
 
-  const statusInfo = getStatusInfo(currentOrder.status, currentOrder.payment_status)
+  const statusInfo = getStatusInfo(currentOrder.status, currentOrder.payment_status, payChannel)
+
+  const showReadyToPayTerminal =
+    payChannel === 'terminal' &&
+    String(currentOrder.payment_status || '').toLowerCase() === 'pending' &&
+    String(currentOrder.status || '').toLowerCase() !== 'ready_for_terminal' &&
+    String(currentOrder.status || '').toLowerCase() !== 'completed'
 
   const handleClick = () => {
     // Cross-Device Receipt: Route to table-based receipt page instead of order-specific confirmation
@@ -166,15 +182,25 @@ export function ActiveOrderBanner() {
 
   return (
     <div
-      onClick={handleClick}
       className={cn(
-        'sticky top-0 z-[60] cursor-pointer transition-all border-b',
+        'sticky top-0 z-[60] transition-all border-b',
         toneClass,
         statusInfo.pulse && 'animate-pulse'
       )}
     >
-      <div className="container mx-auto px-4 py-3">
-        <div className="flex items-center justify-between">
+      <div className="container mx-auto px-4 py-3 space-y-3">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={handleClick}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              handleClick()
+            }
+          }}
+          className="flex cursor-pointer items-center justify-between"
+        >
           <div className="flex items-center gap-3">
             <div>
               <p className="font-semibold text-sm">
@@ -190,6 +216,16 @@ export function ActiveOrderBanner() {
             <span className="text-xs opacity-90">View Receipt →</span>
           </div>
         </div>
+        {showReadyToPayTerminal && restaurantId && (
+          <div onClick={(e) => e.stopPropagation()} className="pb-1">
+            <ReadyToPayTerminalButton
+              restaurantId={restaurantId}
+              orderId={String(currentOrder.id)}
+              sessionId={getCurrentSession()}
+              className="[&_button]:bg-white [&_button]:text-black [&_button]:hover:bg-white/90"
+            />
+          </div>
+        )}
       </div>
     </div>
   )

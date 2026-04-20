@@ -9,6 +9,8 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, Clock, ChefHat, Package, XCircle, Banknote, CreditCard } from 'lucide-react'
 import Link from 'next/link'
+import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import { getCurrentSession } from '@/lib/session'
 
 export default function OrderConfirmationPage() {
   const params = useParams()
@@ -17,6 +19,7 @@ export default function OrderConfirmationPage() {
   const restaurantId = params.restaurantId as string
   const orderId = params.orderId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
+  const terminalNotice = searchParams.get('notice') === 'terminal'
   
   const [order, setOrder] = useState<Order | null>(null)
   const [restaurant, setRestaurant] = useState<any>(null)
@@ -27,7 +30,7 @@ export default function OrderConfirmationPage() {
       try {
         setLoading(true)
         const [orderData, restaurantData] = await Promise.all([
-          getOrder(orderId),
+          getOrder(restaurantId, orderId),
           getRestaurant(restaurantId),
         ])
         
@@ -53,14 +56,14 @@ export default function OrderConfirmationPage() {
   useEffect(() => {
     if (!orderId) return
 
-    const unsubscribe = subscribeToOrder(orderId, (updatedOrder) => {
+    const unsubscribe = subscribeToOrder(restaurantId, orderId, (updatedOrder) => {
       if (updatedOrder) {
         setOrder(updatedOrder)
       }
     })
 
     return () => unsubscribe()
-  }, [orderId])
+  }, [orderId, restaurantId])
 
   const getStatusInfo = (status: Order['status']) => {
     switch (status) {
@@ -87,6 +90,12 @@ export default function OrderConfirmationPage() {
           icon: Package,
           text: 'Ready!',
           description: 'Your order is ready for pickup',
+        }
+      case 'ready_for_terminal':
+        return {
+          icon: CreditCard,
+          text: 'Ready for card machine',
+          description: 'Staff have been notified to bring the terminal to your table',
         }
       case 'completed':
         return {
@@ -168,6 +177,16 @@ export default function OrderConfirmationPage() {
 
         <p className="text-muted-foreground font-sans mb-6">{statusInfo.description}</p>
 
+        {terminalNotice && (
+          <div className="mb-6 rounded-md border border-border bg-muted/80 p-4 text-left">
+            <p className="text-sm font-sans text-foreground leading-relaxed">
+              {
+                "Your waiter will bring the card machine to your table when you're ready to pay."
+              }
+            </p>
+          </div>
+        )}
+
         {/* Payment Information */}
         <div className="bg-muted p-4 mb-6">
           <div className="flex items-center justify-between mb-3">
@@ -199,10 +218,26 @@ export default function OrderConfirmationPage() {
             <p className="text-xs text-muted-foreground font-sans mt-3">
               {order.payment_method === 'cash'
                 ? 'A waiter will bring your bill when your order is ready.'
-                : 'A waiter will bring the card machine to your table.'}
+                : String((order as Order & { payment_channel?: string }).payment_channel || '').toLowerCase() ===
+                    'terminal'
+                  ? 'Tap “Ready to Pay” below when you would like the card machine brought to your table.'
+                  : 'Complete payment using the secure link if you have not already.'}
             </p>
           )}
         </div>
+
+        {(order as Order & { payment_channel?: string }).payment_channel === 'terminal' &&
+          order.payment_status === 'pending' &&
+          order.status !== 'ready_for_terminal' &&
+          order.status !== 'completed' && (
+            <div className="mb-6">
+              <ReadyToPayTerminalButton
+                restaurantId={restaurantId}
+                orderId={order.id}
+                sessionId={getCurrentSession()}
+              />
+            </div>
+          )}
 
         {/* Order Summary */}
         <div className="bg-muted p-4 mb-6 text-left">

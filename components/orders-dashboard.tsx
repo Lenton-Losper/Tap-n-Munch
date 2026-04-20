@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { subscribeToOrders, updateOrderStatus, updateOrderPayment, Order } from '@/lib/firebase/orders'
 import { getRestaurant } from '@/lib/firebase/restaurants'
@@ -22,8 +22,18 @@ import {
 } from '@/components/ui/dialog'
 
 // PART 2: Standardize Order Status Model
-// Use ONLY: new, accepted, preparing, ready, completed, cancelled
-type OrderStatus = 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
+type OrderStatus =
+  | 'new'
+  | 'accepted'
+  | 'preparing'
+  | 'ready'
+  | 'ready_for_terminal'
+  | 'completed'
+  | 'cancelled'
+
+function paymentChannelOf(order: Order): string {
+  return String((order as Order & { payment_channel?: string }).payment_channel || '').toLowerCase()
+}
 
 const tabs: { id: OrderStatus; label: string }[] = [
   { id: 'new', label: 'New Orders' },
@@ -39,6 +49,8 @@ export function OrdersDashboard() {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState<OrderStatus>('new')
   const [orders, setOrders] = useState<Order[]>([])
+  const [primaryOrders, setPrimaryOrders] = useState<Order[]>([])
+  const [readyTerminalOrders, setReadyTerminalOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
@@ -64,6 +76,7 @@ export function OrdersDashboard() {
 
   const isRecentCardPendingOrder = (order: Order) => {
     if (order.payment_method !== 'card' || order.payment_status !== 'pending') return false
+    if (paymentChannelOf(order) === 'terminal') return true
     const createdDate = toDate((order as Order & { created_at?: unknown }).created_at) || toDate(order.placed_at)
     if (!createdDate) return true
     return Date.now() - createdDate.getTime() < 5 * 60 * 1000
@@ -83,6 +96,7 @@ export function OrdersDashboard() {
     if (order.payment_method === 'cash') return true
     if (order.payment_method === 'card_terminal') return true
     if (order.payment_method === 'card') {
+      if (paymentChannelOf(order) === 'terminal' && order.payment_status === 'pending') return true
       if (order.payment_status === 'paid') return true
       return isRecentCardPendingOrder(order)
     }
@@ -105,85 +119,122 @@ export function OrdersDashboard() {
 
     console.log('🔍 Dashboard: Subscribing to orders for restaurant:', restaurantId, 'status:', activeTab)
 
-    // Subscribe to real-time orders
     const unsubscribe = subscribeToOrders(restaurantId, activeTab, (newOrders) => {
-      newOrders.forEach((order) => {
-        const tabId = (order as Order & { tab_id?: string }).tab_id
-        if (order.payment_status === 'paid' && order.status === 'new') {
-          console.warn('[OrdersDashboard] PAID but workflow status still NEW (e.g. webhook missed accepted):', {
-            id: order.id,
-            order_number: order.order_number,
-            payment_method: order.payment_method,
-            tab_id: tabId ?? null,
-            has_tab: Boolean(tabId),
-          })
-        }
-        if (Number(order.order_number) === 64) {
-          console.log('[OrdersDashboard] trace order #64:', {
-            id: order.id,
-            order_number: order.order_number,
-            status: order.status,
-            payment_status: order.payment_status,
-            tab_id: tabId ?? null,
-            activeTab,
-            passes_shouldDisplay: shouldDisplayOrder(order),
-          })
-        }
-      })
-
-      const visibleOrders = newOrders.filter((order) => {
-        if (!shouldDisplayOrder(order)) {
-          return false
-        }
-        if (activeTab === 'new') {
-          if (order.payment_method === 'cash') return true
-          if (order.payment_method === 'card_terminal' && order.payment_status === 'terminal_pending') return true
-          if (
-            order.payment_method === 'card' &&
-            order.payment_status === 'pending' &&
-            isRecentCardPendingOrder(order)
-          ) {
-            return true
-          }
-          // Standalone (or any) card charge that posted paid but never left NEW — show in New so staff can accept.
-          if (order.payment_method === 'card' && order.payment_status === 'paid' && order.status === 'new') {
-            return true
-          }
-          return false
-        }
-        return true
-      })
-
-      console.log('📦 Dashboard: Received', newOrders.length, 'orders for status:', activeTab)
-      if (visibleOrders.length > 0) {
-        console.log('📦 Dashboard: First order details:', {
-          id: visibleOrders[0].id,
-          order_number: visibleOrders[0].order_number,
-          status: visibleOrders[0].status,
-          restaurant_id: visibleOrders[0].restaurant_id,
-          table_number: visibleOrders[0].table_number,
-        })
-      }
-      setOrders(visibleOrders)
+      setPrimaryOrders(newOrders)
       setLoading(false)
-      
-      // Play notification sound for new orders (optional)
-      if (activeTab === 'new' && visibleOrders.length > 0) {
-        // You can add a notification sound here
-      }
-      
-      // PART 5: Safety Logging - Log when 0 orders found
-      if (visibleOrders.length === 0) {
-        console.log('⚠️ Dashboard: No orders found for status:', activeTab)
-        console.log('⚠️ Dashboard: Query parameters:', {
-          restaurantId,
-          status: activeTab,
-        })
-      }
     })
 
     return () => unsubscribe()
   }, [user, restaurantId, activeTab])
+
+  useEffect(() => {
+    if (!user || !restaurantId || activeTab !== 'new') {
+      setReadyTerminalOrders([])
+      return
+    }
+    const unsubscribe = subscribeToOrders(restaurantId, 'ready_for_terminal', setReadyTerminalOrders)
+    return () => unsubscribe()
+  }, [user, restaurantId, activeTab])
+
+  const mergedSourceOrders = useMemo(() => {
+    if (activeTab !== 'new') return primaryOrders
+    const byId = new Map<string, Order>()
+    readyTerminalOrders.forEach((o) => byId.set(o.id, o))
+    primaryOrders.forEach((o) => byId.set(o.id, o))
+    return Array.from(byId.values())
+  }, [activeTab, primaryOrders, readyTerminalOrders])
+
+  useEffect(() => {
+    if (!user || !restaurantId) return
+
+    const newOrders = mergedSourceOrders
+
+    newOrders.forEach((order) => {
+      const tabId = (order as Order & { tab_id?: string }).tab_id
+      if (order.payment_status === 'paid' && order.status === 'new') {
+        console.warn('[OrdersDashboard] PAID but workflow status still NEW (e.g. webhook missed accepted):', {
+          id: order.id,
+          order_number: order.order_number,
+          payment_method: order.payment_method,
+          tab_id: tabId ?? null,
+          has_tab: Boolean(tabId),
+        })
+      }
+      if (Number(order.order_number) === 64) {
+        console.log('[OrdersDashboard] trace order #64:', {
+          id: order.id,
+          order_number: order.order_number,
+          status: order.status,
+          payment_status: order.payment_status,
+          tab_id: tabId ?? null,
+          activeTab,
+          passes_shouldDisplay: shouldDisplayOrder(order),
+        })
+      }
+    })
+
+    const visibleOrders = newOrders.filter((order) => {
+      if (!shouldDisplayOrder(order)) {
+        return false
+      }
+      if (activeTab === 'new') {
+        if (order.payment_method === 'cash') return true
+        if (order.payment_method === 'card_terminal' && order.payment_status === 'terminal_pending') return true
+        if (
+          order.payment_method === 'card' &&
+          order.payment_status === 'pending' &&
+          isRecentCardPendingOrder(order)
+        ) {
+          return true
+        }
+        if (order.payment_method === 'card' && order.payment_status === 'paid' && order.status === 'new') {
+          return true
+        }
+        return false
+      }
+      return true
+    })
+
+    const sortNewTab = (list: Order[]) => {
+      if (activeTab !== 'new') return list
+      const rank = (o: Order) => {
+        const term = paymentChannelOf(o) === 'terminal'
+        if (term && o.status === 'ready_for_terminal') return 0
+        if (term && o.payment_status === 'pending') return 1
+        return 2
+      }
+      return [...list].sort((a, b) => {
+        const ra = rank(a)
+        const rb = rank(b)
+        if (ra !== rb) return ra - rb
+        const ta = toDate(a.placed_at)?.getTime() || 0
+        const tb = toDate(b.placed_at)?.getTime() || 0
+        return ta - tb
+      })
+    }
+
+    const sorted = sortNewTab(visibleOrders)
+
+    console.log('📦 Dashboard: Received', newOrders.length, 'merged orders for status:', activeTab)
+    if (sorted.length > 0) {
+      console.log('📦 Dashboard: First order details:', {
+        id: sorted[0].id,
+        order_number: sorted[0].order_number,
+        status: sorted[0].status,
+        restaurant_id: sorted[0].restaurant_id,
+        table_number: sorted[0].table_number,
+      })
+    }
+    setOrders(sorted)
+
+    if (activeTab === 'new' && sorted.length === 0) {
+      console.log('⚠️ Dashboard: No orders found for status:', activeTab)
+      console.log('⚠️ Dashboard: Query parameters:', {
+        restaurantId,
+        status: activeTab,
+      })
+    }
+  }, [user, restaurantId, activeTab, mergedSourceOrders])
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     if (!restaurantId) {
@@ -611,6 +662,8 @@ export function OrdersDashboard() {
         return 'border-orange-500'
       case 'ready':
         return 'border-green-500'
+      case 'ready_for_terminal':
+        return 'border-orange-600'
       case 'completed':
         return 'border-gray-300'
       case 'cancelled':
@@ -630,6 +683,10 @@ export function OrdersDashboard() {
         return <Badge className="bg-orange-500">Preparing</Badge>
       case 'ready':
         return <Badge className="bg-green-500">Ready</Badge>
+      case 'ready_for_terminal':
+        return (
+          <Badge className="bg-gradient-to-r from-orange-600 to-red-600 text-white border-0">READY FOR TERMINAL</Badge>
+        )
       case 'completed':
         return <Badge variant="secondary">Completed</Badge>
       case 'cancelled':
@@ -676,7 +733,10 @@ export function OrdersDashboard() {
         <div className="container mx-auto px-6">
           <div className="flex gap-2 overflow-x-auto">
             {tabs.map((tab) => {
-              const count = orders.filter((o) => o.status === tab.id).length
+              const count =
+                tab.id === 'new' && activeTab === 'new'
+                  ? orders.length
+                  : orders.filter((o) => o.status === tab.id).length
               return (
                 <button
                   key={tab.id}
@@ -829,34 +889,63 @@ export function OrdersDashboard() {
                   </div>
                 )}
 
-                {/* Send to terminal (card-present) */}
-                {(normalizedOrder.payment_status === 'pending' || normalizedOrder.payment_status === 'cash_pending') &&
-                  normalizedOrder.payment_method !== 'card_terminal' && (
-                  <div className="pt-2 space-y-2">
-                    <Button
-                      className="w-full bg-[#FF6B35] hover:bg-[#e55a28]"
-                      onClick={() => handleSendToTerminal(normalizedOrder)}
-                      disabled={sendingToTerminalOrderId === normalizedOrder.id}
-                    >
-                      <CreditCard className="h-4 w-4 mr-2" />
-                      {sendingToTerminalOrderId === normalizedOrder.id
-                        ? 'Sending to terminal...'
-                        : 'Send to Terminal'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => {
-                        setMarkingPaidOrderId(normalizedOrder.id)
-                        setShowMarkPaidDialog(true)
-                      }}
-                      disabled={markingPaidOrderId === normalizedOrder.id}
-                    >
-                      <DollarSign className="h-4 w-4 mr-2" />
-                      {markingPaidOrderId === normalizedOrder.id ? 'Marking as Paid...' : 'Mark as Paid'}
-                    </Button>
-                  </div>
-                )}
+                {/* Cash: mark paid only */}
+                {normalizedOrder.payment_method === 'cash' &&
+                  normalizedOrder.payment_status === 'cash_pending' && (
+                    <div className="pt-2 space-y-2">
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => {
+                          setMarkingPaidOrderId(normalizedOrder.id)
+                          setShowMarkPaidDialog(true)
+                        }}
+                        disabled={markingPaidOrderId === normalizedOrder.id}
+                      >
+                        <DollarSign className="h-4 w-4 mr-2" />
+                        {markingPaidOrderId === normalizedOrder.id ? 'Marking as Paid...' : 'Mark as Paid'}
+                      </Button>
+                    </div>
+                  )}
+
+                {/* Card + physical terminal (Finatic): wait for customer, then push */}
+                {normalizedOrder.payment_method === 'card' &&
+                  paymentChannelOf(normalizedOrder) === 'terminal' &&
+                  normalizedOrder.payment_status === 'pending' && (
+                    <div className="pt-2 space-y-2">
+                      {(() => {
+                        const readyAt = Boolean(
+                          (normalizedOrder as Order & { ready_for_terminal_at?: unknown })
+                            .ready_for_terminal_at
+                        )
+                        const ready =
+                          normalizedOrder.status === 'ready_for_terminal' || readyAt
+                        return !ready ? (
+                        <p className="text-sm text-muted-foreground font-sans">
+                          Waiting for customer to request terminal
+                        </p>
+                        ) : null
+                      })()}
+                      <Button
+                        className="w-full bg-[#FF6B35] hover:bg-[#e55a28] disabled:opacity-50 disabled:pointer-events-none"
+                        onClick={() => handleSendToTerminal(normalizedOrder)}
+                        disabled={(() => {
+                          const readyAt = Boolean(
+                            (normalizedOrder as Order & { ready_for_terminal_at?: unknown })
+                              .ready_for_terminal_at
+                          )
+                          const ready =
+                            normalizedOrder.status === 'ready_for_terminal' || readyAt
+                          return sendingToTerminalOrderId === normalizedOrder.id || !ready
+                        })()}
+                      >
+                        <CreditCard className="h-4 w-4 mr-2" />
+                        {sendingToTerminalOrderId === normalizedOrder.id
+                          ? 'Sending to terminal...'
+                          : 'Send to Terminal'}
+                      </Button>
+                    </div>
+                  )}
 
                 {normalizedOrder.payment_status === 'terminal_pending' && (
                   <div className="pt-2 space-y-2">
@@ -882,7 +971,7 @@ export function OrdersDashboard() {
 
                 {/* Action Buttons */}
                 <div className="flex gap-3 pt-2">
-                  {normalizedOrder.status === 'new' && (
+                  {(normalizedOrder.status === 'new' || normalizedOrder.status === 'ready_for_terminal') && (
                     <>
                       <Button
                         variant="outline"

@@ -17,6 +17,16 @@ import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { getMenuItem } from '@/lib/firebase/menu-items'
 import { useToast } from '@/hooks/use-toast'
+import { getOrCreateSession, getCurrentSession } from '@/lib/session'
+import { cn } from '@/lib/utils'
+
+type PaymentChoice = 'cash' | 'terminal' | 'online'
+
+function buildPaymentFields(choice: PaymentChoice) {
+  if (choice === 'cash') return { paymentMethod: 'cash' as const, paymentChannel: null as null }
+  if (choice === 'terminal') return { paymentMethod: 'card' as const, paymentChannel: 'terminal' as const }
+  return { paymentMethod: 'card' as const, paymentChannel: 'hosted' as const }
+}
 
 export default function CartPage() {
   const params = useParams()
@@ -39,6 +49,8 @@ export default function CartPage() {
   const [editingItem, setEditingItem] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [addingToTab, setAddingToTab] = useState(false)
+  const [placingOrder, setPlacingOrder] = useState(false)
+  const [paymentChoice, setPaymentChoice] = useState<PaymentChoice>('cash')
 
   const menuQuery = useMemo(() => {
     const q = new URLSearchParams()
@@ -93,6 +105,7 @@ export default function CartPage() {
     if (!inTabFlow || !effectiveTabId) return
     try {
       setAddingToTab(true)
+      const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
       const payload = {
         restaurantId: String(restaurantId),
         tableNumber: Number(tableNumber) || 0,
@@ -113,7 +126,8 @@ export default function CartPage() {
         })),
         subtotal: Number(subtotal),
         total: Number(total),
-        paymentMethod: 'cash',
+        paymentMethod,
+        paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
       }
       const response = await fetch('/api/orders', {
@@ -125,6 +139,14 @@ export default function CartPage() {
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
       if (typeof window !== 'undefined' && data?.orderId) {
         sessionStorage.setItem('last_order_id', String(data.orderId))
+        sessionStorage.setItem('flashtap_return_order_id', String(data.orderId))
+        if (tableNumber > 0) sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+      }
+      const checkoutUrl = data?.checkoutUrl as string | undefined
+      if (paymentChoice === 'online' && checkoutUrl) {
+        clearCart()
+        window.location.href = checkoutUrl
+        return
       }
       clearCart()
       toast({
@@ -140,6 +162,84 @@ export default function CartPage() {
       })
     } finally {
       setAddingToTab(false)
+    }
+  }
+
+  const handlePlaceOrder = async () => {
+    if (inTabFlow) return
+    if (paymentChoice === 'online') return
+    if (!tableNumber || tableNumber <= 0) {
+      toast({
+        title: 'Table required',
+        description: 'Scan the QR code at your table to place an order.',
+        variant: 'destructive',
+      })
+      return
+    }
+    let sid = getCurrentSession()
+    if (!sid) sid = getOrCreateSession(restaurantId, String(tableNumber))
+    if (!sid) {
+      toast({ title: 'Session error', description: 'Please try again.', variant: 'destructive' })
+      return
+    }
+
+    setPlacingOrder(true)
+    try {
+      const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
+      const payload = {
+        restaurantId: String(restaurantId),
+        tableNumber: Number(tableNumber),
+        session_id: String(sid),
+        member_session_id: String(sid),
+        items: items.map((item) => ({
+          menuItemId: item.menu_item_id,
+          name: item.display_name || item.name,
+          displayName: item.display_name || item.name,
+          quantity: item.quantity,
+          basePrice: item.base_price,
+          selectedVariants: item.selected_variants || {},
+          size: item.selected_size?.name || null,
+          addons: item.selected_addons || [],
+          specialInstructions: item.special_instructions || '',
+          subtotal: item.subtotal,
+        })),
+        subtotal: Number(subtotal),
+        total: Number(total),
+        paymentMethod,
+        paymentChannel,
+        orderInstructions: orderInstructions?.trim() || '',
+      }
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(JSON.parse(JSON.stringify(payload))),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to place order')
+
+      const orderId = data?.orderId as string | undefined
+      if (!orderId) throw new Error('No order ID returned')
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('last_order_id', String(orderId))
+        sessionStorage.setItem('flashtap_return_order_id', String(orderId))
+        sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+      }
+      clearCart()
+
+      const confirmQs = new URLSearchParams()
+      if (tableNumber > 0) confirmQs.set('table', String(tableNumber))
+      if (paymentChoice === 'terminal') confirmQs.set('notice', 'terminal')
+      const confirmSuffix = confirmQs.toString() ? `?${confirmQs.toString()}` : ''
+      router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)
+    } catch (err: unknown) {
+      toast({
+        title: 'Order failed',
+        description: err instanceof Error ? err.message : 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setPlacingOrder(false)
     }
   }
 
@@ -321,7 +421,72 @@ export default function CartPage() {
                 />
               </div>
 
-              {/* Checkout Button */}
+              {/* Payment method */}
+              <div className="mb-6" role="radiogroup" aria-label="Payment method">
+                <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
+                  How would you like to pay?
+                </Label>
+                <div className="grid gap-3">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={paymentChoice === 'cash'}
+                    onClick={() => setPaymentChoice('cash')}
+                    className={cn(
+                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                      paymentChoice === 'cash'
+                        ? 'border-foreground bg-muted/50'
+                        : 'border-border bg-background hover:border-muted-foreground/40'
+                    )}
+                  >
+                    <span className="text-lg" aria-hidden>
+                      💵
+                    </span>
+                    <span className="ml-2 font-semibold text-foreground">Cash</span>
+                    <p className="mt-1 text-sm text-muted-foreground">Pay at the table</p>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={paymentChoice === 'terminal'}
+                    onClick={() => setPaymentChoice('terminal')}
+                    className={cn(
+                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                      paymentChoice === 'terminal'
+                        ? 'border-foreground bg-muted/50'
+                        : 'border-border bg-background hover:border-muted-foreground/40'
+                    )}
+                  >
+                    <span className="text-lg" aria-hidden>
+                      💳
+                    </span>
+                    <span className="ml-2 font-semibold text-foreground">Card</span>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Waiter brings card machine to your table
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={paymentChoice === 'online'}
+                    onClick={() => setPaymentChoice('online')}
+                    className={cn(
+                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                      paymentChoice === 'online'
+                        ? 'border-foreground bg-muted/50'
+                        : 'border-border bg-background hover:border-muted-foreground/40'
+                    )}
+                  >
+                    <span className="text-lg" aria-hidden>
+                      🌐
+                    </span>
+                    <span className="ml-2 font-semibold text-foreground">Online</span>
+                    <p className="mt-1 text-sm text-muted-foreground">Pay now online</p>
+                  </button>
+                </div>
+              </div>
+
+              {/* Main CTA: tab = always POST; non-tab online = order-secure; non-tab cash/card = POST from cart */}
               {inTabFlow ? (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
@@ -329,9 +494,9 @@ export default function CartPage() {
                   onClick={handleAddToTab}
                   disabled={addingToTab}
                 >
-                  {addingToTab ? 'Adding…' : 'Add to Tab'}
+                  {addingToTab ? 'Adding…' : paymentChoice === 'online' ? 'Add to Tab & pay online' : 'Add to Tab'}
                 </Button>
-              ) : (
+              ) : paymentChoice === 'online' ? (
                 <Link
                   href={`/menu/${restaurantId}/order-secure${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
                   className="block"
@@ -343,6 +508,15 @@ export default function CartPage() {
                     Proceed to Checkout
                   </Button>
                 </Link>
+              ) : (
+                <Button
+                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                  size="lg"
+                  onClick={handlePlaceOrder}
+                  disabled={placingOrder}
+                >
+                  {placingOrder ? 'Placing order…' : 'Place order'}
+                </Button>
               )}
             </div>
           </div>

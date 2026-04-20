@@ -112,10 +112,12 @@ export default function OrderSecurePage() {
         restaurantId: String(restaurantId),
         tableNumber: Number(tableNumber) || 0,
         session_id: String(sessionId),
+        member_session_id: String(sessionId),
         items: orderItems,
         subtotal: Number(subtotal),
         total: Number(total),
         paymentMethod: 'card',
+        paymentChannel: 'hosted',
       }
 
       const cleanPayload = JSON.parse(JSON.stringify(payload))

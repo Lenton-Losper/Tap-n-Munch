@@ -34,9 +34,20 @@ export interface Order {
   tip: number
   total: number
   payment_method: 'cash' | 'card' | 'mobile_money' | 'card_terminal'
+  /** Finatic: hosted checkout vs physical terminal (card + terminal). */
+  payment_channel?: 'hosted' | 'terminal' | null
+  /** Set when customer requests terminal (see ready-for-terminal API). */
+  ready_for_terminal_at?: string | null
   payment_status: 'pending' | 'cash_pending' | 'terminal_pending' | 'paid' | 'failed'
   paid_at?: any
-  status: 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
+  status:
+    | 'new'
+    | 'accepted'
+    | 'preparing'
+    | 'ready'
+    | 'ready_for_terminal'
+    | 'completed'
+    | 'cancelled'
   placed_at: any
   accepted_at?: any
   preparing_at?: any
@@ -503,6 +514,7 @@ export function subscribeToOrders(
 
 // Subscribe to a single order (real-time)
 export function subscribeToOrder(
+  restaurantId: string,
   orderId: string,
   callback: (order: Order | null) => void
 ): () => void {
@@ -510,22 +522,20 @@ export function subscribeToOrder(
     callback(null)
     return () => {}
   }
-  
+
   try {
-    // NEW: Use hierarchical path - need restaurantId
-    // Note: This function signature needs to be updated to include restaurantId
-    // For now, we'll need to find restaurantId from the order or pass it
-    // TODO: Update all callers to pass restaurantId
-    const docRef = doc(db, 'orders', orderId) // Temporary - will need restaurantId
-    
+    const docRef = doc(db, orderPath(restaurantId, orderId))
+
     return onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const { normalizeOrder } = require('@/lib/utils')
         const data = docSnap.data()
-        callback(normalizeOrder({
-          id: docSnap.id,
-          ...data,
-        }) as Order)
+        callback(
+          normalizeOrder({
+            id: docSnap.id,
+            ...data,
+          }) as Order
+        )
       } else {
         callback(null)
       }

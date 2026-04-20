@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { orderPath } from '@/lib/firebase/paths'
-import { applyTabSettlementSideEffects, buildWebhookPaidPatch } from '@/lib/firebase/apply-tab-settlement'
+import {
+  applyTabSettlementSideEffects,
+  buildWebhookPaidPatch,
+  buildWebhookTerminalPaidPatch,
+} from '@/lib/firebase/apply-tab-settlement'
 import { enforceWebhookRateLimit } from '@/payments/webhook'
 import { verifyPayloadSignature } from '@/payments/signature'
 import { adminDb } from '@/lib/firebase/admin-firestore'
@@ -222,7 +226,11 @@ export async function POST(req: Request) {
     if (!snap.exists) continue
     const data = snap.data() as Record<string, unknown>
     const currentStatus = String(data.status || '')
-    const patch = buildWebhookPaidPatch(currentStatus, transNoStr)
+    const channel = String(data.payment_channel || '').trim().toLowerCase()
+    const patch =
+      channel === 'terminal'
+        ? buildWebhookTerminalPaidPatch(transNoStr)
+        : buildWebhookPaidPatch(currentStatus, transNoStr)
     await ref.update(patch)
   }
 

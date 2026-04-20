@@ -10,7 +10,8 @@ import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, CheckCircle2, FileText } from 'lucide-react'
 import Link from 'next/link'
-import { getSessionInfo } from '@/lib/session'
+import { getSessionInfo, getCurrentSession } from '@/lib/session'
+import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -46,6 +47,7 @@ type OrderRecord = {
   status?: string
   payment_status?: string
   payment_method?: string
+  payment_channel?: string | null
   tab_settlement_for_tab_id?: string | null
   paycloud_merchant_order_no?: string
   items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
@@ -224,7 +226,11 @@ export default function ReceiptPage() {
   // Reconcile card payments (must run every render path — hooks before any return)
   useEffect(() => {
     if (!restaurantId || payableOrders.length === 0) return
-    const hasCardPending = payableOrders.some((o) => o?.payment_method === 'card')
+    const hasCardPending = payableOrders.some(
+      (o) =>
+        o?.payment_method === 'card' &&
+        String(o.payment_channel || '').toLowerCase() !== 'terminal'
+    )
     if (!hasCardPending) return
 
     let cancelled = false
@@ -237,14 +243,18 @@ export default function ReceiptPage() {
       const elapsed = Date.now() - reconcileStartedAt
       if (elapsed > SECOND_WINDOW_MS) return
       const cardOrderIds = payableOrders
-        .filter((o) => o?.payment_method === 'card')
+        .filter(
+          (o) => o?.payment_method === 'card' && String(o.payment_channel || '').toLowerCase() !== 'terminal'
+        )
         .map((o) => String(o.id))
         .filter(Boolean)
         .sort()
       if (!cardOrderIds.length) return
 
       const merchantOrderNo = payableOrders
-        .filter((o) => o?.payment_method === 'card')
+        .filter(
+          (o) => o?.payment_method === 'card' && String(o.payment_channel || '').toLowerCase() !== 'terminal'
+        )
         .map((o) => String(o.paycloud_merchant_order_no || '').trim())
         .find(Boolean)
 
@@ -503,6 +513,19 @@ export default function ReceiptPage() {
                 ) : (
                   <p className="text-muted-foreground font-sans text-sm">No items found</p>
                 )}
+
+                {String(order.payment_channel || '').toLowerCase() === 'terminal' &&
+                  String(order.payment_status || '').toLowerCase() === 'pending' &&
+                  String(order.status || '').toLowerCase() !== 'ready_for_terminal' &&
+                  String(order.status || '').toLowerCase() !== 'completed' && (
+                    <div className="mt-4 border-t border-border pt-4">
+                      <ReadyToPayTerminalButton
+                        restaurantId={restaurantId}
+                        orderId={String(order.id)}
+                        sessionId={getCurrentSession()}
+                      />
+                    </div>
+                  )}
               </div>
             )
           })}

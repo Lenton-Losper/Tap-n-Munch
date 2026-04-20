@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server'
 import { adminDb } from '@/lib/firebase/admin-firestore'
 import { orderPath } from '@/lib/firebase/paths'
-import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { formatPaycloudRequestSignature, loadPrivateKey, signUtf8WithForgePkcs1RsaSha256 } from '@/payments/signature'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
 /** Hardcoded terminal serial for Finatic WISECASHIER / ecrorder flow. */
 const TERMINAL_SN = 'WPYB002349003019'
+
+/** ECR / terminal push — separate merchant from hosted checkout */
+const TERMINAL_PUSH_MERCHANT_NO = '342400001004'
+const TERMINAL_PUSH_STORE_NO = '4424000013'
 
 function buildCanonicalString(payload: Record<string, unknown>) {
   const keys = Object.keys(payload)
@@ -34,13 +37,12 @@ export async function POST(req: Request) {
     }
 
     const appId = process.env.PAYCLOUD_APP_ID
-    const finatic = await getRestaurantFinaticCredentials(fs, String(restaurantId))
-    const merchantNo = String(finatic.merchantNo || process.env.PAYCLOUD_MERCHANT_NO || '').trim()
-    const storeNo = String(finatic.storeNo || process.env.PAYCLOUD_STORE_NO || '').trim()
+    const merchantNo = TERMINAL_PUSH_MERCHANT_NO
+    const storeNo = TERMINAL_PUSH_STORE_NO
 
-    if (!appId || !merchantNo || !storeNo) {
+    if (!appId) {
       return NextResponse.json(
-        { error: 'Missing PayCloud configuration (PAYCLOUD_APP_ID, PAYCLOUD_MERCHANT_NO, PAYCLOUD_STORE_NO)' },
+        { error: 'Missing PayCloud configuration (PAYCLOUD_APP_ID)' },
         { status: 500 }
       )
     }

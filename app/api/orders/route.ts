@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server'
 import { prepareForFirestore } from '@/lib/firebase/firestore-guards'
 import { orderPath, ordersPath, tabPath } from '@/lib/firebase/paths'
 import { createPaymentRequest, maskSecrets } from '@/payments/paycloud'
-import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
 
 const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
+
+/** Hosted PayCloud checkout (pay.paycloud.checkout) — online card payments */
+const HOSTED_CHECKOUT_MERCHANT_NO = '342600032359'
+const HOSTED_CHECKOUT_STORE_NO = '4426010221'
 
 async function getNextOrderNumberAdmin(restaurantId: string, fs: NonNullable<ReturnType<typeof adminDb>>): Promise<number> {
   const snap = await fs.collection(ordersPath(restaurantId)).orderBy('order_number', 'desc').limit(1).get()
@@ -103,6 +106,12 @@ export async function POST(req: Request) {
       if (d.payment_status !== 'pending') {
         return NextResponse.json({ error: 'Order payment is not pending' }, { status: 400 })
       }
+      if (d.payment_channel === 'terminal') {
+        return NextResponse.json(
+          { error: 'Order uses terminal payment; hosted checkout resume is not available' },
+          { status: 400 }
+        )
+      }
 
       const docRefId = resumeOrderId
       const orderNumber = Number(d.order_number) || 0
@@ -112,7 +121,6 @@ export async function POST(req: Request) {
       }
 
       const merchantOrderNo = buildMerchantOrderNo(restaurantId, docRefId)
-      const finatic = await getRestaurantFinaticCredentials(fs, restaurantId)
 
       const patchPayment = async (data: Record<string, unknown>) => {
         await fs.doc(orderPath(restaurantId, docRefId)).update(data)
@@ -128,8 +136,8 @@ export async function POST(req: Request) {
         const payment = await createPaymentRequest({
           amount: total,
           orderId: merchantOrderNo,
-          merchantNo: finatic.merchantNo || body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
-          storeNo: finatic.storeNo || body.storeNo || process.env.PAYCLOUD_STORE_NO,
+          merchantNo: HOSTED_CHECKOUT_MERCHANT_NO,
+          storeNo: HOSTED_CHECKOUT_STORE_NO,
           description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
         })
 
@@ -218,7 +226,17 @@ export async function POST(req: Request) {
       body.paymentMethod === 'card' ? 'card' : body.paymentMethod === 'mobile_money' ? 'mobile_money' : 'cash'
     const initialPaymentStatus = resolvedPaymentMethod === 'cash' ? 'cash_pending' : 'pending'
 
-    if (tabSettlementForTabId && resolvedPaymentMethod === 'card') {
+    const rawPaymentChannel = body.paymentChannel ?? body.payment_channel
+    const paymentChannelResolved: 'hosted' | 'terminal' | null =
+      resolvedPaymentMethod === 'card'
+        ? String(rawPaymentChannel || '')
+            .trim()
+            .toLowerCase() === 'terminal'
+          ? 'terminal'
+          : 'hosted'
+        : null
+
+    if (tabSettlementForTabId && resolvedPaymentMethod === 'card' && paymentChannelResolved === 'hosted') {
       const pendingSettlementRows = await fs
         .collection(ordersPath(restaurantId))
         .where('tab_settlement_for_tab_id', '==', tabSettlementForTabId)
@@ -259,6 +277,7 @@ export async function POST(req: Request) {
       table_number: Number(tableNumber),
       session_id: sessionId || null,
       status: 'new' as const,
+      payment_channel: paymentChannelResolved,
       payment_status: initialPaymentStatus as 'pending' | 'cash_pending',
       table_closed: false,
       is_closed: false,
@@ -327,46 +346,54 @@ export async function POST(req: Request) {
     let payment: any = null
     if (resolvedPaymentMethod === 'card') {
       const merchantOrderNo = buildMerchantOrderNo(restaurantId, docRefId)
-      const finatic = await getRestaurantFinaticCredentials(fs, restaurantId)
-      try {
-        console.log('[PayCloud] Sending merchant_order_no', {
-          merchant_order_no: merchantOrderNo,
-          length: merchantOrderNo.length,
-          orderId: docRefId,
-          flow: 'create',
-        })
-        payment = await createPaymentRequest({
-          amount: orderPayloadBase.total,
-          orderId: merchantOrderNo,
-          merchantNo: finatic.merchantNo || body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
-          storeNo: finatic.storeNo || body.storeNo || process.env.PAYCLOUD_STORE_NO,
-          description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
-        })
 
+      if (paymentChannelResolved === 'terminal') {
         await patchPayment({
           payment_reference: merchantOrderNo,
           paycloud_merchant_order_no: merchantOrderNo,
-          payment_checkout_url: payment?.checkoutUrl || null,
           payment_status: 'pending',
-          payment_pending_since: FieldValue.serverTimestamp(),
         })
-      } catch (paymentError: unknown) {
-        logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
-        const msg =
-          paymentError instanceof Error ? paymentError.message : 'PayCloud payment initialization failed'
-        await patchPayment({
-          payment_status: 'pending',
-          payment_error: msg,
-          payment_init_failed_at: FieldValue.serverTimestamp(),
-        })
-        return NextResponse.json(
-          {
+      } else {
+        try {
+          console.log('[PayCloud] Sending merchant_order_no', {
+            merchant_order_no: merchantOrderNo,
+            length: merchantOrderNo.length,
             orderId: docRefId,
-            payment: null,
-            checkoutUrl: null,
-          },
-          { status: 200 }
-        )
+            flow: 'create',
+          })
+          payment = await createPaymentRequest({
+            amount: orderPayloadBase.total,
+            orderId: merchantOrderNo,
+            merchantNo: HOSTED_CHECKOUT_MERCHANT_NO,
+            storeNo: HOSTED_CHECKOUT_STORE_NO,
+            description: body.description || `FlashTap Table ${tableNumber} Order #${orderNumber}`,
+          })
+
+          await patchPayment({
+            payment_reference: merchantOrderNo,
+            paycloud_merchant_order_no: merchantOrderNo,
+            payment_checkout_url: payment?.checkoutUrl || null,
+            payment_status: 'pending',
+            payment_pending_since: FieldValue.serverTimestamp(),
+          })
+        } catch (paymentError: unknown) {
+          logPayCloudInitFailure({ docRefId, merchantOrderNo }, paymentError)
+          const msg =
+            paymentError instanceof Error ? paymentError.message : 'PayCloud payment initialization failed'
+          await patchPayment({
+            payment_status: 'pending',
+            payment_error: msg,
+            payment_init_failed_at: FieldValue.serverTimestamp(),
+          })
+          return NextResponse.json(
+            {
+              orderId: docRefId,
+              payment: null,
+              checkoutUrl: null,
+            },
+            { status: 200 }
+          )
+        }
       }
     }
 

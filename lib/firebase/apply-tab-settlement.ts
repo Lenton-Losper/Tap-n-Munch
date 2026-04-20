@@ -40,6 +40,16 @@ export function buildWebhookPaidPatch(currentStatus: string, transNoStr: string 
   }
 }
 
+/** Terminal channel: paid + completed (no hosted checkout lifecycle). */
+export function buildWebhookTerminalPaidPatch(transNoStr: string | null): Record<string, unknown> {
+  return {
+    ...markPaidAndCompletedPatch(),
+    payment_trans_no: transNoStr,
+    paycloud_transaction_id: transNoStr || null,
+    is_closed: false,
+  }
+}
+
 async function markTabOrdersPaid(
   fs: NonNullable<ReturnType<typeof adminDb>>,
   restaurantId: string,

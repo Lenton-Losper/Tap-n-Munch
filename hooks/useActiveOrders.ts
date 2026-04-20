@@ -120,7 +120,9 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
               if (!Number.isFinite(tn) || tn !== tableNumber) return false
               const placedMs = orderPlacedAtMs(order)
               if (!placedMs || placedMs < placedCutoff) return false
-              const statusMatch = ['new', 'accepted', 'preparing', 'ready'].includes(order.status)
+              const statusMatch = ['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(
+                order.status
+              )
               return statusMatch
             })
             .sort((a, b) => {

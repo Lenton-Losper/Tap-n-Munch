@@ -182,11 +182,24 @@ export interface Order {
   
   // Payment
   payment_method: 'cash' | 'card' | 'mobile_money'
-  payment_status: 'pending' | 'paid' | 'failed'
+  /** Finatic: hosted checkout URL flow vs physical terminal vs cash (null). */
+  payment_channel: 'hosted' | 'terminal' | null
+  payment_status: 'pending' | 'cash_pending' | 'paid' | 'failed'
   paid_at: string | null
+  /** When staff marked the order ready to push/settle on the card terminal. */
+  ready_for_terminal_at?: string
+  /** When a terminal push was requested (future terminal integration). */
+  terminal_push_requested_at?: string
   
   // Order lifecycle
-  status: 'new' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled'
+  status:
+    | 'new'
+    | 'accepted'
+    | 'preparing'
+    | 'ready'
+    | 'ready_for_terminal'
+    | 'completed'
+    | 'cancelled'
   table_closed: boolean // PART 1: Track if table is closed (prevents order leakage)
   
   // Timestamps
