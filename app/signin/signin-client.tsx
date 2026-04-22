@@ -11,6 +11,7 @@ import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { signInWithSupabase } from '@/lib/supabase/auth'
 
 export function SignInClient() {
   const router = useRouter()
@@ -38,6 +39,19 @@ export function SignInClient() {
 
     try {
       await signIn(email, password)
+
+      try {
+        const supabaseAuth = await signInWithSupabase(email, password)
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'supabase_session',
+            JSON.stringify(supabaseAuth.session ?? null)
+          )
+        }
+      } catch (supabaseError) {
+        console.error('Supabase parallel sign-in failed:', supabaseError)
+      }
+
       router.replace('/dashboard')
     } catch (submitError: any) {
       setError(submitError?.message || 'Failed to sign in. Please check your credentials.')

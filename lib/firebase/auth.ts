@@ -12,6 +12,7 @@ import { doc, setDoc, getDoc, serverTimestamp, collection, addDoc, writeBatch } 
 import type { User as UserType, Restaurant } from './types'
 import { createMenuCategory } from './menu-categories'
 import { createSubCategory } from './sub-categories'
+import { signUpWithSupabase } from '@/lib/supabase/auth'
 
 // Check if Firebase is configured
 function checkFirebaseConfig() {
@@ -161,6 +162,43 @@ export async function signUpRestaurant(
       // Log error but don't fail signup - menu structure can be created later
       console.error('⚠️ Failed to create default menu structure:', menuError)
       console.log('Restaurant created successfully. Menu structure can be created manually.')
+    }
+
+    // Dual-write to Supabase (non-blocking for Firebase flow)
+    try {
+      const supabaseAuth = await signUpWithSupabase(
+        email,
+        password,
+        `${restaurantName} Owner`,
+        phone || ''
+      )
+
+      const supabaseUserId = supabaseAuth.user?.id
+      if (!supabaseUserId) {
+        throw new Error('Supabase signup did not return a user id')
+      }
+
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: supabaseUserId,
+          email,
+          name: `${restaurantName} Owner`,
+          phone: phone || '',
+          role: 'owner',
+          restaurantName,
+        }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error || `HTTP ${response.status}`)
+      }
+    } catch (supabaseError: any) {
+      console.error('⚠️ Supabase dual-write failed during signup:', supabaseError)
     }
     
     return { userId, restaurantId }
