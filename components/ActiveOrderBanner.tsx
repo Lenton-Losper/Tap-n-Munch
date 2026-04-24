@@ -6,9 +6,7 @@ import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { cn } from '@/lib/utils'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
 import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
-import { doc, onSnapshot } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
-import { orderPath } from '@/lib/firebase/paths'
+import { supabase } from '@/lib/supabase/client'
 
 /**
  * PART 3: Active Order Banner
@@ -44,48 +42,79 @@ export function ActiveOrderBanner() {
   const { activeOrder, loading, error } = useActiveOrders(restaurantId, tableNumber)
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
+  const persistedOrderId =
+    typeof window !== 'undefined'
+      ? String(
+          sessionStorage.getItem('last_order_id') || sessionStorage.getItem('flashtap_return_order_id') || ''
+        ).trim()
+      : ''
 
   useEffect(() => {
-    if (!db || !restaurantId) {
+    if (!restaurantId) {
       setLastOrder(null)
       setLastOrderLoaded(true)
       return
     }
-    const fromSession = typeof window !== 'undefined' ? sessionStorage.getItem('last_order_id') : null
-    const fromReturnKey =
-      typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_return_order_id') : null
-    const orderId = String(fromSession || fromReturnKey || '').trim()
+    const orderId = persistedOrderId
     if (!orderId) {
       setLastOrder(null)
       setLastOrderLoaded(true)
       return
     }
 
-    const orderRef = doc(db, orderPath(restaurantId, orderId))
-    const unsub = onSnapshot(
-      orderRef,
-      (snap) => {
-        if (!snap.exists()) {
-          setLastOrder(null)
-          setLastOrderLoaded(true)
-          return
-        }
-        const data = snap.data() as Record<string, any>
-        if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
-          setLastOrder(null)
-          setLastOrderLoaded(true)
-          return
-        }
-        setLastOrder({ id: snap.id, ...data })
+    let cancelled = false
+
+    const fetchLastOrder = async () => {
+      const { data } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('id', orderId)
+        .single()
+      if (cancelled) return
+      if (!data) {
+        setLastOrder(null)
         setLastOrderLoaded(true)
-      },
-      () => {
+        return
+      }
+      if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
+        setLastOrder(null)
+        setLastOrderLoaded(true)
+        return
+      }
+      setLastOrder({ id: String(data.id), ...data })
+      setLastOrderLoaded(true)
+    }
+
+    fetchLastOrder().catch(() => {
+      if (!cancelled) {
         setLastOrder(null)
         setLastOrderLoaded(true)
       }
-    )
-    return () => unsub()
-  }, [restaurantId, tableNumber])
+    })
+
+    const channel = supabase
+      .channel(`active-banner-last-order-${orderId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `id=eq.${orderId}`,
+        },
+        () => {
+          fetchLastOrder().catch(() => {
+            // no-op: handled in fetchLastOrder
+          })
+        }
+      )
+      .subscribe()
+
+    return () => {
+      cancelled = true
+      supabase.removeChannel(channel)
+    }
+  }, [restaurantId, tableNumber, persistedOrderId])
   
   // Debug logging
   if (loading) {
@@ -221,6 +250,7 @@ export function ActiveOrderBanner() {
             <ReadyToPayTerminalButton
               restaurantId={restaurantId}
               orderId={String(currentOrder.id)}
+              tableNumber={Number(currentOrder.table_number) || Number(tableNumber) || 0}
               sessionId={getCurrentSession()}
               className="[&_button]:bg-white [&_button]:text-black [&_button]:hover:bg-white/90"
             />

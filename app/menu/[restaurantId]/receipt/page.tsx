@@ -4,8 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { collection, query, where, onSnapshot, limit } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
+import { supabase } from '@/lib/supabase/client'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, CheckCircle2, FileText } from 'lucide-react'
@@ -21,6 +20,10 @@ function placedAtMillis(order: { placed_at?: unknown }): number {
     return (p as { toMillis: () => number }).toMillis()
   }
   if (typeof p === 'number' && Number.isFinite(p)) return p
+  if (typeof p === 'string') {
+    const d = new Date(p)
+    if (!Number.isNaN(d.getTime())) return d.getTime()
+  }
   return 0
 }
 
@@ -167,44 +170,42 @@ export default function ReceiptPage() {
       return
     }
 
-    if (!db || !restaurantId) {
+    if (!restaurantId) {
       setLoading(false)
       return
     }
 
-    // Firestore: table + open orders only; session_id is intentionally ignored for testing.
-    const { ordersPath } = require('@/lib/firebase/paths')
-    const ordersRef = collection(db, ordersPath(restaurantId))
+    let cancelled = false
+    const loadOrders = async () => {
+      try {
+        const { data: orders } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('firebase_restaurant_id', restaurantId)
+          .eq('table_number', Number(tableNum))
+          .eq('is_closed', false)
+          .order('placed_at', { ascending: true })
 
-    const q = query(
-      ordersRef,
-      where('table_number', '==', tableNum),
-      where('is_closed', '==', false),
-      limit(100)
-    )
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+        if (cancelled) return
         const nowMs = Date.now()
-        const ordersList = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as OrderRecord))
-          .filter((order: { table_number?: unknown }) => Number(order.table_number) === tableNum)
+        const ordersList = (orders || [])
+          .map((order) => ({ ...(order as OrderRecord), id: String((order as { id?: string }).id || '') }))
+          .filter((order) => order.id)
           .filter((order) => shouldShowInReceipt(order, nowMs))
-          .sort((a, b) => placedAtMillis(b) - placedAtMillis(a))
         setOrders(ordersList)
         setLoading(false)
-      },
-      (error: any) => {
+      } catch (error: any) {
+        if (cancelled) return
         console.error('Error loading receipt:', error)
-        if (error?.code === 'permission-denied') {
-          setOrders([])
-        }
+        setOrders([])
         setLoading(false)
       }
-    )
+    }
+    loadOrders()
 
-    return () => unsubscribe()
+    return () => {
+      cancelled = true
+    }
   }, [restaurantId, tableNumber])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
@@ -522,6 +523,7 @@ export default function ReceiptPage() {
                       <ReadyToPayTerminalButton
                         restaurantId={restaurantId}
                         orderId={String(order.id)}
+                        tableNumber={Number(order.table_number) || Number(tableNumber) || 0}
                         sessionId={getCurrentSession()}
                       />
                     </div>

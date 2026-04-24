@@ -4,13 +4,26 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getOrder, subscribeToOrder, Order } from '@/lib/firebase/orders'
+import { supabase } from '@/lib/supabase/client'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, Clock, ChefHat, Package, XCircle, Banknote, CreditCard } from 'lucide-react'
 import Link from 'next/link'
 import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
 import { getCurrentSession } from '@/lib/session'
+
+type Order = {
+  id: string
+  order_number: number
+  status: 'new' | 'accepted' | 'preparing' | 'ready' | 'ready_for_terminal' | 'completed' | 'cancelled'
+  placed_at: string
+  payment_method: string
+  payment_status: string
+  payment_channel?: string | null
+  total: number
+  table_number?: number
+  items: Array<{ quantity: number; name: string; subtotal: number }>
+}
 
 export default function OrderConfirmationPage() {
   const params = useParams()
@@ -29,10 +42,15 @@ export default function OrderConfirmationPage() {
     const loadData = async () => {
       try {
         setLoading(true)
-        const [orderData, restaurantData] = await Promise.all([
-          getOrder(restaurantId, orderId),
+        const [orderResult, restaurantData] = await Promise.all([
+          supabase
+            .from('orders')
+            .select('*')
+            .eq('id', orderId)
+            .single(),
           getRestaurant(restaurantId),
         ])
+        const orderData = (orderResult.data as Order | null) || null
         
         if (!orderData) {
           router.push(`/menu/${restaurantId}`)
@@ -56,14 +74,36 @@ export default function OrderConfirmationPage() {
   useEffect(() => {
     if (!orderId) return
 
-    const unsubscribe = subscribeToOrder(restaurantId, orderId, (updatedOrder) => {
-      if (updatedOrder) {
-        setOrder(updatedOrder)
-      }
-    })
+    const channel = supabase
+      .channel(`order-confirmation-${orderId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `id=eq.${orderId}`,
+        },
+        async () => {
+          const { data: updatedOrder } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('id', orderId)
+            .single()
+          if (updatedOrder) {
+            setOrder(updatedOrder as Order)
+          }
+        }
+      )
+      .subscribe()
 
-    return () => unsubscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [orderId, restaurantId])
+
+  const effectiveTableNumber =
+    tableNumber > 0 ? tableNumber : Number((order as Order | null)?.table_number || 0)
 
   const getStatusInfo = (status: Order['status']) => {
     switch (status) {
@@ -115,7 +155,7 @@ export default function OrderConfirmationPage() {
           text: 'Processing',
           description: 'Your order is being processed',
         }
-    }
+      }
   }
 
   if (loading) {
@@ -159,8 +199,8 @@ export default function OrderConfirmationPage() {
           <p className="text-lg font-sans text-foreground">
             Order <span className="font-bold">#{order.order_number}</span>
           </p>
-          {tableNumber > 0 && (
-            <p className="text-muted-foreground font-sans">Table {tableNumber}</p>
+          {effectiveTableNumber > 0 && (
+            <p className="text-muted-foreground font-sans">Table {effectiveTableNumber}</p>
           )}
           <p className="text-sm text-muted-foreground font-sans">
             {new Date(order.placed_at).toLocaleString()}
@@ -226,14 +266,15 @@ export default function OrderConfirmationPage() {
           )}
         </div>
 
-        {(order as Order & { payment_channel?: string }).payment_channel === 'terminal' &&
-          order.payment_status === 'pending' &&
-          order.status !== 'ready_for_terminal' &&
-          order.status !== 'completed' && (
+        {order.payment_method === 'card' &&
+          String((order as Order & { payment_channel?: string }).payment_channel || '').toLowerCase() ===
+            'terminal' &&
+          String(order.payment_status || '').toLowerCase() !== 'paid' && (
             <div className="mb-6">
               <ReadyToPayTerminalButton
                 restaurantId={restaurantId}
                 orderId={order.id}
+                tableNumber={effectiveTableNumber}
                 sessionId={getCurrentSession()}
               />
             </div>

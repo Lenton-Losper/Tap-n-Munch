@@ -2,16 +2,14 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { subscribeToOrders, updateOrderStatus, updateOrderPayment, Order } from '@/lib/firebase/orders'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { subscribeToOrders, updateOrderPayment, Order } from '@/lib/firebase/orders'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
-import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
+import { supabase } from '@/lib/supabase/client'
 import {
   Dialog,
   DialogContent,
@@ -59,6 +57,7 @@ export function OrdersDashboard() {
   const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
   const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
+  const dashboardRestaurantId = String((restaurant as { firebase_id?: string } | null)?.firebase_id || restaurantId || '')
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -111,30 +110,30 @@ export function OrdersDashboard() {
       return
     }
 
-    if (!restaurantId) {
+    if (!dashboardRestaurantId) {
       console.log('⚠️ Dashboard: No restaurantId available')
       setLoading(false)
       return
     }
 
-    console.log('🔍 Dashboard: Subscribing to orders for restaurant:', restaurantId, 'status:', activeTab)
+    console.log('[DASHBOARD] subscribing with restaurantId:', dashboardRestaurantId)
 
-    const unsubscribe = subscribeToOrders(restaurantId, activeTab, (newOrders) => {
+    const unsubscribe = subscribeToOrders(dashboardRestaurantId, activeTab, (newOrders) => {
       setPrimaryOrders(newOrders)
       setLoading(false)
     })
 
     return () => unsubscribe()
-  }, [user, restaurantId, activeTab])
+  }, [user, dashboardRestaurantId, activeTab])
 
   useEffect(() => {
-    if (!user || !restaurantId || activeTab !== 'new') {
+    if (!user || !dashboardRestaurantId || activeTab !== 'new') {
       setReadyTerminalOrders([])
       return
     }
-    const unsubscribe = subscribeToOrders(restaurantId, 'ready_for_terminal', setReadyTerminalOrders)
+    const unsubscribe = subscribeToOrders(dashboardRestaurantId, 'ready_for_terminal', setReadyTerminalOrders)
     return () => unsubscribe()
-  }, [user, restaurantId, activeTab])
+  }, [user, dashboardRestaurantId, activeTab])
 
   const mergedSourceOrders = useMemo(() => {
     if (activeTab !== 'new') return primaryOrders
@@ -145,7 +144,7 @@ export function OrdersDashboard() {
   }, [activeTab, primaryOrders, readyTerminalOrders])
 
   useEffect(() => {
-    if (!user || !restaurantId) return
+    if (!user || !dashboardRestaurantId) return
 
     const newOrders = mergedSourceOrders
 
@@ -230,14 +229,14 @@ export function OrdersDashboard() {
     if (activeTab === 'new' && sorted.length === 0) {
       console.log('⚠️ Dashboard: No orders found for status:', activeTab)
       console.log('⚠️ Dashboard: Query parameters:', {
-        restaurantId,
+        restaurantId: dashboardRestaurantId,
         status: activeTab,
       })
     }
-  }, [user, restaurantId, activeTab, mergedSourceOrders])
+  }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
-    if (!restaurantId) {
+    if (!dashboardRestaurantId) {
       toast({
         title: 'Update failed',
         description: 'Restaurant ID is missing',
@@ -248,11 +247,19 @@ export function OrdersDashboard() {
     
     console.log('🔄 [DASHBOARD] Updating order status to:', newStatus, {
       orderId,
-      restaurantId,
+      restaurantId: dashboardRestaurantId,
     })
     
     try {
-      await updateOrderStatus(restaurantId, orderId, newStatus)
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to update order status')
+      }
       console.log('✅ [DASHBOARD] Order status updated successfully')
       toast({
         title: 'Order updated',
@@ -261,7 +268,7 @@ export function OrdersDashboard() {
     } catch (error: any) {
       console.error('❌ [DASHBOARD] Failed to update order status:', {
         orderId,
-        restaurantId,
+        restaurantId: dashboardRestaurantId,
         newStatus,
         errorCode: error.code,
         errorMessage: error.message,
@@ -276,7 +283,7 @@ export function OrdersDashboard() {
   }
 
   const handleMarkAsPaid = async (orderId: string) => {
-    if (!restaurantId) {
+    if (!dashboardRestaurantId) {
       toast({
         title: 'Update failed',
         description: 'Restaurant ID is missing',
@@ -287,7 +294,7 @@ export function OrdersDashboard() {
     
     try {
       setMarkingPaidOrderId(orderId)
-      await updateOrderPayment(restaurantId, orderId, 'paid', user?.id)
+      await updateOrderPayment(dashboardRestaurantId, orderId, 'paid', user?.id)
       toast({
         title: 'Payment recorded',
         description: 'Order has been marked as paid',
@@ -297,7 +304,7 @@ export function OrdersDashboard() {
     } catch (error: any) {
       console.error('❌ [DASHBOARD] Failed to mark order as paid:', {
         orderId,
-        restaurantId,
+        restaurantId: dashboardRestaurantId,
         errorCode: error.code,
         errorMessage: error.message,
         errorStack: error.stack,
@@ -311,8 +318,8 @@ export function OrdersDashboard() {
     }
   }
 
-  const handleSendToTerminal = async (order: Order) => {
-    if (!restaurantId) return
+  const handleSendToTerminal = async (order: Order, bypassReadyCheck = false) => {
+    if (!dashboardRestaurantId) return
     try {
       setSendingToTerminalOrderId(order.id)
       const response = await fetch('/api/payments/push-to-terminal', {
@@ -323,7 +330,8 @@ export function OrdersDashboard() {
           amount: Number(order.total) || 0,
           tableNumber: order.table_number,
           orderNumber: order.order_number,
-          restaurantId,
+          restaurantId: dashboardRestaurantId,
+          bypassReadyCheck,
         }),
       })
       const data = await response.json().catch(() => ({}))
@@ -345,13 +353,13 @@ export function OrdersDashboard() {
   }
 
   const handleCancelTerminalPayment = async (order: Order) => {
-    if (!restaurantId) return
+    if (!dashboardRestaurantId) return
     try {
       setCancelingTerminalOrderId(order.id)
       const response = await fetch('/api/payments/cancel-terminal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: order.id, restaurantId }),
+        body: JSON.stringify({ orderId: order.id, restaurantId: dashboardRestaurantId }),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok || data?.success === false) {
@@ -374,13 +382,17 @@ export function OrdersDashboard() {
   }
 
   useEffect(() => {
-    if (!db || !restaurantId || terminalPollingOrderIds.length === 0) return
+    if (!dashboardRestaurantId || terminalPollingOrderIds.length === 0) return
     const timer = setInterval(async () => {
       const doneIds: string[] = []
       for (const orderId of terminalPollingOrderIds) {
         try {
-          const row = await getDoc(doc(db, `restaurants/${restaurantId}/orders/${orderId}`))
-          const data = row.exists() ? (row.data() as Record<string, any>) : undefined
+          const { data } = await supabase
+            .from('orders')
+            .select('id,payment_status,order_number')
+            .eq('id', orderId)
+            .eq('firebase_restaurant_id', dashboardRestaurantId)
+            .single()
           const status = String(data?.payment_status || '').toLowerCase()
           if (status === 'paid') {
             doneIds.push(orderId)
@@ -400,7 +412,7 @@ export function OrdersDashboard() {
       }
     }, 5000)
     return () => clearInterval(timer)
-  }, [db, restaurantId, terminalPollingOrderIds, toast])
+  }, [dashboardRestaurantId, terminalPollingOrderIds, toast])
 
   useEffect(() => {
     const terminalPendingIds = orders
@@ -423,7 +435,7 @@ export function OrdersDashboard() {
    * - Next QR scan creates a NEW session
    */
   const handleCloseTable = async (tableNumber: number) => {
-    if (!db || !restaurantId) {
+    if (!dashboardRestaurantId) {
       toast({
         title: 'Error',
         description: 'Unable to close table. Missing restaurant ID.',
@@ -434,11 +446,8 @@ export function OrdersDashboard() {
 
     try {
       setClosingTableNumber(tableNumber)
-      
-      // Type Safety: Ensure table number is converted correctly
       const tableNum = Number(tableNumber)
       if (isNaN(tableNum) || tableNum <= 0) {
-        console.error('❌ [CLOSE TABLE] Invalid table number:', tableNumber)
         toast({
           title: 'Invalid table number',
           description: `Table number ${tableNumber} is invalid.`,
@@ -448,124 +457,38 @@ export function OrdersDashboard() {
         return
       }
 
-      console.log(`🔍 [CLOSE TABLE] Looking up table ${tableNum} (type: ${typeof tableNum})`)
-      
-      // Table ID Lookup: Query tables collection where table_number == tableNum
-      // This finds the document by the number field, then we use the document's actual ID
-      const { getTableByNumber } = require('@/lib/firebase/tables')
-      const { tablePath, ordersPath, orderPath, tabsPath } = require('@/lib/firebase/paths')
-      
-      const table = await getTableByNumber(restaurantId, tableNum)
-      
-      // Error Handling: If no table document is found, log and return
-      if (!table) {
-        console.error('❌ [CLOSE TABLE] Table document not found in Firestore', {
-          restaurantId,
-          tableNumber: tableNum,
-        })
-        toast({
-          title: 'Table not found',
-          description: `Table ${tableNum} not found in the database. Please verify the table exists.`,
-          variant: 'destructive',
-        })
-        setClosingTableNumber(null)
-        return
+      const { data: openOrders, error: countError } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('firebase_restaurant_id', dashboardRestaurantId)
+        .eq('table_number', Number(tableNum))
+        .eq('is_closed', false)
+      if (countError) throw countError
+
+      const response = await fetch(`/api/tables/${encodeURIComponent(String(tableNum))}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId: dashboardRestaurantId }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to close table')
       }
-
-      // Use the document's actual ID (e.g., "JH7y...") from the query result
-      const tableId = table.id
-      console.log(`✅ [CLOSE TABLE] Found table document: ${tableId} for table number ${tableNum}`)
-
-      // The Batch Update:
-      // 1. Update the Table document status to "available" (active: true)
-      // Using the actual document ID from the query result
-      const tableUpdatePromise = updateDoc(doc(db, tablePath(restaurantId, tableId)), {
-        active: true, // Set table back to available for next customer
-        updated_at: serverTimestamp(),
-      })
-
-      // 2. Update ALL orders for that table where is_closed == false to is_closed: true
-      const ordersRef = collection(db, ordersPath(restaurantId))
-      const ordersQuery = query(
-        ordersRef,
-        where('table_number', '==', tableNum), // Use the converted number
-        where('is_closed', '==', false)
-      )
-
-      const ordersSnapshot = await getDocs(ordersQuery)
-      console.log(`📦 [CLOSE TABLE] Found ${ordersSnapshot.docs.length} open orders for table ${tableNum}`)
-
-      // 3. Settle any open tabs for this table so stale tab sessions don't linger.
-      const tabsRef = collection(db, tabsPath(restaurantId))
-      const openTabsByString = await getDocs(
-        query(tabsRef, where('status', '==', 'open'), where('table_number', '==', String(tableNum)))
-      )
-      const openTabsByNumber = await getDocs(
-        query(tabsRef, where('status', '==', 'open'), where('table_number', '==', tableNum))
-      )
-      const openTabDocs = new Map<string, any>()
-      openTabsByString.docs.forEach((d) => openTabDocs.set(d.id, d))
-      openTabsByNumber.docs.forEach((d) => openTabDocs.set(d.id, d))
-      console.log(`🧾 [CLOSE TABLE] Found ${openTabDocs.size} open tab(s) for table ${tableNum}`)
-      
-      const orderUpdatePromises = ordersSnapshot.docs.map((orderDoc) =>
-        updateDoc(doc(db, orderPath(restaurantId, orderDoc.id)), {
-          table_closed: true,
-          is_closed: true, // Mark order as closed
-          status: 'completed',
-          completed_at: serverTimestamp(),
-          updated_at: serverTimestamp(),
-        })
-      )
-      const tabUpdatePromises = Array.from(openTabDocs.values()).map((tabDoc) =>
-        updateDoc(tabDoc.ref, {
-          status: 'settled',
-          settled_at: serverTimestamp(),
-          settlement_type: 'closed_by_staff',
-          updated_at: serverTimestamp(),
-        })
-      )
-
-      // Execute all updates in parallel
-      await Promise.all([tableUpdatePromise, ...orderUpdatePromises, ...tabUpdatePromises])
-
-      console.log(`✅ [CLOSE TABLE] Successfully closed table ${tableNum}:`, {
-        tableId,
-        ordersClosed: orderUpdatePromises.length,
-        tabsSettled: tabUpdatePromises.length,
-      })
 
       toast({
         title: 'Table closed',
-        description: `Table ${tableNum} closed. ${orderUpdatePromises.length} order(s) completed and ${tabUpdatePromises.length} tab(s) settled.`,
+        description: `Table ${tableNum} closed. ${openOrders?.length || 0} order(s) completed.`,
       })
       
       setShowCloseTableDialog(false)
       setClosingTableNumber(null)
     } catch (error: any) {
-      // Comprehensive error catching with permission denied logging
       console.error('❌ [CLOSE TABLE] Error closing table:', {
         error: error.message,
         code: error.code,
         tableNumber,
-        restaurantId,
+        restaurantId: dashboardRestaurantId,
       })
-
-      // If permission denied, log auth.currentUser.uid and restaurant.owner_id for comparison
-      if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
-        const currentUserUid = user?.uid || 'NO_USER'
-        const restaurantOwnerId = restaurant?.owner_id || 'NO_OWNER_ID'
-        const restaurantOwnerUid = restaurant?.owner_uid || 'NO_OWNER_UID'
-        
-        console.error('🔒 [CLOSE TABLE] Permission Denied - Auth Comparison:', {
-          'auth.currentUser.uid': currentUserUid,
-          'restaurant.owner_id': restaurantOwnerId,
-          'restaurant.owner_uid': restaurantOwnerUid,
-          'Match (uid === owner_uid)': currentUserUid === restaurantOwnerUid,
-          'Match (uid === owner_id)': currentUserUid === restaurantOwnerId,
-          note: 'User must match restaurant owner to close tables',
-        })
-      }
 
       toast({
         title: 'Failed to close table',
@@ -920,30 +843,37 @@ export function OrdersDashboard() {
                         )
                         const ready =
                           normalizedOrder.status === 'ready_for_terminal' || readyAt
-                        return !ready ? (
-                        <p className="text-sm text-muted-foreground font-sans">
-                          Waiting for customer to request terminal
-                        </p>
-                        ) : null
+                        const canSendToTerminal =
+                          ready || paymentChannelOf(normalizedOrder) === 'terminal'
+                        const isSending = sendingToTerminalOrderId === normalizedOrder.id
+                        return (
+                          <>
+                            {!ready && (
+                              <p className="text-sm text-muted-foreground font-sans">
+                                Waiting for customer to request terminal
+                              </p>
+                            )}
+                            <Button
+                              className="w-full bg-[#FF6B35] hover:bg-[#e55a28] disabled:opacity-50 disabled:pointer-events-none"
+                              onClick={() => handleSendToTerminal(normalizedOrder)}
+                              disabled={isSending || !canSendToTerminal}
+                            >
+                              <CreditCard className="h-4 w-4 mr-2" />
+                              {isSending ? 'Sending to terminal...' : 'Send to Terminal'}
+                            </Button>
+                            {!ready && (
+                              <Button
+                                variant="ghost"
+                                className="h-auto w-full p-0 text-xs font-normal text-muted-foreground hover:text-foreground"
+                                onClick={() => handleSendToTerminal(normalizedOrder, true)}
+                                disabled={isSending}
+                              >
+                                Send Anyway
+                              </Button>
+                            )}
+                          </>
+                        )
                       })()}
-                      <Button
-                        className="w-full bg-[#FF6B35] hover:bg-[#e55a28] disabled:opacity-50 disabled:pointer-events-none"
-                        onClick={() => handleSendToTerminal(normalizedOrder)}
-                        disabled={(() => {
-                          const readyAt = Boolean(
-                            (normalizedOrder as Order & { ready_for_terminal_at?: unknown })
-                              .ready_for_terminal_at
-                          )
-                          const ready =
-                            normalizedOrder.status === 'ready_for_terminal' || readyAt
-                          return sendingToTerminalOrderId === normalizedOrder.id || !ready
-                        })()}
-                      >
-                        <CreditCard className="h-4 w-4 mr-2" />
-                        {sendingToTerminalOrderId === normalizedOrder.id
-                          ? 'Sending to terminal...'
-                          : 'Send to Terminal'}
-                      </Button>
                     </div>
                   )}
 

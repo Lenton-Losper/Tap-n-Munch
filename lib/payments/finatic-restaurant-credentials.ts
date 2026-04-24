@@ -1,6 +1,4 @@
-import { adminDb } from '@/lib/firebase/admin-firestore'
-
-type AdminFirestore = NonNullable<ReturnType<typeof adminDb>>
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 /**
  * Same merchant/store resolution as checkout (`app/api/orders/route.ts`):
@@ -8,12 +6,18 @@ type AdminFirestore = NonNullable<ReturnType<typeof adminDb>>
  * `PAYCLOUD_MERCHANT_NO` / `PAYCLOUD_STORE_NO`.
  */
 export async function getRestaurantFinaticCredentials(
-  fs: AdminFirestore,
   restaurantId: string
-): Promise<{ merchantNo: string; storeNo: string }> {
-  const snap = await fs.doc(`restaurants/${restaurantId}`).get()
-  const data = snap.exists ? (snap.data() as Record<string, unknown>) : {}
+): Promise<{ merchantNo: string; storeNo: string; terminalSn: string; terminals: any[] }> {
+  const supabase = createServerSupabaseClient()
+  const { data } = await supabase
+    .from('restaurants')
+    .select('*')
+    .eq('firebase_id', restaurantId)
+    .single()
+
   const merchantNo = String(data?.finatic_merchant_no || process.env.PAYCLOUD_MERCHANT_NO || '').trim()
   const storeNo = String(data?.finatic_store_no || process.env.PAYCLOUD_STORE_NO || '').trim()
-  return { merchantNo, storeNo }
+  const terminalSn = String(data?.finatic_terminal_sn || process.env.PAYCLOUD_TERMINAL_SN || 'WPYB002349003019').trim()
+  const terminals = Array.isArray(data?.terminals) ? data.terminals : []
+  return { merchantNo, storeNo, terminalSn, terminals }
 }

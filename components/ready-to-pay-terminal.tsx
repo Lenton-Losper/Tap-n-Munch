@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 type Props = {
   restaurantId: string
   orderId: string
+  tableNumber: number
   sessionId: string | null
   className?: string
 }
@@ -13,7 +14,7 @@ type Props = {
 /**
  * Customer CTA: notify staff that the card terminal can be brought to the table.
  */
-export function ReadyToPayTerminalButton({ restaurantId, orderId, sessionId, className }: Props) {
+export function ReadyToPayTerminalButton({ restaurantId, orderId, tableNumber, sessionId, className }: Props) {
   const [loading, setLoading] = useState(false)
   const [notified, setNotified] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -46,7 +47,7 @@ export function ReadyToPayTerminalButton({ restaurantId, orderId, sessionId, cla
             const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/ready-for-terminal`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ restaurantId, session_id: sessionId }),
+              body: JSON.stringify({ restaurantId, tableNumber, session_id: sessionId }),
             })
             const data = await res.json().catch(() => ({}))
             if (!res.ok) {

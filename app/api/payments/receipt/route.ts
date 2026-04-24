@@ -1,26 +1,9 @@
 import { NextResponse } from 'next/server'
-import { orderPath } from '@/lib/firebase/paths'
 import { createPaymentRequest } from '@/payments/paycloud'
-import { FieldValue, adminDb } from '@/lib/firebase/admin-firestore'
-
-const ADMIN_NOT_CONFIGURED =
-  'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
-
-async function fetchOrderData(
-  fs: NonNullable<ReturnType<typeof adminDb>>,
-  restaurantId: string,
-  orderId: string
-) {
-  const snap = await fs.doc(orderPath(restaurantId, orderId)).get()
-  if (!snap.exists) return null
-  return snap.data() as Record<string, unknown>
-}
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export async function POST(req: Request) {
-  const fs = adminDb()
-  if (!fs) {
-    return NextResponse.json({ ok: false, error: ADMIN_NOT_CONFIGURED }, { status: 503 })
-  }
+  const supabase = createServerSupabaseClient()
 
   try {
     const body = await req.json()
@@ -38,14 +21,23 @@ export async function POST(req: Request) {
     if (orderIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'No orders to pay' }, { status: 400 })
     }
+
+    const { data: orders } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('firebase_restaurant_id', restaurantId)
+      .eq('table_number', Number(tableNumber))
+      .eq('is_closed', false)
+      .order('placed_at', { ascending: true })
+
+    const byId = new Map((orders || []).map((o: any) => [String(o.id), o]))
     let sum = 0
     for (const orderId of sortedOrderIds) {
-      const data = await fetchOrderData(fs, restaurantId, orderId)
+      const data = byId.get(orderId)
       if (!data) {
         return NextResponse.json({ ok: false, error: `Order not found: ${orderId}` }, { status: 404 })
       }
-      const tn = Number(data.table_number)
-      if (tn !== tableNumber) {
+      if (Number(data.table_number) !== tableNumber) {
         return NextResponse.json({ ok: false, error: 'Order does not match this table' }, { status: 400 })
       }
       if (data.is_closed === true) {
@@ -66,46 +58,37 @@ export async function POST(req: Request) {
       )
     }
 
-    // PayCloud "Try again" requires a unique merchant_order_no per payment attempt.
-    // We keep the order-id portion for debugging/webhook mapping, and append a short nonce.
-    // NOTE: webhook mapping relies on `paycloud_merchant_order_no` persisted below.
     const attemptNonce = String(Date.now()).slice(-8)
     const merchantOrderNo = `${restaurantId}:receipt:${sortedOrderIds.join(',')}@${attemptNonce}`
-
-    console.log('[PayCloud][receipt] PAYCLOUD_CLOCK_OFFSET_MS=', process.env.PAYCLOUD_CLOCK_OFFSET_MS || 0)
-    console.log('[PayCloud][receipt] merchantOrderNo(input)=', merchantOrderNo)
 
     const payment = await createPaymentRequest({
       amount: roundedSum,
       orderId: merchantOrderNo,
-      description: `FlashTap receipt — Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
+      description: `FlashTap receipt - Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
     })
 
-    // This is the exact URL PayCloud should redirect to.
-    // We'll log the extracted `tn` so we can match it against the browser URL.
     let tn: string | null = null
     try {
       tn = new URL(payment.checkoutUrl).searchParams.get('tn')
     } catch {
       tn = null
     }
-    console.log('[PayCloud][receipt] checkoutUrl=', payment.checkoutUrl)
-    console.log('[PayCloud][receipt] checkout tn=', tn)
 
-    // Persist the PayCloud wire merchant order id so the webhook can map back even if
-    // `merchantOrderNo` is attempt-specific.
     if (tn) {
-      const patch = {
-        payment_status: 'pending' as const,
-        payment_provider: 'paycloud',
-        payment_reference: merchantOrderNo,
-        paycloud_merchant_order_no: tn,
-        payment_checkout_url: payment.checkoutUrl,
-        payment_pending_since: FieldValue.serverTimestamp(),
-        payment_init_error: FieldValue.delete(),
-        updated_at: FieldValue.serverTimestamp(),
-      }
-      await Promise.all(sortedOrderIds.map((orderId) => fs.doc(orderPath(restaurantId, orderId)).update(patch)))
+      await Promise.all(
+        sortedOrderIds.map(async (id) => {
+          await supabase
+            .from('orders')
+            .update({
+              payment_status: 'pending',
+              payment_provider: 'paycloud',
+              payment_reference: merchantOrderNo,
+              paycloud_merchant_order_no: tn,
+              payment_checkout_url: payment.checkoutUrl,
+            })
+            .eq('id', id)
+        })
+      )
     }
 
     return NextResponse.json(

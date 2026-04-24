@@ -2,6 +2,7 @@ import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, d
 import { db } from './config'
 import { sanitizeFirestoreData } from './firestore-utils'
 import { ordersPath, orderPath } from './paths'
+import { supabase } from '@/lib/supabase/client'
 
 export interface OrderItem {
   menu_item_id: string
@@ -275,13 +276,11 @@ export async function updateOrderStatus(
   orderId: string,
   status: Order['status']
 ): Promise<void> {
-  if (!db) throw new Error('Firestore is not initialized')
   if (!restaurantId) throw new Error('Restaurant ID is required')
+  const supabaseAny = supabase as any
   
   try {
-    // Use hierarchical path: restaurants/{restaurantId}/orders/{orderId}
-    const docRef = doc(db, orderPath(restaurantId, orderId))
-    const updates: any = {
+    const updates: Record<string, unknown> = {
       status,
       updated_at: new Date().toISOString(),
     }
@@ -297,14 +296,19 @@ export async function updateOrderStatus(
         break
       case 'ready':
         updates.ready_at = now
-        // Calculate prep time if accepted_at exists
-        const order = await getOrder(restaurantId, orderId)
-        if (order?.accepted_at) {
-          const acceptedTime = order.accepted_at instanceof Date 
-            ? order.accepted_at.getTime() 
-            : new Date(order.accepted_at).getTime()
+        const { data: existingOrder } = await supabaseAny
+          .from('orders')
+          .select('accepted_at')
+          .eq('id', orderId)
+          .eq('firebase_restaurant_id', restaurantId)
+          .single()
+        const acceptedAt = (existingOrder as { accepted_at?: string } | null)?.accepted_at
+        if (acceptedAt) {
+          const acceptedTime = new Date(acceptedAt).getTime()
           const readyTime = new Date().getTime()
-          updates.prep_time_minutes = Math.round((readyTime - acceptedTime) / 60000)
+          if (Number.isFinite(acceptedTime)) {
+            updates.prep_time_minutes = Math.round((readyTime - acceptedTime) / 60000)
+          }
         }
         break
       case 'completed':
@@ -315,7 +319,12 @@ export async function updateOrderStatus(
         break
     }
     
-    await updateDoc(docRef, updates)
+    const { error } = await supabaseAny
+      .from('orders')
+      .update(updates)
+      .eq('id', orderId)
+      .eq('firebase_restaurant_id', restaurantId)
+    if (error) throw error
   } catch (error: any) {
     console.error('❌ [updateOrderStatus] Error updating order:', {
       restaurantId,
@@ -335,25 +344,24 @@ export async function updateOrderPayment(
   paymentStatus: Order['payment_status'],
   staffId?: string
 ): Promise<void> {
-  if (!db) throw new Error('Firestore is not initialized')
   if (!restaurantId) throw new Error('Restaurant ID is required')
+  const supabaseAny = supabase as any
   
   try {
-    // Use hierarchical path: restaurants/{restaurantId}/orders/{orderId}
-    const docRef = doc(db, orderPath(restaurantId, orderId))
-    
-    // Check if order is already paid
-    const orderDoc = await getDoc(docRef)
-    if (!orderDoc.exists()) {
+    const { data: currentOrder, error: orderError } = await supabaseAny
+      .from('orders')
+      .select('payment_status')
+      .eq('id', orderId)
+      .eq('firebase_restaurant_id', restaurantId)
+      .single()
+    if (orderError || !currentOrder) {
       throw new Error('Order not found')
     }
-    
-    const currentOrder = orderDoc.data() as Order
-    if (currentOrder.payment_status === 'paid' && paymentStatus === 'paid') {
+    if ((currentOrder as { payment_status?: string }).payment_status === 'paid' && paymentStatus === 'paid') {
       throw new Error('Order is already marked as paid')
     }
     
-    const updates: any = {
+    const updates: Record<string, unknown> = {
       payment_status: paymentStatus,
       updated_at: new Date().toISOString(),
     }
@@ -365,7 +373,12 @@ export async function updateOrderPayment(
       }
     }
     
-    await updateDoc(docRef, updates)
+    const { error } = await supabaseAny
+      .from('orders')
+      .update(updates)
+      .eq('id', orderId)
+      .eq('firebase_restaurant_id', restaurantId)
+    if (error) throw error
   } catch (error: any) {
     console.error('❌ [updateOrderPayment] Error updating payment:', {
       restaurantId,
@@ -387,128 +400,69 @@ export async function updateOrderPayment(
  */
 export function subscribeToOrders(
   restaurantId: string,
-  status: Order['status'],
+  status: string,
   callback: (orders: Order[]) => void
 ): () => void {
-  if (!db) {
-    callback([])
-    return () => {}
-  }
-  
-  try {
-    // STEP 3: Fix Dashboard Query (Match Reality)
-    // Dashboard = restaurant-wide view, NO session filter
-    // NEW: Use hierarchical path - restaurant_id is in the path
-    const q = query(
-      collection(db, ordersPath(restaurantId)),
-      where('status', '==', status),
-      orderBy('placed_at', 'asc') // Use 'asc' for chronological order (oldest first)
-    )
-    
-    console.log('🔍 subscribeToOrders: Querying for restaurant_id:', restaurantId, 'status:', status)
-    
-    // DEBUG: Also check if ANY orders exist for this restaurant (regardless of status)
-    const debugQuery = query(
-      collection(db, ordersPath(restaurantId)),
-      limit(5)
-    )
-    
-    getDocs(debugQuery).then((debugSnapshot) => {
-      console.log('🔍 DEBUG: Total orders for restaurant', restaurantId, ':', debugSnapshot.docs.length)
-      if (debugSnapshot.docs.length > 0) {
-        debugSnapshot.docs.forEach((doc, idx) => {
-          const data = doc.data()
-          console.log(`🔍 DEBUG: Order ${idx + 1}:`, {
-            id: doc.id,
-            status: data.status,
-            restaurant_id: data.restaurant_id,
-            has_placed_at: !!data.placed_at,
-            has_created_at: !!data.created_at,
-            has_session_id: !!data.session_id,
-            order_number: data.order_number,
-          })
-        })
-      } else {
-        console.log('⚠️ DEBUG: No orders found for this restaurant at all. Either no orders exist, or restaurant_id mismatch.')
-      }
-    }).catch((err) => {
-      console.error('⚠️ DEBUG: Error checking all orders:', err)
-    })
-    
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        console.log('📦 subscribeToOrders: Snapshot received,', snapshot.docs.length, 'orders found')
-        if (snapshot.docs.length > 0) {
-          const firstDoc = snapshot.docs[0]
-          const firstData = firstDoc.data()
-          console.log('📦 subscribeToOrders: First order sample:', {
-            id: firstDoc.id,
-            order_number: firstData.order_number,
-            status: firstData.status,
-            restaurant_id: firstData.restaurant_id,
-            table_id: firstData.table_id,
-            session_id: firstData.session_id,
-            created_at: firstData.created_at,
-            placed_at: firstData.placed_at,
-          })
-        } else {
-          // PART 5: Safety Logging - Log all statuses found for this restaurant
-          console.log('⚠️ subscribeToOrders: No orders found. Possible reasons:')
-          console.log('  1. No orders exist with status:', status)
-          console.log('  2. Orders exist but have different status')
-          console.log('  3. Orders exist but missing placed_at field')
-          console.log('  4. Orders exist but restaurant_id mismatch')
-          console.log('📊 Query parameters used:', {
-            restaurant_id: restaurantId,
-            status: status,
-            orderBy: 'placed_at',
-          })
-        }
-        
-        const { normalizeOrder } = require('@/lib/utils')
-        const orders = snapshot.docs.map(doc => {
-          const data = doc.data()
-          return normalizeOrder({
-            id: doc.id,
-            ...data,
-          }) as Order
-        })
-        callback(orders)
-      },
-      (error: any) => {
-        console.error('❌ Error in orders snapshot listener:', error)
-        
-        // Check if it's a missing index error
-        if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
-          console.error(
-            'Firestore index required. Please create the index using the link in the error message, ' +
-            'or deploy firestore.indexes.json using: firebase deploy --only firestore:indexes'
-          )
-          
-          // Extract the index creation URL if available
-          const indexUrlMatch = error.message?.match(/https:\/\/[^\s]+/)
-          if (indexUrlMatch) {
-            console.error('Index creation URL:', indexUrlMatch[0])
-          }
-        }
-        
-        callback([])
-      }
-    )
-  } catch (error: any) {
-    console.error('Error setting up orders subscription:', error)
-    
-    // Check if it's a missing index error
-    if (error?.code === 'failed-precondition' && error?.message?.includes('index')) {
-      console.error(
-        'Firestore index required. Please create the index using the link in the error message, ' +
-        'or deploy firestore.indexes.json using: firebase deploy --only firestore:indexes'
-      )
+  const fetchOrders = async () => {
+    let queryBuilder = supabase
+      .from('orders')
+      .select('*')
+      .eq('firebase_restaurant_id', restaurantId)
+      .order('placed_at', { ascending: true })
+
+    if (status === 'new') {
+      queryBuilder = queryBuilder.in('status', ['new', 'ready_for_terminal'])
+    } else if (status === 'completed') {
+      queryBuilder = queryBuilder.in('status', ['completed']).or('payment_status.eq.paid')
+    } else {
+      queryBuilder = queryBuilder.eq('status', status)
     }
-    
+
+    if (status !== 'completed') {
+      queryBuilder = queryBuilder.eq('is_closed', false)
+    }
+
+    const { data, error } = await queryBuilder
+    if (error) {
+      console.error('[SUPABASE] subscribeToOrders error:', error)
+      callback([])
+      return
+    }
+    const { normalizeOrder } = require('@/lib/utils')
+    const normalized = (data || []).map((row: any) => normalizeOrder(row) as Order)
+    console.log(`[SUPABASE] ${status} orders:`, normalized.length)
+    callback(normalized)
+  }
+
+  fetchOrders().catch((err) => {
+    console.error('[SUPABASE] subscribeToOrders fetch failed:', err)
     callback([])
-    return () => {}
+  })
+
+  const channel = supabase
+    .channel(`orders-${restaurantId}-${status}-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'orders',
+        filter: `firebase_restaurant_id=eq.${restaurantId}`
+      },
+      (payload) => {
+        console.log('[SUPABASE] Realtime change:', payload.eventType)
+        fetchOrders().catch((err) => {
+          console.error('[SUPABASE] subscribeToOrders refresh failed:', err)
+          callback([])
+        })
+      }
+    )
+    .subscribe((channelStatus) => {
+      console.log('[SUPABASE] Subscription status:', channelStatus)
+    })
+
+  return () => {
+    supabase.removeChannel(channel)
   }
 }
 

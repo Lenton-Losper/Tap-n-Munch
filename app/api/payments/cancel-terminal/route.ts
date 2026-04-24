@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server'
-import { adminDb } from '@/lib/firebase/admin-firestore'
-import { orderPath } from '@/lib/firebase/paths'
 import { paycloudWireMerchantOrderNo, signRequest } from '@/payments/paycloud'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { orderId, restaurantId } = body || {}
-    if (!orderId || !restaurantId) {
+    const { orderId } = body || {}
+    if (!orderId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
@@ -17,6 +16,17 @@ export async function POST(req: Request) {
     const endpoint = process.env.PAYCLOUD_ENDPOINT
     if (!merchantNo || !storeNo || !appId || !endpoint) {
       return NextResponse.json({ error: 'Missing PayCloud configuration' }, { status: 500 })
+    }
+
+    const supabase = createServerSupabaseClient()
+    const { data: order } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .single()
+
+    if (!order) {
+      return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
     const merchantOrderNo = paycloudWireMerchantOrderNo(String(orderId))
@@ -39,7 +49,6 @@ export async function POST(req: Request) {
       body: JSON.stringify(signed),
     })
     const data = await response.json().catch(() => ({}))
-    console.log('[CANCEL-TERMINAL] Finatic response:', JSON.stringify(data))
 
     if (!response.ok || String((data as Record<string, unknown>)?.code || '') !== '0') {
       return NextResponse.json(
@@ -52,18 +61,16 @@ export async function POST(req: Request) {
       )
     }
 
-    const fs = adminDb()
-    if (fs) {
-      await fs.doc(orderPath(String(restaurantId), String(orderId))).update({
+    await supabase
+      .from('orders')
+      .update({
         payment_method: 'cash',
         payment_status: 'cash_pending',
-        updated_at: new Date(),
       })
-    }
+      .eq('id', String(orderId))
 
     return NextResponse.json({ success: true, data: (data as Record<string, unknown>)?.data || null }, { status: 200 })
   } catch (err: any) {
-    console.error('[CANCEL-TERMINAL] Error:', err)
     return NextResponse.json({ error: err?.message || 'Failed to cancel terminal payment' }, { status: 500 })
   }
 }
