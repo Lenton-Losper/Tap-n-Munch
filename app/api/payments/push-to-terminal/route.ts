@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { formatPaycloudRequestSignature, loadPrivateKey, signUtf8WithForgePkcs1RsaSha256 } from '@/payments/signature'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -16,8 +17,9 @@ export async function POST(req: Request) {
     const body = await req.json()
     console.log('[PUSH-TO-TERMINAL] Request body:', JSON.stringify(body))
     const { orderId, restaurantId, amount, tableNumber, orderNumber } = body || {}
+    const normalizedRestaurantId = String(restaurantId || '').trim()
     const normalizedOrderId = String(orderId || '').trim()
-    if (!normalizedOrderId || !restaurantId) {
+    if (!normalizedOrderId || !normalizedRestaurantId) {
       console.error('[PUSH-TO-TERMINAL] Missing required fields', {
         orderId,
         restaurantId,
@@ -57,13 +59,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
     }
 
-    // TODO: Switch to per-restaurant credentials once
-    // Sedrick links Sweet Side's P5 to their merchant account
-    const merchantNo = "342400001004"
-    const storeNo = "4424000013"
-    const terminalSn = "WPYB002349003019"
+    const { merchantNo, storeNo, terminalSn } = await getRestaurantFinaticCredentials(
+      normalizedRestaurantId
+    )
+    if (!terminalSn) {
+      console.error('[PUSH-TO-TERMINAL] No terminal configured for restaurant:', normalizedRestaurantId)
+      return NextResponse.json(
+        {
+          error: 'No terminal configured for this restaurant. Please add your terminal serial number in settings.',
+          code: 'NO_TERMINAL'
+        },
+        { status: 400 }
+      )
+    }
     const appId = process.env.PAYCLOUD_APP_ID
-    console.log('[PUSH-TO-TERMINAL] credentials:', {
+    console.log('[PUSH-TO-TERMINAL] Using terminal:', terminalSn, 'for restaurant:', normalizedRestaurantId)
+    console.log('[PUSH-TO-TERMINAL] restaurant credentials:', {
       merchantNo,
       storeNo,
       terminalSn

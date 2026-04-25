@@ -42,8 +42,8 @@ async function main() {
   const { loadPrivateKey, signUtf8WithForgePkcs1RsaSha256, formatPaycloudRequestSignature } = await import('./payments/signature.js')
 
   const appId = requiredEnv('PAYCLOUD_APP_ID')
-  const merchantNo = requiredEnv('PAYCLOUD_MERCHANT_NO')
-  const storeNo = requiredEnv('PAYCLOUD_STORE_NO')
+  const merchantNo = '342400001004'
+  const storeNo = '4424000013'
   requiredEnv('PAYCLOUD_PRIVATE_KEY')
 
   const paramsForSigning = {

@@ -82,11 +82,6 @@ export function OrdersDashboard() {
   }
 
   const shouldDisplayOrder = (order: Order) => {
-    const isPaidCompleted =
-      String(order.status || '').toLowerCase() === 'completed' &&
-      String(order.payment_status || '').toLowerCase() === 'paid'
-    if (isPaidCompleted) return false
-
     const isPaidSettlementOrder =
       String((order as Order & { tab_settlement_for_tab_id?: string | null }).tab_settlement_for_tab_id || '').trim() !== '' &&
       String(order.payment_status || '').toLowerCase() === 'paid'
@@ -510,6 +505,11 @@ export function OrdersDashboard() {
     }
   }
 
+  const getPaymentMethodLabel = (order: Order) => {
+    if (paymentChannelOf(order) === 'terminal') return 'Card Terminal'
+    return String(order.payment_method || 'cash').replace(/_/g, ' ')
+  }
+
   const getPaymentStatusBadge = (order: Order) => {
     if (order.payment_status === 'paid') {
       return (
@@ -727,7 +727,7 @@ export function OrdersDashboard() {
                     {getPaymentStatusBadge(normalizedOrder)}
                     <div className="flex items-center gap-1 text-sm text-muted-foreground">
                       {getPaymentMethodIcon(normalizedOrder.payment_method)}
-                      <span className="capitalize">{normalizedOrder.payment_method || 'cash'}</span>
+                      <span className="capitalize">{getPaymentMethodLabel(normalizedOrder)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">

@@ -33,6 +33,7 @@ export interface Restaurant {
   subscription_status: 'active' | 'inactive' | 'trial'
   finatic_merchant_no?: string
   finatic_store_no?: string
+  finatic_terminal_sn?: string
   created_at: string
   updated_at: string
 }

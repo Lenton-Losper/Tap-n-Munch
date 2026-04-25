@@ -15,6 +15,7 @@ import { useToast } from '@/hooks/use-toast'
 import { Switch } from '@/components/ui/switch'
 import { ProtectedRoute } from '@/components/auth/protected-route'
 import Image from 'next/image'
+import { createClient } from '@supabase/supabase-js'
 
 function SettingsContent() {
   const { user, restaurantId, restaurant: initialRestaurant } = useAuth()
@@ -38,6 +39,7 @@ function SettingsContent() {
   const [cardEnabled, setCardEnabled] = useState(false)
   const [finaticMerchantNo, setFinaticMerchantNo] = useState('')
   const [finaticStoreNo, setFinaticStoreNo] = useState('')
+  const [finaticTerminalSn, setFinaticTerminalSn] = useState('')
   
   // Track if details have changed
   const [detailsChanged, setDetailsChanged] = useState(false)
@@ -67,6 +69,7 @@ function SettingsContent() {
           setCardEnabled(data.payment_methods?.includes('card') ?? false)
           setFinaticMerchantNo(String((data as any).finatic_merchant_no || ''))
           setFinaticStoreNo(String((data as any).finatic_store_no || ''))
+          setFinaticTerminalSn(String((data as any).finatic_terminal_sn || ''))
           setDetailsChanged(false)
         }
       } catch (err) {
@@ -96,10 +99,11 @@ function SettingsContent() {
       logoUrl !== (restaurant.logo_url || null) ||
       finaticMerchantNo !== String((restaurant as any).finatic_merchant_no || '') ||
       finaticStoreNo !== String((restaurant as any).finatic_store_no || '') ||
+      finaticTerminalSn !== String((restaurant as any).finatic_terminal_sn || '') ||
       logoPreview !== null
     
     setDetailsChanged(hasChanged)
-  }, [name, phone, logoUrl, finaticMerchantNo, finaticStoreNo, logoPreview, restaurant])
+  }, [name, phone, logoUrl, finaticMerchantNo, finaticStoreNo, finaticTerminalSn, logoPreview, restaurant])
 
   const handleLogoUpload = async (file: File) => {
     if (!restaurantId) return
@@ -196,7 +200,59 @@ function SettingsContent() {
         logo_url: logoUrl,
         finatic_merchant_no: finaticMerchantNo.trim() || null,
         finatic_store_no: finaticStoreNo.trim() || null,
+        finatic_terminal_sn: finaticTerminalSn.trim() || null,
       })
+
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+      const merchantNo = finaticMerchantNo.trim() || null
+      const storeNo = finaticStoreNo.trim() || null
+      const terminalSn = finaticTerminalSn.trim() || null
+      const restaurantName = name.trim()
+
+      const { data: existing, error: existingError } = await supabase
+        .from('restaurants')
+        .select('id')
+        .eq('firebase_id', restaurantId)
+        .single()
+
+      if (existingError && existingError.code !== 'PGRST116') {
+        throw new Error(existingError.message || 'Failed to check Supabase restaurant record')
+      }
+
+      if (existing) {
+        const { error: updateError } = await supabase
+          .from('restaurants')
+          .update({
+            finatic_merchant_no: merchantNo,
+            finatic_store_no: storeNo,
+            finatic_terminal_sn: terminalSn,
+            updated_at: new Date().toISOString()
+          })
+          .eq('firebase_id', restaurantId)
+
+        if (updateError) {
+          throw new Error(updateError.message || 'Failed to update Supabase credentials')
+        }
+      } else {
+        const { error: insertError } = await supabase
+          .from('restaurants')
+          .insert({
+            firebase_id: restaurantId,
+            finatic_merchant_no: merchantNo,
+            finatic_store_no: storeNo,
+            finatic_terminal_sn: terminalSn,
+            name: restaurantName
+          })
+
+        if (insertError) {
+          throw new Error(insertError.message || 'Failed to insert Supabase credentials')
+        }
+      }
+
+      console.log('[SETTINGS] Credentials saved to Supabase')
 
       // Update local state
       setRestaurant((prev) => 
@@ -208,6 +264,7 @@ function SettingsContent() {
               logo_url: logoUrl,
               finatic_merchant_no: finaticMerchantNo.trim() || '',
               finatic_store_no: finaticStoreNo.trim() || '',
+              finatic_terminal_sn: finaticTerminalSn.trim() || '',
             }
           : null
       )
@@ -421,6 +478,20 @@ function SettingsContent() {
               placeholder="e.g. 4426012791"
               disabled={savingDetails}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="finatic_terminal_sn">Finatic Terminal Serial Number</Label>
+            <Input
+              id="finatic_terminal_sn"
+              value={finaticTerminalSn}
+              onChange={(e) => setFinaticTerminalSn(e.target.value)}
+              placeholder="e.g. WPYB002349003019"
+              disabled={savingDetails}
+            />
+            <p className="text-xs text-muted-foreground">
+              Terminal serial number is restaurant-specific and must be configured per restaurant.
+            </p>
           </div>
 
           {/* Save Button */}
