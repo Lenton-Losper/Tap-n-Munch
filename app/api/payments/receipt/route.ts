@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createPaymentRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
 
 export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
@@ -30,10 +31,10 @@ export async function POST(req: Request) {
       .eq('is_closed', false)
       .order('placed_at', { ascending: true })
 
-    const byId = new Map((orders || []).map((o: any) => [String(o.id), o]))
+    const byId = new Map((orders || []).map((o: { id: string }) => [String(o.id), o]))
     let sum = 0
     for (const orderId of sortedOrderIds) {
-      const data = byId.get(orderId)
+      const data = byId.get(orderId) as Record<string, unknown> | undefined
       if (!data) {
         return NextResponse.json({ ok: false, error: `Order not found: ${orderId}` }, { status: 404 })
       }
@@ -44,7 +45,15 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, error: 'Cannot pay for a closed order' }, { status: 400 })
       }
       if (data.payment_status === 'paid') {
-        return NextResponse.json({ ok: false, error: 'An order is already paid' }, { status: 400 })
+        console.log('[RECEIPT] Order already paid, blocking duplicate:', orderId)
+        return NextResponse.json(
+          {
+            ok: false,
+            error: 'This order has already been paid',
+            code: 'ALREADY_PAID',
+          },
+          { status: 400 }
+        )
       }
       sum += Number(data.total) || 0
     }
@@ -58,36 +67,85 @@ export async function POST(req: Request) {
       )
     }
 
-    const attemptNonce = String(Date.now()).slice(-8)
-    const merchantOrderNo = `${restaurantId}:receipt:${sortedOrderIds.join(',')}@${attemptNonce}`
+    let merchantNo: string
+    let storeNo: string
+    try {
+      const { checkoutMerchantNo, checkoutStoreNo } = await getRestaurantFinaticCredentials(restaurantId)
+      merchantNo = checkoutMerchantNo
+      storeNo = checkoutStoreNo
+      console.log('[RECEIPT] Using checkout credentials:', { merchantNo, storeNo })
+    } catch {
+      return NextResponse.json(
+        {
+          error: 'This restaurant has not configured their payment credentials. Please update settings.',
+        },
+        { status: 400 }
+      )
+    }
 
+    let merchantOrderNo = ''
+    for (const orderId of sortedOrderIds) {
+      const row = byId.get(orderId) as { paycloud_merchant_order_no?: string | null; payment_reference?: string | null }
+      const cand = String(row?.paycloud_merchant_order_no || row?.payment_reference || '').trim()
+      if (cand) {
+        merchantOrderNo = cand
+        break
+      }
+    }
+    if (!merchantOrderNo) {
+      merchantOrderNo = `FT${Date.now()}`.slice(0, 32)
+    }
+
+    const leadId = sortedOrderIds[0]
+    const leadPatch = {
+      payment_status: 'pending' as const,
+      payment_provider: 'paycloud' as const,
+      payment_reference: merchantOrderNo,
+      paycloud_merchant_order_no: merchantOrderNo,
+    }
+    const siblingPatch = {
+      payment_status: 'pending' as const,
+      payment_provider: 'paycloud' as const,
+      payment_reference: merchantOrderNo,
+      paycloud_merchant_order_no: null as string | null,
+    }
+
+    const leadRes = await supabase.from('orders').update(leadPatch).eq('id', leadId)
+    if (leadRes.error) {
+      console.error('[RECEIPT] Failed to persist merchant order (lead):', leadRes.error)
+      return NextResponse.json({ ok: false, error: leadRes.error.message }, { status: 500 })
+    }
+
+    const siblingIds = sortedOrderIds.filter((id) => id !== leadId)
+    if (siblingIds.length > 0) {
+      const sibRes = await Promise.all(
+        siblingIds.map((id) => supabase.from('orders').update(siblingPatch).eq('id', id))
+      )
+      const sibErr = sibRes.find((r) => r.error)
+      if (sibErr?.error) {
+        console.error('[RECEIPT] Failed to persist merchant order (siblings):', sibErr.error)
+        return NextResponse.json({ ok: false, error: sibErr.error.message }, { status: 500 })
+      }
+    }
+
+    // PayCloud checkout body field `expires` (seconds only, never ms/timestamp) is set in payments/paycloud.js.
     const payment = await createPaymentRequest({
       amount: roundedSum,
       orderId: merchantOrderNo,
+      merchantNo,
+      storeNo,
       description: `FlashTap receipt - Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
+      checkoutReturnParams: {
+        rid: restaurantId,
+        table: String(tableNumber),
+      },
     })
 
-    let tn: string | null = null
-    try {
-      tn = new URL(payment.checkoutUrl).searchParams.get('tn')
-    } catch {
-      tn = null
-    }
-
-    if (tn) {
+    if (payment.checkoutUrl) {
       await Promise.all(
-        sortedOrderIds.map(async (id) => {
-          await supabase
-            .from('orders')
-            .update({
-              payment_status: 'pending',
-              payment_provider: 'paycloud',
-              payment_reference: merchantOrderNo,
-              paycloud_merchant_order_no: tn,
-              payment_checkout_url: payment.checkoutUrl,
-            })
-            .eq('id', id)
-        })
+        sortedOrderIds.map((id) =>
+          supabase.from('orders').update({ payment_checkout_url: payment.checkoutUrl }).eq('id', id)
+        )
       )
     }
 

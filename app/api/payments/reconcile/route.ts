@@ -3,6 +3,7 @@ import { orderPath } from '@/lib/firebase/paths'
 import { applyTabSettlementSideEffects, markPaidAndAcceptPatch } from '@/lib/firebase/apply-tab-settlement'
 import { adminDb } from '@/lib/firebase/admin-firestore'
 import { queryPaymentOrder } from '@/payments/paycloud'
+import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
 
 const ADMIN_NOT_CONFIGURED =
   'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
@@ -78,7 +79,8 @@ export async function POST(req: Request) {
       merchantOrderNoFromOrders ||
       (orderIds.length === 1 ? `${restaurantId}:${orderIds[0]}` : `${restaurantId}:receipt:${orderIds.join(',')}`)
 
-    const query = await queryPaymentOrder({ orderId: merchantOrderNo })
+    const { merchantNo, storeNo } = await getRestaurantFinaticCredentials(restaurantId)
+    const query = await queryPaymentOrder({ orderId: merchantOrderNo, merchantNo, storeNo })
     const raw = query.rawResponse || {}
 
     // Finatic returns `data` as a JSON string; parse before checking trans_status.

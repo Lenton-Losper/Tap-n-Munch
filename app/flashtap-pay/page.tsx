@@ -11,6 +11,7 @@ export default function FlashTapPayPage() {
   const [error, setError] = useState('')
 
   const generate = async () => {
+    if (loading) return
     setLoading(true)
     setError('')
     setResult(null)
@@ -60,7 +61,11 @@ export default function FlashTapPayPage() {
         value={note}
         onChange={(e) => setNote(e.target.value)}
       />
-      <button className="border px-4 py-2" disabled={loading} onClick={generate}>
+      <button
+        className={`border px-4 py-2 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+        disabled={loading}
+        onClick={generate}
+      >
         {loading ? 'Generating...' : 'Generate'}
       </button>
 

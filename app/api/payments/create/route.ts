@@ -12,12 +12,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
     }
 
+    const merchantNo = String(body.merchantNo || '').trim()
+    const storeNo = String(body.storeNo || '').trim()
+    if (!merchantNo || !storeNo) {
+      return NextResponse.json(
+        { error: 'merchantNo and storeNo are required (Finatic credentials for the restaurant)' },
+        { status: 400 }
+      )
+    }
+
     const orderId = `flashtap-pay:${Date.now()}`
     const payment = await createPaymentRequest({
       amount,
       orderId,
-      merchantNo: body.merchantNo || process.env.PAYCLOUD_MERCHANT_NO,
-      storeNo: body.storeNo || process.env.PAYCLOUD_STORE_NO,
+      merchantNo,
+      storeNo,
       description: note || `FlashTap Pay - ${merchantName}`,
     })
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { subscribeToOrders, updateOrderPayment, Order } from '@/lib/firebase/orders'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
+type TerminalStatus = 'pending' | 'failed' | null
+
 // PART 2: Standardize Order Status Model
 type OrderStatus =
   | 'new'
@@ -29,12 +31,15 @@ type OrderStatus =
   | 'completed'
   | 'cancelled'
 
+type DashboardTabId = OrderStatus | 'pending_payment'
+
 function paymentChannelOf(order: Order): string {
   return String((order as Order & { payment_channel?: string }).payment_channel || '').toLowerCase()
 }
 
-const tabs: { id: OrderStatus; label: string }[] = [
+const tabs: { id: DashboardTabId; label: string }[] = [
   { id: 'new', label: 'New Orders' },
+  { id: 'pending_payment', label: 'Pending Payment' },
   { id: 'accepted', label: 'Accepted' },
   { id: 'preparing', label: 'Preparing' },
   { id: 'ready', label: 'Ready' },
@@ -45,7 +50,9 @@ export function OrdersDashboard() {
   const { user, restaurantId, restaurant } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
-  const [activeTab, setActiveTab] = useState<OrderStatus>('new')
+  const [activeTab, setActiveTab] = useState<DashboardTabId>('new')
+  const [pendingHostedCount, setPendingHostedCount] = useState(0)
+  const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [primaryOrders, setPrimaryOrders] = useState<Order[]>([])
   const [readyTerminalOrders, setReadyTerminalOrders] = useState<Order[]>([])
@@ -57,7 +64,49 @@ export function OrdersDashboard() {
   const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
   const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
+  const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
   const dashboardRestaurantId = String((restaurant as { firebase_id?: string } | null)?.firebase_id || restaurantId || '')
+  const primaryOrdersPendingRef = useRef<Order[] | null>(null)
+  const readyTerminalPendingRef = useRef<Order[] | null>(null)
+  const primaryDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const readyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearPrimaryDebounce = useCallback(() => {
+    if (primaryDebounceTimerRef.current) {
+      clearTimeout(primaryDebounceTimerRef.current)
+      primaryDebounceTimerRef.current = null
+    }
+  }, [])
+
+  const clearReadyDebounce = useCallback(() => {
+    if (readyDebounceTimerRef.current) {
+      clearTimeout(readyDebounceTimerRef.current)
+      readyDebounceTimerRef.current = null
+    }
+  }, [])
+
+  const queuePrimaryOrdersUpdate = useCallback((incomingOrders: Order[]) => {
+    primaryOrdersPendingRef.current = incomingOrders
+    clearPrimaryDebounce()
+    primaryDebounceTimerRef.current = setTimeout(() => {
+      if (primaryOrdersPendingRef.current) {
+        setPrimaryOrders(primaryOrdersPendingRef.current)
+        primaryOrdersPendingRef.current = null
+      }
+      setLoading(false)
+      primaryDebounceTimerRef.current = null
+    }, 300)
+  }, [clearPrimaryDebounce])
+
+  const queueReadyTerminalOrdersUpdate = useCallback((incomingOrders: Order[]) => {
+    readyTerminalPendingRef.current = incomingOrders
+    clearReadyDebounce()
+    readyDebounceTimerRef.current = setTimeout(() => {
+      setReadyTerminalOrders(readyTerminalPendingRef.current || [])
+      readyTerminalPendingRef.current = null
+      readyDebounceTimerRef.current = null
+    }, 300)
+  }, [clearReadyDebounce])
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -113,24 +162,47 @@ export function OrdersDashboard() {
 
     console.log('[DASHBOARD] subscribing with restaurantId:', dashboardRestaurantId)
 
-    const unsubscribe = subscribeToOrders(dashboardRestaurantId, activeTab, (newOrders) => {
-      setPrimaryOrders(newOrders)
-      setLoading(false)
-    })
+    const unsubscribe = subscribeToOrders(dashboardRestaurantId, activeTab, queuePrimaryOrdersUpdate)
 
-    return () => unsubscribe()
-  }, [user, dashboardRestaurantId, activeTab])
+    return () => {
+      clearPrimaryDebounce()
+      primaryOrdersPendingRef.current = null
+      unsubscribe()
+    }
+  }, [user, dashboardRestaurantId, activeTab, clearPrimaryDebounce, queuePrimaryOrdersUpdate])
+
+  useEffect(() => {
+    if (!user || !dashboardRestaurantId) return
+    const loadPendingHostedCount = async () => {
+      const { count } = await supabase
+        .from('orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('firebase_restaurant_id', dashboardRestaurantId)
+        .eq('payment_status', 'pending')
+        .eq('payment_channel', 'hosted')
+        .eq('is_closed', false)
+      setPendingHostedCount(count ?? 0)
+    }
+    void loadPendingHostedCount()
+    const id = setInterval(() => void loadPendingHostedCount(), 60_000)
+    return () => clearInterval(id)
+  }, [user, dashboardRestaurantId])
 
   useEffect(() => {
     if (!user || !dashboardRestaurantId || activeTab !== 'new') {
       setReadyTerminalOrders([])
       return
     }
-    const unsubscribe = subscribeToOrders(dashboardRestaurantId, 'ready_for_terminal', setReadyTerminalOrders)
-    return () => unsubscribe()
-  }, [user, dashboardRestaurantId, activeTab])
+    const unsubscribe = subscribeToOrders(dashboardRestaurantId, 'ready_for_terminal', queueReadyTerminalOrdersUpdate)
+    return () => {
+      clearReadyDebounce()
+      readyTerminalPendingRef.current = null
+      unsubscribe()
+    }
+  }, [user, dashboardRestaurantId, activeTab, clearReadyDebounce, queueReadyTerminalOrdersUpdate])
 
   const mergedSourceOrders = useMemo(() => {
+    if (activeTab === 'pending_payment') return primaryOrders
     if (activeTab !== 'new') return primaryOrders
     const byId = new Map<string, Order>()
     readyTerminalOrders.forEach((o) => byId.set(o.id, o))
@@ -168,6 +240,9 @@ export function OrdersDashboard() {
     })
 
     const visibleOrders = newOrders.filter((order) => {
+      if (activeTab === 'pending_payment') {
+        return true
+      }
       if (!shouldDisplayOrder(order)) {
         return false
       }
@@ -207,7 +282,7 @@ export function OrdersDashboard() {
       })
     }
 
-    const sorted = sortNewTab(visibleOrders)
+    const sorted = activeTab === 'pending_payment' ? visibleOrders : sortNewTab(visibleOrders)
 
     console.log('📦 Dashboard: Received', newOrders.length, 'merged orders for status:', activeTab)
     if (sorted.length > 0) {
@@ -229,6 +304,54 @@ export function OrdersDashboard() {
       })
     }
   }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
+
+  const refreshPendingHostedCount = useCallback(async () => {
+    if (!dashboardRestaurantId) return
+    const { count } = await supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('firebase_restaurant_id', dashboardRestaurantId)
+      .eq('payment_status', 'pending')
+      .eq('payment_channel', 'hosted')
+      .eq('is_closed', false)
+    setPendingHostedCount(count ?? 0)
+  }, [dashboardRestaurantId])
+
+  const cancelAndFreeHostedOrder = async (orderId: string) => {
+    if (!dashboardRestaurantId) return
+    try {
+      setCancellingHostedOrderId(orderId)
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'cancelled',
+          payment_status: 'cancelled',
+        }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to cancel order')
+      toast({
+        title: 'Order cancelled',
+        description: 'Checkout was cleared — staff can track new orders as usual.',
+      })
+      await refreshPendingHostedCount()
+    } catch (e: unknown) {
+      toast({
+        title: 'Cancel failed',
+        description: e instanceof Error ? e.message : 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCancellingHostedOrderId(null)
+    }
+  }
+
+  const minutesSincePlaced = (order: Order) => {
+    const d = toDate(order.placed_at) || toDate((order as Order & { created_at?: unknown }).created_at)
+    if (!d) return 0
+    return Math.max(0, Math.floor((Date.now() - d.getTime()) / 60_000))
+  }
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     if (!dashboardRestaurantId) {
@@ -315,8 +438,10 @@ export function OrdersDashboard() {
 
   const handleSendToTerminal = async (order: Order, bypassReadyCheck = false) => {
     if (!dashboardRestaurantId) return
+    if (sendingToTerminalOrderId === order.id) return
     try {
       setSendingToTerminalOrderId(order.id)
+      setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: 'pending' }))
       const response = await fetch('/api/payments/push-to-terminal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -337,6 +462,7 @@ export function OrdersDashboard() {
       toast({ title: 'Payment sent to terminal' })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Please try again.'
+      setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: 'failed' }))
       toast({
         title: 'Failed to send to terminal',
         description: message,
@@ -361,6 +487,7 @@ export function OrdersDashboard() {
         throw new Error(data?.error || 'Failed to cancel terminal payment')
       }
       setTerminalPollingOrderIds((prev) => prev.filter((id) => id !== order.id))
+      setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: null }))
       toast({
         title: 'Terminal payment cancelled',
         description: 'Order reverted to cash pending.',
@@ -384,17 +511,22 @@ export function OrdersDashboard() {
         try {
           const { data } = await supabase
             .from('orders')
-            .select('id,payment_status,order_number')
+            .select('id,payment_status,order_number,terminal_status')
             .eq('id', orderId)
             .eq('firebase_restaurant_id', dashboardRestaurantId)
             .single()
           const status = String(data?.payment_status || '').toLowerCase()
+          const terminalStatus = String((data as { terminal_status?: string | null } | null)?.terminal_status || '').toLowerCase()
           if (status === 'paid') {
             doneIds.push(orderId)
+            setTerminalStatusByOrderId((prev) => ({ ...prev, [orderId]: null }))
             toast({
               title: 'Payment confirmed',
               description: `Order #${data?.order_number || orderId.slice(-6)} was paid on terminal.`,
             })
+          } else if (terminalStatus === 'failed') {
+            doneIds.push(orderId)
+            setTerminalStatusByOrderId((prev) => ({ ...prev, [orderId]: 'failed' }))
           } else if (status !== 'terminal_pending') {
             doneIds.push(orderId)
           }
@@ -535,6 +667,15 @@ export function OrdersDashboard() {
     )
   }
 
+  const getTerminalStatus = (order: Order): TerminalStatus => {
+    const local = terminalStatusByOrderId[order.id]
+    if (local) return local
+    const raw = String((order as Order & { terminal_status?: string | null }).terminal_status || '').toLowerCase()
+    if (raw === 'pending' || raw === 'failed') return raw
+    if (order.payment_status === 'terminal_pending') return 'pending'
+    return null
+  }
+
   const formatTimeAgo = (timestamp: any) => {
     if (!timestamp) return 'Just now'
     
@@ -657,21 +798,29 @@ export function OrdersDashboard() {
           <div className="flex gap-2 overflow-x-auto">
             {tabs.map((tab) => {
               const count =
-                tab.id === 'new' && activeTab === 'new'
-                  ? orders.length
-                  : orders.filter((o) => o.status === tab.id).length
+                tab.id === 'pending_payment'
+                  ? pendingHostedCount
+                  : tab.id === 'new' && activeTab === 'new'
+                    ? orders.length
+                    : orders.filter((o) => o.status === tab.id).length
               return (
                 <button
                   key={tab.id}
+                  type="button"
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    'px-4 py-3 font-medium border-b-2 transition-colors whitespace-nowrap',
+                    'relative px-4 py-3 font-medium border-b-2 transition-colors whitespace-nowrap',
                     activeTab === tab.id
                       ? 'border-[#FF6B35] text-[#FF6B35]'
                       : 'border-transparent text-muted-foreground hover:text-foreground'
                   )}
                 >
                   {tab.label} {count > 0 && `(${count})`}
+                  {tab.id === 'pending_payment' && pendingHostedCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-yellow-500 text-white text-xs rounded-full min-w-[1rem] h-4 px-1 flex items-center justify-center">
+                      {pendingHostedCount > 99 ? '99+' : pendingHostedCount}
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -681,7 +830,65 @@ export function OrdersDashboard() {
 
       {/* Orders List */}
       <div className="container mx-auto px-6 py-6">
-        {orders.length === 0 ? (
+        {activeTab === 'pending_payment' ? (
+          orders.length === 0 ? (
+            <div className="text-center py-12 bg-card border rounded-lg">
+              <div className="max-w-md mx-auto">
+                <div className="text-6xl mb-4">💳</div>
+                <h3 className="text-xl font-semibold mb-2">No pending online checkouts</h3>
+                <p className="text-muted-foreground">
+                  Customers who open Finatic but don&apos;t pay within 10 minutes are expired automatically.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-4 max-w-3xl">
+              {orders.map((order) => {
+                const items = Array.isArray(order.items) ? order.items : []
+                const line = items
+                  .map((item: { quantity?: number; name?: string; display_name?: string }) => {
+                    const q = item?.quantity ?? 1
+                    const n = item?.display_name || item?.name || 'Item'
+                    return `${q}× ${n}`
+                  })
+                  .join(', ')
+                return (
+                  <div
+                    key={order.id}
+                    className="border border-yellow-200 bg-yellow-50 rounded-lg p-4 text-left"
+                  >
+                    <div className="flex justify-between items-start gap-3 mb-2">
+                      <div>
+                        <span className="font-bold text-foreground">Table {order.table_number ?? '—'}</span>
+                        <Badge className="ml-2 bg-yellow-500 text-white border-0">Awaiting Payment</Badge>
+                        <p className="text-yellow-800 text-sm mt-1 font-sans">
+                          Awaiting payment for {minutesSincePlaced(order)} min
+                          {minutesSincePlaced(order) === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="bg-red-500 text-white hover:bg-red-600 shrink-0"
+                        disabled={cancellingHostedOrderId === order.id}
+                        onClick={() => void cancelAndFreeHostedOrder(order.id)}
+                      >
+                        {cancellingHostedOrderId === order.id ? 'Cancelling…' : 'Cancel & Free Table'}
+                      </Button>
+                    </div>
+                    <p className="text-sm text-muted-foreground font-sans line-clamp-3">
+                      {line || 'No line items'}
+                    </p>
+                    <p className="font-bold mt-2 font-sans text-foreground">
+                      {restaurant?.currency || 'N$'}
+                      {(Number(order.total) || 0).toFixed(2)}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        ) : orders.length === 0 ? (
           <div className="text-center py-12 bg-card border rounded-lg">
             <div className="max-w-md mx-auto">
               <div className="text-6xl mb-4">📋</div>
@@ -836,6 +1043,17 @@ export function OrdersDashboard() {
                   paymentChannelOf(normalizedOrder) === 'terminal' &&
                   normalizedOrder.payment_status === 'pending' && (
                     <div className="pt-2 space-y-2">
+                      {getTerminalStatus(normalizedOrder) === 'failed' && (
+                        <div className="bg-red-100 text-red-700 px-3 py-1 rounded text-sm font-medium">
+                          Payment Failed - Retry
+                        </div>
+                      )}
+                      {getTerminalStatus(normalizedOrder) === 'pending' && (
+                        <div className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded text-sm font-medium inline-flex items-center gap-2">
+                          <RefreshCw className="h-3 w-3 animate-spin" />
+                          Awaiting Payment...
+                        </div>
+                      )}
                       {(() => {
                         const readyAt = Boolean(
                           (normalizedOrder as Order & { ready_for_terminal_at?: unknown })
@@ -856,7 +1074,7 @@ export function OrdersDashboard() {
                             <Button
                               className="w-full bg-[#FF6B35] hover:bg-[#e55a28] disabled:opacity-50 disabled:pointer-events-none"
                               onClick={() => handleSendToTerminal(normalizedOrder)}
-                              disabled={isSending || !canSendToTerminal}
+                              disabled={isSending || !canSendToTerminal || getTerminalStatus(normalizedOrder) === 'pending'}
                             >
                               <CreditCard className="h-4 w-4 mr-2" />
                               {isSending ? 'Sending to terminal...' : 'Send to Terminal'}

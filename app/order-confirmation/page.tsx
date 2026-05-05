@@ -21,7 +21,9 @@ import { orderPath, ordersPath } from '@/lib/firebase/paths'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, AlertCircle } from 'lucide-react'
+import Link from 'next/link'
+import { supabase } from '@/lib/supabase/client'
 
 type OrderDoc = {
   id: string
@@ -54,6 +56,9 @@ function getSessionIdForReceiptFallback(): string | null {
 }
 
 const RECEIPT_FALLBACK_WINDOW_MS = 30 * 60 * 1000
+
+/** Auto-redirect from paid receipt to menu; fixed delay — not derived from order fields. */
+const REDIRECT_DELAY = 10
 
 function isPaidOrCardOrder(o: OrderDoc): boolean {
   const paid = o.payment_status === 'paid'
@@ -162,6 +167,46 @@ function getFinaticReturnOrderRef(searchParams: URLSearchParams): string {
   return ''
 }
 
+function supabaseOrPaymentRef(tn: string): string {
+  return `paycloud_merchant_order_no.eq.${tn},payment_reference.eq.${tn}`
+}
+
+function combinePaymentStatusFromRows(
+  rows: { payment_status?: string | null }[]
+): 'paid' | 'cancelled' | 'pending' {
+  const s = rows.map((r) => String(r.payment_status || '').toLowerCase())
+  if (s.some((x) => x === 'paid')) return 'paid'
+  if (s.some((x) => x === 'cancelled' || x === 'failed')) return 'cancelled'
+  return 'pending'
+}
+
+function inferCancelledFromSearchParams(searchParams: URLSearchParams): boolean {
+  const keys = ['trade_status', 'status', 'payment_status', 'result', 'msg', 'resp_msg']
+  const blob = keys.map((k) => searchParams.get(k) || '').join(' ').toLowerCase()
+  return /cancel|cancelled|fail|failed|closed|void|declin|user.?abort/.test(blob)
+}
+
+function mapSupabaseRowToOrderDoc(row: Record<string, unknown>): OrderDoc {
+  return {
+    id: String(row.id ?? ''),
+    order_number:
+      typeof row.order_number === 'number' ? row.order_number : Number(row.order_number) || undefined,
+    table_number:
+      typeof row.table_number === 'number' ? row.table_number : Number(row.table_number) || undefined,
+    session_id: typeof row.session_id === 'string' ? row.session_id : undefined,
+    payment_status: typeof row.payment_status === 'string' ? row.payment_status : undefined,
+    payment_method: typeof row.payment_method === 'string' ? row.payment_method : undefined,
+    items: Array.isArray(row.items) ? (row.items as OrderDoc['items']) : [],
+    subtotal: Number(row.subtotal) || 0,
+    tax: Number(row.tax) || 0,
+    total: Number(row.total) || 0,
+    placed_at: row.placed_at,
+    created_at: row.created_at,
+    paycloud_merchant_order_no:
+      typeof row.paycloud_merchant_order_no === 'string' ? row.paycloud_merchant_order_no : undefined,
+  }
+}
+
 function aggregateOrders(rows: OrderDoc[]): ReceiptView {
   if (rows.length === 0) return { id: '', items: [], subtotal: 0, tax: 0, total: 0 }
   if (rows.length === 1) {
@@ -206,6 +251,20 @@ function aggregateOrders(rows: OrderDoc[]): ReceiptView {
     placed_at: bestPlaced,
     merged: true,
     orderDisplay,
+  }
+}
+
+function applyReceiptPaymentState(
+  rows: OrderDoc[],
+  combined: 'paid' | 'cancelled' | 'pending',
+  urlCancel: boolean
+): ReceiptView {
+  let effective: 'paid' | 'cancelled' | 'pending' = combined
+  if (urlCancel && combined !== 'paid') effective = 'cancelled'
+  const agg = aggregateOrders(rows)
+  return {
+    ...agg,
+    payment_status: effective === 'paid' ? 'paid' : effective,
   }
 }
 
@@ -272,6 +331,7 @@ function OrderConfirmationContent() {
   const [restaurant, setRestaurant] = useState<{ name?: string; currency?: string } | null>(null)
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
+  const [dataSource, setDataSource] = useState<'supabase' | 'firestore' | null>(null)
   const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
 
@@ -279,20 +339,49 @@ function OrderConfirmationContent() {
     let cancelled = false
 
     const run = async () => {
-      if (!db) {
-        setLoading(false)
-        setNotFound(true)
-        setNotFoundReason(orderRef ? 'tn-miss' : 'no-context')
-        setReceipt(null)
-        return
-      }
-
       const hint =
         restaurantIdParam ||
+        searchParams.get('rid')?.trim() ||
         (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
 
       try {
         if (orderRef) {
+          const urlCancel = inferCancelledFromSearchParams(searchParams)
+
+          const { data: sbRows, error: sbErr } = await supabase
+            .from('orders')
+            .select('*')
+            .or(supabaseOrPaymentRef(orderRef))
+          if (cancelled) return
+
+          if (!sbErr && sbRows && sbRows.length > 0) {
+            setDataSource('supabase')
+            const docs = sbRows.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+            const combined = combinePaymentStatusFromRows(sbRows)
+            const merged = applyReceiptPaymentState(docs, combined, urlCancel)
+            const firstRow = sbRows[0] as { firebase_restaurant_id?: string | null }
+            setResolvedRestaurantId(String(firstRow.firebase_restaurant_id || hint || ''))
+            setReceipt(merged)
+            setNotFound(false)
+            setNotFoundReason(null)
+            if (merged.payment_status === 'paid') setPaymentConfirmed(true)
+            if (!cancelled) setLoading(false)
+            return
+          }
+
+          if (!db) {
+            if (!cancelled) {
+              setDataSource(null)
+              setLoading(false)
+              setNotFound(true)
+              setNotFoundReason('tn-miss')
+              setReceipt(null)
+              setResolvedRestaurantId(hint)
+            }
+            return
+          }
+
+          setDataSource('firestore')
           const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(orderRef, hint)
           if (cancelled) return
 
@@ -301,15 +390,28 @@ function OrderConfirmationContent() {
             setNotFoundReason('tn-miss')
             setReceipt(null)
             setResolvedRestaurantId(hint)
-            setLoading(false)
+            if (!cancelled) setLoading(false)
             return
           }
 
+          const combinedFs = combinePaymentStatusFromRows(rows)
+          const mergedFs = applyReceiptPaymentState(rows, combinedFs, urlCancel)
           setResolvedRestaurantId(ridFromFetch || hint)
-          setReceipt(aggregateOrders(rows))
+          setReceipt(mergedFs)
           setNotFound(false)
           setNotFoundReason(null)
-          setLoading(false)
+          if (mergedFs.payment_status === 'paid') setPaymentConfirmed(true)
+          if (!cancelled) setLoading(false)
+          return
+        }
+
+        if (!db) {
+          if (!cancelled) {
+            setLoading(false)
+            setNotFound(true)
+            setNotFoundReason('no-context')
+            setReceipt(null)
+          }
           return
         }
 
@@ -339,6 +441,7 @@ function OrderConfirmationContent() {
           return
         }
 
+        setDataSource('firestore')
         setResolvedRestaurantId(ridOut)
         setReceipt(aggregateOrders(rows))
         setNotFound(false)
@@ -359,7 +462,7 @@ function OrderConfirmationContent() {
     return () => {
       cancelled = true
     }
-  }, [orderRef, restaurantIdParam])
+  }, [orderRef, restaurantIdParam, searchParams.toString()])
 
   useEffect(() => {
     const rid = resolvedRestaurantId || restaurantIdParam
@@ -375,9 +478,37 @@ function OrderConfirmationContent() {
     }
   }, [receipt?.payment_status])
 
-  // Poll reconcile when opened from Finatic return URL with tn.
   useEffect(() => {
     if (!orderRef || paymentConfirmed) return
+    if (dataSource !== 'supabase') return
+    const ps = String(receipt?.payment_status || '').toLowerCase()
+    if (ps === 'paid' || ps === 'cancelled' || ps === 'failed') return
+
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      const { data } = await supabase.from('orders').select('*').or(supabaseOrPaymentRef(orderRef))
+      if (!data?.length) return
+      const combined = combinePaymentStatusFromRows(data)
+      const urlCancel = inferCancelledFromSearchParams(searchParams)
+      const docs = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+      const merged = applyReceiptPaymentState(docs, combined, urlCancel)
+      setReceipt(merged)
+      if (merged.payment_status === 'paid') setPaymentConfirmed(true)
+    }
+    const id = setInterval(() => void tick(), 5000)
+    void tick()
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [orderRef, dataSource, receipt?.payment_status, paymentConfirmed, searchParams.toString()])
+
+  // Poll reconcile when opened from Finatic return URL with tn (Firestore-backed orders).
+  useEffect(() => {
+    if (!orderRef || paymentConfirmed) return
+    if (dataSource === 'supabase') return
+    if (String(receipt?.payment_status || '').toLowerCase() === 'cancelled') return
     const restaurantId =
       resolvedRestaurantId ||
       restaurantIdParam ||
@@ -422,7 +553,7 @@ function OrderConfirmationContent() {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [orderRef, resolvedRestaurantId, restaurantIdParam, receipt?.id, paymentConfirmed])
+  }, [orderRef, dataSource, resolvedRestaurantId, restaurantIdParam, receipt?.id, receipt?.payment_status, paymentConfirmed])
 
   const currency = restaurant?.currency || 'N$'
 
@@ -450,10 +581,55 @@ function OrderConfirmationContent() {
     return receipt.id ? receipt.id.slice(-8).toUpperCase() : null
   }, [receipt])
 
-  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !paymentConfirmed
+  const screenStatus = useMemo(() => {
+    if (!receipt) return null
+    const ps = String(receipt.payment_status || '').toLowerCase()
+    if (ps === 'paid' || paymentConfirmed) return 'success' as const
+    if (ps === 'cancelled' || ps === 'failed') return 'cancelled' as const
+    return 'pending' as const
+  }, [receipt, paymentConfirmed])
+
+  const ridForLinks =
+    searchParams.get('rid')?.trim() ||
+    restaurantIdParam ||
+    resolvedRestaurantId ||
+    ''
+  const tableForLinks =
+    searchParams.get('table')?.trim() ||
+    (typeof receipt?.table_number === 'number' && receipt.table_number > 0
+      ? String(receipt.table_number)
+      : '') ||
+    (typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_return_table')?.trim() || '' : '')
+
+  useEffect(() => {
+    if (screenStatus !== 'success') return
+    const restaurantId =
+      resolvedRestaurantId?.trim() ||
+      restaurantIdParam?.trim() ||
+      (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id')?.trim() : '') ||
+      ''
+    if (!restaurantId) return
+
+    const tableNumber = tableForLinks.trim()
+    const timer = setTimeout(() => {
+      if (tableNumber) {
+        router.push(`/menu/${restaurantId}/v2?table=${encodeURIComponent(tableNumber)}`)
+      } else {
+        router.push(`/menu/${restaurantId}/v2`)
+      }
+    }, REDIRECT_DELAY * 1000)
+
+    return () => clearTimeout(timer)
+  }, [screenStatus, resolvedRestaurantId, restaurantIdParam, tableForLinks, router])
+
+  const shouldShowConfirmPayment =
+    dataSource === 'firestore' &&
+    receipt?.payment_status === 'pending' &&
+    !paymentConfirmed
 
   const confirmPayment = async () => {
     if (!db || !receipt || !shouldShowConfirmPayment || confirmingPayment) return
+    const fs = db
     const restaurantId = resolvedRestaurantId || restaurantIdParam
     if (!restaurantId) return
 
@@ -468,7 +644,7 @@ function OrderConfirmationContent() {
     try {
       await Promise.all(
         orderIds.map((orderId) =>
-          updateDoc(doc(db, orderPath(restaurantId, orderId)), {
+          updateDoc(doc(fs, orderPath(restaurantId, orderId)), {
             payment_status: 'paid',
             payment_confirmed_by: 'customer',
             payment_confirmed_at: new Date(),
@@ -498,11 +674,14 @@ function OrderConfirmationContent() {
   if (notFound || !receipt) {
     const noContext = !orderRef && notFoundReason === 'no-context'
     const fallbackEmpty = !orderRef && notFoundReason === 'fallback-empty'
+    const tnMiss = orderRef && notFoundReason === 'tn-miss'
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-6">
-          <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto stroke-[1.5]" aria-hidden />
-          <h1 className="text-2xl font-serif font-bold text-foreground">Payment successful</h1>
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto stroke-[1.5]" aria-hidden />
+          <h1 className="text-2xl font-serif font-bold text-foreground">
+            {tnMiss ? 'Order not found' : 'Unable to show receipt'}
+          </h1>
           {noContext ? (
             <p className="text-muted-foreground font-sans text-sm">
               No payment reference in the link (expected <code className="text-xs">tn</code> or{' '}
@@ -516,23 +695,84 @@ function OrderConfirmationContent() {
               minutes. If you just paid, use the return link from your payment provider or check My
               orders from the menu.
             </p>
+          ) : tnMiss ? (
+            <p className="text-muted-foreground font-sans text-sm">
+              We couldn&apos;t find an order for this payment reference. If you completed payment, wait
+              a moment and refresh, or contact the restaurant.
+            </p>
           ) : (
-            <>
-              <p className="text-muted-foreground font-sans text-sm">
-                Payment confirmed! Show this screen to your waiter.
-              </p>
-              {orderRef ? (
-                <p className="text-foreground font-sans text-sm break-all">
-                  Order reference: <span className="font-semibold">{orderRef}</span>
-                </p>
-              ) : null}
-            </>
+            <p className="text-muted-foreground font-sans text-sm">
+              Something went wrong loading your receipt. Please go back to the menu and try again.
+            </p>
           )}
+          {orderRef ? (
+            <p className="text-foreground font-sans text-xs break-all text-left bg-muted/50 border border-border p-3">
+              Reference: <span className="font-semibold">{orderRef}</span>
+            </p>
+          ) : null}
           <Button
             type="button"
             onClick={goBackToMenu}
             className="w-full bg-foreground text-background hover:bg-foreground/90 py-6 font-semibold font-sans"
           >
+            Back to menu
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (screenStatus === 'cancelled') {
+    const tryAgainHref =
+      ridForLinks && tableForLinks
+        ? `/menu/${encodeURIComponent(ridForLinks)}/receipt?table=${encodeURIComponent(tableForLinks)}`
+        : ridForLinks
+          ? `/menu/${encodeURIComponent(ridForLinks)}/receipt`
+          : '/menu'
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-md w-full text-center p-8">
+          <div className="w-16 h-16 rounded-full border-2 border-red-500 flex items-center justify-center mx-auto mb-4">
+            <span className="text-red-500 text-2xl" aria-hidden>
+              ✕
+            </span>
+          </div>
+          <h1 className="text-2xl font-bold mb-2 text-foreground">Payment Cancelled</h1>
+          <p className="text-muted-foreground mb-6 font-sans text-sm">
+            Your payment was not completed. Your order is still open.
+          </p>
+          <Link
+            href={tryAgainHref}
+            className="block bg-foreground text-background py-4 rounded-xl text-center font-semibold font-sans hover:bg-foreground/90"
+          >
+            Try Again
+          </Link>
+          <Button type="button" variant="ghost" className="w-full mt-4 font-sans" onClick={goBackToMenu}>
+            Back to menu
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (screenStatus === 'pending') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-md w-full text-center p-8">
+          <div className="w-16 h-16 rounded-full border-2 border-yellow-500 flex items-center justify-center mx-auto mb-4 animate-spin text-2xl">
+            ⏳
+          </div>
+          <h1 className="text-2xl font-bold mb-2 text-foreground">Payment Processing</h1>
+          <p className="text-muted-foreground mb-6 font-sans text-sm">
+            Your payment is being confirmed. Please wait…
+          </p>
+          {ridForLinks && tableForLinks ? (
+            <p className="text-xs text-muted-foreground font-sans">
+              Table {tableForLinks}
+              {displayOrderNumber ? ` · Order ${displayOrderNumber}` : ''}
+            </p>
+          ) : null}
+          <Button type="button" variant="outline" className="w-full mt-8 font-sans" onClick={goBackToMenu}>
             Back to menu
           </Button>
         </div>

@@ -11,6 +11,7 @@ import { ArrowLeft, CheckCircle2, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
 import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import OrderStatusBanner from '@/components/OrderStatusBanner'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -53,6 +54,7 @@ type OrderRecord = {
   payment_channel?: string | null
   tab_settlement_for_tab_id?: string | null
   paycloud_merchant_order_no?: string
+  payment_reference?: string | null
   items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
 }
 
@@ -256,7 +258,7 @@ export default function ReceiptPage() {
         .filter(
           (o) => o?.payment_method === 'card' && String(o.payment_channel || '').toLowerCase() !== 'terminal'
         )
-        .map((o) => String(o.paycloud_merchant_order_no || '').trim())
+        .map((o) => String(o.paycloud_merchant_order_no || o.payment_reference || '').trim())
         .find(Boolean)
 
       try {
@@ -295,6 +297,7 @@ export default function ReceiptPage() {
   if (!loading && (!tableNum || tableNum <= 0)) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
         <div className="max-w-md w-full bg-card border border-border p-12 text-center">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
             <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
@@ -319,6 +322,7 @@ export default function ReceiptPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
+        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
         <div className="text-center">
           <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
           <p className="mt-6 text-muted-foreground font-sans">Loading receipt...</p>
@@ -331,6 +335,7 @@ export default function ReceiptPage() {
   if (!orders || !Array.isArray(orders)) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
+        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
         <div className="text-center">
           <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
           <p className="mt-6 text-muted-foreground font-sans">Loading receipt...</p>
@@ -343,6 +348,7 @@ export default function ReceiptPage() {
   if (orders.length === 0) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
         <div className="max-w-md w-full bg-card border border-border p-12 text-center">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
             <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
@@ -366,6 +372,7 @@ export default function ReceiptPage() {
   }
 
   const submitPayment = async () => {
+    if (paymentSubmitting) return
     setPaymentError(null)
     const tableNum = tableNumber ? Number(tableNumber) : 0
     if (!restaurantId || !tableNum) {
@@ -404,6 +411,7 @@ export default function ReceiptPage() {
   if (paymentSuccess) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
         <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-4">
           <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto stroke-[1.5]" aria-hidden />
           <h1 className="text-2xl font-serif font-bold text-foreground">Payment successful!</h1>
@@ -424,6 +432,7 @@ export default function ReceiptPage() {
 
   return (
     <div className="min-h-screen bg-background">
+      <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
       <div className="max-w-2xl mx-auto p-6">
         {/* Receipt Header */}
         <div className="bg-card border border-border p-8 mb-6">
@@ -562,7 +571,8 @@ export default function ReceiptPage() {
               <Button
                 type="button"
                 onClick={submitPayment}
-                className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                disabled={paymentSubmitting}
+                className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Proceed to Payment — {restaurant?.currency || 'N$'}
                 {payableTotal.toFixed(2)}

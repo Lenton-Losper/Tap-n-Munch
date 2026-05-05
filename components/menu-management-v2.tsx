@@ -26,7 +26,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, UtensilsCrossed, Pencil } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, Pencil } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import Image from 'next/image'
@@ -36,6 +36,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { db } from '@/lib/firebase/config'
 import { menuCategoryPath, subCategoriesPath, subCategoryPath, menuItemsPath } from '@/lib/firebase/paths'
 import { collection, deleteDoc, doc, getDocs, writeBatch } from 'firebase/firestore'
+import { FoodItemImage } from '@/components/menu/food-item-image'
 
 const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
 const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
@@ -110,6 +111,20 @@ export function MenuManagementV2() {
     () => (restaurantId ? `${MENU_MGMT_CACHE_PREFIX}:${restaurantId}` : null),
     [restaurantId]
   )
+
+  const invalidateServerMenuCache = useCallback(async () => {
+    if (!restaurantId) return
+    try {
+      await fetch('/api/cache/menu/invalidate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId }),
+      })
+      console.log('[MENU] Cache invalidated after update')
+    } catch (error) {
+      console.error('[MENU] Failed to invalidate server cache:', error)
+    }
+  }, [restaurantId])
 
   const readCache = useCallback((): MenuManagementCachePayload | null => {
     if (!cacheKey || typeof window === 'undefined') return null
@@ -408,6 +423,7 @@ export function MenuManagementV2() {
       // Reload categories
       const categories = await getMenuCategories(restaurantId)
       setMenuCategories(categories)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -472,6 +488,7 @@ export function MenuManagementV2() {
       if (selectedMenuCategory?.id === category.id) {
         setSelectedMenuCategory(categories.length > 0 ? categories[0] : null)
       }
+      await invalidateServerMenuCache()
     } catch (err: any) {
       console.error('[menu-delete][category] failed', {
         categoryId: category.id,
@@ -542,6 +559,7 @@ export function MenuManagementV2() {
 
       setShowEditMenuCategoryModal(false)
       setEditingMenuCategory(null)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -590,6 +608,7 @@ export function MenuManagementV2() {
       const updatedAllSubcats = allSubCategories.filter(sc => sc.menu_category_id !== selectedMenuCategory.id)
       updatedAllSubcats.push(...subcats)
       setAllSubCategories(updatedAllSubcats)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -643,6 +662,7 @@ export function MenuManagementV2() {
         updatedAllSubcats.push(...subcats)
         setAllSubCategories(updatedAllSubcats)
       }
+      await invalidateServerMenuCache()
     } catch (err: any) {
       console.error('[menu-delete][subcategory] failed', {
         subCategoryId: subCategory.id,
@@ -720,6 +740,7 @@ export function MenuManagementV2() {
 
       setShowEditSubCategoryModal(false)
       setEditingSubCategory(null)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -1122,6 +1143,7 @@ export function MenuManagementV2() {
       // Reload all items to refresh the view
       const items = await getMenuItems(restaurantId)
       setAllMenuItems(items)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -1154,6 +1176,7 @@ export function MenuManagementV2() {
       // Reload all items
       const items = await getMenuItems(restaurantId)
       setAllMenuItems(items)
+      await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -1251,16 +1274,23 @@ export function MenuManagementV2() {
 
       <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {/* Category Tabs */}
-        <div className="flex gap-2 mb-4 sm:mb-6 overflow-x-auto pb-2 scrollbar-hide -mx-4 sm:mx-0 px-4 sm:px-0">
+        <div
+          className="flex overflow-x-auto gap-2 pb-2 categories-scroll mb-4 sm:mb-6 -mx-4 sm:mx-0 px-4 sm:px-0"
+          style={{
+            scrollbarWidth: 'none',
+            msOverflowStyle: 'none',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
           <Button
             variant={selectedMenuCategory === null ? 'default' : 'outline'}
             onClick={() => handleSelectMenuCategory(null)}
-            className={`${selectedMenuCategory === null ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap min-w-[100px] sm:min-w-0`}
+            className={`shrink-0 ${selectedMenuCategory === null ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''} h-11 sm:h-10 text-sm sm:text-base whitespace-nowrap min-w-[100px] sm:min-w-0`}
           >
             All Items ({visibleMenuItems.length})
           </Button>
           {menuCategories.map((category) => (
-            <div key={category.id} className="flex items-center gap-1 group flex-shrink-0">
+            <div key={category.id} className="flex shrink-0 items-center gap-1 group">
               <Button
                 variant={selectedMenuCategory?.id === category.id ? 'default' : 'outline'}
                 onClick={() => handleSelectMenuCategory(category)}
@@ -1275,7 +1305,7 @@ export function MenuManagementV2() {
                   e.stopPropagation()
                   handleOpenEditMenuCategory(category)
                 }}
-                className="h-11 w-11 sm:h-8 sm:w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                className="h-11 w-11 sm:h-8 sm:w-8 shrink-0 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                 title={`Edit ${category.name}`}
               >
                 <Pencil className="h-4 w-4" />
@@ -1287,7 +1317,7 @@ export function MenuManagementV2() {
                   e.stopPropagation()
                   handleDeleteMenuCategory(category)
                 }}
-                className="h-11 w-11 sm:h-8 sm:w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                className="h-11 w-11 sm:h-8 sm:w-8 shrink-0 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -1385,56 +1415,16 @@ export function MenuManagementV2() {
                               className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                             >
                               <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
-                                {item.image_url ? (
-                                  <>
-                                    <Image
-                                      src={item.image_url}
-                                      alt={item.name}
-                                      fill
-                                      loading="lazy"
-                                      style={{
-                                        objectFit: item.imageFit || 'cover',
-                                        objectPosition: item.imagePosition || 'center',
-                                      }}
-                                      className="transition-opacity duration-300"
-                                      onLoad={(e) => {
-                                        e.currentTarget.style.opacity = '1'
-                                        // Hide shimmer when image loads
-                                        const container = e.currentTarget.closest('.relative')
-                                        if (container) {
-                                          const shimmer = container.querySelector('.image-shimmer')
-                                          if (shimmer) {
-                                            shimmer.classList.add('hidden')
-                                          }
-                                        }
-                                      }}
-                                      onError={(e) => {
-                                        // Hide image on error, show placeholder
-                                        e.currentTarget.style.display = 'none'
-                                        const container = e.currentTarget.closest('.relative')
-                                        if (container) {
-                                          const placeholder = container.querySelector('.image-placeholder')
-                                          const shimmer = container.querySelector('.image-shimmer')
-                                          if (placeholder) {
-                                            placeholder.classList.remove('hidden')
-                                          }
-                                          if (shimmer) {
-                                            shimmer.classList.add('hidden')
-                                          }
-                                        }
-                                      }}
-                                    />
-                                    {/* Shimmer effect while loading */}
-                                    <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer pointer-events-none" />
-                                  </>
-                                ) : null}
-                                {/* Food placeholder - shown when image fails or is missing */}
-                                <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 ${item.image_url ? 'hidden' : ''}`}>
-                                  <div className="text-center">
-                                    <UtensilsCrossed className="w-12 h-12 text-gray-400 mx-auto mb-1" />
-                                    <p className="text-xs text-gray-500">No image</p>
-                                  </div>
-                                </div>
+                                <FoodItemImage
+                                  itemName={item.name}
+                                  storedImageUrl={item.image_url}
+                                  alt={item.name}
+                                  className="w-full h-full object-cover rounded-t-lg"
+                                  style={{
+                                    objectFit: item.imageFit || 'cover',
+                                    objectPosition: item.imagePosition || 'center',
+                                  }}
+                                />
                               </div>
                               <div className="p-3">
                                 <div className="flex items-start justify-between mb-1 gap-2">
@@ -1591,56 +1581,16 @@ export function MenuManagementV2() {
                             className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                           >
                             <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
-                              {item.image_url ? (
-                                <>
-                                  <Image
-                                    src={item.image_url}
-                                    alt={item.name}
-                                    fill
-                                    loading="lazy"
-                                    style={{
-                                      objectFit: item.imageFit || 'cover',
-                                      objectPosition: item.imagePosition || 'center',
-                                    }}
-                                    className="transition-opacity duration-300"
-                                    onLoad={(e) => {
-                                      e.currentTarget.style.opacity = '1'
-                                      // Hide shimmer when image loads
-                                      const container = e.currentTarget.closest('.relative')
-                                      if (container) {
-                                        const shimmer = container.querySelector('.image-shimmer')
-                                        if (shimmer) {
-                                          shimmer.classList.add('hidden')
-                                        }
-                                      }
-                                    }}
-                                    onError={(e) => {
-                                      // Hide image on error, show placeholder
-                                      e.currentTarget.style.display = 'none'
-                                      const container = e.currentTarget.closest('.relative')
-                                      if (container) {
-                                        const placeholder = container.querySelector('.image-placeholder')
-                                        const shimmer = container.querySelector('.image-shimmer')
-                                        if (placeholder) {
-                                          placeholder.classList.remove('hidden')
-                                        }
-                                        if (shimmer) {
-                                          shimmer.classList.add('hidden')
-                                        }
-                                      }
-                                    }}
-                                  />
-                                  {/* Shimmer effect while loading */}
-                                  <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer pointer-events-none" />
-                                </>
-                              ) : null}
-                              {/* Food placeholder - shown when image fails or is missing */}
-                              <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 ${item.image_url ? 'hidden' : ''}`}>
-                                <div className="text-center">
-                                  <UtensilsCrossed className="w-12 h-12 text-gray-400 mx-auto mb-1" />
-                                  <p className="text-xs text-gray-500">No image</p>
-                                </div>
-                              </div>
+                              <FoodItemImage
+                                itemName={item.name}
+                                storedImageUrl={item.image_url}
+                                alt={item.name}
+                                className="w-full h-full object-cover rounded-t-lg"
+                                style={{
+                                  objectFit: item.imageFit || 'cover',
+                                  objectPosition: item.imagePosition || 'center',
+                                }}
+                              />
                             </div>
                               <div className="p-3">
                                 <div className="flex items-start justify-between mb-1 gap-2">

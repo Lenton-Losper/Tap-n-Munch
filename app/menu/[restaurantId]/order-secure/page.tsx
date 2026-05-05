@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
+import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -55,6 +56,7 @@ export default function OrderSecurePage() {
   const placeOrderEnabled = !submitting && Array.isArray(items) && items.length > 0
 
   const submitOrder = async () => {
+    if (submitting) return
     if (!Array.isArray(items) || items.length === 0) {
       toast({
         title: 'Cart is empty',
@@ -123,9 +125,13 @@ export default function OrderSecurePage() {
       const cleanPayload = JSON.parse(JSON.stringify(payload))
       if (payload.session_id) cleanPayload.session_id = payload.session_id
 
+      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idem ? { 'x-idempotency-key': idem } : {}),
+        },
         body: JSON.stringify(cleanPayload),
       })
 
@@ -137,6 +143,8 @@ export default function OrderSecurePage() {
 
       const orderId = data.orderId as string | undefined
       if (!orderId) throw new Error('Order was created but no order ID was returned')
+
+      clearOrderIdempotencyKey()
 
       const checkoutUrl = data.checkoutUrl as string | undefined
       if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
@@ -226,11 +234,11 @@ export default function OrderSecurePage() {
 
         <Button
           onClick={submitOrder}
-          disabled={!placeOrderEnabled}
+          disabled={!placeOrderEnabled || submitting}
           className="h-11 w-full py-6 text-base font-semibold font-sans bg-foreground text-background hover:bg-foreground/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-muted"
           size="lg"
         >
-          {submitting ? 'Redirecting to payment...' : 'Continue to Payment'}
+          {submitting ? 'Processing...' : 'Continue to Payment'}
         </Button>
         <p className="mt-3 text-xs text-muted-foreground font-sans text-center flex items-center justify-center gap-1.5">
           <ShieldCheck className="w-3.5 h-3.5" aria-hidden />

@@ -40,7 +40,7 @@ export function ReadyToPayTerminalButton({ restaurantId, orderId, tableNumber, s
         disabled={!sessionId || loading}
         title={!sessionId ? 'Session not found — open this page from the same device you ordered on.' : undefined}
         onClick={async () => {
-          if (!sessionId) return
+          if (!sessionId || loading) return
           setError(null)
           setLoading(true)
           try {

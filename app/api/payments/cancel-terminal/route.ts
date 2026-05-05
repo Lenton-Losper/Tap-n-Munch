@@ -1,20 +1,24 @@
 import { NextResponse } from 'next/server'
 import { paycloudWireMerchantOrderNo, signRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { orderId } = body || {}
+    const { orderId, restaurantId: restaurantIdRaw } = body || {}
     if (!orderId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    const merchantNo = process.env.PAYCLOUD_MERCHANT_NO
-    const storeNo = process.env.PAYCLOUD_STORE_NO
+    const restaurantId = String(restaurantIdRaw || '').trim()
+    if (!restaurantId) {
+      return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+    }
+
     const appId = process.env.PAYCLOUD_APP_ID
     const endpoint = process.env.PAYCLOUD_ENDPOINT
-    if (!merchantNo || !storeNo || !appId || !endpoint) {
+    if (!appId || !endpoint) {
       return NextResponse.json({ error: 'Missing PayCloud configuration' }, { status: 500 })
     }
 
@@ -27,6 +31,22 @@ export async function POST(req: Request) {
 
     if (!order) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+    }
+
+    const orderRestaurantId = String((order as { firebase_restaurant_id?: string }).firebase_restaurant_id || '').trim()
+    if (orderRestaurantId && orderRestaurantId !== restaurantId) {
+      return NextResponse.json({ error: 'Order does not belong to this restaurant' }, { status: 400 })
+    }
+
+    let merchantNo: string
+    let storeNo: string
+    try {
+      const creds = await getRestaurantFinaticCredentials(restaurantId)
+      merchantNo = creds.merchantNo
+      storeNo = creds.storeNo
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to load payment credentials'
+      return NextResponse.json({ error: message }, { status: 400 })
     }
 
     const merchantOrderNo = paycloudWireMerchantOrderNo(String(orderId))
@@ -70,7 +90,8 @@ export async function POST(req: Request) {
       .eq('id', String(orderId))
 
     return NextResponse.json({ success: true, data: (data as Record<string, unknown>)?.data || null }, { status: 200 })
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Failed to cancel terminal payment' }, { status: 500 })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Failed to cancel terminal payment'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

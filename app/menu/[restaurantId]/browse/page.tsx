@@ -6,19 +6,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
-import { getMenuItemsByCategory, MenuItem } from '@/lib/firebase/menu-items'
+import { MenuItem } from '@/lib/firebase/menu-items'
 import { SubCategory } from '@/lib/firebase/sub-categories'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
+import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ShoppingCart, Search, ArrowLeft, UtensilsCrossed, Receipt, CheckCircle2, Loader2 } from 'lucide-react'
+import { ShoppingCart, Search, ArrowLeft, Receipt, CheckCircle2, Loader2 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 
 type ItemVariant = {
@@ -46,13 +48,13 @@ export default function MenuBrowsePage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const restaurantId = params.restaurantId as string
-  const tableNumber = parseInt(searchParams.get('table') || '0')
+  const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem } = useCart()
-  const { isInTab, tabId, tabTotal, tabMembers } = useTab()
+  const { isInTab, tabId, tabTotal, tabMembers, tabStatus } = useTab()
 
   const browseQuery = useMemo(() => {
     const q = new URLSearchParams()
@@ -256,7 +258,17 @@ export default function MenuBrowsePage() {
       }
       
       try {
-        const grouped = await getMenuItemsByCategory(restaurantId, selectedMenuCategory.id)
+        const response = await fetch(
+          `/api/menu/${encodeURIComponent(restaurantId)}/category/${encodeURIComponent(selectedMenuCategory.id)}`,
+          { cache: 'no-store' }
+        )
+        if (!response.ok) {
+          throw new Error(`Menu API returned ${response.status}`)
+        }
+        const grouped = (await response.json()) as Record<
+          string,
+          { subcategory: SubCategory; items: MenuItem[] }
+        >
         setGroupedItems(grouped)
       } catch (err: any) {
         console.error('Failed to load menu items:', err)
@@ -265,7 +277,20 @@ export default function MenuBrowsePage() {
     }
     
     loadMenuItems()
-  }, [restaurantId, selectedMenuCategory, searchQuery])
+  }, [restaurantId, selectedMenuCategory])
+
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase()
+  const filteredGroupedEntries = Object.values(groupedItems)
+    .map(({ subcategory, items }) => {
+      if (!normalizedSearchQuery) return { subcategory, items }
+      const filteredItems = items.filter((item) => {
+        const name = String(item.name || '').toLowerCase()
+        const description = String(item.description || '').toLowerCase()
+        return name.includes(normalizedSearchQuery) || description.includes(normalizedSearchQuery)
+      })
+      return { subcategory, items: filteredItems }
+    })
+    .filter(({ items }) => items.length > 0)
 
   useEffect(() => {
     const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
@@ -324,7 +349,8 @@ export default function MenuBrowsePage() {
   }
 
   return (
-    <div className="min-h-screen max-w-full overflow-x-hidden bg-background">
+    <div className="min-h-screen max-w-full bg-background">
+      <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNumber} />
       {/* Active Order Banner */}
       <ActiveOrderBanner />
       
@@ -405,9 +431,11 @@ export default function MenuBrowsePage() {
         <div className="border-b border-border bg-foreground text-background">
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
             <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
-              Tab open • {(restaurant?.currency || 'N$')}
-              {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
-              {tabMembers.length === 1 ? 'person' : 'people'}
+              {tabStatus === 'closed'
+                ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
+                : `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
+                    tabMembers.length
+                  } ${tabMembers.length === 1 ? 'person' : 'people'}`}
             </div>
           </Link>
         </div>
@@ -416,15 +444,23 @@ export default function MenuBrowsePage() {
       <div className="mx-auto max-w-4xl px-4 pt-6 pb-28 sm:pb-32">
         {/* Category Navigation - Horizontal Scroll */}
         {menuCategories.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-4 mb-6 scrollbar-hide">
+          <div
+            className="flex overflow-x-auto gap-2 pb-2 categories-scroll mb-6"
+            style={{
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
             {menuCategories.map((category) => (
               <button
                 key={category.id}
+                type="button"
                 onClick={() => {
                   setSelectedMenuCategory(category)
                   setSearchQuery('')
                 }}
-                className={`whitespace-nowrap px-6 py-3 text-sm font-semibold font-sans transition-colors ${
+                className={`shrink-0 whitespace-nowrap px-6 py-3 text-sm font-semibold font-sans transition-colors ${
                   selectedMenuCategory?.id === category.id
                     ? 'bg-foreground text-background'
                     : 'bg-transparent text-foreground border border-border hover:bg-muted'
@@ -449,9 +485,9 @@ export default function MenuBrowsePage() {
         </div>
 
         {/* Menu Items */}
-        {Object.keys(groupedItems).length > 0 ? (
+        {filteredGroupedEntries.length > 0 ? (
           <div className="space-y-12">
-            {Object.values(groupedItems).map(({ subcategory, items }) => (
+            {filteredGroupedEntries.map(({ subcategory, items }) => (
               <section key={subcategory.id} className="space-y-6">
                 {/* Sub-category Header */}
                 <div className="border-b border-border pb-3">
@@ -474,40 +510,16 @@ export default function MenuBrowsePage() {
                     >
                       {/* Image */}
                       <div className="relative w-full aspect-[4/3] bg-muted overflow-hidden">
-                        {item.image_url ? (
-                          <>
-                            <Image
-                              src={item.image_url}
-                              alt={item.name}
-                              fill
-                              loading="lazy"
-                              style={{
-                                objectFit: item.imageFit || 'cover',
-                                objectPosition: item.imagePosition || 'center',
-                              }}
-                              unoptimized
-                              className="menu-image transition-opacity duration-300"
-                              onLoad={(e) => {
-                                e.currentTarget.style.opacity = '1'
-                                const container = e.currentTarget.closest('.relative')
-                                const shimmer = container?.querySelector('.image-shimmer')
-                                if (shimmer) shimmer.classList.add('hidden')
-                              }}
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none'
-                                const container = e.currentTarget.closest('.relative')
-                                const placeholder = container?.querySelector('.image-placeholder')
-                                const shimmer = container?.querySelector('.image-shimmer')
-                                if (placeholder) placeholder.classList.remove('hidden')
-                                if (shimmer) shimmer.classList.add('hidden')
-                              }}
-                            />
-                            <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer pointer-events-none" />
-                          </>
-                        ) : null}
-                        <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-muted ${item.image_url ? 'hidden' : ''}`}>
-                          <UtensilsCrossed className="w-12 h-12 text-muted-foreground" />
-                        </div>
+                        <FoodItemImage
+                          itemName={item.name}
+                          storedImageUrl={item.image_url}
+                          alt={item.name}
+                          className="h-full w-full object-cover rounded-t-lg"
+                          style={{
+                            objectFit: item.imageFit || 'cover',
+                            objectPosition: item.imagePosition || 'center',
+                          }}
+                        />
                       </div>
                       
                       {/* Content */}
@@ -624,7 +636,7 @@ export default function MenuBrowsePage() {
                 </h3>
                 <p className="text-muted-foreground font-sans mb-2">
                   {searchQuery 
-                    ? `No items match "${searchQuery}". Try a different search.`
+                    ? `No items found for "${searchQuery}"`
                     : selectedMenuCategory
                     ? `No items in "${selectedMenuCategory.name}" yet.`
                     : 'This restaurant hasn\'t added menu items yet.'
@@ -671,19 +683,6 @@ export default function MenuBrowsePage() {
         ))}
       </div>
 
-      {/* Floating Receipt Button */}
-      {tableNumber > 0 && (
-        <div className="fixed bottom-5 right-4 z-50 sm:bottom-6 sm:right-6">
-          <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
-            <button
-              className="bg-foreground text-background w-14 h-14 flex items-center justify-center text-xl hover:bg-foreground/90 transition-all shadow-lg"
-              title="View Receipt"
-            >
-              <Receipt className="w-6 h-6 stroke-[1.5]" />
-            </button>
-          </Link>
-        </div>
-      )}
     </div>
   )
 }

@@ -1,23 +1,20 @@
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getCachedRestaurantCredentials } from '@/lib/cache/restaurant-cache'
 
-/**
- * Same merchant/store resolution as checkout (`app/api/orders/route.ts`):
- * restaurant `finatic_merchant_no` / `finatic_store_no` when set, else
- * `PAYCLOUD_MERCHANT_NO` / `PAYCLOUD_STORE_NO`.
- */
 export async function getRestaurantFinaticCredentials(
   restaurantId: string
-): Promise<{ merchantNo: string; storeNo: string; terminalSn: string | null; terminals: any[] }> {
-  const supabase = createServerSupabaseClient()
-  const { data } = await supabase
-    .from('restaurants')
-    .select('*')
-    .eq('firebase_id', restaurantId)
-    .single()
+): Promise<{ merchantNo: string; storeNo: string; terminalSn: string | null; terminals: unknown[] }> {
+  const data = await getCachedRestaurantCredentials(restaurantId)
 
-  const merchantNo = String(data?.finatic_merchant_no || process.env.PAYCLOUD_MERCHANT_NO || '').trim()
-  const storeNo = String(data?.finatic_store_no || process.env.PAYCLOUD_STORE_NO || '').trim()
+  const merchantNo = String(data?.finatic_merchant_no || '').trim()
+  const storeNo = String(data?.finatic_store_no || '').trim()
   const terminalSn = data?.finatic_terminal_sn ? String(data.finatic_terminal_sn).trim() : null
-  const terminals = Array.isArray(data?.terminals) ? data.terminals : []
+  const terminals = Array.isArray((data as { terminals?: unknown[] })?.terminals)
+    ? (data as { terminals?: unknown[] }).terminals!
+    : []
+
+  if (!merchantNo || !storeNo) {
+    throw new Error(`No Finatic credentials configured for restaurant`)
+  }
+
   return { merchantNo, storeNo, terminalSn, terminals }
 }

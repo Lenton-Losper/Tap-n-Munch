@@ -17,6 +17,7 @@ export default function FlashTapPayCheckoutPage() {
   const [message, setMessage] = useState('')
 
   const payNow = async () => {
+    if (processing) return
     setProcessing(true)
     setMessage('')
     try {
@@ -75,7 +76,7 @@ export default function FlashTapPayCheckoutPage() {
         <button
           onClick={payNow}
           disabled={processing}
-          className="block w-full text-center border px-4 py-3 font-semibold"
+          className={`block w-full text-center border px-4 py-3 font-semibold ${processing ? 'opacity-50 cursor-not-allowed' : ''}`}
         >
           {processing ? 'Processing...' : 'Pay Now'}
         </button>

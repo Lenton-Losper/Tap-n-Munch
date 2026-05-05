@@ -7,6 +7,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/firebase/restaurants'
 import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
+import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { Button } from '@/components/ui/button'
 import { Receipt, ChevronRight } from 'lucide-react'
 import Image from 'next/image'
@@ -16,6 +17,7 @@ import { db } from '@/lib/firebase/config'
 import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
 import { tabsPath } from '@/lib/firebase/paths'
+import { supabase } from '@/lib/supabase/client'
 
 function MenuLandingPageV2Content() {
   console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
@@ -36,6 +38,9 @@ function MenuLandingPageV2Content() {
   const [openTab, setOpenTab] = useState<{ id: string; total: number; members: number } | null>(null)
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
+  const [recentHostedPending, setRecentHostedPending] = useState<{ id: string; placed_at: string } | null>(
+    null
+  )
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, clearTab } = useTab()
 
@@ -215,6 +220,67 @@ function MenuLandingPageV2Content() {
     }
   }, [restaurantId, tableNum])
 
+  useEffect(() => {
+    if (!restaurantId || tableNum <= 0) {
+      setRecentHostedPending(null)
+      return
+    }
+    let cancelled = false
+    const run = async () => {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+      const { data: abandoned } = await supabase
+        .from('orders')
+        .select('id, placed_at')
+        .eq('firebase_restaurant_id', restaurantId)
+        .eq('table_number', tableNum)
+        .eq('payment_status', 'pending')
+        .eq('payment_channel', 'hosted')
+        .eq('is_closed', false)
+        .lt('placed_at', tenMinutesAgo)
+
+      if (!cancelled && abandoned && abandoned.length > 0) {
+        try {
+          await fetch('/api/orders/expire-pending', { method: 'POST' })
+        } catch (e) {
+          console.warn('[TABLE] expire-pending failed', e)
+        }
+      }
+
+      const { data: recentPending } = await supabase
+        .from('orders')
+        .select('id, placed_at')
+        .eq('firebase_restaurant_id', restaurantId)
+        .eq('table_number', tableNum)
+        .eq('payment_status', 'pending')
+        .eq('payment_channel', 'hosted')
+        .eq('is_closed', false)
+        .gte('placed_at', tenMinutesAgo)
+        .order('placed_at', { ascending: false })
+        .limit(1)
+
+      if (cancelled) return
+      const row = recentPending?.[0]
+      setRecentHostedPending(
+        row ? { id: String(row.id), placed_at: String(row.placed_at || '') } : null
+      )
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [restaurantId, tableNum])
+
+  const minutesSince = (iso: string) => {
+    const t = new Date(iso).getTime()
+    if (Number.isNaN(t)) return 0
+    return Math.floor((Date.now() - t) / 60_000)
+  }
+
+  const blockOrderingForHostedPending =
+    Boolean(recentHostedPending) &&
+    recentHostedPending &&
+    minutesSince(recentHostedPending.placed_at) < 10
+
   const browseBase = `/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`
   const browseWithTab = (tid: string) =>
     `${browseBase}${browseBase.includes('?') ? '&' : '?'}tabId=${encodeURIComponent(tid)}`
@@ -314,6 +380,7 @@ function MenuLandingPageV2Content() {
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] relative overflow-hidden">
+      <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum} />
       {/* Active Order Banner */}
       <ActiveOrderBanner />
       
@@ -389,6 +456,16 @@ function MenuLandingPageV2Content() {
 
           {/* CTA Buttons */}
           <div className="space-y-4 pt-8">
+            {tableNum > 0 && recentHostedPending && minutesSince(recentHostedPending.placed_at) < 10 && (
+              <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 mb-2 text-center">
+                <p className="text-yellow-100 font-medium font-sans text-sm">
+                  A payment is being processed for this table.
+                </p>
+                <p className="text-yellow-200/80 font-sans text-xs mt-1">
+                  Please wait or ask your waiter for assistance.
+                </p>
+              </div>
+            )}
             {tableNum > 0 && !tabLoading && openTab && (
               <div className="rounded-lg border border-white/20 bg-white/10 p-3 text-left">
                 <p className="font-sans text-sm text-white">
@@ -405,7 +482,7 @@ function MenuLandingPageV2Content() {
                   <Button
                     size="lg"
                     onClick={handleCreateTab}
-                    disabled={tabActionLoading !== null}
+                    disabled={tabActionLoading !== null || blockOrderingForHostedPending}
                     className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
                   >
                     {tabActionLoading === 'create' ? 'Creating tab...' : 'Create Tab'}
@@ -415,7 +492,7 @@ function MenuLandingPageV2Content() {
                   <Button
                     size="lg"
                     onClick={handleJoinTab}
-                    disabled={tabActionLoading !== null}
+                    disabled={tabActionLoading !== null || blockOrderingForHostedPending}
                     className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
                   >
                     {tabActionLoading === 'join'
@@ -428,6 +505,7 @@ function MenuLandingPageV2Content() {
                   variant="outline"
                   size="lg"
                   onClick={handleOrderSeparately}
+                  disabled={blockOrderingForHostedPending}
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
                   {openTab ? 'Order Separately' : 'Order Now'}

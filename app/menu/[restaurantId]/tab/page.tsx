@@ -12,6 +12,7 @@ import { useTab } from '@/contexts/tab-context'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
 
 type TabOrder = {
   id: string
@@ -226,15 +227,20 @@ export default function TabSummaryPage() {
               description: settlementDescription,
             }
 
+      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idem ? { 'x-idempotency-key': idem } : {}),
+        },
         body: JSON.stringify(payload),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok || !data?.checkoutUrl) {
         throw new Error(data?.error || 'Could not start payment')
       }
+      clearOrderIdempotencyKey()
       const settlementOrderId = String(data.orderId || '')
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('flashtap_tab_settlement_order_id', settlementOrderId)

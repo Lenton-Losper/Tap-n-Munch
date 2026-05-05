@@ -54,27 +54,46 @@ export async function POST(req: Request) {
       console.error('[PUSH-TO-TERMINAL] Order not found', { orderId: normalizedOrderId })
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
+
+    if (String(order.payment_status || '').toLowerCase() === 'paid') {
+      console.log('[PUSH-TO-TERMINAL] Order already paid, blocking duplicate:', normalizedOrderId)
+      return NextResponse.json(
+        {
+          error: 'This order has already been paid',
+          code: 'ALREADY_PAID',
+        },
+        { status: 400 }
+      )
+    }
+
     const resolvedAmount = amount === undefined || amount === null ? Number(order.total) : Number(amount)
     if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
     }
 
-    const { merchantNo, storeNo, terminalSn } = await getRestaurantFinaticCredentials(
-      normalizedRestaurantId
-    )
+    let merchantNo: string
+    let storeNo: string
+    let terminalSn: string | null
+    try {
+      const credentials = await getRestaurantFinaticCredentials(normalizedRestaurantId)
+      merchantNo = credentials.merchantNo
+      storeNo = credentials.storeNo
+      terminalSn = credentials.terminalSn
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to load payment credentials'
+      return NextResponse.json({ error: message }, { status: 400 })
+    }
     if (!terminalSn) {
-      console.error('[PUSH-TO-TERMINAL] No terminal configured for restaurant:', normalizedRestaurantId)
       return NextResponse.json(
         {
-          error: 'No terminal configured for this restaurant. Please add your terminal serial number in settings.',
-          code: 'NO_TERMINAL'
+          error: 'No terminal configured for this restaurant',
+          code: 'NO_TERMINAL',
         },
         { status: 400 }
       )
     }
     const appId = process.env.PAYCLOUD_APP_ID
-    console.log('[PUSH-TO-TERMINAL] Using terminal:', terminalSn, 'for restaurant:', normalizedRestaurantId)
-    console.log('[PUSH-TO-TERMINAL] restaurant credentials:', {
+    console.log('[PUSH-TO-TERMINAL] Using terminal credentials:', {
       merchantNo,
       storeNo,
       terminalSn
@@ -87,7 +106,18 @@ export async function POST(req: Request) {
       )
     }
 
-    const merchantOrderNo = `FT${Date.now()}`.slice(0, 32)
+    const existingMo = String((order as { paycloud_merchant_order_no?: string | null }).paycloud_merchant_order_no || '').trim()
+    const merchantOrderNo = existingMo || `FT${Date.now()}`.slice(0, 32)
+
+    const persistRes = await supabase
+      .from('orders')
+      .update({ paycloud_merchant_order_no: merchantOrderNo })
+      .eq('id', normalizedOrderId)
+    if (persistRes.error) {
+      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
+      return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
+    }
+
     const paramsForSigning: Record<string, unknown> = {
       app_id: appId,
       api_version: '2.0',
@@ -138,6 +168,10 @@ export async function POST(req: Request) {
       data = (await response.json().catch(() => ({}))) as Record<string, unknown>
 
       if (!response.ok || String(data?.code || '') !== '0') {
+        await supabase
+          .from('orders')
+          .update({ terminal_status: 'failed' })
+          .eq('id', normalizedOrderId)
         return NextResponse.json(
           {
             success: false,
@@ -149,6 +183,10 @@ export async function POST(req: Request) {
       }
     } catch (err) {
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
+      await supabase
+        .from('orders')
+        .update({ terminal_status: 'failed' })
+        .eq('id', normalizedOrderId)
       return NextResponse.json(
         { error: 'Finatic call failed', details: String(err) },
         { status: 500 }
@@ -159,8 +197,9 @@ export async function POST(req: Request) {
       .from('orders')
       .update({
         payment_status: 'terminal_pending',
+        status: 'completed',
+        terminal_status: 'pending',
         terminal_sn: terminalSn,
-        paycloud_merchant_order_no: merchantOrderNo
       })
       .eq('id', normalizedOrderId)
 

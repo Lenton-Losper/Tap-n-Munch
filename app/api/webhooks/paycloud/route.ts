@@ -25,6 +25,34 @@ function extractSign(payload: Record<string, unknown>, headers: Headers): string
   return typeof b === 'string' ? b : ''
 }
 
+function extractWebhookMerchantOrderNo(payload: Record<string, unknown>): string {
+  const coerce = (v: unknown): string => {
+    if (typeof v === 'string') return v.trim()
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+    return ''
+  }
+  let s = coerce(payload.merchant_order_no ?? payload.out_trade_no ?? payload.order_id)
+  if (s) return s
+  let biz: unknown = payload.biz_data
+  if (typeof biz === 'string') {
+    try {
+      biz = JSON.parse(biz) as Record<string, unknown>
+    } catch {
+      biz = null
+    }
+  }
+  if (biz && typeof biz === 'object' && !Array.isArray(biz)) {
+    const b = biz as Record<string, unknown>
+    s = coerce(b.merchant_order_no ?? b.out_trade_no)
+    if (s) return s
+  }
+  return ''
+}
+
+function supabaseOrMerchantRef(merchantOrderNo: string): string {
+  return `paycloud_merchant_order_no.eq.${merchantOrderNo},payment_reference.eq.${merchantOrderNo}`
+}
+
 function isPaidTransStatus(transStatus: unknown): boolean {
   if (transStatus === 2 || transStatus === '2') return true
   const s = String(transStatus ?? '').toLowerCase()
@@ -45,6 +73,27 @@ export async function POST(req: Request) {
     return webhookAck()
   }
 
+  const merchantOrderNo = extractWebhookMerchantOrderNo(payload)
+  if (!merchantOrderNo) {
+    return NextResponse.json({ error: 'Missing merchant_order_no' }, { status: 400 })
+  }
+
+  const supabase = createServerSupabaseClient()
+
+  const { data: existingRows } = await supabase
+    .from('orders')
+    .select('id, payment_status')
+    .or(supabaseOrMerchantRef(merchantOrderNo))
+
+  if (
+    existingRows &&
+    existingRows.length > 0 &&
+    existingRows.every((r) => String(r.payment_status || '').toLowerCase() === 'paid')
+  ) {
+    console.log('[WEBHOOK] Duplicate webhook ignored for:', merchantOrderNo)
+    return NextResponse.json({ success: true, message: 'Already processed' })
+  }
+
   const sign = extractSign(payload, req.headers)
   if (sign) {
     try {
@@ -55,23 +104,19 @@ export async function POST(req: Request) {
     }
   }
 
-  const merchantOrderNo = String(
-    payload.merchant_order_no ?? payload.out_trade_no ?? payload.order_id ?? ''
-  ).trim()
   const transStatus = payload.trans_status ?? payload.trade_status ?? payload.status
-  if (!merchantOrderNo || !isPaidTransStatus(transStatus)) {
+  if (!isPaidTransStatus(transStatus)) {
     return webhookAck()
   }
 
-  const supabase = createServerSupabaseClient()
+  console.log('[WEBHOOK] Processing payment for:', merchantOrderNo)
 
-  const { data: order } = await supabase
+  const { data: orderRows } = await supabase
     .from('orders')
-    .select('*')
-    .eq('paycloud_merchant_order_no', merchantOrderNo)
-    .single()
+    .select('id')
+    .or(supabaseOrMerchantRef(merchantOrderNo))
 
-  if (!order) {
+  if (!orderRows?.length) {
     console.error('[WEBHOOK] Order not found:', merchantOrderNo)
     return NextResponse.json({ received: true })
   }
@@ -80,10 +125,9 @@ export async function POST(req: Request) {
     .from('orders')
     .update({
       payment_status: 'paid',
-      status: 'completed',
-      paid_at: new Date().toISOString()
+      paid_at: new Date().toISOString(),
     })
-    .eq('id', order.id)
+    .or(supabaseOrMerchantRef(merchantOrderNo))
 
   return webhookAck()
 }

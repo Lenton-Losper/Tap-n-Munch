@@ -3,6 +3,7 @@ import { db } from './config'
 import { sanitizeFirestoreData } from './firestore-utils'
 import { ordersPath, orderPath } from './paths'
 import { supabase } from '@/lib/supabase/client'
+import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
 
 export interface OrderItem {
   menu_item_id: string
@@ -101,10 +102,16 @@ export async function createOrder(orderData: any): Promise<string> {
   if ('customerEmail' in cleanData) {
     delete cleanData.customerEmail
   }
+
+  const rid = String(cleanData.restaurantId || '')
+  const tableNum = Number(cleanData.tableNumber) || 0
+  const idem = rid ? getOrderIdempotencyKey(rid, tableNum) : ''
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (idem) headers['x-idempotency-key'] = idem
   
   const response = await fetch('/api/orders', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(cleanData),
   })
   
@@ -114,6 +121,7 @@ export async function createOrder(orderData: any): Promise<string> {
   }
   
   const result = await response.json()
+  clearOrderIdempotencyKey()
   return result.orderId
 }
 
@@ -404,22 +412,28 @@ export function subscribeToOrders(
   callback: (orders: Order[]) => void
 ): () => void {
   const fetchOrders = async () => {
-    let queryBuilder = supabase
-      .from('orders')
-      .select('*')
-      .eq('firebase_restaurant_id', restaurantId)
-      .order('placed_at', { ascending: true })
+    let queryBuilder = supabase.from('orders').select('*').eq('firebase_restaurant_id', restaurantId)
 
-    if (status === 'new') {
-      queryBuilder = queryBuilder.in('status', ['new', 'ready_for_terminal'])
-    } else if (status === 'completed') {
-      queryBuilder = queryBuilder.in('status', ['completed']).or('payment_status.eq.paid')
+    if (status === 'pending_payment') {
+      queryBuilder = queryBuilder
+        .eq('payment_status', 'pending')
+        .eq('payment_channel', 'hosted')
+        .eq('is_closed', false)
+        .order('placed_at', { ascending: false })
     } else {
-      queryBuilder = queryBuilder.eq('status', status)
-    }
+      queryBuilder = queryBuilder.order('placed_at', { ascending: true })
 
-    if (status !== 'completed') {
-      queryBuilder = queryBuilder.eq('is_closed', false)
+      if (status === 'new') {
+        queryBuilder = queryBuilder.in('status', ['new', 'ready_for_terminal'])
+      } else if (status === 'completed') {
+        queryBuilder = queryBuilder.in('status', ['completed']).or('payment_status.eq.paid')
+      } else {
+        queryBuilder = queryBuilder.eq('status', status)
+      }
+
+      if (status !== 'completed') {
+        queryBuilder = queryBuilder.eq('is_closed', false)
+      }
     }
 
     const { data, error } = await queryBuilder

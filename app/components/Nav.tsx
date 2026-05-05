@@ -6,8 +6,10 @@ import { Menu, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 const sectionLinks = [
+  { label: 'Problem', href: '/#problem' },
   { label: 'Features', href: '/#features' },
   { label: 'How It Works', href: '/#how-it-works' },
+  { label: 'Payments', href: '/#payments' },
   { label: 'Pricing', href: '/#pricing' },
 ]
 

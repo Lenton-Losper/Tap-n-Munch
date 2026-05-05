@@ -27,6 +27,7 @@ export type TabMember = {
 
 type TabContextType = {
   tabId: string | null
+  tabStatus: string | null
   sessionId: string
   isInTab: boolean
   tabTotal: number
@@ -72,6 +73,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   const [sessionId, setSessionId] = useState<string>('')
   const [tabTotal, setTabTotal] = useState(0)
   const [tabMembers, setTabMembers] = useState<TabMember[]>([])
+  const [tabStatus, setTabStatus] = useState<string | null>(null)
   const [settlementType, setSettlementType] = useState<string | null>(null)
 
   const restaurantId = useMemo(() => getRestaurantIdFromPath(pathname || ''), [pathname])
@@ -98,6 +100,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     if (!pathname?.startsWith('/menu/')) {
       setTabTotal(0)
       setTabMembers([])
+      setTabStatus(null)
       setSettlementType(null)
       return
     }
@@ -111,6 +114,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
           setTabId(null)
           setTabTotal(0)
           setTabMembers([])
+          setTabStatus(null)
           setSettlementType(null)
           if (typeof window !== 'undefined') {
             sessionStorage.removeItem(TAB_ID_KEY)
@@ -118,6 +122,14 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
           return
         }
         const data = snap.data() as Record<string, any>
+        const status = data.status ? String(data.status) : null
+        setTabStatus(status)
+        if (status === 'closed') {
+          setTabTotal(0)
+          setTabMembers([])
+          setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
+          return
+        }
         setTabTotal(Number(data.total) || 0)
         setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
         setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
@@ -130,6 +142,12 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
 
   const persistTabId = (nextTabId: string | null) => {
     setTabId(nextTabId)
+    if (!nextTabId) {
+      setTabTotal(0)
+      setTabMembers([])
+      setTabStatus(null)
+      setSettlementType(null)
+    }
     if (typeof window === 'undefined') return
     if (nextTabId) sessionStorage.setItem(TAB_ID_KEY, nextTabId)
     else sessionStorage.removeItem(TAB_ID_KEY)
@@ -208,6 +226,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
 
   const value: TabContextType = {
     tabId,
+    tabStatus,
     sessionId,
     isInTab: Boolean(tabId),
     tabTotal,

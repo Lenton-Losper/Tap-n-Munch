@@ -116,8 +116,9 @@ export function getPaycloudConfig() {
     /** POST base URL only, e.g. https://open.finatic.africa/api/entry */
     endpoint,
     appId,
-    merchantNo: requiredEnv('PAYCLOUD_MERCHANT_NO'),
-    storeNo: requiredEnv('PAYCLOUD_STORE_NO'),
+    /** Optional defaults; per-restaurant values must be passed into checkout/query APIs when unset. */
+    merchantNo: String(process.env.PAYCLOUD_MERCHANT_NO || '').trim(),
+    storeNo: String(process.env.PAYCLOUD_STORE_NO || '').trim(),
     signType: process.env.PAYCLOUD_SIGN_TYPE || 'RSA2',
     queryOrderMethod: FINATIC_PROTOCOL_FIELDS.methodQuery,
     requestTimeoutMs: Number(process.env.PAYCLOUD_TIMEOUT_MS || 15000),
@@ -142,8 +143,14 @@ export function getPaycloudConfig() {
       const derivedFingerprint = getDerivedPublicKeyFingerprintFromPrivateKey()
       console.log('[PayCloud][ENV] PAYCLOUD_ENDPOINT=', cfg.endpoint)
       console.log('[PayCloud][ENV] PAYCLOUD_APP_ID=', maskId(cfg.appId))
-      console.log('[PayCloud][ENV] PAYCLOUD_MERCHANT_NO=', maskId(cfg.merchantNo))
-      console.log('[PayCloud][ENV] PAYCLOUD_STORE_NO=', maskId(cfg.storeNo))
+      console.log(
+        '[PayCloud][ENV] PAYCLOUD_MERCHANT_NO=',
+        cfg.merchantNo ? maskId(cfg.merchantNo) : '(from restaurant / request only)'
+      )
+      console.log(
+        '[PayCloud][ENV] PAYCLOUD_STORE_NO=',
+        cfg.storeNo ? maskId(cfg.storeNo) : '(from restaurant / request only)'
+      )
       console.log('[PayCloud][ENV] derived_public_fingerprint_sha256=', derivedFingerprint)
       console.log('[PayCloud][ENV] configured_public_fingerprint_sha256=', configuredFingerprint)
     } catch (error) {
@@ -362,7 +369,7 @@ export function paycloudWireMerchantOrderNo(orderId) {
 
   let short
   if (last10.length === 10) {
-    short = `FT-${last10}` // FT- + 10 digits => 14 chars
+    short = `FT${last10}` // FT + 10 digits => 12 chars
   } else if (first8) {
     short = `FT${first8}${last8}` // FT + 0..8 + 8 => <= 18 chars
   } else {
@@ -394,12 +401,37 @@ export function paycloudCheckoutReturnUrl(returnUrlInput) {
   }
 }
 
-function paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo) {
+function paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo, extraQuery) {
   const base = paycloudCheckoutReturnUrl(returnUrl)
   const tn = String(merchantOrderNo || '').trim()
   if (!base || !tn) return base
-  const sep = String(base).includes('?') ? '&' : '?'
-  return `${base}${sep}tn=${encodeURIComponent(tn)}`
+  let url
+  try {
+    url = new URL(base.includes('://') ? base : `https://${base}`)
+  } catch {
+    const sep = String(base).includes('?') ? '&' : '?'
+    let s = `${base}${sep}tn=${encodeURIComponent(tn)}`
+    if (extraQuery && typeof extraQuery === 'object') {
+      for (const [k, v] of Object.entries(extraQuery)) {
+        if (v == null) continue
+        const vs = String(v).trim()
+        if (!vs) continue
+        s += `&${encodeURIComponent(k)}=${encodeURIComponent(vs)}`
+      }
+    }
+    return s
+  }
+  const qs = new URLSearchParams(url.search || '')
+  qs.set('tn', tn)
+  if (extraQuery && typeof extraQuery === 'object') {
+    for (const [k, v] of Object.entries(extraQuery)) {
+      if (v == null) continue
+      const vs = String(v).trim()
+      if (vs) qs.set(k, vs)
+    }
+  }
+  const path = url.pathname || '/order-confirmation'
+  return `${url.origin}${path}?${qs.toString()}`
 }
 
 function encryptMerchantCardPayload(cardPayload) {
@@ -415,6 +447,18 @@ function encryptMerchantCardPayload(cardPayload) {
   return encrypted.toString('base64')
 }
 
+function resolveWireMerchantStore(input, cfg) {
+  const merchantNo = String(input?.merchantNo ?? cfg.merchantNo ?? '').trim()
+  const storeNo = String(input?.storeNo ?? cfg.storeNo ?? '').trim()
+  if (!merchantNo || !storeNo) {
+    throw new PaycloudRequestError(
+      'merchant_no and store_no are required (configure Finatic credentials for this restaurant in Supabase, or set PAYCLOUD_MERCHANT_NO / PAYCLOUD_STORE_NO for local tools)',
+      { phase: 'validation' }
+    )
+  }
+  return { merchantNo, storeNo }
+}
+
 export async function createPaymentRequest(input, options = {}) {
   const cfg = getPaycloudConfig()
   const amount = Number(input.amount)
@@ -426,23 +470,29 @@ export async function createPaymentRequest(input, options = {}) {
     throw new PaycloudRequestError('orderId is required', { phase: 'validation' })
   }
 
+  const { merchantNo, storeNo } = resolveWireMerchantStore(input, cfg)
+
   // Hosted checkout: business params are top-level JSON fields (same shape as official
   // PHP sample on developers.finatic.africa — no biz_content wrapper for these APIs).
   const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
   console.log('[PayCloud][MERCHANT_ORDER_NO][checkout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
   const { notifyUrl, returnUrl } = getPaycloudCheckoutUrls()
+  const checkoutReturnParams =
+    input.checkoutReturnParams && typeof input.checkoutReturnParams === 'object' ? input.checkoutReturnParams : null
   const payload = {
     app_id: cfg.appId,
-    merchant_no: input.merchantNo || cfg.merchantNo,
-    store_no: input.storeNo || cfg.storeNo,
+    merchant_no: merchantNo,
+    store_no: storeNo,
     charset: 'UTF-8',
-    expires: Number(input.expiresSeconds || 300),
+    // Finatic `expires`: relative session lifetime in whole seconds only (e.g. 300 = 5 min).
+    // Never milliseconds (300 * 1000), never Date.now()+n, never a Unix timestamp.
+    expires: 300,
     method: FINATIC_PROTOCOL_FIELDS.methodHostedCheckout,
     format: FINATIC_PROTOCOL_FIELDS.format,
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo),
+    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo, checkoutReturnParams),
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
@@ -567,6 +617,19 @@ export async function createPaymentRequest(input, options = {}) {
   if (treatAsSuccess && checkoutUrl) {
     if (body.sign) {
       try {
+        console.log('[PayCloud][CHECKOUT][VERIFY] raw_response_body=', raw)
+        console.log(
+          '[PayCloud][CHECKOUT][VERIFY] verify_fields=',
+          Object.keys(body || {}).sort()
+        )
+        console.log(
+          '[PayCloud][CHECKOUT][VERIFY] has_expected_fields=',
+          {
+            code: Object.prototype.hasOwnProperty.call(body || {}, 'code'),
+            msg: Object.prototype.hasOwnProperty.call(body || {}, 'msg'),
+            sign: Object.prototype.hasOwnProperty.call(body || {}, 'sign'),
+          }
+        )
         const signatureOk = verifyPayloadSignature(body, body.sign)
         if (!signatureOk) {
           console.warn(
@@ -632,21 +695,26 @@ export async function createMerchantHostedCheckoutRequest(input, options = {}) {
     throw new PaycloudRequestError('card is required for pay.merchant.checkout', { phase: 'validation' })
   }
 
+  const { merchantNo, storeNo } = resolveWireMerchantStore(input, cfg)
+
   const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
   console.log('[PayCloud][MERCHANT_ORDER_NO][mcheckout] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
   const { notifyUrl, returnUrl } = getPaycloudCheckoutUrls()
+  const checkoutReturnParams =
+    input.checkoutReturnParams && typeof input.checkoutReturnParams === 'object' ? input.checkoutReturnParams : null
   const payload = {
     app_id: cfg.appId,
-    merchant_no: input.merchantNo || cfg.merchantNo,
-    store_no: input.storeNo || cfg.storeNo,
+    merchant_no: merchantNo,
+    store_no: storeNo,
     charset: 'UTF-8',
-    expires: Number(input.expiresSeconds || 300),
+    // Same as hosted checkout: `expires` is lifetime in seconds only (300 = 5 min).
+    expires: 300,
     method: FINATIC_PROTOCOL_FIELDS.methodMerchantCheckout,
     format: FINATIC_PROTOCOL_FIELDS.format,
     version: FINATIC_PROTOCOL_FIELDS.version,
     merchant_order_no: merchantOrderNo,
     order_amount: amount.toFixed(2),
-    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo),
+    return_url: paycloudCheckoutReturnUrlWithTn(returnUrl, merchantOrderNo, checkoutReturnParams),
     sign_type: 'RSA2',
     price_currency: input.priceCurrency || 'NAD',
     timestamp: Date.now() - PAYCLOUD_CLOCK_OFFSET_MS,
@@ -749,13 +817,14 @@ export async function queryPaymentOrder(input, options = {}) {
   if (!input?.orderId) {
     throw new PaycloudRequestError('orderId is required', { phase: 'validation' })
   }
+  const { merchantNo, storeNo } = resolveWireMerchantStore(input, cfg)
   const merchantOrderNo = paycloudWireMerchantOrderNo(input.orderId)
   console.log('[PayCloud][MERCHANT_ORDER_NO][query] value=', merchantOrderNo, 'len=', merchantOrderNo?.length)
 
   const payload = {
     app_id: cfg.appId,
-    merchant_no: input.merchantNo || cfg.merchantNo,
-    store_no: input.storeNo || cfg.storeNo,
+    merchant_no: merchantNo,
+    store_no: storeNo,
     sign_type: 'RSA2',
     format: FINATIC_PROTOCOL_FIELDS.format,
     charset: 'UTF-8',

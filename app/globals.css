@@ -133,6 +133,9 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    scroll-behavior: smooth;
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     /* Subtle paper texture - very light */
@@ -252,4 +255,23 @@
 .animate-hero-float {
   animation: hero-float 6s ease-in-out infinite;
   will-change: transform;
+}
+
+.categories-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-down {
+  animation: slide-down 0.3s ease-out;
 }

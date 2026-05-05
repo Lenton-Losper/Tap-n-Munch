@@ -7,9 +7,9 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Checkbox } from '@/components/ui/checkbox'
-import { X, Plus, Minus, ShoppingCart, UtensilsCrossed } from 'lucide-react'
-import Image from 'next/image'
+import { X, Plus, Minus, ShoppingCart } from 'lucide-react'
 import { CartItem } from '@/contexts/cart-context'
+import { FoodItemImage } from '@/components/menu/food-item-image'
 
 interface ItemDetailModalProps {
   item: MenuItem
@@ -82,40 +82,16 @@ export function ItemDetailModal({
         <div className="space-y-5 p-4 sm:space-y-6 sm:p-6">
           {/* Image */}
           <div className="relative w-full aspect-[4/3] overflow-hidden bg-muted">
-            {item.image_url ? (
-              <>
-                <Image
-                  src={item.image_url}
-                  alt={item.name}
-                  fill
-                  loading="lazy"
-                  style={{
-                    objectFit: item.imageFit || 'cover',
-                    objectPosition: item.imagePosition || 'center',
-                  }}
-                  unoptimized
-                  className="menu-image"
-                  onLoad={(e) => {
-                    e.currentTarget.style.opacity = '1'
-                    const container = e.currentTarget.closest('.relative')
-                    const shimmer = container?.querySelector('.image-shimmer')
-                    if (shimmer) shimmer.classList.add('hidden')
-                  }}
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none'
-                    const container = e.currentTarget.closest('.relative')
-                    const placeholder = container?.querySelector('.image-placeholder')
-                    const shimmer = container?.querySelector('.image-shimmer')
-                    if (placeholder) placeholder.classList.remove('hidden')
-                    if (shimmer) shimmer.classList.add('hidden')
-                  }}
-                />
-                <div className="image-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer pointer-events-none" />
-              </>
-            ) : null}
-            <div className={`image-placeholder absolute inset-0 flex items-center justify-center bg-muted ${item.image_url ? 'hidden' : ''}`}>
-              <UtensilsCrossed className="w-16 h-16 text-muted-foreground" />
-            </div>
+            <FoodItemImage
+              itemName={item.name}
+              storedImageUrl={item.image_url}
+              alt={item.name}
+              className="h-full w-full object-cover"
+              style={{
+                objectFit: item.imageFit || 'cover',
+                objectPosition: item.imagePosition || 'center',
+              }}
+            />
           </div>
 
           {/* Item Name & Description */}

@@ -103,7 +103,16 @@ function SettingsContent() {
       logoPreview !== null
     
     setDetailsChanged(hasChanged)
-  }, [name, phone, logoUrl, finaticMerchantNo, finaticStoreNo, finaticTerminalSn, logoPreview, restaurant])
+  }, [
+    name,
+    phone,
+    logoUrl,
+    finaticMerchantNo,
+    finaticStoreNo,
+    finaticTerminalSn,
+    logoPreview,
+    restaurant,
+  ])
 
   const handleLogoUpload = async (file: File) => {
     if (!restaurantId) return
@@ -253,6 +262,12 @@ function SettingsContent() {
       }
 
       console.log('[SETTINGS] Credentials saved to Supabase')
+      await fetch('/api/cache/restaurant/invalidate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId }),
+      })
+      console.log('[SETTINGS] Restaurant cache invalidated')
 
       // Update local state
       setRestaurant((prev) => 

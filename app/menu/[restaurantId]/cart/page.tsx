@@ -19,6 +19,7 @@ import { getMenuItem } from '@/lib/firebase/menu-items'
 import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
+import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
 
 type PaymentChoice = 'cash' | 'terminal' | 'online'
 
@@ -48,8 +49,7 @@ export default function CartPage() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingItem, setEditingItem] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [addingToTab, setAddingToTab] = useState(false)
-  const [placingOrder, setPlacingOrder] = useState(false)
+  const [paying, setPaying] = useState(false)
   const [paymentChoice, setPaymentChoice] = useState<PaymentChoice>('cash')
 
   const menuQuery = useMemo(() => {
@@ -102,9 +102,10 @@ export default function CartPage() {
   const total = subtotal
 
   const handleAddToTab = async () => {
+    if (paying) return
     if (!inTabFlow || !effectiveTabId) return
     try {
-      setAddingToTab(true)
+      setPaying(true)
       const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
       const payload = {
         restaurantId: String(restaurantId),
@@ -130,13 +131,18 @@ export default function CartPage() {
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
       }
+      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idem ? { 'x-idempotency-key': idem } : {}),
+        },
         body: JSON.stringify(payload),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
+      clearOrderIdempotencyKey()
       if (typeof window !== 'undefined' && data?.orderId) {
         sessionStorage.setItem('last_order_id', String(data.orderId))
         sessionStorage.setItem('flashtap_return_order_id', String(data.orderId))
@@ -161,11 +167,12 @@ export default function CartPage() {
         variant: 'destructive',
       })
     } finally {
-      setAddingToTab(false)
+      setPaying(false)
     }
   }
 
   const handlePlaceOrder = async () => {
+    if (paying) return
     if (inTabFlow) return
     if (paymentChoice === 'online') return
     if (!tableNumber || tableNumber <= 0) {
@@ -183,7 +190,7 @@ export default function CartPage() {
       return
     }
 
-    setPlacingOrder(true)
+    setPaying(true)
     try {
       const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
       const payload = {
@@ -209,9 +216,13 @@ export default function CartPage() {
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
       }
+      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idem ? { 'x-idempotency-key': idem } : {}),
+        },
         body: JSON.stringify(JSON.parse(JSON.stringify(payload))),
       })
       const data = await response.json().catch(() => ({}))
@@ -220,6 +231,7 @@ export default function CartPage() {
       const orderId = data?.orderId as string | undefined
       if (!orderId) throw new Error('No order ID returned')
 
+      clearOrderIdempotencyKey()
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('last_order_id', String(orderId))
         sessionStorage.setItem('flashtap_return_order_id', String(orderId))
@@ -239,8 +251,15 @@ export default function CartPage() {
         variant: 'destructive',
       })
     } finally {
-      setPlacingOrder(false)
+      setPaying(false)
     }
+  }
+
+  const handleProceedCheckout = () => {
+    if (paying) return
+    setPaying(true)
+    const qs = tableNumber > 0 ? `?table=${tableNumber}` : ''
+    router.push(`/menu/${restaurantId}/order-secure${qs}`)
   }
 
   if (loading) {
@@ -432,11 +451,13 @@ export default function CartPage() {
                     role="radio"
                     aria-checked={paymentChoice === 'cash'}
                     onClick={() => setPaymentChoice('cash')}
+                    disabled={paying}
                     className={cn(
                       'rounded-lg border-2 p-4 text-left transition-colors font-sans',
                       paymentChoice === 'cash'
                         ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40'
+                        : 'border-border bg-background hover:border-muted-foreground/40',
+                      paying && 'opacity-50 cursor-not-allowed'
                     )}
                   >
                     <span className="text-lg" aria-hidden>
@@ -450,11 +471,13 @@ export default function CartPage() {
                     role="radio"
                     aria-checked={paymentChoice === 'terminal'}
                     onClick={() => setPaymentChoice('terminal')}
+                    disabled={paying}
                     className={cn(
                       'rounded-lg border-2 p-4 text-left transition-colors font-sans',
                       paymentChoice === 'terminal'
                         ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40'
+                        : 'border-border bg-background hover:border-muted-foreground/40',
+                      paying && 'opacity-50 cursor-not-allowed'
                     )}
                   >
                     <span className="text-lg" aria-hidden>
@@ -470,11 +493,13 @@ export default function CartPage() {
                     role="radio"
                     aria-checked={paymentChoice === 'online'}
                     onClick={() => setPaymentChoice('online')}
+                    disabled={paying}
                     className={cn(
                       'rounded-lg border-2 p-4 text-left transition-colors font-sans',
                       paymentChoice === 'online'
                         ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40'
+                        : 'border-border bg-background hover:border-muted-foreground/40',
+                      paying && 'opacity-50 cursor-not-allowed'
                     )}
                   >
                     <span className="text-lg" aria-hidden>
@@ -492,30 +517,28 @@ export default function CartPage() {
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
                   onClick={handleAddToTab}
-                  disabled={addingToTab}
+                  disabled={paying}
                 >
-                  {addingToTab ? 'Adding…' : paymentChoice === 'online' ? 'Add to Tab & pay online' : 'Add to Tab'}
+                  {paying ? 'Processing…' : paymentChoice === 'online' ? 'Add to Tab & pay online' : 'Add to Tab'}
                 </Button>
               ) : paymentChoice === 'online' ? (
-                <Link
-                  href={`/menu/${restaurantId}/order-secure${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}
-                  className="block"
+                <Button
+                  type="button"
+                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
+                  size="lg"
+                  onClick={handleProceedCheckout}
+                  disabled={paying}
                 >
-                  <Button
-                    className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
-                    size="lg"
-                  >
-                    Proceed to Checkout
-                  </Button>
-                </Link>
+                  {paying ? 'Opening…' : 'Proceed to Checkout'}
+                </Button>
               ) : (
                 <Button
-                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
                   size="lg"
                   onClick={handlePlaceOrder}
-                  disabled={placingOrder}
+                  disabled={paying}
                 >
-                  {placingOrder ? 'Placing order…' : 'Place order'}
+                  {paying ? 'Placing order…' : 'Place order'}
                 </Button>
               )}
             </div>
