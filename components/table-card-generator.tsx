@@ -10,7 +10,9 @@ import { Label } from '@/components/ui/label'
 import { Download, Loader2 } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { buildMenuUrl } from '@/lib/base-url'
-import { getTables, Table } from '@/lib/firebase/tables'
+import { getSupabaseTables as getTables } from '@/lib/supabase/tables'
+
+type Table = { id: string; table_number: number }
 
 export function TableCardGenerator() {
   const { user, restaurantId, restaurant } = useAuth()
@@ -30,7 +32,7 @@ export function TableCardGenerator() {
 
     const loadTables = async () => {
       try {
-        const tablesData = await getTables(restaurantId)
+        const tablesData = (await getTables(restaurantId, true)) as Table[]
         setTables(tablesData)
         if (tablesData.length > 0) {
           setSelectedTable(tablesData[0].table_number)
@@ -148,9 +150,7 @@ export function TableCardGenerator() {
       await preloadAndFixImages(cardRef.current)
 
       // Generate high-resolution PNG (4x pixel ratio for print quality)
-      // CORS Configuration: If logo fails to load, ensure Firebase Storage CORS is configured:
-      // Run: gsutil cors set cors.json gs://YOUR-BUCKET-NAME
-      // Where cors.json contains: [{"origin":["*"],"method":["GET"],"responseHeader":["Content-Type"],"maxAgeSeconds":3600}]
+      // CORS configuration: if logo fails to load, verify the Supabase Storage bucket CORS/public access settings.
       const dataUrl = await toPng(cardRef.current, {
         pixelRatio: 4,
         quality: 1.0,
@@ -175,7 +175,7 @@ export function TableCardGenerator() {
       console.error('Error generating card:', error)
       toast({
         title: 'Error',
-        description: error.message || 'Failed to generate card. If logo fails to load, check Firebase CORS settings.',
+        description: error.message || 'Failed to generate card. If logo fails to load, check Supabase Storage CORS settings.',
         variant: 'destructive',
       })
     } finally {

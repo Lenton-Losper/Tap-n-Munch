@@ -80,7 +80,7 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
         const { data: orders, error: queryError } = await supabase
           .from('orders')
           .select('*')
-          .eq('firebase_restaurant_id', restaurantId)
+          .eq('restaurant_id', restaurantId)
           .eq('table_number', Number(tableNumber))
           .eq('is_closed', false)
 
@@ -123,7 +123,7 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
           event: '*',
           schema: 'public',
           table: 'orders',
-          filter: `firebase_restaurant_id=eq.${restaurantId}`,
+          filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
           fetchOrders().catch(() => {

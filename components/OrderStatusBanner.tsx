@@ -107,7 +107,7 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           event: 'UPDATE',
           schema: 'public',
           table: 'orders',
-          filter: `firebase_restaurant_id=eq.${restaurantId}`,
+          filter: `restaurant_id=eq.${restaurantId}`,
         },
         (payload) => {
           const newOrder = payload.new as OrderRow

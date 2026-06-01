@@ -4,8 +4,13 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useState, useRef } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { getRestaurant, updateRestaurantSettings } from '@/lib/firebase/restaurants'
-import { uploadRestaurantLogo } from '@/lib/firebase/storage'
+import { getRestaurant, updateRestaurantSettings } from '@/lib/supabase/restaurants'
+import {
+  isLogoStoragePath,
+  logoPathFromUrl,
+  restaurantLogoDisplayUrl,
+} from '@/lib/restaurant-logo'
+import { uploadRestaurantLogo } from '@/lib/supabase/storage'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -14,8 +19,7 @@ import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import { Switch } from '@/components/ui/switch'
 import { ProtectedRoute } from '@/components/auth/protected-route'
-import Image from 'next/image'
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '@/lib/supabase/client'
 
 function SettingsContent() {
   const { user, restaurantId, restaurant: initialRestaurant } = useAuth()
@@ -29,6 +33,7 @@ function SettingsContent() {
   const [phone, setPhone] = useState('')
   const [logoUrl, setLogoUrl] = useState<string | null>(null)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
   const [savingDetails, setSavingDetails] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -64,7 +69,12 @@ function SettingsContent() {
           setRestaurant(data)
           setName(data.name || '')
           setPhone(data.phone || '')
-          setLogoUrl(data.logo_url || null)
+          setLogoUrl(
+            restaurantLogoDisplayUrl(restaurantId, data.logo_url || null) ||
+              data.logo_url ||
+              null
+          )
+          setLogoLoadFailed(false)
           setCashEnabled(data.payment_methods?.includes('cash') ?? true)
           setCardEnabled(data.payment_methods?.includes('card') ?? false)
           setFinaticMerchantNo(String((data as any).finatic_merchant_no || ''))
@@ -96,7 +106,10 @@ function SettingsContent() {
     const hasChanged = 
       name !== (restaurant.name || '') ||
       phone !== (restaurant.phone || '') ||
-      logoUrl !== (restaurant.logo_url || null) ||
+      logoUrl !==
+        (restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url || null) ||
+          restaurant.logo_url ||
+          null) ||
       finaticMerchantNo !== String((restaurant as any).finatic_merchant_no || '') ||
       finaticStoreNo !== String((restaurant as any).finatic_store_no || '') ||
       finaticTerminalSn !== String((restaurant as any).finatic_terminal_sn || '') ||
@@ -115,7 +128,14 @@ function SettingsContent() {
   ])
 
   const handleLogoUpload = async (file: File) => {
-    if (!restaurantId) return
+    if (!restaurantId) {
+      toast({
+        title: 'Not ready',
+        description: 'Restaurant profile is still loading. Please wait and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
 
     try {
       setUploadingLogo(true)
@@ -149,30 +169,61 @@ function SettingsContent() {
       }
       reader.readAsDataURL(file)
 
-      // Upload to Firebase Storage
-      const downloadURL = await uploadRestaurantLogo(file, restaurantId)
-      setLogoUrl(downloadURL)
-      setLogoPreview(null) // Clear preview after successful upload
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) {
+        toast({
+          title: 'Authentication Required',
+          description: 'Your session expired. Please sign in again.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      console.log('[SETTINGS] uploading logo', { restaurantId, name: file.name, size: file.size })
+      await uploadRestaurantLogo(file, restaurantId, accessToken)
+      const refreshed = await getRestaurant(restaurantId)
+      const storagePath = refreshed?.logo_url || null
+      const displayUrl = restaurantLogoDisplayUrl(restaurantId, storagePath)
+      setLogoUrl(displayUrl)
+      setLogoPreview(null)
+      setLogoLoadFailed(false)
+      setRestaurant(refreshed)
+
+      try {
+        await fetch('/api/cache/restaurant/invalidate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ restaurantId }),
+        })
+      } catch {
+        /* non-fatal */
+      }
 
       toast({
-        title: 'Logo uploaded',
-        description: 'Logo uploaded successfully. Click Save to apply changes.',
+        title: 'Logo saved',
+        description: 'Your restaurant logo was uploaded and saved.',
       })
     } catch (error: any) {
-      console.error('Error uploading logo:', error)
+      console.error('[SETTINGS] logo upload error:', error)
+      setLogoPreview(null)
       toast({
         title: 'Upload failed',
-        description: error.message || 'Failed to upload logo',
+        description: error.message || 'Failed to upload logo. Please try again.',
         variant: 'destructive',
       })
     } finally {
       setUploadingLogo(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
     }
   }
 
   const handleRemoveLogo = () => {
     setLogoUrl(null)
     setLogoPreview(null)
+    setLogoLoadFailed(false)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -203,71 +254,28 @@ function SettingsContent() {
     try {
       setSavingDetails(true)
 
+      const logoForDb =
+        restaurant?.logo_url && (isLogoStoragePath(restaurant.logo_url) || logoPathFromUrl(restaurant.logo_url))
+          ? isLogoStoragePath(restaurant.logo_url)
+            ? restaurant.logo_url
+            : logoPathFromUrl(restaurant.logo_url)
+          : logoUrl?.startsWith('/api/media/')
+            ? restaurant?.logo_url ?? null
+            : logoUrl
+
       await updateRestaurantSettings(restaurantId, {
         name: name.trim(),
         phone: phone.trim(),
-        logo_url: logoUrl,
+        logo_url: logoForDb,
         finatic_merchant_no: finaticMerchantNo.trim() || null,
         finatic_store_no: finaticStoreNo.trim() || null,
         finatic_terminal_sn: finaticTerminalSn.trim() || null,
       })
-
-      const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-      const merchantNo = finaticMerchantNo.trim() || null
-      const storeNo = finaticStoreNo.trim() || null
-      const terminalSn = finaticTerminalSn.trim() || null
-      const restaurantName = name.trim()
-
-      const { data: existing, error: existingError } = await supabase
-        .from('restaurants')
-        .select('id')
-        .eq('firebase_id', restaurantId)
-        .single()
-
-      if (existingError && existingError.code !== 'PGRST116') {
-        throw new Error(existingError.message || 'Failed to check Supabase restaurant record')
-      }
-
-      if (existing) {
-        const { error: updateError } = await supabase
-          .from('restaurants')
-          .update({
-            finatic_merchant_no: merchantNo,
-            finatic_store_no: storeNo,
-            finatic_terminal_sn: terminalSn,
-            updated_at: new Date().toISOString()
-          })
-          .eq('firebase_id', restaurantId)
-
-        if (updateError) {
-          throw new Error(updateError.message || 'Failed to update Supabase credentials')
-        }
-      } else {
-        const { error: insertError } = await supabase
-          .from('restaurants')
-          .insert({
-            firebase_id: restaurantId,
-            finatic_merchant_no: merchantNo,
-            finatic_store_no: storeNo,
-            finatic_terminal_sn: terminalSn,
-            name: restaurantName
-          })
-
-        if (insertError) {
-          throw new Error(insertError.message || 'Failed to insert Supabase credentials')
-        }
-      }
-
-      console.log('[SETTINGS] Credentials saved to Supabase')
       await fetch('/api/cache/restaurant/invalidate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ restaurantId }),
       })
-      console.log('[SETTINGS] Restaurant cache invalidated')
 
       // Update local state
       setRestaurant((prev) => 
@@ -276,7 +284,7 @@ function SettingsContent() {
               ...prev,
               name: name.trim(),
               phone: phone.trim(),
-              logo_url: logoUrl,
+              logo_url: logoForDb,
               finatic_merchant_no: finaticMerchantNo.trim() || '',
               finatic_store_no: finaticStoreNo.trim() || '',
               finatic_terminal_sn: finaticTerminalSn.trim() || '',
@@ -409,24 +417,24 @@ function SettingsContent() {
             <Label>Restaurant Logo</Label>
             <div className="space-y-4">
               {/* Logo Preview */}
-              {(logoUrl || logoPreview) && (
+              {(logoPreview || (logoUrl && !logoLoadFailed)) && (
                 <div className="relative inline-block">
                   <div className="w-32 h-32 rounded-lg border-2 border-border overflow-hidden bg-muted flex items-center justify-center">
                     {logoPreview ? (
-                      <Image
+                      <img
                         src={logoPreview}
                         alt="Logo preview"
-                        width={128}
-                        height={128}
                         className="object-cover w-full h-full"
                       />
                     ) : logoUrl ? (
-                      <Image
-                        src={logoUrl}
+                      <img
+                        src={`${logoUrl}${logoUrl.includes('?') ? '&' : '?'}t=${Date.now()}`}
                         alt="Restaurant logo"
-                        width={128}
-                        height={128}
                         className="object-cover w-full h-full"
+                        onError={() => {
+                          console.warn('[SETTINGS] logo image failed to load', logoUrl)
+                          setLogoLoadFailed(true)
+                        }}
                       />
                     ) : null}
                   </div>
@@ -440,6 +448,12 @@ function SettingsContent() {
                     <X className="h-4 w-4" />
                   </Button>
                 </div>
+              )}
+
+              {logoUrl && logoLoadFailed && !logoPreview && (
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  The saved logo could not be loaded. Upload a new image below to replace it.
+                </p>
               )}
 
               {/* Upload Button */}

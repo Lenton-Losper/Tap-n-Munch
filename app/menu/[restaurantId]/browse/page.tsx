@@ -4,10 +4,8 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/firebase/restaurants'
-import { getMenuCategories, MenuCategory } from '@/lib/firebase/menu-categories'
-import { MenuItem } from '@/lib/firebase/menu-items'
-import { SubCategory } from '@/lib/firebase/sub-categories'
+import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
+import { getSupabaseCategories } from '@/lib/supabase/menu'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
@@ -19,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { ShoppingCart, Search, ArrowLeft, Receipt, CheckCircle2, Loader2 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
@@ -42,6 +41,15 @@ type RawVariantGroup = {
   type?: unknown
   options?: unknown
 }
+
+type MenuCategory = {
+  id: string
+  name: string
+  description?: string | null
+}
+
+type MenuItem = Record<string, any>
+type SubCategory = Record<string, any>
 
 export default function MenuBrowsePage() {
   const params = useParams()
@@ -165,7 +173,7 @@ export default function MenuBrowsePage() {
   }
 
   const getDefaultGroupSelection = (item: MenuItem) => {
-    const result = {}
+    const result = {} as Record<string, any>
     for (const group of getVariantGroups(item)) {
       const first = group.options[0]
       if (typeof first === 'string') {
@@ -211,8 +219,8 @@ export default function MenuBrowsePage() {
       try {
         setLoading(true)
         const [restaurantData, categoriesData] = await Promise.all([
-          getRestaurant(restaurantId),
-          getMenuCategories(restaurantId),
+          getRestaurantByFirebaseId(restaurantId),
+          getSupabaseCategories(restaurantId, true),
         ])
         
         setRestaurant(restaurantData)
@@ -371,10 +379,10 @@ export default function MenuBrowsePage() {
               
               <div className="flex min-w-0 items-center gap-2 sm:gap-3">
                 {/* Logo */}
-                {restaurant?.logo_url ? (
+                {restaurantLogoDisplayUrl(restaurantId, restaurant?.logo_url) ? (
                   <div className="h-10 w-10 shrink-0 overflow-hidden border border-border">
                     <Image
-                      src={restaurant.logo_url}
+                      src={restaurantLogoDisplayUrl(restaurantId, restaurant?.logo_url)!}
                       alt={restaurant.name || 'Restaurant'}
                       width={40}
                       height={40}
@@ -404,7 +412,7 @@ export default function MenuBrowsePage() {
             {/* Right: Action Buttons */}
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               {tableNumber > 0 && (
-                <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}`}>
+                <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}${tabId || tabIdParam ? `&tabId=${encodeURIComponent(tabId || tabIdParam)}` : ''}`}>
                   <Button variant="outline" size="sm" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
                     <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
                     <span className="hidden sm:inline">Receipt</span>
@@ -431,11 +439,13 @@ export default function MenuBrowsePage() {
         <div className="border-b border-border bg-foreground text-background">
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
             <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
-              {tabStatus === 'closed'
-                ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
-                : `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
-                    tabMembers.length
-                  } ${tabMembers.length === 1 ? 'person' : 'people'}`}
+              {tabStatus === 'ready_to_pay'
+                ? `Ready to pay • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
+                : tabStatus === 'closed'
+                  ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
+                  : `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
+                      tabMembers.length
+                    } ${tabMembers.length === 1 ? 'person' : 'people'}`}
             </div>
           </Link>
         </div>

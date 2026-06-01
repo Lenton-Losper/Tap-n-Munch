@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { getOrders, Order } from '@/lib/firebase/orders'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { supabase } from '@/lib/supabase/client'
+import { getRestaurant, resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Clock, Banknote, CreditCard } from 'lucide-react'
+
+type Order = any
 
 export default function AdminOrdersPage() {
   const [restaurantId, setRestaurantId] = useState('')
@@ -18,10 +20,17 @@ export default function AdminOrdersPage() {
     try {
       setLoading(true)
       setError(null)
-      const [ordersData, restaurantData] = await Promise.all([
-        getOrders(id),
+      const restaurantUuid = await resolveRestaurantUuid(id)
+      const [ordersRes, restaurantData] = await Promise.all([
+        supabase
+          .from('orders')
+          .select('*')
+          .eq('restaurant_id', restaurantUuid)
+          .order('placed_at', { ascending: false })
+          .limit(200),
         getRestaurant(id),
       ])
+      const ordersData = (ordersRes.data || []) as Order[]
       setOrders(ordersData)
       setRestaurantName(restaurantData?.name || null)
       setLoading(false)
@@ -115,7 +124,7 @@ export default function AdminOrdersPage() {
                 </div>
 
                 <div className="border-t pt-2 space-y-1 text-sm">
-                  {order.items.map((item, index) => (
+                  {order.items.map((item: any, index: number) => (
                     <div key={index} className="flex justify-between">
                       <span>
                         {item.quantity}× {item.name}

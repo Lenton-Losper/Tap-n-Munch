@@ -1,12 +1,15 @@
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
+import { resolveRestaurantUuid } from './restaurants'
 
-export async function getSupabaseTables(restaurantId: string) {
+export async function getSupabaseTables(restaurantId: string, isFirebaseId = false) {
+  const resolvedRestaurantId = isFirebaseId
+    ? await resolveRestaurantUuid(restaurantId)
+    : restaurantId
   const { data, error } = await supabase
     .from('restaurant_tables')
     .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('active', true)
+    .eq('restaurant_id', resolvedRestaurantId)
     .order('table_number')
   if (error) throw error
   return data
@@ -40,11 +43,40 @@ export async function updateSupabaseTable(
   if (error) throw error
 }
 
-export async function deleteSupabaseTable(tableId: string) {
-  const supabase = createServerSupabaseClient()
-  const { error } = await supabase
+export async function deleteSupabaseTable(
+  tableId: string,
+  options: { restaurantId: string; accessToken: string }
+) {
+  const res = await fetch(`/api/admin/tables/${encodeURIComponent(tableId)}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${options.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ restaurantId: options.restaurantId }),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(payload?.error || `Failed to delete table (${res.status})`)
+  }
+}
+
+export async function getSupabaseTableByNumber(
+  restaurantId: string,
+  tableNumber: number,
+  isFirebaseId = false
+) {
+  const resolvedRestaurantId = isFirebaseId
+    ? await resolveRestaurantUuid(restaurantId)
+    : restaurantId
+
+  const { data, error } = await supabase
     .from('restaurant_tables')
-    .update({ active: false })
-    .eq('id', tableId)
+    .select('*')
+    .eq('restaurant_id', resolvedRestaurantId)
+    .eq('table_number', tableNumber)
+    .single()
+
   if (error) throw error
+  return data
 }

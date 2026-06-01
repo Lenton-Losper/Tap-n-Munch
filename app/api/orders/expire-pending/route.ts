@@ -16,7 +16,7 @@ async function runExpire() {
     .eq('payment_status', 'pending')
     .eq('payment_channel', 'hosted')
     .lt('placed_at', tenMinutesAgo)
-    .select('id, firebase_restaurant_id, table_number, tab_id')
+    .select('id, restaurant_id, table_number, tab_id')
 
   if (error) {
     console.error('[EXPIRE-PENDING] Error:', error)

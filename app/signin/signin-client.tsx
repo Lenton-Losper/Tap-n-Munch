@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Eye, EyeOff } from 'lucide-react'
 import { Nav } from '../components/Nav'
 import { Footer } from '../components/Footer'
-import { FirebaseConfigError } from '@/components/auth/firebase-config-error'
+import { SupabaseConfigError } from '@/components/auth/firebase-config-error'
 import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,7 +15,7 @@ import { signInWithSupabase } from '@/lib/supabase/auth'
 
 export function SignInClient() {
   const router = useRouter()
-  const { user, loading: authLoading, isFirebaseConfigured, signIn } = useAuth()
+  const { user, loading: authLoading, isSupabaseConfigured, signIn } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -28,8 +28,8 @@ export function SignInClient() {
     }
   }, [authLoading, user, router])
 
-  if (!isFirebaseConfigured) {
-    return <FirebaseConfigError />
+  if (!isSupabaseConfigured) {
+    return <SupabaseConfigError />
   }
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {

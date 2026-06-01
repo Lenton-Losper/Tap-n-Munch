@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { getAnalyticsRange, getDailyAnalytics, DailyAnalytics } from '@/lib/firebase/analytics'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getAnalyticsRange, getDailyAnalytics, DailyAnalytics } from '@/lib/supabase/analytics'
 import { ArrowLeft, Calendar, TrendingUp, TrendingDown } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
@@ -101,8 +100,8 @@ export function AnalyticsDashboard() {
         console.error('Failed to load analytics:', err)
         if (err?.message?.includes('index')) {
           setError(
-            'Firestore index required. Please create the index using the link in the console error, ' +
-            'or deploy firestore.indexes.json using Firebase CLI.'
+            'Supabase index required. Please create the index using the link in the console error, ' +
+            'or deploy the required indexes using Supabase.'
           )
         } else {
           setError(err?.message || 'Failed to load analytics data')

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { formatPaycloudRequestSignature, loadPrivateKey, signUtf8WithForgePkcs1RsaSha256 } from '@/payments/signature'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -24,6 +24,7 @@ export async function POST(req: Request) {
         orderId,
         restaurantId,
       })
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Missing required fields')
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
@@ -45,6 +46,7 @@ export async function POST(req: Request) {
         .toLowerCase()
         .includes('invalid input syntax for type uuid')
       if (invalidUuid) {
+        console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Invalid orderId format')
         return NextResponse.json({ error: 'Invalid orderId format' }, { status: 400 })
       }
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
@@ -57,6 +59,7 @@ export async function POST(req: Request) {
 
     if (String(order.payment_status || '').toLowerCase() === 'paid') {
       console.log('[PUSH-TO-TERMINAL] Order already paid, blocking duplicate:', normalizedOrderId)
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Order already paid')
       return NextResponse.json(
         {
           error: 'This order has already been paid',
@@ -68,6 +71,7 @@ export async function POST(req: Request) {
 
     const resolvedAmount = amount === undefined || amount === null ? Number(order.total) : Number(amount)
     if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Invalid amount')
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
     }
 
@@ -81,9 +85,11 @@ export async function POST(req: Request) {
       terminalSn = credentials.terminalSn
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to load payment credentials'
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', message)
       return NextResponse.json({ error: message }, { status: 400 })
     }
     if (!terminalSn) {
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'No terminal configured for this restaurant')
       return NextResponse.json(
         {
           error: 'No terminal configured for this restaurant',
@@ -107,7 +113,10 @@ export async function POST(req: Request) {
     }
 
     const existingMo = String((order as { paycloud_merchant_order_no?: string | null }).paycloud_merchant_order_no || '').trim()
-    const merchantOrderNo = existingMo || `FT${Date.now()}`.slice(0, 32)
+    const rand4 = Math.floor(Math.random() * 10000).toString().padStart(4, '0')
+    const merchantOrderNo = existingMo
+      ? `FT${Date.now()}${rand4}`.slice(0, 32)
+      : existingMo || `FT${Date.now()}`.slice(0, 32)
 
     const persistRes = await supabase
       .from('orders')
@@ -165,9 +174,13 @@ export async function POST(req: Request) {
         headers: { 'Content-Type': 'application/json;charset=UTF-8' },
         body: JSON.stringify(payload),
       })
+      console.log('[PUSH-TO-TERMINAL] Finatic raw response status:', response.status)
+      console.log('[PUSH-TO-TERMINAL] Finatic raw response body:', await response.clone().text())
       data = (await response.json().catch(() => ({}))) as Record<string, unknown>
 
       if (!response.ok || String(data?.code || '') !== '0') {
+        const finaticReason = `Finatic error: HTTP ${response.status}, code=${String(data?.code ?? '')}, msg=${String(data?.msg || 'Failed to push to terminal')}`
+        console.log('[PUSH-TO-TERMINAL] Returning 400 because:', finaticReason)
         await supabase
           .from('orders')
           .update({ terminal_status: 'failed' })
@@ -182,6 +195,7 @@ export async function POST(req: Request) {
         )
       }
     } catch (err) {
+      console.error('[PUSH-TO-TERMINAL] Finatic call threw error:', err)
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
       await supabase
         .from('orders')

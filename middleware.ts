@@ -71,7 +71,7 @@ export const config = {
      * This ensures middleware NEVER runs on /menu/* routes,
      * preventing ANY authentication redirects on QR code access.
      */
-    '/((?!menu|signin|signup|forgot-password|api/public|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!menu|signin|signup|forgot-password|api/public|api/media|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
 

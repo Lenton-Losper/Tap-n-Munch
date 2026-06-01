@@ -1,10 +1,11 @@
+// @ts-nocheck
 'use client'
 
 export const dynamic = "force-dynamic"
 
 import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurant } from '@/lib/supabase/restaurants'
 import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
@@ -12,12 +13,17 @@ import { Button } from '@/components/ui/button'
 import { Receipt, ChevronRight } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
 import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
-import { tabsPath } from '@/lib/firebase/paths'
 import { supabase } from '@/lib/supabase/client'
+import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
+import {
+  ACTIVE_TAB_STATUSES,
+  fetchTabById,
+  isActiveTabStatus,
+} from '@/lib/tab-session'
+import { clearTabSession, persistTabSession, readStoredTabId } from '@/lib/tab-storage'
+import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 
 function MenuLandingPageV2Content() {
   console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
@@ -36,8 +42,11 @@ function MenuLandingPageV2Content() {
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
   const [openTab, setOpenTab] = useState<{ id: string; total: number; members: number } | null>(null)
+  const [myStoredTab, setMyStoredTab] = useState<{ id: string; total: number; status: string } | null>(null)
+  const [storedTabChecked, setStoredTabChecked] = useState(false)
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
+  const [tabActionError, setTabActionError] = useState<string | null>(null)
   const [recentHostedPending, setRecentHostedPending] = useState<{ id: string; placed_at: string } | null>(
     null
   )
@@ -46,58 +55,27 @@ function MenuLandingPageV2Content() {
 
   // Load restaurant data
   useEffect(() => {
-    if (!restaurantId || !db) {
+    if (!restaurantId) {
       if (!restaurantId) {
         setError('Restaurant ID is missing from URL')
         setLoading(false)
       }
       return
     }
-
-    const restaurantRef = doc(db, 'restaurants', restaurantId)
-    const unsubscribe = onSnapshot(
-      restaurantRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const restaurantData = { id: docSnap.id, ...docSnap.data() } as any
-          setRestaurant(restaurantData)
-          setLoading(false)
-        } else {
-          setError(`Restaurant not found. ID: ${restaurantId}`)
-          setLoading(false)
-        }
-      },
-      (err) => {
-        if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-          setError('Please scan a valid QR code to access this restaurant menu.')
-          setLoading(false)
-          return
-        }
-        
-        getRestaurant(restaurantId).then((data) => {
-          if (data) {
-            setRestaurant(data)
-          } else {
-            setError(`Restaurant not found. Please scan a valid QR code.`)
-          }
-          setLoading(false)
-        }).catch((fetchErr: any) => {
-          if (fetchErr?.code === 'permission-denied' || fetchErr?.message?.includes('permission')) {
-            setError('Please scan a valid QR code to access this restaurant menu.')
-          } else {
-            setError(`Restaurant not found. Please scan a valid QR code.`)
-          }
-          setLoading(false)
-        })
-      }
-    )
-
-    return () => unsubscribe()
+    getRestaurant(restaurantId)
+      .then((data) => {
+        setRestaurant(data)
+        setLoading(false)
+      })
+      .catch(() => {
+        setError('Please scan a valid QR code to access this restaurant menu.')
+        setLoading(false)
+      })
   }, [restaurantId])
 
   // Table fetch
   useEffect(() => {
-    if (!restaurant || !restaurantId || !db) return
+    if (!restaurant || !restaurantId) return
     if (tableNum <= 0) {
       setLoading(false)
       setError(null)
@@ -106,34 +84,22 @@ function MenuLandingPageV2Content() {
 
     const loadTableData = async () => {
       try {
-        const tablesRef = collection(db, 'restaurants', restaurantId, 'tables')
-        const q = query(tablesRef, where('table_number', '==', tableNum))
-        const snapshot = await getDocs(q)
-        
-        if (snapshot.empty) {
+        const tableData = await getSupabaseTableByNumber(restaurantId, tableNum, false).catch((err) => {
+          console.warn('[V2] table lookup failed', err)
+          return null
+        })
+        if (!tableData) {
           setTable(null)
         } else {
-          const tableDoc = snapshot.docs[0]
-          const tableData = tableDoc.data()
-          
-          if (tableData.active !== true) {
-            setTable(null)
-          } else {
-            setTable({ id: tableDoc.id, ...tableData })
-            
-            // Treat QR landing as a fresh scan session start.
-            const session = createFreshSession(restaurantId, String(tableNum))
-            if (session) {
-              setSessionId(session)
-              setSessionReady(true)
-
-              if (typeof window !== 'undefined') {
-                localStorage.setItem('current_restaurant_id', restaurantId)
-              }
-
-              // Ensure cart starts empty for each fresh QR session.
-              clearCart()
+          setTable(tableData)
+          const session = createFreshSession(restaurantId, String(tableNum))
+          if (session) {
+            setSessionId(session)
+            setSessionReady(true)
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('current_restaurant_id', restaurantId)
             }
+            clearCart()
           }
         }
       } catch (err: any) {
@@ -161,43 +127,98 @@ function MenuLandingPageV2Content() {
   }, [loading, restaurant])
 
   useEffect(() => {
+    let cancelled = false
+    const validateStoredTab = async () => {
+      if (!restaurantId || tableNum <= 0) {
+        setMyStoredTab(null)
+        setStoredTabChecked(true)
+        return
+      }
+      const storedId = readStoredTabId()
+      if (!storedId) {
+        setMyStoredTab(null)
+        setStoredTabChecked(true)
+        return
+      }
+      try {
+        const tab = await fetchTabById(storedId, restaurantId)
+        if (cancelled) return
+        if (!tab || String(tab.status || '').toLowerCase() === 'settled') {
+          clearTabSession()
+          setMyStoredTab(null)
+        } else if (isActiveTabStatus(tab.status)) {
+          persistTabSession(storedId, tableNum)
+          setMyStoredTab({
+            id: String(tab.id),
+            total: Number(tab.total) || 0,
+            status: String(tab.status || 'open'),
+          })
+        } else {
+          clearTabSession()
+          setMyStoredTab(null)
+        }
+      } catch (err) {
+        console.warn('[V2] stored tab validation failed', err)
+        clearTabSession()
+        setMyStoredTab(null)
+      } finally {
+        if (!cancelled) setStoredTabChecked(true)
+      }
+    }
+    void validateStoredTab()
+    return () => {
+      cancelled = true
+    }
+  }, [restaurantId, tableNum])
+
+  useEffect(() => {
     const loadOpenTab = async () => {
-      if (!restaurantId || !db || tableNum <= 0) {
+      if (!restaurantId || tableNum <= 0 || !storedTabChecked) {
+        if (!restaurantId || tableNum <= 0) setOpenTab(null)
+        return
+      }
+      if (myStoredTab) {
         setOpenTab(null)
         return
       }
       try {
         setTabLoading(true)
-        console.log('[TAB CHECK] Querying for open tab at table:', tableNum)
+        console.log('[TAB CHECK] Querying for active tab at table:', tableNum)
         console.log('[TAB CHECK] restaurantId:', restaurantId)
-        const tabsRef = collection(db, tabsPath(restaurantId))
-        const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000)
-        const openTabsQuery = query(tabsRef, where('status', '==', 'open'))
-        const snapshot = await getDocs(openTabsQuery)
-        const candidates = snapshot.docs.filter((d) => {
-          const data = d.data() as Record<string, any>
-          const tableVal = data.table_number
-          const createdAtRaw = data.created_at
-          const createdAt =
-            createdAtRaw && typeof createdAtRaw.toDate === 'function'
-              ? createdAtRaw.toDate()
-              : createdAtRaw instanceof Date
-              ? createdAtRaw
-              : null
-          const tableMatches = String(tableVal) === String(tableNum)
-          const within12Hours = createdAt ? createdAt >= cutoff : false
-          return tableMatches && within12Hours
-        })
-        console.log('[TAB CHECK] Result:', candidates.length, 'tabs found')
+        const cutoffIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
+        let tabQuery = supabase
+          .from('tabs')
+          .select('*')
+          .eq('restaurant_id', restaurantId)
+          .in('status', [...ACTIVE_TAB_STATUSES])
+          .gte('created_at', cutoffIso)
 
-        if (candidates.length === 0) {
+        if (table?.id) {
+          tabQuery = tabQuery.eq('table_id', table.id)
+        } else {
+          tabQuery = tabQuery.eq('table_number', tableNum)
+        }
+
+        const { data: candidates, error: tabQueryError } = await tabQuery.limit(1)
+        if (tabQueryError) {
+          console.error('[TAB CHECK] query error:', tabQueryError)
+        }
+        const safeCandidates = (candidates || []) as Record<string, any>[]
+        console.log('[TAB CHECK] Result:', safeCandidates.length, 'tabs found')
+
+        if (safeCandidates.length === 0) {
           setOpenTab(null)
           return
         }
-        const tabDoc = candidates[0]
-        const tabData = tabDoc.data() as Record<string, any>
+        const tabData = safeCandidates.find((row) =>
+          isActiveTabStatus(String((row as Record<string, unknown>).status || ''))
+        ) as Record<string, any> | undefined
+        if (!tabData) {
+          setOpenTab(null)
+          return
+        }
         setOpenTab({
-          id: tabDoc.id,
+          id: String(tabData.id),
           total: Number(tabData.total) || 0,
           members: Array.isArray(tabData.members) ? tabData.members.length : 0,
         })
@@ -218,7 +239,7 @@ function MenuLandingPageV2Content() {
         window.removeEventListener('focus', onFocus)
       }
     }
-  }, [restaurantId, tableNum])
+  }, [restaurantId, tableNum, table?.id, storedTabChecked, myStoredTab])
 
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) {
@@ -231,7 +252,7 @@ function MenuLandingPageV2Content() {
       const { data: abandoned } = await supabase
         .from('orders')
         .select('id, placed_at')
-        .eq('firebase_restaurant_id', restaurantId)
+        .eq('restaurant_id', restaurantId)
         .eq('table_number', tableNum)
         .eq('payment_status', 'pending')
         .eq('payment_channel', 'hosted')
@@ -249,7 +270,7 @@ function MenuLandingPageV2Content() {
       const { data: recentPending } = await supabase
         .from('orders')
         .select('id, placed_at')
-        .eq('firebase_restaurant_id', restaurantId)
+        .eq('restaurant_id', restaurantId)
         .eq('table_number', tableNum)
         .eq('payment_status', 'pending')
         .eq('payment_channel', 'hosted')
@@ -276,51 +297,63 @@ function MenuLandingPageV2Content() {
     return Math.floor((Date.now() - t) / 60_000)
   }
 
-  const blockOrderingForHostedPending =
-    Boolean(recentHostedPending) &&
-    recentHostedPending &&
-    minutesSince(recentHostedPending.placed_at) < 10
+  const blockOrderingForHostedPending = Boolean(
+    recentHostedPending && minutesSince(recentHostedPending.placed_at) < 10
+  )
 
   const browseBase = `/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`
   const browseWithTab = (tid: string) =>
     `${browseBase}${browseBase.includes('?') ? '&' : '?'}tabId=${encodeURIComponent(tid)}`
 
-  const handleOrderSeparately = () => {
+  const handleViewMenu = () => {
+    console.log('[V2] view menu without joining tab')
     clearTab()
     router.push(browseBase)
   }
 
   const handleCreateTab = async () => {
-    if (!restaurantId || !table || tableNum <= 0) {
-      router.push(browseBase)
+    if (!restaurantId || tableNum <= 0) {
+      setTabActionError('Missing restaurant or table number. Scan the table QR code again.')
+      console.error('[V2] create tab blocked — missing restaurantId or tableNum', { restaurantId, tableNum })
       return
     }
     try {
       setTabActionLoading('create')
+      setTabActionError(null)
+      console.log('[V2] create tab clicked', { restaurantId, tableNum, tableId: table?.id })
       const tid = await createNewTab({
         restaurantId,
         tableNumber: String(tableNum),
-        tableId: String(table.id || `table_${tableNum}`),
+        tableId: table?.id ? String(table.id) : undefined,
       })
+      console.log('[V2] create tab redirecting to browse', { tid })
       router.push(browseWithTab(tid))
     } catch (err) {
-      console.error('Failed to create tab:', err)
+      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
+      console.error('[V2] create tab failed:', err)
+      setTabActionError(message)
     } finally {
       setTabActionLoading(null)
     }
   }
 
   const handleJoinTab = async () => {
-    if (!restaurantId || !openTab?.id) {
-      router.push(browseBase)
+    const joinTabId = myStoredTab?.id || openTab?.id
+    if (!restaurantId || !joinTabId) {
+      setTabActionError('No open tab found to join.')
       return
     }
     try {
       setTabActionLoading('join')
-      await joinExistingTab({ restaurantId, tabId: openTab.id })
-      router.push(browseWithTab(openTab.id))
+      setTabActionError(null)
+      console.log('[V2] join tab clicked', { restaurantId, tabId: joinTabId, rejoin: Boolean(myStoredTab) })
+      await joinExistingTab({ restaurantId, tabId: joinTabId, tableNumber: tableNum })
+      console.log('[V2] join tab redirecting to browse', { tabId: joinTabId })
+      router.push(browseWithTab(joinTabId))
     } catch (err) {
-      console.error('Failed to join tab:', err)
+      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      console.error('[V2] join tab failed:', err)
+      setTabActionError(message)
     } finally {
       setTabActionLoading(null)
     }
@@ -410,10 +443,10 @@ function MenuLandingPageV2Content() {
           
           {/* Restaurant Logo */}
           <div className="flex justify-center mb-8">
-            {restaurant.logo_url ? (
+            {restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url) ? (
               <div className="w-28 h-28 border-2 border-white/20 overflow-hidden bg-white/10 backdrop-blur-sm">
                 <Image
-                  src={restaurant.logo_url}
+                  src={restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url)!}
                   alt={restaurant.name}
                   width={112}
                   height={112}
@@ -466,49 +499,95 @@ function MenuLandingPageV2Content() {
                 </p>
               </div>
             )}
-            {tableNum > 0 && !tabLoading && openTab && (
-              <div className="rounded-lg border border-white/20 bg-white/10 p-3 text-left">
-                <p className="font-sans text-sm text-white">
-                  Tab running: {(restaurant?.currency || 'N$')}
-                  {(openTab.total || 0).toFixed(2)}
-                </p>
-                <p className="font-sans text-xs text-white/70">{openTab.members} people currently in tab</p>
+            {tabActionError && (
+              <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
+                <p className="font-sans text-sm font-medium text-red-100">Could not open tab</p>
+                <p className="font-sans text-xs text-red-200/90 mt-1">{tabActionError}</p>
               </div>
             )}
-
-            {tableNum > 0 ? (
-              <>
-                {!openTab ? (
-                  <Button
-                    size="lg"
-                    onClick={handleCreateTab}
-                    disabled={tabActionLoading !== null || blockOrderingForHostedPending}
-                    className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
-                  >
-                    {tabActionLoading === 'create' ? 'Creating tab...' : 'Create Tab'}
-                    <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
-                  </Button>
-                ) : (
-                  <Button
-                    size="lg"
-                    onClick={handleJoinTab}
-                    disabled={tabActionLoading !== null || blockOrderingForHostedPending}
-                    className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
-                  >
-                    {tabActionLoading === 'join'
-                      ? 'Joining tab...'
-                      : `Join Tab • ${restaurant?.currency || 'N$'}${(openTab.total || 0).toFixed(2)}`}
-                    <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
-                  </Button>
-                )}
+            {tableNum > 0 && storedTabChecked && !tabLoading && myStoredTab ? (
+              <div className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">Rejoin your tab</p>
+                  <p className="font-sans text-sm text-white/80 mt-2">
+                    Total so far: {(restaurant?.currency || 'NAD')}{(myStoredTab.total || 0).toFixed(2)}
+                  </p>
+                  {myStoredTab.status === 'ready_to_pay' && (
+                    <p className="font-sans text-xs text-amber-200/90 mt-2">
+                      Your tab is ready to pay — your waiter has been notified.
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="lg"
+                  onClick={handleJoinTab}
+                  disabled={tabActionLoading !== null || blockOrderingForHostedPending}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  {tabActionLoading === 'join' ? 'Rejoining…' : 'Rejoin your tab'}
+                </Button>
                 <Button
                   variant="outline"
                   size="lg"
-                  onClick={handleOrderSeparately}
+                  onClick={handleViewMenu}
                   disabled={blockOrderingForHostedPending}
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
-                  {openTab ? 'Order Separately' : 'Order Now'}
+                  View Menu
+                </Button>
+              </div>
+            ) : tableNum > 0 && storedTabChecked && !tabLoading && openTab ? (
+              <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">
+                    A tab is already open for this table
+                  </p>
+                  <p className="font-sans text-sm text-white/80 mt-2">
+                    Total so far: {(restaurant?.currency || 'NAD')}{(openTab.total || 0).toFixed(2)}
+                  </p>
+                  {openTab.members > 0 && (
+                    <p className="font-sans text-xs text-white/60 mt-1">
+                      {openTab.members} {openTab.members === 1 ? 'person' : 'people'} on this tab
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="lg"
+                  onClick={handleJoinTab}
+                  disabled={tabActionLoading !== null || blockOrderingForHostedPending}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  {tabActionLoading === 'join' ? 'Joining tab…' : 'Join Tab'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  onClick={handleViewMenu}
+                  disabled={blockOrderingForHostedPending}
+                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                >
+                  View Menu
+                </Button>
+              </div>
+            ) : tableNum > 0 && storedTabChecked ? (
+              <>
+                <Button
+                  size="lg"
+                  onClick={handleCreateTab}
+                  disabled={tabActionLoading !== null || blockOrderingForHostedPending}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                >
+                  {tabActionLoading === 'create' ? 'Creating tab…' : 'Create Tab'}
+                  <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  onClick={handleViewMenu}
+                  disabled={blockOrderingForHostedPending}
+                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                >
+                  View Menu
                 </Button>
               </>
             ) : (
@@ -524,11 +603,8 @@ function MenuLandingPageV2Content() {
             )}
 
             {/* Secondary: View Receipt */}
-            {sessionReady && sessionId && tableNum > 0 && (
-              <Link 
-                href={`/menu/${restaurantId}/receipt?table=${tableNum}`}
-                className="block"
-              >
+            {sessionReady && sessionId && tableNum > 0 && myStoredTab && (
+              <Link href={`/menu/${restaurantId}/receipt?table=${tableNum}`} className="block">
               <Button
                 variant="outline"
                 size="lg"

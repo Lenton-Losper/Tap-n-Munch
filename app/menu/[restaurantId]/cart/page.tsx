@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { useTab } from '@/contexts/tab-context'
@@ -15,11 +15,14 @@ import { ArrowLeft, Edit, Trash2, ShoppingCart, UtensilsCrossed } from 'lucide-r
 import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
-import { getMenuItem } from '@/lib/firebase/menu-items'
+import { getSupabaseMenuItemById } from '@/lib/supabase/menu'
 import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
+import { ReadyToPayTabButton, ReadyToPayTabNotified } from '@/components/ready-to-pay-tab'
+import { isActiveTabStatus } from '@/lib/tab-session'
+import { readStoredTabId } from '@/lib/tab-storage'
 
 type PaymentChoice = 'cash' | 'terminal' | 'online'
 
@@ -41,9 +44,17 @@ export default function CartPage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
-  const { isInTab, tabId, sessionId } = useTab()
-  const effectiveTabId = tabIdFromUrl || tabId || ''
+  const { isInTab, tabId, sessionId, tabStatus, canAddToTab, tabTotal, refreshTab } = useTab()
+  const storedTabId = readStoredTabId()
+  const effectiveTabId = tabIdFromUrl || tabId || storedTabId || ''
   const inTabFlow = Boolean(isInTab || effectiveTabId)
+  const tabReadyToPay = tabStatus === 'ready_to_pay'
+  const showReadyToPay = Boolean(
+    storedTabId &&
+      effectiveTabId &&
+      isActiveTabStatus(tabStatus) &&
+      items.length > 0
+  )
   const [restaurant, setRestaurant] = useState<any>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -51,6 +62,10 @@ export default function CartPage() {
   const [loading, setLoading] = useState(true)
   const [paying, setPaying] = useState(false)
   const [paymentChoice, setPaymentChoice] = useState<PaymentChoice>('cash')
+
+  useEffect(() => {
+    if (inTabFlow) setPaymentChoice('terminal')
+  }, [inTabFlow])
 
   const menuQuery = useMemo(() => {
     const q = new URLSearchParams()
@@ -63,7 +78,7 @@ export default function CartPage() {
   useEffect(() => {
     const loadRestaurant = async () => {
       try {
-        const restaurantData = await getRestaurant(restaurantId)
+        const restaurantData = await getRestaurantByFirebaseId(restaurantId)
         setRestaurant(restaurantData)
       } catch (err) {
         console.error('Failed to load restaurant:', err)
@@ -80,7 +95,7 @@ export default function CartPage() {
   const handleEdit = async (index: number) => {
     const cartItem = items[index]
     try {
-      const menuItem = await getMenuItem(cartItem.menu_item_id, restaurantId)
+      const menuItem = await getSupabaseMenuItemById(cartItem.menu_item_id, restaurantId, true)
       if (menuItem) {
         setEditingItem(menuItem)
         setEditingIndex(index)
@@ -104,15 +119,23 @@ export default function CartPage() {
   const handleAddToTab = async () => {
     if (paying) return
     if (!inTabFlow || !effectiveTabId) return
+    if (tabReadyToPay || !canAddToTab) {
+      toast({
+        title: 'Tab is ready to pay',
+        description: 'You cannot add more items. Ask your waiter for the card machine.',
+        variant: 'destructive',
+      })
+      return
+    }
     try {
       setPaying(true)
-      const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
+      console.log('[CART] add to tab', { effectiveTabId, tableNumber, restaurantId })
       const payload = {
         restaurantId: String(restaurantId),
         tableNumber: Number(tableNumber) || 0,
-        session_id: String(sessionId || ''),
-        tab_id: String(effectiveTabId),
-        member_session_id: String(sessionId || ''),
+        sessionId: String(sessionId || ''),
+        tabId: String(effectiveTabId),
+        memberSessionId: String(sessionId || ''),
         items: items.map((item) => ({
           menuItemId: item.menu_item_id,
           name: item.display_name || item.name,
@@ -127,8 +150,8 @@ export default function CartPage() {
         })),
         subtotal: Number(subtotal),
         total: Number(total),
-        paymentMethod,
-        paymentChannel,
+        paymentMethod: 'card',
+        paymentChannel: null,
         orderInstructions: orderInstructions?.trim() || '',
       }
       const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
@@ -142,17 +165,13 @@ export default function CartPage() {
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
+      console.log('[CART] add to tab success', data)
       clearOrderIdempotencyKey()
+      await refreshTab()
       if (typeof window !== 'undefined' && data?.orderId) {
         sessionStorage.setItem('last_order_id', String(data.orderId))
         sessionStorage.setItem('flashtap_return_order_id', String(data.orderId))
         if (tableNumber > 0) sessionStorage.setItem('flashtap_return_table', String(tableNumber))
-      }
-      const checkoutUrl = data?.checkoutUrl as string | undefined
-      if (paymentChoice === 'online' && checkoutUrl) {
-        clearCart()
-        window.location.href = checkoutUrl
-        return
       }
       clearCart()
       toast({
@@ -440,86 +459,121 @@ export default function CartPage() {
                 />
               </div>
 
-              {/* Payment method */}
-              <div className="mb-6" role="radiogroup" aria-label="Payment method">
-                <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
-                  How would you like to pay?
-                </Label>
-                <div className="grid gap-3">
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={paymentChoice === 'cash'}
-                    onClick={() => setPaymentChoice('cash')}
-                    disabled={paying}
-                    className={cn(
-                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                      paymentChoice === 'cash'
-                        ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40',
-                      paying && 'opacity-50 cursor-not-allowed'
-                    )}
-                  >
-                    <span className="text-lg" aria-hidden>
-                      💵
-                    </span>
-                    <span className="ml-2 font-semibold text-foreground">Cash</span>
-                    <p className="mt-1 text-sm text-muted-foreground">Pay at the table</p>
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={paymentChoice === 'terminal'}
-                    onClick={() => setPaymentChoice('terminal')}
-                    disabled={paying}
-                    className={cn(
-                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                      paymentChoice === 'terminal'
-                        ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40',
-                      paying && 'opacity-50 cursor-not-allowed'
-                    )}
-                  >
-                    <span className="text-lg" aria-hidden>
-                      💳
-                    </span>
-                    <span className="ml-2 font-semibold text-foreground">Card</span>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Waiter brings card machine to your table
+              {inTabFlow && (
+                <div className="mb-6 rounded-lg border border-border bg-muted/30 p-4">
+                  <p className="font-sans text-sm font-semibold text-foreground">Card payment only</p>
+                  <p className="mt-2 font-sans text-sm text-muted-foreground">
+                    Card — Waiter brings card machine to your table
+                  </p>
+                  {tabTotal > 0 && (
+                    <p className="mt-3 font-sans text-sm text-foreground">
+                      Tab total so far: {restaurant?.currency || 'N$'}
+                      {tabTotal.toFixed(2)}
                     </p>
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={paymentChoice === 'online'}
-                    onClick={() => setPaymentChoice('online')}
-                    disabled={paying}
-                    className={cn(
-                      'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                      paymentChoice === 'online'
-                        ? 'border-foreground bg-muted/50'
-                        : 'border-border bg-background hover:border-muted-foreground/40',
-                      paying && 'opacity-50 cursor-not-allowed'
-                    )}
-                  >
-                    <span className="text-lg" aria-hidden>
-                      🌐
-                    </span>
-                    <span className="ml-2 font-semibold text-foreground">Online</span>
-                    <p className="mt-1 text-sm text-muted-foreground">Pay now online</p>
-                  </button>
+                  )}
+                  {tabReadyToPay && (
+                    <p className="mt-3 font-sans text-sm text-amber-700 dark:text-amber-400">
+                      This tab is ready to pay — you cannot add more items.
+                    </p>
+                  )}
                 </div>
-              </div>
+              )}
+
+              {!inTabFlow && (
+                <div className="mb-6" role="radiogroup" aria-label="Payment method">
+                  <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
+                    How would you like to pay?
+                  </Label>
+                  <div className="grid gap-3">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'cash'}
+                      onClick={() => setPaymentChoice('cash')}
+                      disabled={paying}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'cash'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        paying && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>
+                        💵
+                      </span>
+                      <span className="ml-2 font-semibold text-foreground">Cash</span>
+                      <p className="mt-1 text-sm text-muted-foreground">Pay at the table</p>
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'terminal'}
+                      onClick={() => setPaymentChoice('terminal')}
+                      disabled={paying}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'terminal'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        paying && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>
+                        💳
+                      </span>
+                      <span className="ml-2 font-semibold text-foreground">Card</span>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Waiter brings card machine to your table
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'online'}
+                      onClick={() => setPaymentChoice('online')}
+                      disabled={paying}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'online'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        paying && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>
+                        🌐
+                      </span>
+                      <span className="ml-2 font-semibold text-foreground">Online</span>
+                      <p className="mt-1 text-sm text-muted-foreground">Pay now online</p>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Main CTA: tab = always POST; non-tab online = order-secure; non-tab cash/card = POST from cart */}
+              {showReadyToPay && (
+                <div className="mb-4">
+                  {tabReadyToPay ? (
+                    <ReadyToPayTabNotified />
+                  ) : (
+                    <ReadyToPayTabButton
+                      tabId={effectiveTabId}
+                      restaurantId={restaurantId}
+                      onSuccess={() => void refreshTab()}
+                    />
+                  )}
+                </div>
+              )}
+
               {inTabFlow ? (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
                   onClick={handleAddToTab}
-                  disabled={paying}
+                  disabled={paying || tabReadyToPay || !canAddToTab}
                 >
-                  {paying ? 'Processing…' : paymentChoice === 'online' ? 'Add to Tab & pay online' : 'Add to Tab'}
+                  {paying ? 'Adding…' : 'Add to Tab'}
                 </Button>
               ) : paymentChoice === 'online' ? (
                 <Button

@@ -4,21 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import {
-  collection,
-  collectionGroup,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  updateDoc,
-  where,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
-import { orderPath, ordersPath } from '@/lib/firebase/paths'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurant } from '@/lib/supabase/restaurants'
 import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, AlertCircle } from 'lucide-react'
@@ -74,33 +60,19 @@ async function resolveRecentPaidOrderBySession(
   restaurantId: string,
   sessionId: string
 ): Promise<{ rows: OrderDoc[]; restaurantId: string }> {
-  if (!db || !restaurantId.trim() || !sessionId.trim()) {
+  if (!restaurantId.trim() || !sessionId.trim()) {
     return { rows: [], restaurantId }
   }
 
   const cutoff = Date.now() - RECEIPT_FALLBACK_WINDOW_MS
-  let snap
-
-  try {
-    const q = query(
-      collection(db, ordersPath(restaurantId)),
-      where('session_id', '==', sessionId),
-      orderBy('placed_at', 'desc'),
-      limit(40)
-    )
-    snap = await getDocs(q)
-  } catch {
-    const q2 = query(
-      collection(db, ordersPath(restaurantId)),
-      where('session_id', '==', sessionId),
-      limit(80)
-    )
-    snap = await getDocs(q2)
-  }
-
-  const candidates = snap.docs.map(
-    (d) => ({ id: d.id, ...d.data() } as OrderDoc)
-  )
+  const { data } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('restaurant_id', restaurantId)
+    .eq('session_id', sessionId)
+    .order('placed_at', { ascending: false })
+    .limit(80)
+  const candidates = (data || []).map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
 
   const recent = candidates.filter((o) => {
     if (!isPaidOrCardOrder(o)) return false
@@ -272,42 +244,17 @@ async function resolveOrdersByTn(
   tn: string,
   restaurantIdHint: string | null
 ): Promise<{ rows: OrderDoc[]; restaurantId: string | null }> {
-  if (!db || !tn.trim()) return { rows: [], restaurantId: restaurantIdHint }
+  if (!tn.trim()) return { rows: [], restaurantId: restaurantIdHint }
 
   const rid = restaurantIdHint?.trim() || null
 
-  if (rid) {
-    const direct = await getDoc(doc(db, orderPath(rid, tn)))
-    if (direct.exists()) {
-      return {
-        rows: [{ id: direct.id, ...(direct.data() as Record<string, unknown>) } as OrderDoc],
-        restaurantId: rid,
-      }
-    }
-
-    const byPaycloud = query(
-      collection(db, ordersPath(rid)),
-      where('paycloud_merchant_order_no', '==', tn),
-      limit(15)
-    )
-    const snap = await getDocs(byPaycloud)
-    if (!snap.empty) {
-      return {
-        rows: snap.docs.map((d) => ({ id: d.id, ...d.data() } as OrderDoc)),
-        restaurantId: rid,
-      }
-    }
-  }
-
-  const groupQ = query(collectionGroup(db, 'orders'), where('paycloud_merchant_order_no', '==', tn), limit(15))
-  const groupSnap = await getDocs(groupQ)
-  if (!groupSnap.empty) {
-    const parent = groupSnap.docs[0].ref.parent.parent
-    const restId = parent?.id ?? null
-    return {
-      rows: groupSnap.docs.map((d) => ({ id: d.id, ...d.data() } as OrderDoc)),
-      restaurantId: restId,
-    }
+  let query = supabase.from('orders').select('*').or(supabaseOrPaymentRef(tn)).limit(15)
+  if (rid) query = query.eq('restaurant_id', rid)
+  const { data } = await query
+  if (data && data.length > 0) {
+    const mapped = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+    const first = data[0] as { restaurant_id?: string | null }
+    return { rows: mapped, restaurantId: String(first.restaurant_id || rid || '') || null }
   }
 
   return { rows: [], restaurantId: rid }
@@ -331,7 +278,7 @@ function OrderConfirmationContent() {
   const [restaurant, setRestaurant] = useState<{ name?: string; currency?: string } | null>(null)
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
-  const [dataSource, setDataSource] = useState<'supabase' | 'firestore' | null>(null)
+  const [dataSource, setDataSource] = useState<'supabase' | null>(null)
   const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
 
@@ -359,8 +306,8 @@ function OrderConfirmationContent() {
             const docs = sbRows.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
             const combined = combinePaymentStatusFromRows(sbRows)
             const merged = applyReceiptPaymentState(docs, combined, urlCancel)
-            const firstRow = sbRows[0] as { firebase_restaurant_id?: string | null }
-            setResolvedRestaurantId(String(firstRow.firebase_restaurant_id || hint || ''))
+            const firstRow = sbRows[0] as { restaurant_id?: string | null }
+            setResolvedRestaurantId(String(firstRow.restaurant_id || hint || ''))
             setReceipt(merged)
             setNotFound(false)
             setNotFoundReason(null)
@@ -369,19 +316,6 @@ function OrderConfirmationContent() {
             return
           }
 
-          if (!db) {
-            if (!cancelled) {
-              setDataSource(null)
-              setLoading(false)
-              setNotFound(true)
-              setNotFoundReason('tn-miss')
-              setReceipt(null)
-              setResolvedRestaurantId(hint)
-            }
-            return
-          }
-
-          setDataSource('firestore')
           const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(orderRef, hint)
           if (cancelled) return
 
@@ -402,16 +336,6 @@ function OrderConfirmationContent() {
           setNotFoundReason(null)
           if (mergedFs.payment_status === 'paid') setPaymentConfirmed(true)
           if (!cancelled) setLoading(false)
-          return
-        }
-
-        if (!db) {
-          if (!cancelled) {
-            setLoading(false)
-            setNotFound(true)
-            setNotFoundReason('no-context')
-            setReceipt(null)
-          }
           return
         }
 
@@ -441,7 +365,7 @@ function OrderConfirmationContent() {
           return
         }
 
-        setDataSource('firestore')
+        setDataSource('supabase')
         setResolvedRestaurantId(ridOut)
         setReceipt(aggregateOrders(rows))
         setNotFound(false)
@@ -503,57 +427,6 @@ function OrderConfirmationContent() {
       clearInterval(id)
     }
   }, [orderRef, dataSource, receipt?.payment_status, paymentConfirmed, searchParams.toString()])
-
-  // Poll reconcile when opened from Finatic return URL with tn (Firestore-backed orders).
-  useEffect(() => {
-    if (!orderRef || paymentConfirmed) return
-    if (dataSource === 'supabase') return
-    if (String(receipt?.payment_status || '').toLowerCase() === 'cancelled') return
-    const restaurantId =
-      resolvedRestaurantId ||
-      restaurantIdParam ||
-      (typeof window !== 'undefined' ? localStorage.getItem('current_restaurant_id') : null)
-    if (!restaurantId) return
-
-    const orderIds = String(receipt?.id || orderRef)
-      .split(',')
-      .map((id) => id.trim())
-      .filter(Boolean)
-    if (orderIds.length === 0) return
-
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const run = async () => {
-      if (cancelled || paymentConfirmed) return
-      try {
-        const res = await fetch('/api/payments/reconcile', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            restaurantId,
-            orderIds,
-            merchantOrderNo: orderRef,
-          }),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (data?.paid === true) {
-          setPaymentConfirmed(true)
-          setReceipt((prev) => (prev ? { ...prev, payment_status: 'paid' } : prev))
-          return
-        }
-      } catch {
-        // best-effort polling
-      }
-      timer = setTimeout(run, 10000)
-    }
-
-    void run()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [orderRef, dataSource, resolvedRestaurantId, restaurantIdParam, receipt?.id, receipt?.payment_status, paymentConfirmed])
 
   const currency = restaurant?.currency || 'N$'
 
@@ -622,14 +495,10 @@ function OrderConfirmationContent() {
     return () => clearTimeout(timer)
   }, [screenStatus, resolvedRestaurantId, restaurantIdParam, tableForLinks, router])
 
-  const shouldShowConfirmPayment =
-    dataSource === 'firestore' &&
-    receipt?.payment_status === 'pending' &&
-    !paymentConfirmed
+  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !paymentConfirmed
 
   const confirmPayment = async () => {
-    if (!db || !receipt || !shouldShowConfirmPayment || confirmingPayment) return
-    const fs = db
+    if (!receipt || !shouldShowConfirmPayment || confirmingPayment) return
     const restaurantId = resolvedRestaurantId || restaurantIdParam
     if (!restaurantId) return
 
@@ -642,15 +511,17 @@ function OrderConfirmationContent() {
 
     setConfirmingPayment(true)
     try {
-      await Promise.all(
-        orderIds.map((orderId) =>
-          updateDoc(doc(fs, orderPath(restaurantId, orderId)), {
+      await Promise.all(orderIds.map((orderId) =>
+        (supabase as any)
+          .from('orders')
+          .update({
             payment_status: 'paid',
             payment_confirmed_by: 'customer',
-            payment_confirmed_at: new Date(),
-          })
-        )
-      )
+            payment_confirmed_at: new Date().toISOString(),
+          } as any)
+          .eq('id', orderId)
+          .eq('restaurant_id', restaurantId)
+      ))
       setPaymentConfirmed(true)
       setReceipt((prev) => (prev ? { ...prev, payment_status: 'paid' } : prev))
     } catch (error) {

@@ -1,12 +1,9 @@
 import { NextResponse } from 'next/server'
-import { orderPath } from '@/lib/firebase/paths'
-import { applyTabSettlementSideEffects, markPaidAndAcceptPatch } from '@/lib/firebase/apply-tab-settlement'
-import { adminDb } from '@/lib/firebase/admin-firestore'
+import fs from 'fs'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { queryPaymentOrder } from '@/payments/paycloud'
-import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
-
-const ADMIN_NOT_CONFIGURED =
-  'Server configuration error: Firebase Admin not initialized. Add FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_B64 (recommended on Vercel) to environment variables and redeploy.'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 
 function toMoney(value: unknown) {
   const n = Number(value)
@@ -15,26 +12,26 @@ function toMoney(value: unknown) {
 }
 
 async function loadOrders(
-  fs: NonNullable<ReturnType<typeof adminDb>>,
-  restaurantId: string,
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  restaurantUuid: string,
   orderIds: string[]
 ) {
-  const rows: Array<{ orderId: string; data: Record<string, unknown> }> = []
-  for (const orderId of orderIds) {
-    const snap = await fs.doc(orderPath(restaurantId, orderId)).get()
-    if (!snap.exists) {
-      throw new Error(`Order not found: ${orderId}`)
-    }
-    rows.push({ orderId, data: (snap.data() || {}) as Record<string, unknown> })
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('restaurant_id', restaurantUuid)
+    .in('id', orderIds)
+
+  if (error) throw error
+  const rows = (data || []).map((row) => ({ orderId: String(row.id), data: row as Record<string, unknown> }))
+  if (rows.length !== orderIds.length) {
+    throw new Error('One or more orders were not found')
   }
   return rows
 }
 
 export async function POST(req: Request) {
-  const fs = adminDb()
-  if (!fs) {
-    return NextResponse.json({ ok: false, error: ADMIN_NOT_CONFIGURED }, { status: 503 })
-  }
+  const supabase = createServerSupabaseClient()
 
   try {
     const body = await req.json()
@@ -48,12 +45,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'restaurantId and orderIds are required' }, { status: 400 })
     }
 
+    const restaurantUuid = await resolveRestaurantUuid(restaurantId)
+
     console.log('[RECONCILE] start', {
-      restaurantId,
+      restaurantId: restaurantUuid,
       orderIds,
     })
 
-    const rows = await loadOrders(fs, restaurantId, orderIds)
+    void fs
+    const rows = await loadOrders(supabase, restaurantUuid, orderIds)
     for (const r of rows) {
       console.log('[RECONCILE] loaded order', {
         orderId: r.orderId,
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
       })
     }
     if (rows.every((r) => r.data.payment_status === 'paid')) {
-      return NextResponse.json({ ok: true, paid: true, source: 'firestore' }, { status: 200 })
+      return NextResponse.json({ ok: true, paid: true, source: 'supabase' }, { status: 200 })
     }
 
     const expectedAmount = Math.round(rows.reduce((s, r) => s + (Number(r.data.total) || 0), 0) * 100) / 100
@@ -153,22 +153,11 @@ export async function POST(req: Request) {
     const transId = String(raw.psn || raw.transaction_id || '') || null
     for (const { orderId, data } of rows) {
       const currentStatusRaw = String(data.status || '')
-      const patch = {
-        ...markPaidAndAcceptPatch(currentStatusRaw),
-        paycloud_transaction_id: transId,
-      }
-      await fs.doc(orderPath(restaurantId, orderId)).update(patch)
-    }
-
-    const settlementRow = rows.find((r) => String(r.data.tab_settlement_for_tab_id || '').trim())
-    if (settlementRow) {
-      const kind = await applyTabSettlementSideEffects(restaurantId, settlementRow.data)
-      console.log('[RECONCILE] tab settlement side-effect:', kind)
-    } else {
-      console.log(
-        '[RECONCILE] standalone / no tab settlement row in batch (orders still patched above)',
-        orderIds
-      )
+      const nextStatus =
+        currentStatusRaw === 'new' || currentStatusRaw === 'pending' ? 'accepted' : currentStatusRaw || 'accepted'
+      const patch = { status: nextStatus, payment_status: 'paid', paycloud_transaction_id: transId }
+      const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
+      if (error) throw error
     }
 
     return NextResponse.json({ ok: true, paid: true, source: 'query', merchantOrderNo }, { status: 200 })

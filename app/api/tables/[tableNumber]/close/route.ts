@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { adminDb } from '@/lib/firebase/admin-firestore'
+import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 
 export async function POST(
   req: Request,
@@ -11,6 +11,18 @@ export async function POST(
   const { tableNumber } = await params
   const parsedTableNumber = Number(tableNumber)
   const nowIso = new Date().toISOString()
+  const restaurantUuid = await resolveRestaurantUuid(String(restaurantId || ''))
+
+  console.log('[TABLE-CLOSE] closing table', { restaurantUuid, parsedTableNumber })
+
+  const { data: tableRow } = await supabase
+    .from('restaurant_tables')
+    .select('id')
+    .eq('restaurant_id', restaurantUuid)
+    .eq('table_number', parsedTableNumber)
+    .maybeSingle()
+
+  const tableId = tableRow?.id ? String(tableRow.id) : null
 
   const { error: ordersError } = await supabase
     .from('orders')
@@ -19,7 +31,7 @@ export async function POST(
       table_closed: true,
       status: 'completed',
     })
-    .eq('firebase_restaurant_id', restaurantId)
+    .eq('restaurant_id', restaurantUuid)
     .eq('table_number', parsedTableNumber)
     .eq('is_closed', false)
 
@@ -27,71 +39,49 @@ export async function POST(
     return NextResponse.json({ error: ordersError.message }, { status: 400 })
   }
 
-  const { error: tabsError } = await supabase
+  let tabsQuery = supabase
     .from('tabs')
     .update({
-      status: 'closed',
-      closed_at: nowIso,
+      status: 'settled',
       settled_at: nowIso,
+      settled_type: 'manual_close',
       updated_at: nowIso,
     })
-    .eq('table_number', parsedTableNumber)
-    .eq('firebase_restaurant_id', restaurantId)
-    .eq('status', 'open')
+    .eq('restaurant_id', restaurantUuid)
+    .in('status', ['open', 'ready_to_pay'])
+
+  if (tableId) {
+    tabsQuery = tabsQuery.eq('table_id', tableId)
+  } else {
+    tabsQuery = tabsQuery.eq('table_number', parsedTableNumber)
+  }
+
+  const { error: tabsError } = await tabsQuery
 
   if (tabsError) {
     console.warn('[TABLE-CLOSE] tabs update failed:', tabsError)
   }
 
-  const { error: tableSessionError } = await supabase
-    .from('restaurant_tables')
-    .update({
-      session_id: null,
-      current_tab_id: null,
-      status: 'available',
-      updated_at: nowIso,
-    })
-    .eq('table_number', parsedTableNumber)
-    .eq('firebase_restaurant_id', restaurantId)
+  const tableUpdate: Record<string, unknown> = {
+    session_id: null,
+    current_tab_id: null,
+    status: 'available',
+    updated_at: nowIso,
+  }
+
+  let tableSessionQuery = supabase.from('restaurant_tables').update(tableUpdate).eq('restaurant_id', restaurantUuid)
+
+  if (tableId) {
+    tableSessionQuery = tableSessionQuery.eq('id', tableId)
+  } else {
+    tableSessionQuery = tableSessionQuery.eq('table_number', parsedTableNumber)
+  }
+
+  const { error: tableSessionError } = await tableSessionQuery
 
   if (tableSessionError) {
     console.warn('[TABLE-CLOSE] restaurant_tables update failed:', tableSessionError)
   }
 
-  try {
-    const db = adminDb()
-    if (db) {
-      let tabsSnap = await db
-        .collection(`restaurants/${restaurantId}/tabs`)
-        .where('table_number', '==', parsedTableNumber)
-        .where('status', '==', 'open')
-        .get()
-
-      if (tabsSnap.empty) {
-        tabsSnap = await db
-          .collection(`restaurants/${restaurantId}/tabs`)
-          .where('table_number', '==', String(parsedTableNumber))
-          .where('status', '==', 'open')
-          .get()
-      }
-
-      if (!tabsSnap.empty) {
-        const batch = db.batch()
-        tabsSnap.docs.forEach((tabDoc) => {
-          batch.update(tabDoc.ref, {
-            status: 'closed',
-            settled_at: nowIso,
-            updated_at: nowIso,
-            total: 0,
-            members: [],
-          })
-        })
-        await batch.commit()
-      }
-    }
-  } catch (err) {
-    console.warn('[TABLE-CLOSE] Firestore tab close sync failed:', err)
-  }
-
-  return NextResponse.json({ success: true })
+  return NextResponse.json({ success: true, settled_type: 'manual_close' })
 }

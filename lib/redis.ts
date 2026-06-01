@@ -6,9 +6,9 @@ export const redis = new Redis({
 })
 
 export const CacheKeys = {
-  menu: (restaurantId: string) => `menu:${restaurantId}`,
+  menu: (restaurantId: string) => `menu:v2:${restaurantId}`,
   menuCategory: (restaurantId: string, categoryId: string) =>
-    `menu:${restaurantId}:category:${categoryId}`,
+    `menu:v2:${restaurantId}:category:${categoryId}`,
   restaurant: (restaurantId: string) => `restaurant:${restaurantId}`,
   tab: (restaurantId: string, tableNumber: number) =>
     `tab:${restaurantId}:table:${tableNumber}`,

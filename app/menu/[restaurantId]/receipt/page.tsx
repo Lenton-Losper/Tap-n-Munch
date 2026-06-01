@@ -5,13 +5,24 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurant } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, CheckCircle2, FileText } from 'lucide-react'
+import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
 import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import { ReadyToPayTabButton, ReadyToPayTabNotified } from '@/components/ready-to-pay-tab'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
+import { useTab } from '@/contexts/tab-context'
+import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
+import {
+  clearTabAndGetLandingPath,
+  fetchOrdersForTab,
+  fetchTabById,
+  isActiveTabStatus,
+  resolveStoredTabId,
+  type TabRow,
+} from '@/lib/tab-session'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -52,6 +63,7 @@ type OrderRecord = {
   payment_status?: string
   payment_method?: string
   payment_channel?: string | null
+  tab_id?: string | null
   tab_settlement_for_tab_id?: string | null
   paycloud_merchant_order_no?: string
   payment_reference?: string | null
@@ -141,19 +153,22 @@ export default function ReceiptPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumberFromUrl = searchParams.get('table') || ''
+  const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
+  const { tabStatus, refreshTab } = useTab()
+  const storedTabId = resolveStoredTabId(tabIdFromUrl)
+  const tableNumber =
+    tableNumberFromUrl ||
+    readStoredTableNumber() ||
+    (typeof window !== 'undefined' ? getSessionInfo()?.table : null) ||
+    ''
 
-  // Prefer the session's table number (prevents stale URL from showing the wrong table).
-  const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
-  const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : null
-  const tableNumber = sessionTableNumber && Number.isFinite(sessionTableNumber) && sessionTableNumber > 0 ? String(sessionTableNumber) : tableNumberFromUrl
+  const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<OrderRecord[]>([])
   const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [redirecting, setRedirecting] = useState(false)
 
-  const [paymentSubmitting, setPaymentSubmitting] = useState(false)
-  const [paymentSuccess, setPaymentSuccess] = useState(false)
-  const [paymentError, setPaymentError] = useState<string | null>(null)
-  const [reconcileStartedAt] = useState(() => Date.now())
+  const tabReadyToPay = tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay'
 
   useEffect(() => {
     if (!restaurantId) return
@@ -163,135 +178,113 @@ export default function ReceiptPage() {
   }, [restaurantId])
 
   useEffect(() => {
-    const tableNum = tableNumber ? Number(tableNumber) : null
-    // Prevent stale orders from a previous table render.
-    setOrders([])
-
-    if (!tableNum || tableNum <= 0) {
-      setLoading(false)
-      return
-    }
-
     if (!restaurantId) {
       setLoading(false)
       return
     }
 
-    let cancelled = false
-    const loadOrders = async () => {
-      try {
-        const { data: orders } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('firebase_restaurant_id', restaurantId)
-          .eq('table_number', Number(tableNum))
-          .eq('is_closed', false)
-          .order('placed_at', { ascending: true })
+    const tableNum = Number(tableNumber) || 0
+    if (tableNum <= 0) {
+      setLoading(false)
+      return
+    }
 
+    if (!storedTabId) {
+      console.log('[RECEIPT] no tab_id in localStorage — redirect to landing')
+      setRedirecting(true)
+      router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+      return
+    }
+
+    let cancelled = false
+
+    const validateAndLoad = async () => {
+      try {
+        setLoading(true)
+        const tab = await fetchTabById(storedTabId, restaurantId)
         if (cancelled) return
-        const nowMs = Date.now()
-        const ordersList = (orders || [])
+
+        if (!tab || String(tab.status || '').toLowerCase() === 'settled') {
+          console.log('[RECEIPT] tab missing or settled — redirect to landing', tab?.status)
+          setRedirecting(true)
+          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          return
+        }
+
+        if (!isActiveTabStatus(tab.status)) {
+          setRedirecting(true)
+          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          return
+        }
+
+        setTabRecord(tab)
+        if (tab.id) {
+          persistTabSession(tab.id, tableNum)
+        }
+
+        const rows = await fetchOrdersForTab(storedTabId, restaurantId)
+        if (cancelled) return
+
+        const ordersList = (rows || [])
           .map((order) => ({ ...(order as OrderRecord), id: String((order as { id?: string }).id || '') }))
           .filter((order) => order.id)
-          .filter((order) => shouldShowInReceipt(order, nowMs))
+          .filter((order) => !String(order.tab_settlement_for_tab_id || '').trim())
+
         setOrders(ordersList)
         setLoading(false)
-      } catch (error: any) {
+      } catch (error) {
         if (cancelled) return
-        console.error('Error loading receipt:', error)
-        setOrders([])
-        setLoading(false)
+        console.error('[RECEIPT] validate/load error', error)
+        setRedirecting(true)
+        router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
       }
     }
-    loadOrders()
+
+    void validateAndLoad()
+
+    const channel = supabase
+      .channel(`receipt-tab-${storedTabId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedTabId}` },
+        () => {
+          void fetchTabById(storedTabId, restaurantId).then((tab) => {
+            if (!tab || String(tab.status || '').toLowerCase() === 'settled' || !isActiveTabStatus(tab.status)) {
+              router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+              return
+            }
+            setTabRecord(tab)
+          })
+          void validateAndLoad()
+          void refreshTab()
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `tab_id=eq.${storedTabId}`,
+        },
+        () => {
+          void validateAndLoad()
+        }
+      )
+      .subscribe()
 
     return () => {
       cancelled = true
+      supabase.removeChannel(channel)
     }
-  }, [restaurantId, tableNumber])
+  }, [restaurantId, tableNumber, storedTabId, router, refreshTab])
 
   const tableNum = tableNumber ? Number(tableNumber) : null
 
-  // Keep summary and payment CTA totals identical.
-  const payableOrders = useMemo(
-    () => (Array.isArray(orders) ? orders.filter(isUnpaidNonSettlementOrder) : []),
+  const tabGrandTotal = useMemo(
+    () => orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0),
     [orders]
   )
-  const payableTotal = useMemo(
-    () => payableOrders.reduce((sum, order) => sum + (Number(order?.total) || 0), 0),
-    [payableOrders]
-  )
-  const allPaid = useMemo(
-    () => Array.isArray(orders) && orders.length > 0 && payableOrders.length === 0,
-    [orders, payableOrders]
-  )
-
-  // Reconcile card payments (must run every render path — hooks before any return)
-  useEffect(() => {
-    if (!restaurantId || payableOrders.length === 0) return
-    const hasCardPending = payableOrders.some(
-      (o) =>
-        o?.payment_method === 'card' &&
-        String(o.payment_channel || '').toLowerCase() !== 'terminal'
-    )
-    if (!hasCardPending) return
-
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const FIRST_WINDOW_MS = 60_000
-    const SECOND_WINDOW_MS = 15 * 60_000
-
-    const run = async () => {
-      if (cancelled) return
-      const elapsed = Date.now() - reconcileStartedAt
-      if (elapsed > SECOND_WINDOW_MS) return
-      const cardOrderIds = payableOrders
-        .filter(
-          (o) => o?.payment_method === 'card' && String(o.payment_channel || '').toLowerCase() !== 'terminal'
-        )
-        .map((o) => String(o.id))
-        .filter(Boolean)
-        .sort()
-      if (!cardOrderIds.length) return
-
-      const merchantOrderNo = payableOrders
-        .filter(
-          (o) => o?.payment_method === 'card' && String(o.payment_channel || '').toLowerCase() !== 'terminal'
-        )
-        .map((o) => String(o.paycloud_merchant_order_no || o.payment_reference || '').trim())
-        .find(Boolean)
-
-      try {
-        await fetch('/api/payments/reconcile', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            restaurantId,
-            orderIds: cardOrderIds,
-            ...(merchantOrderNo ? { merchantOrderNo } : {}),
-          }),
-        })
-      } catch {
-        // best-effort polling; Firestore listener still reflects webhook success
-      }
-      const next = elapsed < FIRST_WINDOW_MS ? 5000 : 30000
-      timer = setTimeout(run, next)
-    }
-    run()
-
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [restaurantId, payableOrders, reconcileStartedAt])
-
-  useEffect(() => {
-    if (allPaid && paymentSubmitting) {
-      setPaymentSuccess(true)
-      setPaymentSubmitting(false)
-      setPaymentError(null)
-    }
-  }, [allPaid, paymentSubmitting])
 
   // No table number
   if (!loading && (!tableNum || tableNum <= 0)) {
@@ -314,6 +307,14 @@ export default function ReceiptPage() {
             </Link>
           )}
         </div>
+      </div>
+    )
+  }
+
+  if (redirecting) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
       </div>
     )
   }
@@ -360,70 +361,12 @@ export default function ReceiptPage() {
               : 'No active orders found.'}
           </p>
           {restaurantId && tableNumber && (
-            <Link href={`/menu/${restaurantId}/browse?table=${tableNumber}`}>
-              <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans">
-                Browse Menu
-              </Button>
-            </Link>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  const submitPayment = async () => {
-    if (paymentSubmitting) return
-    setPaymentError(null)
-    const tableNum = tableNumber ? Number(tableNumber) : 0
-    if (!restaurantId || !tableNum) {
-      setPaymentError('Missing table or restaurant.')
-      return
-    }
-
-    setPaymentSubmitting(true)
-    try {
-      const res = await fetch('/api/payments/receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          restaurantId,
-          tableNumber: tableNum,
-          orderIds: payableOrders.map((o) => o.id),
-          amount: payableTotal,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        throw new Error(data.error || `Payment failed (${res.status})`)
-      }
-      if (data.checkoutUrl) {
-        window.location.href = data.checkoutUrl
-        return
-      }
-      throw new Error('Hosted checkout URL was not returned')
-    } catch (e: unknown) {
-      setPaymentError(e instanceof Error ? e.message : 'Payment failed')
-    } finally {
-      setPaymentSubmitting(false)
-    }
-  }
-
-  if (paymentSuccess) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-6">
-        <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
-        <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-4">
-          <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto stroke-[1.5]" aria-hidden />
-          <h1 className="text-2xl font-serif font-bold text-foreground">Payment successful!</h1>
-          <p className="text-muted-foreground font-sans">
-            Payment confirmed - Thank you!
-          </p>
-          {restaurantId && tableNumber && (
-            <Link href={`/menu/${restaurantId}/browse?table=${tableNumber}`}>
-              <Button className="w-full mt-4 bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6">
-                Back to menu
-              </Button>
-            </Link>
+            <Button
+              className="bg-foreground text-background hover:bg-foreground/90 font-sans"
+              onClick={() => router.replace(clearTabAndGetLandingPath(restaurantId, tableNumber))}
+            >
+              Start over
+            </Button>
           )}
         </div>
       </div>
@@ -451,7 +394,7 @@ export default function ReceiptPage() {
               {restaurant?.name || 'Receipt'}
             </h1>
             <p className="text-muted-foreground font-sans text-sm">
-              Table {tableNumber} • {orders.length} Order{orders.length !== 1 ? 's' : ''}
+              Shared tab • Table {tableNumber} • {orders.length} Order{orders.length !== 1 ? 's' : ''}
             </p>
           </div>
 
@@ -462,9 +405,9 @@ export default function ReceiptPage() {
               <span className="font-bold text-foreground">{orders.length}</span>
             </div>
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
-              <span className="text-lg font-semibold text-foreground">Total Amount</span>
+              <span className="text-lg font-semibold text-foreground">Tab Total</span>
               <span className="text-2xl font-bold text-foreground">
-                {restaurant?.currency || 'N$'}{payableTotal.toFixed(2)}
+                {restaurant?.currency || 'N$'}{tabGrandTotal.toFixed(2)}
               </span>
             </div>
           </div>
@@ -542,53 +485,19 @@ export default function ReceiptPage() {
           })}
         </div>
 
-        {/* Pay — only when there are unpaid orders */}
-        {payableOrders.length > 0 && (
+        {storedTabId && orders.length > 0 && !tabReadyToPay && (
           <div className="mt-8 space-y-4">
-            {paymentError && (
-              <div className="space-y-2 bg-card border border-border p-4">
-                <p className="text-sm text-destructive font-sans" role="alert">
-                  {paymentError}
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full border-border font-sans"
-                  onClick={() => setPaymentError(null)}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            )}
-            {paymentSubmitting ? (
-              <div className="bg-card border border-border p-5 sm:p-6">
-                <div className="flex flex-col items-center justify-center gap-3 py-6">
-                  <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin rounded-full" />
-                  <p className="text-sm font-sans text-muted-foreground">Processing payment...</p>
-                </div>
-              </div>
-            ) : (
-              <Button
-                type="button"
-                onClick={submitPayment}
-                disabled={paymentSubmitting}
-                className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Proceed to Payment — {restaurant?.currency || 'N$'}
-                {payableTotal.toFixed(2)}
-              </Button>
-            )}
+            <ReadyToPayTabButton
+              tabId={storedTabId}
+              restaurantId={restaurantId}
+              onSuccess={() => void refreshTab()}
+            />
           </div>
         )}
 
-        {/* Order More Button */}
-        {restaurantId && (
+        {storedTabId && tabReadyToPay && (
           <div className="mt-8">
-            <Link href={`/menu/${restaurantId}/browse?table=${tableNumber}`}>
-              <Button className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base">
-                Order More
-              </Button>
-            </Link>
+            <ReadyToPayTabNotified />
           </div>
         )}
       </div>

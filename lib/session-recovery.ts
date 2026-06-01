@@ -5,8 +5,7 @@
  * Prevents order leakage between customers.
  */
 
-import { collection, query, where, getDocs } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 const SESSION_KEY = 'flashtap_session_v1'
 
@@ -50,44 +49,29 @@ export async function restoreSessionFromTable(
     localStorage.removeItem('flashtap_session_restaurant_v1')
   }
 
-  if (!db) {
-    console.warn('⚠️ Firestore not initialized, cannot recover session')
-    return null
-  }
-
   try {
     console.log('🔍 PART 1: Running session recovery check for table', tableNumber)
 
-    // Query Firestore for active orders for this table
-    // NEW: Use hierarchical path - restaurant_id is in the path
-    const { ordersPath } = require('./firebase/paths')
-    const ordersRef = collection(db, ordersPath(restaurantId))
-    
-    // Query by table_number + active statuses
-    // NEW: restaurant_id is in the path, no need to filter
-    const q = query(
-      ordersRef,
-      where('table_number', '==', tableNumber),
-      where('status', 'in', ['new', 'accepted', 'preparing', 'ready']),
-      where('table_closed', '==', false)
-    )
+    const supabase = createServerSupabaseClient()
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .eq('table_number', tableNumber)
+      .eq('table_closed', false)
+      .in('status', ['new', 'accepted', 'preparing', 'ready'])
+    if (error) throw error
 
-    const snapshot = await getDocs(q)
-    const orders = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    }))
+    console.log('📦 Recovery: Found', (orders || []).length, 'active orders for table', tableNumber)
 
-    console.log('📦 Recovery: Found', orders.length, 'active orders for table', tableNumber)
-
-    if (orders.length === 0) {
+    if (!orders || orders.length === 0) {
       console.log('📭 Recovery: No active orders found - table is clear, no session to restore')
       return null
     }
 
     // Group orders by session_id
     const sessionGroups = new Map<string, number>()
-    orders.forEach(order => {
+    orders.forEach((order: any) => {
       const sessionId = order.session_id
       if (sessionId) {
         sessionGroups.set(sessionId, (sessionGroups.get(sessionId) || 0) + 1)

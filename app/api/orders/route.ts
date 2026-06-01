@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
-import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { CacheKeys, redis, TTL } from '@/lib/redis'
 
 export const dynamic = 'force-dynamic'
@@ -14,23 +15,28 @@ export async function POST(req: Request) {
 
     const body = await req.json()
     const { tableNumber, ...rest } = body
-    const {
-      restaurantId,
-      sessionId,
-      memberSessionId,
-      items,
-      subtotal,
-      total,
-      paymentMethod,
-      paymentChannel,
-      orderInstructions,
-      tabId,
-      tabSettlementForTabId,
-    } = rest
+
+    const restaurantIdRaw =
+      rest.restaurantId ?? rest.restaurant_id ?? body.restaurantId ?? body.restaurant_id
+    const restaurantId = String(restaurantIdRaw || '').trim()
+
+    const sessionId = String(rest.sessionId ?? rest.session_id ?? '').trim()
+    const memberSessionId = String(rest.memberSessionId ?? rest.member_session_id ?? '').trim() || null
+    const items = rest.items
+    const subtotal = rest.subtotal
+    const total = rest.total
+    const paymentMethod = rest.paymentMethod
+    const paymentChannel = rest.paymentChannel
+    const orderInstructions = rest.orderInstructions
+    const tabId = rest.tabId ?? rest.tab_id ?? null
+    const tabSettlementForTabId =
+      rest.tabSettlementForTabId ?? rest.tab_settlement_for_tab_id ?? null
 
     if (!restaurantId) {
       return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
     }
+
+    const restaurantUuid = await resolveRestaurantUuid(restaurantId)
 
     const normalizedTableNumber = Number(tableNumber) || 0
     const rateLimitKey = CacheKeys.rateLimit(restaurantId, normalizedTableNumber)
@@ -59,15 +65,51 @@ export async function POST(req: Request) {
       }
     }
 
-    // Determine payment status
-    const resolvedPaymentMethod = paymentMethod || 'cash'
-    const paymentStatus = resolvedPaymentMethod === 'cash' ? 'cash_pending' : 'pending'
+    const normalizedTabId = tabId ? String(tabId).trim() : ''
+    const isTabOrder = Boolean(normalizedTabId)
+
+    // Tab orders: card only, pending until tab is settled at the table
+    let resolvedPaymentMethod = paymentMethod || 'cash'
+    let paymentStatus = resolvedPaymentMethod === 'cash' ? 'cash_pending' : 'pending'
+    let resolvedPaymentChannel = paymentChannel || null
+
+    if (isTabOrder) {
+      console.log('[ORDERS] tab order', { tabId: normalizedTabId, restaurantUuid })
+      const { data: tabRow, error: tabLoadError } = await supabase
+        .from('tabs')
+        .select('id, status, total, members')
+        .eq('id', normalizedTabId)
+        .eq('restaurant_id', restaurantUuid)
+        .maybeSingle()
+
+      if (tabLoadError) {
+        console.error('[ORDERS] tab load error', tabLoadError)
+        return NextResponse.json({ error: tabLoadError.message }, { status: 500 })
+      }
+      if (!tabRow) {
+        return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
+      }
+      const tabStatus = String(tabRow.status || '')
+      if (tabStatus === 'ready_to_pay') {
+        return NextResponse.json(
+          { error: 'This tab is ready to pay — you cannot add more items.' },
+          { status: 400 }
+        )
+      }
+      if (tabStatus !== 'open') {
+        return NextResponse.json({ error: `Tab is not open (status=${tabStatus})` }, { status: 400 })
+      }
+
+      resolvedPaymentMethod = 'card'
+      paymentStatus = 'pending'
+      resolvedPaymentChannel = null
+    }
 
     // Get next order number
     const { count } = await supabase
       .from('orders')
       .select('*', { count: 'exact', head: true })
-      .eq('firebase_restaurant_id', restaurantId)
+      .eq('restaurant_id', restaurantUuid)
 
     const orderNumber = (count || 0) + 1
 
@@ -75,25 +117,25 @@ export async function POST(req: Request) {
     const { data: newOrder, error: orderError } = await supabase
       .from('orders')
       .insert({
-        firebase_restaurant_id: restaurantId,
-          table_number: normalizedTableNumber,
-        session_id: sessionId || '',
-        member_session_id: memberSessionId || null,
+        restaurant_id: restaurantUuid,
+        table_number: normalizedTableNumber,
+        session_id: sessionId,
+        member_session_id: memberSessionId,
         payment_method: resolvedPaymentMethod,
-        payment_channel: paymentChannel || null,
+        payment_channel: resolvedPaymentChannel,
         payment_status: paymentStatus,
         status: 'new',
         subtotal: subtotal || 0,
         total: total || 0,
         items: items || [],
         order_instructions: orderInstructions || null,
-        tab_id: tabId || null,
+        tab_id: normalizedTabId || null,
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
         order_number: orderNumber,
         placed_at: new Date().toISOString(),
         idempotency_key: idempotencyKey || null,
       })
-      .select()
+      .select('id, restaurant_id, order_number, payment_status, total')
       .single()
 
     if (orderError) {
@@ -139,23 +181,72 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: orderError.message }, { status: 500 })
     }
 
+    if (!newOrder?.restaurant_id) {
+      console.error('[ORDERS] Insert succeeded but restaurant_id is missing on row:', newOrder?.id)
+      return NextResponse.json({ error: 'Order created without restaurant_id' }, { status: 500 })
+    }
+
     const orderId = newOrder.id
+
+    if (isTabOrder) {
+      console.log('[ORDERS] updating tab total and members', normalizedTabId)
+      const { data: tabRow, error: tabReloadError } = await supabase
+        .from('tabs')
+        .select('total, members')
+        .eq('id', normalizedTabId)
+        .single()
+
+      if (!tabReloadError && tabRow) {
+        const members = Array.isArray(tabRow.members) ? [...tabRow.members] : []
+        const sid = memberSessionId || sessionId
+        if (sid && !members.some((m: { session_id?: string }) => String(m?.session_id) === sid)) {
+          members.push({
+            session_id: sid,
+            joined_at: new Date().toISOString(),
+            display_name: `Person ${members.length + 1}`,
+          })
+        }
+        const { data: tabOrdersForTotal, error: tabOrdersSumError } = await supabase
+          .from('orders')
+          .select('total, tab_settlement_for_tab_id')
+          .eq('tab_id', normalizedTabId)
+
+        if (tabOrdersSumError) {
+          console.error('[ORDERS] tab orders sum failed', tabOrdersSumError)
+        }
+
+        const nextTotal = (tabOrdersForTotal || [])
+          .filter((o) => !String(o.tab_settlement_for_tab_id || '').trim())
+          .reduce((sum, o) => sum + (Number(o.total) || 0), 0)
+
+        const { error: tabUpdateError } = await supabase
+          .from('tabs')
+          .update({ total: nextTotal, members })
+          .eq('id', normalizedTabId)
+        if (tabUpdateError) {
+          console.error('[ORDERS] tab total update failed', tabUpdateError)
+        } else {
+          console.log('[ORDERS] tab updated', { tabId: normalizedTabId, nextTotal })
+        }
+      }
+    }
+
     let checkoutUrl: string | null = null
     let merchantOrderNo: string | null = null
 
     const checkoutReturnParams = {
-      rid: String(restaurantId),
+      rid: String(restaurantUuid),
       table: String(normalizedTableNumber),
     }
 
-    // Handle hosted online checkout
-    if (paymentChannel === 'hosted') {
+    // Handle hosted online checkout (not used for tab orders)
+    if (!isTabOrder && resolvedPaymentChannel === 'hosted') {
       let merchantNo: string
       let storeNo: string
       try {
         const credentials = await getRestaurantFinaticCredentials(restaurantId)
-        merchantNo = credentials.checkoutMerchantNo || credentials.merchantNo
-        storeNo = credentials.checkoutStoreNo || credentials.storeNo
+        merchantNo = credentials.checkoutMerchantNo
+        storeNo = credentials.checkoutStoreNo
       } catch (credErr) {
         console.error('[ORDERS] Finatic credentials:', credErr)
         return NextResponse.json(
@@ -200,6 +291,7 @@ export async function POST(req: Request) {
     const successPayload = {
       success: true,
       orderId,
+      restaurantId: newOrder.restaurant_id,
       orderNumber,
       paymentStatus,
       checkoutUrl,

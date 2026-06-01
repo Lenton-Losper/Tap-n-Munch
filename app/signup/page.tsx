@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/components/auth/auth-provider'
-import { FirebaseConfigError } from '@/components/auth/firebase-config-error'
+import { SupabaseConfigError } from '@/components/auth/firebase-config-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -12,7 +12,7 @@ import { Eye, EyeOff, ArrowLeft, Check } from 'lucide-react'
 
 export default function SignUpPage() {
   const router = useRouter()
-  const { user, loading: authLoading, isFirebaseConfigured, signUp } = useAuth()
+  const { user, loading: authLoading, isSupabaseConfigured, signUp } = useAuth()
   const [formData, setFormData] = useState({
     restaurantName: '',
     email: '',
@@ -40,8 +40,8 @@ export default function SignUpPage() {
     )
   }
 
-  if (!isFirebaseConfigured) {
-    return <FirebaseConfigError />
+  if (!isSupabaseConfigured) {
+    return <SupabaseConfigError />
   }
 
   if (user) {

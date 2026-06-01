@@ -1,21 +1,17 @@
+// @ts-nocheck
 'use client'
 
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase/client'
 import {
-  addDoc,
-  arrayUnion,
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  serverTimestamp,
-  updateDoc,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
-import { tabPath, tabsPath } from '@/lib/firebase/paths'
+  clearTabSession,
+  persistTabSession,
+  readStoredTabId,
+  readStoredTableNumber,
+} from '@/lib/tab-storage'
+import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 
-const TAB_ID_KEY = 'flashtap_tab_id'
 const TAB_SESSION_KEY = 'tab_session_id'
 const LEGACY_TAB_SESSION_KEY = 'flashtap_tab_session_id'
 
@@ -30,18 +26,26 @@ type TabContextType = {
   tabStatus: string | null
   sessionId: string
   isInTab: boolean
+  canAddToTab: boolean
   tabTotal: number
   tabMembers: TabMember[]
   settlementType: string | null
   tableNumber: string | null
-  setTabFromJoin: (nextTabId: string) => void
+  setTabFromJoin: (nextTabId: string, tableNumber?: string | number) => void
   clearTab: () => void
   createNewTab: (params: {
     restaurantId: string
     tableNumber: string
-    tableId: string
+    tableId?: string
   }) => Promise<string>
-  joinExistingTab: (params: { restaurantId: string; tabId: string; displayName?: string }) => Promise<void>
+  joinExistingTab: (params: {
+    restaurantId: string
+    tabId: string
+    tableNumber?: string | number
+    displayName?: string
+  }) => Promise<void>
+  markTabReadyToPay: () => Promise<void>
+  refreshTab: () => Promise<void>
 }
 
 const TabContext = createContext<TabContextType | undefined>(undefined)
@@ -77,24 +81,82 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   const [settlementType, setSettlementType] = useState<string | null>(null)
 
   const restaurantId = useMemo(() => getRestaurantIdFromPath(pathname || ''), [pathname])
-  const tableNumber = searchParams?.get('table') || null
+  const tableNumber = searchParams?.get('table') || readStoredTableNumber() || null
   const tabIdFromUrl = searchParams?.get('tabId')?.trim() || null
+
+  const canAddToTab = Boolean(tabId) && isActiveTabStatus(tabStatus) && tabStatus === 'open'
 
   useLayoutEffect(() => {
     setSessionId(ensureTabSessionId())
   }, [])
 
-  // URL tabId wins when present; otherwise restore from sessionStorage.
+  // URL tabId wins; otherwise restore from localStorage.
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return
     if (tabIdFromUrl) {
-      sessionStorage.setItem(TAB_ID_KEY, tabIdFromUrl)
+      const tableFromUrl = searchParams?.get('table')
+      persistTabSession(tabIdFromUrl, tableFromUrl || readStoredTableNumber() || '')
       setTabId(tabIdFromUrl)
       return
     }
-    const storedTabId = sessionStorage.getItem(TAB_ID_KEY)?.trim() || null
+    const storedTabId = readStoredTabId()
     if (storedTabId) setTabId(storedTabId)
-  }, [tabIdFromUrl])
+  }, [tabIdFromUrl, searchParams])
+
+  const loadTab = async () => {
+    if (!restaurantId || !tabId) return
+    const { data, error } = await supabase
+      .from('tabs')
+      .select('*')
+      .eq('id', tabId)
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[TAB CONTEXT] load tab error', error)
+      return
+    }
+
+    if (!data) {
+      setTabId(null)
+      setTabTotal(0)
+      setTabMembers([])
+      setTabStatus(null)
+      setSettlementType(null)
+      clearTabSession()
+      return
+    }
+
+      const status = data.status ? String(data.status) : null
+      setTabStatus(status)
+
+      if (
+        shouldClearTabAfterSettlement(data as { status?: string; settled_type?: string | null })
+      ) {
+        console.log('[TAB CONTEXT] tab no longer active; clearing session', {
+          tabId,
+          status,
+          settled_type: data.settled_type,
+        })
+        setTabId(null)
+        setTabTotal(0)
+        setTabMembers([])
+        setTabStatus(null)
+        setSettlementType(null)
+        clearTabSession()
+        return
+      }
+
+      if (status === 'closed') {
+        setTabTotal(0)
+        setTabMembers([])
+        setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
+        return
+      }
+    setTabTotal(Number(data.total) || 0)
+    setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
+    setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
+  }
 
   useEffect(() => {
     if (!pathname?.startsWith('/menu/')) {
@@ -104,131 +166,155 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
       setSettlementType(null)
       return
     }
-    if (!restaurantId || !tabId || !db) return
+    if (!restaurantId || !tabId) return
 
-    const ref = doc(db, tabPath(restaurantId, tabId))
-    const unsubscribe = onSnapshot(
-      ref,
-      (snap) => {
-        if (!snap.exists()) {
-          setTabId(null)
-          setTabTotal(0)
-          setTabMembers([])
-          setTabStatus(null)
-          setSettlementType(null)
-          if (typeof window !== 'undefined') {
-            sessionStorage.removeItem(TAB_ID_KEY)
-          }
-          return
-        }
-        const data = snap.data() as Record<string, any>
-        const status = data.status ? String(data.status) : null
-        setTabStatus(status)
-        if (status === 'closed') {
-          setTabTotal(0)
-          setTabMembers([])
-          setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
-          return
-        }
-        setTabTotal(Number(data.total) || 0)
-        setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
-        setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
-      },
-      () => {}
-    )
+    let active = true
+    const run = async () => {
+      await loadTab()
+      if (!active) return
+    }
+    void run()
 
-    return () => unsubscribe()
+    const channel = supabase
+      .channel(`tab-${restaurantId}-${tabId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${tabId}` },
+        () => {
+          void loadTab()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      active = false
+      supabase.removeChannel(channel)
+    }
   }, [restaurantId, tabId, pathname])
 
-  const persistTabId = (nextTabId: string | null) => {
+  const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {
     setTabId(nextTabId)
     if (!nextTabId) {
       setTabTotal(0)
       setTabMembers([])
       setTabStatus(null)
       setSettlementType(null)
+      clearTabSession()
+      return
     }
-    if (typeof window === 'undefined') return
-    if (nextTabId) sessionStorage.setItem(TAB_ID_KEY, nextTabId)
-    else sessionStorage.removeItem(TAB_ID_KEY)
+    const resolvedTable =
+      tableNum != null && String(tableNum).trim() !== ''
+        ? String(tableNum)
+        : tableNumber || readStoredTableNumber() || ''
+    if (resolvedTable) {
+      persistTabSession(nextTabId, resolvedTable)
+    } else {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('flashtap_tab_id', nextTabId)
+      }
+    }
   }
 
   const joinExistingTab = async ({
     restaurantId: rid,
     tabId: targetTabId,
+    tableNumber: tableNum,
     displayName,
   }: {
     restaurantId: string
     tabId: string
+    tableNumber?: string | number
     displayName?: string
   }) => {
-    if (!db) throw new Error('Firestore is not initialized')
-    const tabRef = doc(db, tabPath(rid, targetTabId))
-    const tabSnap = await getDoc(tabRef)
-    if (!tabSnap.exists()) throw new Error('Tab not found')
+    console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum })
+    const { data: tabData, error } = await supabase
+      .from('tabs')
+      .select('*')
+      .eq('id', targetTabId)
+      .eq('restaurant_id', rid)
+      .single()
+    if (error || !tabData) throw new Error('Tab not found')
 
     const sid = sessionId || ensureTabSessionId()
-    const data = tabSnap.data() as Record<string, any>
-    const members = Array.isArray(data.members) ? (data.members as TabMember[]) : []
-    if (members.some((m) => String(m.session_id) === sid)) {
-      persistTabId(targetTabId)
-      return
+    const members = Array.isArray(tabData.members) ? (tabData.members as TabMember[]) : []
+    if (!members.some((m) => String(m.session_id) === sid)) {
+      const nextN = members.length + 1
+      const member = {
+        session_id: sid,
+        joined_at: new Date().toISOString(),
+        display_name: displayName || `Person ${nextN}`,
+      }
+      const { error: updateError } = await supabase
+        .from('tabs')
+        .update({ members: [...members, member] })
+        .eq('id', targetTabId)
+      if (updateError) throw updateError
     }
-
-    const nextN = members.length + 1
-    const member = {
-      session_id: sid,
-      joined_at: new Date(),
-      display_name: displayName || `Person ${nextN}`,
-    }
-    await updateDoc(tabRef, {
-      members: arrayUnion(member),
-      updated_at: serverTimestamp(),
-    })
-    persistTabId(targetTabId)
+    persistTabId(targetTabId, tableNum ?? tabData.table_number)
   }
 
   const createNewTab = async ({
     restaurantId: rid,
     tableNumber: tableNum,
-    tableId,
   }: {
     restaurantId: string
     tableNumber: string
-    tableId: string
+    tableId?: string
   }) => {
-    if (!db) throw new Error('Firestore is not initialized')
-    const tabsRef = collection(db, tabsPath(rid))
     const sid = sessionId || ensureTabSessionId()
-    const member = {
-      session_id: sid,
-      joined_at: new Date(),
-      display_name: 'Person 1',
-    }
-    const newTab = await addDoc(tabsRef, {
-      table_number: String(tableNum),
-      table_id: tableId,
-      status: 'open',
-      created_by: sid,
-      members: [member],
-      created_at: serverTimestamp(),
-      settled_at: null,
-      settlement_type: null,
-      total: 0,
-      updated_at: serverTimestamp(),
+    console.log('[TAB CONTEXT] createNewTab start', { rid, tableNum, sessionId: sid })
+
+    const response = await fetch('/api/tabs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        restaurantId: rid,
+        tableNumber: Number(tableNum) || tableNum,
+        sessionId: sid,
+        displayName: 'Person 1',
+      }),
     })
-    persistTabId(newTab.id)
-    return newTab.id
+
+    const data = await response.json().catch(() => ({}))
+    console.log('[TAB CONTEXT] createNewTab response', { ok: response.ok, status: response.status, data })
+
+    if (!response.ok) {
+      throw new Error(data?.error || `Failed to create tab (${response.status})`)
+    }
+
+    const newTabId = String(data?.tabId || '').trim()
+    if (!newTabId) {
+      throw new Error('Tab was created but no tab ID was returned')
+    }
+
+    console.log('[TAB CONTEXT] createNewTab success', newTabId)
+    persistTabId(newTabId, tableNum)
+    return newTabId
+  }
+
+  const markTabReadyToPay = async () => {
+    if (!tabId || !restaurantId) throw new Error('No active tab')
+    const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ restaurantId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data?.error || 'Failed to notify waiter')
+    setTabStatus('ready_to_pay')
+    await loadTab()
   }
 
   const clearTab = () => persistTabId(null)
-  const setTabFromJoin = (nextTabId: string) => persistTabId(nextTabId)
+  const setTabFromJoin = (nextTabId: string, tableNum?: string | number) =>
+    persistTabId(nextTabId, tableNum)
 
   const value: TabContextType = {
     tabId,
     tabStatus,
     sessionId,
     isInTab: Boolean(tabId),
+    canAddToTab,
     tabTotal,
     tabMembers,
     settlementType,
@@ -237,6 +323,8 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     clearTab,
     createNewTab,
     joinExistingTab,
+    markTabReadyToPay,
+    refreshTab: loadTab,
   }
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>

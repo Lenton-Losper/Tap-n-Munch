@@ -5,12 +5,16 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurant } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, Clock, ChefHat, Package, XCircle, Banknote, CreditCard } from 'lucide-react'
 import Link from 'next/link'
 import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
 import { getCurrentSession } from '@/lib/session'
+
+const ORDER_SELECT =
+  'id, order_number, status, placed_at, payment_method, payment_status, payment_channel, customer_ready_to_pay, total, table_number, items'
 
 type Order = {
   id: string
@@ -20,9 +24,32 @@ type Order = {
   payment_method: string
   payment_status: string
   payment_channel?: string | null
+  customer_ready_to_pay?: boolean | null
   total: number
   table_number?: number
   items: Array<{ quantity: number; name: string; subtotal: number }>
+}
+
+function isCashPaymentOrder(order: Order): boolean {
+  const paymentStatus = String(order.payment_status || '').toLowerCase()
+  return (
+    String(order.payment_channel || '').toLowerCase() === 'cash' ||
+    String(order.payment_method || '').toLowerCase() === 'cash' ||
+    paymentStatus === 'cash_pending'
+  )
+}
+
+function showReadyToPayCashButton(order: Order): boolean {
+  const paymentStatus = String(order.payment_status || '').toLowerCase()
+  if (paymentStatus === 'paid' || paymentStatus === 'cancelled') return false
+  return (
+    isCashPaymentOrder(order) &&
+    (order.customer_ready_to_pay === false || order.customer_ready_to_pay == null)
+  )
+}
+
+function showReadyToPayCashNotified(order: Order): boolean {
+  return isCashPaymentOrder(order) && order.customer_ready_to_pay === true
 }
 
 export default function OrderConfirmationPage() {
@@ -45,7 +72,7 @@ export default function OrderConfirmationPage() {
         const [orderResult, restaurantData] = await Promise.all([
           supabase
             .from('orders')
-            .select('*')
+            .select(ORDER_SELECT)
             .eq('id', orderId)
             .single(),
           getRestaurant(restaurantId),
@@ -87,7 +114,7 @@ export default function OrderConfirmationPage() {
         async () => {
           const { data: updatedOrder } = await supabase
             .from('orders')
-            .select('*')
+            .select(ORDER_SELECT)
             .eq('id', orderId)
             .single()
           if (updatedOrder) {
@@ -316,6 +343,18 @@ export default function OrderConfirmationPage() {
             View Receipt
           </Button>
         </div>
+
+        {showReadyToPayCashButton(order) && (
+          <div className="mt-6">
+            <ReadyToPayCashButton orderId={order.id} />
+          </div>
+        )}
+
+        {showReadyToPayCashNotified(order) && (
+          <div className="mt-6">
+            <ReadyToPayCashNotified />
+          </div>
+        )}
 
         {/* Ready notification */}
         {order.status === 'ready' && (

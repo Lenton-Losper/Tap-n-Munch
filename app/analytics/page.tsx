@@ -5,8 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { ProtectedRoute } from '@/components/auth/protected-route'
-import { db } from '@/lib/firebase/config'
-import { collection, getDocs, query, where } from 'firebase/firestore'
+import { supabase } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import {
   Bar,
@@ -105,7 +104,7 @@ function AnalyticsContent() {
 
   useEffect(() => {
     const loadPaidOrders = async () => {
-      if (!restaurantId || !db) {
+      if (!restaurantId) {
         setOrders([])
         setLoading(false)
         return
@@ -114,10 +113,12 @@ function AnalyticsContent() {
       try {
         setLoading(true)
         setError(null)
-        const ordersRef = collection(db, `restaurants/${restaurantId}/orders`)
-        const q = query(ordersRef, where('payment_status', '==', 'paid'))
-        const snap = await getDocs(q)
-        const rows = snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<OrderLike, 'id'>) }))
+        const { data } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('restaurant_id', restaurantId)
+          .eq('payment_status', 'paid')
+        const rows = (data || []).map((row: any) => ({ id: String(row.id), ...(row as Omit<OrderLike, 'id'>) }))
         setOrders(rows)
         setLastUpdated(new Date())
       } catch (err: any) {

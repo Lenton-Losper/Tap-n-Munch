@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { getTables, createTable, deleteTable, Table } from '@/lib/firebase/tables'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getSupabaseTables as getTables, createSupabaseTable as createTable, deleteSupabaseTable as deleteTable } from '@/lib/supabase/tables'
+import { supabase } from '@/lib/supabase/client'
 import { buildMenuUrl } from '@/lib/base-url'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
@@ -14,8 +14,35 @@ import { ArrowLeft, Plus, Download, Copy, Trash2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 
+type Table = { id: string; table_number: number; table_name?: string; location?: string; qr_code_url?: string }
+
+function resolveRestaurantOwnerId(restaurant: Record<string, unknown> | null): string | null {
+  if (!restaurant) return null
+  const trimmed =
+    restaurant.owner_id != null ? String(restaurant.owner_id).trim() : ''
+  return trimmed || null
+}
+
+function canDeleteTablesForRestaurant(
+  userId: string,
+  restaurant: Record<string, unknown> | null,
+  userData: Record<string, unknown> | null,
+  restaurantId: string | null
+): boolean {
+  const ownerId = resolveRestaurantOwnerId(restaurant)
+  if (ownerId && ownerId === userId) return true
+  if (
+    restaurantId &&
+    String(userData?.restaurant_id || '') === String(restaurantId) &&
+    String(userData?.id || '') === userId
+  ) {
+    return true
+  }
+  return false
+}
+
 export function QRCodeManagement() {
-  const { user, restaurantId, restaurant } = useAuth()
+  const { user, restaurantId, restaurant, userData } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
   const [tables, setTables] = useState<Table[]>([])
@@ -43,7 +70,7 @@ export function QRCodeManagement() {
       try {
         setLoading(true)
         console.log('Loading tables for restaurant:', restaurantId)
-        const tablesData = await getTables(restaurantId)
+        const tablesData = await getTables(restaurantId, true)
         console.log('Tables loaded:', tablesData.length)
         setTables(tablesData)
       } catch (err: any) {
@@ -114,9 +141,7 @@ export function QRCodeManagement() {
         restaurant_id: restaurantId,
         table_number: tableNumber,
         table_name: `Table ${tableNumber}`,
-        location: newTableLocation.trim() || undefined,
         qr_code_url: qrCodeUrl,
-        active: true,
       })
 
       toast({
@@ -125,7 +150,7 @@ export function QRCodeManagement() {
       })
 
       // Reload tables
-      const updatedTables = await getTables(restaurantId)
+      const updatedTables = await getTables(restaurantId, true)
       setTables(updatedTables)
       
       setNewTableNumber('')
@@ -165,7 +190,7 @@ export function QRCodeManagement() {
     }
     
     console.log('✅ [DELETE TABLE] User authenticated:', {
-      uid: user.uid,
+      uid: (user as any).id,
       email: user.email
     })
     
@@ -190,36 +215,21 @@ export function QRCodeManagement() {
       return
     }
     
-    // 3. Verify ownership: user.uid must match restaurant.owner_id (underscore, not camelCase)
-    // CRITICAL: Database uses owner_id (underscore), not ownerId (camelCase)
-    const currentUserUid = user.uid
-    const restaurantOwnerId = restaurant.owner_id // Using owner_id (underscore) as per database schema
-    
+    const currentUserUid = user.id
+    const restaurantOwnerId = resolveRestaurantOwnerId(restaurant)
+
     console.log('🔍 [DELETE TABLE] Ownership check:', {
       currentUserUid,
       restaurantOwnerId,
-      match: currentUserUid === restaurantOwnerId,
-      restaurantHasOwnerId: 'owner_id' in restaurant,
-      restaurantOwnerIdType: typeof restaurantOwnerId
+      owner_id: restaurant.owner_id,
+      userRestaurantId: userData?.restaurant_id,
+      canDelete: canDeleteTablesForRestaurant(currentUserUid, restaurant, userData, restaurantId),
     })
-    
-    // Verify restaurant has owner_id field
-    if (!restaurant.owner_id) {
-      console.error('❌ [DELETE TABLE] Restaurant missing owner_id field')
-      console.error('   Restaurant data:', restaurant)
-      toast({
-        title: 'Data Error',
-        description: 'Restaurant data is missing owner information. Please refresh the page and try again.',
-        variant: 'destructive',
-      })
-      return
-    }
-    
-    if (currentUserUid !== restaurantOwnerId) {
+
+    if (!canDeleteTablesForRestaurant(currentUserUid, restaurant, userData, restaurantId)) {
       console.error('❌ [DELETE TABLE] Ownership verification failed')
       console.error('   Current user UID:', currentUserUid)
-      console.error('   Restaurant owner_id:', restaurantOwnerId)
-      console.error('   Match:', currentUserUid === restaurantOwnerId)
+      console.error('   Restaurant owner (id/uid):', restaurantOwnerId)
       toast({
         title: 'Permission Denied',
         description: 'You do not have permission to delete tables. Only the restaurant owner can delete tables.',
@@ -242,8 +252,18 @@ export function QRCodeManagement() {
     })
 
     try {
-      // 6. Call delete with restaurantId parameter (idempotent)
-      await deleteTable(restaurantId, table.id)
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) {
+        toast({
+          title: 'Authentication Required',
+          description: 'Your session expired. Please sign in again.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      await deleteTable(table.id, { restaurantId, accessToken })
       
       console.log('✅ [DELETE TABLE] Table deleted successfully')
       
@@ -258,7 +278,7 @@ export function QRCodeManagement() {
       // Optional: Reload tables list to ensure consistency (but UI is already updated)
       // This is a safety net, but the immediate filter above ensures no ghost tables
       try {
-        const updatedTables = await getTables(restaurantId)
+        const updatedTables = await getTables(restaurantId, true)
         setTables(updatedTables)
       } catch (reloadError: any) {
         // If reload fails, UI is already updated, so just log
@@ -282,7 +302,7 @@ export function QRCodeManagement() {
         console.error('   1. Firestore rules not deployed yet (rules take time to propagate)')
         console.error('   2. Restaurant document missing owner_id field')
         console.error('   3. User UID does not match restaurant.owner_id')
-        console.error('   Current user UID:', user.uid)
+        console.error('   Current user UID:', (user as any).id)
         console.error('   Restaurant owner_id:', restaurant.owner_id)
         toast({
           title: 'Permission Denied',
@@ -589,7 +609,7 @@ export function QRCodeManagement() {
                   </div>
                   <div className="flex justify-center mb-3">
                     <div id={`qr-${table.id}`} className="bg-white p-2 rounded">
-                      <QRCodeSVG value={table.qr_code_url} size={150} />
+                      <QRCodeSVG value={table.qr_code_url || buildMenuUrl(restaurantId, table.table_number)} size={150} />
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -597,7 +617,7 @@ export function QRCodeManagement() {
                       variant="outline"
                       size="sm"
                       className={`w-full ${copiedLinkId === table.id ? 'bg-green-50 border-green-500 text-green-700' : ''}`}
-                      onClick={() => handleCopyLink(table.qr_code_url, table.id)}
+                      onClick={() => handleCopyLink(table.qr_code_url || buildMenuUrl(restaurantId, table.table_number), table.id)}
                     >
                       <Copy className="w-4 h-4 mr-2" />
                       {copiedLinkId === table.id ? 'Link Copied!' : 'Copy Link'}

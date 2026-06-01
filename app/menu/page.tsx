@@ -5,8 +5,8 @@ export const dynamic = "force-dynamic"
 import { useEffect, useState, Suspense } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/components/auth/auth-provider'
-import { getRestaurant } from '@/lib/firebase/restaurants'
-import { getTableByNumber } from '@/lib/firebase/tables'
+import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
+import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
@@ -14,8 +14,7 @@ import { Button } from '@/components/ui/button'
 import { ShoppingCart, AlertCircle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { doc, onSnapshot } from 'firebase/firestore'
-import { db } from '@/lib/firebase/config'
+import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 
 function MenuLandingPageContent() {
   const params = useParams()
@@ -63,43 +62,37 @@ function MenuLandingPageContent() {
   }, [restaurantId, initialized, authLoading])
 
   useEffect(() => {
-    if (!restaurantId || !db) {
+    if (!restaurantId) {
       setLoading(false)
       return
     }
 
+    let cancelled = false
     const timeoutId = setTimeout(() => {
-      if (loading && !restaurant) {
+      if (!cancelled && loading && !restaurant) {
         setError('Loading took too long. Please scan a valid QR code or refresh the page.')
         setLoading(false)
       }
     }, 5000)
 
-    const restaurantRef = doc(db, 'restaurants', restaurantId)
-    const unsubscribe = onSnapshot(restaurantRef, (docSnap) => {
-      clearTimeout(timeoutId)
-      if (docSnap.exists()) {
-        setRestaurant({ id: docSnap.id, ...docSnap.data() })
-        setLoading(false)
+    ;(async () => {
+      try {
+        const restaurantData = await getRestaurantByFirebaseId(restaurantId)
+        if (cancelled) return
+        setRestaurant(restaurantData)
         setError(null)
-      } else {
-        setError(`Restaurant not found`)
-        setLoading(false)
+      } catch (err: any) {
+        if (cancelled) return
+        setPermissionError(Boolean(err?.message?.includes('permission')))
+        setError(err?.message || 'Failed to load restaurant. Please try again.')
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-    }, (err) => {
-      clearTimeout(timeoutId)
-      if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-        setPermissionError(true)
-        setError('Please ask staff to open this table.')
-      } else {
-        setError('Failed to load restaurant. Please try again.')
-      }
-      setLoading(false)
-    })
+    })()
 
     return () => {
+      cancelled = true
       clearTimeout(timeoutId)
-      unsubscribe()
     }
   }, [restaurantId, loading, restaurant])
 
@@ -109,7 +102,7 @@ function MenuLandingPageContent() {
     const loadTableData = async () => {
       if (tableNum > 0) {
         try {
-          const tableData = await getTableByNumber(restaurantId, tableNum)
+          const tableData = await getSupabaseTableByNumber(restaurantId, tableNum, true)
           
           if (tableData) {
             setTable(tableData)
@@ -233,9 +226,9 @@ function MenuLandingPageContent() {
         <div className="w-full max-w-md text-center space-y-8">
           {/* Logo */}
           <div className="flex justify-center">
-            {restaurant.logo_url ? (
+            {restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url) ? (
               <Image
-                src={restaurant.logo_url}
+                src={restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url)!}
                 alt={restaurant.name}
                 width={120}
                 height={120}

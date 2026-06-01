@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/firebase/restaurants'
+import { getRestaurant } from '@/lib/supabase/restaurants'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'

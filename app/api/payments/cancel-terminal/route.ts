@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { paycloudWireMerchantOrderNo, signRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getRestaurantFinaticCredentials } from '@/lib/firebase/restaurant-credentials'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 
 export async function POST(req: Request) {
   try {
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
-    const orderRestaurantId = String((order as { firebase_restaurant_id?: string }).firebase_restaurant_id || '').trim()
+    const orderRestaurantId = String((order as { restaurant_id?: string }).restaurant_id || '').trim()
     if (orderRestaurantId && orderRestaurantId !== restaurantId) {
       return NextResponse.json({ error: 'Order does not belong to this restaurant' }, { status: 400 })
     }
