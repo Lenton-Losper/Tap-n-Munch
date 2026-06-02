@@ -9,22 +9,26 @@ type Props = {
   tableNumber: number
   sessionId: string | null
   className?: string
+  onNotified?: () => void
 }
 
 /**
  * Customer CTA: notify staff that the card terminal can be brought to the table.
  */
-export function ReadyToPayTerminalButton({ restaurantId, orderId, tableNumber, sessionId, className }: Props) {
+export function ReadyToPayTerminalButton({
+  restaurantId,
+  orderId,
+  tableNumber,
+  sessionId,
+  className,
+  onNotified,
+}: Props) {
   const [loading, setLoading] = useState(false)
   const [notified, setNotified] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   if (notified) {
-    return (
-      <p className="text-sm font-sans font-medium text-green-700 dark:text-green-400" role="status">
-        Waiter has been notified — card machine coming!
-      </p>
-    )
+    return null
   }
 
   return (
@@ -54,6 +58,7 @@ export function ReadyToPayTerminalButton({ restaurantId, orderId, tableNumber, s
               throw new Error(typeof data?.error === 'string' ? data.error : 'Request failed')
             }
             setNotified(true)
+            onNotified?.()
           } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Something went wrong')
           } finally {

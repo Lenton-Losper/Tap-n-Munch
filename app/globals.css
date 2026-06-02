@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Premium digital receipt perforated edge */
+.receipt-perforation {
+  background-color: #ffffff;
+  background-image: radial-gradient(circle at 10px -4px, #f8fafc 10px, transparent 10.5px);
+  background-size: 20px 16px;
+  background-position: 0 0;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Minimal Notion-style design tokens */
@@ -274,4 +282,13 @@
 
 .animate-slide-down {
   animation: slide-down 0.3s ease-out;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+  .print\:hidden {
+    display: none !important;
+  }
 }
