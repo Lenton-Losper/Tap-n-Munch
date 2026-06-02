@@ -1,33 +1,38 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+
+export const TAB_READY_NOTIFIED_MESSAGE =
+  'Waiter has been notified — the card machine is on its way'
 
 type Props = {
   tabId: string
   restaurantId: string
   onSuccess?: () => void
   className?: string
+  /** When true, skip API call and show static notified message */
+  tabAlreadyReady?: boolean
 }
 
-const NOTIFIED_MESSAGE = 'Your waiter has been notified'
-
-export function ReadyToPayTabButton({ tabId, restaurantId, onSuccess, className }: Props) {
+export function ReadyToPayTabButton({
+  tabId,
+  restaurantId,
+  onSuccess,
+  className,
+  tabAlreadyReady = false,
+}: Props) {
   const [loading, setLoading] = useState(false)
-  const [notified, setNotified] = useState(false)
+  const [notified, setNotified] = useState(tabAlreadyReady)
   const [error, setError] = useState<string | null>(null)
 
-  if (notified) {
-    return (
-      <p
-        className={`flex items-center justify-center gap-2 text-sm font-sans font-medium text-green-700 dark:text-green-400 ${className ?? ''}`}
-        role="status"
-      >
-        <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
-        {NOTIFIED_MESSAGE}
-      </p>
-    )
+  useEffect(() => {
+    if (tabAlreadyReady) setNotified(true)
+  }, [tabAlreadyReady])
+
+  if (tabAlreadyReady || notified) {
+    return <ReadyToPayTabNotified className={className} />
   }
 
   return (
@@ -39,10 +44,13 @@ export function ReadyToPayTabButton({ tabId, restaurantId, onSuccess, className 
       )}
       <Button
         type="button"
-        className="w-full bg-green-600 text-white hover:bg-green-700 font-sans font-semibold text-base py-6"
+        className="w-full py-4 px-6 text-base font-semibold text-white text-center bg-[#16A34A] hover:bg-green-700 rounded-xl whitespace-normal h-auto min-h-[3rem]"
         disabled={loading}
         onClick={async () => {
-          if (loading) return
+          if (loading || tabAlreadyReady || notified) {
+            if (tabAlreadyReady || notified) onSuccess?.()
+            return
+          }
           setError(null)
           setLoading(true)
           console.log('[READY TO PAY TAB] requesting', { tabId, restaurantId })
@@ -75,11 +83,11 @@ export function ReadyToPayTabButton({ tabId, restaurantId, onSuccess, className 
 export function ReadyToPayTabNotified({ className }: { className?: string }) {
   return (
     <p
-      className={`flex items-center justify-center gap-2 text-sm font-sans font-medium text-green-700 dark:text-green-400 ${className ?? ''}`}
+      className={`flex items-center justify-center gap-2 text-sm font-semibold text-[#16A34A] text-center leading-relaxed ${className ?? ''}`}
       role="status"
     >
       <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
-      {NOTIFIED_MESSAGE}
+      {TAB_READY_NOTIFIED_MESSAGE}
     </p>
   )
 }

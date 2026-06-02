@@ -294,6 +294,9 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
 
   const markTabReadyToPay = async () => {
     if (!tabId || !restaurantId) throw new Error('No active tab')
+    if (tabStatus === 'ready_to_pay') {
+      return
+    }
     const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

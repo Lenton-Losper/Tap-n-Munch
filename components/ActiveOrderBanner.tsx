@@ -6,7 +6,10 @@ import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { cn } from '@/lib/utils'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
-import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import {
+  ReadyToPayTerminalButton,
+  ReadyToPayTerminalNotified,
+} from '@/components/ready-to-pay-terminal'
 import { supabase } from '@/lib/supabase/client'
 
 /**
@@ -183,11 +186,14 @@ export function ActiveOrderBanner() {
 
   const statusInfo = getStatusInfo(currentOrder.status, currentOrder.payment_status, payChannel)
 
+  const orderStatusLower = String(currentOrder.status || '').toLowerCase()
+  const terminalAlreadyNotified =
+    orderStatusLower === 'ready_for_terminal' ||
+    currentOrder.customer_ready_to_pay === true
   const showReadyToPayTerminal =
     payChannel === 'terminal' &&
     String(currentOrder.payment_status || '').toLowerCase() === 'pending' &&
-    String(currentOrder.status || '').toLowerCase() !== 'ready_for_terminal' &&
-    String(currentOrder.status || '').toLowerCase() !== 'completed'
+    orderStatusLower !== 'completed'
 
   const handleClick = () => {
     // Cross-Device Receipt: Route to table-based receipt page instead of order-specific confirmation
@@ -248,13 +254,18 @@ export function ActiveOrderBanner() {
         </div>
         {showReadyToPayTerminal && restaurantId && (
           <div onClick={(e) => e.stopPropagation()} className="pb-1">
-            <ReadyToPayTerminalButton
-              restaurantId={restaurantId}
-              orderId={String(currentOrder.id)}
-              tableNumber={Number(currentOrder.table_number) || Number(tableNumber) || 0}
-              sessionId={getCurrentSession()}
-              className="[&_button]:bg-white [&_button]:text-black [&_button]:hover:bg-white/90"
-            />
+            {terminalAlreadyNotified ? (
+              <ReadyToPayTerminalNotified className="text-white/95" />
+            ) : (
+              <ReadyToPayTerminalButton
+                restaurantId={restaurantId}
+                orderId={String(currentOrder.id)}
+                tableNumber={Number(currentOrder.table_number) || Number(tableNumber) || 0}
+                sessionId={getCurrentSession()}
+                alreadyNotified={terminalAlreadyNotified}
+                className="[&_button]:bg-white [&_button]:text-white [&_button]:hover:bg-white/90"
+              />
+            )}
           </div>
         )}
       </div>

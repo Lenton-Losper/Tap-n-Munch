@@ -42,7 +42,7 @@ type MemberGroup = {
 }
 
 const READY_TO_PAY_MESSAGE =
-  'Your waiter has been notified. Please wait and they will bring the card machine.'
+  'Waiter has been notified — the card machine is on its way'
 
 export default function TabSummaryPage() {
   const params = useParams()
@@ -203,6 +203,10 @@ export default function TabSummaryPage() {
 
   const handleReadyToPay = async () => {
     if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading) return
+    if (tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay') {
+      setReadyToPayNotified(true)
+      return
+    }
     setReadyToPayLoading(true)
     console.log('[TAB PAGE] ready to pay', { tabId: tabRecord?.id ?? storedTabId, restaurantId })
     try {
@@ -314,8 +318,7 @@ export default function TabSummaryPage() {
             </div>
           ) : (
             <Button
-              className="w-full bg-green-600 text-white hover:bg-green-700 font-sans font-semibold"
-              size="lg"
+              className="w-full py-4 px-6 text-base font-semibold text-white text-center bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
               onClick={handleReadyToPay}
               disabled={readyToPayLoading || fullTabRunningTotal <= 0}
             >

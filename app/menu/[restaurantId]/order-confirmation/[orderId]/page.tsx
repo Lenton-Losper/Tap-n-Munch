@@ -8,7 +8,10 @@ import { supabase } from '@/lib/supabase/client'
 import { getRestaurant } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
-import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
+import {
+  ReadyToPayTerminalButton,
+  ReadyToPayTerminalNotified,
+} from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
 import { getCurrentSession } from '@/lib/session'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
@@ -175,10 +178,7 @@ export default function OrderConfirmationPage() {
     order.status === 'ready_for_terminal'
   const browseHref = `/menu/${restaurantId}/browse${effectiveTableNumber > 0 ? `?table=${effectiveTableNumber}` : ''}`
 
-  const showTerminalButton =
-    isCardTerminal &&
-    paymentPending &&
-    !waiterNotified
+  const showTerminalPayCta = isCardTerminal && paymentPending
 
   return (
     <OrderConfirmationView
@@ -195,19 +195,23 @@ export default function OrderConfirmationPage() {
       tax={order.tax}
       currency={currency}
       showTerminalPayMessage={terminalNotice || isCardTerminal}
-      showReadyToPayHint={paymentPending}
-      waiterNotified={waiterNotified && isCardTerminal}
+      showReadyToPayHint={showTerminalPayCta && !waiterNotified}
+      waiterNotified={false}
       orderMoreHref={browseHref}
       readyToPaySlot={
-        showTerminalButton ? (
-          <ReadyToPayTerminalButton
-            restaurantId={restaurantId}
-            orderId={order.id}
-            tableNumber={effectiveTableNumber}
-            sessionId={getCurrentSession()}
-            className="[&_button]:w-full [&_button]:h-12 [&_button]:bg-[#16A34A] [&_button]:hover:bg-green-700 [&_button]:text-white [&_button]:font-semibold [&_button]:rounded-xl"
-            onNotified={() => setTerminalNotifiedLocal(true)}
-          />
+        showTerminalPayCta ? (
+          waiterNotified ? (
+            <ReadyToPayTerminalNotified />
+          ) : (
+            <ReadyToPayTerminalButton
+              restaurantId={restaurantId}
+              orderId={order.id}
+              tableNumber={effectiveTableNumber}
+              sessionId={getCurrentSession()}
+              alreadyNotified={waiterNotified}
+              onNotified={() => setTerminalNotifiedLocal(true)}
+            />
+          )
         ) : undefined
       }
       cashReadySlot={showReadyToPayCashButton(order) ? <ReadyToPayCashButton orderId={order.id} /> : undefined}

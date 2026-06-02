@@ -10,8 +10,11 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
-import { ReadyToPayTerminalButton } from '@/components/ready-to-pay-terminal'
-import { ReadyToPayTabButton, ReadyToPayTabNotified } from '@/components/ready-to-pay-tab'
+import {
+  ReadyToPayTerminalButton,
+  ReadyToPayTerminalNotified,
+} from '@/components/ready-to-pay-terminal'
+import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
@@ -469,15 +472,22 @@ export default function ReceiptPage() {
 
                 {String(order.payment_channel || '').toLowerCase() === 'terminal' &&
                   String(order.payment_status || '').toLowerCase() === 'pending' &&
-                  String(order.status || '').toLowerCase() !== 'ready_for_terminal' &&
                   String(order.status || '').toLowerCase() !== 'completed' && (
                     <div className="mt-4 border-t border-border pt-4">
-                      <ReadyToPayTerminalButton
-                        restaurantId={restaurantId}
-                        orderId={String(order.id)}
-                        tableNumber={Number(order.table_number) || Number(tableNumber) || 0}
-                        sessionId={getCurrentSession()}
-                      />
+                      {String(order.status || '').toLowerCase() === 'ready_for_terminal' ||
+                      order.customer_ready_to_pay === true ? (
+                        <ReadyToPayTerminalNotified />
+                      ) : (
+                        <ReadyToPayTerminalButton
+                          restaurantId={restaurantId}
+                          orderId={String(order.id)}
+                          tableNumber={Number(order.table_number) || Number(tableNumber) || 0}
+                          sessionId={getCurrentSession()}
+                          alreadyNotified={
+                            String(order.status || '').toLowerCase() === 'ready_for_terminal'
+                          }
+                        />
+                      )}
                     </div>
                   )}
               </div>
@@ -485,19 +495,14 @@ export default function ReceiptPage() {
           })}
         </div>
 
-        {storedTabId && orders.length > 0 && !tabReadyToPay && (
+        {storedTabId && orders.length > 0 && (
           <div className="mt-8 space-y-4">
             <ReadyToPayTabButton
               tabId={storedTabId}
               restaurantId={restaurantId}
+              tabAlreadyReady={tabReadyToPay}
               onSuccess={() => void refreshTab()}
             />
-          </div>
-        )}
-
-        {storedTabId && tabReadyToPay && (
-          <div className="mt-8">
-            <ReadyToPayTabNotified />
           </div>
         )}
       </div>

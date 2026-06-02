@@ -21,7 +21,7 @@ import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
-import { ReadyToPayTabButton, ReadyToPayTabNotified } from '@/components/ready-to-pay-tab'
+import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import { isActiveTabStatus } from '@/lib/tab-session'
 import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 
@@ -601,15 +601,12 @@ export default function CartPage() {
               {/* Main CTA: tab = always POST; non-tab online = order-secure; non-tab cash/card = POST from cart */}
               {showReadyToPay && (
                 <div className="mb-4">
-                  {tabReadyToPay ? (
-                    <ReadyToPayTabNotified />
-                  ) : (
-                    <ReadyToPayTabButton
-                      tabId={effectiveTabId}
-                      restaurantId={restaurantId}
-                      onSuccess={() => void refreshTab()}
-                    />
-                  )}
+                  <ReadyToPayTabButton
+                    tabId={effectiveTabId}
+                    restaurantId={restaurantId}
+                    tabAlreadyReady={tabReadyToPay}
+                    onSuccess={() => void refreshTab()}
+                  />
                 </div>
               )}
 
