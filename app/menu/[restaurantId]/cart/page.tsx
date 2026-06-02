@@ -16,13 +16,14 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { getSupabaseMenuItemById } from '@/lib/supabase/menu'
+import { supabase } from '@/lib/supabase/client'
 import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
 import { ReadyToPayTabButton, ReadyToPayTabNotified } from '@/components/ready-to-pay-tab'
 import { isActiveTabStatus } from '@/lib/tab-session'
-import { readStoredTabId } from '@/lib/tab-storage'
+import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 
 type PaymentChoice = 'cash' | 'terminal' | 'online'
 
@@ -49,10 +50,12 @@ export default function CartPage() {
   const effectiveTabId = tabIdFromUrl || tabId || storedTabId || ''
   const inTabFlow = Boolean(isInTab || effectiveTabId)
   const tabReadyToPay = tabStatus === 'ready_to_pay'
+  const [hasSessionTabOrders, setHasSessionTabOrders] = useState(false)
   const showReadyToPay = Boolean(
     storedTabId &&
       effectiveTabId &&
       isActiveTabStatus(tabStatus) &&
+      hasSessionTabOrders &&
       items.length > 0
   )
   const [restaurant, setRestaurant] = useState<any>(null)
@@ -66,6 +69,50 @@ export default function CartPage() {
   useEffect(() => {
     if (inTabFlow) setPaymentChoice('terminal')
   }, [inTabFlow])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const checkSessionTabOrders = async () => {
+      if (!effectiveTabId || !sessionId || !restaurantId) {
+        setHasSessionTabOrders(false)
+        return
+      }
+
+      const { count, error } = await supabase
+        .from('orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', restaurantId)
+        .eq('tab_id', effectiveTabId)
+        .eq('session_id', sessionId)
+        .is('tab_settlement_for_tab_id', null)
+
+      if (cancelled) return
+
+      if (error) {
+        console.warn('[CART] failed to check session tab orders', error)
+        setHasSessionTabOrders(false)
+        return
+      }
+
+      setHasSessionTabOrders(Number(count || 0) > 0)
+    }
+
+    void checkSessionTabOrders()
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveTabId, sessionId, restaurantId])
+
+  useEffect(() => {
+    // If this tab is already ready_to_pay and this session has no tab orders,
+    // the customer likely inherited a stale tab_id from a previous customer.
+    if (!tabReadyToPay || hasSessionTabOrders || !storedTabId) return
+    clearTabSession()
+    const q = new URLSearchParams()
+    if (tableNumber > 0) q.set('table', String(tableNumber))
+    router.replace(`/menu/${restaurantId}/browse${q.toString() ? `?${q.toString()}` : ''}`)
+  }, [tabReadyToPay, hasSessionTabOrders, storedTabId, tableNumber, restaurantId, router])
 
   const menuQuery = useMemo(() => {
     const q = new URLSearchParams()

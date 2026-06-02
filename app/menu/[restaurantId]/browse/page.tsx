@@ -522,6 +522,7 @@ export default function MenuBrowsePage() {
                       <div className="relative w-full aspect-[4/3] bg-muted overflow-hidden">
                         <FoodItemImage
                           itemName={item.name}
+                          menuItemId={item.id}
                           storedImageUrl={item.image_url}
                           alt={item.name}
                           className="h-full w-full object-cover rounded-t-lg"

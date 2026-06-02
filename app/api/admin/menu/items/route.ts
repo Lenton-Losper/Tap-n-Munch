@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import {
+  assertRestaurantAdmin,
+  getUserFromRequest,
+} from '@/lib/supabase/admin-restaurant-auth'
+import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
 
 export const dynamic = 'force-dynamic'
 
@@ -155,6 +160,81 @@ export async function POST(request: Request) {
         details: err?.details || null,
       },
       { status: 500 }
+    )
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const user = await getUserFromRequest(request)
+    const body = (await request.json()) as Record<string, any>
+    const itemId = String(body?.id || body?.item_id || '').trim()
+    const restaurantInput = String(body?.restaurant_id || '').trim()
+
+    if (!itemId) {
+      return NextResponse.json({ error: 'Missing menu item id' }, { status: 400 })
+    }
+    if (!restaurantInput) {
+      return NextResponse.json({ error: 'Missing restaurant_id' }, { status: 400 })
+    }
+
+    const supabase = createServerSupabaseClient()
+    const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
+    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+
+    const categoryId = body.category_id ?? body.menu_category_id ?? undefined
+    const subCategoryId =
+      body.subcategory_id ?? body.sub_category_id ?? body.sub_categoryId ?? undefined
+
+    const payload = buildMenuItemDbPayload({
+      ...body,
+      category_id: categoryId,
+      subcategory_id: subCategoryId,
+    })
+
+    if (Object.keys(payload).length === 0) {
+      return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
+    }
+
+    payload.updated_at = new Date().toISOString()
+
+    console.log(`${LOG_PREFIX} PATCH`, { itemId, restaurantId, payloadKeys: Object.keys(payload) })
+
+    const { data, error } = await supabase
+      .from('menu_items')
+      .update(payload)
+      .eq('id', itemId)
+      .eq('restaurant_id', restaurantId)
+      .select()
+      .maybeSingle()
+
+    if (error) {
+      logRouteError('PATCH update failed', error)
+      throw error
+    }
+
+    if (!data) {
+      return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ success: true, data })
+  } catch (error: unknown) {
+    logRouteError('PATCH handler failed', error)
+    const err = error as { message?: string; code?: string; details?: string }
+    const message = err?.message || 'Failed to update menu item'
+    const status =
+      message.includes('authorization') ||
+      message.includes('session') ||
+      message.includes('permission')
+        ? 403
+        : 500
+    return NextResponse.json(
+      {
+        error: message,
+        code: err?.code || null,
+        details: err?.details || null,
+      },
+      { status }
     )
   }
 }

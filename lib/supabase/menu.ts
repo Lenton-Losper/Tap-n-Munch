@@ -2,6 +2,7 @@
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
 import { resolveRestaurantUuid } from './restaurants'
+import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
 
 /** Map Supabase column names to fields expected by menu-management UI. */
 export function normalizeMenuItemForClient(row: Record<string, any>) {
@@ -363,18 +364,46 @@ export async function createMenuItem(data: Record<string, any>) {
 }
 
 export async function updateMenuItem(
-  _firebaseRestaurantId: string,
+  firebaseRestaurantId: string,
   categoryId: string,
   subCategoryId: string,
   itemId: string,
   data: Record<string, any>
 ) {
-  const payload = {
+  if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('You must be signed in to update menu items.')
+    }
+
+    const response = await fetch('/api/admin/menu/items', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        id: itemId,
+        restaurant_id: firebaseRestaurantId,
+        category_id: categoryId,
+        subcategory_id: subCategoryId || null,
+        ...data,
+      }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to update menu item')
+    }
+    return
+  }
+
+  const payload = buildMenuItemDbPayload({
     ...data,
     category_id: categoryId,
     subcategory_id: subCategoryId || null,
-    base_price: data.base_price,
-  }
+  })
+  payload.updated_at = new Date().toISOString()
   const { error } = await supabase.from('menu_items').update(payload).eq('id', itemId)
   if (error) throw error
 }

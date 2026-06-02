@@ -88,6 +88,7 @@ export function ItemDetailModal({
           <div className="relative w-full aspect-[4/3] overflow-hidden bg-muted">
             <FoodItemImage
               itemName={item.name}
+              menuItemId={item.id}
               storedImageUrl={item.image_url}
               alt={item.name}
               className="h-full w-full object-cover"

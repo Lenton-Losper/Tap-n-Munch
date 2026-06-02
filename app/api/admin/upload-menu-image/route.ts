@@ -1,16 +1,24 @@
 import { NextResponse } from 'next/server'
-import { getPublicStorageUrl, uploadImageServer } from '@/lib/supabase/storage-server'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
+import {
+  assertRestaurantAdmin,
+  getUserFromRequest,
+  resolveRestaurantId,
+} from '@/lib/supabase/admin-restaurant-auth'
+import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
+import { uploadImageServer } from '@/lib/supabase/storage-server'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
   try {
+    const user = await getUserFromRequest(request)
     const formData = await request.formData()
     const file = formData.get('file')
-    const restaurantId = String(formData.get('restaurantId') || '').trim()
+    const restaurantIdRaw = String(formData.get('restaurantId') || '').trim()
     const itemId = String(formData.get('itemId') || '').trim()
 
-    if (!restaurantId) {
+    if (!restaurantIdRaw) {
       return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
     }
     if (!(file instanceof File)) {
@@ -23,6 +31,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Image size must be less than 5MB' }, { status: 400 })
     }
 
+    const supabase = createServerSupabaseClient()
+    const restaurantId = await resolveRestaurantId(supabase, restaurantIdRaw)
+    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+
     const timestamp = Date.now()
     const randomString = Math.random().toString(36).slice(2, 10)
     const ext = file.name.split('.').pop() || 'jpg'
@@ -32,10 +44,24 @@ export async function POST(request: Request) {
 
     const buffer = await file.arrayBuffer()
     const storagePath = await uploadImageServer(buffer, path, file.type)
-    const url = getPublicStorageUrl(storagePath)
-    return NextResponse.json({ success: true, url })
+
+    const displayUrl = itemId
+      ? menuItemImageDisplayUrl(itemId, storagePath)
+      : null
+
+    return NextResponse.json({
+      success: true,
+      storagePath,
+      url: displayUrl || storagePath,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to upload image'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const status =
+      message.includes('authorization') ||
+      message.includes('session') ||
+      message.includes('permission')
+        ? 403
+        : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }

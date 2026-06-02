@@ -38,6 +38,7 @@ import { useToast } from '@/hooks/use-toast'
 import Image from 'next/image'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { uploadMenuItemImage } from '@/lib/supabase/storage'
+import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
 import { Skeleton } from '@/components/ui/skeleton'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 
@@ -777,7 +778,11 @@ export function MenuManagementV2() {
       allow_special_instructions: item.allow_special_instructions,
       status: item.status,
     })
-    setImagePreview(item.image_url || null)
+    setImagePreview(
+      item.image_url
+        ? menuItemImageDisplayUrl(item.id, item.image_url) || item.image_url
+        : null
+    )
     setShowItemModal(true)
   }
 
@@ -1335,6 +1340,7 @@ export function MenuManagementV2() {
                               <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
                                 <FoodItemImage
                                   itemName={item.name}
+                                  menuItemId={item.id}
                                   storedImageUrl={item.image_url}
                                   alt={item.name}
                                   className="w-full h-full object-cover rounded-t-lg"
@@ -1479,6 +1485,7 @@ export function MenuManagementV2() {
                             <div className="relative w-full h-32 bg-gray-50 overflow-hidden">
                               <FoodItemImage
                                 itemName={item.name}
+                                menuItemId={item.id}
                                 storedImageUrl={item.image_url}
                                 alt={item.name}
                                 className="w-full h-full object-cover rounded-t-lg"

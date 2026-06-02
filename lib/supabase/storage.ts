@@ -12,19 +12,27 @@ async function uploadImageClient(file: File, path: string): Promise<string> {
   return `${data.publicUrl}${data.publicUrl.includes('?') ? '&' : '?'}v=${Date.now()}`
 }
 
+/** Returns storage path to save on menu_items.image_url (not a broken public Supabase URL). */
 export async function uploadMenuItemImage(file: File, restaurantId: string, itemId?: string): Promise<string> {
   if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('You must be signed in to upload images.')
+    }
+
     const formData = new FormData()
     formData.append('file', file)
     formData.append('restaurantId', restaurantId)
     if (itemId) formData.append('itemId', itemId)
     const res = await fetch('/api/admin/upload-menu-image', {
       method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
       body: formData,
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(data?.error || 'Failed to upload image')
-    return String(data.url)
+    return String(data.storagePath || data.url)
   }
 
   const timestamp = Date.now()
