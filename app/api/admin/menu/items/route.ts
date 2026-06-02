@@ -238,3 +238,84 @@ export async function PATCH(request: Request) {
     )
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const user = await getUserFromRequest(request)
+    let itemId = ''
+    let restaurantInput = ''
+
+    const contentType = request.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const body = (await request.json()) as Record<string, unknown>
+      itemId = String(body?.id || body?.item_id || '').trim()
+      restaurantInput = String(body?.restaurant_id || '').trim()
+    } else {
+      const url = new URL(request.url)
+      itemId = String(url.searchParams.get('id') || url.searchParams.get('item_id') || '').trim()
+      restaurantInput = String(url.searchParams.get('restaurant_id') || '').trim()
+    }
+
+    if (!itemId) {
+      return NextResponse.json({ error: 'Missing menu item id' }, { status: 400 })
+    }
+    if (!restaurantInput) {
+      return NextResponse.json({ error: 'Missing restaurant_id' }, { status: 400 })
+    }
+
+    const supabase = createServerSupabaseClient()
+    const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
+    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+
+    console.log(`${LOG_PREFIX} DELETE`, { itemId, restaurantId })
+
+    const { error: hardDeleteError } = await supabase
+      .from('menu_items')
+      .delete()
+      .eq('id', itemId)
+      .eq('restaurant_id', restaurantId)
+
+    if (!hardDeleteError) {
+      return NextResponse.json({ success: true, deleted: true })
+    }
+
+    logRouteError('DELETE hard delete failed, trying soft hide', hardDeleteError)
+
+    const { data, error: softError } = await supabase
+      .from('menu_items')
+      .update({ status: 'hidden', updated_at: new Date().toISOString() })
+      .eq('id', itemId)
+      .eq('restaurant_id', restaurantId)
+      .select('id')
+      .maybeSingle()
+
+    if (softError) {
+      logRouteError('DELETE soft hide failed', softError)
+      throw softError
+    }
+
+    if (!data) {
+      return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ success: true, deleted: false, hidden: true })
+  } catch (error: unknown) {
+    logRouteError('DELETE handler failed', error)
+    const err = error as { message?: string; code?: string; details?: string }
+    const message = err?.message || 'Failed to delete menu item'
+    const status =
+      message.includes('authorization') ||
+      message.includes('session') ||
+      message.includes('permission')
+        ? 403
+        : 500
+    return NextResponse.json(
+      {
+        error: message,
+        code: err?.code || null,
+        details: err?.details || null,
+      },
+      { status }
+    )
+  }
+}

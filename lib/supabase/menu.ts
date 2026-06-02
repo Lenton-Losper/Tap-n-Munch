@@ -407,11 +407,36 @@ export async function updateMenuItem(
 }
 
 export async function deleteMenuItem(
-  _firebaseRestaurantId: string,
+  firebaseRestaurantId: string,
   _categoryId: string,
   _subCategoryId: string,
   itemId: string
 ) {
+  if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('You must be signed in to delete menu items.')
+    }
+
+    const response = await fetch('/api/admin/menu/items', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        id: itemId,
+        restaurant_id: firebaseRestaurantId,
+      }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to delete menu item')
+    }
+    return
+  }
+
   return deleteSupabaseMenuItem(itemId)
 }
 

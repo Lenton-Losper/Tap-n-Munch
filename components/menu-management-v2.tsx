@@ -1117,23 +1117,22 @@ export function MenuManagementV2() {
     if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return
 
     try {
-      // For delete, we need the full path - extract from item
-      if (!item.menu_category_id || !item.sub_category_id) {
+      if (!item.menu_category_id) {
         throw new Error('Menu item missing category information')
       }
-      
+
       await deleteMenuItem(
         restaurantId!,
         item.menu_category_id,
-        item.sub_category_id,
+        item.sub_category_id || '',
         item.id
       )
+      setAllMenuItems((prev) => prev.filter((row) => row.id !== item.id))
       toast({
         title: 'Success',
         description: 'Menu item deleted successfully',
       })
-      
-      // Reload all items
+
       const items = await getMenuItems(restaurantId!)
       setAllMenuItems(items)
       await invalidateServerMenuCache()
