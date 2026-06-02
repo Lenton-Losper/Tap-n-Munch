@@ -18,7 +18,6 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
 
   if (data.status !== undefined) {
     payload.status = String(data.status)
-    payload.is_available = String(data.status).toLowerCase() !== 'hidden'
   }
 
   if (data.variants !== undefined) payload.variants = data.variants

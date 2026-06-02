@@ -102,10 +102,9 @@ export async function getSupabaseMenuItems(restaurantId: string) {
     .from('menu_items')
     .select('*')
     .eq('restaurant_id', resolvedRestaurantId)
-    .eq('is_available', true)
     .order('name')
   if (error) throw error
-  return data
+  return (data || []).filter(isCustomerMenuItemVisible)
 }
 
 export async function createSupabaseMenuItem(data: {
@@ -142,13 +141,12 @@ export async function updateSupabaseMenuItem(
 export async function deleteSupabaseMenuItem(itemId: string) {
   const { error } = await supabase
     .from('menu_items')
-    .update({ is_available: false })
+    .update({ status: 'hidden', updated_at: new Date().toISOString() })
     .eq('id', itemId)
   if (error) throw error
 }
 
 function isCustomerMenuItemVisible(item: Record<string, any>) {
-  if (item.is_available === false) return false
   const status = String(item.status || 'available').toLowerCase()
   return status !== 'hidden'
 }
@@ -157,7 +155,7 @@ function normalizeCustomerMenuItem(item: Record<string, any>) {
   return {
     ...item,
     base_price: Number(item.base_price ?? 0),
-    status: item.status || (item.is_available === false ? 'hidden' : 'available'),
+    status: item.status || 'available',
   }
 }
 
@@ -355,7 +353,7 @@ export async function createMenuItem(data: Record<string, any>) {
     ...data,
     base_price: Number(data.base_price ?? 0),
     subcategory_id: (data.sub_category_id ?? data.subcategory_id) || null,
-    is_available: String(data.status || 'available') !== 'hidden',
+    status: data.status || 'available',
   }
   delete payload.sub_category_id
   const { data: row, error } = await supabase.from('menu_items').insert(payload).select().single()
