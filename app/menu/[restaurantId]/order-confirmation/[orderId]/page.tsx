@@ -139,6 +139,28 @@ export default function OrderConfirmationPage() {
     }
   }, [orderId])
 
+  useEffect(() => {
+    if (!orderId || !order) return
+    if (String(order.payment_status || '').toLowerCase() === 'paid') return
+
+    const pollPaymentStatus = async () => {
+      const { data: updatedOrder } = await supabase
+        .from('orders')
+        .select(ORDER_SELECT)
+        .eq('id', orderId)
+        .maybeSingle()
+      if (updatedOrder) {
+        setOrder(updatedOrder as Order)
+      }
+    }
+
+    const interval = setInterval(() => {
+      void pollPaymentStatus()
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [orderId, order?.payment_status])
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
@@ -176,8 +198,6 @@ export default function OrderConfirmationPage() {
     terminalNotifiedLocal ||
     order.customer_ready_to_pay === true ||
     order.status === 'ready_for_terminal'
-  const browseHref = `/menu/${restaurantId}/browse${effectiveTableNumber > 0 ? `?table=${effectiveTableNumber}` : ''}`
-
   const showTerminalPayCta = isCardTerminal && paymentPending
 
   return (
@@ -197,7 +217,6 @@ export default function OrderConfirmationPage() {
       showTerminalPayMessage={terminalNotice || isCardTerminal}
       showReadyToPayHint={showTerminalPayCta && !waiterNotified}
       waiterNotified={false}
-      orderMoreHref={browseHref}
       readyToPaySlot={
         showTerminalPayCta ? (
           waiterNotified ? (

@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from './auth-provider'
 import { Button } from '@/components/ui/button'
 import { signOutSupabase } from '@/lib/supabase/auth'
+import { syncAuthProfile } from '@/lib/supabase/sync-profile'
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, userData, restaurantId, loading } = useAuth()
   const router = useRouter()
   const [hasRedirected, setHasRedirected] = useState(false)
   const [forceLoaded, setForceLoaded] = useState(false)
+  const [repairingAccount, setRepairingAccount] = useState(false)
 
   useEffect(() => {
     if (!loading) {
@@ -65,10 +67,24 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
             Account Data Missing
           </h2>
           <p className="text-gray-600 mb-6">
-            You're signed in, but your user row is missing from Supabase.
+            You're signed in, but your user row is missing from Supabase. We can try to link your account by email.
           </p>
 
           <div className="space-y-3">
+            <Button
+              onClick={async () => {
+                setRepairingAccount(true)
+                const ok = await syncAuthProfile()
+                setRepairingAccount(false)
+                if (ok) {
+                  window.location.reload()
+                }
+              }}
+              className="w-full bg-black hover:bg-black/90 text-white"
+              disabled={repairingAccount}
+            >
+              {repairingAccount ? 'Repairing account...' : 'Repair My Account'}
+            </Button>
             <Button
               onClick={async () => {
                 await signOutSupabase()

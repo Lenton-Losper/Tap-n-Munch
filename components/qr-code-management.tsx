@@ -1,20 +1,81 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getSupabaseTables as getTables, createSupabaseTable as createTable, deleteSupabaseTable as deleteTable } from '@/lib/supabase/tables'
 import { supabase } from '@/lib/supabase/client'
 import { buildMenuUrl } from '@/lib/base-url'
+import {
+  orderRestaurantOrFilter,
+  resolveOrderRestaurantScope,
+  type OrderRestaurantScope,
+} from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { QRCodeSVG } from 'qrcode.react'
-import { ArrowLeft, Plus, Download, Copy, Trash2 } from 'lucide-react'
+import { ArrowLeft, Plus, Download, Copy, Trash2, DoorClosed } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
+import { cn } from '@/lib/utils'
 
 type Table = { id: string; table_number: number; table_name?: string; location?: string; qr_code_url?: string }
+
+type TableLiveStatus = 'active' | 'needs_payment' | 'empty'
+
+type OpenOrderRow = {
+  table_number?: number | null
+  status?: string | null
+  payment_status?: string | null
+}
+
+const ACTIVE_STATUSES = new Set(['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'])
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled'])
+
+function computeTableStatus(orders: OpenOrderRow[]): TableLiveStatus {
+  const open = orders.filter((o) => !TERMINAL_STATUSES.has(String(o.status || '').toLowerCase()))
+  if (open.length === 0) return 'empty'
+
+  const needsPayment = open.some(
+    (o) =>
+      String(o.payment_status || '').toLowerCase() === 'pending' &&
+      String(o.status || '').toLowerCase() === 'ready'
+  )
+  if (needsPayment) return 'needs_payment'
+
+  const isActive = open.some((o) => ACTIVE_STATUSES.has(String(o.status || '').toLowerCase()))
+  if (isActive) return 'active'
+
+  return 'empty'
+}
+
+function groupOrdersByTableStatus(orders: OpenOrderRow[]): Record<number, TableLiveStatus> {
+  const byTable = new Map<number, OpenOrderRow[]>()
+  for (const order of orders) {
+    const tableNum = Number(order.table_number)
+    if (!Number.isFinite(tableNum) || tableNum <= 0) continue
+    const list = byTable.get(tableNum) || []
+    list.push(order)
+    byTable.set(tableNum, list)
+  }
+  const result: Record<number, TableLiveStatus> = {}
+  byTable.forEach((tableOrders, tableNum) => {
+    result[tableNum] = computeTableStatus(tableOrders)
+  })
+  return result
+}
+
+function TableStatusBadge({ status }: { status: TableLiveStatus }) {
+  if (status === 'needs_payment') {
+    return <Badge className="bg-red-600 text-white font-semibold">NEEDS PAYMENT</Badge>
+  }
+  if (status === 'active') {
+    return <Badge className="bg-orange-500 text-white font-semibold">ACTIVE</Badge>
+  }
+  return <Badge className="bg-gray-500 text-white font-semibold">EMPTY</Badge>
+}
 
 function resolveRestaurantOwnerId(restaurant: Record<string, unknown> | null): string | null {
   if (!restaurant) return null
@@ -53,6 +114,42 @@ export function QRCodeManagement() {
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
   // CRITICAL: Prevent double execution (React Strict Mode + double clicks)
   const [deletingTableId, setDeletingTableId] = useState<string | null>(null)
+  const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
+  const [tableStatusByNumber, setTableStatusByNumber] = useState<Record<number, TableLiveStatus>>({})
+  const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
+
+  const refreshTableStatuses = useCallback(async () => {
+    if (!restaurantId) return
+    try {
+      const scope = orderScope ?? (await resolveOrderRestaurantScope(restaurantId))
+      if (!orderScope) setOrderScope(scope)
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('table_number, status, payment_status')
+        .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+        .eq('is_closed', false)
+        .not('status', 'in', '("completed","cancelled")')
+
+      if (error) {
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('orders')
+          .select('table_number, status, payment_status')
+          .or(orderRestaurantOrFilter(scope))
+          .eq('is_closed', false)
+          .not('status', 'in', '("completed","cancelled")')
+        if (fallbackError) throw fallbackError
+        const grouped = groupOrdersByTableStatus(fallbackData as OpenOrderRow[])
+        setTableStatusByNumber(grouped)
+        return
+      }
+
+      const grouped = groupOrdersByTableStatus((data || []) as OpenOrderRow[])
+      setTableStatusByNumber(grouped)
+    } catch (err) {
+      console.error('[TABLES] failed to refresh table statuses', err)
+    }
+  }, [restaurantId, orderScope])
 
   useEffect(() => {
     // Don't run if user is null (prevents fetching when signed out)
@@ -87,6 +184,45 @@ export function QRCodeManagement() {
 
     loadData()
   }, [user, restaurantId, toast])
+
+  useEffect(() => {
+    if (!restaurantId) return
+    void refreshTableStatuses()
+    const interval = setInterval(() => {
+      void refreshTableStatuses()
+    }, 30_000)
+    return () => clearInterval(interval)
+  }, [restaurantId, refreshTableStatuses])
+
+  const handleCloseTable = async (tableNumber: number) => {
+    if (!restaurantId || closingTableNumber != null) return
+    if (!confirm(`Close Table ${tableNumber}? All open orders will be marked completed and paid.`)) return
+
+    try {
+      setClosingTableNumber(tableNumber)
+      const response = await fetch(`/api/tables/${encodeURIComponent(String(tableNumber))}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to close table')
+
+      toast({
+        title: 'Table closed',
+        description: `Table ${tableNumber} orders marked completed and paid.`,
+      })
+      await refreshTableStatuses()
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to close table',
+        description: err instanceof Error ? err.message : 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setClosingTableNumber(null)
+    }
+  }
 
   const handleAddTable = async () => {
     if (!restaurantId || !newTableNumber.trim()) {
@@ -527,7 +663,7 @@ export function QRCodeManagement() {
               <Button variant="ghost" size="icon" onClick={() => router.push('/dashboard')}>
                 <ArrowLeft className="w-5 h-5" />
               </Button>
-              <h1 className="text-2xl font-bold text-gray-900">QR Codes & Tables</h1>
+              <h1 className="text-2xl font-bold text-gray-900">Tables</h1>
             </div>
             <Button
               onClick={() => setIsAddModalOpen(true)}
@@ -585,7 +721,7 @@ export function QRCodeManagement() {
 
         {/* Table-Specific QR Codes */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Table-Specific QR Codes</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-4">Tables</h2>
           {tables.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-4">No tables created yet</p>
@@ -596,13 +732,20 @@ export function QRCodeManagement() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {tables.map((table) => (
+              {tables.map((table) => {
+                const liveStatus = tableStatusByNumber[table.table_number] ?? 'empty'
+                return (
                 <div
                   key={table.id}
-                  className="bg-gray-50 rounded-lg p-4 border border-gray-200"
+                  className={cn(
+                    'bg-gray-50 rounded-lg p-4 border border-gray-200',
+                    liveStatus === 'needs_payment' && 'border-red-200',
+                    liveStatus === 'active' && 'border-orange-200'
+                  )}
                 >
-                  <div className="text-center mb-3">
-                    <h3 className="font-semibold text-lg">{table.table_name}</h3>
+                  <div className="text-center mb-3 space-y-2">
+                    <h3 className="font-semibold text-lg">Table {table.table_number}</h3>
+                    <TableStatusBadge status={liveStatus} />
                     {table.location && (
                       <p className="text-sm text-gray-600">{table.location}</p>
                     )}
@@ -613,6 +756,16 @@ export function QRCodeManagement() {
                     </div>
                   </div>
                   <div className="space-y-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full border-red-300 text-red-700 hover:bg-red-50"
+                      onClick={() => void handleCloseTable(table.table_number)}
+                      disabled={closingTableNumber === table.table_number}
+                    >
+                      <DoorClosed className="w-4 h-4 mr-2" />
+                      {closingTableNumber === table.table_number ? 'Closing...' : 'Close Table'}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -643,7 +796,7 @@ export function QRCodeManagement() {
                     </Button>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           )}
         </div>

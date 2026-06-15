@@ -3,7 +3,7 @@
 
 export const dynamic = "force-dynamic"
 
-import { useEffect, useState, Suspense } from 'react'
+import { useEffect, useState, Suspense, useCallback } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
 import { createFreshSession } from '@/lib/session'
@@ -21,19 +21,38 @@ import {
   ACTIVE_TAB_STATUSES,
   fetchTabById,
   isActiveTabStatus,
+  isTabSessionEndedStatus,
 } from '@/lib/tab-session'
-import { clearTabSession, persistTabSession, readStoredTabId } from '@/lib/tab-storage'
+import {
+  clearTabSession,
+  persistTabSession,
+  readStoredTabId,
+  consumeSessionEndedNotice,
+  clearActiveOrderBannerState,
+  TAB_SESSION_ENDED_MESSAGE,
+} from '@/lib/tab-storage'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 
-function MenuLandingPageV2Content() {
+export type MenuLandingPageV2ContentProps = {
+  restaurantIdOverride?: string
+  tableNumberOverride?: number
+}
+
+export function MenuLandingPageV2Content({
+  restaurantIdOverride,
+  tableNumberOverride,
+}: MenuLandingPageV2ContentProps = {}) {
   console.log("🚀 [SYSTEM LIVE] Luxury Theme - Landing Page v3.0")
   
   const params = useParams()
   const searchParams = useSearchParams()
   const router = useRouter()
-  const restaurantId = params?.restaurantId as string | undefined
+  const restaurantId =
+    restaurantIdOverride ?? (params?.restaurantId as string | undefined)
   const tableNumberParam = searchParams?.get('table')
-  const tableNum = tableNumberParam ? Number(tableNumberParam) : 0
+  const tableNum =
+    tableNumberOverride ??
+    (tableNumberParam ? Number(tableNumberParam) : 0)
   
   const [restaurant, setRestaurant] = useState<any>(null)
   const [table, setTable] = useState<any>(null)
@@ -50,8 +69,18 @@ function MenuLandingPageV2Content() {
   const [recentHostedPending, setRecentHostedPending] = useState<{ id: string; placed_at: string } | null>(
     null
   )
+  const [sessionEndedNotice, setSessionEndedNotice] = useState(false)
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, clearTab } = useTab()
+
+  useEffect(() => {
+    if (consumeSessionEndedNotice()) {
+      setSessionEndedNotice(true)
+      clearActiveOrderBannerState()
+      clearTab()
+      clearCart()
+    }
+  }, [clearTab, clearCart])
 
   // Load restaurant data
   useEffect(() => {
@@ -126,26 +155,76 @@ function MenuLandingPageV2Content() {
     }
   }, [loading, restaurant])
 
-  useEffect(() => {
-    let cancelled = false
-    const validateStoredTab = async () => {
-      if (!restaurantId || tableNum <= 0) {
-        setMyStoredTab(null)
-        setStoredTabChecked(true)
-        return
+  const endTabSession = useCallback(
+    (showNotice: boolean) => {
+      clearTabSession()
+      clearActiveOrderBannerState()
+      clearTab()
+      clearCart()
+      setMyStoredTab(null)
+      setOpenTab(null)
+      if (showNotice) {
+        setSessionEndedNotice(true)
       }
-      const storedId = readStoredTabId()
-      if (!storedId) {
-        setMyStoredTab(null)
-        setStoredTabChecked(true)
-        return
+    },
+    [clearTab, clearCart]
+  )
+
+  const syncTabLandingState = useCallback(async () => {
+    if (!restaurantId || tableNum <= 0) {
+      setMyStoredTab(null)
+      setOpenTab(null)
+      setStoredTabChecked(true)
+      return
+    }
+
+    const restaurantUuid = String(restaurant?.id || restaurantId || '')
+    const storedId = readStoredTabId()
+
+    if (storedId) {
+      const { count: openTableOrders, error: openOrdersError } = await supabase
+        .from('orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', tableNum)
+        .eq('is_closed', false)
+        .not('status', 'in', '("completed","cancelled")')
+
+      if (!openOrdersError && (openTableOrders || 0) === 0) {
+        try {
+          const tab = await fetchTabById(storedId, restaurantUuid)
+          if (
+            !tab ||
+            isTabSessionEndedStatus(tab.status) ||
+            String(tab.status || '').toLowerCase() === 'ready_to_pay'
+          ) {
+            endTabSession(true)
+            setStoredTabChecked(true)
+            return
+          }
+        } catch (err) {
+          console.warn('[V2] open-order tab check failed', err)
+        }
       }
+    }
+
+    if (!storedId) {
+      setMyStoredTab(null)
+      const { count: openOrdersCount, error: openOrdersErr } = await supabase
+        .from('orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', tableNum)
+        .eq('is_closed', false)
+        .not('status', 'in', '("completed","cancelled")')
+      if (!openOrdersErr && (openOrdersCount || 0) === 0) {
+        clearActiveOrderBannerState()
+      }
+    } else {
       try {
-        const tab = await fetchTabById(storedId, restaurantId)
-        if (cancelled) return
-        if (!tab || String(tab.status || '').toLowerCase() === 'settled') {
-          clearTabSession()
-          setMyStoredTab(null)
+        const tab = await fetchTabById(storedId, restaurantUuid)
+        if (!tab || isTabSessionEndedStatus(tab.status)) {
+          endTabSession(Boolean(storedId))
         } else if (isActiveTabStatus(tab.status)) {
           persistTabSession(storedId, tableNum)
           setMyStoredTab({
@@ -154,92 +233,147 @@ function MenuLandingPageV2Content() {
             status: String(tab.status || 'open'),
           })
         } else {
-          clearTabSession()
-          setMyStoredTab(null)
+          endTabSession(Boolean(storedId))
         }
       } catch (err) {
         console.warn('[V2] stored tab validation failed', err)
-        clearTabSession()
-        setMyStoredTab(null)
-      } finally {
-        if (!cancelled) setStoredTabChecked(true)
+        endTabSession(Boolean(storedId))
       }
     }
-    void validateStoredTab()
+
+    setStoredTabChecked(true)
+
+    if (readStoredTabId()) {
+      setOpenTab(null)
+      return
+    }
+
+    try {
+      setTabLoading(true)
+      const cutoffIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
+      let tabQuery = supabase
+        .from('tabs')
+        .select('*')
+        .eq('restaurant_id', restaurantUuid)
+        .in('status', [...ACTIVE_TAB_STATUSES])
+        .gte('created_at', cutoffIso)
+
+      if (table?.id) {
+        tabQuery = tabQuery.eq('table_id', table.id)
+      } else {
+        tabQuery = tabQuery.eq('table_number', tableNum)
+      }
+
+      const { data: candidates, error: tabQueryError } = await tabQuery.limit(1)
+      if (tabQueryError) {
+        console.error('[TAB CHECK] query error:', tabQueryError)
+      }
+
+      const tabData = (candidates || []).find((row) =>
+        isActiveTabStatus(String((row as Record<string, unknown>).status || ''))
+      ) as Record<string, any> | undefined
+
+      if (!tabData) {
+        setOpenTab(null)
+        return
+      }
+
+      setOpenTab({
+        id: String(tabData.id),
+        total: Number(tabData.total) || 0,
+        members: Array.isArray(tabData.members) ? tabData.members.length : 0,
+      })
+    } catch (tabErr) {
+      console.error('Failed to load open tab:', tabErr)
+      setOpenTab(null)
+    } finally {
+      setTabLoading(false)
+    }
+  }, [restaurantId, restaurant?.id, tableNum, table, endTabSession])
+
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      if (cancelled) return
+      await syncTabLandingState()
+    }
+    void run()
     return () => {
       cancelled = true
     }
-  }, [restaurantId, tableNum])
+  }, [syncTabLandingState])
 
   useEffect(() => {
-    const loadOpenTab = async () => {
-      if (!restaurantId || tableNum <= 0 || !storedTabChecked) {
-        if (!restaurantId || tableNum <= 0) setOpenTab(null)
-        return
-      }
-      if (myStoredTab) {
-        setOpenTab(null)
-        return
-      }
-      try {
-        setTabLoading(true)
-        console.log('[TAB CHECK] Querying for active tab at table:', tableNum)
-        console.log('[TAB CHECK] restaurantId:', restaurantId)
-        const cutoffIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
-        let tabQuery = supabase
-          .from('tabs')
-          .select('*')
-          .eq('restaurant_id', restaurantId)
-          .in('status', [...ACTIVE_TAB_STATUSES])
-          .gte('created_at', cutoffIso)
+    if (!restaurantId || tableNum <= 0) return
 
-        if (table?.id) {
-          tabQuery = tabQuery.eq('table_id', table.id)
-        } else {
-          tabQuery = tabQuery.eq('table_number', tableNum)
-        }
+    const restaurantUuid = String(restaurant?.id || restaurantId || '')
+    const storedId = readStoredTabId()
 
-        const { data: candidates, error: tabQueryError } = await tabQuery.limit(1)
-        if (tabQueryError) {
-          console.error('[TAB CHECK] query error:', tabQueryError)
-        }
-        const safeCandidates = (candidates || []) as Record<string, any>[]
-        console.log('[TAB CHECK] Result:', safeCandidates.length, 'tabs found')
-
-        if (safeCandidates.length === 0) {
-          setOpenTab(null)
-          return
-        }
-        const tabData = safeCandidates.find((row) =>
-          isActiveTabStatus(String((row as Record<string, unknown>).status || ''))
-        ) as Record<string, any> | undefined
-        if (!tabData) {
-          setOpenTab(null)
-          return
-        }
-        setOpenTab({
-          id: String(tabData.id),
-          total: Number(tabData.total) || 0,
-          members: Array.isArray(tabData.members) ? tabData.members.length : 0,
-        })
-      } catch (tabErr) {
-        console.error('Failed to load open tab:', tabErr)
-        setOpenTab(null)
-      } finally {
-        setTabLoading(false)
-      }
+    const onTabChange = () => {
+      void syncTabLandingState()
     }
-    loadOpenTab()
-    const onFocus = () => loadOpenTab()
+
+    const channels: ReturnType<typeof supabase.channel>[] = []
+
+    if (storedId) {
+      channels.push(
+        supabase
+          .channel(`v2-stored-tab-${storedId}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedId}` },
+            onTabChange
+          )
+          .subscribe()
+      )
+    }
+
+    if (table?.id) {
+      channels.push(
+        supabase
+          .channel(`v2-table-row-${table.id}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'restaurant_tables', filter: `id=eq.${table.id}` },
+            onTabChange
+          )
+          .subscribe()
+      )
+    }
+
+    channels.push(
+      supabase
+        .channel(`v2-restaurant-tabs-${restaurantUuid}-${tableNum}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'tabs', filter: `restaurant_id=eq.${restaurantUuid}` },
+          (payload) => {
+            const row = (payload.new || payload.old) as Record<string, unknown> | null
+            if (!row) return
+            const rowTableNum = Number(row.table_number || 0)
+            const rowTableId = String(row.table_id || '')
+            if (rowTableNum === tableNum || (table?.id && rowTableId === String(table.id))) {
+              onTabChange()
+            }
+          }
+        )
+        .subscribe()
+    )
+
+    const onFocus = () => {
+      void syncTabLandingState()
+    }
     if (typeof window !== 'undefined') {
       window.addEventListener('focus', onFocus)
     }
+
     return () => {
+      channels.forEach((channel) => supabase.removeChannel(channel))
       if (typeof window !== 'undefined') {
         window.removeEventListener('focus', onFocus)
       }
     }
-  }, [restaurantId, tableNum, table?.id, storedTabChecked, myStoredTab])
+  }, [restaurantId, restaurant?.id, tableNum, table?.id, syncTabLandingState, myStoredTab?.id])
 
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) {
@@ -414,6 +548,13 @@ function MenuLandingPageV2Content() {
   return (
     <div className="min-h-screen bg-[#0A0A0A] relative overflow-hidden">
       <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum} />
+      {sessionEndedNotice && (
+        <div className="relative z-30 px-4 pt-4">
+          <div className="mx-auto max-w-md rounded-lg border border-amber-500/40 bg-amber-500/15 px-4 py-3 text-center text-sm text-amber-100">
+            {TAB_SESSION_ENDED_MESSAGE}
+          </div>
+        </div>
+      )}
       {/* Active Order Banner */}
       <ActiveOrderBanner />
       
@@ -469,7 +610,7 @@ function MenuLandingPageV2Content() {
               Welcome to
             </p>
             <h1 className="text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
-              {restaurant.name}
+              {restaurant?.name || 'Restaurant'}
             </h1>
             {restaurant.description && (
               <p className="text-white/50 font-sans text-base max-w-xs mx-auto leading-relaxed">

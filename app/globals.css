@@ -284,6 +284,22 @@
   animation: slide-down 0.3s ease-out;
 }
 
+@keyframes order-ready-pay-border {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgb(239 68 68);
+    border-color: rgb(239 68 68);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(239 68 68 / 0.35);
+    border-color: rgb(220 38 38);
+  }
+}
+
+.order-card-ready-to-pay {
+  animation: order-ready-pay-border 1.25s ease-in-out infinite;
+}
+
 @media print {
   body {
     background: #fff !important;

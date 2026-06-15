@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { isRivieraHost, RIVIERA_MENU_PATH } from '@/lib/riviera-subdomain'
 
 /**
  * Middleware to handle route protection
@@ -12,6 +13,7 @@ import type { NextRequest } from 'next/server'
  * PUBLIC ROUTES (accessible without authentication - NO LOGIN REQUIRED):
  * - /menu/* - ALL customer-facing menu routes (QR codes, browsing, cart, checkout, order confirmation)
  *   Examples: /menu/[restaurantId], /menu/[restaurantId]?table=2, /menu/[restaurantId]/browse, etc.
+ * - /table/* - Riviera subdomain table landing URLs (riviera.flashtap.app/table/N)
  * - /signin, /signup, /forgot-password - Authentication pages
  * - /api/public/* - Public API routes (if any)
  * - Static assets (_next, favicon, images, etc.)
@@ -30,7 +32,29 @@ import type { NextRequest } from 'next/server'
  * 3. ProtectedRoute component handles authentication checks for admin routes
  * 4. Menu routes NEVER reach this middleware - they're excluded by the matcher
  */
+function handleRivieraSubdomain(request: NextRequest): NextResponse | null {
+  if (!isRivieraHost(request.headers.get('host'))) {
+    return null
+  }
+
+  const { pathname } = request.nextUrl
+
+  if (pathname === '/' || pathname === '') {
+    const rewriteUrl = request.nextUrl.clone()
+    rewriteUrl.pathname = RIVIERA_MENU_PATH
+    rewriteUrl.search = ''
+    return NextResponse.rewrite(rewriteUrl)
+  }
+
+  return null
+}
+
 export function middleware(request: NextRequest) {
+  const rivieraResponse = handleRivieraSubdomain(request)
+  if (rivieraResponse) {
+    return rivieraResponse
+  }
+
   const { pathname } = request.nextUrl
 
   // ✅ SAFETY CHECK: Explicitly allow /menu/* routes (should never reach here due to matcher)
@@ -71,7 +95,7 @@ export const config = {
      * This ensures middleware NEVER runs on /menu/* routes,
      * preventing ANY authentication redirects on QR code access.
      */
-    '/((?!menu|signin|signup|forgot-password|api/public|api/media|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!menu|table|signin|signup|forgot-password|api/public|api/media|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
 

@@ -15,7 +15,6 @@ import { StatusBadge } from './status-badge'
 import { PaymentBadge } from './payment-badge'
 import { InfoBanner } from './info-banner'
 import { OrderSummary } from './order-summary'
-import { ReceiptActions } from './receipt-actions'
 import {
   formatReceiptDate,
   mapOrderStatusToBadge,
@@ -46,7 +45,6 @@ export type OrderConfirmationViewProps = {
   cashReadySlot?: React.ReactNode
   cashNotifiedSlot?: React.ReactNode
   orderReadyBanner?: React.ReactNode
-  orderMoreHref?: string
   className?: string
 }
 
@@ -54,6 +52,7 @@ function PaymentMethodIcon({ method }: { method: string }) {
   const m = String(method).toLowerCase()
   if (m === 'cash') return <Banknote className="h-4 w-4 text-[#6B7280]" aria-hidden />
   if (m === 'wallet') return <Wallet className="h-4 w-4 text-[#6B7280]" aria-hidden />
+  if (m === 'other') return <Wallet className="h-4 w-4 text-[#6B7280]" aria-hidden />
   return <CreditCard className="h-4 w-4 text-[#6B7280]" aria-hidden />
 }
 
@@ -77,15 +76,17 @@ export function OrderConfirmationView({
   cashReadySlot,
   cashNotifiedSlot,
   orderReadyBanner,
-  orderMoreHref,
   className,
 }: OrderConfirmationViewProps) {
   const statusBadge = mapOrderStatusToBadge(orderStatus)
   const methodLabel = normalizePaymentMethod(paymentMethod)
   const statusLabel = normalizePaymentStatus(paymentStatus)
+  const channelLower = String(paymentChannel || '').toLowerCase()
   const isTerminal =
-    String(paymentChannel || '').toLowerCase() === 'terminal' ||
-    (paymentMethod === 'card' && showTerminalPayMessage)
+    channelLower === 'terminal' ||
+    (paymentMethod === 'card' && showTerminalPayMessage && channelLower !== 'card_manual')
+  const isCardManual = channelLower === 'card_manual'
+  const isOtherChannel = channelLower === 'other'
 
   return (
     <div className={cn('min-h-screen bg-[#F8FAFC] print:bg-white', className)}>
@@ -124,9 +125,21 @@ export function OrderConfirmationView({
 
           <StatusBadge label={statusBadge.label} description={statusBadge.description} />
 
-          {(showTerminalPayMessage || isTerminal) && (
+          {(showTerminalPayMessage || isTerminal) && !isCardManual && !isOtherChannel && (
             <InfoBanner className="mt-4" variant="info">
               Your waiter will bring the card machine to your table when you&apos;re ready to pay.
+            </InfoBanner>
+          )}
+
+          {isCardManual && (
+            <InfoBanner className="mt-4" variant="info">
+              Please have your card ready. Staff will bring the card machine to your table.
+            </InfoBanner>
+          )}
+
+          {isOtherChannel && (
+            <InfoBanner className="mt-4" variant="info">
+              Staff will assist you with payment at your table.
             </InfoBanner>
           )}
 
@@ -186,8 +199,6 @@ export function OrderConfirmationView({
 
           {orderReadyBanner ? <div className="mt-4">{orderReadyBanner}</div> : null}
         </ReceiptCard>
-
-        <ReceiptActions orderMoreHref={orderMoreHref} />
 
         <footer className="text-center space-y-1 print:hidden pb-4">
           <p className="text-xs text-[#6B7280] inline-flex items-center justify-center gap-1.5">

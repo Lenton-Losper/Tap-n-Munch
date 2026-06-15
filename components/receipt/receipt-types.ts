@@ -82,10 +82,11 @@ export function mapOrderStatusToBadge(status: OrderStatusKey): {
   }
 }
 
-export function normalizePaymentMethod(method: string): 'Card' | 'Cash' | 'Wallet' | string {
+export function normalizePaymentMethod(method: string): 'Card' | 'Cash' | 'Wallet' | 'Other' | string {
   const m = String(method || '').toLowerCase()
   if (m === 'cash') return 'Cash'
   if (m === 'wallet') return 'Wallet'
+  if (m === 'other') return 'Other'
   if (m === 'card') return 'Card'
   return method ? method.charAt(0).toUpperCase() + method.slice(1) : 'Card'
 }

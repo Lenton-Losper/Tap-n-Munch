@@ -12,7 +12,7 @@ export default function QRCodesPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <Tabs defaultValue="management" className="w-full">
             <TabsList className="mb-6">
-              <TabsTrigger value="management">QR Code Management</TabsTrigger>
+              <TabsTrigger value="management">Tables</TabsTrigger>
               <TabsTrigger value="design">Design Studio</TabsTrigger>
             </TabsList>
             <TabsContent value="management" className="mt-0">

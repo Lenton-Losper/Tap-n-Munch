@@ -1,12 +1,24 @@
 // @ts-nocheck
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { subscribeSupabaseOrders, updateSupabaseOrderPayment } from '@/lib/supabase/orders'
+import {
+  extractFirebaseRestaurantId,
+  orderRestaurantOrFilter,
+  resolveOrderRestaurantScope,
+  type OrderRestaurantScope,
+} from '@/lib/supabase/restaurants'
+import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
+import {
+  applyOrderRealtimeEvent,
+  countPendingHostedOrders,
+  playNewOrderSound,
+  unlockNewOrderSound,
+} from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
@@ -47,6 +59,41 @@ function paymentChannelOf(order: Order): string {
   return String((order as Order & { payment_channel?: string }).payment_channel || '').toLowerCase()
 }
 
+function isOrderPaid(order: Order): boolean {
+  return String(order.payment_status || '').toLowerCase() === 'paid'
+}
+
+function canMarkManualPaid(order: Order): boolean {
+  if (isOrderPaid(order)) return false
+  const ps = String(order.payment_status || '').toLowerCase()
+  const workflowStatus = String(order.status || '').toLowerCase()
+  if (ps === 'cancelled') return false
+  if (workflowStatus === 'completed' && ps === 'paid') return false
+  const ch = paymentChannelOf(order)
+  if (ch === 'cash' || ch === 'card_manual') return true
+  if (order.payment_method === 'cash' && (ps === 'cash_pending' || ps === 'pending')) return true
+  return false
+}
+
+/** At-table payment channels stay in New Orders until staff advances workflow status. */
+function isAtTablePaymentChannel(order: Order): boolean {
+  const ch = paymentChannelOf(order)
+  return ch === 'cash' || ch === 'card_manual' || ch === 'other'
+}
+
+function isCustomerReadyToPay(order: Order): boolean {
+  return order.customer_ready_to_pay === true
+}
+
+function tabIdOf(order: Order): string {
+  return String((order as Order & { tab_id?: string | null }).tab_id || '').trim()
+}
+
+/** Orders added to an open tab — pay at settlement, must stay visible on the kitchen dashboard. */
+function isTabOrder(order: Order): boolean {
+  return tabIdOf(order) !== ''
+}
+
 const tabs: { id: DashboardTabId; label: string }[] = [
   { id: 'new', label: 'New Orders' },
   { id: 'pending_payment', label: 'Pending Payment' },
@@ -56,6 +103,37 @@ const tabs: { id: DashboardTabId; label: string }[] = [
   { id: 'completed', label: 'Completed' },
 ]
 
+function orderActionKey(orderId: string, action: string) {
+  return `${orderId}:${action}`
+}
+
+function ButtonSpinner({ className }: { className?: string }) {
+  return <Loader2 className={cn('h-4 w-4 animate-spin', className)} aria-hidden />
+}
+
+function ActionButtonContent({
+  loading,
+  icon: Icon,
+  label,
+  loadingLabel,
+}: {
+  loading: boolean
+  icon?: ComponentType<{ className?: string }>
+  label: string
+  loadingLabel?: string
+}) {
+  return (
+    <>
+      {loading ? (
+        <ButtonSpinner className="mr-2" />
+      ) : Icon ? (
+        <Icon className="h-4 w-4 mr-2" />
+      ) : null}
+      {loading ? loadingLabel ?? label : label}
+    </>
+  )
+}
+
 export function OrdersDashboard() {
   const { user, restaurantId, restaurant } = useAuth()
   const router = useRouter()
@@ -64,59 +142,25 @@ export function OrdersDashboard() {
   const [pendingHostedCount, setPendingHostedCount] = useState(0)
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
-  const [primaryOrders, setPrimaryOrders] = useState<Order[]>([])
-  const [readyTerminalOrders, setReadyTerminalOrders] = useState<Order[]>([])
+  const [allOrders, setAllOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
+  const [markPaidTargetOrderId, setMarkPaidTargetOrderId] = useState<string | null>(null)
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
+  const [closeTableTargetNumber, setCloseTableTargetNumber] = useState<number | null>(null)
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
+  const [statusUpdateKey, setStatusUpdateKey] = useState<string | null>(null)
   const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
   const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
   const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
   const dashboardRestaurantId = String((restaurant as { id?: string } | null)?.id || restaurantId || '')
-  const primaryOrdersPendingRef = useRef<Order[] | null>(null)
-  const readyTerminalPendingRef = useRef<Order[] | null>(null)
-  const primaryDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const readyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const clearPrimaryDebounce = useCallback(() => {
-    if (primaryDebounceTimerRef.current) {
-      clearTimeout(primaryDebounceTimerRef.current)
-      primaryDebounceTimerRef.current = null
-    }
-  }, [])
-
-  const clearReadyDebounce = useCallback(() => {
-    if (readyDebounceTimerRef.current) {
-      clearTimeout(readyDebounceTimerRef.current)
-      readyDebounceTimerRef.current = null
-    }
-  }, [])
-
-  const queuePrimaryOrdersUpdate = useCallback((incomingOrders: Order[]) => {
-    primaryOrdersPendingRef.current = incomingOrders
-    clearPrimaryDebounce()
-    primaryDebounceTimerRef.current = setTimeout(() => {
-      if (primaryOrdersPendingRef.current) {
-        setPrimaryOrders(primaryOrdersPendingRef.current)
-        primaryOrdersPendingRef.current = null
-      }
-      setLoading(false)
-      primaryDebounceTimerRef.current = null
-    }, 300)
-  }, [clearPrimaryDebounce])
-
-  const queueReadyTerminalOrdersUpdate = useCallback((incomingOrders: Order[]) => {
-    readyTerminalPendingRef.current = incomingOrders
-    clearReadyDebounce()
-    readyDebounceTimerRef.current = setTimeout(() => {
-      setReadyTerminalOrders(readyTerminalPendingRef.current || [])
-      readyTerminalPendingRef.current = null
-      readyDebounceTimerRef.current = null
-    }, 300)
-  }, [clearReadyDebounce])
+  const dashboardFirebaseRestaurantId = extractFirebaseRestaurantId(
+    restaurant as Record<string, unknown> | null
+  )
+  const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
+  const [refetchTick, setRefetchTick] = useState(0)
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -134,7 +178,9 @@ export function OrdersDashboard() {
 
   const isRecentCardPendingOrder = (order: Order) => {
     if (order.payment_method !== 'card' || order.payment_status !== 'pending') return false
-    if (paymentChannelOf(order) === 'terminal') return true
+    const ch = paymentChannelOf(order)
+    if (ch === 'card_manual' || ch === 'other') return false
+    if (ch === 'terminal') return true
     const createdDate = toDate((order as Order & { created_at?: unknown }).created_at) || toDate(order.placed_at)
     if (!createdDate) return true
     return Date.now() - createdDate.getTime() < 5 * 60 * 1000
@@ -146,17 +192,70 @@ export function OrdersDashboard() {
       String(order.payment_status || '').toLowerCase() === 'paid'
     if (isPaidSettlementOrder) return false
 
+    if (isTabOrder(order)) return true
+
+    const ch = paymentChannelOf(order)
+    if (ch === 'cash' || ch === 'card_manual' || ch === 'other') return true
+    if (order.payment_method === 'other') return true
     if (order.payment_method === 'cash') return true
     if (order.payment_method === 'card_terminal') return true
     if (order.payment_method === 'card') {
-      if (paymentChannelOf(order) === 'terminal' && order.payment_status === 'pending') return true
+      if (ch === 'card_manual' && order.payment_status === 'pending') return true
+      if (ch === 'terminal' && order.payment_status === 'pending') return true
       if (order.payment_status === 'paid') return true
       return isRecentCardPendingOrder(order)
     }
     return true
   }
 
-  // Don't run if user is null (prevents fetching when signed out)
+  useEffect(() => {
+    if (!dashboardRestaurantId) {
+      setOrderScope(null)
+      return
+    }
+
+    if (restaurant?.id) {
+      const supabaseUuid = String(restaurant.id)
+      setOrderScope({
+        input: dashboardRestaurantId || supabaseUuid,
+        supabaseUuid,
+        firebaseRestaurantId:
+          extractFirebaseRestaurantId(restaurant as Record<string, unknown>) || supabaseUuid,
+      })
+      return
+    }
+
+    let cancelled = false
+    void resolveOrderRestaurantScope(dashboardRestaurantId, {
+      firebaseRestaurantId: dashboardFirebaseRestaurantId || undefined,
+    })
+      .then((scope) => {
+        if (!cancelled) setOrderScope(scope)
+      })
+      .catch((err) => {
+        console.error('[DASHBOARD] failed to resolve order restaurant scope', err)
+        if (!cancelled) setOrderScope(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurant])
+
+  useEffect(() => {
+    if (!dashboardRestaurantId) return
+    console.log('[DASHBOARD] restaurant id sources', {
+      dashboardRestaurantId,
+      dashboardFirebaseRestaurantId,
+      authRestaurantId: restaurantId,
+      restaurantRowId: (restaurant as { id?: string } | null)?.id ?? null,
+      firebase_id: (restaurant as { firebase_id?: string } | null)?.firebase_id ?? null,
+      firebase_restaurant_id:
+        (restaurant as { firebase_restaurant_id?: string } | null)?.firebase_restaurant_id ?? null,
+      orderScope,
+    })
+  }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurantId, restaurant, orderScope])
+
+  // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   useEffect(() => {
     if (!user) {
       console.log('⚠️ Dashboard: User not authenticated')
@@ -164,65 +263,88 @@ export function OrdersDashboard() {
       return
     }
 
-    if (!dashboardRestaurantId) {
-      console.log('⚠️ Dashboard: No restaurantId available')
+    if (!dashboardRestaurantId || !orderScope) {
+      console.log('⚠️ Dashboard: No restaurant scope available for orders')
       setLoading(false)
       return
     }
 
-    console.log('[DASHBOARD] subscribing with restaurantId:', dashboardRestaurantId)
+    setLoading(true)
 
-    const unsubscribe = subscribeSupabaseOrders(dashboardRestaurantId, activeTab, queuePrimaryOrdersUpdate)
+    console.log('[DASHBOARD] realtime subscribe', {
+      firebaseRestaurantId: orderScope.firebaseRestaurantId,
+    })
 
-    return () => {
-      clearPrimaryDebounce()
-      primaryOrdersPendingRef.current = null
-      unsubscribe()
-    }
-  }, [user, dashboardRestaurantId, activeTab, clearPrimaryDebounce, queuePrimaryOrdersUpdate])
-
-  useEffect(() => {
-    if (!user || !dashboardRestaurantId) return
-    const loadPendingHostedCount = async () => {
-      const { count } = await supabase
-        .from('orders')
-        .select('*', { count: 'exact', head: true })
-        .eq('restaurant_id', dashboardRestaurantId)
-        .eq('payment_status', 'pending')
-        .eq('payment_channel', 'hosted')
-        .eq('is_closed', false)
-      setPendingHostedCount(count ?? 0)
-    }
-    void loadPendingHostedCount()
-    const id = setInterval(() => void loadPendingHostedCount(), 60_000)
-    return () => clearInterval(id)
-  }, [user, dashboardRestaurantId])
-
-  useEffect(() => {
-    if (!user || !dashboardRestaurantId || activeTab !== 'new') {
-      setReadyTerminalOrders([])
-      return
-    }
-    const unsubscribe = subscribeSupabaseOrders(
+    const unsubscribe = subscribeRestaurantOrdersRealtime(
       dashboardRestaurantId,
-      'ready_for_terminal',
-      queueReadyTerminalOrdersUpdate
+      {
+        onInitial: (incoming) => {
+          const list = Array.isArray(incoming) ? (incoming as Order[]) : []
+          setAllOrders(list)
+          setPendingHostedCount(countPendingHostedOrders(list))
+          setLoading(false)
+        },
+        onChange: (payload) => {
+          setAllOrders((prev) => {
+            const next = applyOrderRealtimeEvent(prev, payload)
+            setPendingHostedCount(countPendingHostedOrders(next))
+            return next
+          })
+
+          if (payload.eventType === 'INSERT') {
+            const row = payload.new as Order | null
+            if (row && String(row.status || '').toLowerCase() === 'new') {
+              playNewOrderSound()
+              toast({
+                title: 'New order',
+                description: `Order #${row.order_number ?? '?'} — Table ${row.table_number ?? '?'}`,
+              })
+            }
+          }
+        },
+        onStatus: (status) => {
+          if (status === 'CHANNEL_ERROR') {
+            console.error('[DASHBOARD] Realtime channel error')
+          }
+        },
+      },
+      orderScope
     )
+
     return () => {
-      clearReadyDebounce()
-      readyTerminalPendingRef.current = null
       unsubscribe()
     }
-  }, [user, dashboardRestaurantId, activeTab, clearReadyDebounce, queueReadyTerminalOrdersUpdate])
+  }, [user, dashboardRestaurantId, orderScope, refetchTick, toast])
 
   const mergedSourceOrders = useMemo(() => {
-    if (activeTab === 'pending_payment') return primaryOrders
-    if (activeTab !== 'new') return primaryOrders
-    const byId = new Map<string, Order>()
-    readyTerminalOrders.forEach((o) => byId.set(o.id, o))
-    primaryOrders.forEach((o) => byId.set(o.id, o))
-    return Array.from(byId.values())
-  }, [activeTab, primaryOrders, readyTerminalOrders])
+    if (activeTab === 'pending_payment') {
+      return allOrders.filter(
+        (order) =>
+          paymentChannelOf(order) === 'hosted' &&
+          String(order.payment_status || '').toLowerCase() === 'pending'
+      )
+    }
+    if (activeTab === 'new') {
+      return allOrders.filter(
+        (order) => order.status === 'new' || order.status === 'ready_for_terminal'
+      )
+    }
+    return allOrders.filter((order) => order.status === activeTab)
+  }, [activeTab, allOrders])
+
+  const tabCounts = useMemo(() => {
+    const newCandidates = allOrders.filter(
+      (order) => order.status === 'new' || order.status === 'ready_for_terminal'
+    )
+    return {
+      pending_payment: countPendingHostedOrders(allOrders),
+      new: newCandidates.length,
+      accepted: allOrders.filter((order) => order.status === 'accepted').length,
+      preparing: allOrders.filter((order) => order.status === 'preparing').length,
+      ready: allOrders.filter((order) => order.status === 'ready').length,
+      completed: allOrders.filter((order) => order.status === 'completed').length,
+    } as Record<DashboardTabId, number>
+  }, [allOrders])
 
   useEffect(() => {
     if (!user || !dashboardRestaurantId) return
@@ -255,23 +377,24 @@ export function OrdersDashboard() {
 
     const visibleOrders = newOrders.filter((order) => {
       if (activeTab === 'pending_payment') {
-        return true
+        return paymentChannelOf(order) === 'hosted' && order.payment_status === 'pending'
       }
       if (!shouldDisplayOrder(order)) {
         return false
       }
       if (activeTab === 'new') {
-        if (order.payment_method === 'cash') return true
+        if (isTabOrder(order)) return true
+        if (isAtTablePaymentChannel(order)) return true
+        if (order.payment_method === 'cash' || order.payment_method === 'other') return true
         if (order.payment_method === 'card_terminal' && order.payment_status === 'terminal_pending') return true
+        if (paymentChannelOf(order) === 'terminal') return true
+        if (order.payment_method === 'card' && order.payment_status === 'paid') return true
         if (
           order.payment_method === 'card' &&
           order.payment_status === 'pending' &&
-          isRecentCardPendingOrder(order)
+          paymentChannelOf(order) === 'hosted'
         ) {
-          return true
-        }
-        if (order.payment_method === 'card' && order.payment_status === 'paid' && order.status === 'new') {
-          return true
+          return isRecentCardPendingOrder(order)
         }
         return false
       }
@@ -296,7 +419,23 @@ export function OrdersDashboard() {
       })
     }
 
-    const sorted = activeTab === 'pending_payment' ? visibleOrders : sortNewTab(visibleOrders)
+    const completedSortTime = (order: Order) =>
+      toDate((order as Order & { completed_at?: unknown }).completed_at)?.getTime() ||
+      toDate((order as Order & { accepted_at?: unknown }).accepted_at)?.getTime() ||
+      toDate((order as Order & { updated_at?: unknown }).updated_at)?.getTime() ||
+      toDate(order.placed_at)?.getTime() ||
+      0
+
+    const sortOrdersForTab = (list: Order[]) => {
+      if (activeTab === 'new') return sortNewTab(list)
+      if (activeTab === 'completed') {
+        return [...list].sort((a, b) => completedSortTime(b) - completedSortTime(a))
+      }
+      return list
+    }
+
+    const sorted =
+      activeTab === 'pending_payment' ? visibleOrders : sortOrdersForTab(visibleOrders)
 
     console.log('📦 Dashboard: Received', newOrders.length, 'merged orders for status:', activeTab)
     if (sorted.length > 0) {
@@ -320,16 +459,16 @@ export function OrdersDashboard() {
   }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
 
   const refreshPendingHostedCount = useCallback(async () => {
-    if (!dashboardRestaurantId) return
+    if (!dashboardRestaurantId || !orderScope) return
     const { count } = await supabase
       .from('orders')
       .select('*', { count: 'exact', head: true })
-      .eq('restaurant_id', dashboardRestaurantId)
+      .or(orderRestaurantOrFilter(orderScope))
       .eq('payment_status', 'pending')
       .eq('payment_channel', 'hosted')
       .eq('is_closed', false)
     setPendingHostedCount(count ?? 0)
-  }, [dashboardRestaurantId])
+  }, [dashboardRestaurantId, orderScope])
 
   const cancelAndFreeHostedOrder = async (orderId: string) => {
     if (!dashboardRestaurantId) return
@@ -367,6 +506,12 @@ export function OrdersDashboard() {
     return Math.max(0, Math.floor((Date.now() - d.getTime()) / 60_000))
   }
 
+  const isStatusUpdating = (orderId: string, action: string) =>
+    statusUpdateKey === orderActionKey(orderId, action)
+
+  const isOrderStatusBusy = (orderId: string) =>
+    Boolean(statusUpdateKey?.startsWith(`${orderId}:`))
+
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     if (!dashboardRestaurantId) {
       toast({
@@ -376,12 +521,16 @@ export function OrdersDashboard() {
       })
       return
     }
-    
+
+    const actionKey = orderActionKey(orderId, newStatus)
+    if (statusUpdateKey) return
+
     console.log('🔄 [DASHBOARD] Updating order status to:', newStatus, {
       orderId,
       restaurantId: dashboardRestaurantId,
     })
-    
+
+    setStatusUpdateKey(actionKey)
     try {
       const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
         method: 'PATCH',
@@ -393,6 +542,14 @@ export function OrdersDashboard() {
         throw new Error(data?.error || 'Failed to update order status')
       }
       console.log('✅ [DASHBOARD] Order status updated successfully')
+      const timestampField = `${newStatus}_at`
+      setAllOrders((prev) =>
+        prev.map((order) =>
+          order.id === orderId
+            ? { ...order, status: newStatus, [timestampField]: new Date().toISOString() }
+            : order
+        )
+      )
       toast({
         title: 'Order updated',
         description: `Order status changed to ${newStatus}`,
@@ -411,8 +568,22 @@ export function OrdersDashboard() {
         description: error.message || 'Failed to update order status',
         variant: 'destructive',
       })
+    } finally {
+      setStatusUpdateKey(null)
     }
   }
+
+  const closeMarkPaidDialog = useCallback(() => {
+    setShowMarkPaidDialog(false)
+    setMarkPaidTargetOrderId(null)
+  }, [])
+
+  const applyPaidLocally = useCallback((orderId: string, paidAt: string) => {
+    const paidPatch = { payment_status: 'paid', paid_at: paidAt }
+    setAllOrders((list) =>
+      list.map((order) => (order.id === orderId ? { ...order, ...paidPatch } : order))
+    )
+  }, [])
 
   const handleMarkAsPaid = async (orderId: string) => {
     if (!dashboardRestaurantId) {
@@ -423,19 +594,42 @@ export function OrdersDashboard() {
       })
       return
     }
-    
+
+    if (markingPaidOrderId) return
+
+    const previousOrder = orders.find((order) => order.id === orderId)
+    setMarkingPaidOrderId(orderId)
+
     try {
-      setMarkingPaidOrderId(orderId)
-      await updateSupabaseOrderPayment(orderId, 'paid', {
-        paid_by: user?.id || null,
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_status: 'paid' }),
       })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to mark as paid')
+      }
+
+      const paidAt = String(data?.order?.paid_at || new Date().toISOString())
+      applyPaidLocally(orderId, paidAt)
+      closeMarkPaidDialog()
+
       toast({
         title: 'Payment recorded',
         description: 'Order has been marked as paid',
       })
-      setShowMarkPaidDialog(false)
-      setMarkingPaidOrderId(null)
     } catch (error: any) {
+      if (previousOrder) {
+        const revertPatch = {
+          payment_status: previousOrder.payment_status,
+          paid_at: (previousOrder as Order & { paid_at?: string | null }).paid_at ?? null,
+        }
+        const revert = (list: Order[]) =>
+          list.map((order) => (order.id === orderId ? { ...order, ...revertPatch } : order))
+        setAllOrders(revert)
+      }
+
       console.error('❌ [DASHBOARD] Failed to mark order as paid:', {
         orderId,
         restaurantId: dashboardRestaurantId,
@@ -448,6 +642,7 @@ export function OrdersDashboard() {
         description: error.message || 'Failed to update payment status',
         variant: 'destructive',
       })
+    } finally {
       setMarkingPaidOrderId(null)
     }
   }
@@ -529,7 +724,6 @@ export function OrdersDashboard() {
             .from('orders')
             .select('id,payment_status,order_number,terminal_status')
             .eq('id', orderId)
-            .eq('restaurant_id', dashboardRestaurantId)
             .single()
           const orderRow = (data || null) as any
           const status = String(orderRow?.payment_status || '').toLowerCase()
@@ -588,24 +782,28 @@ export function OrdersDashboard() {
       return
     }
 
-    try {
-      setClosingTableNumber(tableNumber)
-      const tableNum = Number(tableNumber)
-      if (isNaN(tableNum) || tableNum <= 0) {
-        toast({
-          title: 'Invalid table number',
-          description: `Table number ${tableNumber} is invalid.`,
-          variant: 'destructive',
-        })
-        setClosingTableNumber(null)
-        return
-      }
+    const tableNum = Number(tableNumber)
+    if (isNaN(tableNum) || tableNum <= 0) {
+      toast({
+        title: 'Invalid table number',
+        description: `Table number ${tableNumber} is invalid.`,
+        variant: 'destructive',
+      })
+      return
+    }
 
+    if (closingTableNumber !== null) return
+
+    setClosingTableNumber(tableNum)
+    try {
+      if (!orderScope) {
+        throw new Error('Restaurant scope not loaded')
+      }
       const { data: openOrders, error: countError } = await supabase
         .from('orders')
         .select('id')
-        .eq('restaurant_id', dashboardRestaurantId)
-        .eq('table_number', Number(tableNum))
+        .or(orderRestaurantOrFilter(orderScope))
+        .eq('table_number', tableNum)
         .eq('is_closed', false)
       if (countError) throw countError
 
@@ -623,9 +821,9 @@ export function OrdersDashboard() {
         title: 'Table closed',
         description: `Table ${tableNum} closed. ${openOrders?.length || 0} order(s) completed.`,
       })
-      
+
       setShowCloseTableDialog(false)
-      setClosingTableNumber(null)
+      setCloseTableTargetNumber(null)
     } catch (error: any) {
       console.error('❌ [CLOSE TABLE] Error closing table:', {
         error: error.message,
@@ -639,6 +837,7 @@ export function OrdersDashboard() {
         description: error.message || 'Failed to close table. Please check console for details.',
         variant: 'destructive',
       })
+    } finally {
       setClosingTableNumber(null)
     }
   }
@@ -656,7 +855,35 @@ export function OrdersDashboard() {
 
   const getPaymentMethodLabel = (order: Order) => {
     if (paymentChannelOf(order) === 'terminal') return 'Card Terminal'
+    if (isTabOrder(order) && !paymentChannelOf(order)) return 'Tab'
     return String(order.payment_method || 'cash').replace(/_/g, ' ')
+  }
+
+  const getPaymentChannelBadge = (order: Order) => {
+    const ch = paymentChannelOf(order)
+
+    // Tab line items have no payment channel until the tab is settled — TAB badge is shown separately
+    if (isTabOrder(order) && !ch) {
+      return null
+    }
+
+    // Finatic hosted checkout only (never infer "online" from payment_method alone)
+    if (ch === 'hosted') {
+      return <Badge className="bg-blue-600 text-white font-semibold text-xs px-2.5 py-0.5">ONLINE</Badge>
+    }
+    if (ch === 'cash' || (order.payment_method === 'cash' && !ch)) {
+      return <Badge className="bg-green-600 text-white font-semibold text-xs px-2.5 py-0.5">CASH</Badge>
+    }
+    if (ch === 'card_manual' || ch === 'terminal') {
+      return <Badge className="bg-orange-500 text-white font-semibold text-xs px-2.5 py-0.5">CARD</Badge>
+    }
+    if (ch === 'other' || order.payment_method === 'other') {
+      return <Badge className="bg-gray-500 text-white font-semibold text-xs px-2.5 py-0.5">OTHER</Badge>
+    }
+    if (order.payment_method === 'cash') {
+      return <Badge className="bg-green-600 text-white font-semibold text-xs px-2.5 py-0.5">CASH</Badge>
+    }
+    return null
   }
 
   const getPaymentStatusBadge = (order: Order) => {
@@ -772,6 +999,8 @@ export function OrdersDashboard() {
         return <Badge variant="secondary">Completed</Badge>
       case 'cancelled':
         return <Badge variant="destructive">Cancelled</Badge>
+      default:
+        return <Badge variant="outline">{status}</Badge>
     }
   }
 
@@ -784,7 +1013,10 @@ export function OrdersDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
+    <div
+      className="min-h-screen bg-muted/30"
+      onPointerDown={unlockNewOrderSound}
+    >
       {/* Header */}
       <header className="bg-card border-b border-border">
         <div className="container mx-auto px-6 py-6 flex items-center justify-between">
@@ -802,7 +1034,10 @@ export function OrdersDashboard() {
           <Button
             variant="outline"
             size="icon"
-            onClick={() => setLoading(true)}
+            onClick={() => {
+              setLoading(true)
+              setRefetchTick((tick) => tick + 1)
+            }}
           >
             <RefreshCw className="h-5 w-5" />
           </Button>
@@ -814,12 +1049,7 @@ export function OrdersDashboard() {
         <div className="container mx-auto px-6">
           <div className="flex gap-2 overflow-x-auto">
             {tabs.map((tab) => {
-              const count =
-                tab.id === 'pending_payment'
-                  ? pendingHostedCount
-                  : tab.id === 'new' && activeTab === 'new'
-                    ? orders.length
-                    : orders.filter((o) => o.status === tab.id).length
+              const count = tabCounts[tab.id] ?? 0
               return (
                 <button
                   key={tab.id}
@@ -890,7 +1120,11 @@ export function OrdersDashboard() {
                         disabled={cancellingHostedOrderId === order.id}
                         onClick={() => void cancelAndFreeHostedOrder(order.id)}
                       >
-                        {cancellingHostedOrderId === order.id ? 'Cancelling…' : 'Cancel & Free Table'}
+                        <ActionButtonContent
+                          loading={cancellingHostedOrderId === order.id}
+                          label="Cancel & Free Table"
+                          loadingLabel="Cancelling…"
+                        />
                       </Button>
                     </div>
                     <p className="text-sm text-muted-foreground font-sans line-clamp-3">
@@ -929,12 +1163,15 @@ export function OrdersDashboard() {
                 customer: order.customer || {},
               }
 
+              const customerReadyToPay = isCustomerReadyToPay(normalizedOrder)
+
               return (
               <div
                 key={order.id}
                 className={cn(
                   'bg-card border-2 rounded-lg p-6 space-y-4',
-                  getStatusColor(order.status as OrderStatus)
+                  getStatusColor(order.status as OrderStatus),
+                  customerReadyToPay && 'order-card-ready-to-pay'
                 )}
               >
                 {/* Order Header */}
@@ -948,11 +1185,8 @@ export function OrdersDashboard() {
                       </Badge>
                     )}
                     {getStatusBadge(normalizedOrder.status as OrderStatus)}
+                    {getPaymentChannelBadge(normalizedOrder)}
                     {getPaymentStatusBadge(normalizedOrder)}
-                    <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                      {getPaymentMethodIcon(normalizedOrder.payment_method)}
-                      <span className="capitalize">{getPaymentMethodLabel(normalizedOrder)}</span>
-                    </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />
@@ -1018,6 +1252,16 @@ export function OrdersDashboard() {
                   </div>
                 )}
 
+                {customerReadyToPay && (
+                  <div
+                    className="w-full rounded-md bg-amber-500 px-4 py-3 text-center text-sm font-bold text-white shadow-sm"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    🔔 Customer is ready to pay
+                  </div>
+                )}
+
                 {/* Close Table Button - Only show for staff */}
                 {normalizedOrder.table_number && (
                   <div className="pt-2">
@@ -1025,32 +1269,39 @@ export function OrdersDashboard() {
                       variant="outline"
                       className="w-full border-red-300 text-red-600 hover:bg-red-50"
                       onClick={() => {
-                        setClosingTableNumber(normalizedOrder.table_number)
+                        setCloseTableTargetNumber(normalizedOrder.table_number)
                         setShowCloseTableDialog(true)
                       }}
                       disabled={closingTableNumber === normalizedOrder.table_number}
                     >
-                      <DoorClosed className="h-4 w-4 mr-2" />
-                      {closingTableNumber === normalizedOrder.table_number ? 'Closing...' : 'Close Table'}
+                      <ActionButtonContent
+                        loading={closingTableNumber === normalizedOrder.table_number}
+                        icon={DoorClosed}
+                        label="Close Table"
+                        loadingLabel="Closing..."
+                      />
                     </Button>
                   </div>
                 )}
 
-                {/* Cash: mark paid only */}
-                {normalizedOrder.payment_method === 'cash' &&
-                  normalizedOrder.payment_status === 'cash_pending' && (
+                {/* Manual payment: mark paid for cash and card at table */}
+                {canMarkManualPaid(normalizedOrder) && !isOrderPaid(normalizedOrder) && (
                     <div className="pt-2 space-y-2">
                       <Button
                         variant="outline"
                         className="w-full"
                         onClick={() => {
-                          setMarkingPaidOrderId(normalizedOrder.id)
+                          setMarkPaidTargetOrderId(normalizedOrder.id)
                           setShowMarkPaidDialog(true)
                         }}
                         disabled={markingPaidOrderId === normalizedOrder.id}
                       >
-                        <DollarSign className="h-4 w-4 mr-2" />
-                        {markingPaidOrderId === normalizedOrder.id ? 'Marking as Paid...' : 'Mark as Paid'}
+                        <ActionButtonContent
+                          loading={markingPaidOrderId === normalizedOrder.id}
+                          icon={DollarSign}
+                          label="Mark as Paid"
+                          loadingLabel="Marking as Paid..."
+                        />
                       </Button>
                     </div>
                   )}
@@ -1093,8 +1344,12 @@ export function OrdersDashboard() {
                               onClick={() => handleSendToTerminal(normalizedOrder)}
                               disabled={isSending || !canSendToTerminal || getTerminalStatus(normalizedOrder) === 'pending'}
                             >
-                              <CreditCard className="h-4 w-4 mr-2" />
-                              {isSending ? 'Sending to terminal...' : 'Send to Terminal'}
+                              <ActionButtonContent
+                                loading={isSending}
+                                icon={CreditCard}
+                                label="Send to Terminal"
+                                loadingLabel="Sending to terminal..."
+                              />
                             </Button>
                             {!ready && (
                               <Button
@@ -1103,7 +1358,14 @@ export function OrdersDashboard() {
                                 onClick={() => handleSendToTerminal(normalizedOrder, true)}
                                 disabled={isSending}
                               >
-                                Send Anyway
+                                {isSending ? (
+                                  <span className="inline-flex items-center gap-2 py-1">
+                                    <ButtonSpinner />
+                                    Sending...
+                                  </span>
+                                ) : (
+                                  'Send Anyway'
+                                )}
                               </Button>
                             )}
                           </>
@@ -1127,9 +1389,11 @@ export function OrdersDashboard() {
                       onClick={() => handleCancelTerminalPayment(normalizedOrder)}
                       disabled={cancelingTerminalOrderId === normalizedOrder.id}
                     >
-                      {cancelingTerminalOrderId === normalizedOrder.id
-                        ? 'Canceling terminal payment...'
-                        : 'Cancel Terminal Payment'}
+                      <ActionButtonContent
+                        loading={cancelingTerminalOrderId === normalizedOrder.id}
+                        label="Cancel Terminal Payment"
+                        loadingLabel="Canceling terminal payment..."
+                      />
                     </Button>
                   </div>
                 )}
@@ -1142,16 +1406,26 @@ export function OrdersDashboard() {
                         variant="outline"
                         className="flex-1"
                         onClick={() => handleStatusUpdate(normalizedOrder.id, 'cancelled')}
+                        disabled={isOrderStatusBusy(normalizedOrder.id)}
                       >
-                        <XCircle className="h-4 w-4 mr-2" />
-                        Decline
+                        <ActionButtonContent
+                          loading={isStatusUpdating(normalizedOrder.id, 'cancelled')}
+                          icon={XCircle}
+                          label="Decline"
+                          loadingLabel="Declining..."
+                        />
                       </Button>
                       <Button
                         className="flex-1 bg-[#FF6B35] hover:bg-[#e55a28]"
                         onClick={() => handleStatusUpdate(normalizedOrder.id, 'accepted')}
+                        disabled={isOrderStatusBusy(normalizedOrder.id)}
                       >
-                        <CheckCircle2 className="h-4 w-4 mr-2" />
-                        Accept & Start
+                        <ActionButtonContent
+                          loading={isStatusUpdating(normalizedOrder.id, 'accepted')}
+                          icon={CheckCircle2}
+                          label="Accept & Start"
+                          loadingLabel="Accepting..."
+                        />
                       </Button>
                     </>
                   )}
@@ -1159,27 +1433,42 @@ export function OrdersDashboard() {
                     <Button
                       className="flex-1 bg-blue-500 hover:bg-blue-600"
                       onClick={() => handleStatusUpdate(normalizedOrder.id, 'preparing')}
+                      disabled={isOrderStatusBusy(normalizedOrder.id)}
                     >
-                      <ChefHat className="h-4 w-4 mr-2" />
-                      Start Preparing
+                      <ActionButtonContent
+                        loading={isStatusUpdating(normalizedOrder.id, 'preparing')}
+                        icon={ChefHat}
+                        label="Start Preparing"
+                        loadingLabel="Updating..."
+                      />
                     </Button>
                   )}
                   {normalizedOrder.status === 'preparing' && (
                     <Button
                       className="flex-1 bg-orange-500 hover:bg-orange-600"
                       onClick={() => handleStatusUpdate(normalizedOrder.id, 'ready')}
+                      disabled={isOrderStatusBusy(normalizedOrder.id)}
                     >
-                      <Package className="h-4 w-4 mr-2" />
-                      Mark as Ready
+                      <ActionButtonContent
+                        loading={isStatusUpdating(normalizedOrder.id, 'ready')}
+                        icon={Package}
+                        label="Mark as Ready"
+                        loadingLabel="Updating..."
+                      />
                     </Button>
                   )}
                   {normalizedOrder.status === 'ready' && (
                     <Button
                       className="flex-1 bg-green-500 hover:bg-green-600"
                       onClick={() => handleStatusUpdate(normalizedOrder.id, 'completed')}
+                      disabled={isOrderStatusBusy(normalizedOrder.id)}
                     >
-                      <CheckCircle2 className="h-4 w-4 mr-2" />
-                      Complete Order
+                      <ActionButtonContent
+                        loading={isStatusUpdating(normalizedOrder.id, 'completed')}
+                        icon={CheckCircle2}
+                        label="Complete Order"
+                        loadingLabel="Completing..."
+                      />
                     </Button>
                   )}
                 </div>
@@ -1190,7 +1479,15 @@ export function OrdersDashboard() {
       </div>
 
       {/* Mark as Paid Confirmation Dialog */}
-      <Dialog open={showMarkPaidDialog} onOpenChange={setShowMarkPaidDialog}>
+      <Dialog
+        open={showMarkPaidDialog}
+        onOpenChange={(open) => {
+          setShowMarkPaidDialog(open)
+          if (!open) {
+            setMarkPaidTargetOrderId(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Mark Order as Paid</DialogTitle>
@@ -1200,36 +1497,48 @@ export function OrdersDashboard() {
           </DialogHeader>
           <DialogFooter>
             <Button
+              type="button"
               variant="outline"
-              onClick={() => {
-                setShowMarkPaidDialog(false)
-                setMarkingPaidOrderId(null)
-              }}
+              onClick={closeMarkPaidDialog}
+              disabled={Boolean(markingPaidOrderId)}
             >
               Cancel
             </Button>
             <Button
+              type="button"
               className="bg-[#FF6B35] hover:bg-[#e55a28]"
               onClick={() => {
-                if (markingPaidOrderId) {
-                  handleMarkAsPaid(markingPaidOrderId)
+                if (markPaidTargetOrderId) {
+                  void handleMarkAsPaid(markPaidTargetOrderId)
                 }
               }}
-              disabled={!markingPaidOrderId}
+              disabled={!markPaidTargetOrderId || Boolean(markingPaidOrderId)}
             >
-              Mark as Paid
+              <ActionButtonContent
+                loading={Boolean(markingPaidOrderId)}
+                label="Mark as Paid"
+                loadingLabel="Marking as Paid..."
+              />
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Close Table Confirmation Dialog */}
-      <Dialog open={showCloseTableDialog} onOpenChange={setShowCloseTableDialog}>
+      <Dialog
+        open={showCloseTableDialog}
+        onOpenChange={(open) => {
+          if (!open && closingTableNumber === null) {
+            setShowCloseTableDialog(false)
+            setCloseTableTargetNumber(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Close Table</DialogTitle>
             <DialogDescription>
-              Are you sure you want to close Table {closingTableNumber}? 
+              Are you sure you want to close Table {closeTableTargetNumber}? 
               This will end the current session. Customers will need to scan the QR code again to start a new session.
               Existing orders will remain for audit purposes.
             </DialogDescription>
@@ -1239,21 +1548,27 @@ export function OrdersDashboard() {
               variant="outline"
               onClick={() => {
                 setShowCloseTableDialog(false)
-                setClosingTableNumber(null)
+                setCloseTableTargetNumber(null)
               }}
+              disabled={closingTableNumber !== null}
             >
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 text-white"
               onClick={() => {
-                if (closingTableNumber) {
-                  handleCloseTable(closingTableNumber)
+                if (closeTableTargetNumber) {
+                  void handleCloseTable(closeTableTargetNumber)
                 }
               }}
-              disabled={!closingTableNumber}
+              disabled={!closeTableTargetNumber || closingTableNumber !== null}
             >
-              Close Table
+              <ActionButtonContent
+                loading={closingTableNumber !== null}
+                icon={DoorClosed}
+                label="Close Table"
+                loadingLabel="Closing..."
+              />
             </Button>
           </DialogFooter>
         </DialogContent>

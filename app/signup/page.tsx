@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/components/auth/auth-provider'
+import { syncAuthProfile } from '@/lib/supabase/sync-profile'
 import { SupabaseConfigError } from '@/components/auth/firebase-config-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -100,6 +101,8 @@ export default function SignUpPage() {
         formData.restaurantName,
         formData.phone
       )
+
+      await syncAuthProfile(formData.restaurantName)
       
       console.log('✅ Signup successful! Redirecting to dashboard...')
       

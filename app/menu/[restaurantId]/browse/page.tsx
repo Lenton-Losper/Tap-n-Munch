@@ -21,6 +21,8 @@ import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
+import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
+import { readStoredTabId } from '@/lib/tab-storage'
 
 type ItemVariant = {
   size: string
@@ -61,8 +63,17 @@ export default function MenuBrowsePage() {
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
-  const { items: cartItems, getItemCount, addItem } = useCart()
+  const { items: cartItems, getItemCount, addItem, clearCart } = useCart()
   const { isInTab, tabId, tabTotal, tabMembers, tabStatus } = useTab()
+
+  const effectiveTabId = tabIdParam || tabId || readStoredTabId() || ''
+  const { redirecting: tabSessionRedirecting } = useTabSessionEndedRedirect({
+    restaurantId,
+    tableNumber,
+    tabId: effectiveTabId || null,
+    enabled: Boolean(effectiveTabId),
+    onSessionEnded: () => clearCart(),
+  })
 
   const browseQuery = useMemo(() => {
     const q = new URLSearchParams()
@@ -346,6 +357,17 @@ export default function MenuBrowsePage() {
     } else {
       setSelectedItem(item)
     }
+  }
+
+  if (tabSessionRedirecting) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-3 px-6 text-center">
+        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
+        <p className="text-sm text-muted-foreground max-w-xs">
+          Your session has ended. Scan the QR code to start a new order.
+        </p>
+      </div>
+    )
   }
 
   if (loading) {

@@ -39,7 +39,6 @@ export async function initializeUserData(
       subscription_status: 'trial',
       created_at: now,
       updated_at: now,
-      firebase_restaurant_id: null,
     })
     .select('*')
     .single()

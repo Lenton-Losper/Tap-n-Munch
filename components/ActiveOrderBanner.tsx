@@ -11,6 +11,7 @@ import {
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
 import { supabase } from '@/lib/supabase/client'
+import { clearActiveOrderBannerState } from '@/lib/tab-storage'
 
 /**
  * PART 3: Active Order Banner
@@ -53,6 +54,14 @@ export function ActiveOrderBanner() {
         ).trim()
       : ''
 
+  const isBannerEligibleOrder = (order: Record<string, any> | null) => {
+    if (!order) return false
+    if (order.is_closed === true || order.table_closed === true) return false
+    const status = String(order.status || '').toLowerCase()
+    if (status === 'completed' || status === 'cancelled') return false
+    return ['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(status)
+  }
+
   useEffect(() => {
     if (!restaurantId) {
       setLastOrder(null)
@@ -76,11 +85,18 @@ export function ActiveOrderBanner() {
         .single()
       if (cancelled) return
       if (!data) {
+        clearActiveOrderBannerState()
         setLastOrder(null)
         setLastOrderLoaded(true)
         return
       }
       if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
+        setLastOrder(null)
+        setLastOrderLoaded(true)
+        return
+      }
+      if (!isBannerEligibleOrder(data)) {
+        clearActiveOrderBannerState()
         setLastOrder(null)
         setLastOrderLoaded(true)
         return
@@ -141,7 +157,9 @@ export function ActiveOrderBanner() {
     return null
   }
   
-  const currentOrder = lastOrder || activeOrder
+  const currentOrder =
+    (lastOrder && isBannerEligibleOrder(lastOrder) ? lastOrder : null) ||
+    (activeOrder && isBannerEligibleOrder(activeOrder) ? activeOrder : null)
 
   if (!currentOrder) {
     // Fallback logging: Banner hidden because no active orders found

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { CacheKeys, redis, TTL } from '@/lib/redis'
@@ -37,6 +37,7 @@ export async function POST(req: Request) {
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantId)
+    const orderRestaurantScope = await resolveOrderRestaurantScope(restaurantId)
 
     const normalizedTableNumber = Number(tableNumber) || 0
     const rateLimitKey = CacheKeys.rateLimit(restaurantId, normalizedTableNumber)
@@ -70,8 +71,16 @@ export async function POST(req: Request) {
 
     // Tab orders: card only, pending until tab is settled at the table
     let resolvedPaymentMethod = paymentMethod || 'cash'
-    let paymentStatus = resolvedPaymentMethod === 'cash' ? 'cash_pending' : 'pending'
-    let resolvedPaymentChannel = paymentChannel || null
+    let resolvedPaymentChannel = paymentChannel ?? null
+    const channelLower = String(resolvedPaymentChannel || '').toLowerCase()
+    let paymentStatus: string
+    if (channelLower === 'cash' || channelLower === 'card_manual' || channelLower === 'other') {
+      paymentStatus = 'pending'
+    } else if (resolvedPaymentMethod === 'cash' && !resolvedPaymentChannel) {
+      paymentStatus = 'cash_pending'
+    } else {
+      paymentStatus = 'pending'
+    }
 
     if (isTabOrder) {
       console.log('[ORDERS] tab order', { tabId: normalizedTabId, restaurantUuid })
@@ -100,7 +109,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `Tab is not open (status=${tabStatus})` }, { status: 400 })
       }
 
-      resolvedPaymentMethod = 'card'
+      resolvedPaymentMethod = 'tab'
       paymentStatus = 'pending'
       resolvedPaymentChannel = null
     }
@@ -109,7 +118,7 @@ export async function POST(req: Request) {
     const { count } = await supabase
       .from('orders')
       .select('*', { count: 'exact', head: true })
-      .eq('restaurant_id', restaurantUuid)
+      .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
 
     const orderNumber = (count || 0) + 1
 
@@ -118,6 +127,7 @@ export async function POST(req: Request) {
       .from('orders')
       .insert({
         restaurant_id: restaurantUuid,
+        firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
         table_number: normalizedTableNumber,
         session_id: sessionId,
         member_session_id: memberSessionId,

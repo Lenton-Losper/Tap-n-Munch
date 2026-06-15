@@ -5,6 +5,8 @@ function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
+const RESTAURANT_ORDER_SCOPE_SELECT = 'id, firebase_id'
+
 export async function createSupabaseRestaurant(data: {
   owner_id: string
   name: string
@@ -57,7 +59,7 @@ export async function getRestaurantByFirebaseId(firebaseRestaurantId: string) {
   if (isUuid(firebaseRestaurantId)) {
     const { data, error } = await supabase
       .from('restaurants')
-      .select('*')
+      .select(RESTAURANT_ORDER_SCOPE_SELECT)
       .eq('id', firebaseRestaurantId)
       .maybeSingle()
     if (error) throw error
@@ -66,7 +68,7 @@ export async function getRestaurantByFirebaseId(firebaseRestaurantId: string) {
 
   const { data, error } = await supabase
     .from('restaurants')
-    .select('*')
+    .select(RESTAURANT_ORDER_SCOPE_SELECT)
     .eq('firebase_restaurant_id', firebaseRestaurantId)
     .maybeSingle()
 
@@ -74,14 +76,24 @@ export async function getRestaurantByFirebaseId(firebaseRestaurantId: string) {
   if (error && String((error as any).message || '').includes('firebase_restaurant_id')) {
     const fallback = await supabase
       .from('restaurants')
-      .select('*')
+      .select(RESTAURANT_ORDER_SCOPE_SELECT)
       .eq('id', firebaseRestaurantId)
       .maybeSingle()
     if (fallback.error) throw fallback.error
     return fallback.data
   }
   if (error) throw error
-  return data
+  if (data) return data
+
+  const byFirebaseId = await supabase
+    .from('restaurants')
+    .select(RESTAURANT_ORDER_SCOPE_SELECT)
+    .eq('firebase_id', firebaseRestaurantId)
+    .maybeSingle()
+  if (byFirebaseId.error && !String((byFirebaseId.error as any).message || '').includes('firebase_id')) {
+    throw byFirebaseId.error
+  }
+  return byFirebaseId.data
 }
 
 export async function resolveRestaurantUuid(firebaseRestaurantId: string) {
@@ -93,8 +105,103 @@ export async function resolveRestaurantUuid(firebaseRestaurantId: string) {
   return restaurant.id as string
 }
 
-export async function getRestaurant(firebaseRestaurantId: string) {
-  return getRestaurantByFirebaseId(firebaseRestaurantId)
+export type OrderRestaurantScope = {
+  input: string
+  supabaseUuid: string
+  firebaseRestaurantId: string
+}
+
+/** Read the value stored on orders.firebase_restaurant_id for this restaurant. */
+export function extractFirebaseRestaurantId(
+  restaurant: Record<string, unknown> | null | undefined
+): string {
+  if (!restaurant) return ''
+  const explicit = String(restaurant.firebase_id || restaurant.firebase_restaurant_id || '').trim()
+  if (explicit) return explicit
+  // Migrated restaurants (e.g. Riviera) may key orders by Supabase UUID when firebase_id is unset.
+  return String(restaurant.id || '').trim()
+}
+
+export function buildOrderRestaurantScopeFromRestaurant(
+  restaurant: Record<string, unknown>,
+  inputId = ''
+): OrderRestaurantScope {
+  const supabaseUuid = String(restaurant.id || '').trim()
+  const firebaseRestaurantId = extractFirebaseRestaurantId(restaurant)
+  if (!supabaseUuid || !firebaseRestaurantId) {
+    throw new Error('Restaurant record missing id or firebase_id')
+  }
+  return {
+    input: inputId || supabaseUuid,
+    supabaseUuid,
+    firebaseRestaurantId,
+  }
+}
+
+/** Resolve how orders are keyed in Supabase (firebase_restaurant_id on orders rows). */
+export async function resolveOrderRestaurantScope(
+  restaurantIdInput: string,
+  options?: { firebaseRestaurantId?: string | null }
+): Promise<OrderRestaurantScope> {
+  const hintedFirebaseId = String(options?.firebaseRestaurantId || '').trim()
+  const restaurant = await getRestaurantByFirebaseId(restaurantIdInput)
+  if (!restaurant?.id) {
+    throw new Error(`Restaurant not found for id=${restaurantIdInput}`)
+  }
+  const supabaseUuid = String(restaurant.id)
+  const row = restaurant as Record<string, unknown>
+  const firebaseRestaurantId =
+    hintedFirebaseId ||
+    extractFirebaseRestaurantId(row) ||
+    (!isUuid(restaurantIdInput) ? restaurantIdInput.trim() : supabaseUuid)
+
+  if (!firebaseRestaurantId) {
+    throw new Error(
+      `Restaurant ${supabaseUuid} is missing firebase_id — orders are keyed by firebase_restaurant_id, not Supabase UUID`
+    )
+  }
+
+  const scope: OrderRestaurantScope = {
+    input: restaurantIdInput,
+    supabaseUuid,
+    firebaseRestaurantId,
+  }
+  console.log('[ORDERS] resolveOrderRestaurantScope', scope)
+  return scope
+}
+
+/** PostgREST OR filter for orders keyed by Firebase UID and/or Supabase restaurant UUID. */
+export function orderRestaurantOrFilter(scope: OrderRestaurantScope): string {
+  return `firebase_restaurant_id.eq.${scope.firebaseRestaurantId},restaurant_id.eq.${scope.supabaseUuid}`
+}
+
+export function orderRestaurantFirebaseId(scope: OrderRestaurantScope): string {
+  return scope.firebaseRestaurantId
+}
+
+export async function getRestaurant(restaurantIdInput: string) {
+  const id = String(restaurantIdInput || '').trim()
+  if (!id) return null
+
+  const fetchFullRow = async (restaurantUuid: string) => {
+    const { data, error } = await supabase
+      .from('restaurants')
+      .select('*')
+      .eq('id', restaurantUuid)
+      .maybeSingle()
+    if (error) throw error
+    return data
+  }
+
+  if (isUuid(id)) {
+    return fetchFullRow(id)
+  }
+
+  const scoped = await getRestaurantByFirebaseId(id)
+  if (scoped?.id) {
+    return fetchFullRow(String(scoped.id))
+  }
+  return scoped
 }
 
 export async function updateRestaurantSettings(

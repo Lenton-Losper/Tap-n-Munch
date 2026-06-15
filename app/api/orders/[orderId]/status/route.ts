@@ -16,14 +16,27 @@ export async function PATCH(
   }
 
   const patch: Record<string, string> = {}
-  if (status) patch.status = status
-  if (paymentStatus) patch.payment_status = paymentStatus
+  if (status) {
+    patch.status = status
+    const timestampField = `${status}_at`
+    patch[timestampField] = new Date().toISOString()
+  }
+  if (paymentStatus) {
+    patch.payment_status = paymentStatus
+    if (paymentStatus === 'paid') {
+      patch.paid_at = new Date().toISOString()
+    }
+  }
 
-  const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
+  const { data, error } = await supabase.from('orders').update(patch).eq('id', orderId).select('id, payment_status, paid_at, status').maybeSingle()
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 })
   }
 
-  return NextResponse.json({ success: true })
+  if (!data) {
+    return NextResponse.json({ error: 'Order not found or could not be updated' }, { status: 404 })
+  }
+
+  return NextResponse.json({ success: true, order: data })
 }

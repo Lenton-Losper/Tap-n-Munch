@@ -4,7 +4,7 @@ import Link from "next/link"
 import { OrdersDashboard } from "@/components/orders-dashboard"
 import { ProtectedRoute } from "@/components/auth/protected-route"
 import { Button } from "@/components/ui/button"
-import { ClipboardList, QrCode, UtensilsCrossed, BarChart3, Settings } from "lucide-react"
+import { ClipboardList, Table2, UtensilsCrossed, BarChart3, Settings } from "lucide-react"
 
 export default function DashboardPage() {
   return (
@@ -28,10 +28,10 @@ export default function DashboardPage() {
 
               <Button asChild variant="outline" className="h-auto justify-start rounded-lg border-[#E9E9E7] bg-white p-4 hover:bg-[#F1F0EC]">
                 <Link href="/qr-codes" className="flex items-start gap-3">
-                  <QrCode className="mt-0.5 h-5 w-5 text-[#37352F]" />
+                  <Table2 className="mt-0.5 h-5 w-5 text-[#37352F]" />
                   <div className="text-left">
-                    <div className="font-semibold text-[#37352F]">Create QR Code</div>
-                    <div className="text-xs text-[#6B675F]">Generate table QR codes</div>
+                    <div className="font-semibold text-[#37352F]">Tables</div>
+                    <div className="text-xs text-[#6B675F]">Manage tables and QR codes</div>
                   </div>
                 </Link>
               </Button>

@@ -6,6 +6,17 @@
       "path": "/api/orders/expire-pending",
       "schedule": "0 2 * * *"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "host",
+          "value": "riviera.flashtap.app"
+        }
+      ],
+      "destination": "/menu/01bf27f1-a958-4322-bb3e-cc5240987808/v2"
+    }
   ]
 }
-
