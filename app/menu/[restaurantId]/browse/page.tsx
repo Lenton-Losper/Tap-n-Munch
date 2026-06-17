@@ -86,6 +86,9 @@ export default function MenuBrowsePage() {
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
   const [groupedItems, setGroupedItems] = useState<Record<string, { subcategory: SubCategory; items: MenuItem[] }>>({})
+  const [allGroupedItems, setAllGroupedItems] = useState<
+    Record<string, { subcategory: SubCategory; items: MenuItem[] }>
+  >({})
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
@@ -298,8 +301,58 @@ export default function MenuBrowsePage() {
     loadMenuItems()
   }, [restaurantId, selectedMenuCategory])
 
+  useEffect(() => {
+    const loadAllMenuItems = async () => {
+      if (!restaurantId || menuCategories.length === 0) {
+        setAllGroupedItems({})
+        return
+      }
+
+      try {
+        const categoryPayloads = await Promise.all(
+          menuCategories.map(async (category) => {
+            const response = await fetch(
+              `/api/menu/${encodeURIComponent(restaurantId)}/category/${encodeURIComponent(category.id)}`,
+              { cache: 'no-store' }
+            )
+            if (!response.ok) {
+              throw new Error(`Menu API returned ${response.status}`)
+            }
+            return (await response.json()) as Record<
+              string,
+              { subcategory: SubCategory; items: MenuItem[] }
+            >
+          })
+        )
+
+        const merged: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
+        for (const grouped of categoryPayloads) {
+          for (const [key, entry] of Object.entries(grouped)) {
+            const existing = merged[key]
+            if (!existing) {
+              merged[key] = {
+                subcategory: entry.subcategory,
+                items: [...(entry.items || [])],
+              }
+              continue
+            }
+            existing.items.push(...(entry.items || []))
+          }
+        }
+
+        setAllGroupedItems(merged)
+      } catch (err) {
+        console.error('Failed to load full menu for search:', err)
+        setAllGroupedItems({})
+      }
+    }
+
+    void loadAllMenuItems()
+  }, [restaurantId, menuCategories])
+
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const filteredGroupedEntries = Object.values(groupedItems)
+  const menuItemsSource = normalizedSearchQuery ? allGroupedItems : groupedItems
+  const filteredGroupedEntries = Object.values(menuItemsSource)
     .map(({ subcategory, items }) => {
       if (!normalizedSearchQuery) return { subcategory, items }
       const filteredItems = items.filter((item) => {

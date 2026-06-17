@@ -114,6 +114,28 @@ export async function POST(req: Request) {
       resolvedPaymentChannel = null
     }
 
+    if (!isTabOrder) {
+      const { data: openTabForTable, error: openTabError } = await supabase
+        .from('tabs')
+        .select('id')
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', normalizedTableNumber)
+        .eq('status', 'open')
+        .maybeSingle()
+
+      if (openTabError) {
+        console.error('[ORDERS] open tab check failed', openTabError)
+        return NextResponse.json({ error: openTabError.message }, { status: 500 })
+      }
+
+      if (!openTabForTable) {
+        return NextResponse.json(
+          { error: 'This table has been closed. Please scan the QR code to start a new session.' },
+          { status: 403 }
+        )
+      }
+    }
+
     // Get next order number
     const { count } = await supabase
       .from('orders')

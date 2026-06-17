@@ -716,10 +716,15 @@ export function MenuLandingPageV2Content({
                   size="lg"
                   onClick={handleCreateTab}
                   disabled={tabActionLoading !== null || blockOrderingForHostedPending}
-                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group justify-between"
                 >
-                  {tabActionLoading === 'create' ? 'Creating tab…' : 'Create Tab'}
-                  <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                  <span className="flex flex-col items-start leading-tight">
+                    <span>{tabActionLoading === 'create' ? 'Creating tab…' : 'Create Tab'}</span>
+                    <span className="text-xs font-normal text-gray-400">
+                      Share a tab with everyone at your table
+                    </span>
+                  </span>
+                  <ChevronRight className="w-5 h-5 ml-2 shrink-0 group-hover:translate-x-1 transition-transform stroke-[2]" />
                 </Button>
                 <Button
                   variant="outline"
@@ -728,7 +733,12 @@ export function MenuLandingPageV2Content({
                   disabled={blockOrderingForHostedPending}
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
-                  View Menu
+                  <span className="flex flex-col items-start leading-tight">
+                    <span>View Menu</span>
+                    <span className="text-xs font-normal text-white/50">
+                      Browse and order on your own
+                    </span>
+                  </span>
                 </Button>
               </>
             ) : (
