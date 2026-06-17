@@ -12,6 +12,7 @@ export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
 
   try {
+    const t0 = performance.now()
     const idempotencyKey = req.headers.get('x-idempotency-key')?.trim() || ''
 
     const body = await req.json()
@@ -56,6 +57,7 @@ export async function POST(req: Request) {
     }
 
     if (idempotencyKey) {
+      const t1 = performance.now()
       try {
         const existing = await redis.get(CacheKeys.idempotency(idempotencyKey))
         if (existing) {
@@ -65,13 +67,16 @@ export async function POST(req: Request) {
       } catch (err) {
         console.error('[ORDERS] Redis idempotency check failed:', err)
       }
+      console.log(`[ORDERS TIMING] idempotency check: ${(performance.now() - t1).toFixed(0)}ms`)
     }
 
     const normalizedTabId = tabId ? String(tabId).trim() : ''
     const isTabOrder = Boolean(normalizedTabId)
 
     if (normalizedTabId) {
+      const tToken = performance.now()
       const guard = await requireSessionToken(req)
+      console.log(`[ORDERS TIMING] token validation: ${(performance.now() - tToken).toFixed(0)}ms`)
       if (guard.error) return guard.error
     }
 
@@ -151,6 +156,7 @@ export async function POST(req: Request) {
     const orderNumber = (count || 0) + 1
 
     // Create order in Supabase
+    const t2 = performance.now()
     const { data: newOrder, error: orderError } = await supabase
       .from('orders')
       .insert({
@@ -175,6 +181,7 @@ export async function POST(req: Request) {
       })
       .select('id, restaurant_id, order_number, payment_status, total')
       .single()
+    console.log(`[ORDERS TIMING] order insert: ${(performance.now() - t2).toFixed(0)}ms`)
 
     if (orderError) {
       if (orderError.code === '23505' && idempotencyKey) {
@@ -226,6 +233,7 @@ export async function POST(req: Request) {
 
     const orderId = newOrder.id
 
+    const t3 = performance.now()
     if (isTabOrder) {
       console.log('[ORDERS] updating tab total and members', normalizedTabId)
       const { data: tabRow, error: tabReloadError } = await supabase
@@ -268,6 +276,7 @@ export async function POST(req: Request) {
         }
       }
     }
+    console.log(`[ORDERS TIMING] order items insert: ${(performance.now() - t3).toFixed(0)}ms`)
 
     let checkoutUrl: string | null = null
     let merchantOrderNo: string | null = null
@@ -344,6 +353,7 @@ export async function POST(req: Request) {
       }
     }
 
+    console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
     return NextResponse.json(successPayload)
   } catch (error) {
     console.error('[ORDERS] Unexpected error:', error)
