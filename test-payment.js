@@ -9,7 +9,7 @@ async function run() {
   const mockOrder = {
     id: 'order_test_001',
     restaurantId: 'rest_001',
-    status: 'new',
+    status: 'pending',
     payment_status: 'pending',
   }
 

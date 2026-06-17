@@ -59,7 +59,7 @@ export function ActiveOrderBanner() {
     if (order.is_closed === true || order.table_closed === true) return false
     const status = String(order.status || '').toLowerCase()
     if (status === 'completed' || status === 'cancelled') return false
-    return ['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(status)
+    return ['pending', 'accepted', 'ready', 'ready_for_terminal'].includes(status)
   }
 
   useEffect(() => {
@@ -175,23 +175,20 @@ export function ActiveOrderBanner() {
     const s = String(status || '').toLowerCase()
     const p = String(paymentStatus || '').toLowerCase()
     const ch = String(channel || '').toLowerCase()
-    if (p === 'pending' && s === 'new' && ch === 'terminal') {
+    if (p === 'pending' && s === 'pending' && ch === 'terminal') {
       return { text: 'Order received — tap below when ready for card machine', pulse: true, tone: 'neutral' as const }
     }
-    if (p === 'pending' && s === 'new') {
+    if (p === 'pending' && s === 'pending') {
       return { text: 'Order received - Awaiting payment', pulse: true, tone: 'neutral' as const }
     }
     if (p === 'pending' && s === 'ready_for_terminal') {
       return { text: 'Waiter notified — card machine on the way', pulse: true, tone: 'preparing' as const }
     }
-    if (p === 'cash_pending' && s === 'new') {
+    if (p === 'cash_pending' && s === 'pending') {
       return { text: 'Order received - Pay at counter', pulse: true, tone: 'neutral' as const }
     }
     if (p === 'paid' && s === 'accepted') {
       return { text: 'Order accepted - Being prepared', pulse: true, tone: 'preparing' as const }
-    }
-    if (p === 'paid' && s === 'preparing') {
-      return { text: 'Your order is being prepared', pulse: true, tone: 'preparing' as const }
     }
     if (p === 'paid' && s === 'ready') {
       return { text: 'Your order is ready for collection', pulse: false, tone: 'ready' as const }

@@ -96,7 +96,7 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
             const placedMs = orderPlacedAtMs(order)
             if (!placedMs || placedMs < placedCutoff) return false
-            return ['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(
+            return ['pending', 'accepted', 'ready', 'ready_for_terminal'].includes(
               String(order.status || '').toLowerCase()
             )
           })

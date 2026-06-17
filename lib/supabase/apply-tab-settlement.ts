@@ -9,7 +9,7 @@ export function markPaidAndAcceptPatch(currentStatus: string): Record<string, un
     updated_at: new Date().toISOString(),
   }
   const cs = String(currentStatus || '').toLowerCase()
-  if (cs === 'new' || !cs) {
+  if (cs === 'pending' || !cs) {
     return {
       ...base,
       status: 'accepted',

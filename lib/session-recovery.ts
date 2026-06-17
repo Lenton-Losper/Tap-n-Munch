@@ -59,7 +59,7 @@ export async function restoreSessionFromTable(
       .eq('restaurant_id', restaurantId)
       .eq('table_number', tableNumber)
       .eq('table_closed', false)
-      .in('status', ['new', 'accepted', 'preparing', 'ready'])
+      .in('status', ['pending', 'accepted', 'ready'])
     if (error) throw error
 
     console.log('📦 Recovery: Found', (orders || []).length, 'active orders for table', tableNumber)

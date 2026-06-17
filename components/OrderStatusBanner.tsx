@@ -46,7 +46,11 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
     }
   }, [])
 
-  const getStatusNotification = (newStatus: string, orderNumber: number): Notification | null => {
+  const getStatusNotification = (
+    newStatus: string,
+    orderNumber: number,
+    oldStatus: string
+  ): Notification | null => {
     const id = `${orderNumber}-${newStatus}-${Date.now()}`
 
     switch (newStatus) {
@@ -57,19 +61,15 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           type: 'success',
           icon: '✅',
         }
-      case 'preparing':
-        return {
-          id,
-          message: `Order #${orderNumber} is being prepared.`,
-          type: 'info',
-          icon: '👨‍🍳',
-        }
       case 'ready':
         return {
           id,
-          message: `Order #${orderNumber} is ready!`,
-          type: 'success',
-          icon: '🍽️',
+          message:
+            oldStatus === 'accepted'
+              ? `Order #${orderNumber} is being prepared.`
+              : `Order #${orderNumber} is ready!`,
+          type: oldStatus === 'accepted' ? 'info' : 'success',
+          icon: oldStatus === 'accepted' ? '👨‍🍳' : '🍽️',
         }
       case 'completed':
         return {
@@ -124,7 +124,7 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           const newStatus = String(newOrder.status ?? '')
 
           if (newStatus !== oldStatus) {
-            const notification = getStatusNotification(newStatus, orderNum)
+            const notification = getStatusNotification(newStatus, orderNum, oldStatus)
             if (notification) {
               addNotification(notification)
               if ('vibrate' in navigator) {

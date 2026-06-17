@@ -1,7 +1,6 @@
 export type OrderStatusKey =
-  | 'new'
+  | 'pending'
   | 'accepted'
-  | 'preparing'
   | 'ready'
   | 'ready_for_terminal'
   | 'completed'
@@ -39,7 +38,7 @@ export function mapOrderStatusToBadge(status: OrderStatusKey): {
   description: string
 } {
   switch (status) {
-    case 'new':
+    case 'pending':
       return {
         label: 'NEW ORDER',
         description: 'Your order has been received and sent to the restaurant.',
@@ -49,15 +48,10 @@ export function mapOrderStatusToBadge(status: OrderStatusKey): {
         label: 'ACCEPTED',
         description: 'The kitchen has accepted your order.',
       }
-    case 'preparing':
+    case 'ready':
       return {
         label: 'PREPARING',
         description: 'Your order is being prepared.',
-      }
-    case 'ready':
-      return {
-        label: 'READY',
-        description: 'Your order is ready.',
       }
     case 'ready_for_terminal':
       return {

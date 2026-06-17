@@ -107,10 +107,10 @@ function getReceiptStatusBadge(order: OrderRecord): { label: string; className: 
   if (payment === 'pending') {
     return { label: 'PENDING', className: 'bg-yellow-100 text-yellow-800' }
   }
-  if (status === 'accepted' || status === 'preparing') {
-    return { label: status.toUpperCase(), className: 'bg-orange-100 text-orange-800' }
+  if (status === 'accepted' || status === 'ready') {
+    return { label: status === 'accepted' ? 'ACCEPTED' : 'PREPARING', className: 'bg-orange-100 text-orange-800' }
   }
-  if (status === 'new') {
+  if (status === 'pending') {
     return { label: 'NEW', className: 'bg-muted text-foreground' }
   }
   return { label: (order.status || 'unknown').toUpperCase(), className: 'bg-muted text-foreground' }

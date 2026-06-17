@@ -65,13 +65,13 @@ export default function MyOrdersPage() {
 
   const getStatusConfig = (status: string) => {
     const configs: any = {
-      new: { emoji: '🎉', label: 'New' },
+      pending: { emoji: '🎉', label: 'New' },
       accepted: { emoji: '👨‍🍳', label: 'Accepted' },
       preparing: { emoji: '🔥', label: 'Preparing' },
       ready: { emoji: '✅', label: 'Ready' },
       completed: { emoji: '✨', label: 'Completed' },
     }
-    return configs[status] || configs.new
+    return configs[status] || configs.pending
   }
 
   const getTotalSpent = () => {

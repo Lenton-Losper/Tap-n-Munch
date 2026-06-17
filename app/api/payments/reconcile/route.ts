@@ -154,7 +154,7 @@ export async function POST(req: Request) {
     for (const { orderId, data } of rows) {
       const currentStatusRaw = String(data.status || '')
       const nextStatus =
-        currentStatusRaw === 'new' || currentStatusRaw === 'pending' ? 'accepted' : currentStatusRaw || 'accepted'
+        currentStatusRaw === 'pending' ? 'accepted' : currentStatusRaw || 'accepted'
       const patch = { status: nextStatus, payment_status: 'paid', paycloud_transaction_id: transId }
       const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
       if (error) throw error

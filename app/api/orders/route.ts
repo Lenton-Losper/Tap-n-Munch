@@ -134,7 +134,7 @@ export async function POST(req: Request) {
         payment_method: resolvedPaymentMethod,
         payment_channel: resolvedPaymentChannel,
         payment_status: paymentStatus,
-        status: 'new',
+        status: 'pending',
         subtotal: subtotal || 0,
         total: total || 0,
         items: items || [],

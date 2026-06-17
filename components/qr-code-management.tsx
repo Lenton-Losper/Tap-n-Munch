@@ -31,7 +31,7 @@ type OpenOrderRow = {
   payment_status?: string | null
 }
 
-const ACTIVE_STATUSES = new Set(['new', 'accepted', 'preparing', 'ready', 'ready_for_terminal'])
+const ACTIVE_STATUSES = new Set(['pending', 'accepted', 'ready', 'ready_for_terminal'])
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled'])
 
 function computeTableStatus(orders: OpenOrderRow[]): TableLiveStatus {

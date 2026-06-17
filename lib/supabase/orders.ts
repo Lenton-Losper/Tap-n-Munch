@@ -40,7 +40,7 @@ export async function createSupabaseOrder(data: {
     .from('orders')
     .insert({
       ...data,
-      status: data.status || 'new',
+      status: data.status || 'pending',
       payment_status: data.payment_status || 'pending',
       placed_at: new Date().toISOString(),
     })
@@ -68,13 +68,6 @@ export async function getSupabaseOrdersByStatus(
   scopeOverride?: OrderRestaurantScope | null
 ) {
   const scope = scopeOverride ?? (await resolveOrderRestaurantScope(restaurantId))
-  console.log('[ORDERS] getSupabaseOrdersByStatus query', {
-    inputRestaurantId: scope.input,
-    supabaseUuid: scope.supabaseUuid,
-    firebaseRestaurantId: scope.firebaseRestaurantId,
-    status,
-    isClosed: false,
-  })
   const { data, error } = await supabase
     .from('orders')
     .select('*')
@@ -86,10 +79,8 @@ export async function getSupabaseOrdersByStatus(
       nullsFirst: false,
     })
   if (error) {
-    console.error('[ORDERS] getSupabaseOrdersByStatus error', error)
     throw error
   }
-  console.log('[ORDERS] getSupabaseOrdersByStatus result count', data?.length ?? 0)
   return data ?? []
 }
 
@@ -185,7 +176,6 @@ export async function getPendingHostedOrders(
     .eq('is_closed', false)
     .order('placed_at', { ascending: false })
   if (error) {
-    console.error('[ORDERS] getPendingHostedOrders error', error)
     throw error
   }
   return data ?? []
@@ -204,10 +194,8 @@ export async function getAllOpenRestaurantOrders(
     .eq('is_closed', false)
     .order('placed_at', { ascending: false })
   if (error) {
-    console.error('[ORDERS] getAllOpenRestaurantOrders error', error)
     throw error
   }
-  console.log('[ORDERS] getAllOpenRestaurantOrders count', data?.length ?? 0)
   return data ?? []
 }
 
@@ -230,8 +218,16 @@ export function subscribeRestaurantOrdersRealtime(
   },
   scopeOverride?: OrderRestaurantScope | null
 ) {
-  let removeChannel: (() => void) | undefined
+  let channel: ReturnType<typeof supabase.channel> | null = null
   let cancelled = false
+
+  const cleanup = () => {
+    cancelled = true
+    if (channel) {
+      supabase.removeChannel(channel)
+      channel = null
+    }
+  }
 
   const setup = async () => {
     const scope =
@@ -243,14 +239,14 @@ export function subscribeRestaurantOrdersRealtime(
       const orders = await getAllOpenRestaurantOrders(restaurantId, scope)
       if (!cancelled) callbacks.onInitial(orders)
     } catch (error) {
-      console.error('[ORDERS] subscribeRestaurantOrdersRealtime initial load failed', error)
+      console.error(error)
       if (!cancelled) callbacks.onInitial([])
     }
 
     if (cancelled) return
 
     const channelName = `orders-channel-${scope.firebaseRestaurantId}`
-    const channel = supabase.channel(channelName)
+    const nextChannel = supabase.channel(channelName)
 
     const onOrderChange = (payload: {
       eventType?: string
@@ -261,13 +257,6 @@ export function subscribeRestaurantOrdersRealtime(
       const eventType = payload.eventType
       if (eventType !== 'INSERT' && eventType !== 'UPDATE' && eventType !== 'DELETE') return
 
-      console.log('[ORDERS] realtime event', {
-        eventType,
-        orderId: payload.new?.id ?? payload.old?.id,
-        status: payload.new?.status,
-        payment_status: payload.new?.payment_status,
-      })
-
       callbacks.onChange({
         eventType,
         new: (payload.new as Record<string, unknown> | undefined) ?? null,
@@ -275,7 +264,7 @@ export function subscribeRestaurantOrdersRealtime(
       })
     }
 
-    channel.on(
+    nextChannel.on(
       'postgres_changes',
       {
         event: '*',
@@ -286,20 +275,21 @@ export function subscribeRestaurantOrdersRealtime(
       onOrderChange
     )
 
-    channel.subscribe((status, err) => {
-      console.log('[ORDERS] realtime channel status', { channelName, status, error: err?.message })
+    nextChannel.subscribe((status) => {
       callbacks.onStatus?.(status)
     })
 
-    removeChannel = () => supabase.removeChannel(channel)
+    if (cancelled) {
+      supabase.removeChannel(nextChannel)
+      return
+    }
+
+    channel = nextChannel
   }
 
   void setup().catch(console.error)
 
-  return () => {
-    cancelled = true
-    removeChannel?.()
-  }
+  return cleanup
 }
 
 // SUBSCRIBE TO ORDERS BY STATUS (realtime)
@@ -349,14 +339,6 @@ function subscribeRestaurantOrders(
 
     if (cancelled) return
 
-    console.log('[ORDERS] subscribeRestaurantOrders', {
-      inputRestaurantId: scope.input,
-      supabaseUuid: scope.supabaseUuid,
-      firebaseRestaurantId: scope.firebaseRestaurantId,
-      channelSuffix,
-      realtimeFilter: `firebase_restaurant_id=eq.${scope.firebaseRestaurantId}`,
-    })
-
     const refetchOrders = () => {
       if (cancelled) return
       fetchOrders(scope)
@@ -372,13 +354,7 @@ function subscribeRestaurantOrders(
     const channelName = `orders-${scope.firebaseRestaurantId}-${channelSuffix}`
     const channel = supabase.channel(channelName)
 
-    const onOrderChange = (payload: { eventType?: string; new?: Record<string, unknown> }) => {
-      if (payload.eventType === 'UPDATE' && payload.new?.customer_ready_to_pay === true) {
-        console.log('[ORDERS] customer_ready_to_pay UPDATE received', {
-          orderId: payload.new?.id,
-          channelSuffix,
-        })
-      }
+    const onOrderChange = (_payload: { eventType?: string; new?: Record<string, unknown> }) => {
       refetchOrders()
     }
 
@@ -463,7 +439,6 @@ export async function updateOrderStatus(restaurantId: string, orderId: string, s
   const scope = await resolveOrderRestaurantScope(restaurantId)
   const patch: Record<string, any> = { status, updated_at: new Date().toISOString() }
   if (status === 'accepted') patch.accepted_at = new Date().toISOString()
-  if (status === 'preparing') patch.preparing_at = new Date().toISOString()
   if (status === 'ready') patch.ready_at = new Date().toISOString()
   if (status === 'completed') patch.completed_at = new Date().toISOString()
   const { error } = await createServerSupabaseClient()

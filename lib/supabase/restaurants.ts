@@ -166,7 +166,6 @@ export async function resolveOrderRestaurantScope(
     supabaseUuid,
     firebaseRestaurantId,
   }
-  console.log('[ORDERS] resolveOrderRestaurantScope', scope)
   return scope
 }
 

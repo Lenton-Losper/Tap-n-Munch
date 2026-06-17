@@ -1,0 +1,11 @@
+export const RIVIERA_ID = '01bf27f1-a958-4322-bb3e-cc5240987808';
+export const SWEET_SIDE_ID = '01c25795-3cf7-4f94-bd86-ccc302f88a3f';
+export const MINT_LEAF_ID = '13f496c9-0621-4203-9379-e9caad5695ef';
+export const RIVIERA_MERCHANT = '342400001004';
+export const RIVIERA_STORE = '4424000013';
+export const P5_TERMINAL_SN = 'd65e2c61ceefa734';
+export const DEV_PHONE_SN = '0ccdbf19965fecb6';
+export const SHARED_CHECKOUT_MERCHANT = '342600032359';
+export const SHARED_CHECKOUT_STORE = '4426010221';
+export const VALID_ORDER_STATUSES = ['pending', 'accepted', 'ready', 'completed', 'cancelled', 'PENDING', 'ACCEPTED', 'READY', 'COMPLETE', 'CANCELLED'];
+export const VALID_SETTLED_TYPES = ['cash', 'card', 'split', 'qr', 'manual_close'];

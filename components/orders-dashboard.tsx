@@ -1,7 +1,7 @@
 // @ts-nocheck
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import {
   extractFirebaseRestaurantId,
@@ -9,7 +9,7 @@ import {
   resolveOrderRestaurantScope,
   type OrderRestaurantScope,
 } from '@/lib/supabase/restaurants'
-import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
+import { subscribeRestaurantOrdersRealtime, getAllOpenRestaurantOrders } from '@/lib/supabase/orders'
 import {
   applyOrderRealtimeEvent,
   countPendingHostedOrders,
@@ -36,15 +36,22 @@ type TerminalStatus = 'pending' | 'failed' | null
 
 // PART 2: Standardize Order Status Model
 type OrderStatus =
-  | 'new'
+  | 'pending'
   | 'accepted'
-  | 'preparing'
   | 'ready'
   | 'ready_for_terminal'
   | 'completed'
   | 'cancelled'
 
-type DashboardTabId = OrderStatus | 'pending_payment'
+/** Dashboard tab ids (UI) may differ from Supabase order status values. */
+type DashboardTabId = 'new' | 'pending_payment' | 'accepted' | 'preparing' | 'ready' | 'completed'
+
+function supabaseStatusForTab(tab: DashboardTabId): string | null {
+  if (tab === 'pending_payment') return null
+  if (tab === 'new') return 'pending'
+  if (tab === 'preparing') return 'ready'
+  return tab
+}
 type Order = Record<string, any> & {
   id: string
   status: string
@@ -138,6 +145,8 @@ export function OrdersDashboard() {
   const { user, restaurantId, restaurant } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
+  const toastRef = useRef(toast)
+  toastRef.current = toast
   const [activeTab, setActiveTab] = useState<DashboardTabId>('new')
   const [pendingHostedCount, setPendingHostedCount] = useState(0)
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
@@ -160,7 +169,9 @@ export function OrdersDashboard() {
     restaurant as Record<string, unknown> | null
   )
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
-  const [refetchTick, setRefetchTick] = useState(0)
+  const orderScopeRef = useRef<OrderRestaurantScope | null>(null)
+  const subscribedRestaurantIdRef = useRef<string | null>(null)
+  orderScopeRef.current = orderScope
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -233,7 +244,7 @@ export function OrdersDashboard() {
         if (!cancelled) setOrderScope(scope)
       })
       .catch((err) => {
-        console.error('[DASHBOARD] failed to resolve order restaurant scope', err)
+        console.error(err)
         if (!cancelled) setOrderScope(null)
       })
     return () => {
@@ -241,80 +252,97 @@ export function OrdersDashboard() {
     }
   }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurant])
 
-  useEffect(() => {
-    if (!dashboardRestaurantId) return
-    console.log('[DASHBOARD] restaurant id sources', {
-      dashboardRestaurantId,
-      dashboardFirebaseRestaurantId,
-      authRestaurantId: restaurantId,
-      restaurantRowId: (restaurant as { id?: string } | null)?.id ?? null,
-      firebase_id: (restaurant as { firebase_id?: string } | null)?.firebase_id ?? null,
-      firebase_restaurant_id:
-        (restaurant as { firebase_restaurant_id?: string } | null)?.firebase_restaurant_id ?? null,
-      orderScope,
-    })
-  }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurantId, restaurant, orderScope])
-
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   useEffect(() => {
     if (!user) {
-      console.log('⚠️ Dashboard: User not authenticated')
       setLoading(false)
       return
     }
 
-    if (!dashboardRestaurantId || !orderScope) {
-      console.log('⚠️ Dashboard: No restaurant scope available for orders')
+    if (!dashboardRestaurantId) {
       setLoading(false)
       return
     }
 
-    setLoading(true)
+    if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
+      return
+    }
 
-    console.log('[DASHBOARD] realtime subscribe', {
-      firebaseRestaurantId: orderScope.firebaseRestaurantId,
-    })
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
 
-    const unsubscribe = subscribeRestaurantOrdersRealtime(
-      dashboardRestaurantId,
-      {
-        onInitial: (incoming) => {
-          const list = Array.isArray(incoming) ? (incoming as Order[]) : []
-          setAllOrders(list)
-          setPendingHostedCount(countPendingHostedOrders(list))
-          setLoading(false)
-        },
-        onChange: (payload) => {
-          setAllOrders((prev) => {
-            const next = applyOrderRealtimeEvent(prev, payload)
-            setPendingHostedCount(countPendingHostedOrders(next))
-            return next
+    const start = async () => {
+      let scope = orderScopeRef.current
+      if (!scope) {
+        try {
+          scope = await resolveOrderRestaurantScope(dashboardRestaurantId, {
+            firebaseRestaurantId: dashboardFirebaseRestaurantId || undefined,
           })
+        } catch (err) {
+          console.error(err)
+          if (!cancelled) setLoading(false)
+          return
+        }
+      }
 
-          if (payload.eventType === 'INSERT') {
-            const row = payload.new as Order | null
-            if (row && String(row.status || '').toLowerCase() === 'new') {
-              playNewOrderSound()
-              toast({
-                title: 'New order',
-                description: `Order #${row.order_number ?? '?'} — Table ${row.table_number ?? '?'}`,
-              })
+      if (cancelled || !scope) return
+
+      if (subscribedRestaurantIdRef.current === dashboardRestaurantId) return
+      subscribedRestaurantIdRef.current = dashboardRestaurantId
+
+      setLoading(true)
+
+      unsubscribe = subscribeRestaurantOrdersRealtime(
+        dashboardRestaurantId,
+        {
+          onInitial: (incoming) => {
+            if (cancelled) return
+            const list = Array.isArray(incoming) ? (incoming as Order[]) : []
+            setAllOrders(list)
+            setPendingHostedCount(countPendingHostedOrders(list))
+            setLoading(false)
+          },
+          onChange: (payload) => {
+            if (cancelled) return
+            setAllOrders((prev) => {
+              const next = applyOrderRealtimeEvent(prev, payload)
+              setPendingHostedCount(countPendingHostedOrders(next))
+              return next
+            })
+
+            if (payload.eventType === 'INSERT') {
+              const row = payload.new as Order | null
+              if (row && String(row.status || '').toLowerCase() === 'pending') {
+                playNewOrderSound()
+                toastRef.current({
+                  title: 'New order',
+                  description: `Order #${row.order_number ?? '?'} — Table ${row.table_number ?? '?'}`,
+                })
+              }
             }
-          }
+          },
         },
-        onStatus: (status) => {
-          if (status === 'CHANNEL_ERROR') {
-            console.error('[DASHBOARD] Realtime channel error')
-          }
-        },
-      },
-      orderScope
-    )
+        scope
+      )
+
+      if (cancelled) {
+        unsubscribe()
+        if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
+          subscribedRestaurantIdRef.current = null
+        }
+      }
+    }
+
+    void start()
 
     return () => {
-      unsubscribe()
+      cancelled = true
+      if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
+        subscribedRestaurantIdRef.current = null
+      }
+      unsubscribe?.()
     }
-  }, [user, dashboardRestaurantId, orderScope, refetchTick, toast])
+  }, [user, dashboardRestaurantId])
 
   const mergedSourceOrders = useMemo(() => {
     if (activeTab === 'pending_payment') {
@@ -326,21 +354,23 @@ export function OrdersDashboard() {
     }
     if (activeTab === 'new') {
       return allOrders.filter(
-        (order) => order.status === 'new' || order.status === 'ready_for_terminal'
+        (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
       )
     }
-    return allOrders.filter((order) => order.status === activeTab)
+    const mappedStatus = supabaseStatusForTab(activeTab)
+    if (!mappedStatus) return []
+    return allOrders.filter((order) => order.status === mappedStatus)
   }, [activeTab, allOrders])
 
   const tabCounts = useMemo(() => {
     const newCandidates = allOrders.filter(
-      (order) => order.status === 'new' || order.status === 'ready_for_terminal'
+      (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
     )
     return {
       pending_payment: countPendingHostedOrders(allOrders),
       new: newCandidates.length,
       accepted: allOrders.filter((order) => order.status === 'accepted').length,
-      preparing: allOrders.filter((order) => order.status === 'preparing').length,
+      preparing: allOrders.filter((order) => order.status === 'ready').length,
       ready: allOrders.filter((order) => order.status === 'ready').length,
       completed: allOrders.filter((order) => order.status === 'completed').length,
     } as Record<DashboardTabId, number>
@@ -350,30 +380,6 @@ export function OrdersDashboard() {
     if (!user || !dashboardRestaurantId) return
 
     const newOrders = mergedSourceOrders
-
-    newOrders.forEach((order) => {
-      const tabId = (order as Order & { tab_id?: string }).tab_id
-      if (order.payment_status === 'paid' && order.status === 'new') {
-        console.warn('[OrdersDashboard] PAID but workflow status still NEW (e.g. webhook missed accepted):', {
-          id: order.id,
-          order_number: order.order_number,
-          payment_method: order.payment_method,
-          tab_id: tabId ?? null,
-          has_tab: Boolean(tabId),
-        })
-      }
-      if (Number(order.order_number) === 64) {
-        console.log('[OrdersDashboard] trace order #64:', {
-          id: order.id,
-          order_number: order.order_number,
-          status: order.status,
-          payment_status: order.payment_status,
-          tab_id: tabId ?? null,
-          activeTab,
-          passes_shouldDisplay: shouldDisplayOrder(order),
-        })
-      }
-    })
 
     const visibleOrders = newOrders.filter((order) => {
       if (activeTab === 'pending_payment') {
@@ -437,25 +443,7 @@ export function OrdersDashboard() {
     const sorted =
       activeTab === 'pending_payment' ? visibleOrders : sortOrdersForTab(visibleOrders)
 
-    console.log('📦 Dashboard: Received', newOrders.length, 'merged orders for status:', activeTab)
-    if (sorted.length > 0) {
-      console.log('📦 Dashboard: First order details:', {
-        id: sorted[0].id,
-        order_number: sorted[0].order_number,
-        status: sorted[0].status,
-        restaurant_id: sorted[0].restaurant_id,
-        table_number: sorted[0].table_number,
-      })
-    }
     setOrders(sorted)
-
-    if (activeTab === 'new' && sorted.length === 0) {
-      console.log('⚠️ Dashboard: No orders found for status:', activeTab)
-      console.log('⚠️ Dashboard: Query parameters:', {
-        restaurantId: dashboardRestaurantId,
-        status: activeTab,
-      })
-    }
   }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
 
   const refreshPendingHostedCount = useCallback(async () => {
@@ -525,11 +513,6 @@ export function OrdersDashboard() {
     const actionKey = orderActionKey(orderId, newStatus)
     if (statusUpdateKey) return
 
-    console.log('🔄 [DASHBOARD] Updating order status to:', newStatus, {
-      orderId,
-      restaurantId: dashboardRestaurantId,
-    })
-
     setStatusUpdateKey(actionKey)
     try {
       const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
@@ -541,7 +524,6 @@ export function OrdersDashboard() {
       if (!response.ok) {
         throw new Error(data?.error || 'Failed to update order status')
       }
-      console.log('✅ [DASHBOARD] Order status updated successfully')
       const timestampField = `${newStatus}_at`
       setAllOrders((prev) =>
         prev.map((order) =>
@@ -555,14 +537,7 @@ export function OrdersDashboard() {
         description: `Order status changed to ${newStatus}`,
       })
     } catch (error: any) {
-      console.error('❌ [DASHBOARD] Failed to update order status:', {
-        orderId,
-        restaurantId: dashboardRestaurantId,
-        newStatus,
-        errorCode: error.code,
-        errorMessage: error.message,
-        errorStack: error.stack,
-      })
+      console.error(error)
       toast({
         title: 'Update failed',
         description: error.message || 'Failed to update order status',
@@ -630,13 +605,7 @@ export function OrdersDashboard() {
         setAllOrders(revert)
       }
 
-      console.error('❌ [DASHBOARD] Failed to mark order as paid:', {
-        orderId,
-        restaurantId: dashboardRestaurantId,
-        errorCode: error.code,
-        errorMessage: error.message,
-        errorStack: error.stack,
-      })
+      console.error(error)
       toast({
         title: 'Failed to mark as paid',
         description: error.message || 'Failed to update payment status',
@@ -825,16 +794,11 @@ export function OrdersDashboard() {
       setShowCloseTableDialog(false)
       setCloseTableTargetNumber(null)
     } catch (error: any) {
-      console.error('❌ [CLOSE TABLE] Error closing table:', {
-        error: error.message,
-        code: error.code,
-        tableNumber,
-        restaurantId: dashboardRestaurantId,
-      })
+      console.error(error)
 
       toast({
         title: 'Failed to close table',
-        description: error.message || 'Failed to close table. Please check console for details.',
+        description: error.message || 'Failed to close table.',
         variant: 'destructive',
       })
     } finally {
@@ -934,13 +898,11 @@ export function OrdersDashboard() {
     } else if (typeof timestamp === 'number') {
       date = new Date(timestamp)
     } else {
-      console.warn('⚠️ [TIMER] Invalid timestamp format:', timestamp)
       return 'Just now'
     }
     
     // Validate the date
     if (isNaN(date.getTime())) {
-      console.warn('⚠️ [TIMER] Invalid date value:', timestamp)
       return 'Just now'
     }
     
@@ -962,7 +924,7 @@ export function OrdersDashboard() {
 
   const getStatusColor = (status: OrderStatus) => {
     switch (status) {
-      case 'new':
+      case 'pending':
         return 'border-red-500'
       case 'accepted':
         return 'border-blue-500'
@@ -983,7 +945,7 @@ export function OrdersDashboard() {
 
   const getStatusBadge = (status: OrderStatus) => {
     switch (status) {
-      case 'new':
+      case 'pending':
         return <Badge variant="destructive">New</Badge>
       case 'accepted':
         return <Badge className="bg-blue-500">Accepted</Badge>
@@ -1036,7 +998,19 @@ export function OrdersDashboard() {
             size="icon"
             onClick={() => {
               setLoading(true)
-              setRefetchTick((tick) => tick + 1)
+              const scope = orderScopeRef.current
+              if (!dashboardRestaurantId || !scope) {
+                setLoading(false)
+                return
+              }
+              void getAllOpenRestaurantOrders(dashboardRestaurantId, scope)
+                .then((incoming) => {
+                  const list = Array.isArray(incoming) ? (incoming as Order[]) : []
+                  setAllOrders(list)
+                  setPendingHostedCount(countPendingHostedOrders(list))
+                })
+                .catch((err) => console.error(err))
+                .finally(() => setLoading(false))
             }}
           >
             <RefreshCw className="h-5 w-5" />
@@ -1400,7 +1374,7 @@ export function OrdersDashboard() {
 
                 {/* Action Buttons */}
                 <div className="flex gap-3 pt-2">
-                  {(normalizedOrder.status === 'new' || normalizedOrder.status === 'ready_for_terminal') && (
+                  {(normalizedOrder.status === 'pending' || normalizedOrder.status === 'ready_for_terminal') && (
                     <>
                       <Button
                         variant="outline"
@@ -1432,27 +1406,13 @@ export function OrdersDashboard() {
                   {normalizedOrder.status === 'accepted' && (
                     <Button
                       className="flex-1 bg-blue-500 hover:bg-blue-600"
-                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'preparing')}
-                      disabled={isOrderStatusBusy(normalizedOrder.id)}
-                    >
-                      <ActionButtonContent
-                        loading={isStatusUpdating(normalizedOrder.id, 'preparing')}
-                        icon={ChefHat}
-                        label="Start Preparing"
-                        loadingLabel="Updating..."
-                      />
-                    </Button>
-                  )}
-                  {normalizedOrder.status === 'preparing' && (
-                    <Button
-                      className="flex-1 bg-orange-500 hover:bg-orange-600"
                       onClick={() => handleStatusUpdate(normalizedOrder.id, 'ready')}
                       disabled={isOrderStatusBusy(normalizedOrder.id)}
                     >
                       <ActionButtonContent
                         loading={isStatusUpdating(normalizedOrder.id, 'ready')}
-                        icon={Package}
-                        label="Mark as Ready"
+                        icon={ChefHat}
+                        label="Start Preparing"
                         loadingLabel="Updating..."
                       />
                     </Button>

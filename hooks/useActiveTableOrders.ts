@@ -54,7 +54,7 @@ export function useActiveTableOrders(): {
         .select('*')
         .eq('restaurant_id', restaurantId)
         .eq('session_id', tableSessionId)
-        .in('status', ['pending', 'accepted', 'preparing', 'ready'])
+        .in('status', ['pending', 'accepted', 'ready'])
         .order('created_at', { ascending: false })
       if (error) {
         setError(error.message || 'Failed to load orders')
