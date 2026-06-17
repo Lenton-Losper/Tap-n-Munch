@@ -3,7 +3,6 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
-import { CacheKeys, redis, TTL } from '@/lib/redis'
 import { requireSessionToken } from '@/lib/session-guard'
 
 export const dynamic = 'force-dynamic'
@@ -13,7 +12,6 @@ export async function POST(req: Request) {
 
   try {
     const t0 = performance.now()
-    const idempotencyKey = req.headers.get('x-idempotency-key')?.trim() || ''
 
     const body = await req.json()
     const { tableNumber, ...rest } = body
@@ -42,33 +40,6 @@ export async function POST(req: Request) {
     const orderRestaurantScope = await resolveOrderRestaurantScope(restaurantId)
 
     const normalizedTableNumber = Number(tableNumber) || 0
-    const rateLimitKey = CacheKeys.rateLimit(restaurantId, normalizedTableNumber)
-    try {
-      const count = await redis.incr(rateLimitKey)
-      if (count === 1) {
-        await redis.expire(rateLimitKey, TTL.RATE_LIMIT)
-      }
-      if (count > 10) {
-        console.warn('[RATE LIMIT] Too many orders from table:', normalizedTableNumber)
-        return NextResponse.json({ error: 'Too many orders. Please wait a moment.' }, { status: 429 })
-      }
-    } catch (err) {
-      console.error('[RATE LIMIT] Redis error, skipping rate limit:', err)
-    }
-
-    if (idempotencyKey) {
-      const t1 = performance.now()
-      try {
-        const existing = await redis.get(CacheKeys.idempotency(idempotencyKey))
-        if (existing) {
-          console.log('[ORDERS] Duplicate request blocked via Redis:', idempotencyKey)
-          return NextResponse.json(typeof existing === 'string' ? JSON.parse(existing) : existing)
-        }
-      } catch (err) {
-        console.error('[ORDERS] Redis idempotency check failed:', err)
-      }
-      console.log(`[ORDERS TIMING] idempotency check: ${(performance.now() - t1).toFixed(0)}ms`)
-    }
 
     const normalizedTabId = tabId ? String(tabId).trim() : ''
     const isTabOrder = Boolean(normalizedTabId)
@@ -177,51 +148,12 @@ export async function POST(req: Request) {
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
         order_number: orderNumber,
         placed_at: new Date().toISOString(),
-        idempotency_key: idempotencyKey || null,
       })
       .select('id, restaurant_id, order_number, payment_status, total')
       .single()
     console.log(`[ORDERS TIMING] order insert: ${(performance.now() - t2).toFixed(0)}ms`)
 
     if (orderError) {
-      if (orderError.code === '23505' && idempotencyKey) {
-        const { data: existingOrder } = await supabase
-          .from('orders')
-          .select(
-            'id, order_number, total, payment_status, payment_channel, payment_checkout_url, paycloud_merchant_order_no'
-          )
-          .eq('idempotency_key', idempotencyKey)
-          .maybeSingle()
-        if (existingOrder) {
-          try {
-            await redis.setex(
-              CacheKeys.idempotency(idempotencyKey),
-              TTL.IDEMPOTENCY,
-              JSON.stringify({
-                success: true,
-                orderId: existingOrder.id,
-                orderNumber: existingOrder.order_number,
-                paymentStatus: existingOrder.payment_status,
-                checkoutUrl: existingOrder.payment_checkout_url,
-                merchantOrderNo: existingOrder.paycloud_merchant_order_no,
-                duplicate: true,
-              })
-            )
-          } catch (err) {
-            console.error('[ORDERS] Failed to store idempotency key in Redis:', err)
-          }
-          console.log('[ORDERS] Insert race resolved, returning existing order:', existingOrder.id)
-          return NextResponse.json({
-            success: true,
-            orderId: existingOrder.id,
-            orderNumber: existingOrder.order_number,
-            paymentStatus: existingOrder.payment_status,
-            checkoutUrl: existingOrder.payment_checkout_url,
-            merchantOrderNo: existingOrder.paycloud_merchant_order_no,
-            duplicate: true,
-          })
-        }
-      }
       console.error('[ORDERS] Supabase insert error:', orderError)
       return NextResponse.json({ error: orderError.message }, { status: 500 })
     }
@@ -343,14 +275,6 @@ export async function POST(req: Request) {
       paymentStatus,
       checkoutUrl,
       merchantOrderNo,
-    }
-
-    if (idempotencyKey) {
-      try {
-        await redis.setex(CacheKeys.idempotency(idempotencyKey), TTL.IDEMPOTENCY, JSON.stringify(successPayload))
-      } catch (err) {
-        console.error('[ORDERS] Failed to store idempotency key in Redis:', err)
-      }
     }
 
     console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
