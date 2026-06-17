@@ -688,7 +688,10 @@ export default function MenuBrowsePage() {
                             disabled={
                               item.status === 'out_of_stock' ||
                               addingItemId === item.id ||
-                              isRequiredVariantMissing(item, getResolvedVariantSelection(item))
+                              isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
+                              ['settled', 'closed', 'completed', 'cancelled'].includes(
+                                String(tabStatus ?? '').toLowerCase()
+                              )
                             }
                             size="sm"
                             className="h-11 bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90"

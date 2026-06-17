@@ -137,6 +137,10 @@ export async function POST(
     }
   }
 
+  if (tableId) {
+    await supabase.from('restaurant_tables').update({ status: 'available' }).eq('id', tableId)
+  }
+
   const { error: remainingOrdersError } = await supabase
     .from('orders')
     .update({

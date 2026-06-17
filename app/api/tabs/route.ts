@@ -100,6 +100,8 @@ export async function POST(req: Request) {
 
     console.log('[TABS] tab created successfully', newTab)
 
+    await supabase.from('restaurant_tables').update({ status: 'occupied' }).eq('id', tableRow.id)
+
     return NextResponse.json({
       success: true,
       tabId: newTab.id,

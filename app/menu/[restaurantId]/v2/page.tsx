@@ -182,29 +182,15 @@ export function MenuLandingPageV2Content({
     const storedId = readStoredTabId()
 
     if (storedId) {
-      const { count: openTableOrders, error: openOrdersError } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', restaurantUuid)
-        .eq('table_number', tableNum)
-        .eq('is_closed', false)
-        .not('status', 'in', '("completed","cancelled")')
-
-      if (!openOrdersError && (openTableOrders || 0) === 0) {
-        try {
-          const tab = await fetchTabById(storedId, restaurantUuid)
-          if (
-            !tab ||
-            isTabSessionEndedStatus(tab.status) ||
-            String(tab.status || '').toLowerCase() === 'ready_to_pay'
-          ) {
-            endTabSession(true)
-            setStoredTabChecked(true)
-            return
-          }
-        } catch (err) {
-          console.warn('[V2] open-order tab check failed', err)
+      try {
+        const tab = await fetchTabById(storedId, restaurantUuid)
+        if (!tab || isTabSessionEndedStatus(tab.status)) {
+          endTabSession(true)
+          setStoredTabChecked(true)
+          return
         }
+      } catch (err) {
+        console.warn('[V2] stored tab validation failed', err)
       }
     }
 

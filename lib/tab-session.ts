@@ -22,7 +22,7 @@ export function isActiveTabStatus(status: string | null | undefined): boolean {
 /** Tab no longer accepts orders (staff closed table or settlement finished). */
 export function isTabSessionEndedStatus(status: string | null | undefined): boolean {
   const s = String(status || '').toLowerCase()
-  return s === 'closed' || s === 'completed' || s === 'settled'
+  return s === 'settled' || s === 'closed' || s === 'completed' || s === 'cancelled'
 }
 
 export function shouldShowTabPaymentThanks(tab: TabRow | null | undefined): boolean {
