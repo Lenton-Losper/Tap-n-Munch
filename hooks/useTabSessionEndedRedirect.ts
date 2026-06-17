@@ -1,21 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import { useTab } from '@/contexts/tab-context'
 import {
   fetchTabById,
   isTabSessionEndedStatus,
-  landingPath,
   type TabRow,
 } from '@/lib/tab-session'
-import {
-  clearTabSession,
-  readStoredTableNumber,
-  setSessionEndedNotice,
-  clearActiveOrderBannerState,
-} from '@/lib/tab-storage'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 
 type Options = {
   restaurantId: string
@@ -32,8 +24,6 @@ export function useTabSessionEndedRedirect({
   enabled = true,
   onSessionEnded,
 }: Options) {
-  const router = useRouter()
-  const { clearTab } = useTab()
   const [redirecting, setRedirecting] = useState(false)
   const redirectedRef = useRef(false)
 
@@ -41,16 +31,8 @@ export function useTabSessionEndedRedirect({
     if (redirectedRef.current || !restaurantId) return
     redirectedRef.current = true
     setRedirecting(true)
-    setSessionEndedNotice()
-    clearTabSession()
-    clearActiveOrderBannerState()
-    clearTab()
-    onSessionEnded?.()
-
-    const resolvedTable =
-      tableNumber > 0 ? tableNumber : Number(readStoredTableNumber() || 0) || 0
-    router.replace(landingPath(restaurantId, resolvedTable > 0 ? resolvedTable : ''))
-  }, [restaurantId, tableNumber, clearTab, onSessionEnded, router])
+    handleSessionExpired(restaurantId)
+  }, [restaurantId])
 
   const evaluateTab = useCallback(
     (tab: TabRow | null) => {
