@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
-import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
+import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -125,7 +125,7 @@ export default function OrderSecurePage() {
       const cleanPayload = JSON.parse(JSON.stringify(payload))
       if (payload.session_id) cleanPayload.session_id = payload.session_id
 
-      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
+      const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: {
@@ -144,7 +144,7 @@ export default function OrderSecurePage() {
       const orderId = data.orderId as string | undefined
       if (!orderId) throw new Error('Order was created but no order ID was returned')
 
-      clearOrderIdempotencyKey()
+      clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
 
       const checkoutUrl = data.checkoutUrl as string | undefined
       if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')

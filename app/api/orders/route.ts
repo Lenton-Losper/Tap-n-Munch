@@ -12,6 +12,7 @@ export async function POST(req: Request) {
 
   try {
     const t0 = performance.now()
+    const idempotencyKey = req.headers.get('x-idempotency-key') || null
 
     const body = await req.json()
     const { tableNumber, ...rest } = body
@@ -148,12 +149,23 @@ export async function POST(req: Request) {
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
         order_number: orderNumber,
         placed_at: new Date().toISOString(),
+        idempotency_key: idempotencyKey,
       })
       .select('id, restaurant_id, order_number, payment_status, total')
       .single()
     console.log(`[ORDERS TIMING] order insert: ${(performance.now() - t2).toFixed(0)}ms`)
 
     if (orderError) {
+      if (orderError.code === '23505' && idempotencyKey) {
+        const { data: existing } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('idempotency_key', idempotencyKey)
+          .single()
+        if (existing?.id) {
+          return NextResponse.json({ success: true, orderId: existing.id })
+        }
+      }
       console.error('[ORDERS] Supabase insert error:', orderError)
       return NextResponse.json({ error: orderError.message }, { status: 500 })
     }

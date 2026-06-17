@@ -20,7 +20,7 @@ import { supabase } from '@/lib/supabase/client'
 import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
-import { clearOrderIdempotencyKey, getOrderIdempotencyKey } from '@/lib/order-idempotency'
+import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
 import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import { isActiveTabStatus } from '@/lib/tab-session'
 import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
@@ -240,7 +240,7 @@ export default function CartPage() {
         paymentChannel: null,
         orderInstructions: orderInstructions?.trim() || '',
       }
-      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
+      const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetchWithSession('/api/orders', restaurantId, {
         method: 'POST',
         headers: {
@@ -256,7 +256,7 @@ export default function CartPage() {
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
       console.log('[CART] add to tab success', data)
-      clearOrderIdempotencyKey()
+      clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       await refreshTab()
       if (typeof window !== 'undefined' && data?.orderId) {
         sessionStorage.setItem('last_order_id', String(data.orderId))
@@ -325,7 +325,7 @@ export default function CartPage() {
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
       }
-      const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
+      const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: {
@@ -340,7 +340,7 @@ export default function CartPage() {
       const orderId = data?.orderId as string | undefined
       if (!orderId) throw new Error('No order ID returned')
 
-      clearOrderIdempotencyKey()
+      clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('last_order_id', String(orderId))
         sessionStorage.setItem('flashtap_return_order_id', String(orderId))
