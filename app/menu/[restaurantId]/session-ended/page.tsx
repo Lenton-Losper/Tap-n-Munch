@@ -34,7 +34,7 @@ export default function SessionEndedPage() {
           Your dining session has ended
         </h1>
         <p className="text-sm text-white/60 max-w-xs font-sans leading-relaxed">
-          Please scan the QR code on your table to start a new order.
+          Please rescan the QR code on your table to start a new session and get a fresh token.
         </p>
       </div>
     </div>
