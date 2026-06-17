@@ -18,7 +18,16 @@ const SESSION_RESTAURANT_KEY = 'flashtap_session_restaurant_v1'
 export function createFreshSession(restaurantId: string, tableId: string): string | null {
   if (typeof window === 'undefined') return null
 
-  // Always generate new unique session ID
+  // Block session creation if a valid session token exists
+  // This prevents createFreshSession from overriding an active or recently-expired session
+  const existingToken = localStorage.getItem('flashtap_session_token') ||
+                        sessionStorage.getItem('flashtap_session_token')
+
+  if (existingToken) {
+    console.log('[SESSION] blocked createFreshSession — session token exists, letting server validation run')
+    return null
+  }
+
   const sessionId = `sess_${crypto.randomUUID()}`
   localStorage.setItem(SESSION_KEY, sessionId)
   localStorage.setItem(SESSION_TABLE_KEY, tableId)

@@ -18,8 +18,8 @@ import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 import {
-  clearTabAndGetLandingPath,
   fetchOrdersForTab,
   fetchTabById,
   isActiveTabStatus,
@@ -195,7 +195,7 @@ export default function ReceiptPage() {
     if (!storedTabId) {
       console.log('[RECEIPT] no tab_id in localStorage — redirect to landing')
       setRedirecting(true)
-      router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+      handleSessionExpired(restaurantId)
       return
     }
 
@@ -210,13 +210,13 @@ export default function ReceiptPage() {
         if (!tab || String(tab.status || '').toLowerCase() === 'settled') {
           console.log('[RECEIPT] tab missing or settled — redirect to landing', tab?.status)
           setRedirecting(true)
-          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          handleSessionExpired(restaurantId)
           return
         }
 
         if (!isActiveTabStatus(tab.status)) {
           setRedirecting(true)
-          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          handleSessionExpired(restaurantId)
           return
         }
 
@@ -239,7 +239,7 @@ export default function ReceiptPage() {
         if (cancelled) return
         console.error('[RECEIPT] validate/load error', error)
         setRedirecting(true)
-        router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+        handleSessionExpired(restaurantId)
       }
     }
 
@@ -253,7 +253,7 @@ export default function ReceiptPage() {
         () => {
           void fetchTabById(storedTabId, restaurantId).then((tab) => {
             if (!tab || String(tab.status || '').toLowerCase() === 'settled' || !isActiveTabStatus(tab.status)) {
-              router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+              handleSessionExpired(restaurantId)
               return
             }
             setTabRecord(tab)
@@ -366,7 +366,7 @@ export default function ReceiptPage() {
           {restaurantId && tableNumber && (
             <Button
               className="bg-foreground text-background hover:bg-foreground/90 font-sans"
-              onClick={() => router.replace(clearTabAndGetLandingPath(restaurantId, tableNumber))}
+              onClick={() => handleSessionExpired(restaurantId)}
             >
               Start over
             </Button>

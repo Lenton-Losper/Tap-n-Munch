@@ -9,8 +9,11 @@ import {
   persistTabSession,
   readStoredTabId,
   readStoredTableNumber,
+  SESSION_TOKEN_STORAGE_KEY,
 } from '@/lib/tab-storage'
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
+import { fetchWithSession } from '@/lib/fetch-with-session'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 
 const TAB_SESSION_KEY = 'tab_session_id'
 const LEGACY_TAB_SESSION_KEY = 'flashtap_tab_session_id'
@@ -227,30 +230,36 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     displayName?: string
   }) => {
     console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum })
-    const { data: tabData, error } = await supabase
-      .from('tabs')
-      .select('*')
-      .eq('id', targetTabId)
-      .eq('restaurant_id', rid)
-      .single()
-    if (error || !tabData) throw new Error('Tab not found')
-
     const sid = sessionId || ensureTabSessionId()
-    const members = Array.isArray(tabData.members) ? (tabData.members as TabMember[]) : []
-    if (!members.some((m) => String(m.session_id) === sid)) {
-      const nextN = members.length + 1
-      const member = {
-        session_id: sid,
-        joined_at: new Date().toISOString(),
-        display_name: displayName || `Person ${nextN}`,
-      }
-      const { error: updateError } = await supabase
-        .from('tabs')
-        .update({ members: [...members, member] })
-        .eq('id', targetTabId)
-      if (updateError) throw updateError
+
+    const response = await fetch(`/api/tabs/${encodeURIComponent(targetTabId)}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        restaurantId: rid,
+        sessionId: sid,
+        tableNumber: tableNum,
+        displayName,
+      }),
+    })
+
+    const data = await response.json().catch(() => ({}))
+    console.log('[TAB CONTEXT] joinExistingTab response', { ok: response.ok, status: response.status, data })
+    console.log('[TAB CONTEXT] joinExistingTab sessionToken', data?.sessionToken)
+    if (response.status === 410) {
+      handleSessionExpired(rid)
+      throw new Error('Your dining session has ended')
     }
-    persistTabId(targetTabId, tableNum ?? tabData.table_number)
+    if (!response.ok) {
+      throw new Error(data?.error || `Failed to join tab (${response.status})`)
+    }
+
+    if (data?.sessionToken) {
+      sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
+    }
+
+    persistTabId(targetTabId, tableNum ?? data?.tableNumber)
   }
 
   const createNewTab = async ({
@@ -278,8 +287,18 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     const data = await response.json().catch(() => ({}))
     console.log('[TAB CONTEXT] createNewTab response', { ok: response.ok, status: response.status, data })
 
+    if (response.status === 410) {
+      handleSessionExpired(rid)
+      throw new Error('Your dining session has ended')
+    }
+
     if (!response.ok) {
       throw new Error(data?.error || `Failed to create tab (${response.status})`)
+    }
+
+    if (data?.sessionToken) {
+      sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
     }
 
     const newTabId = String(data?.tabId || '').trim()
@@ -297,11 +316,15 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     if (tabStatus === 'ready_to_pay') {
       return
     }
-    const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ restaurantId }),
-    })
+    const res = await fetchWithSession(
+      `/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`,
+      restaurantId,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId }),
+      }
+    )
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(data?.error || 'Failed to notify waiter')
     setTabStatus('ready_to_pay')

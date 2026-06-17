@@ -4,6 +4,7 @@ import { createPaymentRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { requireSessionToken } from '@/lib/session-guard'
 
 export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
@@ -12,6 +13,7 @@ export async function POST(req: Request) {
     const body = await req.json()
     const restaurantId = String(body.restaurantId || '').trim()
     const tableNumber = Number(body.tableNumber)
+    const tabId = String(body.tabId ?? body.tab_id ?? '').trim()
     const orderIds: string[] = Array.isArray(body.orderIds)
       ? body.orderIds.map((id: unknown) => String(id).trim()).filter(Boolean)
       : []
@@ -36,6 +38,19 @@ export async function POST(req: Request) {
       .order('placed_at', { ascending: true })
 
     const byId = new Map((orders || []).map((o: { id: string }) => [String(o.id), o]))
+
+    const requiresSessionToken =
+      Boolean(tabId) ||
+      sortedOrderIds.some((orderId) => {
+        const row = byId.get(orderId) as { tab_id?: string | null } | undefined
+        return Boolean(row?.tab_id)
+      })
+
+    if (requiresSessionToken) {
+      const guard = await requireSessionToken(req)
+      if (guard.error) return guard.error
+    }
+
     let sum = 0
     for (const orderId of sortedOrderIds) {
       const data = byId.get(orderId) as Record<string, unknown> | undefined

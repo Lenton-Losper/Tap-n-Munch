@@ -2,6 +2,7 @@
 export const TAB_ID_STORAGE_KEY = 'flashtap_tab_id'
 export const TAB_TABLE_STORAGE_KEY = 'flashtap_table'
 export const TAB_SESSION_ENDED_NOTICE_KEY = 'flashtap_session_ended_notice'
+export const SESSION_TOKEN_STORAGE_KEY = 'flashtap_session_token'
 
 export const TAB_SESSION_ENDED_MESSAGE =
   'Your session has ended. Scan the QR code to start a new order.'
@@ -26,6 +27,7 @@ export function clearTabSession() {
   if (typeof window === 'undefined') return
   localStorage.removeItem(TAB_ID_STORAGE_KEY)
   localStorage.removeItem(TAB_TABLE_STORAGE_KEY)
+  sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY)
 }
 
 export function setSessionEndedNotice() {

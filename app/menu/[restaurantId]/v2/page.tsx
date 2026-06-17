@@ -29,8 +29,8 @@ import {
   readStoredTabId,
   consumeSessionEndedNotice,
   clearActiveOrderBannerState,
-  TAB_SESSION_ENDED_MESSAGE,
 } from '@/lib/tab-storage'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 
 export type MenuLandingPageV2ContentProps = {
@@ -74,13 +74,38 @@ export function MenuLandingPageV2Content({
   const { createNewTab, joinExistingTab, clearTab } = useTab()
 
   useEffect(() => {
+    console.log('[V2] page mounted, URL:', window.location.href)
+    console.log('[V2] token at mount:', localStorage.getItem('flashtap_session_token'))
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (sessionStorage.getItem('flashtap_session_expired') === 'true') {
+      window.location.replace(
+        window.location.hostname !== 'flashtap.app' &&
+        !window.location.hostname.includes('localhost') &&
+        !window.location.hostname.includes('vercel.app')
+          ? '/session-ended'
+          : `/menu/${restaurantId}/session-ended`
+      )
+      return
+    }
+  }, [restaurantId])
+
+  useEffect(() => {
     if (consumeSessionEndedNotice()) {
-      setSessionEndedNotice(true)
       clearActiveOrderBannerState()
       clearTab()
       clearCart()
+      if (restaurantId) handleSessionExpired(String(restaurantId))
     }
-  }, [clearTab, clearCart])
+  }, [clearTab, clearCart, restaurantId])
+
+  useEffect(() => {
+    if (sessionEndedNotice && restaurantId) {
+      handleSessionExpired(String(restaurantId))
+    }
+  }, [sessionEndedNotice, restaurantId])
 
   // Load restaurant data
   useEffect(() => {
@@ -113,28 +138,69 @@ export function MenuLandingPageV2Content({
 
     const loadTableData = async () => {
       try {
-        const tableData = await getSupabaseTableByNumber(restaurantId, tableNum, false).catch((err) => {
+        const tableData = await getSupabaseTableByNumber(
+          restaurantId,
+          tableNum,
+          false
+        ).catch((err) => {
           console.warn('[V2] table lookup failed', err)
           return null
         })
+
         if (!tableData) {
           setTable(null)
-        } else {
-          setTable(tableData)
-          const session = createFreshSession(restaurantId, String(tableNum))
-          if (session) {
-            setSessionId(session)
-            setSessionReady(true)
-            if (typeof window !== 'undefined') {
-              localStorage.setItem('current_restaurant_id', restaurantId)
-            }
-            clearCart()
+          setLoading(false)
+          setError(null)
+          return
+        }
+
+        console.log('[V2] table state', {
+          table: tableData.table_number,
+          status: tableData.status,
+          version: tableData.current_session_version,
+        })
+
+        // Read the session version the customer was issued
+        const storedToken = sessionStorage.getItem('flashtap_session_token')
+        const storedTabId = localStorage.getItem('flashtap_tab_id')
+
+        // If customer has an existing session token, validate version before proceeding
+        if (storedToken && storedTabId) {
+          // Validate via server
+          const guardRes = await fetch('/api/session/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: storedToken }),
+          }).catch(() => null)
+
+          if (guardRes?.status === 410) {
+            console.log('[V2] session invalid — redirecting to session-ended')
+            handleSessionExpired(restaurantId)
+            return
           }
+        }
+
+        // No existing session — check table status before creating fresh session
+        // Only create a fresh session if table is in a clean available state
+        // If table was recently closed (status = 'available' but version > 1 means
+        // it has been used before — still ok for new customers)
+        // Never create a session if table status indicates it was just closed
+        // and the close happened after the customer loaded the page
+        setTable(tableData)
+
+        const session = createFreshSession(restaurantId, String(tableNum))
+        if (session) {
+          setSessionId(session)
+          setSessionReady(true)
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('current_restaurant_id', restaurantId)
+          }
+          clearCart()
         }
       } catch (err: any) {
         setTable(null)
       }
-      
+
       setLoading(false)
       setError(null)
     }
@@ -171,6 +237,28 @@ export function MenuLandingPageV2Content({
   )
 
   const syncTabLandingState = useCallback(async () => {
+    // Check if token is invalid before showing landing UI
+    const storedToken = localStorage.getItem('flashtap_session_token') ||
+                        sessionStorage.getItem('flashtap_session_token')
+
+    if (storedToken) {
+      const res = await fetch('/api/session/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: storedToken }),
+      }).catch(() => null)
+
+      if (res?.status === 410) {
+        // Token is invalid — clear everything and show session ended
+        sessionStorage.removeItem('flashtap_session_token')
+        localStorage.removeItem('flashtap_session_token')
+        localStorage.removeItem('flashtap_tab_id')
+        localStorage.removeItem('flashtap_table')
+        window.location.replace(`/menu/${restaurantId}/session-ended`)
+        return
+      }
+    }
+
     if (!restaurantId || tableNum <= 0) {
       setMyStoredTab(null)
       setOpenTab(null)
@@ -554,13 +642,6 @@ export function MenuLandingPageV2Content({
   return (
     <div className="min-h-screen bg-[#0A0A0A] relative overflow-hidden">
       <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum} />
-      {sessionEndedNotice && (
-        <div className="relative z-30 px-4 pt-4">
-          <div className="mx-auto max-w-md rounded-lg border border-amber-500/40 bg-amber-500/15 px-4 py-3 text-center text-sm text-amber-100">
-            {TAB_SESSION_ENDED_MESSAGE}
-          </div>
-        </div>
-      )}
       {/* Active Order Banner */}
       <ActiveOrderBanner />
       

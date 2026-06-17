@@ -7,7 +7,6 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
 import { useTab } from '@/contexts/tab-context'
 import {
-  clearTabAndGetLandingPath,
   fetchOrdersForTab,
   fetchTabById,
   resolveStoredTabId,
@@ -17,6 +16,8 @@ import { persistTabSession } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2 } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { fetchWithSession } from '@/lib/fetch-with-session'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 
 type TabOrder = {
   id: string
@@ -95,7 +96,7 @@ export default function TabSummaryPage() {
 
     if (!storedTabId) {
       setRedirecting(true)
-      router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+      handleSessionExpired(restaurantId)
       return
     }
 
@@ -108,7 +109,7 @@ export default function TabSummaryPage() {
 
         if (!tab || String(tab.status || '').toLowerCase() === 'settled') {
           setRedirecting(true)
-          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          handleSessionExpired(restaurantId)
           return
         }
 
@@ -124,7 +125,7 @@ export default function TabSummaryPage() {
       } catch {
         if (!cancelled) {
           setRedirecting(true)
-          router.replace(clearTabAndGetLandingPath(restaurantId, tableNum))
+          handleSessionExpired(restaurantId)
         }
       }
     }
@@ -210,11 +211,19 @@ export default function TabSummaryPage() {
     setReadyToPayLoading(true)
     console.log('[TAB PAGE] ready to pay', { tabId: tabRecord?.id ?? storedTabId, restaurantId })
     try {
-      const res = await fetch(`/api/tabs/${encodeURIComponent(storedTabId)}/ready-to-pay`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ restaurantId }),
-      })
+      const res = await fetchWithSession(
+        `/api/tabs/${encodeURIComponent(storedTabId)}/ready-to-pay`,
+        restaurantId,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ restaurantId }),
+        }
+      )
+      if (res.status === 410) {
+        handleSessionExpired(restaurantId)
+        return
+      }
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         throw new Error(data?.error || `Request failed (${res.status})`)
@@ -258,7 +267,7 @@ export default function TabSummaryPage() {
           <p className="mt-2 text-sm text-muted-foreground">Start or join a tab from the table landing page.</p>
           <Button
             className="mt-6"
-            onClick={() => router.replace(clearTabAndGetLandingPath(restaurantId, tableNumber))}
+            onClick={() => handleSessionExpired(restaurantId)}
           >
             Go to start
           </Button>

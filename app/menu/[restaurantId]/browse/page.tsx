@@ -61,6 +61,14 @@ export default function MenuBrowsePage() {
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (sessionStorage.getItem('flashtap_session_expired') === 'true') {
+      window.location.replace(`/menu/${restaurantId}/session-ended`)
+      return
+    }
+  }, [restaurantId])
+
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem, clearCart } = useCart()

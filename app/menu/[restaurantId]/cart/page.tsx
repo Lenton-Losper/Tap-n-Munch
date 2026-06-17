@@ -25,6 +25,8 @@ import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import { isActiveTabStatus } from '@/lib/tab-session'
 import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
+import { fetchWithSession } from '@/lib/fetch-with-session'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -239,7 +241,7 @@ export default function CartPage() {
         orderInstructions: orderInstructions?.trim() || '',
       }
       const idem = getOrderIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
-      const response = await fetch('/api/orders', {
+      const response = await fetchWithSession('/api/orders', restaurantId, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -247,6 +249,10 @@ export default function CartPage() {
         },
         body: JSON.stringify(payload),
       })
+      if (response.status === 410) {
+        handleSessionExpired(restaurantId)
+        return
+      }
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
       console.log('[CART] add to tab success', data)

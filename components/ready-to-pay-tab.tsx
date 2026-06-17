@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { fetchWithSession } from '@/lib/fetch-with-session'
+import { handleSessionExpired } from '@/lib/handle-session-expired'
 
 export const TAB_READY_NOTIFIED_MESSAGE =
   'Waiter has been notified — the card machine is on its way'
@@ -55,11 +57,19 @@ export function ReadyToPayTabButton({
           setLoading(true)
           console.log('[READY TO PAY TAB] requesting', { tabId, restaurantId })
           try {
-            const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ restaurantId }),
-            })
+            const res = await fetchWithSession(
+              `/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`,
+              restaurantId,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ restaurantId }),
+              }
+            )
+            if (res.status === 410) {
+              handleSessionExpired(restaurantId)
+              return
+            }
             const data = await res.json().catch(() => ({}))
             if (!res.ok) {
               throw new Error(data?.error || `Request failed (${res.status})`)

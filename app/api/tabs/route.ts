@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { issueTokenForOpenTab } from '@/lib/session-token'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,7 +38,7 @@ export async function POST(req: Request) {
     console.log('[TABS] looking up restaurant_tables row', { restaurantUuid, tableNumber })
     const { data: tableRow, error: tableError } = await supabase
       .from('restaurant_tables')
-      .select('id, table_number')
+      .select('id, table_number, current_session_version')
       .eq('restaurant_id', restaurantUuid)
       .eq('table_number', tableNumber)
       .maybeSingle()
@@ -102,12 +103,22 @@ export async function POST(req: Request) {
 
     await supabase.from('restaurant_tables').update({ status: 'occupied' }).eq('id', tableRow.id)
 
+    console.log('[TOKEN-4] calling issueTokenForOpenTab')
+    const sessionToken = await issueTokenForOpenTab(
+      supabase,
+      newTab.id,
+      tableRow.id,
+      restaurantUuid
+    )
+    console.log('[TOKEN-4] sessionToken result', sessionToken, typeof sessionToken)
+
     return NextResponse.json({
       success: true,
       tabId: newTab.id,
       restaurantId: newTab.restaurant_id,
       tableId: newTab.table_id,
       tableNumber: newTab.table_number,
+      sessionToken,
     })
   } catch (err) {
     console.error('[TABS] unexpected error', err)

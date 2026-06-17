@@ -21,16 +21,17 @@ export default function MenuLandingPage({
   const tableNumber = queryParams?.get('table') || ''
 
   useEffect(() => {
+    console.log('[MENU-ROOT] mounting, restaurantId:', restaurantId, 'tableNumber:', tableNumber)
+    console.log('[MENU-ROOT] URL:', typeof window !== 'undefined' ? window.location.href : 'server')
     if (!restaurantId) {
       router.replace('/')
       return
     }
-
-    if (typeof window !== 'undefined') {
-      window.history.replaceState(null, '', window.location.href)
+    if (sessionStorage.getItem('flashtap_session_token') || localStorage.getItem('flashtap_session_token')) {
+      console.log('[MENU-ROOT] token exists, checking...')
     }
-
     const tableParam = tableNumber ? `?table=${tableNumber}` : ''
+    console.log('[MENU-ROOT] redirecting to v2', tableParam)
     router.replace(`/menu/${restaurantId}/v2${tableParam}`)
   }, [restaurantId, tableNumber, router])
 

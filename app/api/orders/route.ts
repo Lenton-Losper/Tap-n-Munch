@@ -4,6 +4,7 @@ import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supaba
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { CacheKeys, redis, TTL } from '@/lib/redis'
+import { requireSessionToken } from '@/lib/session-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,6 +69,11 @@ export async function POST(req: Request) {
 
     const normalizedTabId = tabId ? String(tabId).trim() : ''
     const isTabOrder = Boolean(normalizedTabId)
+
+    if (normalizedTabId) {
+      const guard = await requireSessionToken(req)
+      if (guard.error) return guard.error
+    }
 
     // Tab orders: card only, pending until tab is settled at the table
     let resolvedPaymentMethod = paymentMethod || 'cash'
@@ -341,6 +347,48 @@ export async function POST(req: Request) {
     return NextResponse.json(successPayload)
   } catch (error) {
     console.error('[ORDERS] Unexpected error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+export async function GET(req: Request) {
+  const supabase = createServerSupabaseClient()
+
+  try {
+    const { searchParams } = new URL(req.url)
+    const tabId = String(searchParams.get('tabId') || searchParams.get('tab_id') || '').trim()
+    const restaurantIdRaw = String(
+      searchParams.get('restaurantId') || searchParams.get('restaurant_id') || ''
+    ).trim()
+
+    if (!tabId) {
+      return NextResponse.json({ error: 'tabId is required' }, { status: 400 })
+    }
+
+    const guard = await requireSessionToken(req)
+    if (guard.error) return guard.error
+
+    if (!restaurantIdRaw) {
+      return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+    }
+
+    const restaurantUuid = await resolveRestaurantUuid(restaurantIdRaw)
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, status, payment_status, total, placed_at, tab_id, session_id')
+      .eq('restaurant_id', restaurantUuid)
+      .eq('tab_id', tabId)
+      .eq('is_closed', false)
+      .order('placed_at', { ascending: false })
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true, orders: data || [] })
+  } catch (error) {
+    console.error('[ORDERS] GET error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

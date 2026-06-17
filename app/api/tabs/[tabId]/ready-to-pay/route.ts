@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { requireSessionToken } from '@/lib/session-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +17,9 @@ export async function POST(
   if (!normalizedTabId) {
     return NextResponse.json({ error: 'Missing tab id' }, { status: 400 })
   }
+
+  const guard = await requireSessionToken(req)
+  if (guard.error) return guard.error
 
   try {
     const body = await req.json().catch(() => ({}))
