@@ -223,17 +223,37 @@ export function MenuLandingPageV2Content({
     } else {
       try {
         const tab = await fetchTabById(storedId, restaurantUuid)
+        const tabStatus = String(tab?.status || '').toLowerCase()
+
         if (!tab || isTabSessionEndedStatus(tab.status)) {
           endTabSession(Boolean(storedId))
-        } else if (isActiveTabStatus(tab.status)) {
-          persistTabSession(storedId, tableNum)
-          setMyStoredTab({
-            id: String(tab.id),
-            total: Number(tab.total) || 0,
-            status: String(tab.status || 'open'),
-          })
+        } else if (tabStatus === 'open') {
+          const { data: openTabRow, error: openTabValidateError } = await supabase
+            .from('tabs')
+            .select('id, total, status')
+            .eq('id', storedId)
+            .eq('restaurant_id', restaurantUuid)
+            .eq('status', 'open')
+            .maybeSingle()
+
+          if (openTabValidateError) {
+            throw openTabValidateError
+          }
+
+          if (openTabRow) {
+            persistTabSession(storedId, tableNum)
+            setMyStoredTab({
+              id: String(openTabRow.id),
+              total: Number(openTabRow.total) || 0,
+              status: 'open',
+            })
+          } else {
+            clearTabSession()
+            setMyStoredTab(null)
+          }
         } else {
-          endTabSession(Boolean(storedId))
+          clearTabSession()
+          setMyStoredTab(null)
         }
       } catch (err) {
         console.warn('[V2] stored tab validation failed', err)
