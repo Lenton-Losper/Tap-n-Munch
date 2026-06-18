@@ -14,7 +14,6 @@ import {
   ReadyToPayTerminalButton,
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
-import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
@@ -170,8 +169,6 @@ export default function ReceiptPage() {
   const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
-
-  const tabReadyToPay = tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay'
 
   useEffect(() => {
     if (!restaurantId) return
@@ -494,17 +491,6 @@ export default function ReceiptPage() {
             )
           })}
         </div>
-
-        {storedTabId && orders.length > 0 && (
-          <div className="mt-8 space-y-4">
-            <ReadyToPayTabButton
-              tabId={storedTabId}
-              restaurantId={restaurantId}
-              tabAlreadyReady={tabReadyToPay}
-              onSuccess={() => void refreshTab()}
-            />
-          </div>
-        )}
       </div>
     </div>
   )

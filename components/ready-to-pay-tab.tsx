@@ -12,6 +12,7 @@ export const TAB_READY_NOTIFIED_MESSAGE =
 type Props = {
   tabId: string
   restaurantId: string
+  paymentPreference?: 'cash' | 'card' | 'other'
   onSuccess?: () => void
   className?: string
   /** When true, skip API call and show static notified message */
@@ -21,6 +22,7 @@ type Props = {
 export function ReadyToPayTabButton({
   tabId,
   restaurantId,
+  paymentPreference,
   onSuccess,
   className,
   tabAlreadyReady = false,
@@ -32,6 +34,8 @@ export function ReadyToPayTabButton({
   useEffect(() => {
     if (tabAlreadyReady) setNotified(true)
   }, [tabAlreadyReady])
+
+  if (!paymentPreference) return null
 
   if (tabAlreadyReady || notified) {
     return <ReadyToPayTabNotified className={className} />
@@ -55,7 +59,7 @@ export function ReadyToPayTabButton({
           }
           setError(null)
           setLoading(true)
-          console.log('[READY TO PAY TAB] requesting', { tabId, restaurantId })
+          console.log('[READY TO PAY TAB] requesting', { tabId, restaurantId, paymentPreference })
           try {
             const res = await fetchWithSession(
               `/api/tabs/${encodeURIComponent(tabId)}/ready-to-pay`,
@@ -63,7 +67,7 @@ export function ReadyToPayTabButton({
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ restaurantId }),
+                body: JSON.stringify({ restaurantId, paymentPreference }),
               }
             )
             if (res.status === 410) {
@@ -84,7 +88,7 @@ export function ReadyToPayTabButton({
           }
         }}
       >
-        {loading ? 'Sending…' : 'Ready to Pay'}
+        {loading ? 'Sending…' : 'Settle Tab'}
       </Button>
     </div>
   )

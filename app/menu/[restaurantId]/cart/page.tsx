@@ -21,8 +21,6 @@ import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
-import { ReadyToPayTabButton } from '@/components/ready-to-pay-tab'
-import { isActiveTabStatus } from '@/lib/tab-session'
 import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -65,13 +63,6 @@ export default function CartPage() {
   const inTabFlow = Boolean(isInTab || effectiveTabId)
   const tabReadyToPay = tabStatus === 'ready_to_pay'
   const [hasSessionTabOrders, setHasSessionTabOrders] = useState(false)
-  const showReadyToPay = Boolean(
-    storedTabId &&
-      effectiveTabId &&
-      isActiveTabStatus(tabStatus) &&
-      hasSessionTabOrders &&
-      items.length > 0
-  )
   const [restaurant, setRestaurant] = useState<any>(null)
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -638,18 +629,6 @@ export default function CartPage() {
                       <p className="mt-1 text-sm text-muted-foreground">Staff will assist with payment at your table</p>
                     </button>
                   </div>
-                </div>
-              )}
-
-              {/* Main CTA: tab = always POST; non-tab online = order-secure; non-tab cash/card = POST from cart */}
-              {showReadyToPay && (
-                <div className="mb-4">
-                  <ReadyToPayTabButton
-                    tabId={effectiveTabId}
-                    restaurantId={restaurantId}
-                    tabAlreadyReady={tabReadyToPay}
-                    onSuccess={() => void refreshTab()}
-                  />
                 </div>
               )}
 

@@ -355,7 +355,8 @@ export default function TabSummaryPage() {
               onClick={() => setShowPaymentSelector(true)}
               disabled={fullTabRunningTotal <= 0}
             >
-              Ready to Pay
+              Settle Tab • {currency}
+              {fullTabRunningTotal.toFixed(2)}
             </Button>
           )}
 
@@ -390,7 +391,9 @@ export default function TabSummaryPage() {
                 onClick={() => void handleReadyToPay()}
                 disabled={!paymentPreference || readyToPayLoading}
               >
-                {readyToPayLoading ? 'Sending…' : 'Notify Waiter'}
+                {readyToPayLoading
+                  ? 'Sending…'
+                  : `Confirm — ${currency}${fullTabRunningTotal.toFixed(2)}`}
               </Button>
               <button
                 onClick={() => {
