@@ -90,6 +90,41 @@ export async function POST(req: Request) {
       .single()
 
     if (insertError) {
+      if (insertError.code === '23505') {
+        // Race condition — another tab was just created for this table
+        // Fetch the existing open tab and return it
+        const { data: existingTab, error: fetchError } = await supabase
+          .from('tabs')
+          .select('id, restaurant_id, table_id, table_number, status, members, total')
+          .eq('restaurant_id', restaurantUuid)
+          .eq('table_number', tableNumber)
+          .eq('status', 'open')
+          .maybeSingle()
+
+        if (fetchError || !existingTab) {
+          return NextResponse.json({ error: 'Table already has an open tab' }, { status: 409 })
+        }
+
+        const sessionToken = await issueTokenForOpenTab(
+          supabase,
+          existingTab.id,
+          tableRow.id,
+          restaurantUuid
+        )
+
+        console.log('[TABS] race condition — returning existing open tab', existingTab.id)
+
+        return NextResponse.json({
+          success: true,
+          tabId: existingTab.id,
+          restaurantId: existingTab.restaurant_id,
+          tableId: existingTab.table_id,
+          tableNumber: existingTab.table_number,
+          sessionToken,
+          joinedExisting: true,
+        })
+      }
+
       console.error('[TABS] insert failed', insertError)
       return NextResponse.json({ error: insertError.message }, { status: 500 })
     }
