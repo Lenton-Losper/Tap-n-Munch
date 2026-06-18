@@ -4,7 +4,7 @@ import Link from "next/link"
 import { OrdersDashboard } from "@/components/orders-dashboard"
 import { ProtectedRoute } from "@/components/auth/protected-route"
 import { Button } from "@/components/ui/button"
-import { ClipboardList, Table2, UtensilsCrossed, BarChart3, Settings } from "lucide-react"
+import { ClipboardList, Table2, UtensilsCrossed, BarChart3, Settings, History } from "lucide-react"
 
 export default function DashboardPage() {
   return (
@@ -15,13 +15,23 @@ export default function DashboardPage() {
             <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Dashboard</h1>
             <p className="mt-2 text-sm text-[#6B675F]">Quickly access core operations for your venue.</p>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               <Button asChild variant="outline" className="h-auto justify-start rounded-lg border-[#E9E9E7] bg-white p-4 hover:bg-[#F1F0EC]">
                 <Link href="/dashboard" className="flex items-start gap-3">
                   <ClipboardList className="mt-0.5 h-5 w-5 text-[#37352F]" />
                   <div className="text-left">
                     <div className="font-semibold text-[#37352F]">Live Orders</div>
                     <div className="text-xs text-[#6B675F]">Manage incoming orders</div>
+                  </div>
+                </Link>
+              </Button>
+
+              <Button asChild variant="outline" className="h-auto justify-start rounded-lg border-[#E9E9E7] bg-white p-4 hover:bg-[#F1F0EC]">
+                <Link href="/dashboard/order-history" className="flex items-start gap-3">
+                  <History className="mt-0.5 h-5 w-5 text-[#37352F]" />
+                  <div className="text-left">
+                    <div className="font-semibold text-[#37352F]">Order History</div>
+                    <div className="text-xs text-[#6B675F]">Browse past orders</div>
                   </div>
                 </Link>
               </Button>
