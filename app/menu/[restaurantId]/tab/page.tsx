@@ -38,6 +38,7 @@ type TabOrder = {
 type MemberGroup = {
   memberKey: string
   label: string
+  isCurrentUser: boolean
   items: string[]
   subtotal: number
 }
@@ -144,12 +145,12 @@ export default function TabSummaryPage() {
     const tabOrders = ordersForDisplay
     const members = tabMembers.length > 0 ? tabMembers : []
 
-    const buildGroup = (memberSid: string, label: string): MemberGroup => {
+    const buildGroup = (memberSid: string, label: string, isCurrentUser: boolean): MemberGroup => {
       const memberOrders = tabOrders.filter((o) => {
         const orderSid = String(o.member_session_id || o.session_id || '').trim()
         return orderSid === memberSid
       })
-      const group: MemberGroup = { memberKey: memberSid, label, items: [], subtotal: 0 }
+      const group: MemberGroup = { memberKey: memberSid, label, isCurrentUser, items: [], subtotal: 0 }
       for (const order of memberOrders) {
         group.subtotal += Number(order.total) || 0
         const orderItems = Array.isArray(order.items) ? order.items : []
@@ -170,7 +171,7 @@ export default function TabSummaryPage() {
           String(order.member_session_id || order.session_id || 'unknown').trim() || 'unknown'
         let group = bySid.get(memberSid)
         if (!group) {
-          group = { memberKey: memberSid, label: 'Guest', items: [], subtotal: 0 }
+          group = { memberKey: memberSid, label: 'Guest', isCurrentUser: memberSid === sessionId, items: [], subtotal: 0 }
           bySid.set(memberSid, group)
         }
         group.subtotal += Number(order.total) || 0
@@ -189,10 +190,10 @@ export default function TabSummaryPage() {
       .map((member) => {
         const memberSid = String(member.session_id || '').trim()
         if (!memberSid) return null
-        const displayName = String(member.display_name || '').trim()
-        let label = displayName || 'Guest'
-        if (memberSid === sessionId) label = displayName ? `You (${displayName})` : 'You'
-        return buildGroup(memberSid, label)
+        const displayName = String(member.display_name || '').trim() || 'Guest'
+        const isCurrentUser = memberSid === sessionId
+        const label = displayName
+        return buildGroup(memberSid, label, isCurrentUser)
       })
       .filter((g): g is MemberGroup => Boolean(g && g.items.length > 0))
   }, [ordersForDisplay, sessionId, tabMembers, currency])
@@ -201,6 +202,31 @@ export default function TabSummaryPage() {
     () => ordersForDisplay.reduce((sum, order) => sum + (Number(order.total) || 0), 0),
     [ordersForDisplay]
   )
+
+  const updateMemberName = async (newName: string) => {
+    if (!storedTabId || !sessionId || !restaurantId) return
+    const res = await fetchWithSession(
+      `/api/tabs/${encodeURIComponent(storedTabId)}/member`,
+      restaurantId,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, displayName: newName }),
+      }
+    )
+    if (res.status === 410) {
+      handleSessionExpired(restaurantId)
+      return
+    }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(data?.error || 'Failed to update name')
+    }
+    sessionStorage.setItem('flashtap_display_name', newName)
+    await refreshTab()
+    const tab = await fetchTabById(storedTabId, restaurantId)
+    if (tab) setTabRecord(tab)
+  }
 
   const handleReadyToPay = async () => {
     if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading) return
@@ -313,7 +339,29 @@ export default function TabSummaryPage() {
         <div className="space-y-4">
           {groupedOrders.map((group) => (
             <div key={group.memberKey} className="rounded-lg border border-border bg-card p-4">
-              <h2 className="font-sans text-base font-semibold text-foreground">{group.label}</h2>
+              <h2 className="font-sans text-base font-semibold text-foreground">
+                {group.isCurrentUser ? `You — ${group.label}` : group.label}
+                {group.isCurrentUser && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newName = prompt('Enter your name:', group.label)
+                      if (newName?.trim()) {
+                        void updateMemberName(newName.trim()).catch((err) => {
+                          toast({
+                            title: 'Could not update name',
+                            description: err instanceof Error ? err.message : 'Please try again.',
+                            variant: 'destructive',
+                          })
+                        })
+                      }
+                    }}
+                    className="text-xs text-muted-foreground underline ml-2 font-normal"
+                  >
+                    Edit
+                  </button>
+                )}
+              </h2>
               <div className="mt-2 space-y-1 text-sm text-muted-foreground">
                 {group.items.map((line, lineIndex) => (
                   <p key={`${group.memberKey}-${lineIndex}`}>{line}</p>

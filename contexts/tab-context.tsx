@@ -40,6 +40,7 @@ type TabContextType = {
     restaurantId: string
     tableNumber: string
     tableId?: string
+    displayName?: string
   }) => Promise<string>
   joinExistingTab: (params: {
     restaurantId: string
@@ -231,6 +232,9 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   }) => {
     console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum })
     const sid = sessionId || ensureTabSessionId()
+    const storedDisplayName =
+      typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_display_name') || '' : ''
+    const resolvedDisplayName = displayName?.trim() || storedDisplayName.trim() || 'Guest'
 
     const response = await fetch(`/api/tabs/${encodeURIComponent(targetTabId)}/join`, {
       method: 'POST',
@@ -239,7 +243,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
         restaurantId: rid,
         sessionId: sid,
         tableNumber: tableNum,
-        displayName,
+        displayName: resolvedDisplayName,
       }),
     })
 
@@ -265,12 +269,17 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   const createNewTab = async ({
     restaurantId: rid,
     tableNumber: tableNum,
+    displayName: displayNameParam,
   }: {
     restaurantId: string
     tableNumber: string
     tableId?: string
+    displayName?: string
   }) => {
     const sid = sessionId || ensureTabSessionId()
+    const storedDisplayName =
+      typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_display_name') || '' : ''
+    const displayName = displayNameParam?.trim() || storedDisplayName.trim() || 'Guest'
     console.log('[TAB CONTEXT] createNewTab start', { rid, tableNum, sessionId: sid })
 
     const response = await fetch('/api/tabs', {
@@ -280,7 +289,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
         restaurantId: rid,
         tableNumber: Number(tableNum) || tableNum,
         sessionId: sid,
-        displayName: 'Person 1',
+        displayName,
       }),
     })
 

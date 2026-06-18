@@ -70,6 +70,7 @@ export function MenuLandingPageV2Content({
     null
   )
   const [sessionEndedNotice, setSessionEndedNotice] = useState(false)
+  const [displayName, setDisplayName] = useState('')
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, clearTab } = useTab()
 
@@ -539,6 +540,13 @@ export function MenuLandingPageV2Content({
     router.push(browseBase)
   }
 
+  const persistDisplayName = () => {
+    if (typeof window === 'undefined') return
+    if (displayName.trim()) {
+      sessionStorage.setItem('flashtap_display_name', displayName.trim())
+    }
+  }
+
   const handleCreateTab = async () => {
     if (!restaurantId || tableNum <= 0) {
       setTabActionError('Missing restaurant or table number. Scan the table QR code again.')
@@ -548,11 +556,13 @@ export function MenuLandingPageV2Content({
     try {
       setTabActionLoading('create')
       setTabActionError(null)
+      persistDisplayName()
       console.log('[V2] create tab clicked', { restaurantId, tableNum, tableId: table?.id })
       const tid = await createNewTab({
         restaurantId,
         tableNumber: String(tableNum),
         tableId: table?.id ? String(table.id) : undefined,
+        displayName: displayName.trim() || undefined,
       })
       console.log('[V2] create tab redirecting to browse', { tid })
       router.push(browseWithTab(tid))
@@ -574,8 +584,14 @@ export function MenuLandingPageV2Content({
     try {
       setTabActionLoading('join')
       setTabActionError(null)
+      persistDisplayName()
       console.log('[V2] join tab clicked', { restaurantId, tabId: joinTabId, rejoin: Boolean(myStoredTab) })
-      await joinExistingTab({ restaurantId, tabId: joinTabId, tableNumber: tableNum })
+      await joinExistingTab({
+        restaurantId,
+        tabId: joinTabId,
+        tableNumber: tableNum,
+        displayName: displayName.trim() || undefined,
+      })
       console.log('[V2] join tab redirecting to browse', { tabId: joinTabId })
       router.push(browseWithTab(joinTabId))
     } catch (err) {
@@ -731,6 +747,18 @@ export function MenuLandingPageV2Content({
               <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
                 <p className="font-sans text-sm font-medium text-red-100">Could not open tab</p>
                 <p className="font-sans text-xs text-red-200/90 mt-1">{tabActionError}</p>
+              </div>
+            )}
+            {tableNum > 0 && (
+              <div className="mb-4">
+                <input
+                  type="text"
+                  placeholder="Your name (optional)"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  maxLength={30}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/40 font-sans text-base focus:outline-none focus:border-white/40"
+                />
               </div>
             )}
             {tableNum > 0 && storedTabChecked && !tabLoading && myStoredTab ? (

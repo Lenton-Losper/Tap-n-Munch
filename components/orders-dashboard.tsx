@@ -170,7 +170,7 @@ export function OrdersDashboard() {
   )
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
   const [tabInfoById, setTabInfoById] = useState<
-    Record<string, { status: string; payment_preference: string | null }>
+    Record<string, { status: string; payment_preference: string | null; members: any[] }>
   >({})
   const orderScopeRef = useRef<OrderRestaurantScope | null>(null)
   const subscribedRestaurantIdRef = useRef<string | null>(null)
@@ -274,7 +274,7 @@ export function OrdersDashboard() {
     const loadTabs = async () => {
       const { data, error } = await supabase
         .from('tabs')
-        .select('id, status, payment_preference')
+        .select('id, status, payment_preference, members')
         .eq('restaurant_id', restaurantUuid)
         .in('id', tabIds)
 
@@ -284,11 +284,12 @@ export function OrdersDashboard() {
         return
       }
 
-      const next: Record<string, { status: string; payment_preference: string | null }> = {}
+      const next: Record<string, { status: string; payment_preference: string | null; members: any[] }> = {}
       for (const row of data || []) {
         next[String(row.id)] = {
           status: String(row.status || ''),
           payment_preference: row.payment_preference ? String(row.payment_preference) : null,
+          members: Array.isArray(row.members) ? row.members : [],
         }
       }
       setTabInfoById(next)
@@ -319,6 +320,7 @@ export function OrdersDashboard() {
             id?: string
             status?: string
             payment_preference?: string | null
+            members?: unknown
           }
           if (!row?.id) return
           setTabInfoById((prev) => ({
@@ -326,6 +328,9 @@ export function OrdersDashboard() {
             [String(row.id)]: {
               status: String(row.status || ''),
               payment_preference: row.payment_preference ? String(row.payment_preference) : null,
+              members: Array.isArray(row.members)
+                ? row.members
+                : prev[String(row.id)]?.members ?? [],
             },
           }))
         }
@@ -1223,6 +1228,15 @@ export function OrdersDashboard() {
               // DEFENSIVE NORMALIZATION: Ensure items is always an array before rendering
               // This prevents "Cannot read property 'length' of undefined" errors
               const tabInfo = tabIdOf(order) ? tabInfoById[tabIdOf(order)] : null
+              const memberNameMap: Record<string, string> = {}
+              tabInfo?.members?.forEach((m: any) => {
+                if (m?.session_id) {
+                  memberNameMap[String(m.session_id)] = String(m.display_name || '').trim() || 'Guest'
+                }
+              })
+              const memberSessionId = String(
+                (order as Order & { member_session_id?: string | null }).member_session_id || ''
+              ).trim()
               const normalizedOrder = {
                 ...order,
                 items: Array.isArray(order.items) ? order.items : [],
@@ -1289,6 +1303,14 @@ export function OrdersDashboard() {
 
                 {/* Order Items - DEFENSIVE: Use normalizedOrder.items which is guaranteed to be an array */}
                 <div className="space-y-2 border-t pt-3">
+                  {memberSessionId && memberNameMap[memberSessionId] && (
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="text-sm">👤</span>
+                      <span className="text-sm font-medium text-foreground font-sans">
+                        {memberNameMap[memberSessionId]}
+                      </span>
+                    </div>
+                  )}
                   {normalizedOrder.items.length > 0 ? (
                     normalizedOrder.items.map((item: any, index: number) => (
                       <div key={index} className="text-sm">
