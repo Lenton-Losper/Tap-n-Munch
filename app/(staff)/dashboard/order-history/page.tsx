@@ -3,10 +3,8 @@
 export const dynamic = 'force-dynamic'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { ArrowLeft, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { ProtectedRoute } from '@/components/auth/protected-route'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -93,7 +91,6 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 }
 
 function OrderHistoryContent() {
-  const router = useRouter()
   const { restaurant, restaurantId } = useAuth()
   const currencySymbol = String(restaurant?.currency || 'N$')
 
@@ -158,19 +155,9 @@ function OrderHistoryContent() {
     <div className="min-h-screen bg-[#F7F6F3]">
       <div className="border-b border-[#E9E9E7] bg-white px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => router.push('/dashboard')}
-              className="h-11 w-11"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div>
-              <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Order History</h1>
-              <p className="mt-1 text-sm text-[#6B675F]">Browse and filter past orders for your venue.</p>
-            </div>
+          <div>
+            <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Order History</h1>
+            <p className="mt-1 text-sm text-[#6B675F]">Browse and filter past orders for your venue.</p>
           </div>
           <Button
             type="button"
@@ -366,9 +353,5 @@ function OrderHistoryContent() {
 }
 
 export default function OrderHistoryPage() {
-  return (
-    <ProtectedRoute>
-      <OrderHistoryContent />
-    </ProtectedRoute>
-  )
+  return <OrderHistoryContent />
 }

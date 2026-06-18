@@ -4,7 +4,6 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { ProtectedRoute } from '@/components/auth/protected-route'
 import { supabase } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import {
@@ -492,9 +491,5 @@ function AnalyticsContent() {
 }
 
 export default function AnalyticsPage() {
-  return (
-    <ProtectedRoute>
-      <AnalyticsContent />
-    </ProtectedRoute>
-  )
+  return <AnalyticsContent />
 }

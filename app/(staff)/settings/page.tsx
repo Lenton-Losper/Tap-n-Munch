@@ -18,7 +18,6 @@ import { ArrowLeft, Banknote, CreditCard, Save, Upload, X, Building2 } from 'luc
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import { Switch } from '@/components/ui/switch'
-import { ProtectedRoute } from '@/components/auth/protected-route'
 import { supabase } from '@/lib/supabase/client'
 
 function SettingsContent() {
@@ -620,10 +619,6 @@ function SettingsContent() {
 }
 
 export default function SettingsPage() {
-  return (
-    <ProtectedRoute>
-      <SettingsContent />
-    </ProtectedRoute>
-  )
+  return <SettingsContent />
 }
 
