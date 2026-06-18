@@ -529,7 +529,7 @@ export default function MenuBrowsePage() {
                   ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
                   : `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
                       tabMembers.length
-                    } ${tabMembers.length === 1 ? 'person' : 'people'}`}
+                    } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`}
             </div>
           </Link>
         </div>
