@@ -14,10 +14,10 @@ import {
 } from '@/lib/tab-session'
 import { persistTabSession } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
-import { CheckCircle2 } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+import { cn } from '@/lib/utils'
 
 type TabOrder = {
   id: string
@@ -42,8 +42,6 @@ type MemberGroup = {
   subtotal: number
 }
 
-const READY_TO_PAY_MESSAGE =
-  'Waiter has been notified — the card machine is on its way'
 
 export default function TabSummaryPage() {
   const params = useParams()
@@ -63,6 +61,8 @@ export default function TabSummaryPage() {
   const [redirecting, setRedirecting] = useState(false)
   const [readyToPayLoading, setReadyToPayLoading] = useState(false)
   const [readyToPayNotified, setReadyToPayNotified] = useState(false)
+  const [paymentPreference, setPaymentPreference] = useState<'cash' | 'card' | 'other' | null>(null)
+  const [showPaymentSelector, setShowPaymentSelector] = useState(false)
 
   const tabReadyToPay = tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay' || readyToPayNotified
 
@@ -203,13 +203,17 @@ export default function TabSummaryPage() {
   )
 
   const handleReadyToPay = async () => {
-    if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading) return
+    if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading || !paymentPreference) return
     if (tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay') {
       setReadyToPayNotified(true)
       return
     }
     setReadyToPayLoading(true)
-    console.log('[TAB PAGE] ready to pay', { tabId: tabRecord?.id ?? storedTabId, restaurantId })
+    console.log('[TAB PAGE] ready to pay', {
+      tabId: tabRecord?.id ?? storedTabId,
+      restaurantId,
+      paymentPreference,
+    })
     try {
       const res = await fetchWithSession(
         `/api/tabs/${encodeURIComponent(storedTabId)}/ready-to-pay`,
@@ -217,7 +221,7 @@ export default function TabSummaryPage() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ restaurantId }),
+          body: JSON.stringify({ restaurantId, paymentPreference }),
         }
       )
       if (res.status === 410) {
@@ -225,12 +229,22 @@ export default function TabSummaryPage() {
         return
       }
       const data = await res.json().catch(() => ({}))
+      if (res.status === 409 && data?.alreadyReady) {
+        setReadyToPayNotified(true)
+        await refreshTab()
+        const tab = await fetchTabById(storedTabId, restaurantId)
+        if (tab) setTabRecord(tab)
+        return
+      }
       if (!res.ok) {
-        throw new Error(data?.error || `Request failed (${res.status})`)
+        throw new Error(data?.error || data?.message || `Request failed (${res.status})`)
       }
       console.log('[TAB PAGE] ready to pay success', data)
       setReadyToPayNotified(true)
+      setShowPaymentSelector(false)
       await refreshTab()
+      const tab = await fetchTabById(storedTabId, restaurantId)
+      if (tab) setTabRecord(tab)
     } catch (err) {
       console.error('[TAB PAGE] ready to pay failed', err)
       toast({
@@ -329,29 +343,81 @@ export default function TabSummaryPage() {
               + Order More
             </Button>
           )}
-          {tabReadyToPay && (
-            <p className="text-center text-sm text-muted-foreground font-sans mb-3">
-              Your waiter has been notified and will assist you shortly.
-            </p>
-          )}
-          {tabReadyToPay ? (
-            <div
-              className="rounded-lg border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/40 p-6 text-center"
-              role="status"
+
+          {!tabReadyToPay && !showPaymentSelector && (
+            <Button
+              className="w-full py-4 px-6 text-base font-semibold text-white bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
+              onClick={() => setShowPaymentSelector(true)}
+              disabled={fullTabRunningTotal <= 0}
             >
-              <CheckCircle2 className="mx-auto h-10 w-10 text-green-600 dark:text-green-400 mb-3" aria-hidden />
-              <p className="font-sans text-base font-medium text-green-900 dark:text-green-100">
-                {READY_TO_PAY_MESSAGE}
+              Ready to Pay
+            </Button>
+          )}
+
+          {!tabReadyToPay && showPaymentSelector && (
+            <div className="space-y-3">
+              <p className="text-center text-sm font-semibold text-foreground font-sans">
+                How would you like to pay?
+              </p>
+              <div className="grid gap-2">
+                {(['cash', 'card', 'other'] as const).map((method) => (
+                  <button
+                    key={method}
+                    onClick={() => setPaymentPreference(method)}
+                    className={cn(
+                      'rounded-lg border-2 p-3 text-left transition-colors font-sans',
+                      paymentPreference === method
+                        ? 'border-foreground bg-muted/50'
+                        : 'border-border bg-background'
+                    )}
+                  >
+                    <span className="text-lg mr-2">
+                      {method === 'cash' ? '💵' : method === 'card' ? '💳' : '🤝'}
+                    </span>
+                    <span className="font-semibold text-foreground">
+                      {method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : 'Other'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <Button
+                className="w-full py-4 px-6 text-base font-semibold text-white bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
+                onClick={() => void handleReadyToPay()}
+                disabled={!paymentPreference || readyToPayLoading}
+              >
+                {readyToPayLoading ? 'Sending…' : 'Notify Waiter'}
+              </Button>
+              <button
+                onClick={() => {
+                  setShowPaymentSelector(false)
+                  setPaymentPreference(null)
+                }}
+                className="w-full text-center text-sm text-muted-foreground py-2"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {tabReadyToPay && (
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center space-y-2">
+              <p className="font-sans text-sm font-medium text-green-900">
+                ✓ Payment Requested
+              </p>
+              {tabRecord?.payment_preference && (
+                <p className="font-sans text-sm text-green-700">
+                  Payment preference:{' '}
+                  {tabRecord.payment_preference === 'cash'
+                    ? '💵 Cash'
+                    : tabRecord.payment_preference === 'card'
+                      ? '💳 Card'
+                      : '🤝 Other'}
+                </p>
+              )}
+              <p className="font-sans text-xs text-green-600">
+                A waiter has been notified and will assist you shortly.
               </p>
             </div>
-          ) : (
-            <Button
-              className="w-full py-4 px-6 text-base font-semibold text-white text-center bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
-              onClick={handleReadyToPay}
-              disabled={readyToPayLoading || fullTabRunningTotal <= 0}
-            >
-              {readyToPayLoading ? 'Sending…' : 'Ready to Pay'}
-            </Button>
           )}
         </div>
       </div>

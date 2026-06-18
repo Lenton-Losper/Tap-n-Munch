@@ -169,6 +169,9 @@ export function OrdersDashboard() {
     restaurant as Record<string, unknown> | null
   )
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
+  const [tabInfoById, setTabInfoById] = useState<
+    Record<string, { status: string; payment_preference: string | null }>
+  >({})
   const orderScopeRef = useRef<OrderRestaurantScope | null>(null)
   const subscribedRestaurantIdRef = useRef<string | null>(null)
   orderScopeRef.current = orderScope
@@ -251,6 +254,88 @@ export function OrdersDashboard() {
       cancelled = true
     }
   }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurant])
+
+  useEffect(() => {
+    const restaurantUuid = orderScope?.supabaseUuid
+    if (!restaurantUuid) {
+      setTabInfoById({})
+      return
+    }
+
+    const tabIds = [
+      ...new Set(allOrders.map((order) => tabIdOf(order)).filter(Boolean)),
+    ] as string[]
+    if (!tabIds.length) {
+      setTabInfoById({})
+      return
+    }
+
+    let cancelled = false
+    const loadTabs = async () => {
+      const { data, error } = await supabase
+        .from('tabs')
+        .select('id, status, payment_preference')
+        .eq('restaurant_id', restaurantUuid)
+        .in('id', tabIds)
+
+      if (cancelled) return
+      if (error) {
+        console.error('[DASHBOARD] tab fetch error', error)
+        return
+      }
+
+      const next: Record<string, { status: string; payment_preference: string | null }> = {}
+      for (const row of data || []) {
+        next[String(row.id)] = {
+          status: String(row.status || ''),
+          payment_preference: row.payment_preference ? String(row.payment_preference) : null,
+        }
+      }
+      setTabInfoById(next)
+    }
+
+    void loadTabs()
+    return () => {
+      cancelled = true
+    }
+  }, [allOrders, orderScope?.supabaseUuid])
+
+  useEffect(() => {
+    const restaurantUuid = orderScope?.supabaseUuid
+    if (!restaurantUuid) return
+
+    const channel = supabase
+      .channel(`tabs-dash-${restaurantUuid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'tabs',
+          filter: `restaurant_id=eq.${restaurantUuid}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            id?: string
+            status?: string
+            payment_preference?: string | null
+          }
+          if (!row?.id) return
+          setTabInfoById((prev) => ({
+            ...prev,
+            [String(row.id)]: {
+              status: String(row.status || ''),
+              payment_preference: row.payment_preference ? String(row.payment_preference) : null,
+            },
+          }))
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [orderScope?.supabaseUuid])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   useEffect(() => {
@@ -1131,10 +1216,13 @@ export function OrdersDashboard() {
             {orders.map((order) => {
               // DEFENSIVE NORMALIZATION: Ensure items is always an array before rendering
               // This prevents "Cannot read property 'length' of undefined" errors
+              const tabInfo = tabIdOf(order) ? tabInfoById[tabIdOf(order)] : null
               const normalizedOrder = {
                 ...order,
                 items: Array.isArray(order.items) ? order.items : [],
                 customer: order.customer || {},
+                tab_ready_to_pay: tabInfo?.status === 'ready_to_pay',
+                tab_payment_preference: tabInfo?.payment_preference ?? null,
               }
 
               const customerReadyToPay = isCustomerReadyToPay(normalizedOrder)
@@ -1172,28 +1260,24 @@ export function OrdersDashboard() {
                   <span className="text-lg font-bold">
                     {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
-                  {normalizedOrder.payment_method &&
-                    normalizedOrder.payment_method !== 'tab' &&
-                    ['cash', 'card_manual', 'card', 'other'].includes(normalizedOrder.payment_method) && (
-                      <div className="flex items-center justify-end gap-1.5 mt-1">
-                        <span className="text-sm">
-                          {normalizedOrder.payment_method === 'cash'
-                            ? '💵'
-                            : normalizedOrder.payment_method === 'other'
-                              ? '🤝'
-                              : '💳'}
-                        </span>
-                        <span className="text-xs font-medium text-muted-foreground font-sans capitalize">
-                          {normalizedOrder.payment_method === 'card_manual'
+                  {normalizedOrder.tab_ready_to_pay && normalizedOrder.tab_payment_preference && (
+                    <div className="flex items-center justify-end gap-1.5 mt-1">
+                      <span className="text-sm">
+                        {normalizedOrder.tab_payment_preference === 'cash'
+                          ? '💵'
+                          : normalizedOrder.tab_payment_preference === 'other'
+                            ? '🤝'
+                            : '💳'}
+                      </span>
+                      <span className="text-xs font-medium text-muted-foreground font-sans">
+                        {normalizedOrder.tab_payment_preference === 'cash'
+                          ? 'Cash'
+                          : normalizedOrder.tab_payment_preference === 'card'
                             ? 'Card'
-                            : normalizedOrder.payment_method === 'cash'
-                              ? 'Cash'
-                              : normalizedOrder.payment_method === 'other'
-                                ? 'Other'
-                                : 'Card'}
-                        </span>
-                      </div>
-                    )}
+                            : 'Other'}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Order Items - DEFENSIVE: Use normalizedOrder.items which is guaranteed to be an array */}

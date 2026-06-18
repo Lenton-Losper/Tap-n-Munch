@@ -52,7 +52,7 @@ export default function CartPage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
-  const { isInTab, tabId, sessionId, tabStatus, canAddToTab, tabTotal, refreshTab } = useTab()
+  const { isInTab, tabId, sessionId, tabStatus, refreshTab } = useTab()
   const storedTabId = readStoredTabId()
   const effectiveTabId = tabIdFromUrl || tabId || storedTabId || ''
   const { redirecting: tabSessionRedirecting } = useTabSessionEndedRedirect({
@@ -150,16 +150,6 @@ export default function CartPage() {
     return s ? `?${s}` : ''
   }, [tableNumber, effectiveTabId])
 
-  const receiptHref = useMemo(() => {
-    const q = new URLSearchParams()
-    if (tableNumber > 0) q.set('table', String(tableNumber))
-    if (effectiveTabId) q.set('tabId', effectiveTabId)
-    const s = q.toString()
-    return `/menu/${restaurantId}/receipt${s ? `?${s}` : ''}`
-  }, [restaurantId, tableNumber, effectiveTabId])
-
-  const showTabPendingBlock = inTabFlow && !canAddToTab
-
   useEffect(() => {
     const loadRestaurant = async () => {
       try {
@@ -204,11 +194,10 @@ export default function CartPage() {
   const handleAddToTab = async () => {
     if (paying) return
     if (!inTabFlow || !effectiveTabId) return
-    if (tabReadyToPay || !canAddToTab) {
+    if (tabReadyToPay) {
       toast({
-        title: 'Pending order on this tab',
-        description:
-          'Your waiter has been notified. Please wait before placing another order.',
+        title: 'Tab is ready to pay',
+        description: 'Your waiter has been notified. You cannot add more items.',
         variant: 'destructive',
       })
       return
@@ -558,95 +547,6 @@ export default function CartPage() {
                 />
               </div>
 
-              {showTabPendingBlock && (
-                <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4">
-                  <p className="font-sans text-sm font-semibold text-amber-900">
-                    You have a pending order on this tab.
-                  </p>
-                  <p className="mt-2 font-sans text-sm text-amber-800">
-                    Your waiter has been notified. Please wait before placing another order.
-                  </p>
-                  <Link href={receiptHref} className="mt-4 block">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full border-amber-400 text-amber-900 hover:bg-amber-100 font-sans font-semibold"
-                    >
-                      View my order
-                    </Button>
-                  </Link>
-                </div>
-              )}
-
-              {inTabFlow && !showTabPendingBlock && (
-                <div className="mb-6" role="radiogroup" aria-label="Payment method">
-                  <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
-                    How would you like to pay?
-                  </Label>
-                  <div className="grid gap-3">
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={paymentChoice === 'cash'}
-                      onClick={() => setPaymentChoice('cash')}
-                      disabled={paying || tabReadyToPay}
-                      className={cn(
-                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                        paymentChoice === 'cash'
-                          ? 'border-foreground bg-muted/50'
-                          : 'border-border bg-background hover:border-muted-foreground/40',
-                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
-                      )}
-                    >
-                      <span className="text-lg" aria-hidden>💵</span>
-                      <span className="ml-2 font-semibold text-foreground">Pay at table with cash</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Staff will collect cash at your table</p>
-                    </button>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={paymentChoice === 'card_manual'}
-                      onClick={() => setPaymentChoice('card_manual')}
-                      disabled={paying || tabReadyToPay}
-                      className={cn(
-                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                        paymentChoice === 'card_manual'
-                          ? 'border-foreground bg-muted/50'
-                          : 'border-border bg-background hover:border-muted-foreground/40',
-                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
-                      )}
-                    >
-                      <span className="text-lg" aria-hidden>💳</span>
-                      <span className="ml-2 font-semibold text-foreground">Pay at table with card</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Staff will bring their card machine to your table</p>
-                    </button>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={paymentChoice === 'other'}
-                      onClick={() => setPaymentChoice('other')}
-                      disabled={paying || tabReadyToPay}
-                      className={cn(
-                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
-                        paymentChoice === 'other'
-                          ? 'border-foreground bg-muted/50'
-                          : 'border-border bg-background hover:border-muted-foreground/40',
-                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
-                      )}
-                    >
-                      <span className="text-lg" aria-hidden>🤝</span>
-                      <span className="ml-2 font-semibold text-foreground">Other</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Staff will assist with payment at your table</p>
-                    </button>
-                  </div>
-                  {tabTotal > 0 && (
-                    <p className="mt-3 font-sans text-sm text-muted-foreground">
-                      Tab total so far: {restaurant?.currency || 'N$'}{tabTotal.toFixed(2)}
-                    </p>
-                  )}
-                </div>
-              )}
-
               {!inTabFlow && (
                 <div className="mb-6" role="radiogroup" aria-label="Payment method">
                   <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
@@ -742,7 +642,7 @@ export default function CartPage() {
               )}
 
               {/* Main CTA: tab = always POST; non-tab online = order-secure; non-tab cash/card = POST from cart */}
-              {showReadyToPay && !showTabPendingBlock && (
+              {showReadyToPay && (
                 <div className="mb-4">
                   <ReadyToPayTabButton
                     tabId={effectiveTabId}
@@ -753,16 +653,16 @@ export default function CartPage() {
                 </div>
               )}
 
-              {inTabFlow && !showTabPendingBlock ? (
+              {inTabFlow ? (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
                   onClick={handleAddToTab}
-                  disabled={paying || tabReadyToPay || !canAddToTab}
+                  disabled={paying || tabReadyToPay || tabStatus !== 'open'}
                 >
                   {paying ? 'Adding…' : 'Add to Tab'}
                 </Button>
-              ) : !inTabFlow ? (
+              ) : (
                 <div className="text-center py-4">
                   <p className="text-sm text-muted-foreground font-sans mb-3">
                     You need a tab to place an order.
@@ -778,7 +678,7 @@ export default function CartPage() {
                     Create a Tab
                   </Button>
                 </div>
-              ) : null}
+              )}
             </div>
           </div>
         </div>
