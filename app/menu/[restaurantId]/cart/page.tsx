@@ -762,25 +762,22 @@ export default function CartPage() {
                 >
                   {paying ? 'Adding…' : 'Add to Tab'}
                 </Button>
-              ) : !inTabFlow && ENABLE_ONLINE_CARD_CHECKOUT && paymentChoice === 'online' ? (
-                <Button
-                  type="button"
-                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
-                  size="lg"
-                  onClick={handleProceedCheckout}
-                  disabled={paying}
-                >
-                  {paying ? 'Opening…' : 'Proceed to Checkout'}
-                </Button>
               ) : !inTabFlow ? (
-                <Button
-                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base disabled:opacity-50 disabled:cursor-not-allowed"
-                  size="lg"
-                  onClick={handlePlaceOrder}
-                  disabled={paying}
-                >
-                  {paying ? 'Placing order…' : 'Place order'}
-                </Button>
+                <div className="text-center py-4">
+                  <p className="text-sm text-muted-foreground font-sans mb-3">
+                    You need a tab to place an order.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      router.replace(
+                        `/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`
+                      )
+                    }
+                  >
+                    Create a Tab
+                  </Button>
+                </div>
               ) : null}
             </div>
           </div>

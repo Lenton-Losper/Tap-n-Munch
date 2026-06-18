@@ -1172,6 +1172,28 @@ export function OrdersDashboard() {
                   <span className="text-lg font-bold">
                     {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
+                  {normalizedOrder.payment_method &&
+                    normalizedOrder.payment_method !== 'tab' &&
+                    ['cash', 'card_manual', 'card', 'other'].includes(normalizedOrder.payment_method) && (
+                      <div className="flex items-center justify-end gap-1.5 mt-1">
+                        <span className="text-sm">
+                          {normalizedOrder.payment_method === 'cash'
+                            ? '💵'
+                            : normalizedOrder.payment_method === 'other'
+                              ? '🤝'
+                              : '💳'}
+                        </span>
+                        <span className="text-xs font-medium text-muted-foreground font-sans capitalize">
+                          {normalizedOrder.payment_method === 'card_manual'
+                            ? 'Card'
+                            : normalizedOrder.payment_method === 'cash'
+                              ? 'Cash'
+                              : normalizedOrder.payment_method === 'other'
+                                ? 'Other'
+                                : 'Card'}
+                        </span>
+                      </div>
+                    )}
                 </div>
 
                 {/* Order Items - DEFENSIVE: Use normalizedOrder.items which is guaranteed to be an array */}

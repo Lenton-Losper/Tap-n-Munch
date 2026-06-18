@@ -383,6 +383,7 @@ export default function MenuBrowsePage() {
   }, [groupedItems])
 
   const handleAddToCart = async (item: MenuItem) => {
+    if (!isInTab) return
     const hasInlineVariantGroups = getVariantGroups(item).length > 0
     if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
       setAddingItemId(item.id)
@@ -694,6 +695,7 @@ export default function MenuBrowsePage() {
                           <Button
                             onClick={() => handleAddToCart(item)}
                             disabled={
+                              !isInTab ||
                               item.status === 'out_of_stock' ||
                               addingItemId === item.id ||
                               isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
@@ -704,7 +706,9 @@ export default function MenuBrowsePage() {
                             size="sm"
                             className="h-11 bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90"
                           >
-                            {item.status === 'out_of_stock' ? (
+                            {!isInTab ? (
+                              'Create Tab to Order'
+                            ) : item.status === 'out_of_stock' ? (
                               'Unavailable'
                             ) : addingItemId === item.id ? (
                               <span className="inline-flex items-center gap-2">
@@ -757,11 +761,27 @@ export default function MenuBrowsePage() {
           restaurant={restaurant}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
+            if (!isInTab) return
             addItem(cartItem)
             pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)
           }}
         />
+      )}
+
+      {!isInTab && (
+        <div className="fixed bottom-0 left-0 right-0 bg-foreground text-background px-4 py-3 text-center font-sans text-sm font-medium z-50">
+          <button
+            onClick={() =>
+              router.replace(
+                `/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`
+              )
+            }
+            className="underline"
+          >
+            Create a tab to start ordering
+          </button>
+        </div>
       )}
 
       <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4 sm:top-4">

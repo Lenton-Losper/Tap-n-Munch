@@ -315,6 +315,25 @@ export default function TabSummaryPage() {
         </div>
 
         <div className="mt-8 space-y-4">
+          {!tabReadyToPay && (
+            <Button
+              variant="outline"
+              size="lg"
+              className="w-full border-2 border-border text-foreground font-sans text-base py-6 mb-3"
+              onClick={() =>
+                router.push(
+                  `/menu/${restaurantId}/browse?table=${tableNumber}&tabId=${storedTabId}`
+                )
+              }
+            >
+              + Order More
+            </Button>
+          )}
+          {tabReadyToPay && (
+            <p className="text-center text-sm text-muted-foreground font-sans mb-3">
+              Your waiter has been notified and will assist you shortly.
+            </p>
+          )}
           {tabReadyToPay ? (
             <div
               className="rounded-lg border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/40 p-6 text-center"
