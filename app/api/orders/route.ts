@@ -92,9 +92,14 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `Tab is not open (status=${tabStatus})` }, { status: 400 })
       }
 
-      resolvedPaymentMethod = 'tab'
+      // Preserve the customer's payment preference — do not overwrite with 'tab'
+      // resolvedPaymentMethod already contains cash/card/other from the request
+      // Only override if no valid payment method was sent
+      if (!resolvedPaymentMethod || resolvedPaymentMethod === 'tab') {
+        resolvedPaymentMethod = 'cash' // default to cash if nothing selected
+      }
       paymentStatus = 'pending'
-      resolvedPaymentChannel = null
+      resolvedPaymentChannel = resolvedPaymentChannel || null
     }
 
     if (!isTabOrder) {
