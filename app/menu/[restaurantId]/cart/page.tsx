@@ -236,8 +236,7 @@ export default function CartPage() {
         })),
         subtotal: Number(subtotal),
         total: Number(total),
-        paymentMethod: 'tab',
-        paymentChannel: null,
+        ...buildPaymentFields(paymentChoice),
         orderInstructions: orderInstructions?.trim() || '',
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
@@ -580,15 +579,69 @@ export default function CartPage() {
               )}
 
               {inTabFlow && !showTabPendingBlock && (
-                <div className="mb-6 rounded-lg border border-border bg-muted/30 p-4">
-                  <p className="font-sans text-sm font-semibold text-foreground">Card payment only</p>
-                  <p className="mt-2 font-sans text-sm text-muted-foreground">
-                    Card — Waiter brings card machine to your table
-                  </p>
+                <div className="mb-6" role="radiogroup" aria-label="Payment method">
+                  <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
+                    How would you like to pay?
+                  </Label>
+                  <div className="grid gap-3">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'cash'}
+                      onClick={() => setPaymentChoice('cash')}
+                      disabled={paying || tabReadyToPay}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'cash'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>💵</span>
+                      <span className="ml-2 font-semibold text-foreground">Pay at table with cash</span>
+                      <p className="mt-1 text-sm text-muted-foreground">Staff will collect cash at your table</p>
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'card_manual'}
+                      onClick={() => setPaymentChoice('card_manual')}
+                      disabled={paying || tabReadyToPay}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'card_manual'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>💳</span>
+                      <span className="ml-2 font-semibold text-foreground">Pay at table with card</span>
+                      <p className="mt-1 text-sm text-muted-foreground">Staff will bring their card machine to your table</p>
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentChoice === 'other'}
+                      onClick={() => setPaymentChoice('other')}
+                      disabled={paying || tabReadyToPay}
+                      className={cn(
+                        'rounded-lg border-2 p-4 text-left transition-colors font-sans',
+                        paymentChoice === 'other'
+                          ? 'border-foreground bg-muted/50'
+                          : 'border-border bg-background hover:border-muted-foreground/40',
+                        (paying || tabReadyToPay) && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <span className="text-lg" aria-hidden>🤝</span>
+                      <span className="ml-2 font-semibold text-foreground">Other</span>
+                      <p className="mt-1 text-sm text-muted-foreground">Staff will assist with payment at your table</p>
+                    </button>
+                  </div>
                   {tabTotal > 0 && (
-                    <p className="mt-3 font-sans text-sm text-foreground">
-                      Tab total so far: {restaurant?.currency || 'N$'}
-                      {tabTotal.toFixed(2)}
+                    <p className="mt-3 font-sans text-sm text-muted-foreground">
+                      Tab total so far: {restaurant?.currency || 'N$'}{tabTotal.toFixed(2)}
                     </p>
                   )}
                 </div>
