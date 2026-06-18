@@ -203,7 +203,11 @@ export default function TabSummaryPage() {
   )
 
   const handleReadyToPay = async () => {
-    if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading || !paymentPreference) return
+    if (!storedTabId || !restaurantId || tabReadyToPay || readyToPayLoading) return
+    if (!paymentPreference) {
+      setShowPaymentSelector(true)
+      return
+    }
     if (tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay') {
       setReadyToPayNotified(true)
       return
@@ -346,6 +350,7 @@ export default function TabSummaryPage() {
 
           {!tabReadyToPay && !showPaymentSelector && (
             <Button
+              type="button"
               className="w-full py-4 px-6 text-base font-semibold text-white bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
               onClick={() => setShowPaymentSelector(true)}
               disabled={fullTabRunningTotal <= 0}

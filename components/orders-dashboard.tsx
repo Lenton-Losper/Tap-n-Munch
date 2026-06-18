@@ -910,6 +910,12 @@ export function OrdersDashboard() {
 
   const getPaymentChannelBadge = (order: Order) => {
     const ch = paymentChannelOf(order)
+    const tabStatus = String((order as Order & { tab_status?: string | null }).tab_status || '')
+
+    // Tab orders: payment method is chosen at Ready to Pay, not when items are added
+    if (isTabOrder(order) && tabStatus !== 'ready_to_pay') {
+      return null
+    }
 
     // Tab line items have no payment channel until the tab is settled — TAB badge is shown separately
     if (isTabOrder(order) && !ch) {
@@ -1221,6 +1227,7 @@ export function OrdersDashboard() {
                 ...order,
                 items: Array.isArray(order.items) ? order.items : [],
                 customer: order.customer || {},
+                tab_status: tabInfo?.status ?? null,
                 tab_ready_to_pay: tabInfo?.status === 'ready_to_pay',
                 tab_payment_preference: tabInfo?.payment_preference ?? null,
               }
@@ -1260,7 +1267,7 @@ export function OrdersDashboard() {
                   <span className="text-lg font-bold">
                     {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
-                  {normalizedOrder.tab_ready_to_pay && normalizedOrder.tab_payment_preference && (
+                  {normalizedOrder.tab_status === 'ready_to_pay' && normalizedOrder.tab_payment_preference && (
                     <div className="flex items-center justify-end gap-1.5 mt-1">
                       <span className="text-sm">
                         {normalizedOrder.tab_payment_preference === 'cash'
