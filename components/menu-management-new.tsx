@@ -19,7 +19,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Checkbox } from '@/components/ui/checkbox'
 
 export function MenuManagement() {
-  const { user } = useAuth()
+  const { user, restaurantId } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
   const [categories, setCategories] = useState<Category[]>([])
@@ -46,14 +46,14 @@ export function MenuManagement() {
   })
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !restaurantId) return
 
     const loadData = async () => {
       try {
         setLoading(true)
         const [categoriesData, itemsData] = await Promise.all([
-          getCategories(user.id),
-          getMenuItems(user.id),
+          getCategories(restaurantId),
+          getMenuItems(restaurantId),
         ])
         setCategories(categoriesData)
         setMenuItems(itemsData)
@@ -73,14 +73,14 @@ export function MenuManagement() {
     }
 
     loadData()
-  }, [user, toast])
+  }, [user, restaurantId, toast])
 
   useEffect(() => {
-    if (!user || !selectedCategory) return
+    if (!user || !restaurantId || !selectedCategory) return
 
     const loadItems = async () => {
       try {
-        const items = await getMenuItems(user.id, selectedCategory)
+        const items = await getMenuItems(restaurantId, selectedCategory)
         setMenuItems(items)
       } catch (err: any) {
         console.error('Failed to load menu items:', err)
@@ -88,7 +88,7 @@ export function MenuManagement() {
     }
 
     loadItems()
-  }, [user, selectedCategory])
+  }, [user, restaurantId, selectedCategory])
 
   const filteredItems = menuItems.filter(item => {
     if (searchQuery) {
@@ -135,7 +135,7 @@ export function MenuManagement() {
   }
 
   const handleSaveItem = async () => {
-    if (!user) return
+    if (!user || !restaurantId) return
 
     try {
       if (!formData.name || !formData.category_id || !formData.base_price) {
@@ -148,7 +148,7 @@ export function MenuManagement() {
       }
 
       const itemData = {
-        restaurant_id: user.id,
+        restaurant_id: restaurantId,
         category_id: formData.category_id,
         name: formData.name,
         description: formData.description,
@@ -164,7 +164,7 @@ export function MenuManagement() {
 
       if (editingItem) {
         await (updateMenuItem as any)(
-          user.id,
+          restaurantId,
           (editingItem as any).category_id,
           (editingItem as any).sub_category_id,
           editingItem.id,
@@ -183,7 +183,7 @@ export function MenuManagement() {
       }
 
       // Reload items
-      const items = await getMenuItems(user.id, selectedCategory)
+      const items = await getMenuItems(restaurantId, selectedCategory)
       setMenuItems(items)
       setShowItemModal(false)
     } catch (err: any) {
@@ -200,7 +200,7 @@ export function MenuManagement() {
 
     try {
       await (deleteMenuItem as any)(
-        user.id,
+        restaurantId,
         (item as any).category_id,
         (item as any).sub_category_id,
         item.id
@@ -209,7 +209,7 @@ export function MenuManagement() {
         title: 'Success',
         description: 'Menu item deleted',
       })
-      const items = await getMenuItems(user.id, selectedCategory)
+      const items = await getMenuItems(restaurantId, selectedCategory)
       setMenuItems(items)
     } catch (err: any) {
       toast({
@@ -224,13 +224,13 @@ export function MenuManagement() {
     try {
       const newStatus = item.status === 'available' ? 'out_of_stock' : 'available'
       await (updateMenuItem as any)(
-        user.id,
+        restaurantId,
         (item as any).category_id,
         (item as any).sub_category_id,
         item.id,
         { status: newStatus }
       )
-      const items = await getMenuItems(user.id, selectedCategory)
+      const items = await getMenuItems(restaurantId, selectedCategory)
       setMenuItems(items)
     } catch (err: any) {
       toast({

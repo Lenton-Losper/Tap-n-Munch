@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
+import { RoleGuard } from '@/components/auth/role-guard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -353,5 +354,9 @@ function OrderHistoryContent() {
 }
 
 export default function OrderHistoryPage() {
-  return <OrderHistoryContent />
+  return (
+    <RoleGuard allowedRoles={['owner', 'manager']}>
+      <OrderHistoryContent />
+    </RoleGuard>
+  )
 }

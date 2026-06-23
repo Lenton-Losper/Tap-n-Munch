@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useState, useRef } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
+import { RoleGuard } from '@/components/auth/role-guard'
 import { getRestaurant, updateRestaurantSettings } from '@/lib/supabase/restaurants'
 import {
   isLogoStoragePath,
@@ -19,6 +20,7 @@ import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase/client'
+import { TerminalsSection } from '@/components/settings/terminals-section'
 
 function SettingsContent() {
   const { user, restaurantId, restaurant: initialRestaurant } = useAuth()
@@ -613,12 +615,18 @@ function SettingsContent() {
             </Button>
           </div>
         </div>
+
+        <TerminalsSection />
       </div>
     </div>
   )
 }
 
 export default function SettingsPage() {
-  return <SettingsContent />
+  return (
+    <RoleGuard allowedRoles={['owner']}>
+      <SettingsContent />
+    </RoleGuard>
+  )
 }
 

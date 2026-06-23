@@ -1,330 +1,350 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Eye, EyeOff } from 'lucide-react'
+import { Nav } from '../components/Nav'
+import { Footer } from '../components/Footer'
+import { SupabaseConfigError } from '@/components/auth/supabase-config-error'
+import { AuthDivider, GoogleSignInButton } from '@/components/auth/google-sign-in-button'
 import { useAuth } from '@/components/auth/auth-provider'
-import { syncAuthProfile } from '@/lib/supabase/sync-profile'
-import { SupabaseConfigError } from '@/components/auth/firebase-config-error'
+import { signInWithGoogleOAuth } from '@/lib/supabase/google-auth'
+import { supabase } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Eye, EyeOff, ArrowLeft, Check } from 'lucide-react'
 
-export default function SignUpPage() {
+function SignUpForm() {
   const router = useRouter()
-  const { user, loading: authLoading, isSupabaseConfigured, signUp } = useAuth()
-  const [formData, setFormData] = useState({
-    restaurantName: '',
-    email: '',
-    phone: '',
-    password: '',
-    confirmPassword: '',
-  })
+  const searchParams = useSearchParams()
+  const isGoogleSetup = searchParams.get('google') === 'true'
+  const googleName = searchParams.get('name') || ''
+
+  const { user, loading: authLoading, isSupabaseConfigured, signIn } = useAuth()
+  const [fullName, setFullName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [restaurantName, setRestaurantName] = useState('')
+  const [phone, setPhone] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
-  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null)
 
   useEffect(() => {
-    if (!authLoading && user) {
+    if (isGoogleSetup && googleName) {
+      setFullName(decodeURIComponent(googleName))
+    }
+  }, [isGoogleSetup, googleName])
+
+  useEffect(() => {
+    if (authLoading) return
+    if (isGoogleSetup) {
+      if (!user) {
+        router.replace('/signin')
+      }
+      return
+    }
+    if (user) {
       router.replace('/dashboard')
     }
-  }, [user, authLoading, router])
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black"></div>
-      </div>
-    )
-  }
+  }, [authLoading, user, router, isGoogleSetup])
 
   if (!isSupabaseConfigured) {
     return <SupabaseConfigError />
   }
 
-  if (user) {
-    return null
-  }
-
-  // Password validation
-  const passwordChecks = {
-    minLength: formData.password.length >= 8,
-    hasUpperCase: /[A-Z]/.test(formData.password),
-    hasLowerCase: /[a-z]/.test(formData.password),
-    hasNumber: /[0-9]/.test(formData.password),
-  }
-
-  const isPasswordValid = Object.values(passwordChecks).every(Boolean)
-  const passwordsMatch = formData.password === formData.confirmPassword && formData.confirmPassword.length > 0
-
-  // Check username availability (simple check - just validates format)
-  const checkUsername = (email: string) => {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    setUsernameAvailable(emailRegex.test(email))
-  }
-
-  const handleChange = (field: string, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
-    if (field === 'email') {
-      checkUsername(value)
+  const handleGoogleSignIn = async () => {
+    setError('')
+    setGoogleLoading(true)
+    try {
+      await signInWithGoogleOAuth()
+    } finally {
+      setGoogleLoading(false)
     }
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
     setError('')
 
-    if (!isPasswordValid) {
-      setError('Please meet all password requirements')
+    if (!isGoogleSetup && password !== confirmPassword) {
+      setError('Passwords do not match.')
       return
     }
 
-    if (!passwordsMatch) {
-      setError('Passwords do not match')
-      return
-    }
-
-    setLoading(true)
+    setSubmitting(true)
 
     try {
-      console.log('🚀 Starting signup process...', {
-        email: formData.email,
-        restaurantName: formData.restaurantName,
-      })
-      
-      await signUp(
-        formData.email,
-        formData.password,
-        formData.restaurantName,
-        formData.phone
-      )
+      if (isGoogleSetup) {
+        const { data: sessionData } = await supabase.auth.getSession()
+        const accessToken = sessionData.session?.access_token
 
-      await syncAuthProfile(formData.restaurantName)
-      
-      console.log('✅ Signup successful! Redirecting to dashboard...')
-      
-      // Wait a moment for auth state to update
-      setTimeout(() => {
-        router.replace('/dashboard')
-      }, 500)
-    } catch (err: any) {
-      console.error('❌ Signup error:', {
-        error: err,
-        message: err.message,
-        stack: err.stack,
+        if (!accessToken) {
+          throw new Error('Session expired. Please sign in with Google again.')
+        }
+
+        const response = await fetch('/api/auth/create-restaurant', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            restaurantName,
+            fullName,
+            phone,
+          }),
+        })
+
+        const payload = await response.json()
+        if (!response.ok) {
+          throw new Error(payload?.error || 'Failed to complete setup.')
+        }
+
+        router.replace('/onboarding')
+        return
+      }
+
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fullName,
+          email,
+          password,
+          restaurantName,
+          phone,
+        }),
       })
-      setError(err.message || 'Failed to create account. Please try again.')
-      setLoading(false)
+
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to create account.')
+      }
+
+      await signIn(email, password)
+      router.replace('/onboarding')
+    } catch (submitError: unknown) {
+      const message =
+        submitError instanceof Error
+          ? submitError.message
+          : 'Failed to create account. Please try again.'
+      setError(message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
+  const busy = submitting || googleLoading || authLoading
+
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Create Account</h1>
-          <p className="text-gray-600 mb-6">
-            Sign up to start managing your restaurant
+    <div className="min-h-screen bg-[#F7F6F3] text-[#37352F]">
+      <Nav />
+
+      <main className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4 pt-20 sm:px-6 lg:px-8">
+        <section className="w-full max-w-lg rounded-2xl border border-[#E9E9E7] bg-white p-8 shadow-[0_10px_35px_rgba(55,53,47,0.05)] sm:p-10">
+          <h1 className="font-serif text-3xl font-semibold">
+            {isGoogleSetup ? 'Complete Setup' : 'Create Account'}
+          </h1>
+          <p className="mt-2 text-sm text-[#6B675F]">
+            {isGoogleSetup
+              ? 'Add your restaurant details to finish setting up FlashTap.'
+              : 'Start your FlashTap venue in minutes.'}
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          {!isGoogleSetup ? (
+            <>
+              <div className="mt-8">
+                <GoogleSignInButton
+                  disabled={busy}
+                  onError={setError}
+                  onClick={handleGoogleSignIn}
+                />
+              </div>
+
+              <AuthDivider />
+            </>
+          ) : null}
+
+          <form onSubmit={handleSubmit} className={`space-y-5 ${isGoogleSetup ? 'mt-8' : ''}`}>
             <div className="space-y-2">
-              <Label htmlFor="restaurantName">Restaurant Name *</Label>
+              <Label htmlFor="fullName" className="text-[#37352F]">
+                Full Name
+              </Label>
+              <Input
+                id="fullName"
+                type="text"
+                value={fullName}
+                onChange={(event) => setFullName(event.target.value)}
+                required
+                disabled={busy}
+                placeholder="Jane Doe"
+                className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
+              />
+            </div>
+
+            {!isGoogleSetup ? (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="email" className="text-[#37352F]">
+                    Email
+                  </Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    required
+                    disabled={busy}
+                    placeholder="you@example.com"
+                    className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="password" className="text-[#37352F]">
+                    Password
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="password"
+                      type={showPassword ? 'text' : 'password'}
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      required
+                      disabled={busy}
+                      placeholder="Create a password"
+                      className="rounded-lg border-[#E9E9E7] bg-white pr-11 text-[#37352F] placeholder:text-[#9B978E]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B675F] hover:text-[#37352F]"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      disabled={busy}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword" className="text-[#37352F]">
+                    Confirm Password
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="confirmPassword"
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      value={confirmPassword}
+                      onChange={(event) => setConfirmPassword(event.target.value)}
+                      required
+                      disabled={busy}
+                      placeholder="Confirm your password"
+                      className="rounded-lg border-[#E9E9E7] bg-white pr-11 text-[#37352F] placeholder:text-[#9B978E]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B675F] hover:text-[#37352F]"
+                      aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      disabled={busy}
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            <div className="space-y-2">
+              <Label htmlFor="restaurantName" className="text-[#37352F]">
+                Restaurant Name
+              </Label>
               <Input
                 id="restaurantName"
                 type="text"
-                placeholder="e.g., FlashTap"
-                value={formData.restaurantName}
-                onChange={(e) => handleChange('restaurantName', e.target.value)}
+                value={restaurantName}
+                onChange={(event) => setRestaurantName(event.target.value)}
                 required
-                disabled={loading}
-                className="w-full"
+                disabled={busy}
+                placeholder="The Riverside Bistro"
+                className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email *</Label>
+              <Label htmlFor="phone" className="text-[#37352F]">
+                Phone
+              </Label>
               <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={formData.email}
-                onChange={(e) => handleChange('email', e.target.value)}
-                required
-                disabled={loading}
-                className="w-full"
+                id="phone"
+                type="tel"
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                disabled={busy}
+                placeholder="+264 81 123 4567"
+                className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
               />
-              {formData.email && usernameAvailable !== null && (
-                <div className={`flex items-center gap-2 text-sm ${
-                  usernameAvailable ? 'text-green-600' : 'text-red-600'
-                }`}>
-                  {usernameAvailable ? (
-                    <>
-                      <Check className="w-4 h-4" />
-                      <span>Email is valid</span>
-                    </>
-                  ) : (
-                    <span>Please enter a valid email address</span>
-                  )}
-                </div>
-              )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="phone">Phone Number *</Label>
-              <div className="flex">
-                <span className="inline-flex items-center px-3 rounded-l-md border border-r-0 border-gray-300 bg-gray-50 text-gray-500 text-sm">
-                  +
-                </span>
-                <Input
-                  id="phone"
-                  type="tel"
-                  placeholder="234 567 8900"
-                  value={formData.phone}
-                  onChange={(e) => handleChange('phone', e.target.value)}
-                  required
-                  disabled={loading}
-                  className="w-full rounded-l-none"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password">Password *</Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Create a password"
-                  value={formData.password}
-                  onChange={(e) => handleChange('password', e.target.value)}
-                  required
-                  disabled={loading}
-                  className="w-full pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                  disabled={loading}
-                >
-                  {showPassword ? (
-                    <EyeOff className="w-5 h-5" />
-                  ) : (
-                    <Eye className="w-5 h-5" />
-                  )}
-                </button>
-              </div>
-              {formData.password && (
-                <div className="space-y-1 mt-2">
-                  {Object.entries(passwordChecks).map(([key, isValid]) => (
-                    <div
-                      key={key}
-                      className={`flex items-center gap-2 text-sm ${
-                        isValid ? 'text-green-600' : 'text-gray-500'
-                      }`}
-                    >
-                      {isValid ? (
-                        <Check className="w-4 h-4" />
-                      ) : (
-                        <span className="w-4 h-4 flex items-center justify-center">○</span>
-                      )}
-                      <span>
-                        {key === 'minLength' && 'At least 8 characters'}
-                        {key === 'hasUpperCase' && 'One uppercase letter'}
-                        {key === 'hasLowerCase' && 'One lowercase letter'}
-                        {key === 'hasNumber' && 'One number'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm Password *</Label>
-              <div className="relative">
-                <Input
-                  id="confirmPassword"
-                  type={showConfirmPassword ? 'text' : 'password'}
-                  placeholder="Confirm your password"
-                  value={formData.confirmPassword}
-                  onChange={(e) => handleChange('confirmPassword', e.target.value)}
-                  required
-                  disabled={loading}
-                  className="w-full pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                  disabled={loading}
-                >
-                  {showConfirmPassword ? (
-                    <EyeOff className="w-5 h-5" />
-                  ) : (
-                    <Eye className="w-5 h-5" />
-                  )}
-                </button>
-              </div>
-              {formData.confirmPassword && (
-                <div className={`flex items-center gap-2 text-sm ${
-                  passwordsMatch ? 'text-green-600' : 'text-red-600'
-                }`}>
-                  {passwordsMatch ? (
-                    <>
-                      <Check className="w-4 h-4" />
-                      <span>Passwords match</span>
-                    </>
-                  ) : (
-                    <span>Passwords do not match</span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {error && (
-              <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">
+            {error ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
-              </div>
-            )}
+              </p>
+            ) : null}
 
             <Button
               type="submit"
-              className="w-full bg-black hover:bg-black/90 text-white"
-              disabled={loading || !isPasswordValid || !passwordsMatch}
+              disabled={busy}
+              className="w-full rounded-lg bg-[#37352F] text-white hover:bg-[#2f2d27]"
             >
-              {loading ? 'Creating Account...' : 'Start Free Trial'}
+              {submitting
+                ? isGoogleSetup
+                  ? 'Completing setup...'
+                  : 'Creating account...'
+                : isGoogleSetup
+                  ? 'Complete Setup'
+                  : 'Create Account'}
             </Button>
           </form>
 
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-600">
-              Already have an account?{' '}
+          {!isGoogleSetup ? (
+            <div className="mt-6 text-sm">
               <Link
                 href="/signin"
-                className="font-medium text-black hover:text-black/80"
+                className="text-[#6B675F] underline decoration-[#BFBAB0] underline-offset-4 hover:text-[#37352F]"
               >
-                Sign In
+                Already have an account? Sign in
               </Link>
-            </p>
-          </div>
+            </div>
+          ) : null}
+        </section>
+      </main>
 
-          <div className="mt-6 pt-6 border-t border-gray-200">
-            <Link
-              href="/"
-              className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Back to Home
-            </Link>
-          </div>
-        </div>
-      </div>
+      <Footer />
     </div>
   )
 }
 
+export default function SignUpPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[#F7F6F3] text-[#6B675F]">
+          Loading...
+        </div>
+      }
+    >
+      <SignUpForm />
+    </Suspense>
+  )
+}

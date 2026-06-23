@@ -67,6 +67,14 @@ export default function TabSummaryPage() {
 
   const tabReadyToPay = tabStatus === 'ready_to_pay' || tabRecord?.status === 'ready_to_pay' || readyToPayNotified
 
+  const creatorTabPin = useMemo(() => {
+    if (typeof window === 'undefined' || !storedTabId) return null
+    const storedCreatorTabId = sessionStorage.getItem('flashtap_creator_tab_id')
+    const pin = sessionStorage.getItem('flashtap_creator_tab_pin')
+    if (storedCreatorTabId === storedTabId && pin) return pin
+    return null
+  }, [storedTabId])
+
   const currency = restaurant?.currency || 'N$'
 
   useEffect(() => {
@@ -327,6 +335,13 @@ export default function TabSummaryPage() {
           <h1 className="font-serif text-2xl font-bold text-foreground">Table {tableNumber || '-'} Tab</h1>
           <p className="mt-1 text-sm text-muted-foreground font-sans">Review your tab before paying</p>
         </div>
+
+        {creatorTabPin && (
+          <div className="mb-6 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-sans text-foreground">
+            Tab PIN:{' '}
+            <span className="font-bold text-emerald-600">{creatorTabPin}</span> — Share with your group
+          </div>
+        )}
 
         <div className="mb-8 rounded-lg border-2 border-border bg-card p-6 text-center">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Full tab running total</p>

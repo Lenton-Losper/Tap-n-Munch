@@ -74,5 +74,84 @@ export async function assertRestaurantAdmin(
     return
   }
 
+  const { data: membership, error: membershipError } = await supabase
+    .from('restaurant_users')
+    .select('role')
+    .eq('user_id', userId)
+    .eq('restaurant_id', restaurantId)
+    .maybeSingle()
+
+  if (membershipError) throw membershipError
+
+  const memberRole = String(membership?.role || '').toLowerCase()
+  if (memberRole === 'owner' || memberRole === 'manager') {
+    return
+  }
+
   throw new Error('You do not have permission to manage this restaurant.')
+}
+
+export async function assertRestaurantOwner(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  userId: string,
+  restaurantId: string
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('restaurant_users')
+    .select('role')
+    .eq('user_id', userId)
+    .eq('restaurant_id', restaurantId)
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (String(data?.role || '').toLowerCase() === 'owner') {
+    return
+  }
+
+  const { data: restaurant, error: restError } = await supabase
+    .from('restaurants')
+    .select('owner_id')
+    .eq('id', restaurantId)
+    .maybeSingle()
+
+  if (restError) throw restError
+
+  const ownerId = restaurant?.owner_id != null ? String(restaurant.owner_id).trim() : ''
+  if (ownerId && ownerId === userId) {
+    return
+  }
+
+  throw new Error('Only restaurant owners can manage terminals.')
+}
+
+export async function getRestaurantIdForUser(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  userId: string
+): Promise<string> {
+  const { data: ownerRow, error: ownerError } = await supabase
+    .from('restaurant_users')
+    .select('restaurant_id')
+    .eq('user_id', userId)
+    .eq('role', 'owner')
+    .limit(1)
+    .maybeSingle()
+
+  if (ownerError) throw ownerError
+  if (ownerRow?.restaurant_id) {
+    return String(ownerRow.restaurant_id)
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from('restaurant_users')
+    .select('restaurant_id')
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle()
+
+  if (membershipError) throw membershipError
+  if (!membership?.restaurant_id) {
+    throw new Error('Restaurant not found for this account')
+  }
+  return String(membership.restaurant_id)
 }

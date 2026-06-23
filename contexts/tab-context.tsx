@@ -41,13 +41,19 @@ type TabContextType = {
     tableNumber: string
     tableId?: string
     displayName?: string
-  }) => Promise<string>
+  }) => Promise<{ tabId: string; tabPin?: string }>
   joinExistingTab: (params: {
     restaurantId: string
     tabId: string
     tableNumber?: string | number
     displayName?: string
   }) => Promise<void>
+  joinTabWithPin: (params: {
+    restaurantId: string
+    tableNumber: string | number
+    pin: string
+    displayName?: string
+  }) => Promise<string>
   markTabReadyToPay: () => Promise<void>
   refreshTab: () => Promise<void>
 }
@@ -219,6 +225,64 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const joinTabWithPin = async ({
+    restaurantId: rid,
+    tableNumber: tableNum,
+    pin,
+    displayName,
+  }: {
+    restaurantId: string
+    tableNumber: string | number
+    pin: string
+    displayName?: string
+  }) => {
+    const sid = sessionId || ensureTabSessionId()
+    const storedDisplayName =
+      typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_display_name') || '' : ''
+    const resolvedDisplayName = displayName?.trim() || storedDisplayName.trim() || 'Guest'
+
+    const response = await fetch('/api/tabs/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        restaurantId: rid,
+        tableNumber: Number(tableNum) || tableNum,
+        pin: pin.trim(),
+        sessionId: sid,
+        displayName: resolvedDisplayName,
+      }),
+    })
+
+    const data = await response.json().catch(() => ({}))
+
+    if (response.status === 403) {
+      throw new Error('Incorrect PIN, please try again')
+    }
+    if (response.status === 404) {
+      throw new Error('No open tab found for this table')
+    }
+    if (response.status === 410) {
+      handleSessionExpired(rid)
+      throw new Error('Your dining session has ended')
+    }
+    if (!response.ok) {
+      throw new Error(data?.error || `Failed to join tab (${response.status})`)
+    }
+
+    if (data?.sessionToken) {
+      sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
+    }
+
+    const joinedTabId = String(data?.tabId || '').trim()
+    if (!joinedTabId) {
+      throw new Error('Tab was joined but no tab ID was returned')
+    }
+
+    persistTabId(joinedTabId, tableNum)
+    return joinedTabId
+  }
+
   const joinExistingTab = async ({
     restaurantId: rid,
     tabId: targetTabId,
@@ -317,7 +381,10 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
 
     console.log('[TAB CONTEXT] createNewTab success', newTabId)
     persistTabId(newTabId, tableNum)
-    return newTabId
+    return {
+      tabId: newTabId,
+      tabPin: data?.tabPin ? String(data.tabPin) : undefined,
+    }
   }
 
   const markTabReadyToPay = async () => {
@@ -358,6 +425,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
     clearTab,
     createNewTab,
     joinExistingTab,
+    joinTabWithPin,
     markTabReadyToPay,
     refreshTab: loadTab,
   }

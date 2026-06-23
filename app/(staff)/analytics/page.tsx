@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
+import { RoleGuard } from '@/components/auth/role-guard'
 import { supabase } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import {
@@ -491,5 +492,9 @@ function AnalyticsContent() {
 }
 
 export default function AnalyticsPage() {
-  return <AnalyticsContent />
+  return (
+    <RoleGuard allowedRoles={['owner', 'manager']}>
+      <AnalyticsContent />
+    </RoleGuard>
+  )
 }

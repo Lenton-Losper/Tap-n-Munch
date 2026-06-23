@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Suspense } from 'react'
 import { SignInClient } from './signin-client'
 
 export const metadata: Metadata = {
@@ -7,6 +8,16 @@ export const metadata: Metadata = {
 }
 
 export default function SignInPage() {
-  return <SignInClient />
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[#F7F6F3] text-[#6B675F]">
+          Loading...
+        </div>
+      }
+    >
+      <SignInClient />
+    </Suspense>
+  )
 }
 

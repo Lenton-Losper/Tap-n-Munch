@@ -90,6 +90,16 @@ export default function MenuBrowsePage() {
     const s = q.toString()
     return s ? `?${s}` : ''
   }, [tableNumber, tabIdParam, tabId])
+
+  const creatorTabPin = useMemo(() => {
+    if (typeof window === 'undefined') return null
+    const activeTabId = tabIdParam || tabId || readStoredTabId() || ''
+    if (!activeTabId) return null
+    const storedTabId = sessionStorage.getItem('flashtap_creator_tab_id')
+    const pin = sessionStorage.getItem('flashtap_creator_tab_pin')
+    if (storedTabId === activeTabId && pin) return pin
+    return null
+  }, [tabIdParam, tabId])
   const [restaurant, setRestaurant] = useState<any>(null)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -527,9 +537,18 @@ export default function MenuBrowsePage() {
                 ? `Ready to pay • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
                 : tabStatus === 'closed'
                   ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
-                  : `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
-                      tabMembers.length
-                    } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`}
+                  : creatorTabPin ? (
+                      <>
+                        Tab open • {(restaurant?.currency || 'N$')}
+                        {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
+                        {tabMembers.length === 1 ? 'person' : 'people'} • PIN:{' '}
+                        <span className="font-bold text-emerald-400">{creatorTabPin}</span> — Tap to settle →
+                      </>
+                    ) : (
+                      `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
+                        tabMembers.length
+                      } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`
+                    )}
             </div>
           </Link>
         </div>

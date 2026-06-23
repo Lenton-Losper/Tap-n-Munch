@@ -71,8 +71,12 @@ export function MenuLandingPageV2Content({
   )
   const [sessionEndedNotice, setSessionEndedNotice] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const [createdTabPin, setCreatedTabPin] = useState<{ tabId: string; pin: string } | null>(null)
+  const [showJoinPinEntry, setShowJoinPinEntry] = useState(false)
+  const [joinPin, setJoinPin] = useState('')
+  const [joinPinError, setJoinPinError] = useState<string | null>(null)
   const { clearCart } = useCart()
-  const { createNewTab, joinExistingTab, clearTab } = useTab()
+  const { createNewTab, joinExistingTab, joinTabWithPin, clearTab } = useTab()
 
   useEffect(() => {
     console.log('[V2] page mounted, URL:', window.location.href)
@@ -558,14 +562,22 @@ export function MenuLandingPageV2Content({
       setTabActionError(null)
       persistDisplayName()
       console.log('[V2] create tab clicked', { restaurantId, tableNum, tableId: table?.id })
-      const tid = await createNewTab({
+      const result = await createNewTab({
         restaurantId,
         tableNumber: String(tableNum),
         tableId: table?.id ? String(table.id) : undefined,
         displayName: displayName.trim() || undefined,
       })
-      console.log('[V2] create tab redirecting to browse', { tid })
-      router.push(browseWithTab(tid))
+      console.log('[V2] create tab success', result)
+      if (result.tabPin) {
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('flashtap_creator_tab_pin', result.tabPin)
+          sessionStorage.setItem('flashtap_creator_tab_id', result.tabId)
+        }
+        setCreatedTabPin({ tabId: result.tabId, pin: result.tabPin })
+        return
+      }
+      router.push(browseWithTab(result.tabId))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
       console.error('[V2] create tab failed:', err)
@@ -575,8 +587,24 @@ export function MenuLandingPageV2Content({
     }
   }
 
-  const handleJoinTab = async () => {
-    const joinTabId = myStoredTab?.id || openTab?.id
+  const handleContinueAfterPin = () => {
+    if (!createdTabPin) return
+    router.push(browseWithTab(createdTabPin.tabId))
+    setCreatedTabPin(null)
+  }
+
+  const handleStartJoinTab = () => {
+    if (myStoredTab) {
+      void handleRejoinStoredTab()
+      return
+    }
+    setJoinPin('')
+    setJoinPinError(null)
+    setShowJoinPinEntry(true)
+  }
+
+  const handleRejoinStoredTab = async () => {
+    const joinTabId = myStoredTab?.id
     if (!restaurantId || !joinTabId) {
       setTabActionError('No open tab found to join.')
       return
@@ -585,22 +613,58 @@ export function MenuLandingPageV2Content({
       setTabActionLoading('join')
       setTabActionError(null)
       persistDisplayName()
-      console.log('[V2] join tab clicked', { restaurantId, tabId: joinTabId, rejoin: Boolean(myStoredTab) })
       await joinExistingTab({
         restaurantId,
         tabId: joinTabId,
         tableNumber: tableNum,
         displayName: displayName.trim() || undefined,
       })
-      console.log('[V2] join tab redirecting to browse', { tabId: joinTabId })
       router.push(browseWithTab(joinTabId))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
-      console.error('[V2] join tab failed:', err)
+      console.error('[V2] rejoin tab failed:', err)
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
     }
+  }
+
+  const handleSubmitJoinPin = async () => {
+    if (!restaurantId || tableNum <= 0) {
+      setJoinPinError('Missing restaurant or table number.')
+      return
+    }
+    if (!/^\d{4}$/.test(joinPin.trim())) {
+      setJoinPinError('Enter the 4-digit PIN.')
+      return
+    }
+    try {
+      setTabActionLoading('join')
+      setJoinPinError(null)
+      persistDisplayName()
+      const joinedTabId = await joinTabWithPin({
+        restaurantId,
+        tableNumber: tableNum,
+        pin: joinPin.trim(),
+        displayName: displayName.trim() || undefined,
+      })
+      setShowJoinPinEntry(false)
+      setJoinPin('')
+      router.push(browseWithTab(joinedTabId))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      setJoinPinError(message)
+    } finally {
+      setTabActionLoading(null)
+    }
+  }
+
+  const handleJoinTab = async () => {
+    if (myStoredTab) {
+      await handleRejoinStoredTab()
+      return
+    }
+    handleStartJoinTab()
   }
 
   // Loading state
@@ -733,6 +797,73 @@ export function MenuLandingPageV2Content({
 
           {/* CTA Buttons */}
           <div className="space-y-4 pt-8">
+            {createdTabPin ? (
+              <div className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">Your tab PIN is</p>
+                  <p className="font-mono text-5xl font-bold tracking-[0.3em] text-white mt-4">
+                    {createdTabPin.pin}
+                  </p>
+                  <p className="font-sans text-sm text-white/80 mt-4">
+                    Share this with your group so they can join your tab.
+                  </p>
+                </div>
+                <Button
+                  size="lg"
+                  onClick={handleContinueAfterPin}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  Continue
+                </Button>
+              </div>
+            ) : showJoinPinEntry ? (
+              <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">Enter tab PIN</p>
+                  <p className="font-sans text-sm text-white/70 mt-2">
+                    Ask the person who created the tab for the 4-digit PIN.
+                  </p>
+                </div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={4}
+                  placeholder="0000"
+                  value={joinPin}
+                  onChange={(e) => {
+                    setJoinPin(e.target.value.replace(/\D/g, '').slice(0, 4))
+                    setJoinPinError(null)
+                  }}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-4 py-4 text-center text-white text-3xl font-mono tracking-[0.4em] placeholder-white/30 focus:outline-none focus:border-white/40"
+                />
+                {joinPinError && (
+                  <p className="font-sans text-sm text-red-200">{joinPinError}</p>
+                )}
+                <Button
+                  size="lg"
+                  onClick={handleSubmitJoinPin}
+                  disabled={tabActionLoading !== null || joinPin.length !== 4}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  {tabActionLoading === 'join' ? 'Joining tab…' : 'Join Tab'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    setShowJoinPinEntry(false)
+                    setJoinPin('')
+                    setJoinPinError(null)
+                  }}
+                  disabled={tabActionLoading !== null}
+                  className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                >
+                  Back
+                </Button>
+              </div>
+            ) : (
+              <>
             {tableNum > 0 && recentHostedPending && minutesSince(recentHostedPending.placed_at) < 10 && (
               <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 mb-2 text-center">
                 <p className="text-yellow-100 font-medium font-sans text-sm">
@@ -880,6 +1011,8 @@ export function MenuLandingPageV2Content({
                 View Receipt
               </Button>
             </Link>
+            )}
+              </>
             )}
           </div>
 

@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import { Inter, Playfair_Display } from 'next/font/google'
+import { headers } from 'next/headers'
 import { Analytics } from '@vercel/analytics/next'
+import { isRivieraHost } from '@/lib/riviera-subdomain'
 import { AppProviders } from './providers'
 import './globals.css'
 
@@ -24,15 +26,18 @@ export const metadata: Metadata = {
   generator: 'v0.app',
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const host = (await headers()).get('host')
+  const isRivieraSubdomain = isRivieraHost(host)
+
   return (
     <html lang="en" className={`${inter.variable} ${playfairDisplay.variable}`}>
       <body>
-        <AppProviders>{children}</AppProviders>
+        <AppProviders isRivieraSubdomain={isRivieraSubdomain}>{children}</AppProviders>
         <Analytics />
       </body>
     </html>

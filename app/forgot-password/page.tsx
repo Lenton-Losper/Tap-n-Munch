@@ -6,21 +6,39 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ArrowLeft } from 'lucide-react'
+import { supabase } from '@/lib/supabase/client'
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
+  const [error, setError] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError('')
     setLoading(true)
-    // TODO: Implement password reset with Firebase
-    // await sendPasswordResetEmail(auth, email)
-    setTimeout(() => {
+
+    try {
+      const redirectTo =
+        typeof window !== 'undefined' ? `${window.location.origin}/signin` : undefined
+
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      })
+
+      if (resetError) {
+        setError(resetError.message || 'Failed to send reset email. Please try again.')
+        return
+      }
+
       setSent(true)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to send reset email. Please try again.'
+      setError(message)
+    } finally {
       setLoading(false)
-    }, 1000)
+    }
   }
 
   if (sent) {
@@ -29,9 +47,7 @@ export default function ForgotPasswordPage() {
         <div className="w-full max-w-md">
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Check your email</h1>
-            <p className="text-gray-600 mb-6">
-              We've sent a password reset link to {email}
-            </p>
+            <p className="text-gray-600 mb-6">Check your email for a password reset link</p>
             <Link href="/signin">
               <Button className="w-full bg-[#FF6B35] hover:bg-[#e55a28] text-white">
                 Back to Sign In
@@ -49,7 +65,7 @@ export default function ForgotPasswordPage() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Forgot Password</h1>
           <p className="text-gray-600 mb-6">
-            Enter your email address and we'll send you a link to reset your password
+            Enter your email address and we&apos;ll send you a link to reset your password
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -66,6 +82,12 @@ export default function ForgotPasswordPage() {
                 className="w-full"
               />
             </div>
+
+            {error ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </p>
+            ) : null}
 
             <Button
               type="submit"
@@ -90,4 +112,3 @@ export default function ForgotPasswordPage() {
     </div>
   )
 }
-

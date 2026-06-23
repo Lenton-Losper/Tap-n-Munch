@@ -1,7 +1,6 @@
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
 import {
-  orderRestaurantOrFilter,
   resolveOrderRestaurantScope,
   resolveRestaurantUuid,
   type OrderRestaurantScope,
@@ -71,7 +70,7 @@ export async function getSupabaseOrdersByStatus(
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .or(orderRestaurantOrFilter(scope))
+    .eq('restaurant_id', scope.restaurantId)
     .eq('status', status)
     .eq('is_closed', false)
     .order(status === 'completed' ? 'completed_at' : 'placed_at', {
@@ -90,7 +89,7 @@ export async function getSupabaseOrdersByTable(restaurantId: string, tableNumber
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+    .eq('restaurant_id', scope.restaurantId)
     .eq('table_number', tableNumber)
     .eq('is_closed', false)
     .order('placed_at', { ascending: true })
@@ -155,7 +154,7 @@ export async function closeSupabaseTableOrders(restaurantId: string, tableNumber
       is_closed: true,
       table_closed: true,
     })
-    .or(orderRestaurantOrFilter(scope))
+    .eq('restaurant_id', scope.restaurantId)
     .eq('table_number', tableNumber)
     .eq('is_closed', false)
   if (error) throw error
@@ -170,7 +169,7 @@ export async function getPendingHostedOrders(
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .or(orderRestaurantOrFilter(scope))
+    .eq('restaurant_id', scope.restaurantId)
     .eq('payment_status', 'pending')
     .eq('payment_channel', 'hosted')
     .eq('is_closed', false)
@@ -190,7 +189,7 @@ export async function getAllOpenRestaurantOrders(
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .or(orderRestaurantOrFilter(scope))
+    .eq('restaurant_id', scope.restaurantId)
     .eq('is_closed', false)
     .order('placed_at', { ascending: false })
   if (error) {
@@ -207,7 +206,6 @@ export type OrderRealtimePayload = {
 
 /**
  * Single Realtime channel for all order INSERT/UPDATE/DELETE events for a restaurant.
- * Filters by firebase_restaurant_id (orders are keyed by this column in production).
  */
 export function subscribeRestaurantOrdersRealtime(
   restaurantId: string,
@@ -245,7 +243,7 @@ export function subscribeRestaurantOrdersRealtime(
 
     if (cancelled) return
 
-    const channelName = `orders-channel-${scope.firebaseRestaurantId}`
+    const channelName = `orders-channel-${scope.restaurantId}`
     const nextChannel = supabase.channel(channelName)
 
     const onOrderChange = (payload: {
@@ -270,7 +268,7 @@ export function subscribeRestaurantOrdersRealtime(
         event: '*',
         schema: 'public',
         table: 'orders',
-        filter: `firebase_restaurant_id=eq.${scope.firebaseRestaurantId}`,
+        filter: `restaurant_id=eq.${scope.restaurantId}`,
       },
       onOrderChange
     )
@@ -351,7 +349,7 @@ function subscribeRestaurantOrders(
     refetchOrders()
     if (cancelled) return
 
-    const channelName = `orders-${scope.firebaseRestaurantId}-${channelSuffix}`
+    const channelName = `orders-${scope.restaurantId}-${channelSuffix}`
     const channel = supabase.channel(channelName)
 
     const onOrderChange = (_payload: { eventType?: string; new?: Record<string, unknown> }) => {
@@ -364,7 +362,7 @@ function subscribeRestaurantOrders(
         event: '*',
         schema: 'public',
         table: 'orders',
-        filter: `firebase_restaurant_id=eq.${scope.firebaseRestaurantId}`,
+        filter: `restaurant_id=eq.${scope.restaurantId}`,
       },
       onOrderChange
     )
@@ -389,12 +387,11 @@ export async function getNextSupabaseOrderNumber(restaurantId: string): Promise<
   const { count, error } = await supabase
     .from('orders')
     .select('*', { count: 'exact', head: true })
-    .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+    .eq('restaurant_id', scope.restaurantId)
   if (error) throw error
   return (count || 0) + 1
 }
 
-// Firebase-orders compatibility exports (migration bridge)
 export async function getNextOrderNumber(restaurantId: string) {
   return getNextSupabaseOrderNumber(restaurantId)
 }
@@ -415,7 +412,7 @@ export async function getOrders(restaurantId: string, status?: string): Promise<
   let query = supabase
     .from('orders')
     .select('*')
-    .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+    .eq('restaurant_id', scope.restaurantId)
     .order('placed_at', { ascending: false })
   if (status) query = query.eq('status', status)
   const { data, error } = await query
@@ -428,7 +425,7 @@ export async function getOrder(restaurantId: string, orderId: string): Promise<O
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+    .eq('restaurant_id', scope.restaurantId)
     .eq('id', orderId)
     .maybeSingle()
   if (error) throw error
@@ -444,7 +441,7 @@ export async function updateOrderStatus(restaurantId: string, orderId: string, s
   const { error } = await createServerSupabaseClient()
     .from('orders')
     .update(patch)
-    .or(orderRestaurantOrFilter(scope))
+    .eq('restaurant_id', scope.restaurantId)
     .eq('id', orderId)
   if (error) throw error
 }
@@ -468,4 +465,4 @@ export function subscribeToOrders(
   return subscribeSupabaseOrders(restaurantId, status, callback)
 }
 
-export { resolveOrderRestaurantScope, orderRestaurantOrFilter } from './restaurants'
+export { resolveOrderRestaurantScope, resolveRestaurantUuid } from './restaurants'

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { issueTokenForOpenTab } from '@/lib/session-token'
+import { generateTabPin } from '@/lib/tabs/generate-tab-pin'
 
 export const dynamic = 'force-dynamic'
 
@@ -67,6 +68,8 @@ export async function POST(req: Request) {
         ]
       : []
 
+    const tabPin = generateTabPin()
+
     const insertPayload = {
       restaurant_id: restaurantUuid,
       table_id: tableRow.id,
@@ -74,6 +77,7 @@ export async function POST(req: Request) {
       status: 'open',
       members,
       total: 0,
+      tab_pin: tabPin,
     }
 
     console.log('[TABS] inserting tab row', {
@@ -154,6 +158,7 @@ export async function POST(req: Request) {
       tableId: newTab.table_id,
       tableNumber: newTab.table_number,
       sessionToken,
+      tabPin,
     })
   } catch (err) {
     console.error('[TABS] unexpected error', err)

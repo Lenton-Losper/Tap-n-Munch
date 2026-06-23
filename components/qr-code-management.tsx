@@ -6,7 +6,6 @@ import { getSupabaseTables as getTables, createSupabaseTable as createTable, del
 import { supabase } from '@/lib/supabase/client'
 import { buildMenuUrl } from '@/lib/base-url'
 import {
-  orderRestaurantOrFilter,
   resolveOrderRestaurantScope,
   type OrderRestaurantScope,
 } from '@/lib/supabase/restaurants'
@@ -127,21 +126,12 @@ export function QRCodeManagement() {
       const { data, error } = await supabase
         .from('orders')
         .select('table_number, status, payment_status')
-        .eq('firebase_restaurant_id', scope.firebaseRestaurantId)
+        .eq('restaurant_id', scope.restaurantId)
         .eq('is_closed', false)
         .not('status', 'in', '("completed","cancelled")')
 
       if (error) {
-        const { data: fallbackData, error: fallbackError } = await supabase
-          .from('orders')
-          .select('table_number, status, payment_status')
-          .or(orderRestaurantOrFilter(scope))
-          .eq('is_closed', false)
-          .not('status', 'in', '("completed","cancelled")')
-        if (fallbackError) throw fallbackError
-        const grouped = groupOrdersByTableStatus(fallbackData as OpenOrderRow[])
-        setTableStatusByNumber(grouped)
-        return
+        throw error
       }
 
       const grouped = groupOrdersByTableStatus((data || []) as OpenOrderRow[])

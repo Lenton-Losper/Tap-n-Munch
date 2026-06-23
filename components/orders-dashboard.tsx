@@ -4,8 +4,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import {
-  extractFirebaseRestaurantId,
-  orderRestaurantOrFilter,
   resolveOrderRestaurantScope,
   type OrderRestaurantScope,
 } from '@/lib/supabase/restaurants'
@@ -165,9 +163,6 @@ export function OrdersDashboard() {
   const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
   const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
   const dashboardRestaurantId = String((restaurant as { id?: string } | null)?.id || restaurantId || '')
-  const dashboardFirebaseRestaurantId = extractFirebaseRestaurantId(
-    restaurant as Record<string, unknown> | null
-  )
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
   const [tabInfoById, setTabInfoById] = useState<
     Record<string, { status: string; payment_preference: string | null; members: any[] }>
@@ -229,20 +224,14 @@ export function OrdersDashboard() {
     }
 
     if (restaurant?.id) {
-      const supabaseUuid = String(restaurant.id)
       setOrderScope({
-        input: dashboardRestaurantId || supabaseUuid,
-        supabaseUuid,
-        firebaseRestaurantId:
-          extractFirebaseRestaurantId(restaurant as Record<string, unknown>) || supabaseUuid,
+        restaurantId: String(restaurant.id),
       })
       return
     }
 
     let cancelled = false
-    void resolveOrderRestaurantScope(dashboardRestaurantId, {
-      firebaseRestaurantId: dashboardFirebaseRestaurantId || undefined,
-    })
+    void resolveOrderRestaurantScope(dashboardRestaurantId)
       .then((scope) => {
         if (!cancelled) setOrderScope(scope)
       })
@@ -253,10 +242,10 @@ export function OrdersDashboard() {
     return () => {
       cancelled = true
     }
-  }, [dashboardRestaurantId, dashboardFirebaseRestaurantId, restaurant])
+  }, [dashboardRestaurantId, restaurant])
 
   useEffect(() => {
-    const restaurantUuid = orderScope?.supabaseUuid
+    const restaurantUuid = orderScope?.restaurantId
     if (!restaurantUuid) {
       setTabInfoById({})
       return
@@ -299,10 +288,10 @@ export function OrdersDashboard() {
     return () => {
       cancelled = true
     }
-  }, [allOrders, orderScope?.supabaseUuid])
+  }, [allOrders, orderScope?.restaurantId])
 
   useEffect(() => {
-    const restaurantUuid = orderScope?.supabaseUuid
+    const restaurantUuid = orderScope?.restaurantId
     if (!restaurantUuid) return
 
     const channel = supabase
@@ -340,7 +329,7 @@ export function OrdersDashboard() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [orderScope?.supabaseUuid])
+  }, [orderScope?.restaurantId])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   useEffect(() => {
@@ -365,9 +354,7 @@ export function OrdersDashboard() {
       let scope = orderScopeRef.current
       if (!scope) {
         try {
-          scope = await resolveOrderRestaurantScope(dashboardRestaurantId, {
-            firebaseRestaurantId: dashboardFirebaseRestaurantId || undefined,
-          })
+          scope = await resolveOrderRestaurantScope(dashboardRestaurantId)
         } catch (err) {
           console.error(err)
           if (!cancelled) setLoading(false)
@@ -541,7 +528,7 @@ export function OrdersDashboard() {
     const { count } = await supabase
       .from('orders')
       .select('*', { count: 'exact', head: true })
-      .or(orderRestaurantOrFilter(orderScope))
+      .eq('restaurant_id', orderScope.restaurantId)
       .eq('payment_status', 'pending')
       .eq('payment_channel', 'hosted')
       .eq('is_closed', false)
@@ -861,7 +848,7 @@ export function OrdersDashboard() {
       const { data: openOrders, error: countError } = await supabase
         .from('orders')
         .select('id')
-        .or(orderRestaurantOrFilter(orderScope))
+        .eq('restaurant_id', orderScope.restaurantId)
         .eq('table_number', tableNum)
         .eq('is_closed', false)
       if (countError) throw countError

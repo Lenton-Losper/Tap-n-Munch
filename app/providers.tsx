@@ -10,15 +10,22 @@ const DynamicAuthProvider = dynamic(
   { ssr: false }
 )
 
-function isPublicMarketingRoute(pathname: string) {
+function isPublicMarketingRoute(pathname: string, isRivieraSubdomain: boolean) {
+  if (isRivieraSubdomain) return false
   return pathname === '/' || pathname === '/contact'
 }
 
-export function AppProviders({ children }: { children: React.ReactNode }) {
+export function AppProviders({
+  children,
+  isRivieraSubdomain = false,
+}: {
+  children: React.ReactNode
+  isRivieraSubdomain?: boolean
+}) {
   const pathname = usePathname()
 
   // Keep auth initialization off public marketing routes.
-  if (isPublicMarketingRoute(pathname)) {
+  if (isPublicMarketingRoute(pathname, isRivieraSubdomain)) {
     return <CartProvider>{children}</CartProvider>
   }
 

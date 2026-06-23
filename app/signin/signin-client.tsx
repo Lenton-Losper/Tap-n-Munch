@@ -2,25 +2,34 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Eye, EyeOff } from 'lucide-react'
 import { Nav } from '../components/Nav'
 import { Footer } from '../components/Footer'
-import { SupabaseConfigError } from '@/components/auth/firebase-config-error'
+import { SupabaseConfigError } from '@/components/auth/supabase-config-error'
+import { AuthDivider, GoogleSignInButton } from '@/components/auth/google-sign-in-button'
 import { useAuth } from '@/components/auth/auth-provider'
+import { signInWithGoogleOAuth } from '@/lib/supabase/google-auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { signInWithSupabase } from '@/lib/supabase/auth'
 
 export function SignInClient() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { user, loading: authLoading, isSupabaseConfigured, signIn } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (searchParams.get('error') === 'oauth') {
+      setError('Google sign-in failed. Please try again.')
+    }
+  }, [searchParams])
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -39,24 +48,21 @@ export function SignInClient() {
 
     try {
       await signIn(email, password)
-
-      try {
-        const supabaseAuth = await signInWithSupabase(email, password)
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(
-            'supabase_session',
-            JSON.stringify(supabaseAuth.session ?? null)
-          )
-        }
-      } catch (supabaseError) {
-        console.error('Supabase parallel sign-in failed:', supabaseError)
-      }
-
       router.replace('/dashboard')
     } catch (submitError: any) {
       setError(submitError?.message || 'Failed to sign in. Please check your credentials.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleGoogleSignIn = async () => {
+    setError('')
+    setGoogleLoading(true)
+    try {
+      await signInWithGoogleOAuth()
+    } finally {
+      setGoogleLoading(false)
     }
   }
 
@@ -80,7 +86,7 @@ export function SignInClient() {
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 required
-                disabled={submitting}
+                disabled={submitting || googleLoading}
                 placeholder="you@example.com"
                 className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
               />
@@ -97,7 +103,7 @@ export function SignInClient() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   required
-                  disabled={submitting}
+                  disabled={submitting || googleLoading}
                   placeholder="Enter your password"
                   className="rounded-lg border-[#E9E9E7] bg-white pr-11 text-[#37352F] placeholder:text-[#9B978E]"
                 />
@@ -106,7 +112,7 @@ export function SignInClient() {
                   onClick={() => setShowPassword((prev) => !prev)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B675F] hover:text-[#37352F]"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  disabled={submitting}
+                  disabled={submitting || googleLoading}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -114,17 +120,27 @@ export function SignInClient() {
             </div>
 
             {error ? (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </p>
             ) : null}
 
             <Button
               type="submit"
-              disabled={submitting || authLoading}
+              disabled={submitting || googleLoading || authLoading}
               className="w-full rounded-lg bg-[#37352F] text-white hover:bg-[#2f2d27]"
             >
               {submitting ? 'Signing in...' : 'Sign In'}
             </Button>
           </form>
+
+          <AuthDivider />
+
+          <GoogleSignInButton
+            disabled={submitting || googleLoading || authLoading}
+            onError={setError}
+            onClick={handleGoogleSignIn}
+          />
 
           <div className="mt-6 text-sm">
             <Link
@@ -134,6 +150,15 @@ export function SignInClient() {
               Forgot password?
             </Link>
           </div>
+
+          <div className="mt-4 text-sm">
+            <Link
+              href="/signup"
+              className="text-[#6B675F] underline decoration-[#BFBAB0] underline-offset-4 hover:text-[#37352F]"
+            >
+              Don&apos;t have an account? Sign up
+            </Link>
+          </div>
         </section>
       </main>
 
@@ -141,4 +166,3 @@ export function SignInClient() {
     </div>
   )
 }
-

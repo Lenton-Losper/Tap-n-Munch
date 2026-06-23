@@ -3,10 +3,12 @@ export const dynamic = "force-dynamic";
 import { QRCodeManagement } from "@/components/qr-code-management"
 import { TableCardGenerator } from "@/components/table-card-generator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { RoleGuard } from "@/components/auth/role-guard"
 
 export default function QRCodesPage() {
   return (
-    <div className="min-h-screen bg-gray-50">
+    <RoleGuard allowedRoles={['owner', 'manager']}>
+      <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Tabs defaultValue="management" className="w-full">
           <TabsList className="mb-6">
@@ -22,5 +24,6 @@ export default function QRCodesPage() {
         </Tabs>
       </div>
     </div>
+    </RoleGuard>
   )
 }

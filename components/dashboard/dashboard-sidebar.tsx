@@ -12,28 +12,70 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ReportBugButton } from '@/components/dashboard/report-bug-dialog'
+import { useAuth, type StaffRole } from '@/components/auth/auth-provider'
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Live Orders', icon: ClipboardList, match: (path: string) => path === '/dashboard' },
+  {
+    href: '/dashboard',
+    label: 'Live Orders',
+    icon: ClipboardList,
+    roles: ['owner', 'manager', 'waiter'] as StaffRole[],
+    match: (path: string) => path === '/dashboard',
+  },
   {
     href: '/dashboard/order-history',
     label: 'Order History',
     icon: History,
+    roles: ['owner', 'manager'] as StaffRole[],
     match: (path: string) => path.startsWith('/dashboard/order-history'),
   },
-  { href: '/qr-codes', label: 'Tables', icon: Table2, match: (path: string) => path.startsWith('/qr-codes') },
+  {
+    href: '/qr-codes',
+    label: 'Tables',
+    icon: Table2,
+    roles: ['owner', 'manager'] as StaffRole[],
+    match: (path: string) => path.startsWith('/qr-codes'),
+  },
   {
     href: '/menu-management',
     label: 'Menu Management',
     icon: UtensilsCrossed,
+    roles: ['owner', 'manager'] as StaffRole[],
     match: (path: string) => path.startsWith('/menu-management'),
   },
-  { href: '/analytics', label: 'Analytics', icon: BarChart3, match: (path: string) => path.startsWith('/analytics') },
-  { href: '/settings', label: 'Settings', icon: Settings, match: (path: string) => path.startsWith('/settings') },
+  {
+    href: '/analytics',
+    label: 'Analytics',
+    icon: BarChart3,
+    roles: ['owner', 'manager'] as StaffRole[],
+    match: (path: string) => path.startsWith('/analytics'),
+  },
+  {
+    href: '/settings',
+    label: 'Settings',
+    icon: Settings,
+    roles: ['owner'] as StaffRole[],
+    match: (path: string) => path.startsWith('/settings'),
+  },
 ]
+
+const ROLE_LABELS: Record<StaffRole, string> = {
+  owner: 'Owner',
+  manager: 'Manager',
+  waiter: 'Waiter',
+}
 
 export function DashboardSidebar() {
   const pathname = usePathname()
+  const { userData, restaurant, role } = useAuth()
+
+  const restaurantName = String(restaurant?.name || '').trim()
+  const displayName = String(userData?.full_name || userData?.name || '').trim()
+
+  const visibleItems = NAV_ITEMS.filter((item) => {
+    if (!role) return item.href === '/dashboard'
+    return item.roles.includes(role)
+  })
 
   return (
     <aside className="flex h-full w-56 shrink-0 flex-col border-r border-[#E9E9E7] bg-white">
@@ -41,11 +83,27 @@ export function DashboardSidebar() {
         <Link href="/dashboard" className="font-serif text-lg font-semibold text-[#37352F]">
           FlashTap
         </Link>
-        <p className="mt-0.5 text-xs text-[#6B675F]">Venue dashboard</p>
+        {restaurantName ? (
+          <p className="mt-0.5 text-xs text-[#6B675F]">{restaurantName}</p>
+        ) : null}
+        {displayName || role ? (
+          <div className="mt-3 flex flex-col gap-1.5">
+            {displayName ? (
+              <p className="truncate text-xs text-[#37352F]" title={displayName}>
+                {displayName}
+              </p>
+            ) : null}
+            {role ? (
+              <span className="inline-flex w-fit items-center rounded-full border border-[#E9E9E7] bg-[#FAFAF8] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[#6B675F]">
+                {ROLE_LABELS[role]}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
-        {NAV_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const active = item.match(pathname)
           const Icon = item.icon
           return (

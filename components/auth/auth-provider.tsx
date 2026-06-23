@@ -10,15 +10,16 @@ import {
   signUpWithSupabase,
 } from '@/lib/supabase/auth'
 import { supabase } from '@/lib/supabase/client'
-import { extractFirebaseRestaurantId } from '@/lib/supabase/restaurants'
 import { syncAuthProfile } from '@/lib/supabase/sync-profile'
+
+export type StaffRole = 'owner' | 'manager' | 'waiter'
 
 interface AuthContextType {
   user: User | null
   userData: Record<string, any> | null
   restaurant: Record<string, any> | null
   restaurantId: string | null
-  firebaseRestaurantId: string | null
+  role: StaffRole | null
   loading: boolean
   isSupabaseConfigured: boolean
   signUp: (email: string, password: string, restaurantName: string, phone?: string) => Promise<void>
@@ -31,7 +32,7 @@ const AuthContext = createContext<AuthContextType>({
   userData: null,
   restaurant: null,
   restaurantId: null,
-  firebaseRestaurantId: null,
+  role: null,
   loading: true,
   isSupabaseConfigured: false,
   signUp: async () => {},
@@ -39,39 +40,71 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
 })
 
+const RESTAURANT_SELECT =
+  'id, name, phone, currency, owner_id, payment_methods, subscription_status, subscription_tier, logo_url, updated_at'
+
+function parseStaffRole(value: unknown): StaffRole | null {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'owner' || normalized === 'manager' || normalized === 'waiter') {
+    return normalized
+  }
+  return null
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [userData, setUserData] = useState<Record<string, any> | null>(null)
   const [restaurant, setRestaurant] = useState<Record<string, any> | null>(null)
   const [restaurantId, setRestaurantId] = useState<string | null>(null)
-  const [firebaseRestaurantId, setFirebaseRestaurantId] = useState<string | null>(null)
+  const [role, setRole] = useState<StaffRole | null>(null)
   const [loading, setLoading] = useState(true)
   const [isSupabaseConfigured, setIsSupabaseConfigured] = useState(true)
 
-  // Load user data and restaurant when user changes
   useEffect(() => {
-    const loadUserData = async (authUser: User | null) => {
-      if (!authUser) {
+    const loadUserData = async (_sessionUser: User | null) => {
+      if (!_sessionUser) {
         setUserData(null)
         setRestaurant(null)
         setRestaurantId(null)
-        setFirebaseRestaurantId(null)
+        setRole(null)
         setLoading(false)
         return
       }
 
+      setLoading(true)
+
       try {
-        let { data: userRow, error: userRowError } = await supabase
+        const {
+          data: { user: authUser },
+          error: authUserError,
+        } = await supabase.auth.getUser()
+
+        if (authUserError || !authUser) {
+          console.error('[AuthProvider] getUser failed:', authUserError)
+          setUserData(null)
+          setRestaurant(null)
+          setRestaurantId(null)
+          setRole(null)
+          return
+        }
+
+        let { data: userRecord, error: userRowError } = await supabase
           .from('users')
           .select('*')
           .eq('id', authUser.id)
           .maybeSingle()
 
+        console.log('[AuthProvider] user lookup:', {
+          authUserId: authUser.id,
+          userRecord,
+          error: userRowError,
+        })
+
         if (userRowError) {
           throw userRowError
         }
 
-        if (!userRow) {
+        if (!userRecord) {
           const synced = await syncAuthProfile()
           if (synced) {
             const retry = await supabase
@@ -79,49 +112,85 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               .select('*')
               .eq('id', authUser.id)
               .maybeSingle()
-            userRow = retry.data
+
+            console.log('[AuthProvider] user lookup retry:', {
+              authUserId: authUser.id,
+              userRecord: retry.data,
+              error: retry.error,
+            })
+
+            userRecord = retry.data
             if (retry.error) {
               throw retry.error
             }
           }
         }
 
-        const userRecord = (userRow || null) as Record<string, any> | null
+        setUserData((userRecord || null) as Record<string, any> | null)
 
-        setUserData(userRecord)
+        let linkedRestaurantId: string | null = null
+        let resolvedRole: StaffRole | null = null
 
-        if (userRecord?.restaurant_id) {
-          const { data: restaurantRow, error: restErr } = await supabase
-            .from('restaurants')
-            .select('id, firebase_id, name, phone, currency, owner_id, payment_methods, subscription_status, subscription_tier, logo_url, updated_at')
-            .eq('id', userRecord.restaurant_id)
-            .single()
+        const { data: sessionData } = await supabase.auth.getSession()
+        const accessToken = sessionData.session?.access_token
 
-          if (restErr) {
-            console.error('Failed to load restaurant row:', restErr)
-            setRestaurant(null)
-            setRestaurantId(String(userRecord.restaurant_id))
-            setFirebaseRestaurantId(null)
-          } else {
-            const restaurantRecord = (restaurantRow || null) as Record<string, any> | null
-            setRestaurant(restaurantRecord)
-            setRestaurantId((restaurantRecord?.id as string | undefined) || String(userRecord.restaurant_id))
-            setFirebaseRestaurantId(extractFirebaseRestaurantId(restaurantRecord) || null)
-            if (restaurantRecord?.id && typeof window !== 'undefined') {
-              localStorage.setItem('restaurantId', String(restaurantRecord.id))
+        if (accessToken) {
+          const res = await fetch('/api/auth/role', {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+
+          if (res.ok) {
+            const payload = await res.json()
+            resolvedRole = parseStaffRole(payload.role)
+            if (payload.restaurant_id) {
+              linkedRestaurantId = String(payload.restaurant_id)
             }
+            console.log('[AuthProvider] role API result:', payload)
+          } else {
+            console.warn('[AuthProvider] role API failed:', res.status, await res.text())
           }
-        } else {
+        }
+
+        setRole(resolvedRole)
+
+        if (!linkedRestaurantId && userRecord?.restaurant_id) {
+          linkedRestaurantId = String(userRecord.restaurant_id)
+        }
+
+        if (!linkedRestaurantId) {
           setRestaurant(null)
           setRestaurantId(null)
-          setFirebaseRestaurantId(null)
+          setRole(null)
+          return
+        }
+
+        const { data: restaurantRow, error: restErr } = await supabase
+          .from('restaurants')
+          .select(RESTAURANT_SELECT)
+          .eq('id', linkedRestaurantId)
+          .single()
+
+        if (restErr) {
+          console.error('Failed to load restaurant row:', restErr)
+          setRestaurant(null)
+          setRestaurantId(linkedRestaurantId)
+          return
+        }
+
+        const restaurantRecord = (restaurantRow || null) as Record<string, any> | null
+        setRestaurant(restaurantRecord)
+        setRestaurantId(
+          (restaurantRecord?.id as string | undefined) || linkedRestaurantId
+        )
+        if (restaurantRecord?.id && typeof window !== 'undefined') {
+          localStorage.setItem('restaurantId', String(restaurantRecord.id))
         }
       } catch (error) {
         console.error('Failed to load Supabase auth data:', error)
         setUserData(null)
         setRestaurant(null)
         setRestaurantId(null)
-        setFirebaseRestaurantId(null)
+        setRole(null)
       } finally {
         setLoading(false)
       }
@@ -176,9 +245,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserData(null)
     setRestaurant(null)
     setRestaurantId(null)
-    setFirebaseRestaurantId(null)
+    setRole(null)
     setLoading(false)
-    // Clear localStorage on sign out
     if (typeof window !== 'undefined') {
       localStorage.removeItem('restaurantId')
     }
@@ -192,7 +260,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         userData,
         restaurant,
         restaurantId,
-        firebaseRestaurantId,
+        role,
         loading,
         isSupabaseConfigured,
         signUp,
@@ -208,4 +276,3 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export function useAuth() {
   return useContext(AuthContext)
 }
-
