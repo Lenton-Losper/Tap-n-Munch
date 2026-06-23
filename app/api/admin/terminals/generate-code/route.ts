@@ -37,18 +37,19 @@ export async function POST(request: Request) {
       .from('restaurant_terminals')
       .insert({
         restaurant_id: restaurantId,
-        device_id: pendingTerminalDeviceId(),
         activation_code: code,
         activation_code_expires_at: expiresAt,
+        expires_at: expiresAt,
         active: false,
         name: `Terminal ${terminalNumber}`,
+        device_id: pendingTerminalDeviceId(),
       })
       .select('id, activation_code, activation_code_expires_at')
       .single()
 
     if (error) {
-      console.log('[generate-code] insert error:', error)
-      throw error
+      console.error('[generate-code] insert error full:', JSON.stringify(error))
+      throw new Error(error.message || 'Database insert failed')
     }
 
     await markSetupStepComplete(supabase, restaurantId, 'terminal_connected')

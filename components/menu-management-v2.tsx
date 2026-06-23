@@ -68,6 +68,7 @@ export function MenuManagementV2() {
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [visibleItemsBySubcategory, setVisibleItemsBySubcategory] = useState<Record<string, number>>({})
+  const [showHidden, setShowHidden] = useState(false)
   const [loading, setLoading] = useState(true)
   
   // Modal state
@@ -277,8 +278,8 @@ export function MenuManagementV2() {
   const searchableQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery])
 
   const visibleMenuItems = useMemo(
-    () => allMenuItems.filter((item) => item.status !== 'hidden'),
-    [allMenuItems]
+    () => (showHidden ? allMenuItems : allMenuItems.filter((item) => item.status !== 'hidden')),
+    [allMenuItems, showHidden]
   )
 
   const subCategoriesByMenuCategory = useMemo(() => {
@@ -317,6 +318,37 @@ export function MenuManagementV2() {
   const groupedData = useMemo(() => {
     if (!selectedMenuCategory) return {}
     const categoryItems = itemsByCategory[selectedMenuCategory.id] || []
+    const realSubcategories = subCategoriesByMenuCategory[selectedMenuCategory.id] || []
+
+    if (realSubcategories.length > 0) {
+      const result: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
+
+      for (const subcategory of realSubcategories) {
+        const items = categoryItems.filter((item) => item.sub_category_id === subcategory.id)
+        result[subcategory.id] = { subcategory, items }
+      }
+
+      const otherItems = categoryItems.filter(
+        (item) =>
+          !item.sub_category_id ||
+          !realSubcategories.some((subcategory) => subcategory.id === item.sub_category_id)
+      )
+      if (otherItems.length > 0) {
+        result.__other__ = {
+          subcategory: {
+            id: '__other__',
+            menu_category_id: selectedMenuCategory.id,
+            name: 'Other',
+            description: '',
+            display_order: 9999,
+          } as SubCategory,
+          items: otherItems,
+        }
+      }
+
+      return result
+    }
+
     return {
       [selectedMenuCategory.id]: {
         subcategory: {
@@ -329,7 +361,12 @@ export function MenuManagementV2() {
         items: categoryItems,
       },
     }
-  }, [itemsByCategory, selectedMenuCategory])
+  }, [itemsByCategory, selectedMenuCategory, subCategoriesByMenuCategory])
+
+  const hasRealSubcategories = useMemo(() => {
+    if (!selectedMenuCategory) return false
+    return (subCategoriesByMenuCategory[selectedMenuCategory.id] || []).length > 0
+  }, [selectedMenuCategory, subCategoriesByMenuCategory])
 
   const allSubCategoryOptions = useMemo(() => {
     const categoryNameById = Object.fromEntries(
@@ -1285,8 +1322,8 @@ export function MenuManagementV2() {
         </div>
 
         {/* Search Bar */}
-        <div className="mb-4 sm:mb-6">
-          <div className="relative">
+        <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-3 sm:items-center">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
             <Input
               placeholder="Search menu items..."
@@ -1295,6 +1332,15 @@ export function MenuManagementV2() {
               className="pl-10 h-11 sm:h-10 text-base sm:text-sm"
             />
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowHidden((prev) => !prev)}
+            className="h-11 sm:h-9 shrink-0"
+          >
+            {showHidden ? 'Hide hidden items' : 'Show hidden items'}
+          </Button>
         </div>
 
         {/* Show All Items View */}
@@ -1379,11 +1425,17 @@ export function MenuManagementV2() {
                                     N${item.base_price.toFixed(2)}
                                   </span>
                                   <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                    item.status === 'available' 
-                                      ? 'bg-green-100 text-green-800' 
-                                      : 'bg-yellow-100 text-yellow-800'
+                                    item.status === 'hidden'
+                                      ? 'bg-gray-200 text-gray-600'
+                                      : item.status === 'available'
+                                        ? 'bg-green-100 text-green-800'
+                                        : 'bg-yellow-100 text-yellow-800'
                                   }`}>
-                                    {item.status === 'available' ? '✓' : '⚠'}
+                                    {item.status === 'hidden'
+                                      ? 'Hidden'
+                                      : item.status === 'available'
+                                        ? '✓'
+                                        : '⚠'}
                                   </span>
                                 </div>
                               </div>
@@ -1431,6 +1483,9 @@ export function MenuManagementV2() {
         {/* Show Selected Category View */}
         {selectedMenuCategory && (
           <div className="space-y-8">
+            {hasRealSubcategories ? (
+              <h3 className="text-lg sm:text-xl font-semibold">{selectedMenuCategory.name}</h3>
+            ) : null}
             {Object.keys(groupedData).length === 0 ? (
               <div className="text-center py-8 sm:py-12 bg-card border rounded-lg px-4 sm:px-6">
                 <div className="max-w-md mx-auto">
@@ -1456,27 +1511,53 @@ export function MenuManagementV2() {
                   return item.name.toLowerCase().includes(searchableQuery) || 
                          item.description?.toLowerCase().includes(searchableQuery)
                 })
+
+                if (filteredItems.length === 0 && searchableQuery) return null
                 
                 return (
                   <div key={subcategory.id} className="space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
-                      <h3 className="text-lg sm:text-xl font-semibold">
-                        {selectedMenuCategory.name} ({filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'})
-                      </h3>
-                      <div className="flex gap-2">
+                    {hasRealSubcategories ? (
+                      <h4 className="text-base font-medium text-muted-foreground">
+                        {subcategory.name} ({filteredItems.length}{' '}
+                        {filteredItems.length === 1 ? 'item' : 'items'})
+                      </h4>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
+                        <h3 className="text-lg sm:text-xl font-semibold">
+                          {selectedMenuCategory.name} ({filteredItems.length}{' '}
+                          {filteredItems.length === 1 ? 'item' : 'items'})
+                        </h3>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={handleAddItem}
+                            className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
+                            size="sm"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />
+                            Add Item
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {hasRealSubcategories ? (
+                      <div className="flex justify-end">
                         <Button
-                          onClick={handleAddItem}
-                          className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-9 text-sm sm:text-sm"
+                          onClick={() =>
+                            subcategory.id === '__other__'
+                              ? handleAddItem()
+                              : handleAddItemForSubCategory(subcategory)
+                          }
+                          className="bg-[#FF6B35] hover:bg-[#e55a28] h-11 sm:h-9 text-sm sm:text-sm"
                           size="sm"
                         >
                           <Plus className="h-4 w-4 mr-2" />
                           Add Item
                         </Button>
                       </div>
-                    </div>
+                    ) : null}
                     {filteredItems.length > 0 ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
-                        {filteredItems.slice(0, getVisibleLimit(selectedMenuCategory.id)).map((item) => (
+                        {filteredItems.slice(0, getVisibleLimit(subcategory.id)).map((item) => (
                           <div
                             key={item.id}
                             className="bg-card border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
@@ -1524,11 +1605,17 @@ export function MenuManagementV2() {
                                   N${item.base_price.toFixed(2)}
                                 </span>
                                 <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                  item.status === 'available' 
-                                    ? 'bg-green-100 text-green-800' 
-                                    : 'bg-yellow-100 text-yellow-800'
+                                  item.status === 'hidden'
+                                    ? 'bg-gray-200 text-gray-600'
+                                    : item.status === 'available'
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-yellow-100 text-yellow-800'
                                 }`}>
-                                  {item.status === 'available' ? '✓' : '⚠'}
+                                  {item.status === 'hidden'
+                                    ? 'Hidden'
+                                    : item.status === 'available'
+                                      ? '✓'
+                                      : '⚠'}
                                 </span>
                               </div>
                             </div>
@@ -1540,14 +1627,14 @@ export function MenuManagementV2() {
                         {searchableQuery ? `No items match "${searchQuery}"` : 'No items in this category'}
                       </p>
                     )}
-                    {filteredItems.length > getVisibleLimit(selectedMenuCategory.id) && (
+                    {filteredItems.length > getVisibleLimit(subcategory.id) && (
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleLoadMoreItems(selectedMenuCategory.id)}
+                        onClick={() => handleLoadMoreItems(subcategory.id)}
                         className="h-9 text-sm"
                       >
-                        Load More ({filteredItems.length - getVisibleLimit(selectedMenuCategory.id)} remaining)
+                        Load More ({filteredItems.length - getVisibleLimit(subcategory.id)} remaining)
                       </Button>
                     )}
                   </div>

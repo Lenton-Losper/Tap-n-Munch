@@ -67,6 +67,13 @@ export async function PATCH(request: Request) {
 
     if (restaurantError) throw restaurantError
 
+    const { error: userPhoneError } = await supabase
+      .from('users')
+      .update({ phone: phone || null })
+      .eq('id', user.id)
+
+    if (userPhoneError) throw userPhoneError
+
     await markSetupStepComplete(supabase, restaurantId, 'profile_complete')
 
     return NextResponse.json({ success: true, restaurantId })

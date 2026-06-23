@@ -14,6 +14,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+const GOOGLE_SIGNIN_HINT =
+  "It looks like you signed up with Google. Please use the 'Continue with Google' button to sign in."
+
+function isInvalidCredentialsError(message: string): boolean {
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('invalid login credentials') ||
+    normalized.includes('invalid credentials') ||
+    normalized.includes('invalid email or password')
+  )
+}
+
 export function SignInClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -50,7 +62,13 @@ export function SignInClient() {
       await signIn(email, password)
       router.replace('/dashboard')
     } catch (submitError: any) {
-      setError(submitError?.message || 'Failed to sign in. Please check your credentials.')
+      const message =
+        submitError?.message || 'Failed to sign in. Please check your credentials.'
+      if (isInvalidCredentialsError(message)) {
+        setError(`${message}\n\n${GOOGLE_SIGNIN_HINT}`)
+      } else {
+        setError(message)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -120,7 +138,7 @@ export function SignInClient() {
             </div>
 
             {error ? (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p className="whitespace-pre-line rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
               </p>
             ) : null}

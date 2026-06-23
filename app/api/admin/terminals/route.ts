@@ -5,7 +5,10 @@ import {
   getUserFromRequest,
   assertRestaurantOwner,
 } from '@/lib/supabase/admin-restaurant-auth'
-import { generateTerminalActivationCode } from '@/lib/terminals/activation-code'
+import {
+  generateTerminalActivationCode,
+  pendingTerminalDeviceId,
+} from '@/lib/terminals/activation-code'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
 
 export const dynamic = 'force-dynamic'
@@ -52,6 +55,74 @@ export async function GET(request: Request) {
     return NextResponse.json({ terminals })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to load terminals'
+    const status =
+      message.includes('authorization') || message.includes('session')
+        ? 401
+        : message.includes('owner')
+          ? 403
+          : 500
+    return NextResponse.json({ error: message }, { status })
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const user = await getUserFromRequest(request)
+    const body = await request.json()
+    const label = String(body?.label || '').trim()
+    const serialNumber = String(body?.serialNumber || '').trim()
+    const deviceModel = String(body?.deviceModel || '').trim()
+
+    if (!label) {
+      return NextResponse.json({ error: 'Terminal label is required' }, { status: 400 })
+    }
+    if (!serialNumber) {
+      return NextResponse.json({ error: 'Serial number is required' }, { status: 400 })
+    }
+    if (!deviceModel) {
+      return NextResponse.json({ error: 'Device model is required' }, { status: 400 })
+    }
+
+    const supabase = createServerSupabaseClient()
+    const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    await assertRestaurantOwner(supabase, user.id, restaurantId)
+
+    const code = generateTerminalActivationCode()
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+
+    const { data, error } = await supabase
+      .from('restaurant_terminals')
+      .insert({
+        restaurant_id: restaurantId,
+        name: label,
+        terminal_name: label,
+        sn: serialNumber,
+        device_serial: serialNumber,
+        device_id: pendingTerminalDeviceId(),
+        model: deviceModel,
+        activation_code: code,
+        activation_code_expires_at: expiresAt,
+        expires_at: expiresAt,
+        active: false,
+        status: 'active',
+      })
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    await markSetupStepComplete(supabase, restaurantId, 'terminal_connected')
+
+    return NextResponse.json({
+      success: true,
+      terminal: mapTerminalRow(data as Record<string, unknown>),
+      code: String((data as Record<string, unknown>)?.activation_code || code),
+      expiresAt: String(
+        (data as Record<string, unknown>)?.activation_code_expires_at || expiresAt
+      ),
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to add terminal'
     const status =
       message.includes('authorization') || message.includes('session')
         ? 401

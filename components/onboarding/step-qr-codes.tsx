@@ -6,7 +6,7 @@ import JSZip from 'jszip'
 import { QRCodeSVG } from 'qrcode.react'
 import { Button } from '@/components/ui/button'
 import { getSupabaseTables } from '@/lib/supabase/tables'
-import { buildOnboardingTableQrUrl } from '@/lib/onboarding/qr-url'
+import { buildMenuUrl } from '@/lib/base-url'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
 import type { StepHandle } from './types'
 
@@ -51,7 +51,7 @@ export const StepQrCodes = forwardRef<StepHandle, StepQrCodesProps>(function Ste
   }, [restaurantId, onError])
 
   const getTableUrl = (table: TableRow) =>
-    table.qr_code_url || buildOnboardingTableQrUrl(restaurantId, table.table_number)
+    table.qr_code_url || buildMenuUrl(restaurantId, table.table_number)
 
   const downloadSingle = async (table: TableRow) => {
     const url = getTableUrl(table)

@@ -1,7 +1,7 @@
-import { getQRCodeBaseUrl } from '@/lib/base-url'
-
-/** Onboarding QR URL format: /table/{tableNumber}?r={restaurantId} */
-export function buildOnboardingTableQrUrl(restaurantId: string, tableNumber: number): string {
-  const baseUrl = getQRCodeBaseUrl() || 'https://www.flashtap.app'
-  return `${baseUrl}/table/${tableNumber}?r=${restaurantId}`
+/** Onboarding QR URL format: /menu/{restaurantId}/v2?table={tableNumber} */
+export function buildOnboardingTableQrUrl(
+  restaurantId: string,
+  tableNumber: number
+): string {
+  return `https://www.flashtap.app/menu/${restaurantId}/v2?table=${tableNumber}`
 }

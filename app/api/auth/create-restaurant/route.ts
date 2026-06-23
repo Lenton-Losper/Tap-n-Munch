@@ -59,6 +59,7 @@ export async function POST(request: Request) {
       .from('restaurants')
       .insert({
         name: restaurantName,
+        phone: phone || null,
         currency: 'NAD',
       })
       .select('id')

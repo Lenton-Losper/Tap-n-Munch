@@ -150,6 +150,7 @@ export function OrdersDashboard() {
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [allOrders, setAllOrders] = useState<Order[]>([])
+  const [completedOrders, setCompletedOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [markPaidTargetOrderId, setMarkPaidTargetOrderId] = useState<string | null>(null)
@@ -421,6 +422,24 @@ export function OrdersDashboard() {
     }
   }, [user, dashboardRestaurantId])
 
+  useEffect(() => {
+    if (activeTab !== 'completed' || !dashboardRestaurantId) return
+
+    const fetchCompleted = async () => {
+      const { data } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('restaurant_id', dashboardRestaurantId)
+        .eq('status', 'completed')
+        .order('placed_at', { ascending: false })
+        .limit(100)
+
+      if (data) setCompletedOrders(data as Order[])
+    }
+
+    void fetchCompleted()
+  }, [activeTab, dashboardRestaurantId])
+
   const mergedSourceOrders = useMemo(() => {
     if (activeTab === 'pending_payment') {
       return allOrders.filter(
@@ -434,10 +453,20 @@ export function OrdersDashboard() {
         (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
       )
     }
+    if (activeTab === 'completed') {
+      const fromRealtime = allOrders.filter((order) => order.status === 'completed')
+      const merged = [...fromRealtime]
+      for (const order of completedOrders) {
+        if (!merged.find((existing) => existing.id === order.id)) {
+          merged.push(order)
+        }
+      }
+      return merged
+    }
     const mappedStatus = supabaseStatusForTab(activeTab)
     if (!mappedStatus) return []
     return allOrders.filter((order) => order.status === mappedStatus)
-  }, [activeTab, allOrders])
+  }, [activeTab, allOrders, completedOrders])
 
   const tabCounts = useMemo(() => {
     const newCandidates = allOrders.filter(
