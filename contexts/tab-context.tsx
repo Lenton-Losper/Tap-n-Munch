@@ -80,7 +80,13 @@ function getRestaurantIdFromPath(pathname: string) {
   return match?.[1] || null
 }
 
-export function TabProvider({ children }: { children: React.ReactNode }) {
+export function TabProvider({
+  children,
+  restaurantId: restaurantIdProp,
+}: {
+  children: React.ReactNode
+  restaurantId?: string
+}) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [tabId, setTabId] = useState<string | null>(null)
@@ -90,7 +96,8 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   const [tabStatus, setTabStatus] = useState<string | null>(null)
   const [settlementType, setSettlementType] = useState<string | null>(null)
 
-  const restaurantId = useMemo(() => getRestaurantIdFromPath(pathname || ''), [pathname])
+  const restaurantIdFromPath = useMemo(() => getRestaurantIdFromPath(pathname || ''), [pathname])
+  const restaurantId = restaurantIdProp || restaurantIdFromPath
   const tableNumber = searchParams?.get('table') || readStoredTableNumber() || null
   const tabIdFromUrl = searchParams?.get('tabId')?.trim() || null
 
@@ -174,13 +181,18 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
       setTabMembers([])
       setTabStatus(null)
       setSettlementType(null)
-      return
     }
+  }, [pathname])
+
+  useEffect(() => {
     if (!restaurantId || !tabId) return
+    if (tabId && tabStatus) return // already initialised, skip
 
     let active = true
     const run = async () => {
+      console.time('useTab:init')
       await loadTab()
+      console.timeEnd('useTab:init')
       if (!active) return
     }
     void run()
@@ -200,7 +212,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
       active = false
       supabase.removeChannel(channel)
     }
-  }, [restaurantId, tabId, pathname])
+  }, [restaurantId, tabId])
 
   const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {
     setTabId(nextTabId)

@@ -25,6 +25,7 @@ const DEFAULT_SETUP_ROW = {
   terminal_connected: false,
   test_order_completed: false,
   first_payment_completed: false,
+  dismissed: false,
 }
 
 export async function ensureSetupStatusRow(
@@ -51,11 +52,21 @@ export async function ensureSetupStatusRow(
 export async function markSetupStepComplete(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   restaurantId: string,
-  flag: SetupFlag
+  flag: SetupFlag | 'dismissed'
 ) {
   await ensureSetupStatusRow(supabase, restaurantId)
 
   const now = new Date().toISOString()
+
+  if (flag === 'dismissed') {
+    const { error } = await supabase
+      .from('restaurant_setup_status')
+      .update({ dismissed: true, updated_at: now })
+      .eq('restaurant_id', restaurantId)
+
+    if (error) throw error
+    return
+  }
 
   const { data: current } = await supabase
     .from('restaurant_setup_status')

@@ -71,6 +71,7 @@ export function MenuLandingPageV2Content({
   )
   const [sessionEndedNotice, setSessionEndedNotice] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const [displayNameError, setDisplayNameError] = useState('')
   const [createdTabPin, setCreatedTabPin] = useState<{ tabId: string; pin: string } | null>(null)
   const [showJoinPinEntry, setShowJoinPinEntry] = useState(false)
   const [joinPin, setJoinPin] = useState('')
@@ -551,7 +552,17 @@ export function MenuLandingPageV2Content({
     }
   }
 
+  const requireDisplayName = (): boolean => {
+    if (!displayName.trim()) {
+      setDisplayNameError('Please enter your name')
+      return false
+    }
+    setDisplayNameError('')
+    return true
+  }
+
   const handleCreateTab = async () => {
+    if (!requireDisplayName()) return
     if (!restaurantId || tableNum <= 0) {
       setTabActionError('Missing restaurant or table number. Scan the table QR code again.')
       console.error('[V2] create tab blocked — missing restaurantId or tableNum', { restaurantId, tableNum })
@@ -604,6 +615,7 @@ export function MenuLandingPageV2Content({
   }
 
   const handleRejoinStoredTab = async () => {
+    if (!requireDisplayName()) return
     const joinTabId = myStoredTab?.id
     if (!restaurantId || !joinTabId) {
       setTabActionError('No open tab found to join.')
@@ -630,6 +642,7 @@ export function MenuLandingPageV2Content({
   }
 
   const handleSubmitJoinPin = async () => {
+    if (!requireDisplayName()) return
     if (!restaurantId || tableNum <= 0) {
       setJoinPinError('Missing restaurant or table number.')
       return
@@ -884,12 +897,20 @@ export function MenuLandingPageV2Content({
               <div className="mb-4">
                 <input
                   type="text"
-                  placeholder="Your name (optional)"
+                  placeholder="Your name"
                   value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
+                  onChange={(e) => {
+                    setDisplayName(e.target.value)
+                    if (displayNameError && e.target.value.trim()) {
+                      setDisplayNameError('')
+                    }
+                  }}
                   maxLength={30}
                   className="w-full rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/40 font-sans text-base focus:outline-none focus:border-white/40"
                 />
+                {displayNameError ? (
+                  <p className="mt-2 text-sm font-sans text-red-300">{displayNameError}</p>
+                ) : null}
               </div>
             )}
             {tableNum > 0 && storedTabChecked && !tabLoading && myStoredTab ? (

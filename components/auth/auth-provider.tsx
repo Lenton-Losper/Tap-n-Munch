@@ -74,10 +74,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true)
 
       try {
-        const {
-          data: { user: authUser },
-          error: authUserError,
-        } = await supabase.auth.getUser()
+        const [{ data: { user: authUser }, error: authUserError }, { data: sessionData }] =
+          await Promise.all([
+            supabase.auth.getUser(),
+            supabase.auth.getSession(),
+          ])
 
         if (authUserError || !authUser) {
           console.error('[AuthProvider] getUser failed:', authUserError)
@@ -88,11 +89,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        let { data: userRecord, error: userRowError } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', authUser.id)
-          .maybeSingle()
+        const accessToken = sessionData.session?.access_token
+
+        const [userLookup, roleResult] = await Promise.all([
+          supabase.from('users').select('*').eq('id', authUser.id).maybeSingle(),
+          accessToken
+            ? fetch('/api/auth/role', { headers: { Authorization: `Bearer ${accessToken}` } })
+            : Promise.resolve(null),
+        ])
+
+        let { data: userRecord, error: userRowError } = userLookup
 
         console.log('[AuthProvider] user lookup:', {
           authUserId: authUser.id,
@@ -131,14 +137,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         let linkedRestaurantId: string | null = null
         let resolvedRole: StaffRole | null = null
 
-        const { data: sessionData } = await supabase.auth.getSession()
-        const accessToken = sessionData.session?.access_token
-
-        if (accessToken) {
-          const res = await fetch('/api/auth/role', {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
-
+        if (roleResult) {
+          const res = roleResult
           if (res.ok) {
             const payload = await res.json()
             resolvedRole = parseStaffRole(payload.role)

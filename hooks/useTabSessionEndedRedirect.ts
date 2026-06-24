@@ -13,6 +13,7 @@ type Options = {
   restaurantId: string
   tableNumber: number
   tabId: string | null
+  tabStatus?: string | null
   enabled?: boolean
   onSessionEnded?: () => void
 }
@@ -21,6 +22,7 @@ export function useTabSessionEndedRedirect({
   restaurantId,
   tableNumber,
   tabId,
+  tabStatus,
   enabled = true,
   onSessionEnded,
 }: Options) {
@@ -44,16 +46,20 @@ export function useTabSessionEndedRedirect({
   )
 
   useEffect(() => {
+    if (tabStatus && tabStatus !== 'ended' && tabStatus !== 'closed') return
     if (!enabled || !restaurantId || !tabId || redirectedRef.current) return
 
     let cancelled = false
 
     const load = async () => {
+      console.time('session-ended-check')
       try {
         const tab = await fetchTabById(tabId, restaurantId)
         if (!cancelled) evaluateTab(tab)
       } catch (error) {
         console.error('[TAB SESSION ENDED] initial tab check failed', error)
+      } finally {
+        console.timeEnd('session-ended-check')
       }
     }
 
@@ -80,7 +86,7 @@ export function useTabSessionEndedRedirect({
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [enabled, restaurantId, tabId, evaluateTab])
+  }, [enabled, restaurantId, tabId, tabStatus, evaluateTab])
 
   return { redirecting }
 }

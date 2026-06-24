@@ -1,10 +1,8 @@
 'use client'
 
-export const dynamic = "force-dynamic";
-
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
+import { getRestaurantById } from '@/lib/supabase/restaurants'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { useTab } from '@/contexts/tab-context'
@@ -45,6 +43,8 @@ export default function CartPage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
   const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
+  const nameParam = searchParams.get('name') || ''
+  const currencyParam = searchParams.get('currency') || 'NAD'
   const { toast } = useToast()
 
   useClearCartOnTableChange(restaurantId, tableNumber)
@@ -57,69 +57,83 @@ export default function CartPage() {
     restaurantId,
     tableNumber,
     tabId: effectiveTabId || null,
+    tabStatus,
     enabled: Boolean(effectiveTabId),
     onSessionEnded: () => clearCart(),
   })
   const inTabFlow = Boolean(isInTab || effectiveTabId)
   const tabReadyToPay = tabStatus === 'ready_to_pay'
   const [hasSessionTabOrders, setHasSessionTabOrders] = useState(false)
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurant, setRestaurant] = useState<any>({ name: nameParam, currency: currencyParam })
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingItem, setEditingItem] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
   const [paying, setPaying] = useState(false)
   const [paymentChoice, setPaymentChoice] = useState<PaymentChoice>('cash')
 
   useEffect(() => {
     let cancelled = false
 
-    const checkSessionTabOrders = async () => {
-      if (!effectiveTabId || !sessionId || !restaurantId) {
-        setHasSessionTabOrders(false)
-        return
-      }
+    const runOrderChecks = async () => {
+      console.time('cart:order-counts')
+      const sessionOrdersQuery =
+        effectiveTabId && sessionId && restaurantId
+          ? supabase
+              .from('orders')
+              .select('id', { count: 'exact', head: true })
+              .eq('restaurant_id', restaurantId)
+              .eq('tab_id', effectiveTabId)
+              .eq('session_id', sessionId)
+              .is('tab_settlement_for_tab_id', null)
+          : null
 
-      const { count, error } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', restaurantId)
-        .eq('tab_id', effectiveTabId)
-        .eq('session_id', sessionId)
-        .is('tab_settlement_for_tab_id', null)
+      const staleTabOrdersQuery =
+        tabReadyToPay && storedTabId && effectiveTabId && restaurantId
+          ? supabase
+              .from('orders')
+              .select('id', { count: 'exact', head: true })
+              .eq('restaurant_id', restaurantId)
+              .eq('tab_id', effectiveTabId)
+              .is('tab_settlement_for_tab_id', null)
+          : null
+
+      const [sessionResult, staleTabResult] = await Promise.all([
+        sessionOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
+        staleTabOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
+      ])
+      console.timeEnd('cart:order-counts')
 
       if (cancelled) return
 
-      if (error) {
-        console.warn('[CART] failed to check session tab orders', error)
+      if (sessionOrdersQuery) {
+        if (sessionResult.error) {
+          console.warn('[CART] failed to check session tab orders', sessionResult.error)
+          setHasSessionTabOrders(false)
+        } else {
+          setHasSessionTabOrders(Number(sessionResult.count || 0) > 0)
+        }
+      } else {
         setHasSessionTabOrders(false)
+      }
+
+      const hasSessionOrders =
+        sessionOrdersQuery && !sessionResult.error
+          ? Number(sessionResult.count || 0) > 0
+          : false
+
+      if (
+        !tabReadyToPay ||
+        hasSessionOrders ||
+        !storedTabId ||
+        !effectiveTabId ||
+        !restaurantId ||
+        !staleTabOrdersQuery
+      ) {
         return
       }
 
-      setHasSessionTabOrders(Number(count || 0) > 0)
-    }
-
-    void checkSessionTabOrders()
-    return () => {
-      cancelled = true
-    }
-  }, [effectiveTabId, sessionId, restaurantId])
-
-  useEffect(() => {
-    // Only clear a stale tab_id when ready_to_pay but the tab has no orders at all.
-    if (!tabReadyToPay || hasSessionTabOrders || !storedTabId || !effectiveTabId || !restaurantId) return
-
-    let cancelled = false
-    const verifyStaleTab = async () => {
-      const { count, error } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', restaurantId)
-        .eq('tab_id', effectiveTabId)
-        .is('tab_settlement_for_tab_id', null)
-
-      if (cancelled || error) return
-      if ((count || 0) === 0) {
+      if (staleTabResult.error) return
+      if ((staleTabResult.count || 0) === 0) {
         clearTabSession()
         const q = new URLSearchParams()
         if (tableNumber > 0) q.set('table', String(tableNumber))
@@ -127,11 +141,19 @@ export default function CartPage() {
       }
     }
 
-    void verifyStaleTab()
+    void runOrderChecks()
     return () => {
       cancelled = true
     }
-  }, [tabReadyToPay, hasSessionTabOrders, storedTabId, effectiveTabId, restaurantId, tableNumber, router])
+  }, [
+    effectiveTabId,
+    sessionId,
+    restaurantId,
+    tabReadyToPay,
+    storedTabId,
+    tableNumber,
+    router,
+  ])
 
   const menuQuery = useMemo(() => {
     const q = new URLSearchParams()
@@ -144,17 +166,17 @@ export default function CartPage() {
   useEffect(() => {
     const loadRestaurant = async () => {
       try {
-        const restaurantData = await getRestaurantByFirebaseId(restaurantId)
-        setRestaurant(restaurantData)
+        const restaurantData = await getRestaurantById(restaurantId)
+        if (restaurantData) {
+          setRestaurant(restaurantData)
+        }
       } catch (err) {
         console.error('Failed to load restaurant:', err)
-      } finally {
-        setLoading(false)
       }
     }
-    
+
     if (restaurantId) {
-      loadRestaurant()
+      void loadRestaurant()
     }
   }, [restaurantId])
 
@@ -356,14 +378,6 @@ export default function CartPage() {
         <p className="text-sm text-muted-foreground max-w-xs">
           Your session has ended. Scan the QR code to start a new order.
         </p>
-      </div>
-    )
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
       </div>
     )
   }

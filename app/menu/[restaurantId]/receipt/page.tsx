@@ -1,7 +1,5 @@
 'use client'
 
-export const dynamic = "force-dynamic";
-
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
@@ -70,6 +68,10 @@ type OrderRecord = {
   paycloud_merchant_order_no?: string
   payment_reference?: string | null
   items?: Array<{ quantity?: number; name?: string; subtotal?: number }>
+  member_session_id?: string | null
+  session_id?: string | null
+  customer_name?: string | null
+  customer?: { name?: string } | null
 }
 
 function isOrderPaid(order: OrderRecord): boolean {
@@ -147,6 +149,47 @@ function formatOrderTimestamp(value: unknown): string {
   }
 
   return '—'
+}
+
+function buildMemberNameMap(tab: TabRow | null): Record<string, string> {
+  const map: Record<string, string> = {}
+  const members = Array.isArray(tab?.members) ? tab.members : []
+  for (const member of members) {
+    const row = member as {
+      session_id?: string
+      member_session_id?: string
+      id?: string
+      display_name?: string
+    }
+    const name = String(row.display_name || '').trim() || 'Guest'
+    const keys = [row.session_id, row.member_session_id, row.id]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+    for (const key of keys) {
+      map[key] = name
+    }
+  }
+  return map
+}
+
+function getOrderCustomerLabel(
+  order: OrderRecord,
+  memberNameMap: Record<string, string>
+): string {
+  const customerName = String(order.customer_name || order.customer?.name || '').trim()
+  if (customerName) return customerName
+
+  const memberSessionId = String(order.member_session_id || '').trim()
+  if (memberSessionId && memberNameMap[memberSessionId]) {
+    return memberNameMap[memberSessionId]
+  }
+
+  const sessionId = String(order.session_id || '').trim()
+  if (sessionId && memberNameMap[sessionId]) {
+    return memberNameMap[sessionId]
+  }
+
+  return 'Guest'
 }
 
 export default function ReceiptPage() {
@@ -286,6 +329,14 @@ export default function ReceiptPage() {
     [orders]
   )
 
+  const memberNameMap = useMemo(() => buildMemberNameMap(tabRecord), [tabRecord])
+
+  useEffect(() => {
+    if (!tabRecord && !orders.length) return
+    console.log('[receipt] members:', tabRecord?.members)
+    console.log('[receipt] order sample:', orders?.[0])
+  }, [tabRecord, orders])
+
   // No table number
   if (!loading && (!tableNum || tableNum <= 0)) {
     return (
@@ -421,6 +472,7 @@ export default function ReceiptPage() {
             const displayDate = formatOrderTimestamp(order.placed_at ?? order.created_at)
 
             const orderTotal = typeof order.total === 'number' ? order.total : 0
+            const customerLabel = getOrderCustomerLabel(order, memberNameMap)
 
             return (
               <div key={order.id || Math.random()} className="bg-card border border-border p-6">
@@ -428,7 +480,8 @@ export default function ReceiptPage() {
                 <div className="flex justify-between items-start mb-4 pb-4 border-b border-border">
                   <div>
                     <h3 className="font-sans font-bold text-foreground text-lg">
-                      Order #{order.order_number || order.id?.slice(-6)?.toUpperCase() || 'N/A'}
+                      Order #{order.order_number || order.id?.slice(-6)?.toUpperCase() || 'N/A'} —{' '}
+                      {customerLabel}
                     </h3>
                     <p className="text-sm text-muted-foreground font-sans">
                       {displayDate}

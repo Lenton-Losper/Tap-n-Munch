@@ -29,6 +29,15 @@ export const StepTerminal = forwardRef<StepHandle, StepTerminalProps>(function S
       })
       setCode(payload.code)
       setExpiresAt(payload.expiresAt)
+
+      try {
+        await onboardingFetch('/api/admin/setup-status', {
+          method: 'PATCH',
+          body: JSON.stringify({ flag: 'terminal_connected' }),
+        })
+      } catch {
+        // non-blocking
+      }
     } catch (error: unknown) {
       onError(error instanceof Error ? error.message : 'Failed to generate activation code')
     } finally {

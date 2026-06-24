@@ -29,6 +29,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { onboardingFetch } from '@/lib/onboarding/api-client'
+
+async function markFirstPaymentSetupComplete() {
+  try {
+    await onboardingFetch('/api/admin/setup-status', {
+      method: 'PATCH',
+      body: JSON.stringify({ flag: 'first_payment_completed' }),
+    })
+  } catch {
+    // non-blocking
+  }
+}
 
 type TerminalStatus = 'pending' | 'failed' | null
 
@@ -696,6 +708,8 @@ export function OrdersDashboard() {
       applyPaidLocally(orderId, paidAt)
       closeMarkPaidDialog()
 
+      void markFirstPaymentSetupComplete()
+
       toast({
         title: 'Payment recorded',
         description: 'Order has been marked as paid',
@@ -806,6 +820,7 @@ export function OrdersDashboard() {
           if (status === 'paid') {
             doneIds.push(orderId)
             setTerminalStatusByOrderId((prev) => ({ ...prev, [orderId]: null }))
+            void markFirstPaymentSetupComplete()
             toast({
               title: 'Payment confirmed',
               description: `Order #${orderRow?.order_number || orderId.slice(-6)} was paid on terminal.`,

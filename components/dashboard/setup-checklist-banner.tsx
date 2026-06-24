@@ -8,7 +8,6 @@ import {
 } from '@/lib/onboarding/setup-status'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
 
-const DISMISS_STORAGE_KEY = 'setup_wizard_dismissed'
 const BRAND_ORANGE = '#d96a3b'
 const BAR_BG = '#fdf6f0'
 const BAR_BORDER = '#e8d5c4'
@@ -41,13 +40,7 @@ export function SetupChecklistBanner() {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(false)
-  const [dismissed, setDismissed] = useState(false)
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setDismissed(sessionStorage.getItem(DISMISS_STORAGE_KEY) === 'true')
-    }
-  }, [])
+  const [dismissing, setDismissing] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -66,12 +59,23 @@ export function SetupChecklistBanner() {
     }
   }, [])
 
-  const handleDismiss = () => {
-    sessionStorage.setItem(DISMISS_STORAGE_KEY, 'true')
-    setDismissed(true)
+  const handlePermanentDismiss = async () => {
+    if (dismissing) return
+    setDismissing(true)
+    try {
+      await onboardingFetch('/api/admin/setup-status', {
+        method: 'PATCH',
+        body: JSON.stringify({ flag: 'dismissed' }),
+      })
+      setStatus((prev) => (prev ? { ...prev, dismissed: true } : prev))
+    } catch {
+      // non-blocking
+    } finally {
+      setDismissing(false)
+    }
   }
 
-  if (dismissed) return null
+  if (status?.dismissed === true) return null
 
   if (loading) {
     return (
@@ -89,6 +93,9 @@ export function SetupChecklistBanner() {
 
   const completion = status.completion_percentage ?? 0
   if (completion >= 100) return null
+
+  const canPermanentDismiss =
+    completion >= 75 || Boolean(status.test_order_completed)
 
   return (
     <div
@@ -129,10 +136,63 @@ export function SetupChecklistBanner() {
           />
         </div>
 
+        {canPermanentDismiss ? (
+          <button
+            type="button"
+            onClick={() => void handlePermanentDismiss()}
+            disabled={dismissing}
+            className="shrink-0 rounded px-2 py-1 transition-colors disabled:opacity-60"
+            style={{
+              fontSize: '12px',
+              color: DISMISS_COLOR,
+              backgroundColor: 'transparent',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = BRAND_ORANGE
+              e.currentTarget.style.backgroundColor = HOVER_BG
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = DISMISS_COLOR
+              e.currentTarget.style.backgroundColor = 'transparent'
+            }}
+          >
+            {dismissing ? 'Dismissing...' : 'Mark Complete & Dismiss'}
+          </button>
+        ) : null}
+
         <button
           type="button"
-          onClick={() => setExpanded((prev) => !prev)}
-          className="shrink-0 rounded px-2 py-1 transition-colors"
+          onClick={() => void handlePermanentDismiss()}
+          disabled={dismissing}
+          className="shrink-0 rounded px-2 py-1 transition-colors disabled:opacity-60"
+          style={{
+            fontSize: '12px',
+            color: DISMISS_COLOR,
+            backgroundColor: 'transparent',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = BRAND_ORANGE
+            e.currentTarget.style.backgroundColor = HOVER_BG
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = DISMISS_COLOR
+            e.currentTarget.style.backgroundColor = 'transparent'
+          }}
+        >
+          {dismissing ? 'Hiding...' : 'Not interested'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (expanded) {
+              void handlePermanentDismiss()
+            } else {
+              setExpanded(true)
+            }
+          }}
+          disabled={dismissing}
+          className="shrink-0 rounded px-2 py-1 transition-colors disabled:opacity-60"
           style={{
             fontSize: '13px',
             color: BRAND_ORANGE,
@@ -145,25 +205,7 @@ export function SetupChecklistBanner() {
             e.currentTarget.style.backgroundColor = 'transparent'
           }}
         >
-          {expanded ? '▲ Hide checklist' : '▼ Show checklist'}
-        </button>
-
-        <button
-          type="button"
-          onClick={handleDismiss}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-lg leading-none transition-colors"
-          style={{ color: DISMISS_COLOR, backgroundColor: 'transparent' }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = BRAND_ORANGE
-            e.currentTarget.style.backgroundColor = HOVER_BG
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = DISMISS_COLOR
-            e.currentTarget.style.backgroundColor = 'transparent'
-          }}
-          aria-label="Dismiss setup wizard for this session"
-        >
-          ×
+          {expanded ? (dismissing ? 'Hiding...' : '▲ Hide checklist') : '▼ Show checklist'}
         </button>
       </div>
 
@@ -200,7 +242,7 @@ export function SetupChecklistBanner() {
           </ul>
 
           <div
-            className="mt-4 pt-4"
+            className="mt-4 flex flex-wrap items-center gap-3 pt-4"
             style={{ borderTop: '1px solid #eeeeee' }}
           >
             <Link
@@ -217,6 +259,26 @@ export function SetupChecklistBanner() {
             >
               Continue Setup →
             </Link>
+
+            {canPermanentDismiss ? (
+              <button
+                type="button"
+                onClick={() => void handlePermanentDismiss()}
+                disabled={dismissing}
+                className="inline-block transition-opacity hover:opacity-90 disabled:opacity-60"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: DISMISS_COLOR,
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  border: `1px solid ${BAR_BORDER}`,
+                }}
+              >
+                {dismissing ? 'Dismissing...' : 'Mark Complete & Dismiss'}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

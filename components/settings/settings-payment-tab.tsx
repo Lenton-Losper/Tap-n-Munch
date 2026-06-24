@@ -14,6 +14,7 @@ import {
   SETTINGS_BRAND_PRIMARY_HOVER,
 } from './constants'
 import { getSettingsAccessToken } from './settings-utils'
+import { onboardingFetch } from '@/lib/onboarding/api-client'
 
 const ACTIVATION_STORAGE_PREFIX = 'settings_terminal_activation_result'
 const SUCCESS_BG = '#FFF8F4'
@@ -265,6 +266,15 @@ export function SettingsPaymentTab() {
       setActivationResult(result)
       if (restaurantId) persistActivation(restaurantId, result)
       await loadTerminals()
+
+      try {
+        await onboardingFetch('/api/admin/setup-status', {
+          method: 'PATCH',
+          body: JSON.stringify({ flag: 'terminal_connected' }),
+        })
+      } catch {
+        // non-blocking
+      }
 
       requestAnimationFrame(() => {
         document.getElementById('terminal-activation-success')?.scrollIntoView({

@@ -1,7 +1,5 @@
 'use client'
 
-export const dynamic = "force-dynamic";
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
@@ -10,11 +8,11 @@ import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
-import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
+import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ShoppingCart, Search, ArrowLeft, Receipt, CheckCircle2, Loader2 } from 'lucide-react'
+import { Search, ArrowLeft, Receipt, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -53,6 +51,27 @@ type MenuCategory = {
 type MenuItem = Record<string, any>
 type SubCategory = Record<string, any>
 
+const ACCENT = '#C0392B'
+
+function isPopularItem(item: MenuItem): boolean {
+  return item.is_popular === true || item.isPopular === true || item.featured === true
+}
+
+function flattenGroupedItems(
+  grouped: Record<string, { subcategory: SubCategory; items: MenuItem[] }>
+): MenuItem[] {
+  const seen = new Set<string>()
+  const result: MenuItem[] = []
+  for (const entry of Object.values(grouped)) {
+    for (const item of entry.items || []) {
+      if (!item?.id || seen.has(item.id)) continue
+      seen.add(item.id)
+      result.push(item)
+    }
+  }
+  return result
+}
+
 export default function MenuBrowsePage() {
   const params = useParams()
   const searchParams = useSearchParams()
@@ -79,16 +98,18 @@ export default function MenuBrowsePage() {
     restaurantId,
     tableNumber,
     tabId: effectiveTabId || null,
+    tabStatus,
     enabled: Boolean(effectiveTabId),
     onSessionEnded: () => clearCart(),
   })
 
   const browseQuery = useMemo(() => {
-    const q = new URLSearchParams()
-    if (tableNumber > 0) q.set('table', String(tableNumber))
-    if (tabIdParam || tabId) q.set('tabId', tabIdParam || tabId || '')
-    const s = q.toString()
-    return s ? `?${s}` : ''
+    if (!(tableNumber > 0)) return ''
+    const activeTabId = tabId || tabIdParam
+    if (activeTabId) {
+      return `?table=${tableNumber}&tabId=${encodeURIComponent(activeTabId)}`
+    }
+    return `?table=${tableNumber}`
   }, [tableNumber, tabIdParam, tabId])
 
   const creatorTabPin = useMemo(() => {
@@ -102,6 +123,7 @@ export default function MenuBrowsePage() {
   }, [tabIdParam, tabId])
   const [restaurant, setRestaurant] = useState<any>(null)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
+  const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
   const [groupedItems, setGroupedItems] = useState<Record<string, { subcategory: SubCategory; items: MenuItem[] }>>({})
   const [allGroupedItems, setAllGroupedItems] = useState<
@@ -258,10 +280,6 @@ export default function MenuBrowsePage() {
         setRestaurant(restaurantData)
         setMenuCategories(categoriesData)
         
-        if (categoriesData.length > 0) {
-          setSelectedMenuCategory(categoriesData[0])
-        }
-        
         if (tableNumber > 0) {
           const existingSession = getCurrentSession()
           const sessionInfo = getSessionInfo()
@@ -369,7 +387,8 @@ export default function MenuBrowsePage() {
   }, [restaurantId, menuCategories])
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const menuItemsSource = normalizedSearchQuery ? allGroupedItems : groupedItems
+  const useAllMenu = normalizedSearchQuery.length > 0 || categoryFilter === 'all'
+  const menuItemsSource = useAllMenu ? allGroupedItems : groupedItems
   const filteredGroupedEntries = Object.values(menuItemsSource)
     .map(({ subcategory, items }) => {
       if (!normalizedSearchQuery) return { subcategory, items }
@@ -381,6 +400,92 @@ export default function MenuBrowsePage() {
       return { subcategory, items: filteredItems }
     })
     .filter(({ items }) => items.length > 0)
+
+  const displayItems = useMemo(
+    () => flattenGroupedItems(
+      Object.fromEntries(filteredGroupedEntries.map(({ subcategory, items }) => [subcategory.id, { subcategory, items }]))
+    ),
+    [filteredGroupedEntries]
+  )
+
+  const popularItems = useMemo(
+    () => flattenGroupedItems(allGroupedItems).filter(isPopularItem),
+    [allGroupedItems]
+  )
+
+  const currency = restaurant?.currency || 'N$'
+
+  const renderVariantSelectors = (item: MenuItem) => {
+    if (getVariantGroups(item).length === 0) return null
+    const resolvedSelection = getResolvedVariantSelection(item)
+    return (
+      <div className="mb-2 space-y-2">
+        {getVariantGroups(item).map((group) => (
+          <div key={`${item.id}-${group.name}`}>
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+              {group.name}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {group.options.map((option, optionIndex) => {
+                const optionLabel = getSelectedVariantLabel(option)
+                const isSelected = resolvedSelection[group.name] === optionLabel
+                return (
+                  <button
+                    key={`${item.id}-${group.name}-${optionLabel}-${optionIndex}`}
+                    type="button"
+                    onClick={() =>
+                      setSelectedVariantGroupsByItem((prev) => ({
+                        ...prev,
+                        [item.id]: {
+                          ...getDefaultGroupSelection(item),
+                          ...(prev[item.id] || {}),
+                          [group.name]: optionLabel,
+                        },
+                      }))
+                    }
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                      isSelected
+                        ? 'border-black bg-black text-white'
+                        : 'border-gray-200 bg-white text-black'
+                    }`}
+                  >
+                    {group.type === 'price' && typeof option !== 'string'
+                      ? `${optionLabel} (${currency}${Number(option.price).toFixed(0)})`
+                      : optionLabel}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderAddButton = (item: MenuItem, compact = false) => (
+    <button
+      type="button"
+      onClick={() => handleAddToCart(item)}
+      disabled={
+        !isInTab ||
+        item.status === 'out_of_stock' ||
+        addingItemId === item.id ||
+        isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
+        ['settled', 'closed', 'completed', 'cancelled'].includes(String(tabStatus ?? '').toLowerCase())
+      }
+      className={`flex shrink-0 items-center justify-center rounded-full font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-40 ${
+        compact ? 'h-8 w-8' : 'h-9 w-9'
+      }`}
+      style={{ backgroundColor: ACCENT }}
+      aria-label={`Add ${item.name} to cart`}
+    >
+      {addingItemId === item.id ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <Plus className="h-4 w-4" strokeWidth={2.5} />
+      )}
+    </button>
+  )
 
   useEffect(() => {
     const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
@@ -451,12 +556,10 @@ export default function MenuBrowsePage() {
   }
 
   return (
-    <div className="min-h-screen max-w-full bg-background">
+    <div className="min-h-screen max-w-full bg-white text-black">
       <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNumber} />
-      {/* Active Order Banner */}
-      <ActiveOrderBanner />
-      
-      {/* Sticky Header */}
+
+      {/* Sticky Header — unchanged */}
       <header className="sticky top-0 z-40 border-b border-border bg-white">
         <div className="mx-auto max-w-4xl px-4 py-3 sm:py-4">
           <div className="flex items-center justify-between gap-2">
@@ -513,15 +616,27 @@ export default function MenuBrowsePage() {
                   </Button>
                 </Link>
               )}
-              <Link href={`/menu/${restaurantId}/cart${browseQuery}`}>
-                <Button variant="outline" size="sm" className="relative h-11 border-border px-3 font-sans text-xs sm:text-sm">
-                  <ShoppingCart className="w-4 h-4 mr-1.5 stroke-[1.5]" />
-                  <span className="hidden sm:inline">Cart</span>
-                  {getItemCount() > 0 && (
-                    <span className="absolute -top-2 -right-2 bg-foreground text-background text-xs w-5 h-5 flex items-center justify-center font-semibold">
+              <Link
+                href={`/menu/${restaurantId}/cart?${new URLSearchParams({
+                  ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
+                  ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
+                  name: restaurant?.name || '',
+                  currency: restaurant?.currency || 'NAD',
+                }).toString()}`}
+              >
+                <Button
+                  size="sm"
+                  className="relative h-11 rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 sm:text-sm"
+                >
+                  My Orders
+                  {getItemCount() > 0 ? (
+                    <span
+                      className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
+                      style={{ backgroundColor: ACCENT }}
+                    >
                       {getItemCount()}
                     </span>
-                  )}
+                  ) : null}
                 </Button>
               </Link>
             </div>
@@ -554,224 +669,239 @@ export default function MenuBrowsePage() {
         </div>
       )}
 
-      <div className="mx-auto max-w-4xl px-4 pt-6 pb-28 sm:pb-32">
-        {/* Category Navigation - Horizontal Scroll */}
-        {menuCategories.length > 0 && (
+      <MenuOrderStatusTracker
+        restaurantId={restaurantId}
+        tableNumber={tableNumber}
+        currency={currency}
+        tabId={effectiveTabId || undefined}
+      />
+
+      <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">
+        {/* Search */}
+        <div className="relative mb-4">
+          <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400 stroke-[1.5]" />
+          <Input
+            type="text"
+            placeholder="Search menu items..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-11 rounded-xl border-gray-200 bg-white pl-12 font-sans text-base text-black sm:text-sm"
+          />
+        </div>
+
+        {/* Category tabs */}
+        {menuCategories.length > 0 ? (
           <div
-            className="flex overflow-x-auto gap-2 pb-2 categories-scroll mb-6"
-            style={{
-              scrollbarWidth: 'none',
-              msOverflowStyle: 'none',
-              WebkitOverflowScrolling: 'touch',
-            }}
+            className="mb-6 flex gap-2 overflow-x-auto pb-1"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch' }}
           >
+            <button
+              type="button"
+              onClick={() => {
+                setCategoryFilter('all')
+                setSelectedMenuCategory(null)
+                setSearchQuery('')
+              }}
+              className={`shrink-0 whitespace-nowrap rounded-full px-5 py-2 text-sm font-semibold transition-colors ${
+                categoryFilter === 'all'
+                  ? 'bg-black text-white'
+                  : 'border border-gray-300 bg-white text-black hover:bg-gray-50'
+              }`}
+            >
+              All
+            </button>
             {menuCategories.map((category) => (
               <button
                 key={category.id}
                 type="button"
                 onClick={() => {
+                  setCategoryFilter(category.id)
                   setSelectedMenuCategory(category)
                   setSearchQuery('')
                 }}
-                className={`shrink-0 whitespace-nowrap px-6 py-3 text-sm font-semibold font-sans transition-colors ${
-                  selectedMenuCategory?.id === category.id
-                    ? 'bg-foreground text-background'
-                    : 'bg-transparent text-foreground border border-border hover:bg-muted'
+                className={`shrink-0 whitespace-nowrap rounded-full px-5 py-2 text-sm font-semibold transition-colors ${
+                  categoryFilter === category.id
+                    ? 'bg-black text-white'
+                    : 'border border-gray-300 bg-white text-black hover:bg-gray-50'
                 }`}
               >
                 {category.name}
               </button>
             ))}
           </div>
-        )}
+        ) : null}
 
-        {/* Search Bar */}
-        <div className="relative mb-6 sm:mb-8">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground stroke-[1.5]" />
-          <Input
-            type="text"
-            placeholder="Search menu items..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-11 border-border bg-muted pl-12 font-sans text-base sm:text-sm"
-          />
-        </div>
-
-        {/* Menu Items */}
-        {filteredGroupedEntries.length > 0 ? (
-          <div className="space-y-12">
-            {filteredGroupedEntries.map(({ subcategory, items }) => (
-              <section key={subcategory.id} className="space-y-6">
-                {/* Sub-category Header */}
-                <div className="border-b border-border pb-3">
-                  <h2 className="text-2xl font-serif font-bold text-foreground">
-                    {subcategory.name}
-                  </h2>
-                  {subcategory.description && (
-                    <p className="text-sm font-sans text-muted-foreground mt-1">
-                      {subcategory.description}
-                    </p>
-                  )}
-                </div>
-                
-                {/* Items Grid */}
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  {items.map((item) => (
-                    <article
-                      key={item.id}
-                      className="bg-card border border-border overflow-hidden hover-lift"
-                    >
-                      {/* Image */}
-                      <div className="relative w-full aspect-[4/3] bg-muted overflow-hidden">
-                        <FoodItemImage
-                          itemName={item.name}
-                          menuItemId={item.id}
-                          storedImageUrl={item.image_url}
-                          alt={item.name}
-                          className="h-full w-full object-cover rounded-t-lg"
-                          style={{
-                            objectFit: item.imageFit || 'cover',
-                            objectPosition: item.imagePosition || 'center',
-                          }}
-                        />
-                      </div>
-                      
-                      {/* Content */}
-                      <div className="p-4">
-                        <h3 className="mb-1 line-clamp-2 font-sans text-base font-semibold text-foreground sm:text-lg">
-                          {item.name}
-                        </h3>
-                        {item.description && (
-                          <p className="text-sm font-sans text-muted-foreground mb-4 line-clamp-2 leading-relaxed">
-                            {item.description}
-                          </p>
-                        )}
-                        {getVariantGroups(item).length > 0 && (
-                          <div className="mb-3 space-y-2">
-                            {getVariantGroups(item).map((group) => {
-                              const resolvedSelection = getResolvedVariantSelection(item)
-                              return (
-                                <div key={`${item.id}-${group.name}`}>
-                                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                    {group.name}
-                                  </p>
-                                  <div className="flex flex-wrap gap-2">
-                                    {group.options.map((option, optionIndex) => {
-                                      const optionLabel = getSelectedVariantLabel(option)
-                                      const isSelected = resolvedSelection[group.name] === optionLabel
-                                      return (
-                                        <button
-                                          key={`${item.id}-${group.name}-${optionLabel}-${optionIndex}`}
-                                          type="button"
-                                          onClick={() =>
-                                            setSelectedVariantGroupsByItem((prev) => ({
-                                              ...prev,
-                                              [item.id]: {
-                                                ...getDefaultGroupSelection(item),
-                                                ...(prev[item.id] || {}),
-                                                [group.name]: optionLabel,
-                                              },
-                                            }))
-                                          }
-                                          className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
-                                            isSelected
-                                              ? 'border-foreground bg-foreground text-background'
-                                              : 'border-border bg-transparent text-foreground'
-                                          }`}
-                                        >
-                                          {group.type === 'price' && typeof option !== 'string'
-                                            ? `${optionLabel} (${restaurant?.currency || 'N$'}${Number(option.price).toFixed(0)})`
-                                            : optionLabel}
-                                        </button>
-                                      )
-                                    })}
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                        
-                        {/* Price + Add Button */}
-                        <div className="flex items-center justify-between border-t border-border pt-2">
-                          <div>
-                            {(() => {
-                              const resolvedSelection = getResolvedVariantSelection(item)
-                              const displayPrice = getItemDisplayPrice(item, resolvedSelection)
-                              return (
-                            <p className="text-lg font-sans font-bold text-foreground">
-                              <span className="text-sm font-normal text-muted-foreground mr-0.5">
-                                {restaurant?.currency || 'N$'}
-                              </span>
-                              {displayPrice.toFixed(2)}
-                            </p>
-                              )
-                            })()}
-                            {item.status === 'out_of_stock' && (
-                              <p className="text-xs font-sans text-destructive mt-0.5">Out of Stock</p>
-                            )}
-                          </div>
-                          <Button
-                            onClick={() => handleAddToCart(item)}
-                            disabled={
-                              !isInTab ||
-                              item.status === 'out_of_stock' ||
-                              addingItemId === item.id ||
-                              isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
-                              ['settled', 'closed', 'completed', 'cancelled'].includes(
-                                String(tabStatus ?? '').toLowerCase()
-                              )
-                            }
-                            size="sm"
-                            className="h-11 bg-foreground px-4 font-sans text-sm font-semibold text-background hover:bg-foreground/90"
-                          >
-                            {!isInTab ? (
-                              'Create Tab to Order'
-                            ) : item.status === 'out_of_stock' ? (
-                              'Unavailable'
-                            ) : addingItemId === item.id ? (
-                              <span className="inline-flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin stroke-[1.5]" />
-                                Adding...
-                              </span>
-                            ) : (
-                              'Add +'
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : (
-          !loading && (
-            <div className="text-center py-16 bg-card border border-border">
-              <div className="max-w-md mx-auto px-6">
-                <div className="text-6xl mb-6">🍽️</div>
-                <h3 className="text-xl font-serif font-bold text-foreground mb-2">
-                  {searchQuery ? 'No items found' : 'Menu coming soon!'}
-                </h3>
-                <p className="text-muted-foreground font-sans mb-2">
-                  {searchQuery 
-                    ? `No items found for "${searchQuery}"`
-                    : selectedMenuCategory
-                    ? `No items in "${selectedMenuCategory.name}" yet.`
-                    : 'This restaurant hasn\'t added menu items yet.'
-                  }
-                </p>
-                {!searchQuery && (
-                  <p className="text-sm text-muted-foreground font-sans">
-                    Please ask staff for assistance.
-                  </p>
-                )}
-              </div>
+        {/* Popular Picks */}
+        {popularItems.length > 0 ? (
+          <section className="mb-8">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-black">Popular Picks ⭐</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setCategoryFilter('all')
+                  setSelectedMenuCategory(null)
+                  setSearchQuery('')
+                  document.getElementById('all-menu')?.scrollIntoView({ behavior: 'smooth' })
+                }}
+                className="text-sm font-medium"
+                style={{ color: ACCENT }}
+              >
+                View All →
+              </button>
             </div>
-          )
-        )}
+            <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
+              {popularItems.map((item) => {
+                const resolvedSelection = getResolvedVariantSelection(item)
+                const displayPrice = getItemDisplayPrice(item, resolvedSelection)
+                return (
+                  <article
+                    key={`popular-${item.id}`}
+                    className="relative w-40 shrink-0 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm sm:w-44"
+                  >
+                    <div className="relative aspect-square w-full overflow-hidden bg-gray-100">
+                      <span
+                        className="absolute left-2 top-2 z-10 rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
+                        style={{ backgroundColor: ACCENT }}
+                      >
+                        Popular
+                      </span>
+                      <FoodItemImage
+                        itemName={item.name}
+                        menuItemId={item.id}
+                        storedImageUrl={item.image_url}
+                        alt={item.name}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <div className="p-3">
+                      <div className="flex items-end justify-between gap-2">
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold text-black">{item.name}</h3>
+                          <p className="text-sm font-bold" style={{ color: ACCENT }}>
+                            {currency}
+                            {displayPrice.toFixed(2)}
+                          </p>
+                        </div>
+                        {renderAddButton(item, true)}
+                      </div>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        ) : null}
+
+        {/* All Menu */}
+        <section id="all-menu">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-black">All Menu</h2>
+            <button
+              type="button"
+              onClick={() => {
+                setCategoryFilter('all')
+                setSelectedMenuCategory(null)
+                setSearchQuery('')
+              }}
+              className="text-sm font-medium"
+              style={{ color: ACCENT }}
+            >
+              View All Items →
+            </button>
+          </div>
+
+          {displayItems.length > 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {displayItems.map((item) => {
+                const resolvedSelection = getResolvedVariantSelection(item)
+                const displayPrice = getItemDisplayPrice(item, resolvedSelection)
+                return (
+                  <article
+                    key={item.id}
+                    className="flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm"
+                  >
+                    <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gray-100">
+                      <FoodItemImage
+                        itemName={item.name}
+                        menuItemId={item.id}
+                        storedImageUrl={item.image_url}
+                        alt={item.name}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-bold leading-tight text-black">{item.name}</h3>
+                          {item.description ? (
+                            <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{item.description}</p>
+                          ) : null}
+                        </div>
+                        {renderAddButton(item)}
+                      </div>
+                      {renderVariantSelectors(item)}
+                      <div className="mt-auto flex items-center justify-between pt-1">
+                        <p className="text-sm font-bold" style={{ color: ACCENT }}>
+                          {currency}
+                          {displayPrice.toFixed(2)}
+                        </p>
+                        {item.status === 'out_of_stock' ? (
+                          <span className="text-xs text-red-600">Out of stock</span>
+                        ) : !isInTab ? (
+                          <span className="text-[10px] text-gray-400">Create tab to order</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          ) : (
+            !loading && (
+              <div className="rounded-2xl border border-gray-100 bg-white py-16 text-center">
+                <div className="mx-auto max-w-md px-6">
+                  <div className="mb-6 text-6xl">🍽️</div>
+                  <h3 className="mb-2 text-xl font-bold text-black">
+                    {searchQuery ? 'No items found' : 'Menu coming soon!'}
+                  </h3>
+                  <p className="mb-2 text-gray-500">
+                    {searchQuery
+                      ? `No items found for "${searchQuery}"`
+                      : selectedMenuCategory
+                        ? `No items in "${selectedMenuCategory.name}" yet.`
+                        : "This restaurant hasn't added menu items yet."}
+                  </p>
+                  {!searchQuery ? (
+                    <p className="text-sm text-gray-400">Please ask staff for assistance.</p>
+                  ) : null}
+                </div>
+              </div>
+            )
+          )}
+        </section>
       </div>
+
+      {/* Footer */}
+      <footer className="border-t border-gray-200 bg-white py-10">
+        <div className="mx-auto grid max-w-4xl grid-cols-1 gap-8 px-4 sm:grid-cols-3">
+          <div className="text-center sm:text-left">
+            <Shield className="mx-auto mb-2 h-6 w-6 text-black sm:mx-0" strokeWidth={1.5} />
+            <p className="font-bold text-black">Secure &amp; Safe</p>
+            <p className="mt-1 text-sm text-gray-500">Encrypted payments &amp; data protection</p>
+          </div>
+          <div className="text-center sm:text-left">
+            <Zap className="mx-auto mb-2 h-6 w-6 text-black sm:mx-0" strokeWidth={1.5} />
+            <p className="font-bold text-black">Fast &amp; Easy</p>
+            <p className="mt-1 text-sm text-gray-500">Order in seconds from your table</p>
+          </div>
+          <div className="text-center sm:text-left">
+            <Smartphone className="mx-auto mb-2 h-6 w-6 text-black sm:mx-0" strokeWidth={1.5} />
+            <p className="font-bold text-black">Contactless</p>
+            <p className="mt-1 text-sm text-gray-500">No app download required</p>
+          </div>
+        </div>
+      </footer>
 
       {/* Item Detail Modal */}
       {selectedItem && (

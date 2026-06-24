@@ -25,6 +25,7 @@ export type SetupStatus = {
   terminal_connected: boolean
   test_order_completed: boolean
   first_payment_completed: boolean
+  dismissed?: boolean
   completion_percentage?: number
   profile_completed_at?: string | null
   tables_configured_at?: string | null
