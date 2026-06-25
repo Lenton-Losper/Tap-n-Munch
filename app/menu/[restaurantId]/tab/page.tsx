@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { useTab } from '@/contexts/tab-context'
 import {
   fetchOrdersForTab,
@@ -55,9 +55,9 @@ export default function TabSummaryPage() {
 
   const storedTabId = resolveStoredTabId(tabIdFromUrl)
   const { sessionId, tabMembers, tabStatus, refreshTab } = useTab()
+  const { currency, permissions, refresh } = useRestaurant()
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<TabOrder[]>([])
-  const [restaurant, setRestaurant] = useState<{ currency?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
   const [readyToPayLoading, setReadyToPayLoading] = useState(false)
@@ -75,26 +75,11 @@ export default function TabSummaryPage() {
     return null
   }, [storedTabId])
 
-  const currency = restaurant?.currency || 'N$'
-
   useEffect(() => {
     if (tabStatus === 'ready_to_pay') {
       setReadyToPayNotified(true)
     }
   }, [tabStatus])
-
-  useEffect(() => {
-    const loadRestaurant = async () => {
-      if (!restaurantId) return
-      try {
-        const r = await getRestaurant(restaurantId)
-        setRestaurant(r)
-      } catch {
-        setRestaurant(null)
-      }
-    }
-    loadRestaurant()
-  }, [restaurantId])
 
   useEffect(() => {
     const tableNum = Number(tableNumber) || 0
@@ -267,6 +252,16 @@ export default function TabSummaryPage() {
         return
       }
       const data = await res.json().catch(() => ({}))
+      if (res.status === 403 && data?.settingsVersion != null) {
+        await refresh()
+        toast({
+          title: 'Payment option unavailable',
+          description: 'Cash payments are no longer available. Please select Card.',
+          variant: 'destructive',
+        })
+        setPaymentPreference(null)
+        return
+      }
       if (res.status === 409 && data?.alreadyReady) {
         setReadyToPayNotified(true)
         await refreshTab()
@@ -336,7 +331,7 @@ export default function TabSummaryPage() {
           <p className="mt-1 text-sm text-muted-foreground font-sans">Review your tab before paying</p>
         </div>
 
-        {creatorTabPin && (
+        {creatorTabPin && tabRecord?.pin_required !== false && (
           <div className="mb-6 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-sans text-foreground">
             Tab PIN:{' '}
             <span className="font-bold text-emerald-600">{creatorTabPin}</span> — Share with your group
@@ -429,7 +424,14 @@ export default function TabSummaryPage() {
                 How would you like to pay?
               </p>
               <div className="grid gap-2">
-                {(['cash', 'card', 'other'] as const).map((method) => (
+                {(['cash', 'card', 'other'] as const)
+                  .filter((method) => {
+                    if (method === 'other') return true
+                    if (method === 'cash') return permissions.canPayCash
+                    if (method === 'card') return permissions.canPayCard
+                    return true
+                  })
+                  .map((method) => (
                   <button
                     key={method}
                     onClick={() => setPaymentPreference(method)}

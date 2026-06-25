@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurantById } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { useTab } from '@/contexts/tab-context'
@@ -43,9 +43,9 @@ export default function CartPage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
   const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
-  const nameParam = searchParams.get('name') || ''
-  const currencyParam = searchParams.get('currency') || 'NAD'
   const { toast } = useToast()
+  const { restaurant, settings, currency, paymentMethods: enabledMethods, permissions, loading: restaurantLoading } =
+    useRestaurant()
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
@@ -64,7 +64,6 @@ export default function CartPage() {
   const inTabFlow = Boolean(isInTab || effectiveTabId)
   const tabReadyToPay = tabStatus === 'ready_to_pay'
   const [hasSessionTabOrders, setHasSessionTabOrders] = useState(false)
-  const [restaurant, setRestaurant] = useState<any>({ name: nameParam, currency: currencyParam })
   const [orderInstructions, setOrderInstructions] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingItem, setEditingItem] = useState<any>(null)
@@ -75,7 +74,6 @@ export default function CartPage() {
     let cancelled = false
 
     const runOrderChecks = async () => {
-      console.time('cart:order-counts')
       const sessionOrdersQuery =
         effectiveTabId && sessionId && restaurantId
           ? supabase
@@ -101,7 +99,6 @@ export default function CartPage() {
         sessionOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
         staleTabOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
       ])
-      console.timeEnd('cart:order-counts')
 
       if (cancelled) return
 
@@ -163,23 +160,6 @@ export default function CartPage() {
     return s ? `?${s}` : ''
   }, [tableNumber, effectiveTabId])
 
-  useEffect(() => {
-    const loadRestaurant = async () => {
-      try {
-        const restaurantData = await getRestaurantById(restaurantId)
-        if (restaurantData) {
-          setRestaurant(restaurantData)
-        }
-      } catch (err) {
-        console.error('Failed to load restaurant:', err)
-      }
-    }
-
-    if (restaurantId) {
-      void loadRestaurant()
-    }
-  }, [restaurantId])
-
   const handleEdit = async (index: number) => {
     const cartItem = items[index]
     try {
@@ -203,6 +183,32 @@ export default function CartPage() {
 
   const subtotal = getTotal()
   const total = subtotal
+
+  const enabledPaymentMethods = useMemo(() => {
+    if (restaurantLoading) {
+      return { cash: true, card: true }
+    }
+    if (!Array.isArray(enabledMethods) || enabledMethods.length === 0) {
+      return { cash: true, card: true }
+    }
+    const normalized = enabledMethods.map((method) => String(method))
+    return {
+      cash: normalized.includes('cash'),
+      card: normalized.includes('card'),
+    }
+  }, [restaurantLoading, enabledMethods])
+
+  const showPaymentMethodChoice =
+    enabledPaymentMethods.cash && enabledPaymentMethods.card
+
+  useEffect(() => {
+    if (inTabFlow || restaurantLoading) return
+    if (enabledPaymentMethods.cash && !enabledPaymentMethods.card) {
+      setPaymentChoice('cash')
+    } else if (enabledPaymentMethods.card && !enabledPaymentMethods.cash) {
+      setPaymentChoice('card_manual')
+    }
+  }, [inTabFlow, restaurantLoading, enabledPaymentMethods.cash, enabledPaymentMethods.card])
 
   const handleAddToTab = async () => {
     if (paying) return
@@ -238,7 +244,6 @@ export default function CartPage() {
         })),
         subtotal: Number(subtotal),
         total: Number(total),
-        ...buildPaymentFields(paymentChoice),
         orderInstructions: orderInstructions?.trim() || '',
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
@@ -480,7 +485,7 @@ export default function CartPage() {
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <p className="font-sans text-base font-bold text-foreground sm:text-lg">
                         <span className="mr-0.5 text-xs font-normal text-muted-foreground sm:text-sm">
-                          {restaurant?.currency || 'N$'}
+                          {currency}
                         </span>
                         {item.subtotal.toFixed(2)}
                         <span className="ml-2 text-xs font-normal text-muted-foreground">
@@ -524,7 +529,7 @@ export default function CartPage() {
               <div className="mb-6 space-y-3">
                 <div className="flex justify-between font-sans text-sm">
                   <span className="text-muted-foreground">Subtotal</span>
-                  <span className="text-foreground">{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
+                  <span className="text-foreground">{currency}{subtotal.toFixed(2)}</span>
                 </div>
               </div>
               
@@ -532,7 +537,7 @@ export default function CartPage() {
                 <div className="flex justify-between items-center">
                   <span className="font-sans text-lg font-semibold text-foreground">Total</span>
                   <span className="font-sans text-2xl font-bold text-foreground">
-                    {restaurant?.currency || 'N$'}{total.toFixed(2)}
+                    {currency}{total.toFixed(2)}
                   </span>
                 </div>
               </div>
@@ -552,13 +557,13 @@ export default function CartPage() {
                 />
               </div>
 
-              {!inTabFlow && (
+              {!inTabFlow && showPaymentMethodChoice && (
                 <div className="mb-6" role="radiogroup" aria-label="Payment method">
                   <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
                     How would you like to pay?
                   </Label>
                   <div className="grid gap-3">
-                    {ENABLE_ONLINE_CARD_CHECKOUT && (
+                    {ENABLE_ONLINE_CARD_CHECKOUT && enabledPaymentMethods.card && (
                     <button
                       type="button"
                       role="radio"
@@ -580,6 +585,7 @@ export default function CartPage() {
                       <p className="mt-1 text-sm text-muted-foreground">Pay now with card online</p>
                     </button>
                     )}
+                    {enabledPaymentMethods.cash && (
                     <button
                       type="button"
                       role="radio"
@@ -600,6 +606,8 @@ export default function CartPage() {
                       <span className="ml-2 font-semibold text-foreground">Pay at table with cash</span>
                       <p className="mt-1 text-sm text-muted-foreground">Staff will collect cash at your table</p>
                     </button>
+                    )}
+                    {enabledPaymentMethods.card && (
                     <button
                       type="button"
                       role="radio"
@@ -622,6 +630,7 @@ export default function CartPage() {
                         Staff will bring their card machine to your table
                       </p>
                     </button>
+                    )}
                     <button
                       type="button"
                       role="radio"
@@ -681,7 +690,7 @@ export default function CartPage() {
       {editingItem && editingIndex !== null && (
         <ItemDetailModal
           item={editingItem}
-          restaurant={restaurant}
+          restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => {
             setEditingItem(null)
             setEditingIndex(null)

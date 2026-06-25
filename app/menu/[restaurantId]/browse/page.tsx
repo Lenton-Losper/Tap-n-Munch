@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurantByFirebaseId } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
@@ -21,6 +21,7 @@ import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
+import { fetchTabById } from '@/lib/tab-session'
 
 type ItemVariant = {
   size: string
@@ -54,7 +55,7 @@ type SubCategory = Record<string, any>
 const ACCENT = '#C0392B'
 
 function isPopularItem(item: MenuItem): boolean {
-  return item.is_popular === true || item.isPopular === true || item.featured === true
+  return item.is_popular === true
 }
 
 function flattenGroupedItems(
@@ -92,6 +93,7 @@ export default function MenuBrowsePage() {
 
   const { items: cartItems, getItemCount, addItem, clearCart } = useCart()
   const { isInTab, tabId, tabTotal, tabMembers, tabStatus } = useTab()
+  const { restaurant, currency } = useRestaurant()
 
   const effectiveTabId = tabIdParam || tabId || readStoredTabId() || ''
   const { redirecting: tabSessionRedirecting } = useTabSessionEndedRedirect({
@@ -121,7 +123,7 @@ export default function MenuBrowsePage() {
     if (storedTabId === activeTabId && pin) return pin
     return null
   }, [tabIdParam, tabId])
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [tabPinRequired, setTabPinRequired] = useState(true)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -145,6 +147,20 @@ export default function MenuBrowsePage() {
       toastTimersRef.current = []
     }
   }, [])
+
+  useEffect(() => {
+    if (!isInTab || !effectiveTabId || !restaurantId) return
+
+    let cancelled = false
+    void fetchTabById(effectiveTabId, restaurantId).then((tab) => {
+      if (cancelled) return
+      setTabPinRequired(tab?.pin_required !== false)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isInTab, effectiveTabId, restaurantId])
 
   const pushCartToast = (name: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000)
@@ -272,14 +288,9 @@ export default function MenuBrowsePage() {
     const loadData = async () => {
       try {
         setLoading(true)
-        const [restaurantData, categoriesData] = await Promise.all([
-          getRestaurantByFirebaseId(restaurantId),
-          getSupabaseCategories(restaurantId, true),
-        ])
-        
-        setRestaurant(restaurantData)
+        const categoriesData = await getSupabaseCategories(restaurantId, true)
         setMenuCategories(categoriesData)
-        
+
         if (tableNumber > 0) {
           const existingSession = getCurrentSession()
           const sessionInfo = getSessionInfo()
@@ -295,14 +306,14 @@ export default function MenuBrowsePage() {
             }
           }
         }
-        
+
         setLoading(false)
       } catch (err: any) {
         console.error('Failed to load data:', err)
         setLoading(false)
       }
     }
-    
+
     if (restaurantId) {
       loadData()
     }
@@ -412,8 +423,6 @@ export default function MenuBrowsePage() {
     () => flattenGroupedItems(allGroupedItems).filter(isPopularItem),
     [allGroupedItems]
   )
-
-  const currency = restaurant?.currency || 'N$'
 
   const renderVariantSelectors = (item: MenuItem) => {
     if (getVariantGroups(item).length === 0) return null
@@ -621,12 +630,12 @@ export default function MenuBrowsePage() {
                   ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
                   ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
                   name: restaurant?.name || '',
-                  currency: restaurant?.currency || 'NAD',
+                  currency,
                 }).toString()}`}
               >
                 <Button
                   size="sm"
-                  className="relative h-11 rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 sm:text-sm"
+                  className="relative h-11 cursor-pointer rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 sm:text-sm"
                 >
                   My Orders
                   {getItemCount() > 0 ? (
@@ -649,18 +658,18 @@ export default function MenuBrowsePage() {
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
             <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
               {tabStatus === 'ready_to_pay'
-                ? `Ready to pay • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
+                ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
                 : tabStatus === 'closed'
-                  ? `Tab closed • ${(restaurant?.currency || 'N$')}${(0).toFixed(2)} • 0 people`
-                  : creatorTabPin ? (
+                  ? `Tab closed • ${currency}${(0).toFixed(2)} • 0 people`
+                  : creatorTabPin && tabPinRequired ? (
                       <>
-                        Tab open • {(restaurant?.currency || 'N$')}
+                        Tab open • {currency}
                         {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
                         {tabMembers.length === 1 ? 'person' : 'people'} • PIN:{' '}
                         <span className="font-bold text-emerald-400">{creatorTabPin}</span> — Tap to settle →
                       </>
                     ) : (
-                      `Tab open • ${(restaurant?.currency || 'N$')}${(Number(tabTotal) || 0).toFixed(2)} • ${
+                      `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)} • ${
                         tabMembers.length
                       } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`
                     )}
@@ -907,7 +916,7 @@ export default function MenuBrowsePage() {
       {selectedItem && (
         <ItemDetailModal
           item={selectedItem}
-          restaurant={restaurant}
+          restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
             if (!isInTab) return

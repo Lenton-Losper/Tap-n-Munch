@@ -4,11 +4,17 @@ import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 
 export const dynamic = 'force-dynamic'
 
-type StaffRole = 'owner' | 'manager' | 'waiter'
+type StaffRole = 'owner' | 'manager' | 'waiter' | 'kitchen' | 'bar'
 
 function parseStaffRole(value: unknown): StaffRole | null {
   const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'owner' || normalized === 'manager' || normalized === 'waiter') {
+  if (
+    normalized === 'owner' ||
+    normalized === 'manager' ||
+    normalized === 'waiter' ||
+    normalized === 'kitchen' ||
+    normalized === 'bar'
+  ) {
     return normalized
   }
   return null

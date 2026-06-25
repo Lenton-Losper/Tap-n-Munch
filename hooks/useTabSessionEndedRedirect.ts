@@ -52,14 +52,11 @@ export function useTabSessionEndedRedirect({
     let cancelled = false
 
     const load = async () => {
-      console.time('session-ended-check')
       try {
         const tab = await fetchTabById(tabId, restaurantId)
         if (!cancelled) evaluateTab(tab)
       } catch (error) {
         console.error('[TAB SESSION ENDED] initial tab check failed', error)
-      } finally {
-        console.timeEnd('session-ended-check')
       }
     }
 

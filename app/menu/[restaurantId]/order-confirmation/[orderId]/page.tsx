@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import { getRestaurant } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
 import {
@@ -73,9 +73,9 @@ export default function OrderConfirmationPage() {
   const orderId = params.orderId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
   const terminalNotice = searchParams.get('notice') === 'terminal'
+  const { currency: restaurantCurrency } = useRestaurant()
 
   const [order, setOrder] = useState<Order | null>(null)
-  const [restaurant, setRestaurant] = useState<{ currency?: string; name?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [terminalNotifiedLocal, setTerminalNotifiedLocal] = useState(false)
 
@@ -83,10 +83,7 @@ export default function OrderConfirmationPage() {
     const loadData = async () => {
       try {
         setLoading(true)
-        const [orderResult, restaurantData] = await Promise.all([
-          supabase.from('orders').select(ORDER_SELECT).eq('id', orderId).single(),
-          getRestaurant(restaurantId),
-        ])
+        const orderResult = await supabase.from('orders').select(ORDER_SELECT).eq('id', orderId).single()
         const orderData = (orderResult.data as Order | null) || null
 
         if (!orderData) {
@@ -95,7 +92,6 @@ export default function OrderConfirmationPage() {
         }
 
         setOrder(orderData)
-        setRestaurant(restaurantData)
         setLoading(false)
       } catch (err) {
         console.error('Failed to load order:', err)
@@ -187,7 +183,7 @@ export default function OrderConfirmationPage() {
 
   const effectiveTableNumber =
     tableNumber > 0 ? tableNumber : Number(order.table_number || 0)
-  const currency = normalizeCurrency(restaurant?.currency)
+  const currency = normalizeCurrency(restaurantCurrency)
   const paymentStatusLower = String(order.payment_status || '').toLowerCase()
   const isTerminalChannel =
     String(order.payment_channel || '').toLowerCase() === 'terminal'

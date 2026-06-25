@@ -62,6 +62,7 @@ create table menu_categories (
   name text not null,
   description text,
   display_order integer default 0,
+  route_to text not null default 'kitchen' check (route_to in ('kitchen', 'bar', 'both')),
   active boolean default true,
   created_at timestamptz default now(),
   updated_at timestamptz default now()

@@ -62,6 +62,25 @@ export async function POST(
       return NextResponse.json({ error: `Tab cannot be marked ready (status=${status})` }, { status: 400 })
     }
 
+    // Validate payment preference against restaurant settings
+    const { data: settings } = await supabase
+      .from('restaurant_settings')
+      .select('payment_methods, settings_version')
+      .eq('restaurant_id', restaurantUuid)
+      .maybeSingle()
+
+    const allowedMethods = settings?.payment_methods ?? ['cash', 'card']
+
+    if (paymentPreference && paymentPreference !== 'other' && !allowedMethods.includes(paymentPreference)) {
+      return NextResponse.json(
+        {
+          error: `This restaurant does not accept ${paymentPreference} payments.`,
+          settingsVersion: settings?.settings_version ?? 1,
+        },
+        { status: 403 }
+      )
+    }
+
     const { data: updatedTab, error: updateError } = await supabase
       .from('tabs')
       .update({

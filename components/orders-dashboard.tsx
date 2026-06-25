@@ -30,6 +30,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
+import { orderMatchesStation } from '@/lib/order-routing'
 
 async function markFirstPaymentSetupComplete() {
   try {
@@ -152,7 +153,7 @@ function ActionButtonContent({
 }
 
 export function OrdersDashboard() {
-  const { user, restaurantId, restaurant } = useAuth()
+  const { user, restaurantId, restaurant, role } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
   const toastRef = useRef(toast)
@@ -452,23 +453,35 @@ export function OrdersDashboard() {
     void fetchCompleted()
   }, [activeTab, dashboardRestaurantId])
 
+  const stationFilteredOrders = useMemo(() => {
+    if (role === 'kitchen') {
+      return allOrders.filter((order) => orderMatchesStation(order, 'kitchen'))
+    }
+    if (role === 'bar') {
+      return allOrders.filter((order) => orderMatchesStation(order, 'bar'))
+    }
+    return allOrders
+  }, [allOrders, role])
+
   const mergedSourceOrders = useMemo(() => {
     if (activeTab === 'pending_payment') {
-      return allOrders.filter(
+      return stationFilteredOrders.filter(
         (order) =>
           paymentChannelOf(order) === 'hosted' &&
           String(order.payment_status || '').toLowerCase() === 'pending'
       )
     }
     if (activeTab === 'new') {
-      return allOrders.filter(
+      return stationFilteredOrders.filter(
         (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
       )
     }
     if (activeTab === 'completed') {
-      const fromRealtime = allOrders.filter((order) => order.status === 'completed')
+      const fromRealtime = stationFilteredOrders.filter((order) => order.status === 'completed')
       const merged = [...fromRealtime]
       for (const order of completedOrders) {
+        if (role === 'kitchen' && !orderMatchesStation(order, 'kitchen')) continue
+        if (role === 'bar' && !orderMatchesStation(order, 'bar')) continue
         if (!merged.find((existing) => existing.id === order.id)) {
           merged.push(order)
         }
@@ -477,22 +490,22 @@ export function OrdersDashboard() {
     }
     const mappedStatus = supabaseStatusForTab(activeTab)
     if (!mappedStatus) return []
-    return allOrders.filter((order) => order.status === mappedStatus)
-  }, [activeTab, allOrders, completedOrders])
+    return stationFilteredOrders.filter((order) => order.status === mappedStatus)
+  }, [activeTab, stationFilteredOrders, completedOrders, role])
 
   const tabCounts = useMemo(() => {
-    const newCandidates = allOrders.filter(
+    const newCandidates = stationFilteredOrders.filter(
       (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
     )
     return {
-      pending_payment: countPendingHostedOrders(allOrders),
+      pending_payment: countPendingHostedOrders(stationFilteredOrders),
       new: newCandidates.length,
-      accepted: allOrders.filter((order) => order.status === 'accepted').length,
-      preparing: allOrders.filter((order) => order.status === 'ready').length,
-      ready: allOrders.filter((order) => order.status === 'ready').length,
-      completed: allOrders.filter((order) => order.status === 'completed').length,
+      accepted: stationFilteredOrders.filter((order) => order.status === 'accepted').length,
+      preparing: stationFilteredOrders.filter((order) => order.status === 'ready').length,
+      ready: stationFilteredOrders.filter((order) => order.status === 'ready').length,
+      completed: stationFilteredOrders.filter((order) => order.status === 'completed').length,
     } as Record<DashboardTabId, number>
-  }, [allOrders])
+  }, [stationFilteredOrders])
 
   useEffect(() => {
     if (!user || !dashboardRestaurantId) return

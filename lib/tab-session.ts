@@ -14,6 +14,7 @@ export type TabRow = {
   members?: unknown
   payment_preference?: string | null
   ready_to_pay_at?: string | null
+  pin_required?: boolean | null
 }
 
 export function isActiveTabStatus(status: string | null | undefined): boolean {
@@ -67,7 +68,7 @@ export function resolveStoredTabId(urlTabId?: string | null): string | null {
 export async function fetchTabById(tabId: string, restaurantId: string): Promise<TabRow | null> {
   const { data, error } = await supabase
     .from('tabs')
-    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at')
+    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required')
     .eq('id', tabId)
     .eq('restaurant_id', restaurantId)
     .maybeSingle()
@@ -87,7 +88,7 @@ export async function fetchActiveTabForTable(
 ): Promise<TabRow | null> {
   let query = supabase
     .from('tabs')
-    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at')
+    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required')
     .eq('restaurant_id', restaurantId)
     .in('status', [...ACTIVE_TAB_STATUSES])
 

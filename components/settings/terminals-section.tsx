@@ -94,7 +94,7 @@ export function TerminalsSection() {
       if (!response.ok) {
         throw new Error(payload?.error || 'Failed to generate activation code')
       }
-      setActivationCode(payload.code)
+      setActivationCode(payload.activationCode)
       setCodeExpiresAt(payload.expiresAt)
       setCodeDialogOpen(true)
       await loadTerminals()

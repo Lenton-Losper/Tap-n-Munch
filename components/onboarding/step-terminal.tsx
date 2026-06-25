@@ -27,7 +27,7 @@ export const StepTerminal = forwardRef<StepHandle, StepTerminalProps>(function S
         method: 'POST',
         body: JSON.stringify({}),
       })
-      setCode(payload.code)
+      setCode(payload.activationCode)
       setExpiresAt(payload.expiresAt)
 
       try {

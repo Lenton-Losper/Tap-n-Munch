@@ -15,6 +15,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { supabase } from '@/lib/supabase/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import {
@@ -60,7 +61,12 @@ export function MenuLandingPageV2Content({
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
-  const [openTab, setOpenTab] = useState<{ id: string; total: number; members: number } | null>(null)
+  const [openTab, setOpenTab] = useState<{
+    id: string
+    total: number
+    members: number
+    pin_required: boolean
+  } | null>(null)
   const [myStoredTab, setMyStoredTab] = useState<{ id: string; total: number; status: string } | null>(null)
   const [storedTabChecked, setStoredTabChecked] = useState(false)
   const [tabLoading, setTabLoading] = useState(false)
@@ -78,6 +84,7 @@ export function MenuLandingPageV2Content({
   const [joinPinError, setJoinPinError] = useState<string | null>(null)
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, joinTabWithPin, clearTab } = useTab()
+  const { currency } = useRestaurant()
 
   useEffect(() => {
     console.log('[V2] page mounted, URL:', window.location.href)
@@ -382,6 +389,7 @@ export function MenuLandingPageV2Content({
         id: String(tabData.id),
         total: Number(tabData.total) || 0,
         members: Array.isArray(tabData.members) ? tabData.members.length : 0,
+        pin_required: tabData.pin_required !== false,
       })
     } catch (tabErr) {
       console.error('Failed to load open tab:', tabErr)
@@ -609,9 +617,39 @@ export function MenuLandingPageV2Content({
       void handleRejoinStoredTab()
       return
     }
+    if (openTab?.pin_required === false) {
+      void handleJoinWithoutPin()
+      return
+    }
     setJoinPin('')
     setJoinPinError(null)
     setShowJoinPinEntry(true)
+  }
+
+  const handleJoinWithoutPin = async () => {
+    if (!requireDisplayName()) return
+    if (!restaurantId || !openTab?.id) {
+      setTabActionError('No open tab found to join.')
+      return
+    }
+    try {
+      setTabActionLoading('join')
+      setTabActionError(null)
+      persistDisplayName()
+      await joinExistingTab({
+        restaurantId,
+        tabId: openTab.id,
+        tableNumber: tableNum,
+        displayName: displayName.trim() || undefined,
+      })
+      router.push(browseWithTab(openTab.id))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      console.error('[V2] join tab without PIN failed:', err)
+      setTabActionError(message)
+    } finally {
+      setTabActionLoading(null)
+    }
   }
 
   const handleRejoinStoredTab = async () => {
@@ -918,7 +956,7 @@ export function MenuLandingPageV2Content({
                 <div>
                   <p className="font-sans text-lg font-semibold text-white">Rejoin your tab</p>
                   <p className="font-sans text-sm text-white/80 mt-2">
-                    Total so far: {(restaurant?.currency || 'NAD')}{(myStoredTab.total || 0).toFixed(2)}
+                    Total so far: {currency}{(myStoredTab.total || 0).toFixed(2)}
                   </p>
                   {myStoredTab.status === 'ready_to_pay' && (
                     <p className="font-sans text-xs text-amber-200/90 mt-2">
@@ -951,7 +989,7 @@ export function MenuLandingPageV2Content({
                     A tab is already open for this table
                   </p>
                   <p className="font-sans text-sm text-white/80 mt-2">
-                    Total so far: {(restaurant?.currency || 'NAD')}{(openTab.total || 0).toFixed(2)}
+                    Total so far: {currency}{(openTab.total || 0).toFixed(2)}
                   </p>
                   {openTab.members > 0 && (
                     <p className="font-sans text-xs text-white/60 mt-1">

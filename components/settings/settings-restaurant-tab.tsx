@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getRestaurant, updateRestaurantSettings } from '@/lib/supabase/restaurants'
+import { getSettingsAccessToken } from './settings-utils'
 import {
   isLogoStoragePath,
   logoPathFromUrl,
@@ -13,6 +14,7 @@ import { supabase } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Upload } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { SETTINGS_BRAND_PRIMARY, SETTINGS_BRAND_PRIMARY_HOVER } from './constants'
@@ -30,6 +32,8 @@ export function SettingsRestaurantTab() {
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const [logoLoadFailed, setLogoLoadFailed] = useState(false)
   const [storedLogoPath, setStoredLogoPath] = useState<string | null>(null)
+  const [tabPinRequired, setTabPinRequired] = useState(true)
+  const [savingTabPinRequired, setSavingTabPinRequired] = useState(false)
 
   const loadRestaurant = useCallback(async () => {
     if (!restaurantId) {
@@ -39,6 +43,12 @@ export function SettingsRestaurantTab() {
     try {
       setLoading(true)
       const data = await getRestaurant(restaurantId)
+      const { data: settingsData } = await supabase
+        .from('restaurant_settings')
+        .select('tab_pin_required')
+        .eq('restaurant_id', restaurantId)
+        .maybeSingle()
+
       if (data) {
         setName(data.name || '')
         setPhone(data.phone || '')
@@ -48,6 +58,7 @@ export function SettingsRestaurantTab() {
         )
         setLogoLoadFailed(false)
       }
+      setTabPinRequired(settingsData?.tab_pin_required !== false)
     } catch (error: unknown) {
       toast({
         title: 'Error',
@@ -62,6 +73,37 @@ export function SettingsRestaurantTab() {
   useEffect(() => {
     void loadRestaurant()
   }, [loadRestaurant])
+
+  const handleTabPinRequiredToggle = async (enabled: boolean) => {
+    if (!restaurantId) return
+
+    try {
+      setSavingTabPinRequired(true)
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/restaurants/${restaurantId}/settings`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ tab_pin_required: enabled }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to update tab PIN setting')
+      }
+      setTabPinRequired(enabled)
+      toast({ title: 'Saved', description: 'Tab PIN setting updated.' })
+    } catch (error: unknown) {
+      toast({
+        title: 'Save failed',
+        description: error instanceof Error ? error.message : 'Failed to update tab PIN setting',
+        variant: 'destructive',
+      })
+    } finally {
+      setSavingTabPinRequired(false)
+    }
+  }
 
   const handleLogoUpload = async (file: File) => {
     if (!restaurantId) return
@@ -240,6 +282,21 @@ export function SettingsRestaurantTab() {
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           disabled={saving}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+        <div className="space-y-1">
+          <Label htmlFor="tab-pin-required">Require Tab PIN</Label>
+          <p className="text-sm text-muted-foreground">
+            When enabled, customers must share a 4-digit PIN for others to join their tab.
+          </p>
+        </div>
+        <Switch
+          id="tab-pin-required"
+          checked={tabPinRequired}
+          onCheckedChange={(checked) => void handleTabPinRequiredToggle(checked)}
+          disabled={savingTabPinRequired || saving || uploadingLogo}
         />
       </div>
 

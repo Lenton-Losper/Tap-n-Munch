@@ -5,7 +5,7 @@ import { RoleGuard } from "@/components/auth/role-guard"
 
 export default function DashboardPage() {
   return (
-    <RoleGuard allowedRoles={['owner', 'manager', 'waiter']}>
+    <RoleGuard allowedRoles={['owner', 'manager', 'waiter', 'kitchen', 'bar']}>
       <OrdersDashboard />
     </RoleGuard>
   )

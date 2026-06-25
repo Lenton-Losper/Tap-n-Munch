@@ -190,9 +190,7 @@ export function TabProvider({
 
     let active = true
     const run = async () => {
-      console.time('useTab:init')
       await loadTab()
-      console.timeEnd('useTab:init')
       if (!active) return
     }
     void run()

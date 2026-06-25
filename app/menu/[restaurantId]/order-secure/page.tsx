@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { getRestaurant } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { useCart } from '@/contexts/cart-context'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
@@ -24,34 +24,16 @@ export default function OrderSecurePage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items, getTotal, clearCart } = useCart()
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const { currency } = useRestaurant()
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const restaurantData = await getRestaurant(restaurantId)
-        setRestaurant(restaurantData)
-        if (tableNumber > 0) {
-          getOrCreateSession(restaurantId, String(tableNumber))
-        }
-      } catch (err) {
-        console.error('Failed to load data:', err)
-        toast({
-          title: 'Error',
-          description: 'Failed to load restaurant information.',
-          variant: 'destructive',
-        })
-      } finally {
-        setLoading(false)
-      }
+    if (tableNumber > 0 && restaurantId) {
+      getOrCreateSession(restaurantId, String(tableNumber))
     }
-
-    if (restaurantId) {
-      loadData()
-    }
-  }, [restaurantId, tableNumber, toast])
+    setLoading(false)
+  }, [restaurantId, tableNumber])
 
   const placeOrderEnabled = !submitting && Array.isArray(items) && items.length > 0
 
@@ -210,7 +192,7 @@ export default function OrderSecurePage() {
                   {item.display_name || item.name}
                 </span>
                 <span className="text-foreground">
-                  {restaurant?.currency || 'N$'}
+                  {currency}
                   {(Number(item.subtotal) || 0).toFixed(2)}
                 </span>
               </div>
@@ -219,13 +201,13 @@ export default function OrderSecurePage() {
           <div className="space-y-3">
             <div className="flex justify-between text-sm font-sans">
               <span className="text-muted-foreground">Subtotal</span>
-              <span className="text-foreground">{restaurant?.currency || 'N$'}{subtotal.toFixed(2)}</span>
+              <span className="text-foreground">{currency}{subtotal.toFixed(2)}</span>
             </div>
             <div className="border-t border-border pt-4 mt-4">
               <div className="flex justify-between items-center">
                 <span className="text-lg font-semibold font-sans text-foreground">Total</span>
                 <span className="text-xl font-bold font-sans text-foreground sm:text-2xl">
-                  {restaurant?.currency || 'N$'}{total.toFixed(2)}
+                  {currency}{total.toFixed(2)}
                 </span>
               </div>
             </div>

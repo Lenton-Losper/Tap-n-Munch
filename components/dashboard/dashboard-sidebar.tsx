@@ -19,7 +19,7 @@ const NAV_ITEMS = [
     href: '/dashboard',
     label: 'Live Orders',
     icon: ClipboardList,
-    roles: ['owner', 'manager', 'waiter'] as StaffRole[],
+    roles: ['owner', 'manager', 'waiter', 'kitchen', 'bar'] as StaffRole[],
     match: (path: string) => path === '/dashboard',
   },
   {
@@ -63,6 +63,8 @@ const ROLE_LABELS: Record<StaffRole, string> = {
   owner: 'Owner',
   manager: 'Manager',
   waiter: 'Waiter',
+  kitchen: 'Kitchen',
+  bar: 'Bar',
 }
 
 export function DashboardSidebar() {

@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, Pencil } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -82,9 +83,9 @@ export function MenuManagementV2() {
   const [editingSubCategory, setEditingSubCategory] = useState<SubCategory | null>(null)
   
   // Form state
-  const [menuCategoryForm, setMenuCategoryForm] = useState({ name: '', description: '' })
+  const [menuCategoryForm, setMenuCategoryForm] = useState({ name: '', description: '', route_to: 'kitchen' as 'kitchen' | 'bar' | 'both' })
   const [subCategoryForm, setSubCategoryForm] = useState({ name: '', description: '' })
-  const [editMenuCategoryForm, setEditMenuCategoryForm] = useState({ name: '', description: '', display_order: '' })
+  const [editMenuCategoryForm, setEditMenuCategoryForm] = useState({ name: '', description: '', display_order: '', route_to: 'kitchen' as 'kitchen' | 'bar' | 'both' })
   const [editSubCategoryForm, setEditSubCategoryForm] = useState({ name: '', description: '', display_order: '' })
   const [itemForm, setItemForm] = useState({
     name: '',
@@ -107,6 +108,7 @@ export function MenuManagementV2() {
     has_addons: false,
     addons: [] as Array<{ name: string; price: number }>,
     allow_special_instructions: true,
+    is_popular: false,
     status: 'available' as 'available' | 'out_of_stock' | 'hidden',
   })
   const [uploadingImage, setUploadingImage] = useState(false)
@@ -456,12 +458,17 @@ export function MenuManagementV2() {
     }
 
     try {
-      await createMenuCategory(restaurantId, name, menuCategoryForm.description || undefined)
+      await createMenuCategory(
+        restaurantId,
+        name,
+        menuCategoryForm.description || undefined,
+        menuCategoryForm.route_to
+      )
       toast({
         title: 'Success',
         description: `Category "${name}" created successfully`,
       })
-      setMenuCategoryForm({ name: '', description: '' })
+      setMenuCategoryForm({ name: '', description: '', route_to: 'kitchen' })
       setShowMenuCategoryModal(false)
       
       // Reload categories
@@ -526,6 +533,7 @@ export function MenuManagementV2() {
       name: category.name || '',
       description: category.description || '',
       display_order: String(category.display_order ?? ''),
+      route_to: (category.route_to || 'kitchen') as 'kitchen' | 'bar' | 'both',
     })
     setShowEditMenuCategoryModal(true)
   }
@@ -559,6 +567,7 @@ export function MenuManagementV2() {
         name: nextName,
         description: editMenuCategoryForm.description.trim() || null,
         display_order: nextDisplayOrder,
+        route_to: editMenuCategoryForm.route_to,
       } as Partial<MenuCategory>)
 
       const categories = ((await getMenuCategories(restaurantId)) || []) as any[]
@@ -774,6 +783,7 @@ export function MenuManagementV2() {
       has_addons: false,
       addons: [],
       allow_special_instructions: true,
+      is_popular: false,
       status: 'available',
     })
     setEditingItem(null)
@@ -813,6 +823,7 @@ export function MenuManagementV2() {
       has_addons: item.has_addons,
       addons: item.addons || [],
       allow_special_instructions: item.allow_special_instructions,
+      is_popular: item.is_popular === true,
       status: item.status,
     })
     setImagePreview(
@@ -1082,6 +1093,7 @@ export function MenuManagementV2() {
             has_addons: itemForm.has_addons,
             addons: itemForm.addons,
             allow_special_instructions: itemForm.allow_special_instructions,
+            is_popular: itemForm.is_popular,
             status: itemForm.status,
           }
         )
@@ -1107,6 +1119,7 @@ export function MenuManagementV2() {
           has_addons: itemForm.has_addons,
           addons: itemForm.addons,
           allow_special_instructions: itemForm.allow_special_instructions,
+          is_popular: itemForm.is_popular,
           status: itemForm.status,
         })
         toast({
@@ -1132,6 +1145,7 @@ export function MenuManagementV2() {
         has_addons: false,
         addons: [],
         allow_special_instructions: true,
+        is_popular: false,
         status: 'available',
       })
       setEditingItem(null)
@@ -1671,6 +1685,24 @@ export function MenuManagementV2() {
                 rows={3}
               />
             </div>
+            <div>
+              <Label>Order goes to</Label>
+              <Select
+                value={menuCategoryForm.route_to}
+                onValueChange={(value: 'kitchen' | 'bar' | 'both') =>
+                  setMenuCategoryForm({ ...menuCategoryForm, route_to: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select destination" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kitchen">Kitchen</SelectItem>
+                  <SelectItem value="bar">Bar</SelectItem>
+                  <SelectItem value="both">Both</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShowMenuCategoryModal(false)}>
                 Cancel
@@ -1725,6 +1757,24 @@ export function MenuManagementV2() {
                 onChange={(e) => setEditMenuCategoryForm({ ...editMenuCategoryForm, display_order: e.target.value })}
                 placeholder="0"
               />
+            </div>
+            <div>
+              <Label>Order goes to</Label>
+              <Select
+                value={editMenuCategoryForm.route_to}
+                onValueChange={(value: 'kitchen' | 'bar' | 'both') =>
+                  setEditMenuCategoryForm({ ...editMenuCategoryForm, route_to: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select destination" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kitchen">Kitchen</SelectItem>
+                  <SelectItem value="bar">Bar</SelectItem>
+                  <SelectItem value="both">Both</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex justify-end gap-2">
               <Button
@@ -2235,6 +2285,19 @@ export function MenuManagementV2() {
                 className="rounded"
               />
               <Label>Allow special instructions</Label>
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="item-is-popular">Popular Pick</Label>
+                <p className="text-sm text-muted-foreground">
+                  Show this item in the Popular Picks section on the customer menu
+                </p>
+              </div>
+              <Switch
+                id="item-is-popular"
+                checked={itemForm.is_popular}
+                onCheckedChange={(checked) => setItemForm({ ...itemForm, is_popular: checked })}
+              />
             </div>
             <div>
               <Label>Status</Label>

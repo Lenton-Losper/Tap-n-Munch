@@ -49,6 +49,7 @@ export async function createSupabaseCategory(data: {
   name: string
   description?: string
   display_order?: number
+  route_to?: 'kitchen' | 'bar' | 'both'
 }) {
   const { data: category, error } = await supabase
     .from('menu_categories')
@@ -256,10 +257,16 @@ export async function getMenuCategories(firebaseRestaurantId: string) {
 export async function createMenuCategory(
   firebaseRestaurantId: string,
   name: string,
-  description?: string
+  description?: string,
+  routeTo?: 'kitchen' | 'bar' | 'both'
 ) {
   const restaurantId = await resolveRestaurantUuid(firebaseRestaurantId)
-  return createSupabaseCategory({ restaurant_id: restaurantId, name, description })
+  return createSupabaseCategory({
+    restaurant_id: restaurantId,
+    name,
+    description,
+    route_to: routeTo || 'kitchen',
+  })
 }
 
 export async function updateMenuCategory(

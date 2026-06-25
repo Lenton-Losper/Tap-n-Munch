@@ -4,6 +4,7 @@ import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supaba
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { requireSessionToken } from '@/lib/session-guard'
+import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,7 +27,10 @@ export async function POST(req: Request) {
     const items = rest.items
     const subtotal = rest.subtotal
     const total = rest.total
-    const paymentMethod = rest.paymentMethod
+    const paymentMethod =
+      rest.paymentMethod != null && String(rest.paymentMethod).trim() !== ''
+        ? String(rest.paymentMethod).trim()
+        : undefined
     const paymentChannel = rest.paymentChannel
     const orderInstructions = rest.orderInstructions
     const tabId = rest.tabId ?? rest.tab_id ?? null
@@ -131,6 +135,25 @@ export async function POST(req: Request) {
       .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
 
     const orderNumber = (count || 0) + 1
+    const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
+
+    // Validate payment method against restaurant settings
+    const { data: settings } = await supabase
+      .from('restaurant_settings')
+      .select('payment_methods, settings_version')
+      .eq('restaurant_id', restaurantUuid)
+      .maybeSingle()
+
+    const allowedMethods = settings?.payment_methods ?? ['cash', 'card']
+    if (paymentMethod && !allowedMethods.includes(paymentMethod)) {
+      return NextResponse.json(
+        {
+          error: `This restaurant does not accept ${paymentMethod} payments.`,
+          settingsVersion: settings?.settings_version ?? 1,
+        },
+        { status: 403 }
+      )
+    }
 
     // Create order in Supabase
     const t2 = performance.now()
@@ -148,7 +171,7 @@ export async function POST(req: Request) {
         status: 'pending',
         subtotal: subtotal || 0,
         total: total || 0,
-        items: items || [],
+        items: itemsWithRouting,
         order_instructions: orderInstructions || null,
         tab_id: normalizedTabId || null,
         tab_settlement_for_tab_id: tabSettlementForTabId || null,

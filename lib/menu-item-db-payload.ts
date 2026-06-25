@@ -24,5 +24,7 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
   if (data.variant_groups !== undefined) payload.variant_groups = data.variant_groups
   if (data.variantGroups !== undefined) payload.variant_groups = data.variantGroups
 
+  if (data.is_popular !== undefined) payload.is_popular = Boolean(data.is_popular)
+
   return payload
 }

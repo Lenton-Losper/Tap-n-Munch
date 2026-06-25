@@ -133,6 +133,7 @@ export async function POST(request: Request) {
       description,
       image_url: imageUrl,
       base_price: basePrice,
+      is_popular: Boolean(body.is_popular),
     }
 
     console.log(`${LOG_PREFIX} inserting menu item`, { payload })

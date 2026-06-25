@@ -112,14 +112,23 @@ export async function POST(request: Request) {
       (updateData.device_id ? String(updateData.device_id) : '') ||
       (updateData.sn ? String(updateData.sn) : '')
 
-    if (!resolvedDeviceSerial) {
+    const finalDeviceSerial = resolvedDeviceSerial || `ft-${terminalId}`
+
+    if (!finalDeviceSerial) {
       throw new Error('Unable to resolve device serial for terminal token')
+    }
+
+    if (!resolvedDeviceSerial) {
+      await supabase
+        .from('restaurant_terminals')
+        .update({ device_serial: `ft-${terminalId}` })
+        .eq('id', terminalId)
     }
 
     const accessToken = await signTerminalJwt({
       terminal_id: terminalId,
       restaurant_id: restaurantId,
-      device_serial: resolvedDeviceSerial,
+      device_serial: finalDeviceSerial,
     })
 
     return NextResponse.json({

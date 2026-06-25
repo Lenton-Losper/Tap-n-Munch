@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Copy, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
+import { supabase } from '@/lib/supabase/client'
 import { getRestaurant } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/hooks/use-toast'
 import {
   SETTINGS_BRAND_PRIMARY,
@@ -29,9 +31,9 @@ type ActivationResult = {
 type TerminalRow = {
   id: string
   label: string
-  sn: string | null
+  device_serial: string | null
   model: string | null
-  is_active: boolean
+  status: string
   has_pending_code: boolean
 }
 
@@ -66,7 +68,7 @@ function clearStoredActivation(restaurantId: string | null) {
 }
 
 function terminalStatusBadge(terminal: TerminalRow) {
-  if (terminal.is_active) {
+  if (terminal.status === 'active') {
     return <Badge className="bg-emerald-600 hover:bg-emerald-600">Active</Badge>
   }
   return <Badge variant="secondary">Pending</Badge>
@@ -143,12 +145,16 @@ export function SettingsPaymentTab() {
   const { toast } = useToast()
   const [merchantNo, setMerchantNo] = useState('')
   const [storeNo, setStoreNo] = useState('')
+  const [paymentMethods, setPaymentMethods] = useState<string[]>(['cash', 'card'])
   const [savingAccount, setSavingAccount] = useState(false)
+  const [savingPaymentMethods, setSavingPaymentMethods] = useState(false)
   const [loadingAccount, setLoadingAccount] = useState(true)
 
   const [terminals, setTerminals] = useState<TerminalRow[]>([])
   const [loadingTerminals, setLoadingTerminals] = useState(true)
   const [generatingCode, setGeneratingCode] = useState(false)
+  const [deactivatingId, setDeactivatingId] = useState<string | null>(null)
+  const [showInactive, setShowInactive] = useState(false)
   const [activationResult, setActivationResult] = useState<ActivationResult | null>(null)
 
   useEffect(() => {
@@ -167,6 +173,17 @@ export function SettingsPaymentTab() {
       const data = await getRestaurant(restaurantId)
       setMerchantNo(String((data as any)?.finatic_merchant_no || ''))
       setStoreNo(String((data as any)?.finatic_store_no || ''))
+      const token = await getSettingsAccessToken()
+      const res = await fetch(`/api/admin/restaurants/${restaurantId}/settings`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payload = await res.json()
+      const methods = payload?.settings?.payment_methods
+      setPaymentMethods(
+        Array.isArray(methods) && methods.length > 0
+          ? methods.map((m: unknown) => String(m))
+          : ['cash', 'card']
+      )
     } catch (error: unknown) {
       toast({
         title: 'Error',
@@ -179,17 +196,40 @@ export function SettingsPaymentTab() {
   }, [restaurantId, toast])
 
   const loadTerminals = useCallback(async () => {
+    if (!restaurantId) {
+      setLoadingTerminals(false)
+      return
+    }
     try {
       setLoadingTerminals(true)
       const token = await getSettingsAccessToken()
-      const response = await fetch('/api/admin/terminals', {
+      const response = await fetch('/api/admin/terminals/list', {
         headers: { Authorization: `Bearer ${token}` },
       })
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload?.error || 'Failed to load terminals')
       }
-      setTerminals(payload.terminals || [])
+
+      const rows: TerminalRow[] = (payload.terminals || []).map((row: Record<string, unknown>) => {
+        const activationCode = row.activation_code ? String(row.activation_code) : null
+        const expiresAt = row.activation_code_expires_at
+          ? String(row.activation_code_expires_at)
+          : null
+        const hasPendingCode =
+          Boolean(activationCode) &&
+          (!expiresAt || new Date(expiresAt).getTime() > Date.now())
+
+        return {
+          id: String(row.id),
+          label: String(row.terminal_name || 'Terminal'),
+          device_serial: row.device_serial ? String(row.device_serial) : null,
+          model: row.model ? String(row.model) : null,
+          status: String(row.status || 'active'),
+          has_pending_code: hasPendingCode,
+        }
+      })
+      setTerminals(rows)
     } catch (error: unknown) {
       toast({
         title: 'Error',
@@ -199,12 +239,55 @@ export function SettingsPaymentTab() {
     } finally {
       setLoadingTerminals(false)
     }
-  }, [toast])
+  }, [restaurantId, toast])
 
   useEffect(() => {
     void loadAccount()
     void loadTerminals()
   }, [loadAccount, loadTerminals])
+
+  const handlePaymentMethodToggle = async (method: 'cash' | 'card', enabled: boolean) => {
+    if (!restaurantId) return
+
+    const nextMethods = enabled
+      ? [...new Set([...paymentMethods, method])]
+      : paymentMethods.filter((item) => item !== method)
+
+    if (nextMethods.length === 0) {
+      toast({
+        title: 'Error',
+        description: 'At least one payment method must remain enabled.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      setSavingPaymentMethods(true)
+      const token = await getSettingsAccessToken()
+      const res = await fetch(`/api/admin/restaurants/${restaurantId}/settings`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ payment_methods: nextMethods }),
+      })
+      const payload = await res.json()
+      if (!res.ok) throw new Error(payload?.error || 'Failed to update payment methods')
+
+      setPaymentMethods(nextMethods)
+      toast({ title: 'Saved', description: 'Payment methods updated.' })
+    } catch (error: unknown) {
+      toast({
+        title: 'Save failed',
+        description: error instanceof Error ? error.message : 'Failed to update payment methods',
+        variant: 'destructive',
+      })
+    } finally {
+      setSavingPaymentMethods(false)
+    }
+  }
 
   const handleSaveAccount = async () => {
     try {
@@ -256,7 +339,7 @@ export function SettingsPaymentTab() {
         throw new Error(payload?.error || 'Failed to generate activation code')
       }
 
-      const code = String(payload?.code || '').trim()
+      const code = String(payload?.activationCode || '').trim()
       const expiresAt = String(payload?.expiresAt || '').trim()
       if (!code) {
         throw new Error('No activation code was returned. Please try again.')
@@ -293,6 +376,29 @@ export function SettingsPaymentTab() {
     }
   }
 
+  const handleDeactivateTerminal = async (terminal: TerminalRow) => {
+    try {
+      setDeactivatingId(terminal.id)
+      const { error } = await supabase
+        .from('restaurant_terminals')
+        .update({ status: 'inactive' })
+        .eq('id', terminal.id)
+
+      if (error) throw error
+
+      toast({ title: 'Deactivated', description: 'Terminal has been deactivated.' })
+      await loadTerminals()
+    } catch (error: unknown) {
+      toast({
+        title: 'Deactivation failed',
+        description: error instanceof Error ? error.message : 'Failed to deactivate terminal',
+        variant: 'destructive',
+      })
+    } finally {
+      setDeactivatingId(null)
+    }
+  }
+
   const handleCopyCode = async () => {
     if (!activationResult?.code) return
     try {
@@ -311,6 +417,11 @@ export function SettingsPaymentTab() {
     backgroundColor: SETTINGS_BRAND_PRIMARY,
     color: '#fff',
   }
+
+  const visibleTerminals = terminals.filter(
+    (terminal) => showInactive || terminal.status === 'active'
+  )
+  const hasInactiveTerminals = terminals.some((terminal) => terminal.status !== 'active')
 
   return (
     <div className="space-y-6">
@@ -366,6 +477,50 @@ export function SettingsPaymentTab() {
         )}
       </div>
 
+      <div className="bg-card border rounded-lg p-6 space-y-6">
+        <div>
+          <h2 className="text-xl font-semibold">Payment Methods</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Choose which payment options customers can select at checkout.
+          </p>
+        </div>
+
+        {loadingAccount ? (
+          <p className="text-sm text-muted-foreground">Loading payment methods...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="payment-method-cash">Cash payments</Label>
+                <p className="text-sm text-muted-foreground">
+                  Allow customers to pay with cash at the table.
+                </p>
+              </div>
+              <Switch
+                id="payment-method-cash"
+                checked={paymentMethods.includes('cash')}
+                onCheckedChange={(checked) => void handlePaymentMethodToggle('cash', checked)}
+                disabled={savingPaymentMethods}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="payment-method-card">Card payments</Label>
+                <p className="text-sm text-muted-foreground">
+                  Allow customers to pay with card at the table.
+                </p>
+              </div>
+              <Switch
+                id="payment-method-card"
+                checked={paymentMethods.includes('card')}
+                onCheckedChange={(checked) => void handlePaymentMethodToggle('card', checked)}
+                disabled={savingPaymentMethods}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
       {activationResult ? (
         <div id="terminal-activation-success">
           <TerminalActivationSuccessCard
@@ -403,13 +558,15 @@ export function SettingsPaymentTab() {
 
         {loadingTerminals ? (
           <p className="text-sm text-muted-foreground">Loading terminals...</p>
-        ) : terminals.length === 0 ? (
+        ) : visibleTerminals.length === 0 ? (
           <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-            No terminals registered yet.
+            {terminals.length === 0
+              ? 'No terminals registered yet.'
+              : 'No active terminals. Toggle "Show inactive" to see deactivated devices.'}
           </div>
         ) : (
           <div className="space-y-3">
-            {terminals.map((terminal) => (
+            {visibleTerminals.map((terminal) => (
               <div
                 key={terminal.id}
                 className="flex flex-col gap-2 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -420,14 +577,35 @@ export function SettingsPaymentTab() {
                     {terminalStatusBadge(terminal)}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Serial: {terminal.sn || '—'}
+                    Serial: {terminal.device_serial || '—'}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     Model: {terminal.model || '—'}
                   </p>
                 </div>
+                {terminal.status === 'active' ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 text-red-600 hover:text-red-700"
+                    onClick={() => handleDeactivateTerminal(terminal)}
+                    disabled={deactivatingId === terminal.id}
+                  >
+                    {deactivatingId === terminal.id ? 'Deactivating...' : 'Deactivate'}
+                  </Button>
+                ) : null}
               </div>
             ))}
+            {hasInactiveTerminals ? (
+              <button
+                type="button"
+                onClick={() => setShowInactive((current) => !current)}
+                className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+              >
+                {showInactive ? 'Hide inactive' : 'Show inactive'}
+              </button>
+            ) : null}
           </div>
         )}
       </div>

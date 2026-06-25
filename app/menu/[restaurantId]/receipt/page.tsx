@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import { getRestaurant } from '@/lib/supabase/restaurants'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
@@ -200,6 +200,7 @@ export default function ReceiptPage() {
   const tableNumberFromUrl = searchParams.get('table') || ''
   const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
   const { tabStatus, refreshTab } = useTab()
+  const { restaurant, currency } = useRestaurant()
   const storedTabId = resolveStoredTabId(tabIdFromUrl)
   const tableNumber =
     tableNumberFromUrl ||
@@ -209,16 +210,8 @@ export default function ReceiptPage() {
 
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<OrderRecord[]>([])
-  const [restaurant, setRestaurant] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
-
-  useEffect(() => {
-    if (!restaurantId) return
-    getRestaurant(restaurantId)
-      .then((restaurantData) => setRestaurant(restaurantData))
-      .catch((err) => console.error('Failed to load restaurant:', err))
-  }, [restaurantId])
 
   useEffect(() => {
     if (!restaurantId) {
@@ -330,12 +323,6 @@ export default function ReceiptPage() {
   )
 
   const memberNameMap = useMemo(() => buildMemberNameMap(tabRecord), [tabRecord])
-
-  useEffect(() => {
-    if (!tabRecord && !orders.length) return
-    console.log('[receipt] members:', tabRecord?.members)
-    console.log('[receipt] order sample:', orders?.[0])
-  }, [tabRecord, orders])
 
   // No table number
   if (!loading && (!tableNum || tableNum <= 0)) {
@@ -458,7 +445,7 @@ export default function ReceiptPage() {
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
               <span className="text-lg font-semibold text-foreground">Tab Total</span>
               <span className="text-2xl font-bold text-foreground">
-                {restaurant?.currency || 'N$'}{tabGrandTotal.toFixed(2)}
+                {currency}{tabGrandTotal.toFixed(2)}
               </span>
             </div>
           </div>
@@ -489,7 +476,7 @@ export default function ReceiptPage() {
                   </div>
                   <div className="text-right">
                     <p className="text-xl font-bold text-foreground font-sans">
-                      {restaurant?.currency || 'N$'}{orderTotal.toFixed(2)}
+                      {currency}{orderTotal.toFixed(2)}
                     </p>
                     {(() => {
                       const badge = getReceiptStatusBadge(order)
@@ -511,7 +498,7 @@ export default function ReceiptPage() {
                           {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
                         </span>
                         <span className="font-semibold text-foreground">
-                          {restaurant?.currency || 'N$'}{((item?.subtotal || 0)).toFixed(2)}
+                          {currency}{((item?.subtotal || 0)).toFixed(2)}
                         </span>
                       </div>
                     ))}

@@ -59,7 +59,7 @@ export async function getRestaurantById(restaurantId: string) {
 
   const { data, error } = await supabase
     .from('restaurants')
-    .select('id, name, phone, currency, owner_id, payment_methods, subscription_status, subscription_tier, logo_url, updated_at')
+    .select('id, name, phone, owner_id, subscription_status, subscription_tier, logo_url, updated_at')
     .eq('id', id)
     .maybeSingle()
 

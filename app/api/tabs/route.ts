@@ -58,6 +58,19 @@ export async function POST(req: Request) {
 
     console.log('[TABS] table UUID found', tableRow.id)
 
+    const { data: settingsRow, error: settingsError } = await supabase
+      .from('restaurant_settings')
+      .select('tab_pin_required')
+      .eq('restaurant_id', restaurantUuid)
+      .maybeSingle()
+
+    if (settingsError) {
+      console.error('[TABS] restaurant_settings lookup error', settingsError)
+    }
+
+    const pinRequired = settingsRow?.tab_pin_required !== false
+    const tabPin = pinRequired ? generateTabPin() : null
+
     const members = sessionId
       ? [
           {
@@ -68,8 +81,6 @@ export async function POST(req: Request) {
         ]
       : []
 
-    const tabPin = generateTabPin()
-
     const insertPayload = {
       restaurant_id: restaurantUuid,
       table_id: tableRow.id,
@@ -78,6 +89,7 @@ export async function POST(req: Request) {
       members,
       total: 0,
       tab_pin: tabPin,
+      pin_required: pinRequired,
     }
 
     console.log('[TABS] inserting tab row', {
@@ -158,7 +170,7 @@ export async function POST(req: Request) {
       tableId: newTab.table_id,
       tableNumber: newTab.table_number,
       sessionToken,
-      tabPin,
+      ...(tabPin ? { tabPin } : {}),
     })
   } catch (err) {
     console.error('[TABS] unexpected error', err)
