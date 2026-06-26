@@ -23,6 +23,7 @@ export interface OrderItem {
 export interface Order {
   id: string;
   restaurant_id: string;
+  table_id?: string;
   table_number: number;
   order_number: number;
   status: OrderStatus;
@@ -30,6 +31,34 @@ export interface Order {
   total: number;
   placed_at: string;
   member_name?: string;
+}
+
+export interface TabOrder {
+  id: string;
+  order_number: number;
+  total: number;
+  status: string;
+  payment_status: string;
+  member_name?: string;
+  items: OrderItem[];
+  placed_at: string;
+}
+
+export interface TableTab {
+  id: string;
+  status: string;
+  total: number;
+  unpaid_total: number;
+  payment_preference?: string;
+  orders: TabOrder[];
+}
+
+export interface TableWithTab {
+  id: string;
+  table_number: number;
+  status: string;
+  tab: TableTab | null;
+  can_close: boolean;
 }
 
 export interface Terminal {

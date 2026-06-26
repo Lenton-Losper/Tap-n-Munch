@@ -31,6 +31,7 @@ export function mapRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: String(row.id ?? row.order_id ?? ''),
     restaurant_id: String(row.restaurant_id),
+    table_id: row.table_id ? String(row.table_id) : undefined,
     table_number: Number(row.table_number),
     order_number: Number(row.order_number),
     status: row.status as OrderStatus,

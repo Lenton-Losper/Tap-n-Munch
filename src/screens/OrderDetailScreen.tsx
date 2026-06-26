@@ -236,6 +236,7 @@ export default function OrderDetailScreen({route}: Props) {
                 onPress={() =>
                   navigation.navigate('Payment', {
                     orderId: order.id,
+                    tableId: order.table_id,
                     tableNumber: order.table_number,
                     total: order.total,
                     orderNumber: order.order_number,

@@ -14,7 +14,12 @@ import {
   saveTerminalId,
   saveTerminalToken,
 } from './storage';
-import {ActivationResponse, Order, OrderStatus} from '../types';
+import {
+  ActivationResponse,
+  Order,
+  OrderStatus,
+  TableWithTab,
+} from '../types';
 import {mapRowToOrder} from './orderMapper';
 
 interface ApiErrorBody {
@@ -352,6 +357,79 @@ export function connectToOrderStream(
     }
     abortCurrent?.();
   };
+}
+
+export async function getTables(token: string): Promise<TableWithTab[]> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tables`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {tables?: TableWithTab[]};
+  return data.tables ?? [];
+}
+
+export async function settleTab(
+  tabId: string,
+  orderIds: string[],
+  amount: number,
+  gatewayReference: string,
+  token: string,
+): Promise<{
+  payment_reference: string;
+  new_tab_total: number;
+  can_close: boolean;
+}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/settle`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        order_ids: orderIds,
+        amount,
+        gateway_reference: gatewayReference,
+        method: 'card',
+      }),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  return response.json() as Promise<{
+    payment_reference: string;
+    new_tab_total: number;
+    can_close: boolean;
+  }>;
+}
+
+export async function closeTable(tableId: string, token: string): Promise<void> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tables/${encodeURIComponent(tableId)}/close`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
 }
 
 export async function completePayment(

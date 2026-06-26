@@ -13,7 +13,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {completePayment, getOrder, updateOrderStatus} from '../lib/api';
+import {closeTable, completePayment, getOrder} from '../lib/api';
 import {formatCurrency, getItemUnitPrice} from '../lib/currency';
 import {processPaymentIntent} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
@@ -32,15 +32,22 @@ function formatTime(iso: string): string {
   });
 }
 
+function formatAmountPaid(amount: number): string {
+  const safe = Number.isFinite(amount) ? amount : 0;
+  return `NAD ${safe.toFixed(2)}`;
+}
+
 export default function PaymentScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
-  const {orderId, tableNumber, total, orderNumber, placedAt} = route.params;
+  const {orderId, tableId, tableNumber, total, orderNumber, placedAt} =
+    route.params;
   const {machineState, startPayment, paymentSuccess, paymentFailed, reset} =
     usePaymentStateMachine();
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
-  const [completing, setCompleting] = useState(false);
-  const [successTimestamp, setSuccessTimestamp] = useState<string | null>(null);
+  const [closingTable, setClosingTable] = useState(false);
+
+  const resolvedTableId = order?.table_id ?? tableId;
 
   const loadOrder = useCallback(async () => {
     setLoadingOrder(true);
@@ -62,6 +69,11 @@ export default function PaymentScreen({route, navigation}: Props) {
     loadOrder();
   }, [loadOrder]);
 
+  const goToOrders = () => {
+    reset();
+    navigation.navigate('MainTabs', {screen: 'Orders'});
+  };
+
   const handleProcessPayment = async () => {
     startPayment(orderId, total);
     try {
@@ -79,7 +91,6 @@ export default function PaymentScreen({route, navigation}: Props) {
           amount: total,
           paymentMethod: 'card',
         });
-        setSuccessTimestamp(new Date().toISOString());
         paymentSuccess(result.reference);
       } else {
         await completePayment(orderId, token, {
@@ -95,30 +106,80 @@ export default function PaymentScreen({route, navigation}: Props) {
     }
   };
 
-  const handleCompleteAndExit = async () => {
-    setCompleting(true);
+  const handleCloseTable = async () => {
+    if (!resolvedTableId) {
+      Alert.alert(
+        'Error',
+        'Failed to close table. Please close from the dashboard.',
+      );
+      goToOrders();
+      return;
+    }
+
+    setClosingTable(true);
     try {
       const token = await getTerminalToken();
       if (!token) {
         throw new Error('Session expired');
       }
-      await updateOrderStatus(orderId, 'completed', token);
-      reset();
-      navigation.navigate('Orders');
-    } catch (err) {
+      await closeTable(resolvedTableId, token);
+      goToOrders();
+    } catch {
       Alert.alert(
         'Error',
-        err instanceof Error ? err.message : 'Failed to complete order',
+        'Failed to close table. Please close from the dashboard.',
       );
+      goToOrders();
     } finally {
-      setCompleting(false);
+      setClosingTable(false);
     }
   };
 
-  const {state, reference, error} = machineState;
+  const handleBackToOrders = () => {
+    goToOrders();
+  };
+
+  const {state, error} = machineState;
   const displayOrderNumber = order?.order_number ?? orderNumber;
   const displayPlacedAt = order?.placed_at ?? placedAt ?? new Date().toISOString();
   const items = order?.items ?? [];
+
+  if (state === 'PAYMENT_SUCCESS') {
+    return (
+      <View style={styles.wrapper}>
+        <View style={[styles.successScreen, {paddingBottom: insets.bottom + Spacing.lg}]}>
+          <View style={styles.successContent}>
+            <MaterialCommunityIcons
+              name="check-circle"
+              size={72}
+              color={Colors.green}
+            />
+            <Text style={styles.successTitle}>Payment successful</Text>
+            <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
+          </View>
+
+          <View style={styles.successActions}>
+            <Pressable
+              style={[styles.primaryButton, closingTable && styles.buttonDisabled]}
+              disabled={closingTable}
+              onPress={handleCloseTable}>
+              {closingTable ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Close Table</Text>
+              )}
+            </Pressable>
+            <Pressable
+              style={styles.secondaryButton}
+              disabled={closingTable}
+              onPress={handleBackToOrders}>
+              <Text style={styles.secondaryButtonText}>Back to Orders</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrapper}>
@@ -191,36 +252,6 @@ export default function PaymentScreen({route, navigation}: Props) {
               </View>
             )}
 
-            {state === 'PAYMENT_SUCCESS' && (
-              <View style={styles.successCard}>
-                <MaterialCommunityIcons
-                  name="check-circle"
-                  size={40}
-                  color={Colors.green}
-                />
-                <Text style={styles.statusTitle}>SUCCESS</Text>
-                <Text style={styles.statusSubtitle}>Payment completed</Text>
-                <Text style={styles.reference}>
-                  Reference: {reference ?? '—'}
-                </Text>
-                {successTimestamp ? (
-                  <Text style={styles.timestamp}>
-                    {formatTime(successTimestamp)}
-                  </Text>
-                ) : null}
-                <Pressable
-                  style={styles.outlinedButton}
-                  disabled={completing}
-                  onPress={handleCompleteAndExit}>
-                  {completing ? (
-                    <ActivityIndicator color={Colors.primary} />
-                  ) : (
-                    <Text style={styles.outlinedButtonText}>New Payment</Text>
-                  )}
-                </Pressable>
-              </View>
-            )}
-
             {state === 'PAYMENT_FAILED' && (
               <View style={styles.failedCard}>
                 <MaterialCommunityIcons
@@ -242,29 +273,27 @@ export default function PaymentScreen({route, navigation}: Props) {
         ) : null}
       </ScrollView>
 
-      {state !== 'PAYMENT_SUCCESS' && (
-        <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.md}]}>
-          <Pressable
-            style={[
-              styles.processButton,
-              state === 'PAYMENT_IN_PROGRESS' && styles.buttonDisabled,
-            ]}
-            disabled={state === 'PAYMENT_IN_PROGRESS'}
-            onPress={handleProcessPayment}>
-            <MaterialCommunityIcons
-              name="credit-card-outline"
-              size={22}
-              color={Colors.white}
-            />
-            <View style={styles.processButtonTextWrap}>
-              <Text style={styles.processButtonTitle}>Process Payment</Text>
-              <Text style={styles.processButtonSubtitle}>
-                Tap card or insert to pay
-              </Text>
-            </View>
-          </Pressable>
-        </View>
-      )}
+      <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.md}]}>
+        <Pressable
+          style={[
+            styles.processButton,
+            state === 'PAYMENT_IN_PROGRESS' && styles.buttonDisabled,
+          ]}
+          disabled={state === 'PAYMENT_IN_PROGRESS'}
+          onPress={handleProcessPayment}>
+          <MaterialCommunityIcons
+            name="credit-card-outline"
+            size={22}
+            color={Colors.white}
+          />
+          <View style={styles.processButtonTextWrap}>
+            <Text style={styles.processButtonTitle}>Process Payment</Text>
+            <Text style={styles.processButtonSubtitle}>
+              Tap card or insert to pay
+            </Text>
+          </View>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -273,6 +302,59 @@ const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  successScreen: {
+    flex: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xl * 2,
+    justifyContent: 'space-between',
+  },
+  successContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.md,
+  },
+  successTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginTop: Spacing.md,
+  },
+  successAmount: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: Colors.green,
+  },
+  successActions: {
+    gap: Spacing.md,
+    width: '100%',
+  },
+  primaryButton: {
+    backgroundColor: Colors.primary,
+    borderRadius: 12,
+    paddingVertical: 18,
+    alignItems: 'center',
+    width: '100%',
+  },
+  primaryButtonText: {
+    color: Colors.white,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    paddingVertical: 18,
+    alignItems: 'center',
+    width: '100%',
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  secondaryButtonText: {
+    color: Colors.textPrimary,
+    fontSize: 17,
+    fontWeight: '600',
   },
   topBar: {
     flexDirection: 'row',
@@ -400,15 +482,6 @@ const styles = StyleSheet.create({
     ...Typography.subheading,
     color: Colors.blue,
   },
-  successCard: {
-    backgroundColor: Colors.greenLight,
-    borderRadius: 12,
-    padding: Spacing.lg,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.green,
-    gap: Spacing.xs,
-  },
   failedCard: {
     backgroundColor: Colors.redLight,
     borderRadius: 12,
@@ -417,12 +490,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.red,
     gap: Spacing.xs,
-  },
-  statusTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: Colors.green,
-    letterSpacing: 1,
   },
   failedTitle: {
     fontSize: 20,
@@ -434,35 +501,10 @@ const styles = StyleSheet.create({
     ...Typography.body,
     color: Colors.textSecondary,
   },
-  reference: {
-    ...Typography.small,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginTop: Spacing.xs,
-  },
-  timestamp: {
-    ...Typography.tiny,
-    color: Colors.textMuted,
-    marginBottom: Spacing.sm,
-  },
   failedError: {
     ...Typography.small,
     color: Colors.red,
     textAlign: 'center',
-  },
-  outlinedButton: {
-    marginTop: Spacing.sm,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: Spacing.lg,
-    minWidth: 160,
-    alignItems: 'center',
-  },
-  outlinedButtonText: {
-    ...Typography.subheading,
-    color: Colors.primary,
   },
   outlinedRedButton: {
     marginTop: Spacing.sm,
