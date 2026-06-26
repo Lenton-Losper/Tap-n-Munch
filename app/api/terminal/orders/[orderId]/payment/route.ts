@@ -41,6 +41,8 @@ export async function POST(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
+    let canClose = false
+
     if (status === 'success') {
       const paidAt = new Date().toISOString()
 
@@ -61,16 +63,42 @@ export async function POST(
         return NextResponse.json({ error: 'Failed to update order' }, { status: 500 })
       }
 
+      // Recalculate tab total from remaining unpaid orders
       if (order.tab_id) {
+        const { data: unpaidOrders } = await supabase
+          .from('orders')
+          .select('total')
+          .eq('tab_id', order.tab_id)
+          .neq('payment_status', 'paid')
+
+        const newTotal = (unpaidOrders ?? []).reduce(
+          (sum: number, o: any) => sum + Number(o.total), 0
+        )
+
+        await supabase
+          .from('tabs')
+          .update({ total: newTotal })
+          .eq('id', order.tab_id)
+
+        // Check if all orders on the tab are now paid
+        const { data: remainingOrders } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('tab_id', order.tab_id)
+          .neq('payment_status', 'paid')
+
+        const allPaid = (remainingOrders ?? []).length === 0
+
+        canClose = allPaid
+
         await supabase
           .from('tabs')
           .update({
-            status: 'settled',
-            settled_at: paidAt,
-            settled_type: 'card',
+            status: 'open',
+            payment_preference: null,
+            ready_to_pay_at: null,
           })
           .eq('id', order.tab_id)
-          .eq('restaurant_id', terminal.restaurantId)
       }
 
       const { error: auditError } = await supabase.from('audit_logs').insert({
@@ -107,7 +135,7 @@ export async function POST(
       }
     }
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, canClose })
   } catch (err: unknown) {
     if (err instanceof Response) return err
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

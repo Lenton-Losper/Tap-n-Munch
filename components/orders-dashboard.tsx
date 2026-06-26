@@ -49,6 +49,7 @@ type TerminalStatus = 'pending' | 'failed' | null
 type OrderStatus =
   | 'pending'
   | 'accepted'
+  | 'preparing'
   | 'ready'
   | 'ready_for_terminal'
   | 'completed'
@@ -60,7 +61,7 @@ type DashboardTabId = 'new' | 'pending_payment' | 'accepted' | 'preparing' | 're
 function supabaseStatusForTab(tab: DashboardTabId): string | null {
   if (tab === 'pending_payment') return null
   if (tab === 'new') return 'pending'
-  if (tab === 'preparing') return 'ready'
+  if (tab === 'preparing') return 'preparing'
   return tab
 }
 type Order = Record<string, any> & {
@@ -501,7 +502,7 @@ export function OrdersDashboard() {
       pending_payment: countPendingHostedOrders(stationFilteredOrders),
       new: newCandidates.length,
       accepted: stationFilteredOrders.filter((order) => order.status === 'accepted').length,
-      preparing: stationFilteredOrders.filter((order) => order.status === 'ready').length,
+      preparing: stationFilteredOrders.filter((order) => order.status === 'preparing').length,
       ready: stationFilteredOrders.filter((order) => order.status === 'ready').length,
       completed: stationFilteredOrders.filter((order) => order.status === 'completed').length,
     } as Record<DashboardTabId, number>
@@ -1290,7 +1291,9 @@ export function OrdersDashboard() {
                 tab_payment_preference: tabInfo?.payment_preference ?? null,
               }
 
-              const customerReadyToPay = isCustomerReadyToPay(normalizedOrder)
+              const customerReadyToPay =
+                order.customer_ready_to_pay === true ||
+                tabInfo?.status === 'ready_to_pay'
 
               return (
               <div
@@ -1576,7 +1579,7 @@ export function OrdersDashboard() {
                         <ActionButtonContent
                           loading={isStatusUpdating(normalizedOrder.id, 'accepted')}
                           icon={CheckCircle2}
-                          label="Accept & Start"
+                          label="Accept Order"
                           loadingLabel="Accepting..."
                         />
                       </Button>
@@ -1585,18 +1588,33 @@ export function OrdersDashboard() {
                   {normalizedOrder.status === 'accepted' && (
                     <Button
                       className="flex-1 bg-blue-500 hover:bg-blue-600"
-                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'ready')}
+                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'preparing')}
                       disabled={isOrderStatusBusy(normalizedOrder.id)}
                     >
                       <ActionButtonContent
-                        loading={isStatusUpdating(normalizedOrder.id, 'ready')}
+                        loading={isStatusUpdating(normalizedOrder.id, 'preparing')}
                         icon={ChefHat}
                         label="Start Preparing"
                         loadingLabel="Updating..."
                       />
                     </Button>
                   )}
-                  {normalizedOrder.status === 'ready' && (
+                  {normalizedOrder.status === 'preparing' && (
+                    <Button
+                      className="flex-1 bg-blue-500 hover:bg-blue-600"
+                      onClick={() => handleStatusUpdate(normalizedOrder.id, 'ready')}
+                      disabled={isOrderStatusBusy(normalizedOrder.id)}
+                    >
+                      <ActionButtonContent
+                        loading={isStatusUpdating(normalizedOrder.id, 'ready')}
+                        icon={ChefHat}
+                        label="Mark Ready"
+                        loadingLabel="Updating..."
+                      />
+                    </Button>
+                  )}
+                  {normalizedOrder.status === 'ready' &&
+                    (isOrderPaid(normalizedOrder) || isTabOrder(normalizedOrder)) && (
                     <Button
                       className="flex-1 bg-green-500 hover:bg-green-600"
                       onClick={() => handleStatusUpdate(normalizedOrder.id, 'completed')}

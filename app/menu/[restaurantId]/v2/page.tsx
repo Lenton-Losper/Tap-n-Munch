@@ -10,7 +10,7 @@ import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { Button } from '@/components/ui/button'
-import { Receipt, ChevronRight } from 'lucide-react'
+import { Receipt, ChevronRight, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useCart } from '@/contexts/cart-context'
@@ -33,6 +33,35 @@ import {
 } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
+
+function isTabPaymentInProgressError(message: string | null | undefined): boolean {
+  if (!message) return false
+  const lower = message.toLowerCase()
+  return (
+    lower.includes('ready_to_pay') ||
+    lower.includes('payment is currently being processed') ||
+    lower.includes('payment is being processed')
+  )
+}
+
+function TabPaymentInProgressCard() {
+  return (
+    <div
+      className="rounded-xl border border-amber-400/50 bg-amber-500/10 p-4 text-left flex items-start gap-3"
+      role="status"
+      aria-live="polite"
+    >
+      <AlertTriangle className="h-5 w-5 shrink-0 text-amber-300 mt-0.5" aria-hidden />
+      <div>
+        <p className="font-sans text-sm font-semibold text-amber-50">Payment in progress</p>
+        <p className="font-sans text-xs text-amber-100/90 mt-1 leading-relaxed">
+          A payment is currently being processed for this table. Please wait a moment until the
+          payment is completed before joining the tab.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 export type MenuLandingPageV2ContentProps = {
   restaurantIdOverride?: string
@@ -66,6 +95,7 @@ export function MenuLandingPageV2Content({
     total: number
     members: number
     pin_required: boolean
+    status: string
   } | null>(null)
   const [myStoredTab, setMyStoredTab] = useState<{ id: string; total: number; status: string } | null>(null)
   const [storedTabChecked, setStoredTabChecked] = useState(false)
@@ -390,6 +420,7 @@ export function MenuLandingPageV2Content({
         total: Number(tabData.total) || 0,
         members: Array.isArray(tabData.members) ? tabData.members.length : 0,
         pin_required: tabData.pin_required !== false,
+        status: String(tabData.status || 'open'),
       })
     } catch (tabErr) {
       console.error('Failed to load open tab:', tabErr)
@@ -888,9 +919,11 @@ export function MenuLandingPageV2Content({
                   }}
                   className="w-full rounded-lg border border-white/20 bg-white/10 px-4 py-4 text-center text-white text-3xl font-mono tracking-[0.4em] placeholder-white/30 focus:outline-none focus:border-white/40"
                 />
-                {joinPinError && (
+                {joinPinError && isTabPaymentInProgressError(joinPinError) ? (
+                  <TabPaymentInProgressCard />
+                ) : joinPinError ? (
                   <p className="font-sans text-sm text-red-200">{joinPinError}</p>
-                )}
+                ) : null}
                 <Button
                   size="lg"
                   onClick={handleSubmitJoinPin}
@@ -925,12 +958,14 @@ export function MenuLandingPageV2Content({
                 </p>
               </div>
             )}
-            {tabActionError && (
+            {tabActionError && isTabPaymentInProgressError(tabActionError) ? (
+              <TabPaymentInProgressCard />
+            ) : tabActionError ? (
               <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
                 <p className="font-sans text-sm font-medium text-red-100">Could not open tab</p>
                 <p className="font-sans text-xs text-red-200/90 mt-1">{tabActionError}</p>
               </div>
-            )}
+            ) : null}
             {tableNum > 0 && (
               <div className="mb-4">
                 <input
@@ -983,6 +1018,20 @@ export function MenuLandingPageV2Content({
                 </Button>
               </div>
             ) : tableNum > 0 && storedTabChecked && !tabLoading && openTab ? (
+              openTab.status === 'ready_to_pay' ? (
+                <div className="space-y-4">
+                  <TabPaymentInProgressCard />
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={handleViewMenu}
+                    disabled={blockOrderingForHostedPending}
+                    className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                  >
+                    View Menu
+                  </Button>
+                </div>
+              ) : (
               <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
                 <div>
                   <p className="font-sans text-lg font-semibold text-white">
@@ -1015,6 +1064,7 @@ export function MenuLandingPageV2Content({
                   View Menu
                 </Button>
               </div>
+              )
             ) : tableNum > 0 && storedTabChecked ? (
               <>
                 <Button
