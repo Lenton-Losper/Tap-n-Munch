@@ -4,6 +4,10 @@ compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
 [vars]
 ENVIRONMENT = "staging"
 NEXT_PUBLIC_SUPABASE_URL = "https://mdqjpxwczrhkxkbqatqa.supabase.co"
