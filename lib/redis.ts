@@ -1,9 +1,11 @@
 import { Redis } from '@upstash/redis'
 
-export const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-})
+export function getRedis(): Redis {
+  const url = process.env.UPSTASH_REDIS_REST_URL
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN
+  if (!url || !token) throw new Error('Upstash Redis environment variables are not configured')
+  return new Redis({ url, token })
+}
 
 export const CacheKeys = {
   menu: (restaurantId: string) => `menu:v2:${restaurantId}`,

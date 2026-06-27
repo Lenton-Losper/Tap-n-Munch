@@ -58,7 +58,7 @@ export async function POST(request: Request) {
       deviceId || terminalSn || (data.device_id ? String(data.device_id) : null)
 
     const refreshToken = generateRefreshToken()
-    const refreshTokenHash = hashRefreshToken(refreshToken)
+    const refreshTokenHash = await hashRefreshToken(refreshToken)
     const refreshTokenExpiresAtValue = refreshTokenExpiresAt()
 
     const updates: Record<string, unknown> = {

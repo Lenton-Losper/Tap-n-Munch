@@ -1,12 +1,12 @@
-import { redis } from '@/lib/redis'
+import { getRedis } from '@/lib/redis'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  const keys = await redis.keys('restaurant:*')
+  const keys = await getRedis().keys('restaurant:*')
   if (keys.length > 0) {
-    await Promise.all(keys.map((k) => redis.del(k)))
+    await Promise.all(keys.map((k) => getRedis().del(k)))
   }
   return NextResponse.json({
     cleared: keys,

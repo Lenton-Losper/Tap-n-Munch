@@ -1,4 +1,4 @@
-import { CacheKeys, redis, TTL } from '@/lib/redis'
+import { CacheKeys, getRedis, TTL } from '@/lib/redis'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 const CREDENTIALS_SELECT =
@@ -73,7 +73,7 @@ async function fetchRestaurantCredentials(restaurantId: string) {
 export async function getCachedRestaurantCredentials(restaurantId: string) {
   try {
     const cacheKey = CacheKeys.restaurant(restaurantId)
-    const cached = await redis.get(cacheKey)
+    const cached = await getRedis().get(cacheKey)
 
     if (cached) {
       console.log('[RESTAURANT CACHE] Hit for:', restaurantId)
@@ -92,7 +92,7 @@ export async function getCachedRestaurantCredentials(restaurantId: string) {
     }
 
     const credentials = mapRestaurantCredentials(restaurant as Record<string, unknown>)
-    await redis.setex(cacheKey, TTL.RESTAURANT, JSON.stringify(credentials))
+    await getRedis().setex(cacheKey, TTL.RESTAURANT, JSON.stringify(credentials))
     return credentials
   } catch (err) {
     console.error('[RESTAURANT CACHE] Error:', err)
@@ -102,7 +102,7 @@ export async function getCachedRestaurantCredentials(restaurantId: string) {
 
 export async function invalidateRestaurantCache(restaurantId: string) {
   try {
-    await redis.del(CacheKeys.restaurant(restaurantId))
+    await getRedis().del(CacheKeys.restaurant(restaurantId))
     console.log('[RESTAURANT CACHE] Invalidated for:', restaurantId)
   } catch (err) {
     console.error('[RESTAURANT CACHE] Failed to invalidate:', err)

@@ -1,11 +1,11 @@
-import { CacheKeys, redis, TTL } from '@/lib/redis'
+import { CacheKeys, getRedis, TTL } from '@/lib/redis'
 
 export async function getCachedMenu(restaurantId: string, categoryId?: string) {
   try {
     const cacheKey = categoryId
       ? CacheKeys.menuCategory(restaurantId, categoryId)
       : CacheKeys.menu(restaurantId)
-    const cached = await redis.get(cacheKey)
+    const cached = await getRedis().get(cacheKey)
 
     if (cached) {
       console.log('[MENU CACHE] Hit for restaurant:', restaurantId, categoryId ? `(category ${categoryId})` : '')
@@ -25,7 +25,7 @@ export async function setCachedMenu(restaurantId: string, menuData: unknown, cat
     const cacheKey = categoryId
       ? CacheKeys.menuCategory(restaurantId, categoryId)
       : CacheKeys.menu(restaurantId)
-    await redis.setex(cacheKey, TTL.MENU, JSON.stringify(menuData))
+    await getRedis().setex(cacheKey, TTL.MENU, JSON.stringify(menuData))
     console.log('[MENU CACHE] Stored for restaurant:', restaurantId, categoryId ? `(category ${categoryId})` : '')
   } catch (err) {
     console.error('[MENU CACHE] Failed to cache menu:', err)
@@ -35,12 +35,12 @@ export async function setCachedMenu(restaurantId: string, menuData: unknown, cat
 export async function invalidateMenuCache(restaurantId: string) {
   try {
     const [allMenuDeleted, categoryKeys] = await Promise.all([
-      redis.del(CacheKeys.menu(restaurantId)),
-      redis.keys(CacheKeys.menuCategory(restaurantId, '*')),
+      getRedis().del(CacheKeys.menu(restaurantId)),
+      getRedis().keys(CacheKeys.menuCategory(restaurantId, '*')),
     ])
 
     if (Array.isArray(categoryKeys) && categoryKeys.length > 0) {
-      await redis.del(...categoryKeys)
+      await getRedis().del(...categoryKeys)
     }
 
     console.log(

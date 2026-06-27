@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import fs from 'fs'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { queryPaymentOrder } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
@@ -52,7 +51,6 @@ export async function POST(req: Request) {
       orderIds,
     })
 
-    void fs
     const rows = await loadOrders(supabase, restaurantUuid, orderIds)
     for (const r of rows) {
       console.log('[RECONCILE] loaded order', {
