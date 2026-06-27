@@ -28,6 +28,10 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: https://flashtap-staging.workers.dev
+          NEXT_PUBLIC_BASE_URL: https://flashtap-staging.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler@3.99.0 deploy
