@@ -155,6 +155,17 @@ export async function POST(req: Request) {
       )
     }
 
+    let tableUuid: string | null = null
+    if (normalizedTableNumber > 0) {
+      const { data: tableRow } = await supabase
+        .from('restaurant_tables')
+        .select('id')
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', normalizedTableNumber)
+        .single()
+      tableUuid = tableRow?.id ?? null
+    }
+
     // Create order in Supabase
     const t2 = performance.now()
     const { data: newOrder, error: orderError } = await supabase
@@ -163,6 +174,7 @@ export async function POST(req: Request) {
         restaurant_id: restaurantUuid,
         firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
         table_number: normalizedTableNumber,
+        table_id: tableUuid,
         session_id: sessionId,
         member_session_id: memberSessionId,
         payment_method: resolvedPaymentMethod,

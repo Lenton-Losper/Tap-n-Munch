@@ -18,7 +18,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing refresh token' }, { status: 401 })
     }
 
-    const hash = hashRefreshToken(refreshToken)
+    const hash = await hashRefreshToken(refreshToken)
     const supabase = createServerSupabaseClient()
 
     const { data: terminal, error } = await supabase
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     }
 
     const newRefreshToken = generateRefreshToken()
-    const newHash = hashRefreshToken(newRefreshToken)
+    const newHash = await hashRefreshToken(newRefreshToken)
     const newExpiry = refreshTokenExpiresAt()
 
     const { error: rotateError } = await supabase

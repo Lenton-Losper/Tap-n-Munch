@@ -18,8 +18,18 @@ export async function PATCH(
   const patch: Record<string, string> = {}
   if (status) {
     patch.status = status
-    const timestampField = `${status}_at`
-    patch[timestampField] = new Date().toISOString()
+    const TIMESTAMP_FIELDS: Record<string, string> = {
+      accepted: 'accepted_at',
+      confirmed: 'confirmed_at',
+      preparing: 'preparing_at',
+      ready: 'ready_at',
+      completed: 'completed_at',
+      served: 'served_at',
+    }
+    const timestampField = TIMESTAMP_FIELDS[status]
+    if (timestampField) {
+      patch[timestampField] = new Date().toISOString()
+    }
   }
   if (paymentStatus) {
     patch.payment_status = paymentStatus

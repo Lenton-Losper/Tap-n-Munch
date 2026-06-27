@@ -43,7 +43,16 @@ export async function POST(
     }
 
     if (String(tabData.status || '') !== 'open') {
-      return NextResponse.json({ error: `Tab is not open (status=${tabData.status})` }, { status: 400 })
+      if (String(tabData.status || '') === 'ready_to_pay') {
+        return NextResponse.json(
+          {
+            error: 'Payment is currently being processed for this table.',
+            code: 'TAB_PAYMENT_IN_PROGRESS',
+          },
+          { status: 409 }
+        )
+      }
+      return NextResponse.json({ error: 'This tab is not available right now.' }, { status: 400 })
     }
 
     const tableId = String(tabData.table_id || '').trim()

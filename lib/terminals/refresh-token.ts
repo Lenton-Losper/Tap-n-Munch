@@ -1,11 +1,15 @@
-import { createHash, randomBytes } from 'crypto'
-
 export function generateRefreshToken(): string {
-  return randomBytes(48).toString('hex')
+  const bytes = new Uint8Array(48)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-export function hashRefreshToken(refreshToken: string): string {
-  return createHash('sha256').update(refreshToken).digest('hex')
+export async function hashRefreshToken(refreshToken: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(refreshToken)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 export function refreshTokenExpiresAt(): string {

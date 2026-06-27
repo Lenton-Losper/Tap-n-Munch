@@ -114,6 +114,18 @@ export default function MenuBrowsePage() {
     return `?table=${tableNumber}`
   }, [tableNumber, tabIdParam, tabId])
 
+  const myOrdersHref = useMemo(() => {
+    const params = new URLSearchParams({
+      ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
+      ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
+      name: restaurant?.name || '',
+      currency,
+    })
+    return `/menu/${restaurantId}/cart?${params.toString()}`
+  }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency])
+
+  const [myOrdersLoading, setMyOrdersLoading] = useState(false)
+
   const creatorTabPin = useMemo(() => {
     if (typeof window === 'undefined') return null
     const activeTabId = tabIdParam || tabId || readStoredTabId() || ''
@@ -625,29 +637,33 @@ export default function MenuBrowsePage() {
                   </Button>
                 </Link>
               )}
-              <Link
-                href={`/menu/${restaurantId}/cart?${new URLSearchParams({
-                  ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
-                  ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
-                  name: restaurant?.name || '',
-                  currency,
-                }).toString()}`}
+              <Button
+                size="sm"
+                disabled={myOrdersLoading}
+                onClick={() => {
+                  if (myOrdersLoading) return
+                  setMyOrdersLoading(true)
+                  router.push(myOrdersHref)
+                }}
+                className="relative h-11 cursor-pointer rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 disabled:opacity-70 disabled:cursor-not-allowed sm:text-sm"
               >
-                <Button
-                  size="sm"
-                  className="relative h-11 cursor-pointer rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 sm:text-sm"
-                >
-                  My Orders
-                  {getItemCount() > 0 ? (
-                    <span
-                      className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
-                      style={{ backgroundColor: ACCENT }}
-                    >
-                      {getItemCount()}
-                    </span>
-                  ) : null}
-                </Button>
-              </Link>
+                {myOrdersLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden />
+                    Loading...
+                  </>
+                ) : (
+                  'My Orders'
+                )}
+                {!myOrdersLoading && getItemCount() > 0 ? (
+                  <span
+                    className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
+                    style={{ backgroundColor: ACCENT }}
+                  >
+                    {getItemCount()}
+                  </span>
+                ) : null}
+              </Button>
             </div>
           </div>
         </div>

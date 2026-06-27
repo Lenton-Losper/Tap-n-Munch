@@ -1,4 +1,4 @@
-import { resend } from '@/lib/email/resend'
+import { getResend } from '@/lib/email/resend'
 
 type StaffInviteEmailParams = {
   to: string
@@ -22,7 +22,7 @@ export async function sendStaffInviteEmail({
 }: StaffInviteEmailParams) {
   const displayRole = formatRole(role)
 
-  return resend.emails.send({
+  return getResend().emails.send({
     from: 'FlashTap <noreply@flashtap.app>',
     to: [to],
     subject: `You've been invited to join ${restaurantName} on FlashTap`,
