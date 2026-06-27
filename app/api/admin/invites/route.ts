@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+// randomUUID is available globally via Web Crypto API (runtime-independent)
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
@@ -18,7 +18,7 @@ function normalizeRole(value: string): 'manager' | 'waiter' | null {
 }
 
 function createInviteToken(): string {
-  return randomUUID()
+  return crypto.randomUUID()
 }
 
 function getAppUrl(): string {
