@@ -4,6 +4,9 @@ const RIVIERA_MENU_PATH = `/menu/${RIVIERA_RESTAURANT_ID}/v2`
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    instrumentationHook: false,
+  },
   typescript: {
     ignoreBuildErrors: true,
   },
