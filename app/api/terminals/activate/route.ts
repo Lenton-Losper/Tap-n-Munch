@@ -21,6 +21,7 @@ function readBodyString(body: Record<string, unknown>, ...keys: string[]): strin
 }
 
 export async function POST(request: Request) {
+  console.log('[activate] NEXT_PUBLIC_SUPABASE_URL:', process.env.NEXT_PUBLIC_SUPABASE_URL)
   try {
     const body = (await request.json()) as Record<string, unknown>
     const code = normalizeActivationCode(String(body?.code || ''))
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
       .gt('activation_code_expires_at', nowIso)
       .maybeSingle()
 
-    console.log('[activate] lookup result:', data, error)
+    console.log('[activate] lookup result:', JSON.stringify({ data, error }))
 
     if (error) throw error
 
