@@ -21,6 +21,10 @@ export async function GET(request: Request) {
       subscription: subRes.data ?? null,
     })
   } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    if (message.includes('Missing authorization') || message.includes('Invalid or expired session')) {
+      return NextResponse.json({ error: message }, { status: 401 })
+    }
     console.error('[admin/features] GET error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
