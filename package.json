@@ -16,6 +16,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:ci": "jest --ci --forceExit",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "test:live": "node test-payment-live.js",
     "vercel:env:push": "node scripts/push-env-to-vercel.mjs"
   },
@@ -84,6 +86,7 @@
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "^1.20.1",
+    "@playwright/test": "^1.61.1",
     "@supabase/supabase-js": "^2.104.0",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/jest": "^29.5.14",
