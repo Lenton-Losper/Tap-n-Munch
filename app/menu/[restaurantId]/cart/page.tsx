@@ -23,6 +23,7 @@ import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -43,6 +44,8 @@ export default function CartPage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
   const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
+  const isKiosk = isKioskMode(searchParams)
+  const kioskCustomerName = getKioskName(searchParams)
   const { toast } = useToast()
   const { restaurant, settings, currency, paymentMethods: enabledMethods, permissions, loading: restaurantLoading } =
     useRestaurant()
@@ -156,9 +159,11 @@ export default function CartPage() {
     const q = new URLSearchParams()
     if (tableNumber > 0) q.set('table', String(tableNumber))
     if (effectiveTabId) q.set('tabId', effectiveTabId)
+    if (isKiosk) q.set('kiosk', 'true')
+    if (kioskCustomerName) q.set('name', kioskCustomerName)
     const s = q.toString()
     return s ? `?${s}` : ''
-  }, [tableNumber, effectiveTabId])
+  }, [tableNumber, effectiveTabId, isKiosk, kioskCustomerName])
 
   const handleEdit = async (index: number) => {
     const cartItem = items[index]
@@ -330,6 +335,7 @@ export default function CartPage() {
         paymentMethod,
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
+        customer_name: isKiosk ? kioskCustomerName || null : null,
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
@@ -357,7 +363,11 @@ export default function CartPage() {
       const confirmQs = new URLSearchParams()
       if (tableNumber > 0) confirmQs.set('table', String(tableNumber))
       const confirmSuffix = confirmQs.toString() ? `?${confirmQs.toString()}` : ''
-      router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)
+      if (isKiosk) {
+        router.replace(kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName))
+      } else {
+        router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)
+      }
     } catch (err: unknown) {
       toast({
         title: 'Order failed',

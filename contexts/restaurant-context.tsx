@@ -8,8 +8,6 @@ interface Restaurant {
   phone: string | null
   logo_url: string | null
   owner_id: string
-  subscription_status: string
-  subscription_tier: string
 }
 
 interface RestaurantSettings {
@@ -84,7 +82,7 @@ export function RestaurantProvider({
       const [restaurantResult, settingsRes] = await Promise.all([
         supabase
           .from('restaurants')
-          .select('id, name, phone, logo_url, owner_id, subscription_status, subscription_tier')
+          .select('id, name, phone, logo_url, owner_id')
           .eq('id', restaurantId)
           .maybeSingle(),
         fetch(`/api/admin/restaurants/${restaurantId}/settings`),

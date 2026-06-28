@@ -15,6 +15,7 @@ export async function POST(req: Request) {
     const tableNumberRaw = body.tableNumber ?? body.table_number
     const sessionId = String(body.sessionId ?? body.session_id ?? '').trim()
     const displayName = String(body.displayName ?? body.display_name ?? 'Person 1').trim() || 'Person 1'
+    const customerName = String(body.customerName ?? body.customer_name ?? '').trim() || null
 
     const restaurantId = String(restaurantIdRaw || '').trim()
     const tableNumber = Number(tableNumberRaw)
@@ -90,6 +91,7 @@ export async function POST(req: Request) {
       total: 0,
       tab_pin: tabPin,
       pin_required: pinRequired,
+      customer_name: customerName,
     }
 
     console.log('[TABS] inserting tab row', {
@@ -102,7 +104,7 @@ export async function POST(req: Request) {
     const { data: newTab, error: insertError } = await supabase
       .from('tabs')
       .insert(insertPayload)
-      .select('id, restaurant_id, table_id, table_number, status')
+      .select('id, restaurant_id, table_id, table_number, status, customer_name')
       .single()
 
     if (insertError) {
@@ -169,6 +171,7 @@ export async function POST(req: Request) {
       restaurantId: newTab.restaurant_id,
       tableId: newTab.table_id,
       tableNumber: newTab.table_number,
+      customer_name: newTab.customer_name ?? null,
       sessionToken,
       ...(tabPin ? { tabPin } : {}),
     })

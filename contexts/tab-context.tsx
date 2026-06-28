@@ -41,6 +41,7 @@ type TabContextType = {
     tableNumber: string
     tableId?: string
     displayName?: string
+    customerName?: string
   }) => Promise<{ tabId: string; tabPin?: string }>
   joinExistingTab: (params: {
     restaurantId: string
@@ -344,11 +345,13 @@ export function TabProvider({
     restaurantId: rid,
     tableNumber: tableNum,
     displayName: displayNameParam,
+    customerName,
   }: {
     restaurantId: string
     tableNumber: string
     tableId?: string
     displayName?: string
+    customerName?: string
   }) => {
     const sid = sessionId || ensureTabSessionId()
     const storedDisplayName =
@@ -364,6 +367,7 @@ export function TabProvider({
         tableNumber: Number(tableNum) || tableNum,
         sessionId: sid,
         displayName,
+        customer_name: customerName || null,
       }),
     })
 

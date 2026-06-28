@@ -13,10 +13,8 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: Request) {
   try {
     const user = await getUserFromRequest(request)
-    console.log('[generate-code] user:', user?.id)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    console.log('[generate-code] restaurantId:', restaurantId)
     await assertRestaurantOwner(supabase, user.id, restaurantId)
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>))
