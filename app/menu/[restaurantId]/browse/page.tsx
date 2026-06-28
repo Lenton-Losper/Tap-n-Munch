@@ -553,7 +553,7 @@ export default function MenuBrowsePage() {
         setAddingItemId(null)
       }
     } else {
-      setSelectedItem(item)
+      setSelectedItem(item as any)
     }
   }
 
@@ -601,7 +601,7 @@ export default function MenuBrowsePage() {
                   <div className="h-10 w-10 shrink-0 overflow-hidden border border-border">
                     <Image
                       src={restaurantLogoDisplayUrl(restaurantId, restaurant?.logo_url)!}
-                      alt={restaurant.name || 'Restaurant'}
+                      alt={restaurant?.name || 'Restaurant'}
                       width={40}
                       height={40}
                       className="object-cover w-full h-full"
@@ -931,7 +931,7 @@ export default function MenuBrowsePage() {
       {/* Item Detail Modal */}
       {selectedItem && (
         <ItemDetailModal
-          item={selectedItem}
+          item={selectedItem as any}
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {

@@ -89,9 +89,9 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
 
         const placedCutoff = Date.now() - BANNER_ORDER_MAX_AGE_MS
         const activeOrders = (orders || [])
-          .map((row) => ({ ...(row as ActiveOrder), id: String((row as { id?: string }).id || '') }))
-          .filter((order) => Boolean(order.id))
-          .filter((order) => {
+          .map((row: any) => ({ ...(row as ActiveOrder), id: String((row as { id?: string }).id || '') }))
+          .filter((order: any) => Boolean(order.id))
+          .filter((order: any) => {
             const tn = Number(order.table_number)
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
             const placedMs = orderPlacedAtMs(order)
@@ -100,7 +100,7 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
               String(order.status || '').toLowerCase()
             )
           })
-          .sort((a, b) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
+          .sort((a: any, b: any) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
 
         setActiveOrder(activeOrders[0] || null)
         setLoading(false)
