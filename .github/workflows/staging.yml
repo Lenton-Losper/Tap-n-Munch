@@ -6,7 +6,32 @@ on:
       - cloudflare-staging
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Lint, Typecheck & Test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Run tests
+        run: npm run test:ci
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          FLASHTAP_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     name: Build and Deploy to Cloudflare Workers
 
