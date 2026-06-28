@@ -24,6 +24,10 @@ export async function GET(request: Request) {
     if (error) throw error
     return NextResponse.json({ staff: data ?? [] })
   } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    if (message.includes('Missing authorization') || message.includes('Invalid or expired session')) {
+      return NextResponse.json({ error: message }, { status: 401 })
+    }
     console.error('[staff] GET error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

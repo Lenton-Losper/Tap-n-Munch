@@ -1,11 +1,11 @@
-import { getSupabase } from './helpers';
+import { getSupabaseAdmin } from './helpers';
 import {
   RIVIERA_ID, CHOWNOW_ID,
   VALID_ROLES, VALID_PAYMENT_METHODS, VALID_FEATURE_KEYS
 } from './constants';
 
 describe('Schema constraints', () => {
-  const sb = getSupabase();
+  const sb = getSupabaseAdmin();
 
   test('payment_methods CHECK constraint rejects invalid values', async () => {
     const { error } = await sb
