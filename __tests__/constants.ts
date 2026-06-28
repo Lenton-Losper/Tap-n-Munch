@@ -1,5 +1,4 @@
 export const RIVIERA_ID = '01bf27f1-a958-4322-bb3e-cc5240987808';
-export const SWEET_SIDE_ID = '01c25795-3cf7-4f94-bd86-ccc302f88a3f';
 export const MINT_LEAF_ID = '13f496c9-0621-4203-9379-e9caad5695ef';
 export const RIVIERA_MERCHANT = '342400001004';
 export const RIVIERA_STORE = '4424000013';

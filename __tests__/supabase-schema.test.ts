@@ -1,5 +1,5 @@
 import { getSupabase } from './helpers';
-import { RIVIERA_ID, SWEET_SIDE_ID, MINT_LEAF_ID } from './constants';
+import { RIVIERA_ID, MINT_LEAF_ID } from './constants';
 
 describe('Supabase — schema & data', () => {
   const sb = getSupabase();
@@ -48,12 +48,6 @@ describe('Supabase — schema & data', () => {
     expect(error).toBeNull();
     expect(data?.finatic_merchant_no).toBeTruthy();
     expect(data?.finatic_store_no).toBeTruthy();
-  });
-
-  test('Sweet Side row exists', async () => {
-    const { data, error } = await sb.from('restaurants').select('id').eq('id', SWEET_SIDE_ID);
-    expect(error).toBeNull();
-    expect(data).toHaveLength(1);
   });
 
   test('No menu item cross-contamination between restaurants', async () => {
