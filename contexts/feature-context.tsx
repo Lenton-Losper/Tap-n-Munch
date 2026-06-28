@@ -2,10 +2,17 @@
 import { createContext, useContext } from 'react'
 
 export interface RestaurantFeatures {
-  kiosk: boolean
-  stockControl: boolean
-  whatsappBot: boolean
-  staffApp: boolean
+  kitchen_enabled: boolean
+  inventory_enabled: boolean
+  analytics_enabled: boolean
+  split_bill_enabled: boolean
+  reservations_enabled: boolean
+  loyalty_enabled: boolean
+  online_payments_enabled: boolean
+  multi_branch_enabled: boolean
+  staff_app_enabled: boolean
+  kiosk_enabled: boolean
+  whatsapp_enabled: boolean
 }
 
 export interface FeatureContextType {
@@ -16,10 +23,17 @@ export interface FeatureContextType {
 }
 
 const defaultFeatures: RestaurantFeatures = {
-  kiosk: false,
-  stockControl: false,
-  whatsappBot: false,
-  staffApp: false,
+  kitchen_enabled: false,
+  inventory_enabled: false,
+  analytics_enabled: false,
+  split_bill_enabled: false,
+  reservations_enabled: false,
+  loyalty_enabled: false,
+  online_payments_enabled: false,
+  multi_branch_enabled: false,
+  staff_app_enabled: false,
+  kiosk_enabled: false,
+  whatsapp_enabled: false,
 }
 
 const FeatureContext = createContext<FeatureContextType>({

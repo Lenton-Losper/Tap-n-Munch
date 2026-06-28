@@ -45,6 +45,19 @@ export async function initializeUserData(
   if (restaurantError || !restaurant?.id) throw restaurantError || new Error('Failed to create restaurant')
 
   const restaurantId = String(restaurant.id)
+
+  await supabase.from('restaurant_features').insert({
+    restaurant_id: restaurantId,
+  })
+
+  await supabase.from('subscriptions').insert({
+    restaurant_id: restaurantId,
+    plan: 'starter',
+    status: 'trial',
+    price: 0,
+    currency: 'NAD',
+    trial_ends_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+  })
   const userPayload = {
     id: userId,
     email,
