@@ -24,8 +24,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     const { error } = await supabase
       .from('restaurant_features')
-      .update({ ...safeUpdates, updated_at: new Date().toISOString() })
-      .eq('restaurant_id', params.id)
+      .upsert(
+        { restaurant_id: params.id, ...safeUpdates, updated_at: new Date().toISOString() },
+        { onConflict: 'restaurant_id' }
+      )
 
     if (error) throw error
     return NextResponse.json({ success: true })
