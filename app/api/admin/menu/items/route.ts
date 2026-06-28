@@ -4,6 +4,8 @@ import {
   assertRestaurantAdmin,
   getUserFromRequest,
 } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
 
 export const dynamic = 'force-dynamic'
@@ -93,6 +95,7 @@ async function resolveRestaurantId(supabase: ReturnType<typeof createServerSupab
 
 export async function POST(request: Request) {
   try {
+    const user = await getUserFromRequest(request)
     const body = (await request.json()) as Record<string, any>
     const restaurantInput = String(body?.restaurant_id || '').trim()
     if (!restaurantInput) {
@@ -109,6 +112,8 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.MENU_WRITE)
+    if (denied) return denied
     const categoryId = body.category_id ?? body.menu_category_id ?? null
     const subCategoryId = (body.sub_category_id ?? body.subcategory_id ?? body.sub_categoryId) || null
     const basePrice = Number(body.base_price ?? 0)
@@ -181,7 +186,8 @@ export async function PATCH(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.MENU_WRITE)
+    if (denied) return denied
 
     const categoryId = body.category_id ?? body.menu_category_id ?? undefined
     const subCategoryId =

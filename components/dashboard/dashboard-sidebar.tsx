@@ -8,6 +8,7 @@ import {
   History,
   Settings,
   Table2,
+  Users,
   UtensilsCrossed,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -42,6 +43,13 @@ const NAV_ITEMS = [
     icon: UtensilsCrossed,
     roles: ['owner', 'manager'] as StaffRole[],
     match: (path: string) => path.startsWith('/menu-management'),
+  },
+  {
+    href: '/staff',
+    label: 'Staff',
+    icon: Users,
+    roles: ['owner', 'manager'] as StaffRole[],
+    match: (path: string) => path.startsWith('/staff'),
   },
   {
     href: '/analytics',

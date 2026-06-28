@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await assertPlatformAdmin(request)
+  if (denied) return denied
+
   try {
     const supabase = createServerSupabaseClient()
 
-    // TODO: add platform_admins auth check here
     const { data: restaurants } = await supabase
       .from('restaurants')
       .select('id, name, created_at')

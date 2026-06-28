@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
-  assertRestaurantAdmin,
   getRestaurantIdForUser,
   getUserFromRequest,
   resolveRestaurantId,
 } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,7 +26,8 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.MENU_WRITE)
+    if (denied) return denied
 
     const { data: existing, error: findError } = await supabase
       .from('menu_categories')
