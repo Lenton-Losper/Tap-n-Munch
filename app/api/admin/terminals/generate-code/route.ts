@@ -11,14 +11,10 @@ import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
-  console.log('[generate-code] NEXT_PUBLIC_SUPABASE_URL:', process.env.NEXT_PUBLIC_SUPABASE_URL)
-  console.log('[generate-code] SERVICE_ROLE_KEY prefix:', process.env.SUPABASE_SERVICE_ROLE_KEY?.slice(0, 40))
   try {
     const user = await getUserFromRequest(request)
-    console.log('[generate-code] user:', user?.id)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    console.log('[generate-code] restaurantId:', restaurantId)
     await assertRestaurantOwner(supabase, user.id, restaurantId)
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>))
@@ -40,8 +36,6 @@ export async function POST(request: Request) {
         })
         .select('id, activation_code, activation_code_expires_at')
         .single()
-
-      console.log('[generate-code] insert result:', JSON.stringify({ data: terminal, error: terminalError }))
 
       if (terminalError) {
         console.error('[generate-code] insert error full:', JSON.stringify(terminalError))
@@ -83,8 +77,6 @@ export async function POST(request: Request) {
       )
       .select('id, activation_code, activation_code_expires_at')
       .single()
-
-    console.log('[generate-code] insert result:', JSON.stringify({ data: terminal, error: terminalError }))
 
     if (terminalError) {
       console.error('[generate-code] insert error full:', JSON.stringify(terminalError))

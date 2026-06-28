@@ -21,14 +21,11 @@ function readBodyString(body: Record<string, unknown>, ...keys: string[]): strin
 }
 
 export async function POST(request: Request) {
-  console.log('[activate] NEXT_PUBLIC_SUPABASE_URL:', process.env.NEXT_PUBLIC_SUPABASE_URL)
   try {
     const body = (await request.json()) as Record<string, unknown>
     const code = normalizeActivationCode(String(body?.code || ''))
     const deviceId = readBodyString(body, 'deviceId', 'device_id')
     const terminalSn = readBodyString(body, 'terminalSn', 'terminal_sn', 'sn')
-
-    console.log('[activate] code received:', code)
 
     if (!code) {
       return NextResponse.json({ error: 'Activation code is required' }, { status: 400 })
@@ -44,8 +41,6 @@ export async function POST(request: Request) {
       .eq('active', false)
       .gt('activation_code_expires_at', nowIso)
       .maybeSingle()
-
-    console.log('[activate] lookup result:', JSON.stringify({ data, error }))
 
     if (error) throw error
 
@@ -92,8 +87,6 @@ export async function POST(request: Request) {
       .eq('restaurant_id', restaurantId)
       .select('id, restaurant_id, name, device_serial, device_id, sn')
       .single()
-
-    console.log('[activate] update result:', updateData, updateError)
 
     if (updateError || !updateData?.id) {
       throw updateError || new Error('Failed to activate terminal')
