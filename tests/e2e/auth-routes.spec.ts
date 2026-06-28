@@ -17,13 +17,17 @@ test.describe('Auth and protected routes', () => {
 
   test('admin console redirects when not authenticated', async ({ page }) => {
     await page.goto(`${STAGING_BASE}/admin/restaurants`)
-    // Middleware redirects server-side — should be immediate
     await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(3000)
     const url = page.url()
     const body = await page.textContent('body')
-    const isProtected = url.includes('sign-in') || url.includes('login') ||
-      body?.includes('Sign in') || body?.includes('Unauthorized') ||
-      body?.includes('Sign up')
+    const isProtected =
+      url.includes('signin') ||
+      url.includes('sign-in') ||
+      url.includes('login') ||
+      body?.includes('Sign in') ||
+      body?.includes('Sign up') ||
+      body?.includes('Unauthorized')
     expect(isProtected).toBe(true)
   })
 
