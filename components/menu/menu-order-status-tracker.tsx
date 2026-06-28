@@ -208,7 +208,7 @@ export function MenuOrderStatusTracker({ restaurantId, tableNumber, currency = '
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
-        (payload) => {
+        (payload: any) => {
           applyOrderUpdate(payload.new as Record<string, any>)
         }
       )
@@ -244,7 +244,7 @@ export function MenuOrderStatusTracker({ restaurantId, tableNumber, currency = '
           table: 'orders',
           filter: `id=eq.${orderId}`,
         },
-        (payload) => {
+        (payload: any) => {
           const updated = payload.new as Record<string, any>
           if (!updated?.id) return
           if (tableNumber && Number(updated.table_number) !== Number(tableNumber)) return

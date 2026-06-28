@@ -262,9 +262,9 @@ export default function ReceiptPage() {
         if (cancelled) return
 
         const ordersList = (rows || [])
-          .map((order) => ({ ...(order as OrderRecord), id: String((order as { id?: string }).id || '') }))
-          .filter((order) => order.id)
-          .filter((order) => !String(order.tab_settlement_for_tab_id || '').trim())
+          .map((order: any) => ({ ...(order as OrderRecord), id: String((order as { id?: string }).id || '') }))
+          .filter((order: any) => order.id)
+          .filter((order: any) => !String(order.tab_settlement_for_tab_id || '').trim())
 
         setOrders(ordersList)
         setLoading(false)
@@ -512,7 +512,7 @@ export default function ReceiptPage() {
                   String(order.status || '').toLowerCase() !== 'completed' && (
                     <div className="mt-4 border-t border-border pt-4">
                       {String(order.status || '').toLowerCase() === 'ready_for_terminal' ||
-                      order.customer_ready_to_pay === true ? (
+                      (order as any).customer_ready_to_pay === true ? (
                         <ReadyToPayTerminalNotified />
                       ) : (
                         <ReadyToPayTerminalButton

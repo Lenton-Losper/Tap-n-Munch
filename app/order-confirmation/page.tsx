@@ -72,16 +72,16 @@ async function resolveRecentPaidOrderBySession(
     .eq('session_id', sessionId)
     .order('placed_at', { ascending: false })
     .limit(80)
-  const candidates = (data || []).map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+  const candidates = (data || []).map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
 
-  const recent = candidates.filter((o) => {
+  const recent = candidates.filter((o: any) => {
     if (!isPaidOrCardOrder(o)) return false
     const ms = placedAtMillis(o.placed_at ?? o.created_at)
     return ms >= cutoff
   })
 
   recent.sort(
-    (a, b) =>
+    (a: any, b: any) =>
       placedAtMillis(b.placed_at ?? b.created_at) -
       placedAtMillis(a.placed_at ?? a.created_at)
   )
@@ -252,7 +252,7 @@ async function resolveOrdersByTn(
   if (rid) query = query.eq('restaurant_id', rid)
   const { data } = await query
   if (data && data.length > 0) {
-    const mapped = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+    const mapped = data.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
     const first = data[0] as { restaurant_id?: string | null }
     return { rows: mapped, restaurantId: String(first.restaurant_id || rid || '') || null }
   }
@@ -303,7 +303,7 @@ function OrderConfirmationContent() {
 
           if (!sbErr && sbRows && sbRows.length > 0) {
             setDataSource('supabase')
-            const docs = sbRows.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+            const docs = sbRows.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
             const combined = combinePaymentStatusFromRows(sbRows)
             const merged = applyReceiptPaymentState(docs, combined, urlCancel)
             const firstRow = sbRows[0] as { restaurant_id?: string | null }
@@ -415,7 +415,7 @@ function OrderConfirmationContent() {
       if (!data?.length) return
       const combined = combinePaymentStatusFromRows(data)
       const urlCancel = inferCancelledFromSearchParams(searchParams)
-      const docs = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+      const docs = data.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
       const merged = applyReceiptPaymentState(docs, combined, urlCancel)
       setReceipt(merged)
       if (merged.payment_status === 'paid') setPaymentConfirmed(true)

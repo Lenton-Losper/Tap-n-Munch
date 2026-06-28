@@ -10,7 +10,7 @@ import {
   readSessionTokenFromSearchParams,
   setSessionTokenExpiredNotice,
   tableLandingPath,
-} from '@/lib/session-token'
+} from '@/lib/session-token-client'
 
 type Options = {
   restaurantId: string
@@ -112,7 +112,7 @@ export function useSessionTokenGuard({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'tabs', filter: `restaurant_id=eq.${restaurantId}` },
-        (payload) => {
+        (payload: any) => {
           if (cancelled || invalidatedRef.current) return
           const row = (payload.new || payload.old) as Record<string, unknown> | null
           if (!row) return

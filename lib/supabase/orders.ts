@@ -273,7 +273,7 @@ export function subscribeRestaurantOrdersRealtime(
       onOrderChange
     )
 
-    nextChannel.subscribe((status) => {
+    nextChannel.subscribe((status: string) => {
       callbacks.onStatus?.(status)
     })
 
