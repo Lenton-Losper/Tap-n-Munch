@@ -1,5 +1,5 @@
 import { getSupabase } from './helpers';
-import { RIVIERA_ID, P5_TERMINAL_SN } from './constants';
+import { RIVIERA_ID, P5_TERMINAL_SN, DEV_PHONE_SN } from './constants';
 
 describe('APK & terminal logic', () => {
   const sb = getSupabase();
@@ -20,7 +20,7 @@ describe('APK & terminal logic', () => {
       .select('finatic_terminal_sn')
       .eq('id', RIVIERA_ID)
       .single();
-    const validSNs = [P5_TERMINAL_SN, '0ccdbf19965fecb6'];
+    const validSNs = [P5_TERMINAL_SN, DEV_PHONE_SN];
     expect(validSNs).toContain(data?.finatic_terminal_sn);
   });
 
