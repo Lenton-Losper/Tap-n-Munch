@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -7,6 +8,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const denied = await assertPlatformAdmin(req)
+  if (denied) return denied
+
   const { id } = await params
   try {
     const supabase = createServerSupabaseClient()

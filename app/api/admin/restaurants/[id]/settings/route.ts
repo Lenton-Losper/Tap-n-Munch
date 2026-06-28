@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest, getRestaurantIdForUser } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,19 +21,25 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params
+  await params
   try {
+    const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
+    const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_READ)
+    if (denied) return denied
+
     const { data, error } = await supabase
       .from('restaurant_settings')
       .select('payment_methods, tab_pin_required, max_tab_hours, allow_split_bill, currency, timezone, tax_rate, service_charge, settings_version, updated_at')
-      .eq('restaurant_id', id)
+      .eq('restaurant_id', restaurantId)
       .maybeSingle()
     if (error) throw error
     return NextResponse.json({ settings: data })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to load settings'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const status = message.includes('authorization') || message.includes('session') ? 401 : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }
 
@@ -39,11 +47,13 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params
+  await params
   try {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
+    if (denied) return denied
 
     // Note: using user's linked restaurantId, ignoring URL param for security
 

@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(
-  _req: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const denied = await assertPlatformAdmin(request)
+  if (denied) return denied
+
   const { id } = await params
   try {
     const supabase = createServerSupabaseClient()
