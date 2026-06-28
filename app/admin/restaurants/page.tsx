@@ -16,11 +16,18 @@ export default function AdminRestaurantsPage() {
   const router = useRouter()
 
   useEffect(() => {
-    fetch('/api/platform/restaurants')
-      .then(r => r.json())
-      .then(data => setRestaurants(data.restaurants ?? []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    const loadRestaurants = async () => {
+      const { data: { session } } = await (await import('@/lib/supabase/client')).supabase.auth.getSession()
+      const token = session?.access_token
+      fetch('/api/platform/restaurants', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then(r => r.json())
+        .then(data => setRestaurants(data.restaurants ?? []))
+        .catch(() => {})
+        .finally(() => setLoading(false))
+    }
+    loadRestaurants()
   }, [])
 
   if (loading) return <div className="p-8">Loading...</div>

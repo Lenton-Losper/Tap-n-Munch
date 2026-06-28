@@ -30,23 +30,35 @@ export default function AdminRestaurantDetailPage() {
   const [toggling, setToggling] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch(`/api/platform/restaurants/${id}`)
-      .then(r => r.json())
-      .then(data => {
-        setName(data.restaurant?.name ?? '')
-        setFeatures(data.features ?? {})
-        setSubscription(data.subscription ?? null)
+    const loadRestaurant = async () => {
+      const { data: { session } } = await (await import('@/lib/supabase/client')).supabase.auth.getSession()
+      const token = session?.access_token
+      fetch(`/api/platform/restaurants/${id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      .finally(() => setLoading(false))
+        .then(r => r.json())
+        .then(data => {
+          setName(data.restaurant?.name ?? '')
+          setFeatures(data.features ?? {})
+          setSubscription(data.subscription ?? null)
+        })
+        .finally(() => setLoading(false))
+    }
+    loadRestaurant()
   }, [id])
 
   const toggle = async (feature: string, value: boolean) => {
     setToggling(feature)
     setFeatures(prev => ({ ...prev, [feature]: value }))
     try {
+      const { data: { session } } = await (await import('@/lib/supabase/client')).supabase.auth.getSession()
+      const token = session?.access_token
       const res = await fetch(`/api/platform/restaurants/${id}/features`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ [feature]: value }),
       })
       if (!res.ok) throw new Error('Failed')
