@@ -22,6 +22,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (Object.keys(safeUpdates).length === 0)
       return NextResponse.json({ error: 'No valid fields' }, { status: 400 })
 
+    console.log('[platform/features] upserting', { restaurantId: params.id, safeUpdates })
+
     const { error } = await supabase
       .from('restaurant_features')
       .upsert(
@@ -32,7 +34,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (error) throw error
     return NextResponse.json({ success: true })
   } catch (err) {
-    console.error('[platform/features] PATCH error:', err)
+    console.error('[platform/features] PATCH error:', JSON.stringify(err))
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
