@@ -336,6 +336,7 @@ export default function CartPage() {
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
         customer_name: isKiosk ? kioskCustomerName || null : null,
+        channel: isKiosk ? 'kiosk' : 'table',
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
@@ -364,7 +365,14 @@ export default function CartPage() {
       if (tableNumber > 0) confirmQs.set('table', String(tableNumber))
       const confirmSuffix = confirmQs.toString() ? `?${confirmQs.toString()}` : ''
       if (isKiosk) {
-        router.replace(kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName))
+        const orderLabel =
+          (typeof data?.kioskOrderLabel === 'string' && data.kioskOrderLabel) ||
+          (data?.kioskOrderNumber != null
+            ? `K-${String(data.kioskOrderNumber).padStart(3, '0')}`
+            : undefined)
+        router.replace(
+          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel)
+        )
       } else {
         router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)
       }

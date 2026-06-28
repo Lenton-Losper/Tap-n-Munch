@@ -10,6 +10,7 @@ export default function KioskSuccessPage() {
   const restaurantId = params.restaurantId as string
   const tableParam = searchParams.get('table') || '99'
   const customerName = searchParams.get('name') || 'Guest'
+  const orderNumber = searchParams.get('orderNumber') || ''
 
   const [countdown, setCountdown] = useState(12)
 
@@ -32,6 +33,9 @@ export default function KioskSuccessPage() {
       <div className="flex flex-col items-center gap-6 text-center">
         <CheckCircle2 className="w-24 h-24 text-green-500" />
         <h1 className="text-3xl font-bold text-gray-900">Order placed!</h1>
+        {orderNumber && (
+          <div className="text-6xl font-bold text-gray-900">{orderNumber}</div>
+        )}
         <p className="text-xl text-gray-600">
           Thank you, <span className="font-semibold">{customerName}</span>.<br />
           Your order is being prepared.
