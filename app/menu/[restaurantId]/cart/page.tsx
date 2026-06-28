@@ -335,6 +335,7 @@ export default function CartPage() {
         paymentMethod,
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
+        customer_name: isKiosk ? kioskCustomerName || null : null,
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
