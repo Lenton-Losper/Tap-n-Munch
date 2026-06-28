@@ -28,7 +28,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FLASHTAP_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
+          RIVIERA_URL: https://flashtap-staging.llosperofficial.workers.dev
 
   deploy:
     needs: test

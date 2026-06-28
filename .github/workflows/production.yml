@@ -28,7 +28,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FLASHTAP_BASE_URL: https://flashtap.app
+          RIVIERA_URL: https://riviera.flashtap.app
 
   deploy:
     needs: test
