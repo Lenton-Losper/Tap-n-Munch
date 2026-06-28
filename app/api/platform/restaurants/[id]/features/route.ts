@@ -3,7 +3,11 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params
   try {
     const supabase = createServerSupabaseClient()
     const updates = await req.json()
@@ -22,19 +26,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (Object.keys(safeUpdates).length === 0)
       return NextResponse.json({ error: 'No valid fields' }, { status: 400 })
 
-    console.log('[platform/features] upserting', { restaurantId: params.id, safeUpdates })
-
     const { error } = await supabase
       .from('restaurant_features')
       .upsert(
-        { restaurant_id: params.id, ...safeUpdates, updated_at: new Date().toISOString() },
+        { restaurant_id: id, ...safeUpdates, updated_at: new Date().toISOString() },
         { onConflict: 'restaurant_id' }
       )
 
     if (error) throw error
     return NextResponse.json({ success: true })
   } catch (err) {
-    console.error('[platform/features] PATCH error:', JSON.stringify(err))
+    console.error('[platform/features] PATCH error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

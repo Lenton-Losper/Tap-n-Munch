@@ -5,14 +5,15 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(
   _req: Request,
-  { params }: { params: { restaurantId: string } }
+  { params }: { params: Promise<{ restaurantId: string }> }
 ) {
+  const { restaurantId } = await params
   try {
     const supabase = createServerSupabaseClient()
     const { data: features } = await supabase
       .from('restaurant_features')
       .select('*')
-      .eq('restaurant_id', params.restaurantId)
+      .eq('restaurant_id', restaurantId)
       .maybeSingle()
 
     return NextResponse.json({ features: features ?? null })
