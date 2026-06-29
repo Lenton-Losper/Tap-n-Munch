@@ -118,14 +118,18 @@ export default function MenuBrowsePage() {
   }, [tableNumber, tabIdParam, tabId])
 
   const myOrdersHref = useMemo(() => {
-    const params = new URLSearchParams({
-      ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
-      ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
-      name: restaurant?.name || '',
-      currency,
-    })
+    const params = new URLSearchParams()
+    if (tableNumber > 0) params.set('table', String(tableNumber))
+    if (tabId || tabIdParam) params.set('tabId', tabId || tabIdParam)
+    if (isKiosk) {
+      params.set('kiosk', 'true')
+      params.set('name', orderingCtx.customerName)
+    } else {
+      params.set('name', restaurant?.name || '')
+      params.set('currency', currency)
+    }
     return `/menu/${restaurantId}/cart?${params.toString()}`
-  }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency])
+  }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency, isKiosk, orderingCtx.customerName])
 
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
 
