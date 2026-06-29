@@ -44,23 +44,28 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
 
     const { data: restaurants, error } = await supabase
       .from('restaurants')
-      .select('id, name, slug, created_at, owner_id')
+      .select('id, name, slug, created_at')
       .order('created_at', { ascending: false })
 
     if (error) throw error
     if (!restaurants) return { restaurants: [], failed: false }
 
-    const ownerIds = [...new Set(restaurants.map((r) => String(r.owner_id || '')).filter(Boolean))]
+    const restaurantIds = restaurants.map((r) => r.id)
     const ownerEmails = new Map<string, string>()
 
-    if (ownerIds.length > 0) {
-      const { data: owners } = await supabase
-        .from('users')
-        .select('id, email')
-        .in('id', ownerIds)
+    if (restaurantIds.length > 0) {
+      const { data: ownerRows } = await supabase
+        .from('restaurant_users')
+        .select('restaurant_id, user_id, users(email)')
+        .in('restaurant_id', restaurantIds)
+        .eq('role', 'owner')
 
-      for (const owner of owners ?? []) {
-        ownerEmails.set(String(owner.id), String(owner.email))
+      for (const row of ownerRows ?? []) {
+        const usersRelation = row.users as { email: string } | { email: string }[] | null
+        const email = Array.isArray(usersRelation) ? usersRelation[0]?.email : usersRelation?.email
+        if (email && !ownerEmails.has(row.restaurant_id)) {
+          ownerEmails.set(row.restaurant_id, email)
+        }
       }
     }
 
@@ -78,12 +83,11 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
             .eq('restaurant_id', r.id)
             .maybeSingle(),
         ])
-        const ownerId = r.owner_id ? String(r.owner_id) : ''
         return {
           id: r.id,
           name: r.name,
           slug: r.slug ?? null,
-          owner_email: ownerId ? ownerEmails.get(ownerId) ?? null : null,
+          owner_email: ownerEmails.get(r.id) ?? null,
           created_at: r.created_at,
           features: featuresRes.data,
           subscription: subRes.data,
