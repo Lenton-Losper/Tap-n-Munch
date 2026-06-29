@@ -1,6 +1,5 @@
 import Link from 'next/link'
-import { cookies, headers } from 'next/headers'
-import { createServerClient } from '@supabase/ssr'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,16 +23,6 @@ const FEATURE_BADGES: { key: keyof RestaurantFeatures; label: string }[] = [
   { key: 'staff_app_enabled', label: 'staff_app' },
 ]
 
-function getBaseUrl(host: string | null): string {
-  const configured =
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') ||
-    process.env.NEXT_PUBLIC_BASE_URL?.replace(/\/$/, '')
-  if (configured) return configured
-  if (!host) return 'http://localhost:3000'
-  const protocol = host.includes('localhost') ? 'http' : 'https'
-  return `${protocol}://${host}`
-}
-
 function formatDate(iso: string) {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
@@ -50,53 +39,59 @@ function enabledFeatureBadges(features: RestaurantFeatures | null): string[] {
 }
 
 async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed: boolean }> {
-  const cookieStore = await cookies()
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options)
-          })
-        },
-      },
-    }
-  )
-
-  const { data: { user }, error: userError } = await supabase.auth.getUser()
-
-  if (userError || !user) {
-    return { restaurants: [], failed: true }
-  }
-
-  const { data: { session } } = await supabase.auth.getSession()
-  const token = session?.access_token
-  if (!token) {
-    return { restaurants: [], failed: true }
-  }
-
-  const host = (await headers()).get('host')
-  const baseUrl = getBaseUrl(host)
-
   try {
-    const res = await fetch(`${baseUrl}/api/platform/restaurants`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      cache: 'no-store',
-    })
+    const supabase = createServerSupabaseClient()
 
-    if (!res.ok) {
-      return { restaurants: [], failed: true }
+    const { data: restaurants, error } = await supabase
+      .from('restaurants')
+      .select('id, name, slug, created_at, owner_id')
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+    if (!restaurants) return { restaurants: [], failed: false }
+
+    const ownerIds = [...new Set(restaurants.map((r) => String(r.owner_id || '')).filter(Boolean))]
+    const ownerEmails = new Map<string, string>()
+
+    if (ownerIds.length > 0) {
+      const { data: owners } = await supabase
+        .from('users')
+        .select('id, email')
+        .in('id', ownerIds)
+
+      for (const owner of owners ?? []) {
+        ownerEmails.set(String(owner.id), String(owner.email))
+      }
     }
 
-    const data = (await res.json()) as { restaurants?: RestaurantRow[] }
-    return { restaurants: data.restaurants ?? [], failed: false }
+    const results = await Promise.all(
+      restaurants.map(async (r) => {
+        const [featuresRes, subRes] = await Promise.all([
+          supabase
+            .from('restaurant_features')
+            .select('kiosk_enabled, staff_app_enabled')
+            .eq('restaurant_id', r.id)
+            .maybeSingle(),
+          supabase
+            .from('subscriptions')
+            .select('plan, status')
+            .eq('restaurant_id', r.id)
+            .maybeSingle(),
+        ])
+        const ownerId = r.owner_id ? String(r.owner_id) : ''
+        return {
+          id: r.id,
+          name: r.name,
+          slug: r.slug ?? null,
+          owner_email: ownerId ? ownerEmails.get(ownerId) ?? null : null,
+          created_at: r.created_at,
+          features: featuresRes.data,
+          subscription: subRes.data,
+        }
+      })
+    )
+
+    return { restaurants: results, failed: false }
   } catch {
     return { restaurants: [], failed: true }
   }
