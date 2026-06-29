@@ -17,9 +17,7 @@ export async function GET(request: Request) {
   const supabase = createServerSupabaseClient()
   const now = new Date()
 
-  // Find all enabled schedules whose send_time falls within the current UTC hour
-  // and haven't been sent in the last 23 hours (deduplication)
-  const currentHour = now.getUTCHours()
+  // Find all enabled schedules not sent in the last 23 hours (deduplication)
   const twentyThreeHoursAgo = new Date(now.getTime() - 23 * 60 * 60 * 1000).toISOString()
 
   const { data: schedules, error: schedulesError } = await supabase
@@ -33,25 +31,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: schedulesError.message }, { status: 500 })
   }
 
-  const eligible = (schedules ?? []).filter((schedule) => {
-    // Parse send_time (stored as HH:MM:SS in DB) and compare hour in schedule timezone
-    const [hours] = (schedule.send_time as string).split(':').map(Number)
-    // Convert current UTC time to schedule timezone to get local hour
-    try {
-      const localHour = parseInt(
-        new Intl.DateTimeFormat('en', {
-          timeZone: schedule.timezone,
-          hour: 'numeric',
-          hour12: false,
-        }).format(now),
-        10
-      )
-      return localHour === hours
-    } catch {
-      // Fallback to UTC if timezone is invalid
-      return currentHour === hours
-    }
-  })
+  const eligible = schedules ?? []
 
   console.log(`[CRON] ${eligible.length} schedules eligible out of ${(schedules ?? []).length} enabled`)
 
