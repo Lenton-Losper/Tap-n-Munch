@@ -20,7 +20,14 @@ import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
-type Table = { id: string; table_number: number; table_name?: string; location?: string; qr_code_url?: string }
+type Table = {
+  id: string
+  table_number: number
+  table_name?: string
+  location?: string
+  qr_code_url?: string
+  is_kiosk?: boolean
+}
 
 type TableLiveStatus = 'active' | 'needs_payment' | 'empty'
 
@@ -742,7 +749,14 @@ export function QRCodeManagement() {
                   </div>
                   <div className="flex justify-center mb-3">
                     <div id={`qr-${table.id}`} className="bg-white p-2 rounded">
-                      <QRCodeSVG value={table.qr_code_url || buildMenuUrl(restaurantId, table.table_number)} size={150} />
+                      <QRCodeSVG
+                        value={
+                          (table.is_kiosk ? buildMenuUrl(restaurantId, table.table_number, true) : null)
+                          || table.qr_code_url
+                          || buildMenuUrl(restaurantId, table.table_number)
+                        }
+                        size={150}
+                      />
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -760,7 +774,14 @@ export function QRCodeManagement() {
                       variant="outline"
                       size="sm"
                       className={`w-full ${copiedLinkId === table.id ? 'bg-green-50 border-green-500 text-green-700' : ''}`}
-                      onClick={() => handleCopyLink(table.qr_code_url || buildMenuUrl(restaurantId, table.table_number), table.id)}
+                      onClick={() =>
+                        handleCopyLink(
+                          (table.is_kiosk ? buildMenuUrl(restaurantId, table.table_number, true) : null)
+                          || table.qr_code_url
+                          || buildMenuUrl(restaurantId, table.table_number),
+                          table.id
+                        )
+                      }
                     >
                       <Copy className="w-4 h-4 mr-2" />
                       {copiedLinkId === table.id ? 'Link Copied!' : 'Copy Link'}
