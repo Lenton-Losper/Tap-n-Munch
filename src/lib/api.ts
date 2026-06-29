@@ -113,6 +113,13 @@ async function terminalFetch(
 export async function activateTerminal(
   code: string,
 ): Promise<ActivationResponse> {
+  console.log('[activate] FLASHTAP_API_URL:', FLASHTAP_API_URL);
+  console.log(
+    '[activate] full URL:',
+    `${FLASHTAP_API_URL}/api/terminals/activate`,
+  );
+  console.log('[activate] code being sent:', code);
+
   const response = await fetch(`${FLASHTAP_API_URL}/api/terminals/activate`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -441,7 +448,7 @@ export async function completePayment(
     amount: number;
     paymentMethod: 'card';
   },
-): Promise<void> {
+): Promise<{canClose: boolean}> {
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/payment`,
     {
@@ -457,4 +464,7 @@ export async function completePayment(
   if (!response.ok) {
     throw new Error('Payment update failed');
   }
+
+  const data = (await response.json()) as {canClose?: boolean};
+  return {canClose: Boolean(data.canClose)};
 }

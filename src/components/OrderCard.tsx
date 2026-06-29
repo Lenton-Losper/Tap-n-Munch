@@ -2,7 +2,6 @@ import React from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {formatCurrency} from '../lib/currency';
-import {getStatusColor} from '../lib/statusColors';
 import {Order} from '../types';
 import StatusBadge from './StatusBadge';
 
@@ -19,16 +18,26 @@ function formatTime(iso: string): string {
 }
 
 export default function OrderCard({order, onPress}: OrderCardProps) {
-  const statusColor = getStatusColor(order.status);
-
   return (
     <Pressable
       style={({pressed}) => [styles.card, pressed && styles.cardPressed]}
       onPress={onPress}>
       <View style={styles.topRow}>
-        <Text style={[styles.tableNumber, {color: statusColor}]}>
-          {order.table_number}
-        </Text>
+        {order.channel === 'kiosk' ? (
+          <View style={styles.kioskBadge}>
+            <Text style={styles.kioskLabel}>🖥 KIOSK</Text>
+            {order.kiosk_order_number ? (
+              <Text style={styles.kioskNumber}>
+                K-{String(order.kiosk_order_number).padStart(3, '0')}
+              </Text>
+            ) : null}
+            {order.customer_name ? (
+              <Text style={styles.kioskCustomer}>{order.customer_name}</Text>
+            ) : null}
+          </View>
+        ) : (
+          <Text style={styles.tableLabel}>TABLE {order.table_number}</Text>
+        )}
         <View style={styles.topRight}>
           <Text style={styles.orderNumber}>#{order.order_number}</Text>
           <StatusBadge status={order.status} />
@@ -80,11 +89,16 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: Spacing.sm,
   },
-  tableNumber: {
+  tableLabel: {
     fontSize: 48,
     fontWeight: '800',
     lineHeight: 52,
+    color: Colors.textPrimary,
   },
+  kioskBadge: {flexDirection: 'row', alignItems: 'center', gap: 6},
+  kioskLabel: {fontSize: 12, fontWeight: '700', color: '#7C3AED'},
+  kioskNumber: {fontSize: 14, fontWeight: '800', color: '#5B21B6'},
+  kioskCustomer: {fontSize: 12, color: '#6B7280'},
   topRight: {
     alignItems: 'flex-end',
     gap: Spacing.xs,

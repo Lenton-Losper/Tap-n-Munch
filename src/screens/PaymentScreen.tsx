@@ -15,6 +15,7 @@ import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {closeTable, completePayment, getOrder} from '../lib/api';
 import {formatCurrency, getItemUnitPrice} from '../lib/currency';
+import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {processPaymentIntent} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -46,6 +47,7 @@ export default function PaymentScreen({route, navigation}: Props) {
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
+  const [canCloseTable, setCanCloseTable] = useState(false);
 
   const resolvedTableId = order?.table_id ?? tableId;
 
@@ -85,13 +87,38 @@ export default function PaymentScreen({route, navigation}: Props) {
       const result = await processPaymentIntent(total, orderId);
 
       if (result.success && result.reference) {
-        await completePayment(orderId, token, {
+        const paymentResult = await completePayment(orderId, token, {
           status: 'success',
           reference: result.reference,
           amount: total,
           paymentMethod: 'card',
         });
-        paymentSuccess(result.reference);
+
+        const orderForAction: Order =
+          order ?? {
+            id: orderId,
+            restaurant_id: '',
+            table_number: tableNumber,
+            order_number: orderNumber ?? 0,
+            status: 'ready',
+            items: [],
+            total,
+            placed_at: placedAt ?? new Date().toISOString(),
+            channel: 'table',
+          };
+
+        const action = getPostPaymentAction(orderForAction, paymentResult.canClose);
+
+        if (action.type === 'auto_return') {
+          paymentSuccess(result.reference);
+          setTimeout(() => {
+            reset();
+            navigation.goBack();
+          }, action.delayMs);
+        } else {
+          setCanCloseTable(action.canClose);
+          paymentSuccess(result.reference);
+        }
       } else {
         await completePayment(orderId, token, {
           status: 'failed',
@@ -159,21 +186,33 @@ export default function PaymentScreen({route, navigation}: Props) {
           </View>
 
           <View style={styles.successActions}>
+            {canCloseTable ? (
+              <Pressable
+                style={[styles.primaryButton, closingTable && styles.buttonDisabled]}
+                disabled={closingTable}
+                onPress={handleCloseTable}>
+                {closingTable ? (
+                  <ActivityIndicator color={Colors.white} />
+                ) : (
+                  <Text style={styles.primaryButtonText}>Close Table</Text>
+                )}
+              </Pressable>
+            ) : null}
             <Pressable
-              style={[styles.primaryButton, closingTable && styles.buttonDisabled]}
-              disabled={closingTable}
-              onPress={handleCloseTable}>
-              {closingTable ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <Text style={styles.primaryButtonText}>Close Table</Text>
-              )}
-            </Pressable>
-            <Pressable
-              style={styles.secondaryButton}
+              style={[
+                canCloseTable ? styles.secondaryButton : styles.primaryButton,
+                closingTable && styles.buttonDisabled,
+              ]}
               disabled={closingTable}
               onPress={handleBackToOrders}>
-              <Text style={styles.secondaryButtonText}>Back to Orders</Text>
+              <Text
+                style={
+                  canCloseTable
+                    ? styles.secondaryButtonText
+                    : styles.primaryButtonText
+                }>
+                Back to Orders
+              </Text>
             </Pressable>
           </View>
         </View>

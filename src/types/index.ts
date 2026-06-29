@@ -31,6 +31,9 @@ export interface Order {
   total: number;
   placed_at: string;
   member_name?: string;
+  channel?: string;
+  customer_name?: string;
+  kiosk_order_number?: number;
 }
 
 export interface TabOrder {

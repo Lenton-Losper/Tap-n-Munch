@@ -39,6 +39,11 @@ export function mapRowToOrder(row: Record<string, unknown>): Order {
     total: Number(row.total),
     placed_at: String(row.placed_at ?? row.created_at ?? new Date().toISOString()),
     member_name: row.member_name ? String(row.member_name) : undefined,
+    channel: String(row.channel ?? 'table'),
+    customer_name: row.customer_name ? String(row.customer_name) : undefined,
+    kiosk_order_number: row.kiosk_order_number
+      ? Number(row.kiosk_order_number)
+      : undefined,
   };
 }
 
