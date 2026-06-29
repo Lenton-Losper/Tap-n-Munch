@@ -438,6 +438,36 @@ CREATE POLICY "Platform admins can read audit logs"
   );
 
 
+CREATE TABLE IF NOT EXISTS "public"."report_schedules" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "restaurant_id" uuid NOT NULL REFERENCES "public"."restaurants"("id") ON DELETE CASCADE,
+    "enabled" boolean NOT NULL DEFAULT true,
+    "email" text NOT NULL,
+    "format" text NOT NULL DEFAULT 'pdf'
+        CHECK ("format" IN ('pdf', 'csv')),
+    "send_time" time NOT NULL DEFAULT '20:00',
+    "timezone" text NOT NULL DEFAULT 'Africa/Windhoek',
+    "created_at" timestamptz NOT NULL DEFAULT now(),
+    "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS "report_schedules_restaurant_id_idx"
+  ON "public"."report_schedules" USING "btree" ("restaurant_id");
+
+ALTER TABLE "public"."report_schedules" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Owners can manage their report schedules"
+  ON "public"."report_schedules"
+  FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM "public"."restaurants"
+      WHERE "restaurants"."id" = "report_schedules"."restaurant_id"
+        AND "restaurants"."owner_id" = auth.uid()
+    )
+  );
+
+
 CREATE TABLE IF NOT EXISTS "public"."restaurant_setup_status" (
     "restaurant_id" "uuid" NOT NULL,
     "profile_complete" boolean DEFAULT false NOT NULL,
