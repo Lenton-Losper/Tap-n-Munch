@@ -46,7 +46,12 @@ export interface ActiveOrder {
  * - Works for anonymous users (no session required)
  * - Privacy: Orders hidden once table is closed (is_closed == true)
  */
-export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
+export function useActiveOrders(
+  restaurantId?: string,
+  tableNumber?: number,
+  isKiosk?: boolean,
+  customerName?: string
+): {
   activeOrder: ActiveOrder | null
   loading: boolean
   error: string | null
@@ -77,12 +82,20 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
 
     const fetchOrders = async () => {
       try {
-        const { data: orders, error: queryError } = await supabase
+        let query = supabase
           .from('orders')
           .select('*')
           .eq('restaurant_id', restaurantId)
           .eq('table_number', Number(tableNumber))
           .eq('is_closed', false)
+
+        // TODO: Replace customer_name filtering with kiosk_session_id when
+        // shared-device session model is implemented. See mentor brief 29/06/2026.
+        if (isKiosk && customerName) {
+          query = query.eq('channel', 'kiosk').eq('customer_name', customerName)
+        }
+
+        const { data: orders, error: queryError } = await query
 
         if (queryError) throw queryError
         if (cancelled) return
@@ -137,7 +150,7 @@ export function useActiveOrders(restaurantId?: string, tableNumber?: number): {
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [restaurantId, tableNumber])
+  }, [restaurantId, tableNumber, isKiosk, customerName])
 
   return { activeOrder, loading, error }
 }

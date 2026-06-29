@@ -706,6 +706,8 @@ export default function MenuBrowsePage() {
         tableNumber={tableNumber}
         currency={currency}
         tabId={effectiveTabId || undefined}
+        isKiosk={isKiosk}
+        customerName={isKiosk ? orderingCtx.customerName : undefined}
       />
 
       <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">

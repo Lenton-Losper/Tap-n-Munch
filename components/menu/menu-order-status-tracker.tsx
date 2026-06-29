@@ -17,6 +17,8 @@ type Props = {
   tableNumber: number
   currency?: string
   tabId?: string
+  isKiosk?: boolean
+  customerName?: string
 }
 
 type TrackerStep = {
@@ -129,8 +131,20 @@ function ReadyToPayCardButton({
   )
 }
 
-export function MenuOrderStatusTracker({ restaurantId, tableNumber, currency = 'N$', tabId }: Props) {
-  const { activeOrder, loading, error } = useActiveOrders(restaurantId, tableNumber)
+export function MenuOrderStatusTracker({
+  restaurantId,
+  tableNumber,
+  currency = 'N$',
+  tabId,
+  isKiosk,
+  customerName,
+}: Props) {
+  const { activeOrder, loading, error } = useActiveOrders(
+    restaurantId,
+    tableNumber,
+    isKiosk,
+    customerName
+  )
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
   const [liveOrder, setLiveOrder] = useState<Record<string, any> | null>(null)
