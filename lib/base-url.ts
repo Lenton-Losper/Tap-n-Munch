@@ -73,26 +73,25 @@ export function getQRCodeBaseUrl(): string {
  * 
  * @param restaurantId - Restaurant ID
  * @param tableNumber - Optional table number
- * @returns Full menu URL pointing to /v2 route
+ * @param isKiosk - When true, link to the kiosk name-entry flow
+ * @returns Full menu URL pointing to /v2 or /kiosk route
  */
-export function buildMenuUrl(restaurantId: string, tableNumber?: number): string {
+export function buildMenuUrl(
+  restaurantId: string,
+  tableNumber?: number,
+  isKiosk?: boolean
+): string {
   if (!restaurantId) {
     console.error('❌ [QR DEBUG] buildMenuUrl called with missing restaurantId')
     return ''
   }
-  
+
   const baseUrl = getQRCodeBaseUrl()
+  if (isKiosk && tableNumber) {
+    return `${baseUrl}/menu/${restaurantId}/kiosk?table=${tableNumber}`
+  }
   const tableParam = tableNumber ? `?table=${tableNumber}` : ''
-  const fullUrl = `${baseUrl}/menu/${restaurantId}/v2${tableParam}`
-  
-  console.log("📌 [QR DEBUG] Generated Link:", {
-    restaurantId,
-    tableNumber: tableNumber || 'none',
-    baseUrl,
-    fullUrl
-  })
-  
-  return fullUrl
+  return `${baseUrl}/menu/${restaurantId}/v2${tableParam}`
 }
 
 
