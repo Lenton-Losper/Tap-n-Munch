@@ -11,10 +11,13 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {AuthProvider, useAuth} from '../context/AuthContext';
 import {StreamProvider} from '../context/StreamContext';
 import {Colors, Typography} from '../constants/theme';
+import {POSOrderItem} from '../lib/api';
 import ActivationScreen from '../screens/ActivationScreen';
 import OrderDetailScreen from '../screens/OrderDetailScreen';
 import OrdersScreen from '../screens/OrdersScreen';
 import PaymentScreen from '../screens/PaymentScreen';
+import POSCartScreen from '../screens/POSCartScreen';
+import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import TableDetailScreen from '../screens/TableDetailScreen';
 import TablesScreen from '../screens/TablesScreen';
@@ -27,6 +30,7 @@ export type AuthStackParamList = {
 export type MainTabParamList = {
   Tables: undefined;
   Orders: undefined;
+  POSSale: undefined;
 };
 
 export type MainStackParamList = {
@@ -42,6 +46,8 @@ export type MainStackParamList = {
     placedAt?: string;
   };
   Settings: undefined;
+  POSSale: undefined;
+  POSCart: {cart: POSOrderItem[]; restaurantId: string};
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
@@ -93,6 +99,20 @@ function MainTabNavigator() {
           ),
         }}
       />
+      <MainTab.Screen
+        name="POSSale"
+        component={POSSaleScreen}
+        options={{
+          tabBarLabel: 'Sale',
+          tabBarIcon: ({color, size}) => (
+            <MaterialCommunityIcons
+              name="cart-plus"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
     </MainTab.Navigator>
   );
 }
@@ -125,6 +145,11 @@ function MainNavigator() {
         <MainStack.Screen
           name="Payment"
           component={PaymentScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="POSCart"
+          component={POSCartScreen}
           options={{headerShown: false}}
         />
         <MainStack.Screen

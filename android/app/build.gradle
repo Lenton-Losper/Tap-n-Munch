@@ -21,7 +21,7 @@ react {
     //   The list of variants to that are debuggable. For those we're going to
     //   skip the bundling of the JS bundle and the assets. Default is "debug", "debugOptimized".
     //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
-    // debuggableVariants = ["liteDebug", "liteDebugOptimized", "prodDebug", "prodDebugOptimized"]
+    debuggableVariants = ["productionDebug", "stagingDebug"]
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -82,8 +82,38 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 21
-        versionName "1.20"
+        versionCode 27
+        versionName "1.26"
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+
+    flavorDimensions "env"
+
+    productFlavors {
+        production {
+            dimension "env"
+            applicationId "com.flashtap.pos"
+            resValue "string", "app_name", "FlashTap Terminal"
+            buildConfigField "String", "API_BASE_URL", '"https://www.flashtap.app"'
+            buildConfigField "String", "SUPABASE_URL", '"https://ihlmmpmolnpchzgwyhgh.supabase.co"'
+            buildConfigField "String", "SUPABASE_ANON_KEY", '"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlobG1tcG1vbG5wY2h6Z3d5aGdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MDIxNjMsImV4cCI6MjA2MjE3ODE2M30.aCqOGKMSgKMNkCosKMFAqAG2hOSGKTIJBgHgfApMCKQ"'
+            buildConfigField "String", "ENV_NAME", '"production"'
+            buildConfigField "String", "NOTIFY_URL", '"https://www.flashtap.app/api/webhooks/paycloud"'
+            buildConfigField "String", "PAYCLOUD_APP_ID", '"wz66363c6bb9592fb5"'
+        }
+        staging {
+            dimension "env"
+            applicationId "com.flashtap.pos.staging"
+            resValue "string", "app_name", "FlashTap Terminal (Staging)"
+            buildConfigField "String", "API_BASE_URL", '"https://flashtap-staging.llosperofficial.workers.dev"'
+            buildConfigField "String", "SUPABASE_URL", '"https://mdqjpxwczrhkxkbqatqa.supabase.co"'
+            buildConfigField "String", "SUPABASE_ANON_KEY", '"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kcWpweHdjenJoa3hrYnFhdHFhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDQyMDAsImV4cCI6MjA5NzkyMDIwMH0.LK7V0b7VWFZnjtFva7JlLgx0adpKlCwRJuMVuLRTk4U"'
+            buildConfigField "String", "ENV_NAME", '"staging"'
+            buildConfigField "String", "NOTIFY_URL", '"https://flashtap-staging.llosperofficial.workers.dev/api/webhooks/paycloud"'
+            buildConfigField "String", "PAYCLOUD_APP_ID", '"wz66363c6bb9592fb5"'
+        }
     }
     signingConfigs {
         debug {

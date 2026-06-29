@@ -468,3 +468,153 @@ export async function completePayment(
   const data = (await response.json()) as {canClose?: boolean};
   return {canClose: Boolean(data.canClose)};
 }
+
+// ─── POS / Menu ────────────────────────────────────────────────────────────
+
+export interface MenuCategory {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface MenuItem {
+  id: string;
+  name: string;
+  description: string | null;
+  base_price: number;
+  is_available: boolean;
+  image_url: string | null;
+  category_id: string;
+}
+
+export interface POSOrderItem {
+  menuItemId: string;
+  name: string;
+  quantity: number;
+  basePrice: number;
+  subtotal: number;
+}
+
+type MenuCategoryGroupResponse = Record<
+  string,
+  {
+    subcategory?: {id: string; name: string; display_order?: number};
+    items?: Record<string, unknown>[];
+  }
+>;
+
+function mapMenuCategory(row: Record<string, unknown>): MenuCategory {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    sort_order: Number(row.sort_order ?? row.display_order ?? 0),
+    is_active: Boolean(row.is_active ?? row.active ?? true),
+  };
+}
+
+function mapMenuItem(row: Record<string, unknown>): MenuItem {
+  const status = String(row.status ?? 'available').toLowerCase();
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    description: row.description != null ? String(row.description) : null,
+    base_price: Number(row.base_price ?? 0),
+    is_available: status !== 'hidden' && status !== 'unavailable',
+    image_url: row.image_url != null ? String(row.image_url) : null,
+    category_id: String(row.category_id ?? row.menu_category_id ?? ''),
+  };
+}
+
+export async function getMenuCategories(
+  token: string,
+  restaurantId: string,
+): Promise<MenuCategory[]> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/menu/${restaurantId}/categories`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as
+    | {categories?: Record<string, unknown>[]}
+    | Record<string, unknown>[];
+
+  const rows = Array.isArray(data) ? data : (data.categories ?? []);
+  return rows.map(row => mapMenuCategory(row));
+}
+
+export async function getMenuItems(
+  token: string,
+  restaurantId: string,
+  categoryId: string,
+): Promise<MenuItem[]> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/menu/${restaurantId}/category/${categoryId}`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as
+    | {items?: Record<string, unknown>[]}
+    | MenuCategoryGroupResponse;
+
+  if (Array.isArray((data as {items?: unknown[]}).items)) {
+    return ((data as {items: Record<string, unknown>[]}).items ?? []).map(
+      row => mapMenuItem(row),
+    );
+  }
+
+  const items: MenuItem[] = [];
+  for (const group of Object.values(data as MenuCategoryGroupResponse)) {
+    for (const row of group.items ?? []) {
+      items.push(mapMenuItem(row));
+    }
+  }
+  return items;
+}
+
+export async function createPOSOrder(
+  token: string,
+  params: {
+    restaurantId: string;
+    items: POSOrderItem[];
+    subtotal: number;
+    total: number;
+    orderInstructions?: string;
+  },
+): Promise<{orderId: string; orderNumber: number}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/orders`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(params),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {
+    orderId: string;
+    orderNumber: number;
+  };
+  return data;
+}
