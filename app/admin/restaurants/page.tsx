@@ -68,6 +68,12 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
     }
   )
 
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+
+  if (userError || !user) {
+    return { restaurants: [], failed: true }
+  }
+
   const { data: { session } } = await supabase.auth.getSession()
   const token = session?.access_token
   if (!token) {
