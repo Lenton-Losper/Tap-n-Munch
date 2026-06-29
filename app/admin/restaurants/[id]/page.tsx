@@ -1,11 +1,8 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  FEATURE_FLAG_KEYS,
-  FeatureFlagsPanel,
-  type FeatureFlagsState,
-} from './feature-flags-panel'
+import { FEATURE_FLAG_KEYS, type FeatureFlagsState } from './constants'
+import { FeatureFlagsPanel } from './feature-flags-panel'
 
 export const dynamic = 'force-dynamic'
 
