@@ -16,6 +16,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { downloadCsv } from '@/lib/reports/generate-csv'
+import { downloadPdf } from '@/lib/reports/generate-pdf'
+import { getReportData, GetReportDataParams } from '@/lib/reports/get-report-data'
+import { getAccessToken } from '@/lib/onboarding/api-client'
 
 type OrderItem = {
   name?: string
@@ -92,7 +96,7 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 }
 
 function OrderHistoryContent() {
-  const { restaurant, restaurantId } = useAuth()
+  const { restaurant, restaurantId, user } = useAuth()
   const currencySymbol = String(restaurant?.currency || 'N$')
 
   const [startDate, setStartDate] = useState(todayIso)
@@ -105,6 +109,13 @@ function OrderHistoryContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<HistoryResponse | null>(null)
+  const [downloading, setDownloading] = useState<'pdf' | 'csv' | null>(null)
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [emailAddress, setEmailAddress] = useState('')
+  const [emailFormat, setEmailFormat] = useState<'pdf' | 'csv'>('pdf')
+  const [sendingEmail, setSendingEmail] = useState(false)
+  const [emailSent, setEmailSent] = useState(false)
 
   const loadHistory = useCallback(async () => {
     if (!restaurantId) {
@@ -142,6 +153,69 @@ function OrderHistoryContent() {
     }
   }, [restaurantId, startDate, endDate, tableNumber, status, orderNumber, page])
 
+  const handleDownload = async (format: 'pdf' | 'csv') => {
+    if (!restaurantId) return
+
+    setDownloading(format)
+    try {
+      const params: GetReportDataParams = {
+        restaurantId,
+        startDate,
+        endDate,
+        tableNumber: tableNumber.trim() ? Number(tableNumber) : undefined,
+        status: status !== 'all' ? status : undefined,
+      }
+      const report = await getReportData(params)
+      if (format === 'csv') {
+        downloadCsv(report)
+      } else {
+        await downloadPdf(report)
+      }
+    } catch (err) {
+      console.error('Download failed', err)
+    } finally {
+      setDownloading(null)
+    }
+  }
+
+  const handleSendEmail = async () => {
+    if (!restaurantId || !emailAddress) return
+    setSendingEmail(true)
+    setEmailSent(false)
+    try {
+      const token = await getAccessToken()
+
+      const res = await fetch(
+        `/api/admin/restaurants/${restaurantId}/reports/email`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            email: emailAddress,
+            format: emailFormat,
+            startDate,
+            endDate,
+            tableNumber: tableNumber.trim() || undefined,
+            status: status !== 'all' ? status : undefined,
+          }),
+        }
+      )
+      if (!res.ok) throw new Error('Failed to send')
+      setEmailSent(true)
+      setTimeout(() => {
+        setShowEmailModal(false)
+        setEmailSent(false)
+      }, 2000)
+    } catch (err) {
+      console.error('Email send failed', err)
+    } finally {
+      setSendingEmail(false)
+    }
+  }
+
   useEffect(() => {
     void loadHistory()
   }, [loadHistory])
@@ -160,16 +234,64 @@ function OrderHistoryContent() {
             <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Order History</h1>
             <p className="mt-1 text-sm text-[#6B675F]">Browse and filter past orders for your venue.</p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void loadHistory()}
-            disabled={loading}
-            className="border-[#E9E9E7]"
-          >
-            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setEmailAddress(user?.email ?? '')
+                setShowEmailModal(true)
+              }}
+              className="border-[#E9E9E7]"
+            >
+              Send by Email
+            </Button>
+            <div className="relative">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowDownloadMenu((prev) => !prev)}
+                disabled={downloading !== null}
+                className="border-[#E9E9E7]"
+              >
+                {downloading ? 'Downloading...' : 'Download'}
+              </Button>
+              {showDownloadMenu && (
+                <div className="absolute right-0 z-10 mt-1 w-40 rounded-md border border-gray-200 bg-white shadow-lg">
+                  <button
+                    type="button"
+                    className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-50"
+                    onClick={() => {
+                      setShowDownloadMenu(false)
+                      void handleDownload('csv')
+                    }}
+                  >
+                    Download CSV
+                  </button>
+                  <button
+                    type="button"
+                    className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-50"
+                    onClick={() => {
+                      setShowDownloadMenu(false)
+                      void handleDownload('pdf')
+                    }}
+                  >
+                    Download PDF
+                  </button>
+                </div>
+              )}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void loadHistory()}
+              disabled={loading}
+              className="border-[#E9E9E7]"
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -349,6 +471,68 @@ function OrderHistoryContent() {
           </>
         )}
       </div>
+
+      {showEmailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-lg font-semibold text-[#37352F]">Send Report by Email</h2>
+
+            <div className="mb-4">
+              <label className="mb-1 block text-sm font-medium text-[#37352F]">Email address</label>
+              <input
+                type="email"
+                value={emailAddress}
+                onChange={(e) => setEmailAddress(e.target.value)}
+                className="w-full rounded-md border border-[#E9E9E7] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E75B6]"
+                placeholder="recipient@example.com"
+              />
+            </div>
+
+            <div className="mb-6">
+              <label className="mb-1 block text-sm font-medium text-[#37352F]">Format</label>
+              <div className="flex gap-3">
+                {(['pdf', 'csv'] as const).map((fmt) => (
+                  <button
+                    key={fmt}
+                    type="button"
+                    onClick={() => setEmailFormat(fmt)}
+                    className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+                      emailFormat === fmt
+                        ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
+                        : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
+                    }`}
+                  >
+                    {fmt.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {emailSent && (
+              <p className="mb-4 text-sm font-medium text-green-600">Report sent successfully.</p>
+            )}
+
+            <div className="flex justify-end gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowEmailModal(false)}
+                disabled={sendingEmail}
+                className="border-[#E9E9E7]"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSendEmail()}
+                disabled={sendingEmail || !emailAddress}
+              >
+                {sendingEmail ? 'Sending...' : 'Send Report'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
