@@ -22,6 +22,7 @@ import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
 import { fetchTabById } from '@/lib/tab-session'
+import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 
 type ItemVariant = {
   size: string
@@ -76,6 +77,8 @@ function flattenGroupedItems(
 export default function MenuBrowsePage() {
   const params = useParams()
   const searchParams = useSearchParams()
+  const orderingCtx = getOrderingContext(searchParams)
+  const isKiosk = isKioskChannel(orderingCtx)
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
@@ -115,14 +118,18 @@ export default function MenuBrowsePage() {
   }, [tableNumber, tabIdParam, tabId])
 
   const myOrdersHref = useMemo(() => {
-    const params = new URLSearchParams({
-      ...(tableNumber > 0 ? { table: String(tableNumber) } : {}),
-      ...(tabId || tabIdParam ? { tabId: tabId || tabIdParam } : {}),
-      name: restaurant?.name || '',
-      currency,
-    })
+    const params = new URLSearchParams()
+    if (tableNumber > 0) params.set('table', String(tableNumber))
+    if (tabId || tabIdParam) params.set('tabId', tabId || tabIdParam)
+    if (isKiosk) {
+      params.set('kiosk', 'true')
+      params.set('name', orderingCtx.customerName)
+    } else {
+      params.set('name', restaurant?.name || '')
+      params.set('currency', currency)
+    }
     return `/menu/${restaurantId}/cart?${params.toString()}`
-  }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency])
+  }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency, isKiosk, orderingCtx.customerName])
 
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
 
@@ -488,7 +495,7 @@ export default function MenuBrowsePage() {
       type="button"
       onClick={() => handleAddToCart(item)}
       disabled={
-        !isInTab ||
+        (!isInTab && !isKiosk) ||
         item.status === 'out_of_stock' ||
         addingItemId === item.id ||
         isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
@@ -519,7 +526,7 @@ export default function MenuBrowsePage() {
   }, [groupedItems])
 
   const handleAddToCart = async (item: MenuItem) => {
-    if (!isInTab) return
+    if (!isInTab && !isKiosk) return
     const hasInlineVariantGroups = getVariantGroups(item).length > 0
     if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
       setAddingItemId(item.id)
@@ -873,7 +880,7 @@ export default function MenuBrowsePage() {
                         </p>
                         {item.status === 'out_of_stock' ? (
                           <span className="text-xs text-red-600">Out of stock</span>
-                        ) : !isInTab ? (
+                        ) : (!isInTab && !isKiosk) ? (
                           <span className="text-[10px] text-gray-400">Create tab to order</span>
                         ) : null}
                       </div>
@@ -935,7 +942,7 @@ export default function MenuBrowsePage() {
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
-            if (!isInTab) return
+            if (!isInTab && !isKiosk) return
             addItem(cartItem)
             pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)
@@ -943,7 +950,7 @@ export default function MenuBrowsePage() {
         />
       )}
 
-      {!isInTab && (
+      {!isInTab && !isKiosk && (
         <div className="fixed bottom-0 left-0 right-0 bg-foreground text-background px-4 py-3 text-center font-sans text-sm font-medium z-50">
           <button
             onClick={() =>

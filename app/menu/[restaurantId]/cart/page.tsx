@@ -336,6 +336,7 @@ export default function CartPage() {
         paymentChannel,
         orderInstructions: orderInstructions?.trim() || '',
         customer_name: isKiosk ? kioskCustomerName || null : null,
+        channel: isKiosk ? 'kiosk' : 'table',
       }
       const idem = getOrCreateCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       const response = await fetch('/api/orders', {
@@ -364,7 +365,14 @@ export default function CartPage() {
       if (tableNumber > 0) confirmQs.set('table', String(tableNumber))
       const confirmSuffix = confirmQs.toString() ? `?${confirmQs.toString()}` : ''
       if (isKiosk) {
-        router.replace(kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName))
+        const orderLabel =
+          (typeof data?.kioskOrderLabel === 'string' && data.kioskOrderLabel) ||
+          (data?.kioskOrderNumber != null
+            ? `K-${String(data.kioskOrderNumber).padStart(3, '0')}`
+            : undefined)
+        router.replace(
+          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel)
+        )
       } else {
         router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)
       }
@@ -613,8 +621,14 @@ export default function CartPage() {
                       <span className="text-lg" aria-hidden>
                         💵
                       </span>
-                      <span className="ml-2 font-semibold text-foreground">Pay at table with cash</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Staff will collect cash at your table</p>
+                      <span className="ml-2 font-semibold text-foreground">
+                        {isKiosk ? 'Pay at the counter' : 'Pay at table with cash'}
+                      </span>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {isKiosk
+                          ? 'Collect your order and pay at the counter'
+                          : 'Staff will collect cash at your table'}
+                      </p>
                     </button>
                     )}
                     {enabledPaymentMethods.card && (
@@ -635,9 +649,13 @@ export default function CartPage() {
                       <span className="text-lg" aria-hidden>
                         💳
                       </span>
-                      <span className="ml-2 font-semibold text-foreground">Pay at table with card</span>
+                      <span className="ml-2 font-semibold text-foreground">
+                        {isKiosk ? 'Tap your card at the counter' : 'Pay at table with card'}
+                      </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Staff will bring their card machine to your table
+                        {isKiosk
+                          ? 'Tap your card at the counter when you collect your order'
+                          : 'Staff will bring their card machine to your table'}
                       </p>
                     </button>
                     )}
@@ -665,7 +683,7 @@ export default function CartPage() {
                 </div>
               )}
 
-              {inTabFlow ? (
+              {inTabFlow && (
                 <Button
                   className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
                   size="lg"
@@ -674,7 +692,20 @@ export default function CartPage() {
                 >
                   {paying ? 'Adding…' : 'Add to Tab'}
                 </Button>
-              ) : (
+              )}
+
+              {isKiosk && !inTabFlow && (
+                <Button
+                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                  size="lg"
+                  onClick={handlePlaceOrder}
+                  disabled={paying || items.length === 0}
+                >
+                  {paying ? 'Placing order…' : 'Place Order'}
+                </Button>
+              )}
+
+              {!inTabFlow && !isKiosk && (
                 <div className="text-center py-4">
                   <p className="text-sm text-muted-foreground font-sans mb-3">
                     You need a tab to place an order.

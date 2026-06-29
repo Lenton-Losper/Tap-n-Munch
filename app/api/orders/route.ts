@@ -17,6 +17,7 @@ export async function POST(req: Request) {
 
     const body = await req.json()
     const { tableNumber, ...rest } = body
+    const channel = String(body.channel ?? 'table').trim()
 
     const restaurantIdRaw =
       rest.restaurantId ?? rest.restaurant_id ?? body.restaurantId ?? body.restaurant_id
@@ -106,7 +107,7 @@ export async function POST(req: Request) {
       resolvedPaymentChannel = resolvedPaymentChannel || null
     }
 
-    if (!isTabOrder) {
+    if (!isTabOrder && channel !== 'kiosk') {
       const { data: openTabForTable, error: openTabError } = await supabase
         .from('tabs')
         .select('id')
@@ -188,6 +189,7 @@ export async function POST(req: Request) {
         tab_id: normalizedTabId || null,
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
         order_number: orderNumber,
+        channel,
         placed_at: new Date().toISOString(),
         idempotency_key: idempotencyKey,
       })
@@ -216,6 +218,28 @@ export async function POST(req: Request) {
     }
 
     const orderId = newOrder.id
+
+    let kioskOrderNumber: number | undefined
+    let kioskOrderLabel: string | undefined
+
+    if (channel === 'kiosk') {
+      const today = new Date().toISOString().split('T')[0]
+      const { count: kioskCount } = await supabase
+        .from('orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', restaurantUuid)
+        .eq('channel', 'kiosk')
+        .gte('placed_at', `${today}T00:00:00Z`)
+
+      const kioskNumber = (kioskCount ?? 0) + 1
+      await supabase
+        .from('orders')
+        .update({ kiosk_order_number: kioskNumber })
+        .eq('id', orderId)
+
+      kioskOrderNumber = kioskNumber
+      kioskOrderLabel = `K-${String(kioskNumber).padStart(3, '0')}`
+    }
 
     const t3 = performance.now()
     if (isTabOrder) {
@@ -327,6 +351,7 @@ export async function POST(req: Request) {
       paymentStatus,
       checkoutUrl,
       merchantOrderNo,
+      ...(kioskOrderNumber != null ? { kioskOrderNumber, kioskOrderLabel } : {}),
     }
 
     console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
