@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic'
 
 const ALLOWED_SETTINGS = [
   'payment_methods',
+  'kiosk_payment_methods',
   'tab_pin_required',
   'max_tab_hours',
   'allow_split_bill',
@@ -16,6 +17,8 @@ const ALLOWED_SETTINGS = [
   'tax_rate',
   'service_charge',
 ]
+
+const VALID_KIOSK_METHODS = ['cash', 'card', 'other']
 
 export async function GET(
   request: Request,
@@ -31,11 +34,26 @@ export async function GET(
 
     const { data, error } = await supabase
       .from('restaurant_settings')
-      .select('payment_methods, tab_pin_required, max_tab_hours, allow_split_bill, currency, timezone, tax_rate, service_charge, settings_version, updated_at')
+      .select(
+        'payment_methods, kiosk_payment_methods, tab_pin_required, max_tab_hours, allow_split_bill, currency, timezone, tax_rate, service_charge, settings_version, updated_at'
+      )
       .eq('restaurant_id', restaurantId)
       .maybeSingle()
     if (error) throw error
-    return NextResponse.json({ settings: data })
+
+    const { count } = await supabase
+      .from('restaurant_tables')
+      .select('id', { count: 'exact', head: true })
+      .eq('restaurant_id', restaurantId)
+      .eq('is_kiosk', true)
+
+    return NextResponse.json({
+      settings: {
+        ...(data ?? {}),
+        hasKiosk: (count ?? 0) > 0,
+        kiosk_payment_methods: data?.kiosk_payment_methods ?? ['cash', 'card', 'other'],
+      },
+    })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to load settings'
     const status = message.includes('authorization') || message.includes('session') ? 401 : 500
@@ -80,6 +98,20 @@ export async function PATCH(
       const valid = ['cash', 'card', 'online']
       if (!methods.every(m => valid.includes(String(m)))) {
         return NextResponse.json({ error: 'Invalid payment method' }, { status: 400 })
+      }
+    }
+
+    if (updates.kiosk_payment_methods !== undefined) {
+      const kioskMethods = updates.kiosk_payment_methods as unknown[]
+      if (
+        !Array.isArray(kioskMethods) ||
+        kioskMethods.length === 0 ||
+        !kioskMethods.every((m) => VALID_KIOSK_METHODS.includes(String(m)))
+      ) {
+        return NextResponse.json(
+          { error: 'kiosk_payment_methods must be a non-empty array of: cash, card, other' },
+          { status: 400 }
+        )
       }
     }
 

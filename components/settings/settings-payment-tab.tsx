@@ -146,8 +146,11 @@ export function SettingsPaymentTab() {
   const [merchantNo, setMerchantNo] = useState('')
   const [storeNo, setStoreNo] = useState('')
   const [paymentMethods, setPaymentMethods] = useState<string[]>(['cash', 'card'])
+  const [hasKiosk, setHasKiosk] = useState(false)
+  const [kioskMethods, setKioskMethods] = useState<string[]>(['cash', 'card', 'other'])
   const [savingAccount, setSavingAccount] = useState(false)
   const [savingPaymentMethods, setSavingPaymentMethods] = useState(false)
+  const [savingKioskMethods, setSavingKioskMethods] = useState(false)
   const [loadingAccount, setLoadingAccount] = useState(true)
 
   const [terminals, setTerminals] = useState<TerminalRow[]>([])
@@ -183,6 +186,13 @@ export function SettingsPaymentTab() {
         Array.isArray(methods) && methods.length > 0
           ? methods.map((m: unknown) => String(m))
           : ['cash', 'card']
+      )
+      setHasKiosk(Boolean(payload?.settings?.hasKiosk))
+      const kioskPaymentMethods = payload?.settings?.kiosk_payment_methods
+      setKioskMethods(
+        Array.isArray(kioskPaymentMethods) && kioskPaymentMethods.length > 0
+          ? kioskPaymentMethods.map((m: unknown) => String(m))
+          : ['cash', 'card', 'other']
       )
     } catch (error: unknown) {
       toast({
@@ -286,6 +296,49 @@ export function SettingsPaymentTab() {
       })
     } finally {
       setSavingPaymentMethods(false)
+    }
+  }
+
+  const handleKioskMethodToggle = async (method: 'cash' | 'card' | 'other', enabled: boolean) => {
+    if (!restaurantId) return
+
+    const nextMethods = enabled
+      ? [...new Set([...kioskMethods, method])]
+      : kioskMethods.filter((m) => m !== method)
+
+    if (nextMethods.length === 0) {
+      toast({
+        title: 'Error',
+        description: 'At least one kiosk payment method must remain enabled.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      setSavingKioskMethods(true)
+      const token = await getSettingsAccessToken()
+      const res = await fetch(`/api/admin/restaurants/${restaurantId}/settings`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ kiosk_payment_methods: nextMethods }),
+      })
+      const payload = await res.json()
+      if (!res.ok) throw new Error(payload?.error || 'Failed to update kiosk payment methods')
+
+      setKioskMethods(nextMethods)
+      toast({ title: 'Saved', description: 'Kiosk payment methods updated.' })
+    } catch (error: unknown) {
+      toast({
+        title: 'Save failed',
+        description: error instanceof Error ? error.message : 'Failed to update kiosk payment methods',
+        variant: 'destructive',
+      })
+    } finally {
+      setSavingKioskMethods(false)
     }
   }
 
@@ -520,6 +573,66 @@ export function SettingsPaymentTab() {
           </div>
         )}
       </div>
+
+      {hasKiosk ? (
+        <div className="bg-card border rounded-lg p-6 space-y-6">
+          <div>
+            <h2 className="text-xl font-semibold">Kiosk Payment Methods</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Choose which payment options customers can select at the kiosk.
+            </p>
+          </div>
+
+          {loadingAccount ? (
+            <p className="text-sm text-muted-foreground">Loading kiosk payment methods...</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1">
+                  <Label htmlFor="kiosk-payment-method-cash">Pay at counter</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Allow customers to pay with cash at the kiosk.
+                  </p>
+                </div>
+                <Switch
+                  id="kiosk-payment-method-cash"
+                  checked={kioskMethods.includes('cash')}
+                  onCheckedChange={(checked) => void handleKioskMethodToggle('cash', checked)}
+                  disabled={savingKioskMethods}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1">
+                  <Label htmlFor="kiosk-payment-method-card">Tap card at counter</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Allow customers to tap their card when collecting their order.
+                  </p>
+                </div>
+                <Switch
+                  id="kiosk-payment-method-card"
+                  checked={kioskMethods.includes('card')}
+                  onCheckedChange={(checked) => void handleKioskMethodToggle('card', checked)}
+                  disabled={savingKioskMethods}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1">
+                  <Label htmlFor="kiosk-payment-method-other">Other</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Staff will assist the customer with payment.
+                  </p>
+                </div>
+                <Switch
+                  id="kiosk-payment-method-other"
+                  checked={kioskMethods.includes('other')}
+                  onCheckedChange={(checked) => void handleKioskMethodToggle('other', checked)}
+                  disabled={savingKioskMethods}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {activationResult ? (
         <div id="terminal-activation-success">

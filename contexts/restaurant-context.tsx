@@ -12,6 +12,8 @@ interface Restaurant {
 
 interface RestaurantSettings {
   payment_methods: string[]
+  kiosk_payment_methods?: string[]
+  hasKiosk?: boolean
   tab_pin_required: boolean
   max_tab_hours: number
   allow_split_bill: boolean
@@ -36,6 +38,8 @@ interface RestaurantContextType {
   permissions: RestaurantPermissions
   currency: string
   paymentMethods: string[]
+  hasKiosk: boolean
+  kioskPaymentMethods: string[]
   tabPinRequired: boolean
   maxTabHours: number
   settingsVersion: number
@@ -57,6 +61,8 @@ const RestaurantContext = createContext<RestaurantContextType>({
   permissions: defaultPermissions,
   currency: 'NAD',
   paymentMethods: ['cash', 'card'],
+  hasKiosk: false,
+  kioskPaymentMethods: ['cash', 'card', 'other'],
   tabPinRequired: true,
   maxTabHours: 8,
   settingsVersion: 1,
@@ -105,6 +111,8 @@ export function RestaurantProvider({
   }, [load])
 
   const paymentMethods = settings?.payment_methods ?? ['cash', 'card']
+  const kioskPaymentMethods = settings?.kiosk_payment_methods ?? ['cash', 'card', 'other']
+  const hasKiosk = settings?.hasKiosk ?? false
   const tabPinRequired = settings?.tab_pin_required ?? true
   const maxTabHours = settings?.max_tab_hours ?? 8
   const currency = settings?.currency ?? 'NAD'
@@ -125,6 +133,8 @@ export function RestaurantProvider({
         permissions,
         currency,
         paymentMethods,
+        hasKiosk,
+        kioskPaymentMethods,
         tabPinRequired,
         maxTabHours,
         settingsVersion,

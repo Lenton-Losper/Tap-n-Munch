@@ -47,7 +47,7 @@ export default function CartPage() {
   const isKiosk = isKioskMode(searchParams)
   const kioskCustomerName = getKioskName(searchParams)
   const { toast } = useToast()
-  const { restaurant, settings, currency, paymentMethods: enabledMethods, permissions, loading: restaurantLoading } =
+  const { restaurant, settings, currency, paymentMethods: enabledMethods, kioskPaymentMethods, permissions, loading: restaurantLoading } =
     useRestaurant()
 
   useClearCartOnTableChange(restaurantId, tableNumber)
@@ -202,6 +202,15 @@ export default function CartPage() {
       card: normalized.includes('card'),
     }
   }, [restaurantLoading, enabledMethods])
+
+  const enabledKioskMethods = useMemo(() => {
+    const methods = kioskPaymentMethods ?? ['cash', 'card', 'other']
+    return {
+      cash: methods.includes('cash'),
+      card: methods.includes('card'),
+      other: methods.includes('other'),
+    }
+  }, [kioskPaymentMethods])
 
   const showPaymentMethodChoice =
     enabledPaymentMethods.cash && enabledPaymentMethods.card
@@ -603,7 +612,7 @@ export default function CartPage() {
                       <p className="mt-1 text-sm text-muted-foreground">Pay now with card online</p>
                     </button>
                     )}
-                    {enabledPaymentMethods.cash && (
+                    {(isKiosk ? enabledKioskMethods.cash : enabledPaymentMethods.cash) && (
                     <button
                       type="button"
                       role="radio"
@@ -631,7 +640,7 @@ export default function CartPage() {
                       </p>
                     </button>
                     )}
-                    {enabledPaymentMethods.card && (
+                    {(isKiosk ? enabledKioskMethods.card : enabledPaymentMethods.card) && (
                     <button
                       type="button"
                       role="radio"
@@ -659,6 +668,7 @@ export default function CartPage() {
                       </p>
                     </button>
                     )}
+                    {(isKiosk ? enabledKioskMethods.other : showPaymentMethodChoice) && (
                     <button
                       type="button"
                       role="radio"
@@ -679,6 +689,7 @@ export default function CartPage() {
                       <span className="ml-2 font-semibold text-foreground">Other</span>
                       <p className="mt-1 text-sm text-muted-foreground">Staff will assist with payment at your table</p>
                     </button>
+                    )}
                   </div>
                 </div>
               )}
