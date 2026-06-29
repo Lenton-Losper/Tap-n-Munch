@@ -447,6 +447,7 @@ CREATE TABLE IF NOT EXISTS "public"."report_schedules" (
         CHECK ("format" IN ('pdf', 'csv')),
     "send_time" time NOT NULL DEFAULT '20:00',
     "timezone" text NOT NULL DEFAULT 'Africa/Windhoek',
+    "last_sent_at" timestamptz,
     "created_at" timestamptz NOT NULL DEFAULT now(),
     "updated_at" timestamptz NOT NULL DEFAULT now()
 );
@@ -463,6 +464,37 @@ CREATE POLICY "Owners can manage their report schedules"
     EXISTS (
       SELECT 1 FROM "public"."restaurants"
       WHERE "restaurants"."id" = "report_schedules"."restaurant_id"
+        AND "restaurants"."owner_id" = auth.uid()
+    )
+  );
+
+
+CREATE TABLE IF NOT EXISTS "public"."report_send_log" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "schedule_id" uuid NOT NULL REFERENCES "public"."report_schedules"("id") ON DELETE CASCADE,
+    "restaurant_id" uuid NOT NULL REFERENCES "public"."restaurants"("id") ON DELETE CASCADE,
+    "report_period" date NOT NULL,
+    "sent_at" timestamptz NOT NULL DEFAULT now(),
+    "status" text NOT NULL CHECK ("status" IN ('success', 'failed')),
+    "error" text,
+    "duration_ms" integer,
+    "created_at" timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS "report_send_log_schedule_id_idx"
+  ON "public"."report_send_log" USING "btree" ("schedule_id");
+
+CREATE INDEX IF NOT EXISTS "report_send_log_restaurant_id_idx"
+  ON "public"."report_send_log" USING "btree" ("restaurant_id");
+
+ALTER TABLE "public"."report_send_log" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Owners can read their report send logs"
+  ON "public"."report_send_log" FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM "public"."restaurants"
+      WHERE "restaurants"."id" = "report_send_log"."restaurant_id"
         AND "restaurants"."owner_id" = auth.uid()
     )
   );
