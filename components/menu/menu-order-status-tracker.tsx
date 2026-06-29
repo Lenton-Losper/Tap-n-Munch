@@ -19,6 +19,7 @@ type Props = {
   tabId?: string
   isKiosk?: boolean
   customerName?: string
+  sessionId?: string
 }
 
 type TrackerStep = {
@@ -138,12 +139,14 @@ export function MenuOrderStatusTracker({
   tabId,
   isKiosk,
   customerName,
+  sessionId,
 }: Props) {
   const { activeOrder, loading, error } = useActiveOrders(
     restaurantId,
     tableNumber,
     isKiosk,
-    customerName
+    customerName,
+    sessionId
   )
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)

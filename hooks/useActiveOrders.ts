@@ -50,7 +50,8 @@ export function useActiveOrders(
   restaurantId?: string,
   tableNumber?: number,
   isKiosk?: boolean,
-  customerName?: string
+  customerName?: string,
+  sessionId?: string
 ): {
   activeOrder: ActiveOrder | null
   loading: boolean
@@ -89,11 +90,10 @@ export function useActiveOrders(
           .eq('table_number', Number(tableNumber))
           .eq('is_closed', false)
 
-        // TODO: Replace customer_name filtering with kiosk_session_id when
-        // shared-device session model is implemented. See mentor brief 29/06/2026.
-        if (isKiosk && customerName) {
-          query = query.eq('channel', 'kiosk').eq('customer_name', customerName)
+        if (isKiosk && sessionId) {
+          query = query.eq('session_id', sessionId)
         }
+        // TODO removed — session_id is now the authoritative kiosk identity.
 
         const { data: orders, error: queryError } = await query
 
@@ -150,7 +150,7 @@ export function useActiveOrders(
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [restaurantId, tableNumber, isKiosk, customerName])
+  }, [restaurantId, tableNumber, isKiosk, customerName, sessionId])
 
   return { activeOrder, loading, error }
 }

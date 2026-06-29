@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import Image from 'next/image'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
+import { startKioskCustomerSession } from '@/lib/session'
 
 export default function KioskPage() {
   const params = useParams()
@@ -36,6 +37,10 @@ export default function KioskPage() {
       setError('Name must be at least 2 characters.')
       return
     }
+
+    // Begin new customer lifecycle — clears previous session, tab, cart
+    startKioskCustomerSession(restaurantId, tableParam)
+
     router.push(
       `/menu/${restaurantId}/browse?table=${tableParam}&kiosk=true&name=${encodeURIComponent(trimmed)}`
     )

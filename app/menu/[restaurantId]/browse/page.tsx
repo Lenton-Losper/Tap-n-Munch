@@ -83,6 +83,13 @@ export default function MenuBrowsePage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
+  const [kioskSessionId, setKioskSessionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (isKiosk) {
+      setKioskSessionId(getCurrentSession())
+    }
+  }, [isKiosk])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -708,6 +715,7 @@ export default function MenuBrowsePage() {
         tabId={effectiveTabId || undefined}
         isKiosk={isKiosk}
         customerName={isKiosk ? orderingCtx.customerName : undefined}
+        sessionId={isKiosk ? kioskSessionId ?? undefined : undefined}
       />
 
       <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">

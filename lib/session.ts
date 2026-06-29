@@ -103,3 +103,52 @@ export function isSessionValid(): boolean {
   const sessionId = localStorage.getItem(SESSION_KEY)
   return sessionId !== null && sessionId.startsWith('sess_')
 }
+
+/**
+ * Begins a completely new kiosk customer lifecycle.
+ * Clears all state from the previous customer (session, tab, cart,
+ * return pointers) then creates a fresh session UUID.
+ * Idempotent — safe to call multiple times.
+ *
+ * Principle: Identity is represented by session_id, not by display
+ * data such as customer names. session_id is authoritative.
+ */
+export function startKioskCustomerSession(
+  restaurantId: string,
+  tableId: string
+): string {
+  if (typeof window === 'undefined') return ''
+
+  // Clear previous customer's session
+  localStorage.removeItem('flashtap_session_v1')
+  localStorage.removeItem('flashtap_session_table_v1')
+  localStorage.removeItem('flashtap_session_restaurant_v1')
+  sessionStorage.removeItem('flashtap_session_v1')
+
+  // Clear previous customer's tab state
+  localStorage.removeItem('flashtap_tab_id')
+  localStorage.removeItem('flashtap_table')
+  localStorage.removeItem('flashtap_session_token')
+  sessionStorage.removeItem('flashtap_session_token')
+  sessionStorage.removeItem('tab_session_id')
+  sessionStorage.removeItem('flashtap_tab_session_id')
+
+  // Clear previous customer's cart
+  localStorage.removeItem('cart')
+  localStorage.removeItem('cart_session_id')
+
+  // Clear previous customer's return pointers
+  sessionStorage.removeItem('last_order_id')
+  sessionStorage.removeItem('flashtap_return_order_id')
+  sessionStorage.removeItem('flashtap_return_table')
+
+  // Create fresh session for new customer
+  const sessionId = `sess_${crypto.randomUUID()}`
+  localStorage.setItem('flashtap_session_v1', sessionId)
+  localStorage.setItem('flashtap_session_table_v1', tableId)
+  localStorage.setItem('flashtap_session_restaurant_v1', restaurantId)
+  sessionStorage.setItem('flashtap_session_v1', sessionId)
+
+  console.log('[Kiosk] New customer session started:', sessionId)
+  return sessionId
+}
