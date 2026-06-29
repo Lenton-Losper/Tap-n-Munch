@@ -392,11 +392,50 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_features" (
     "online_payments_enabled" boolean DEFAULT false NOT NULL,
     "multi_branch_enabled" boolean DEFAULT false NOT NULL,
     "staff_app_enabled" boolean DEFAULT false NOT NULL,
+    "kiosk_enabled" boolean DEFAULT false NOT NULL,
+    "whatsapp_enabled" boolean DEFAULT false NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
 );
 
 
 ALTER TABLE "public"."restaurant_features" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."platform_admins" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+    "email" text NOT NULL UNIQUE,
+    "role" text NOT NULL DEFAULT 'support'
+        CHECK (role IN ('super_admin', 'support')),
+    "created_at" timestamptz DEFAULT now()
+);
+ALTER TABLE "public"."platform_admins" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE TABLE IF NOT EXISTS "public"."platform_audit_logs" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "actor_id" uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+    "actor_email" text NOT NULL,
+    "action" text NOT NULL,
+    "target_type" text NOT NULL,
+    "target_id" uuid,
+    "payload" jsonb,
+    "ip_address" text,
+    "user_agent" text,
+    "success" boolean NOT NULL DEFAULT true,
+    "created_at" timestamptz DEFAULT now() NOT NULL
+);
+
+ALTER TABLE "public"."platform_audit_logs" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Platform admins can read audit logs"
+  ON "public"."platform_audit_logs" FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM "public"."platform_admins"
+      WHERE "platform_admins"."user_id" = auth.uid()
+    )
+  );
 
 
 CREATE TABLE IF NOT EXISTS "public"."restaurant_setup_status" (

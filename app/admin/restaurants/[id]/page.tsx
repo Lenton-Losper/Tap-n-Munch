@@ -1,100 +1,155 @@
-'use client'
-import { useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
-import { useToast } from '@/hooks/use-toast'
-import { Switch } from '@/components/ui/switch'
-import { Label } from '@/components/ui/label'
+import Link from 'next/link'
+import { notFound } from 'next/navigation'
+import { cookies, headers } from 'next/headers'
+import { createServerClient } from '@supabase/ssr'
+import {
+  FEATURE_FLAG_KEYS,
+  FeatureFlagsPanel,
+  type FeatureFlagsState,
+} from './feature-flags-panel'
 
-const FEATURE_LABELS: Record<string, string> = {
-  kitchen_enabled: 'Kitchen Display',
-  inventory_enabled: 'Inventory / Stock Control',
-  analytics_enabled: 'Analytics',
-  split_bill_enabled: 'Split Bill',
-  reservations_enabled: 'Reservations',
-  loyalty_enabled: 'Loyalty',
-  online_payments_enabled: 'Online Payments',
-  multi_branch_enabled: 'Multi Branch',
-  staff_app_enabled: 'Staff App',
-  kiosk_enabled: 'Kiosk Mode',
-  whatsapp_enabled: 'WhatsApp Bot',
+export const dynamic = 'force-dynamic'
+
+type RestaurantDetail = {
+  id: string
+  name: string
+  slug: string | null
+  owner_email: string | null
+  created_at: string
 }
 
-export default function AdminRestaurantDetailPage() {
-  const params = useParams()
-  const id = params.id as string
-  const { toast } = useToast()
-  const [name, setName] = useState('')
-  const [features, setFeatures] = useState<Record<string, boolean>>({})
-  const [subscription, setSubscription] = useState<{ plan: string; status: string } | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [toggling, setToggling] = useState<string | null>(null)
+function getBaseUrl(host: string | null): string {
+  const configured =
+    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') ||
+    process.env.NEXT_PUBLIC_BASE_URL?.replace(/\/$/, '')
+  if (configured) return configured
+  if (!host) return 'http://localhost:3000'
+  const protocol = host.includes('localhost') ? 'http' : 'https'
+  return `${protocol}://${host}`
+}
 
-  useEffect(() => {
-    const loadRestaurant = async () => {
-      const { data: { session } } = await (await import('@/lib/supabase/client')).supabase.auth.getSession()
-      const token = session?.access_token
-      fetch(`/api/platform/restaurants/${id}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then(r => r.json())
-        .then(data => {
-          setName(data.restaurant?.name ?? '')
-          setFeatures(data.features ?? {})
-          setSubscription(data.subscription ?? null)
-        })
-        .finally(() => setLoading(false))
-    }
-    loadRestaurant()
-  }, [id])
+function formatDate(iso: string) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleDateString('en-NA', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
 
-  const toggle = async (feature: string, value: boolean) => {
-    setToggling(feature)
-    setFeatures(prev => ({ ...prev, [feature]: value }))
-    try {
-      const { data: { session } } = await (await import('@/lib/supabase/client')).supabase.auth.getSession()
-      const token = session?.access_token
-      const res = await fetch(`/api/platform/restaurants/${id}/features`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+function normalizeFeatures(raw: Record<string, unknown> | null | undefined): FeatureFlagsState {
+  return FEATURE_FLAG_KEYS.reduce((acc, key) => {
+    acc[key] = Boolean(raw?.[key])
+    return acc
+  }, {} as FeatureFlagsState)
+}
+
+async function loadRestaurant(id: string) {
+  const cookieStore = await cookies()
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll()
         },
-        body: JSON.stringify({ [feature]: value }),
-      })
-      if (!res.ok) throw new Error('Failed')
-      toast({ title: `${FEATURE_LABELS[feature]} ${value ? 'enabled' : 'disabled'}` })
-    } catch {
-      setFeatures(prev => ({ ...prev, [feature]: !value }))
-      toast({ title: 'Failed to update', variant: 'destructive' })
-    } finally {
-      setToggling(null)
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options)
+          })
+        },
+      },
     }
+  )
+
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  if (!token) return null
+
+  const host = (await headers()).get('host')
+  const baseUrl = getBaseUrl(host)
+
+  const res = await fetch(`${baseUrl}/api/platform/restaurants/${id}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: 'no-store',
+  })
+
+  if (!res.ok) return null
+
+  return res.json() as Promise<{
+    restaurant: RestaurantDetail | null
+    features: Record<string, unknown> | null
+    subscription: { plan: string; status: string } | null
+  }>
+}
+
+export default async function AdminRestaurantDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const data = await loadRestaurant(id)
+
+  if (!data?.restaurant) {
+    notFound()
   }
 
-  if (loading) return <div className="p-8">Loading...</div>
+  const { restaurant, features, subscription } = data
+  const featureState = normalizeFeatures(features)
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-2">{name}</h1>
-      {subscription && (
-        <p className="text-sm text-gray-500 mb-8">
-          Plan: <span className="font-medium">{subscription.plan}</span> —
-          Status: <span className="font-medium">{subscription.status}</span>
-        </p>
-      )}
-      <h2 className="text-lg font-semibold mb-4">Feature Flags</h2>
-      <div className="flex flex-col gap-4">
-        {Object.entries(FEATURE_LABELS).map(([key, label]) => (
-          <div key={key} className="flex items-center justify-between py-2 border-b">
-            <Label htmlFor={key} className="text-sm">{label}</Label>
-            <Switch
-              id={key}
-              checked={!!features[key]}
-              onCheckedChange={val => toggle(key, val)}
-              disabled={toggling === key}
-            />
+    <div className="min-h-screen bg-[#F7F6F3]">
+      <div className="border-b border-[#E9E9E7] bg-white px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl">
+          <Link
+            href="/admin/restaurants"
+            className="text-sm font-medium text-[#2E75B6] hover:underline"
+          >
+            ← Back to restaurants
+          </Link>
+          <h1 className="mt-4 font-serif text-3xl font-semibold text-[#37352F]">
+            {restaurant.name}
+          </h1>
+          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+            <div>
+              <dt className="text-[#6B675F]">Slug</dt>
+              <dd className="font-medium text-[#37352F]">{restaurant.slug ?? '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-[#6B675F]">Owner email</dt>
+              <dd className="font-medium text-[#37352F]">{restaurant.owner_email ?? '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-[#6B675F]">Created</dt>
+              <dd className="font-medium text-[#37352F]">{formatDate(restaurant.created_at)}</dd>
+            </div>
+            {subscription && (
+              <div>
+                <dt className="text-[#6B675F]">Subscription</dt>
+                <dd className="font-medium text-[#37352F]">
+                  {subscription.plan} · {subscription.status}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5 sm:p-6">
+          <h2 className="text-lg font-semibold text-[#37352F]">Feature Flags</h2>
+          <p className="mt-1 text-sm text-[#6B675F]">
+            Enable or disable product features for this restaurant.
+          </p>
+          <div className="mt-6">
+            <FeatureFlagsPanel restaurantId={id} initialFeatures={featureState} />
           </div>
-        ))}
+        </div>
       </div>
     </div>
   )
