@@ -56,7 +56,7 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
     if (restaurantIds.length > 0) {
       const { data: ownerRows } = await supabase
         .from('restaurant_users')
-        .select('restaurant_id, user_id, users(email)')
+        .select('restaurant_id, user_id, users!restaurant_users_user_id_fkey(email)')
         .in('restaurant_id', restaurantIds)
         .eq('role', 'owner')
 
