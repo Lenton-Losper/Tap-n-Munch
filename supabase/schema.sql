@@ -366,10 +366,13 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_settings" (
 ALTER TABLE "public"."restaurant_settings" OWNER TO "postgres";
 
 
-CREATE OR REPLACE VIEW "public"."public_restaurant_settings" AS
+DROP VIEW IF EXISTS "public"."public_restaurant_settings";
+
+CREATE VIEW "public"."public_restaurant_settings" AS
  SELECT "restaurant_id",
     "currency",
     "payment_methods",
+    "kiosk_payment_methods",
     "tab_pin_required",
     "max_tab_hours"
    FROM "public"."restaurant_settings";

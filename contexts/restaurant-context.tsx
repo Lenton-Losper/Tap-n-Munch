@@ -79,6 +79,7 @@ export function RestaurantProvider({
 }) {
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
   const [settings, setSettings] = useState<RestaurantSettings | null>(null)
+  const [kioskPaymentMethods, setKioskPaymentMethods] = useState<string[]>(['cash', 'card', 'other'])
   const [settingsVersion, setSettingsVersion] = useState(1)
   const [loading, setLoading] = useState(true)
 
@@ -99,6 +100,16 @@ export function RestaurantProvider({
       if (settingsData) setSettings(settingsData)
       const version = settingsData?.settings_version ?? 1
       setSettingsVersion(version)
+
+      const { data: publicSettings } = await supabase
+        .from('public_restaurant_settings')
+        .select('kiosk_payment_methods')
+        .eq('restaurant_id', restaurantId)
+        .maybeSingle()
+
+      setKioskPaymentMethods(
+        publicSettings?.kiosk_payment_methods ?? ['cash', 'card', 'other']
+      )
     } catch (err) {
       console.error('[RestaurantContext] failed to load:', err)
     } finally {
@@ -111,7 +122,6 @@ export function RestaurantProvider({
   }, [load])
 
   const paymentMethods = settings?.payment_methods ?? ['cash', 'card']
-  const kioskPaymentMethods = settings?.kiosk_payment_methods ?? ['cash', 'card', 'other']
   const hasKiosk = settings?.hasKiosk ?? false
   const tabPinRequired = settings?.tab_pin_required ?? true
   const maxTabHours = settings?.max_tab_hours ?? 8
