@@ -1,7 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { cookies, headers } from 'next/headers'
-import { createServerClient } from '@supabase/ssr'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
   FEATURE_FLAG_KEYS,
   FeatureFlagsPanel,
@@ -10,22 +9,15 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+const FEATURE_COLUMNS =
+  'kitchen_enabled, inventory_enabled, analytics_enabled, split_bill_enabled, reservations_enabled, loyalty_enabled, online_payments_enabled, multi_branch_enabled, staff_app_enabled, kiosk_enabled, whatsapp_enabled'
+
 type RestaurantDetail = {
   id: string
   name: string
   slug: string | null
   owner_email: string | null
   created_at: string
-}
-
-function getBaseUrl(host: string | null): string {
-  const configured =
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') ||
-    process.env.NEXT_PUBLIC_BASE_URL?.replace(/\/$/, '')
-  if (configured) return configured
-  if (!host) return 'http://localhost:3000'
-  const protocol = host.includes('localhost') ? 'http' : 'https'
-  return `${protocol}://${host}`
 }
 
 function formatDate(iso: string) {
@@ -45,46 +37,59 @@ function normalizeFeatures(raw: Record<string, unknown> | null | undefined): Fea
   }, {} as FeatureFlagsState)
 }
 
-async function loadRestaurant(id: string) {
-  const cookieStore = await cookies()
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options)
-          })
-        },
-      },
+async function loadRestaurant(id: string): Promise<{
+  restaurant: RestaurantDetail | null
+  features: Record<string, unknown> | null
+  subscription: { plan: string; status: string } | null
+} | null> {
+  try {
+    const supabase = createServerSupabaseClient()
+    const [restaurantRes, featuresRes, subRes] = await Promise.all([
+      supabase
+        .from('restaurants')
+        .select('id, name, slug, created_at, owner_id')
+        .eq('id', id)
+        .maybeSingle(),
+      supabase
+        .from('restaurant_features')
+        .select(FEATURE_COLUMNS)
+        .eq('restaurant_id', id)
+        .maybeSingle(),
+      supabase
+        .from('subscriptions')
+        .select('plan, status, trial_ends_at, renews_at')
+        .eq('restaurant_id', id)
+        .maybeSingle(),
+    ])
+
+    let ownerEmail: string | null = null
+    if (restaurantRes.data?.owner_id) {
+      const { data: owner } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', restaurantRes.data.owner_id)
+        .maybeSingle()
+      ownerEmail = owner?.email ? String(owner.email) : null
     }
-  )
 
-  const { data: { session } } = await supabase.auth.getSession()
-  const token = session?.access_token
-  if (!token) return null
+    const restaurant = restaurantRes.data
+      ? {
+          id: restaurantRes.data.id,
+          name: restaurantRes.data.name,
+          slug: restaurantRes.data.slug ?? null,
+          owner_email: ownerEmail,
+          created_at: restaurantRes.data.created_at,
+        }
+      : null
 
-  const host = (await headers()).get('host')
-  const baseUrl = getBaseUrl(host)
-
-  const res = await fetch(`${baseUrl}/api/platform/restaurants/${id}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    cache: 'no-store',
-  })
-
-  if (!res.ok) return null
-
-  return res.json() as Promise<{
-    restaurant: RestaurantDetail | null
-    features: Record<string, unknown> | null
-    subscription: { plan: string; status: string } | null
-  }>
+    return {
+      restaurant,
+      features: featuresRes.data,
+      subscription: subRes.data,
+    }
+  } catch {
+    return null
+  }
 }
 
 export default async function AdminRestaurantDetailPage({
