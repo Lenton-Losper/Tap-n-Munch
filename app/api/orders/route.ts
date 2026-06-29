@@ -18,6 +18,7 @@ export async function POST(req: Request) {
     const body = await req.json()
     const { tableNumber, ...rest } = body
     const channel = String(body.channel ?? 'table').trim()
+    const customerName = String(body.customer_name ?? body.customerName ?? '').trim() || null
 
     const restaurantIdRaw =
       rest.restaurantId ?? rest.restaurant_id ?? body.restaurantId ?? body.restaurant_id
@@ -190,6 +191,7 @@ export async function POST(req: Request) {
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
         order_number: orderNumber,
         channel,
+        customer_name: customerName,
         placed_at: new Date().toISOString(),
         idempotency_key: idempotencyKey,
       })
