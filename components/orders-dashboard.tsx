@@ -1,7 +1,7 @@
 // @ts-nocheck
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type ComponentType } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import {
   resolveOrderRestaurantScope,
@@ -578,6 +578,12 @@ export function OrdersDashboard() {
     setOrders(sorted)
   }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
 
+  const groupedOrders = useMemo(() => {
+    const kiosk = orders.filter((o) => String(o.channel || '') === 'kiosk')
+    const table = orders.filter((o) => String(o.channel || '') !== 'kiosk')
+    return [...kiosk, ...table]
+  }, [orders])
+
   const refreshPendingHostedCount = useCallback(async () => {
     if (!dashboardRestaurantId || !orderScope) return
     const { count } = await supabase
@@ -992,6 +998,14 @@ export function OrdersDashboard() {
   }
 
   const getPaymentStatusBadge = (order: Order) => {
+    if (String(order.payment_status || '').toLowerCase() === 'cancelled') {
+      return (
+        <Badge variant="destructive">
+          <XCircle className="h-3 w-3 mr-1" />
+          Cancelled
+        </Badge>
+      )
+    }
     if (order.payment_status === 'paid') {
       return (
         <Badge className="bg-green-500 text-white">
@@ -1269,7 +1283,13 @@ export function OrdersDashboard() {
           </div>
         ) : (
           <div className="grid gap-4 lg:grid-cols-2">
-            {orders.map((order) => {
+            {groupedOrders.map((order, index, arr) => {
+              const prevOrder = index > 0 ? arr[index - 1] : null
+              const isKioskOrder = String(order.channel || '') === 'kiosk'
+              const showKioskHeader =
+                isKioskOrder && (index === 0 || String(prevOrder?.channel || '') !== 'kiosk')
+              const showTableHeader =
+                !isKioskOrder && prevOrder != null && String(prevOrder.channel || '') === 'kiosk'
               // DEFENSIVE NORMALIZATION: Ensure items is always an array before rendering
               // This prevents "Cannot read property 'length' of undefined" errors
               const tabInfo = tabIdOf(order) ? tabInfoById[tabIdOf(order)] : null
@@ -1296,6 +1316,21 @@ export function OrdersDashboard() {
                 tabInfo?.status === 'ready_to_pay'
 
               return (
+              <Fragment key={order.id}>
+                {showKioskHeader && (
+                  <div className="col-span-full">
+                    <h3 className="text-xs font-semibold text-purple-600 uppercase tracking-wider mb-1 px-1">
+                      Kiosk Orders
+                    </h3>
+                  </div>
+                )}
+                {showTableHeader && (
+                  <div className="col-span-full mt-2">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 px-1">
+                      Table Orders
+                    </h3>
+                  </div>
+                )}
               <div
                 key={order.id}
                 className={cn(
@@ -1308,7 +1343,13 @@ export function OrdersDashboard() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-lg font-bold">#{normalizedOrder.order_number || 'N/A'}</span>
-                    <Badge variant="secondary">Table {normalizedOrder.table_number || 0}</Badge>
+                    {normalizedOrder.channel === 'kiosk' ? (
+                      <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                        🖥 Kiosk
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary">Table {normalizedOrder.table_number || 0}</Badge>
+                    )}
                     {normalizedOrder.tab_id && (
                       <Badge className="bg-purple-600 text-white">
                         TAB {String(normalizedOrder.tab_id).slice(-6)}
@@ -1350,6 +1391,21 @@ export function OrdersDashboard() {
 
                 {/* Order Items - DEFENSIVE: Use normalizedOrder.items which is guaranteed to be an array */}
                 <div className="space-y-2 border-t pt-3">
+                  {normalizedOrder.channel === 'kiosk' && (
+                    <div className="flex items-center gap-2 mb-2">
+                      {normalizedOrder.kiosk_order_number && (
+                        <span className="text-sm font-bold text-purple-700">
+                          K-{String(normalizedOrder.kiosk_order_number).padStart(3, '0')}
+                        </span>
+                      )}
+                      {normalizedOrder.customer_name && (
+                        <>
+                          <span className="text-gray-400">—</span>
+                          <span className="text-sm font-medium">👤 {normalizedOrder.customer_name}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {memberSessionId && memberNameMap[memberSessionId] && (
                     <div className="flex items-center gap-1.5 mb-2">
                       <span className="text-sm">👤</span>
@@ -1630,6 +1686,7 @@ export function OrdersDashboard() {
                   )}
                 </div>
               </div>
+              </Fragment>
             )})}
           </div>
         )}

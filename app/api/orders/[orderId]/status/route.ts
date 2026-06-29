@@ -15,7 +15,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'status or payment_status required' }, { status: 400 })
   }
 
-  const patch: Record<string, string> = {}
+  const patch: Record<string, string | boolean> = {}
   if (status) {
     patch.status = status
     const TIMESTAMP_FIELDS: Record<string, string> = {
@@ -25,10 +25,15 @@ export async function PATCH(
       ready: 'ready_at',
       completed: 'completed_at',
       served: 'served_at',
+      cancelled: 'cancelled_at',
     }
     const timestampField = TIMESTAMP_FIELDS[status]
     if (timestampField) {
       patch[timestampField] = new Date().toISOString()
+    }
+    if (status === 'cancelled') {
+      patch.is_closed = true
+      patch.payment_status = 'cancelled'
     }
   }
   if (paymentStatus) {
@@ -38,7 +43,12 @@ export async function PATCH(
     }
   }
 
-  const { data, error } = await supabase.from('orders').update(patch).eq('id', orderId).select('id, payment_status, paid_at, status').maybeSingle()
+  const { data, error } = await supabase
+    .from('orders')
+    .update(patch)
+    .eq('id', orderId)
+    .select('id, payment_status, paid_at, status, is_closed, cancelled_at')
+    .maybeSingle()
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 })
