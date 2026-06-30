@@ -16,7 +16,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await supabase
       .from('restaurant_users')
-      .select('id, user_id, role, invite_accepted, created_at, users(email, name)')
+      .select('id, user_id, role, invite_accepted, created_at, users!restaurant_users_user_id_fkey(email, name)')
       .eq('restaurant_id', restaurantId)
       .is('deleted_at', null)
       .order('created_at', { ascending: true })
