@@ -6,6 +6,7 @@ import {
   BarChart3,
   ClipboardList,
   History,
+  Package,
   Settings,
   Table2,
   Users,
@@ -57,6 +58,13 @@ const NAV_ITEMS = [
     icon: BarChart3,
     roles: ['owner', 'manager'] as StaffRole[],
     match: (path: string) => path.startsWith('/analytics'),
+  },
+  {
+    href: '/stock',
+    label: 'Stock',
+    icon: Package,
+    roles: ['owner'] as StaffRole[],
+    match: (path: string) => path.startsWith('/stock'),
   },
   {
     href: '/settings',

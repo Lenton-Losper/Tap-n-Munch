@@ -1,0 +1,81 @@
+import { Badge } from '@/components/ui/badge'
+import { formatLastDelivery, formatStockQuantity } from '@/lib/stock/format'
+import type { StockOverviewData } from '@/lib/stock/queries'
+
+function SummaryCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
+      <p className="text-xs font-medium uppercase tracking-wide text-[#6B675F]">{label}</p>
+      <p className="mt-2 font-serif text-3xl font-semibold text-[#37352F]">{value}</p>
+    </div>
+  )
+}
+
+export function StockOverviewPanel({
+  data,
+  successMessage,
+}: {
+  data: StockOverviewData
+  successMessage?: string | null
+}) {
+  return (
+    <div className="space-y-6">
+      {successMessage ? (
+        <div className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          {successMessage}
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <SummaryCard label="Tracked items" value={data.trackedItems} />
+        <SummaryCard label="Low stock" value={data.lowStock} />
+        <SummaryCard label="Last delivery" value={formatLastDelivery(data.lastDeliveryAt)} />
+      </div>
+
+      <div className="rounded-2xl border border-[#E9E9E7] bg-white">
+        <div className="border-b border-[#E9E9E7] px-5 py-4">
+          <h2 className="font-serif text-xl font-semibold text-[#37352F]">Current stock</h2>
+          <p className="mt-1 text-sm text-[#6B675F]">Read-only view of active tracked items.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-[#FAFAF8] text-left text-xs font-medium uppercase tracking-wide text-[#6B675F]">
+              <tr>
+                <th className="px-5 py-3">Item</th>
+                <th className="px-5 py-3">Current stock</th>
+                <th className="px-5 py-3">Base unit</th>
+                <th className="px-5 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-5 py-8 text-center text-[#6B675F]">
+                    No tracked items yet. Receive stock to get started.
+                  </td>
+                </tr>
+              ) : (
+                data.rows.map((row) => (
+                  <tr key={row.id} className="border-t border-[#E9E9E7]">
+                    <td className="px-5 py-3 font-medium text-[#37352F]">{row.name}</td>
+                    <td className="px-5 py-3 text-[#37352F]">
+                      {formatStockQuantity(row.currentStock, row.base_unit)}
+                    </td>
+                    <td className="px-5 py-3 text-[#6B675F]">{row.base_unit}</td>
+                    <td className="px-5 py-3">
+                      {row.isLow ? (
+                        <Badge className="border-amber-200 bg-amber-50 text-amber-800">Low</Badge>
+                      ) : (
+                        <span className="text-[#6B675F]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
