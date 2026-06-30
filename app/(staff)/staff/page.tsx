@@ -12,6 +12,12 @@ import {
 import { Trash2, UserPlus } from 'lucide-react'
 import { RoleGuard } from '@/components/auth/role-guard'
 import { getAccessToken } from '@/lib/onboarding/api-client'
+import {
+  InviteStaffDialog,
+  PendingInvitesList,
+  useStaffInvites,
+  type StaffInviteRow,
+} from '@/components/staff/staff-invites'
 
 const ROLE_COLORS: Record<string, string> = {
   owner: 'bg-purple-100 text-purple-800',
@@ -36,6 +42,8 @@ function StaffContent() {
   const [staff, setStaff] = useState<StaffMember[]>([])
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState<string | null>(null)
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const { invites, addInvite, loadInvites } = useStaffInvites()
 
   const load = async () => {
     try {
@@ -53,6 +61,15 @@ function StaffContent() {
   }
 
   useEffect(() => { load() }, [])
+
+  const handleInviteSent = async (invite: StaffInviteRow) => {
+    addInvite(invite)
+    await loadInvites()
+    toast({
+      title: 'Invite sent',
+      description: `Invitation sent to ${invite.email}.`,
+    })
+  }
 
   const changeRole = async (userId: string, role: string) => {
     setUpdating(userId)
@@ -101,11 +118,17 @@ function StaffContent() {
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Staff</h1>
-        <Button variant="outline" size="sm" onClick={() => window.location.href = '/settings#invites'}>
+        <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
           <UserPlus className="w-4 h-4 mr-2" />
           Invite Staff
         </Button>
       </div>
+
+      <InviteStaffDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        onInviteSent={handleInviteSent}
+      />
 
       <div className="border rounded-lg divide-y">
         {staff.length === 0 && (
@@ -160,6 +183,10 @@ function StaffContent() {
             </div>
           )
         })}
+      </div>
+
+      <div className="mt-6">
+        <PendingInvitesList invites={invites} />
       </div>
     </div>
   )
