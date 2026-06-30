@@ -1,17 +1,20 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import {
   BarChart3,
   ClipboardList,
   History,
+  LogOut,
   Package,
   Settings,
   Table2,
   Users,
   UtensilsCrossed,
 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ReportBugButton } from '@/components/dashboard/report-bug-dialog'
 import { useAuth, type StaffRole } from '@/components/auth/auth-provider'
@@ -85,10 +88,22 @@ const ROLE_LABELS: Record<StaffRole, string> = {
 
 export function DashboardSidebar() {
   const pathname = usePathname()
-  const { userData, restaurant, role } = useAuth()
+  const router = useRouter()
+  const { userData, restaurant, role, signOut } = useAuth()
+  const [signingOut, setSigningOut] = useState(false)
 
   const restaurantName = String(restaurant?.name || '').trim()
   const displayName = String(userData?.full_name || userData?.name || '').trim()
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    try {
+      await signOut()
+      router.replace('/signin')
+    } catch {
+      setSigningOut(false)
+    }
+  }
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (!role) return item.href === '/dashboard'
@@ -142,8 +157,18 @@ export function DashboardSidebar() {
         })}
       </nav>
 
-      <div className="mt-auto border-t border-[#E9E9E7] p-3">
+      <div className="mt-auto space-y-1 border-t border-[#E9E9E7] p-3">
         <ReportBugButton />
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={handleSignOut}
+          disabled={signingOut}
+          className="h-auto w-full justify-start gap-2 rounded-lg px-3 py-2.5 text-sm font-medium text-[#6B675F] hover:bg-[#F1F0EC] hover:text-[#37352F]"
+        >
+          <LogOut className="h-4 w-4 shrink-0" />
+          {signingOut ? 'Signing out...' : 'Sign out'}
+        </Button>
       </div>
     </aside>
   )
