@@ -48,6 +48,7 @@ export default function POSSaleScreen() {
 
   useEffect(() => {
     if (!token || !restaurantId) {
+      setLoadingCats(false);
       return;
     }
     setLoadingCats(true);
@@ -125,6 +126,17 @@ export default function POSSaleScreen() {
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>{error}</Text>
+      </View>
+    );
+  }
+
+  if (!token || !restaurantId) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>
+          Debug: token={token ? 'present' : 'NULL'}, restaurantId=
+          {restaurantId ?? 'NULL'}
+        </Text>
       </View>
     );
   }
