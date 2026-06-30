@@ -54,6 +54,16 @@ export function formatReasonLabel(reason: string) {
   return reason.charAt(0).toUpperCase() + reason.slice(1)
 }
 
+export const ADJUSTMENT_TYPES = [
+  { value: 'waste', label: 'Waste' },
+  { value: 'sale', label: 'Sale (manual)' },
+  { value: 'damage', label: 'Damage' },
+  { value: 'count', label: 'Recount correction' },
+  { value: 'other', label: 'Other' },
+] as const
+
+export type AdjustmentType = (typeof ADJUSTMENT_TYPES)[number]['value']
+
 export const MOVEMENT_REASONS = [
   'received',
   'adjustment',

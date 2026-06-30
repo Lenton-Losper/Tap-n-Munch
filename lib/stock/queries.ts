@@ -100,6 +100,51 @@ export async function getStockOverview(
   }
 }
 
+export type StockItemLevel = {
+  id: string
+  name: string
+  base_unit: string
+  currentStock: number
+}
+
+export async function getStockItemCurrentLevel(
+  supabase: SupabaseClient,
+  restaurantId: string,
+  stockItemId: string,
+): Promise<StockItemLevel | null> {
+  const [{ data: item, error: itemError }, { data: movements, error: movementsError }] =
+    await Promise.all([
+      supabase
+        .from('stock_items')
+        .select('id, name, base_unit')
+        .eq('restaurant_id', restaurantId)
+        .eq('id', stockItemId)
+        .eq('is_active', true)
+        .maybeSingle(),
+      supabase
+        .from('stock_movements')
+        .select('quantity_delta')
+        .eq('restaurant_id', restaurantId)
+        .eq('stock_item_id', stockItemId),
+    ])
+
+  if (itemError) throw itemError
+  if (movementsError) throw movementsError
+  if (!item) return null
+
+  const currentStock = (movements ?? []).reduce(
+    (sum, movement) => sum + (Number(movement.quantity_delta) || 0),
+    0,
+  )
+
+  return {
+    id: item.id,
+    name: item.name,
+    base_unit: item.base_unit,
+    currentStock,
+  }
+}
+
 export async function getActiveStockItems(
   supabase: SupabaseClient,
   restaurantId: string,

@@ -3,6 +3,8 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { requireStockOwner } from '@/lib/stock/auth'
+import { ADJUSTMENT_TYPES, type AdjustmentType } from '@/lib/stock/format'
+import { getStockItemCurrentLevel } from '@/lib/stock/queries'
 
 export type GrvLineItemInput = {
   stockItemId: string
@@ -101,4 +103,85 @@ export async function saveGrvAction(input: SaveGrvInput) {
   revalidatePath('/stock/history')
 
   redirect(`/stock?received=${lineItems.length}`)
+}
+
+const ADJUSTMENT_TYPE_VALUES = new Set<string>(ADJUSTMENT_TYPES.map((option) => option.value))
+
+export async function getStockItemLevelAction(stockItemId: string) {
+  const id = stockItemId.trim()
+  if (!id) {
+    return { error: 'Stock item is required.' }
+  }
+
+  const { supabase, restaurantId } = await requireStockOwner()
+
+  try {
+    const level = await getStockItemCurrentLevel(supabase, restaurantId, id)
+    if (!level) {
+      return { error: 'Stock item not found.' }
+    }
+    return { data: level }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load stock level.'
+    return { error: message }
+  }
+}
+
+export type SaveAdjustmentInput = {
+  stockItemId: string
+  adjustmentType: AdjustmentType
+  quantityDelta: number
+  notes?: string
+}
+
+export async function saveAdjustmentAction(input: SaveAdjustmentInput) {
+  const stockItemId = input.stockItemId.trim()
+  const notes = input.notes?.trim() ?? ''
+  const quantityDelta = Number(input.quantityDelta)
+
+  if (!stockItemId) {
+    return { error: 'Stock item is required.' }
+  }
+
+  if (!ADJUSTMENT_TYPE_VALUES.has(input.adjustmentType)) {
+    return { error: 'Select a valid adjustment reason.' }
+  }
+
+  if (!Number.isFinite(quantityDelta) || quantityDelta === 0) {
+    return { error: 'Enter a non-zero quantity change.' }
+  }
+
+  const { supabase, userId, restaurantId } = await requireStockOwner()
+
+  const level = await getStockItemCurrentLevel(supabase, restaurantId, stockItemId)
+  if (!level) {
+    return { error: 'Stock item not found.' }
+  }
+
+  const { error } = await supabase.from('stock_movements').insert({
+    restaurant_id: restaurantId,
+    stock_item_id: stockItemId,
+    quantity_delta: quantityDelta,
+    reason: 'adjustment',
+    adjustment_type: input.adjustmentType,
+    created_by: userId,
+    notes: notes || null,
+  })
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  const newBalance = level.currentStock + quantityDelta
+
+  revalidatePath('/stock')
+  revalidatePath('/stock/history')
+
+  return {
+    data: {
+      newBalance,
+      baseUnit: level.base_unit,
+      itemName: level.name,
+    },
+  }
 }
