@@ -90,6 +90,7 @@ export async function POST(request: Request) {
       channel: 'pos',
       customerName: null,
       idempotencyKey: request.headers.get('x-idempotency-key') || null,
+      isClosed: true,
     })
 
     return NextResponse.json({

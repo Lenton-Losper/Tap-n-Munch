@@ -58,7 +58,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     .from('orders')
     .select('order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, total, items')
     .eq('restaurant_id', params.restaurantId)
-    .eq('is_closed', true)
+    .or('is_closed.eq.true,status.eq.completed')
     .gte('placed_at', `${params.startDate}T00:00:00.000Z`)
     .lte('placed_at', `${params.endDate}T23:59:59.999Z`)
     .order('placed_at', { ascending: false })

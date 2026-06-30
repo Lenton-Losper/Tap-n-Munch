@@ -19,6 +19,7 @@ export interface CreateOrderParams {
   idempotencyKey: string | null
   memberSessionId: string | null
   tabSettlementForTabId: string | null
+  isClosed?: boolean
 }
 
 export interface CreateOrderResult {
@@ -63,6 +64,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       customer_name: params.customerName,
       placed_at: new Date().toISOString(),
       idempotency_key: params.idempotencyKey,
+      is_closed: params.isClosed ?? false,
     })
     .select('id, restaurant_id, order_number, payment_status')
     .single()
