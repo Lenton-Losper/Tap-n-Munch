@@ -34,6 +34,7 @@ export type MovementHistoryRow = {
   reason: string
   referenceLabel: string
   createdAt: string
+  unitCost: number | null
 }
 
 function aggregateStockByItem(
@@ -164,6 +165,7 @@ export type MovementHistoryFilters = {
   stockItemId?: string
   reason?: MovementReason | 'all'
   dateRange?: MovementDateRange
+  includeCosts?: boolean
 }
 
 export async function getMovementHistory(
@@ -210,13 +212,25 @@ export async function getMovementHistory(
     .map((movement) => movement.reference_id as string)
 
   const grvNumberByLineItemId = new Map<string, string>()
+  const unitCostByLineItemId = new Map<string, number | null>()
   if (lineItemIds.length > 0) {
+    const lineItemSelect = filters.includeCosts ? 'id, goods_received_id, unit_cost' : 'id, goods_received_id'
     const { data: lineItems, error: lineItemsError } = await supabase
       .from('goods_received_items')
-      .select('id, goods_received_id')
+      .select(lineItemSelect)
       .in('id', lineItemIds)
 
     if (lineItemsError) throw lineItemsError
+
+    if (filters.includeCosts) {
+      for (const row of lineItems ?? []) {
+        const cost = (row as { unit_cost?: number | string | null }).unit_cost
+        unitCostByLineItemId.set(
+          row.id,
+          cost != null && cost !== '' ? Number(cost) : null,
+        )
+      }
+    }
 
     const goodsReceivedIds = [...new Set((lineItems ?? []).map((row) => row.goods_received_id))]
     const lineItemToGrvId = new Map((lineItems ?? []).map((row) => [row.id, row.goods_received_id]))
@@ -254,6 +268,12 @@ export async function getMovementHistory(
       reason: movement.reason,
       referenceLabel,
       createdAt: movement.created_at,
+      unitCost:
+        filters.includeCosts &&
+        movement.reference_type === 'goods_received_items' &&
+        movement.reference_id
+          ? (unitCostByLineItemId.get(movement.reference_id) ?? null)
+          : null,
     }
   })
 }

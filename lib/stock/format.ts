@@ -3,6 +3,11 @@ export function formatStockQuantity(value: number, baseUnit: string) {
   return `${formatted} ${baseUnit}`
 }
 
+export function formatUnitCost(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return value.toFixed(2)
+}
+
 export function formatLastDelivery(value: string | null) {
   if (!value) return 'No deliveries yet'
   const date = new Date(value)

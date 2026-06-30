@@ -20,9 +20,11 @@ function SummaryCard({ label, value }: { label: string; value: string | number }
 export function StockOverviewPanel({
   data,
   successMessage: initialSuccessMessage,
+  canAdjust = false,
 }: {
   data: StockOverviewData
   successMessage?: string | null
+  canAdjust?: boolean
 }) {
   const router = useRouter()
   const [successMessage, setSuccessMessage] = useState<string | null>(initialSuccessMessage ?? null)
@@ -68,13 +70,13 @@ export function StockOverviewPanel({
                 <th className="px-5 py-3">Current stock</th>
                 <th className="px-5 py-3">Base unit</th>
                 <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3 text-right">Actions</th>
+                {canAdjust ? <th className="px-5 py-3 text-right">Actions</th> : null}
               </tr>
             </thead>
             <tbody>
               {data.rows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-[#6B675F]">
+                  <td colSpan={canAdjust ? 5 : 4} className="px-5 py-8 text-center text-[#6B675F]">
                     No tracked items yet. Receive stock to get started.
                   </td>
                 </tr>
@@ -93,17 +95,19 @@ export function StockOverviewPanel({
                         <span className="text-[#6B675F]">—</span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="border-[#E9E9E7]"
-                        onClick={() => openAdjustment(row.id)}
-                      >
-                        Adjust
-                      </Button>
-                    </td>
+                    {canAdjust ? (
+                      <td className="px-5 py-3 text-right">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="border-[#E9E9E7]"
+                          onClick={() => openAdjustment(row.id)}
+                        >
+                          Adjust
+                        </Button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))
               )}
@@ -114,7 +118,7 @@ export function StockOverviewPanel({
 
       <StockAdjustmentModal
         stockItemId={adjustItemId}
-        open={adjustOpen}
+        open={adjustOpen && canAdjust}
         onOpenChange={setAdjustOpen}
         onSaved={handleAdjustmentSaved}
       />

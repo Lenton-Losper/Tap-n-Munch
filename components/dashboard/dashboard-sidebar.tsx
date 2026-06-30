@@ -63,7 +63,7 @@ const NAV_ITEMS = [
     href: '/stock',
     label: 'Stock',
     icon: Package,
-    roles: ['owner'] as StaffRole[],
+    roles: ['owner', 'manager', 'kitchen', 'bar'] as StaffRole[],
     match: (path: string) => path.startsWith('/stock'),
   },
   {

@@ -42,7 +42,13 @@ function emptyRow(): LineRow {
   }
 }
 
-export function ReceiveStockForm({ stockItems: initialStockItems }: { stockItems: StockItemOption[] }) {
+export function ReceiveStockForm({
+  stockItems: initialStockItems,
+  showUnitCost = false,
+}: {
+  stockItems: StockItemOption[]
+  showUnitCost?: boolean
+}) {
   const [stockItems, setStockItems] = useState(initialStockItems)
   const [supplier, setSupplier] = useState('')
   const [invoiceNumber, setInvoiceNumber] = useState('')
@@ -113,7 +119,7 @@ export function ReceiveStockForm({ stockItems: initialStockItems }: { stockItems
       .map((row) => ({
         stockItemId: row.stockItemId,
         quantity: Number(row.quantity),
-        unitCost: row.unitCost.trim() ? Number(row.unitCost) : null,
+        unitCost: showUnitCost && row.unitCost.trim() ? Number(row.unitCost) : null,
       }))
 
     startTransition(async () => {
@@ -179,7 +185,11 @@ export function ReceiveStockForm({ stockItems: initialStockItems }: { stockItems
             {rows.map((row, index) => (
               <div
                 key={row.key}
-                className="grid gap-3 rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] p-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+                className={
+                  showUnitCost
+                    ? 'grid gap-3 rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] p-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]'
+                    : 'grid gap-3 rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] p-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto]'
+                }
               >
                 <div className="space-y-1.5">
                   <Label>Stock item</Label>
@@ -218,18 +228,20 @@ export function ReceiveStockForm({ stockItems: initialStockItems }: { stockItems
                     className="border-[#E9E9E7] bg-white"
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor={`unit-cost-${row.key}`}>Unit cost (optional)</Label>
-                  <Input
-                    id={`unit-cost-${row.key}`}
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={row.unitCost}
-                    onChange={(event) => updateRow(row.key, { unitCost: event.target.value })}
-                    className="border-[#E9E9E7] bg-white"
-                  />
-                </div>
+                {showUnitCost ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`unit-cost-${row.key}`}>Unit cost (optional)</Label>
+                    <Input
+                      id={`unit-cost-${row.key}`}
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={row.unitCost}
+                      onChange={(event) => updateRow(row.key, { unitCost: event.target.value })}
+                      className="border-[#E9E9E7] bg-white"
+                    />
+                  </div>
+                ) : null}
                 <div className="flex items-end justify-end">
                   <Button
                     type="button"

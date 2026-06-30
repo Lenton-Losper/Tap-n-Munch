@@ -2,7 +2,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { requireStockOwner } from '@/lib/stock/auth'
+import { PERMISSIONS } from '@/lib/permissions'
+import { authorize } from '@/lib/permissions/authorize'
+import { requireStockPermissionOrError } from '@/lib/stock/auth'
 import { ADJUSTMENT_TYPES, type AdjustmentType } from '@/lib/stock/format'
 import { getStockItemCurrentLevel } from '@/lib/stock/queries'
 
@@ -26,7 +28,11 @@ export async function createStockItemAction(input: { name: string; baseUnit: str
     return { error: 'Name and base unit are required.' }
   }
 
-  const { supabase, restaurantId } = await requireStockOwner()
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
 
   const { data, error } = await supabase
     .from('stock_items')
@@ -67,7 +73,13 @@ export async function saveGrvAction(input: SaveGrvInput) {
     return { error: 'Add at least one item with a quantity greater than zero.' }
   }
 
-  const { supabase, userId, restaurantId } = await requireStockOwner()
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, userId, restaurantId } = context
+
+  const canViewCosts = await authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS)
 
   const { data: header, error: headerError } = await supabase
     .from('goods_received')
@@ -89,7 +101,7 @@ export async function saveGrvAction(input: SaveGrvInput) {
     goods_received_id: header.id,
     stock_item_id: row.stockItemId,
     quantity: row.quantity,
-    unit_cost: row.unitCost ?? null,
+    unit_cost: canViewCosts ? (row.unitCost ?? null) : null,
   }))
 
   const { error: itemsError } = await supabase.from('goods_received_items').insert(itemRows)
@@ -113,7 +125,11 @@ export async function getStockItemLevelAction(stockItemId: string) {
     return { error: 'Stock item is required.' }
   }
 
-  const { supabase, restaurantId } = await requireStockOwner()
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_ADJUST)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
 
   try {
     const level = await getStockItemCurrentLevel(supabase, restaurantId, id)
@@ -151,7 +167,11 @@ export async function saveAdjustmentAction(input: SaveAdjustmentInput) {
     return { error: 'Enter a non-zero quantity change.' }
   }
 
-  const { supabase, userId, restaurantId } = await requireStockOwner()
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_ADJUST)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, userId, restaurantId } = context
 
   const level = await getStockItemCurrentLevel(supabase, restaurantId, stockItemId)
   if (!level) {

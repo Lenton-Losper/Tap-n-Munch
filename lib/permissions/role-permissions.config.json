@@ -1,0 +1,54 @@
+{
+  "$comment": "Defines which capabilities each role grants by default. The platform defines what capabilities exist (see PERMISSIONS in index.ts); this file defines which roles get which capabilities. Adding a new role requires an entry here — missing roles get zero permissions silently, so review carefully when adding new StaffRole values.",
+  "owner": [
+    "orders:read",
+    "orders:update",
+    "orders:delete",
+    "menu:read",
+    "menu:write",
+    "tables:read",
+    "tables:manage",
+    "payments:process",
+    "staff:manage",
+    "settings:read",
+    "settings:write",
+    "stock:view",
+    "stock:receive",
+    "stock:adjust",
+    "stock:view_costs",
+    "stock:delete_grv"
+  ],
+  "manager": [
+    "orders:read",
+    "orders:update",
+    "menu:read",
+    "menu:write",
+    "tables:read",
+    "tables:manage",
+    "payments:process",
+    "staff:manage",
+    "settings:read",
+    "stock:view",
+    "stock:receive",
+    "stock:adjust"
+  ],
+  "cashier": [
+    "orders:read",
+    "tables:read",
+    "payments:process"
+  ],
+  "waiter": [
+    "orders:read",
+    "orders:update",
+    "tables:read",
+    "tables:manage"
+  ],
+  "kitchen": [
+    "orders:read",
+    "orders:update",
+    "stock:view"
+  ],
+  "bar": [
+    "stock:view"
+  ]
+}

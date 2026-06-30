@@ -8,6 +8,8 @@
  * The client never participates in authorization decisions.
  */
 
+import rolePermissionsConfig from './role-permissions.config.json'
+
 export const PERMISSIONS = {
   // Orders
   ORDERS_READ:    'orders:read',
@@ -31,6 +33,13 @@ export const PERMISSIONS = {
   // Settings
   SETTINGS_READ:  'settings:read',
   SETTINGS_WRITE: 'settings:write',
+
+  // Stock
+  STOCK_VIEW:       'stock:view',
+  STOCK_RECEIVE:    'stock:receive',
+  STOCK_ADJUST:     'stock:adjust',
+  STOCK_VIEW_COSTS: 'stock:view_costs',
+  STOCK_DELETE_GRV: 'stock:delete_grv',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
@@ -39,34 +48,9 @@ export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
  * Default permissions per role.
  * These are application-level defaults — they live in code, not the DB.
  * Per-user exceptions are stored in staff_permissions and applied on top.
+ *
+ * Role → capability mapping is defined in role-permissions.config.json.
  */
-export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
-  owner: [
-    PERMISSIONS.ORDERS_READ, PERMISSIONS.ORDERS_UPDATE, PERMISSIONS.ORDERS_DELETE,
-    PERMISSIONS.MENU_READ, PERMISSIONS.MENU_WRITE,
-    PERMISSIONS.TABLES_READ, PERMISSIONS.TABLES_MANAGE,
-    PERMISSIONS.PAYMENTS_PROCESS,
-    PERMISSIONS.STAFF_MANAGE,
-    PERMISSIONS.SETTINGS_READ, PERMISSIONS.SETTINGS_WRITE,
-  ],
-  manager: [
-    PERMISSIONS.ORDERS_READ, PERMISSIONS.ORDERS_UPDATE,
-    PERMISSIONS.MENU_READ, PERMISSIONS.MENU_WRITE,
-    PERMISSIONS.TABLES_READ, PERMISSIONS.TABLES_MANAGE,
-    PERMISSIONS.PAYMENTS_PROCESS,
-    PERMISSIONS.STAFF_MANAGE,
-    PERMISSIONS.SETTINGS_READ,
-  ],
-  cashier: [
-    PERMISSIONS.ORDERS_READ,
-    PERMISSIONS.TABLES_READ,
-    PERMISSIONS.PAYMENTS_PROCESS,
-  ],
-  waiter: [
-    PERMISSIONS.ORDERS_READ, PERMISSIONS.ORDERS_UPDATE,
-    PERMISSIONS.TABLES_READ, PERMISSIONS.TABLES_MANAGE,
-  ],
-  kitchen: [
-    PERMISSIONS.ORDERS_READ, PERMISSIONS.ORDERS_UPDATE,
-  ],
-}
+export const ROLE_PERMISSIONS: Record<string, Permission[]> = Object.fromEntries(
+  Object.entries(rolePermissionsConfig).filter(([key]) => !key.startsWith('$')),
+) as Record<string, Permission[]>

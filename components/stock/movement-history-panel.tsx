@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { MOVEMENT_REASONS, formatReasonLabel, formatRelativeMovementTime } from '@/lib/stock/format'
+import { MOVEMENT_REASONS, formatReasonLabel, formatRelativeMovementTime, formatUnitCost } from '@/lib/stock/format'
 import type { MovementHistoryRow } from '@/lib/stock/queries'
 import type { StockItemOption } from '@/lib/stock/queries'
 
@@ -33,9 +33,11 @@ function reasonBadgeClass(reason: string) {
 export function MovementHistoryPanel({
   rows,
   stockItems,
+  showUnitCost = false,
 }: {
   rows: MovementHistoryRow[]
   stockItems: StockItemOption[]
+  showUnitCost?: boolean
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -116,13 +118,14 @@ export function MovementHistoryPanel({
                 <th className="px-5 py-3">Change</th>
                 <th className="px-5 py-3">Reason</th>
                 <th className="px-5 py-3">Reference</th>
+                {showUnitCost ? <th className="px-5 py-3">Unit cost</th> : null}
                 <th className="px-5 py-3">When</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-[#6B675F]">
+                  <td colSpan={showUnitCost ? 6 : 5} className="px-5 py-8 text-center text-[#6B675F]">
                     No movements match these filters.
                   </td>
                 </tr>
@@ -149,6 +152,9 @@ export function MovementHistoryPanel({
                         </Badge>
                       </td>
                       <td className="px-5 py-3 text-[#37352F]">{row.referenceLabel}</td>
+                      {showUnitCost ? (
+                        <td className="px-5 py-3 text-[#37352F]">{formatUnitCost(row.unitCost)}</td>
+                      ) : null}
                       <td className="px-5 py-3 text-[#6B675F]">
                         {formatRelativeMovementTime(row.createdAt)}
                       </td>
