@@ -346,9 +346,18 @@ export async function getMenuItems(firebaseRestaurantId: string, subCategoryId?:
 
 export async function createMenuItem(data: Record<string, any>) {
   if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('You must be signed in to create menu items.')
+    }
+
     const response = await fetch('/api/admin/menu/items', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
       body: JSON.stringify(data),
     })
     const payload = await response.json().catch(() => ({}))
