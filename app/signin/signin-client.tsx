@@ -36,12 +36,9 @@ export function SignInClient() {
   const [submitting, setSubmitting] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (searchParams.get('error') === 'oauth') {
-      setError('Google sign-in failed. Please try again.')
-    }
-  }, [searchParams])
+  const oauthError =
+    searchParams.get('error') === 'oauth' ? 'Google sign-in failed. Please try again.' : ''
+  const displayError = error || oauthError
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -139,7 +136,7 @@ export function SignInClient() {
 
             {error ? (
               <p className="whitespace-pre-line rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {error}
+                {displayError}
               </p>
             ) : null}
 

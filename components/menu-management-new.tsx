@@ -73,6 +73,8 @@ export function MenuManagement() {
     }
 
     loadData()
+    // selectedCategory is set inside this effect; including it would re-fetch all menu data on every category change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/restaurant change only
   }, [user, restaurantId, toast])
 
   useEffect(() => {

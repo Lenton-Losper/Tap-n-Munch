@@ -75,24 +75,19 @@ export default function TabSummaryPage() {
     return null
   }, [storedTabId])
 
-  useEffect(() => {
-    if (tabStatus === 'ready_to_pay') {
-      setReadyToPayNotified(true)
-    }
-  }, [tabStatus])
+  const tableNumVal = Number(tableNumber) || 0
+  const canLoadTab = Boolean(restaurantId) && tableNumVal > 0
+  const missingTabSession = canLoadTab && !storedTabId
+  const showTabLoading = canLoadTab && loading && !redirecting && !missingTabSession
 
   useEffect(() => {
-    const tableNum = Number(tableNumber) || 0
-    if (!restaurantId || tableNum <= 0) {
-      setLoading(false)
-      return
-    }
+    if (!canLoadTab || storedTabId) return
+    handleSessionExpired(restaurantId)
+  }, [canLoadTab, storedTabId, restaurantId])
 
-    if (!storedTabId) {
-      setRedirecting(true)
-      handleSessionExpired(restaurantId)
-      return
-    }
+  useEffect(() => {
+    if (!canLoadTab) return
+    if (!storedTabId) return
 
     let cancelled = false
     const load = async () => {
@@ -108,7 +103,7 @@ export default function TabSummaryPage() {
         }
 
         setTabRecord(tab)
-        persistTabSession(storedTabId, tableNum)
+        persistTabSession(storedTabId, tableNumVal)
 
         const rows = await fetchOrdersForTab(storedTabId, restaurantId)
         if (cancelled) return
@@ -290,15 +285,7 @@ export default function TabSummaryPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
-      </div>
-    )
-  }
-
-  if (redirecting) {
+  if (missingTabSession || redirecting || showTabLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />

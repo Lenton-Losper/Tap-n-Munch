@@ -2,6 +2,7 @@
 "use client"
 
 import { useState } from "react"
+import Image from "next/image"
 import { ShoppingCart, Plus, Minus, X, ArrowLeft, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -301,12 +302,14 @@ export function MenuScreen() {
             onClick={() => handleOpenModal(item)}
             className="w-full bg-card border border-border rounded-lg p-4 flex gap-4 hover:shadow-md transition-shadow text-left"
           >
-            <img
+            <Image
               src={item.image_url || "/placeholder.svg"}
               alt={item.name}
+              width={100}
+              height={100}
               className="w-[100px] h-[100px] rounded-md object-cover flex-shrink-0"
+              unoptimized
               onError={(e) => {
-                // Fallback to placeholder if image fails to load
                 e.currentTarget.src = "/placeholder.svg"
               }}
             />
@@ -334,10 +337,13 @@ export function MenuScreen() {
 
           {selectedItem && (
             <div className="space-y-6">
-              <img
+              <Image
                 src={selectedItem.image.replace("100", "250") || "/placeholder.svg"}
                 alt={selectedItem.name}
+                width={500}
+                height={250}
                 className="w-full h-[250px] object-cover"
+                unoptimized
               />
 
               <div className="px-6 space-y-6">
@@ -442,12 +448,14 @@ export function MenuScreen() {
                 {cart.map((item) => (
                   <div key={item.id} className="bg-muted/30 rounded-lg p-4 space-y-3">
                     <div className="flex gap-3">
-                      <img
+                      <Image
                         src={item.image || "/placeholder.svg"}
                         alt={item.name}
+                        width={80}
+                        height={80}
                         className="w-20 h-20 rounded-md object-cover flex-shrink-0"
+                        unoptimized
                         onError={(e) => {
-                          // Fallback to placeholder if image fails to load
                           e.currentTarget.src = "/placeholder.svg"
                         }}
                       />

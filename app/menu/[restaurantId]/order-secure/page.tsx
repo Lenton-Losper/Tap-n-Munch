@@ -25,14 +25,12 @@ export default function OrderSecurePage() {
 
   const { items, getTotal, clearCart } = useCart()
   const { currency } = useRestaurant()
-  const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (tableNumber > 0 && restaurantId) {
       getOrCreateSession(restaurantId, String(tableNumber))
     }
-    setLoading(false)
   }, [restaurantId, tableNumber])
 
   const placeOrderEnabled = !submitting && Array.isArray(items) && items.length > 0
@@ -153,14 +151,6 @@ export default function OrderSecurePage() {
 
   const subtotal = typeof getTotal === 'function' ? getTotal() : 0
   const total = subtotal
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
-      </div>
-    )
-  }
 
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-background">

@@ -213,17 +213,11 @@ export default function ReceiptPage() {
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
 
-  useEffect(() => {
-    if (!restaurantId) {
-      setLoading(false)
-      return
-    }
+  const tableNum = Number(tableNumber) || 0
+  const canLoadReceipt = Boolean(restaurantId) && tableNum > 0
 
-    const tableNum = Number(tableNumber) || 0
-    if (tableNum <= 0) {
-      setLoading(false)
-      return
-    }
+  useEffect(() => {
+    if (!canLoadReceipt) return
 
     if (!storedTabId) {
       console.log('[RECEIPT] no tab_id in localStorage — redirect to landing')
@@ -358,7 +352,9 @@ export default function ReceiptPage() {
   }
 
   // Loading
-  if (loading) {
+  const showReceiptLoading = canLoadReceipt && loading && !redirecting
+
+  if (redirecting || showReceiptLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />

@@ -41,6 +41,8 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
   useEffect(() => {
     return () => {
+      // Read ref at unmount so all timers (including ones registered after mount) are cleared.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- ref must be read at cleanup time, not captured at mount
       for (const t of dismissTimersRef.current.values()) clearTimeout(t)
       dismissTimersRef.current.clear()
     }

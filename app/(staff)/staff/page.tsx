@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
 import {
@@ -45,7 +45,7 @@ function StaffContent() {
   const [inviteOpen, setInviteOpen] = useState(false)
   const { invites, addInvite, loadInvites } = useStaffInvites()
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const token = await getAccessToken()
       const res = await fetch('/api/admin/staff', {
@@ -58,9 +58,11 @@ function StaffContent() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [toast])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    void load()
+  }, [load])
 
   const handleInviteSent = async (invite: StaffInviteRow) => {
     addInvite(invite)

@@ -106,6 +106,13 @@ function OrderHistoryContent() {
   const [orderNumber, setOrderNumber] = useState('')
   const [page, setPage] = useState(1)
 
+  const filterKey = `${startDate}|${endDate}|${tableNumber}|${status}|${orderNumber}`
+  const [pageFilterKey, setPageFilterKey] = useState(filterKey)
+  if (pageFilterKey !== filterKey) {
+    setPageFilterKey(filterKey)
+    setPage(1)
+  }
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<HistoryResponse | null>(null)
@@ -219,10 +226,6 @@ function OrderHistoryContent() {
   useEffect(() => {
     void loadHistory()
   }, [loadHistory])
-
-  useEffect(() => {
-    setPage(1)
-  }, [startDate, endDate, tableNumber, status, orderNumber])
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1
 

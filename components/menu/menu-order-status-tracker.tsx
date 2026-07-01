@@ -244,10 +244,6 @@ export function MenuOrderStatusTracker({
   }, [lastOrder, activeOrder])
 
   useEffect(() => {
-    setLiveOrder(null)
-  }, [baseOrder?.id])
-
-  useEffect(() => {
     if (!baseOrder?.id) return
 
     const orderId = String(baseOrder.id)

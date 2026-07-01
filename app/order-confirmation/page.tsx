@@ -265,7 +265,7 @@ function OrderConfirmationContent() {
   const router = useRouter()
   const orderRef = useMemo(
     () => getFinaticReturnOrderRef(searchParams),
-    [searchParams.toString()]
+    [searchParams]
   )
   const restaurantIdParam = searchParams.get('restaurantId')?.trim() || ''
 
@@ -281,6 +281,8 @@ function OrderConfirmationContent() {
   const [dataSource, setDataSource] = useState<'supabase' | null>(null)
   const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
+  const isPaymentConfirmed =
+    paymentConfirmed || String(receipt?.payment_status || '').toLowerCase() === 'paid'
 
   useEffect(() => {
     let cancelled = false
@@ -386,7 +388,7 @@ function OrderConfirmationContent() {
     return () => {
       cancelled = true
     }
-  }, [orderRef, restaurantIdParam, searchParams.toString()])
+  }, [orderRef, restaurantIdParam, searchParams])
 
   useEffect(() => {
     const rid = resolvedRestaurantId || restaurantIdParam
@@ -397,13 +399,7 @@ function OrderConfirmationContent() {
   }, [resolvedRestaurantId, restaurantIdParam])
 
   useEffect(() => {
-    if (receipt?.payment_status === 'paid') {
-      setPaymentConfirmed(true)
-    }
-  }, [receipt?.payment_status])
-
-  useEffect(() => {
-    if (!orderRef || paymentConfirmed) return
+    if (!orderRef || isPaymentConfirmed) return
     if (dataSource !== 'supabase') return
     const ps = String(receipt?.payment_status || '').toLowerCase()
     if (ps === 'paid' || ps === 'cancelled' || ps === 'failed') return
@@ -426,7 +422,7 @@ function OrderConfirmationContent() {
       cancelled = true
       clearInterval(id)
     }
-  }, [orderRef, dataSource, receipt?.payment_status, paymentConfirmed, searchParams.toString()])
+  }, [orderRef, dataSource, receipt?.payment_status, isPaymentConfirmed, searchParams])
 
   const currency = restaurant?.currency || 'N$'
 
@@ -457,10 +453,10 @@ function OrderConfirmationContent() {
   const screenStatus = useMemo(() => {
     if (!receipt) return null
     const ps = String(receipt.payment_status || '').toLowerCase()
-    if (ps === 'paid' || paymentConfirmed) return 'success' as const
+    if (ps === 'paid' || isPaymentConfirmed) return 'success' as const
     if (ps === 'cancelled' || ps === 'failed') return 'cancelled' as const
     return 'pending' as const
-  }, [receipt, paymentConfirmed])
+  }, [receipt, isPaymentConfirmed])
 
   const ridForLinks =
     searchParams.get('rid')?.trim() ||
@@ -495,7 +491,7 @@ function OrderConfirmationContent() {
     return () => clearTimeout(timer)
   }, [screenStatus, resolvedRestaurantId, restaurantIdParam, tableForLinks, router])
 
-  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !paymentConfirmed
+  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !isPaymentConfirmed
 
   const confirmPayment = async () => {
     if (!receipt || !shouldShowConfirmPayment || confirmingPayment) return
@@ -749,7 +745,7 @@ function OrderConfirmationContent() {
               >
                 {confirmingPayment ? 'Confirming...' : 'Confirm Payment'}
               </Button>
-            ) : paymentConfirmed ? (
+            ) : isPaymentConfirmed ? (
               <div className="w-full border border-green-200 bg-green-50 text-green-700 py-4 px-4 flex items-center justify-center gap-2 font-semibold">
                 <CheckCircle2 className="w-5 h-5" aria-hidden />
                 <span>Payment Confirmed</span>

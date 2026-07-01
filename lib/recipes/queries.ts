@@ -130,7 +130,11 @@ export async function getRecipeEditorData(
   if (recipeItemsError) throw recipeItemsError
 
   const ingredients: RecipeIngredientRow[] = (recipeItems ?? []).map((row) => {
-    const stockItem = row.stock_items as { id: string; name: string; base_unit: string }
+    const joined = row.stock_items
+    const stockItem = Array.isArray(joined) ? joined[0] : joined
+    if (!stockItem || typeof stockItem !== 'object') {
+      throw new Error('Recipe ingredient is missing its linked stock item.')
+    }
     return {
       stockItemId: row.stock_item_id,
       stockItemName: stockItem.name,

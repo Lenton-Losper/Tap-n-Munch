@@ -214,26 +214,41 @@ export async function getMovementHistory(
   const grvNumberByLineItemId = new Map<string, string>()
   const unitCostByLineItemId = new Map<string, number | null>()
   if (lineItemIds.length > 0) {
-    const lineItemSelect = filters.includeCosts ? 'id, goods_received_id, unit_cost' : 'id, goods_received_id'
-    const { data: lineItems, error: lineItemsError } = await supabase
-      .from('goods_received_items')
-      .select(lineItemSelect)
-      .in('id', lineItemIds)
+    type GrvLineItemBase = { id: string; goods_received_id: string }
+    type GrvLineItemWithCost = GrvLineItemBase & {
+      unit_cost: number | string | null
+    }
 
-    if (lineItemsError) throw lineItemsError
+    let lineItems: GrvLineItemBase[] = []
 
     if (filters.includeCosts) {
-      for (const row of lineItems ?? []) {
-        const cost = (row as { unit_cost?: number | string | null }).unit_cost
+      const { data, error: lineItemsError } = await supabase
+        .from('goods_received_items')
+        .select('id, goods_received_id, unit_cost')
+        .in('id', lineItemIds)
+
+      if (lineItemsError) throw lineItemsError
+
+      for (const row of (data ?? []) as GrvLineItemWithCost[]) {
+        const cost = row.unit_cost
         unitCostByLineItemId.set(
           row.id,
           cost != null && cost !== '' ? Number(cost) : null,
         )
       }
+      lineItems = (data ?? []) as GrvLineItemBase[]
+    } else {
+      const { data, error: lineItemsError } = await supabase
+        .from('goods_received_items')
+        .select('id, goods_received_id')
+        .in('id', lineItemIds)
+
+      if (lineItemsError) throw lineItemsError
+      lineItems = data ?? []
     }
 
-    const goodsReceivedIds = [...new Set((lineItems ?? []).map((row) => row.goods_received_id))]
-    const lineItemToGrvId = new Map((lineItems ?? []).map((row) => [row.id, row.goods_received_id]))
+    const goodsReceivedIds = [...new Set(lineItems.map((row) => row.goods_received_id))]
+    const lineItemToGrvId = new Map(lineItems.map((row) => [row.id, row.goods_received_id]))
 
     if (goodsReceivedIds.length > 0) {
       const { data: headers, error: headersError } = await supabase

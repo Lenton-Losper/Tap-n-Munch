@@ -215,14 +215,18 @@ export default function CartPage() {
   const showPaymentMethodChoice =
     enabledPaymentMethods.cash && enabledPaymentMethods.card
 
-  useEffect(() => {
-    if (inTabFlow || restaurantLoading) return
-    if (enabledPaymentMethods.cash && !enabledPaymentMethods.card) {
-      setPaymentChoice('cash')
-    } else if (enabledPaymentMethods.card && !enabledPaymentMethods.cash) {
-      setPaymentChoice('card_manual')
-    }
-  }, [inTabFlow, restaurantLoading, enabledPaymentMethods.cash, enabledPaymentMethods.card])
+  const resolvedPaymentChoice = useMemo((): PaymentChoice => {
+    if (inTabFlow || restaurantLoading) return paymentChoice
+    if (enabledPaymentMethods.cash && !enabledPaymentMethods.card) return 'cash'
+    if (enabledPaymentMethods.card && !enabledPaymentMethods.cash) return 'card_manual'
+    return paymentChoice
+  }, [
+    inTabFlow,
+    restaurantLoading,
+    enabledPaymentMethods.cash,
+    enabledPaymentMethods.card,
+    paymentChoice,
+  ])
 
   const handleAddToTab = async () => {
     if (paying) return
@@ -303,7 +307,7 @@ export default function CartPage() {
   const handlePlaceOrder = async () => {
     if (paying) return
     if (inTabFlow) return
-    if (paymentChoice === 'online') return
+    if (resolvedPaymentChoice === 'online') return
     if (!tableNumber || tableNumber <= 0) {
       toast({
         title: 'Table required',
@@ -321,7 +325,7 @@ export default function CartPage() {
 
     setPaying(true)
     try {
-      const { paymentMethod, paymentChannel } = buildPaymentFields(paymentChoice)
+      const { paymentMethod, paymentChannel } = buildPaymentFields(resolvedPaymentChoice)
       const payload = {
         restaurantId: String(restaurantId),
         tableNumber: Number(tableNumber),
@@ -503,7 +507,7 @@ export default function CartPage() {
                     )}
                     {item.special_instructions && (
                       <p className="mt-1 break-words font-sans text-sm italic text-muted-foreground">
-                        "{item.special_instructions}"
+                        &ldquo;{item.special_instructions}&rdquo;
                       </p>
                     )}
                     

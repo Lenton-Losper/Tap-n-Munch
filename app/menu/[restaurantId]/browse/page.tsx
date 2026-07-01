@@ -83,13 +83,7 @@ export default function MenuBrowsePage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
-  const [kioskSessionId, setKioskSessionId] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (isKiosk) {
-      setKioskSessionId(getCurrentSession())
-    }
-  }, [isKiosk])
+  const kioskSessionId = isKiosk ? getCurrentSession() : null
 
   useEffect(() => {
     if (typeof window === 'undefined') return

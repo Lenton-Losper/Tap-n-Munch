@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 
 export const TERMINAL_NOTIFIED_MESSAGE =
@@ -41,14 +41,12 @@ export function ReadyToPayTerminalButton({
   alreadyNotified = false,
 }: Props) {
   const [loading, setLoading] = useState(false)
-  const [notified, setNotified] = useState(alreadyNotified)
+  const [userNotified, setUserNotified] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (alreadyNotified) setNotified(true)
-  }, [alreadyNotified])
+  const notified = alreadyNotified || userNotified
 
-  if (alreadyNotified || notified) {
+  if (notified) {
     return <TerminalNotifiedMessage className={className} />
   }
 
@@ -81,7 +79,7 @@ export function ReadyToPayTerminalButton({
             if (!res.ok) {
               throw new Error(typeof data?.error === 'string' ? data.error : 'Request failed')
             }
-            setNotified(true)
+            setUserNotified(true)
             onNotified?.()
           } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Something went wrong')

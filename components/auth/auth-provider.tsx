@@ -57,14 +57,18 @@ function parseStaffRole(value: unknown): StaffRole | null {
   return null
 }
 
+const isSupabaseEnvConfigured = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+)
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [userData, setUserData] = useState<Record<string, any> | null>(null)
   const [restaurant, setRestaurant] = useState<Record<string, any> | null>(null)
   const [restaurantId, setRestaurantId] = useState<string | null>(null)
   const [role, setRole] = useState<StaffRole | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [isSupabaseConfigured, setIsSupabaseConfigured] = useState(true)
+  const [loading, setLoading] = useState(isSupabaseEnvConfigured)
+  const isSupabaseConfigured = isSupabaseEnvConfigured
 
   useEffect(() => {
     const loadUserData = async (_sessionUser: User | null) => {
@@ -206,17 +210,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user])
 
   useEffect(() => {
-    const configured = Boolean(
-      process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-    setIsSupabaseConfigured(configured)
-
-    if (!configured) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
+    if (!isSupabaseConfigured) return
 
     getSupabaseSession()
       .then((session) => {
@@ -236,7 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       listener.subscription.unsubscribe()
     }
-  }, [])
+  }, [isSupabaseConfigured])
 
   const signUp = async (email: string, password: string, restaurantName: string, phone?: string) => {
     await signUpWithSupabase(email, password, restaurantName, phone || '')

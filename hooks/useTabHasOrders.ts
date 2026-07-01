@@ -11,16 +11,13 @@ export function useTabHasOrders(
   restaurantId: string | null | undefined,
   tabId: string | null | undefined
 ): boolean {
+  const rid = String(restaurantId || '').trim()
+  const tid = String(tabId || '').trim()
+  const enabled = Boolean(rid && tid)
   const [hasOrders, setHasOrders] = useState(false)
 
   useEffect(() => {
-    const rid = String(restaurantId || '').trim()
-    const tid = String(tabId || '').trim()
-
-    if (!rid || !tid) {
-      setHasOrders(false)
-      return
-    }
+    if (!enabled) return
 
     let cancelled = false
 
@@ -61,7 +58,7 @@ export function useTabHasOrders(
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [restaurantId, tabId])
+  }, [enabled, rid, tid])
 
-  return hasOrders
+  return enabled ? hasOrders : false
 }

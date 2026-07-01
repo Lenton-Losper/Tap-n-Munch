@@ -33,39 +33,31 @@ function MenuLandingPageContent() {
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
   const [permissionError, setPermissionError] = useState(false)
-  const [initialized, setInitialized] = useState(false)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    
+  const [initialized] = useState(() => {
+    if (typeof window === 'undefined') return false
     const oldKeys = [
       'table_session_id',
       'table_session_restaurant',
       'table_session_table',
       'session_id',
     ]
-    
-    oldKeys.forEach(key => {
+    oldKeys.forEach((key) => {
       if (localStorage.getItem(key)) {
         localStorage.removeItem(key)
       }
     })
-    
-    setInitialized(true)
-  }, [])
+    return true
+  })
+
+  const canLoadRestaurant = Boolean(restaurantId)
+  const missingRestaurantError =
+    !authLoading && initialized && !restaurantId
+      ? 'Invalid menu URL. Please scan a valid QR code or use a valid menu link.'
+      : null
+  const displayError = error ?? missingRestaurantError
 
   useEffect(() => {
-    if (!authLoading && initialized && !restaurantId) {
-      setError('Invalid menu URL. Please scan a valid QR code or use a valid menu link.')
-      setLoading(false)
-    }
-  }, [restaurantId, initialized, authLoading])
-
-  useEffect(() => {
-    if (!restaurantId) {
-      setLoading(false)
-      return
-    }
+    if (!canLoadRestaurant) return
 
     let cancelled = false
     const timeoutId = setTimeout(() => {
@@ -163,21 +155,23 @@ function MenuLandingPageContent() {
     )
   }
 
-  if (loading) {
+  const showPageLoading = canLoadRestaurant && loading
+
+  if (showPageLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
           <p className="mt-6 text-muted-foreground font-sans">Scanning...</p>
-          {error && (
-            <p className="mt-3 text-sm text-destructive font-sans">{error}</p>
+          {displayError && (
+            <p className="mt-3 text-sm text-destructive font-sans">{displayError}</p>
           )}
         </div>
       </div>
     )
   }
 
-  if (error || !restaurant) {
+  if (displayError || !restaurant) {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle className="w-12 h-12 text-foreground mb-6 stroke-[1.5]" />
@@ -185,7 +179,7 @@ function MenuLandingPageContent() {
           {permissionError ? 'Access Restricted' : 'Restaurant Not Found'}
         </h1>
         <p className="text-muted-foreground font-sans mb-6">
-          {error || 'The link you followed may be invalid or expired.'}
+          {displayError || 'The link you followed may be invalid or expired.'}
         </p>
         {permissionError && (
           <div className="p-4 bg-muted border border-border max-w-md mb-6">

@@ -22,7 +22,9 @@ function SignUpForm() {
   const googleName = searchParams.get('name') || ''
 
   const { user, loading: authLoading, isSupabaseConfigured, signIn } = useAuth()
-  const [fullName, setFullName] = useState('')
+  const [fullName, setFullName] = useState(() =>
+    isGoogleSetup && googleName ? decodeURIComponent(googleName) : ''
+  )
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -33,12 +35,6 @@ function SignUpForm() {
   const [submitting, setSubmitting] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (isGoogleSetup && googleName) {
-      setFullName(decodeURIComponent(googleName))
-    }
-  }, [isGoogleSetup, googleName])
 
   useEffect(() => {
     if (authLoading) return

@@ -184,21 +184,15 @@ export function MenuManagementV2() {
   )
 
   // Load all data - Pre-fetch using localStorage restaurantId for faster loading
+  const cachedRestaurantId =
+    typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : null
+  const effectiveRestaurantId = restaurantId || cachedRestaurantId
+  const canLoadMenuData = Boolean(user || cachedRestaurantId) && Boolean(effectiveRestaurantId)
+  const showMenuLoading = canLoadMenuData && loading
+
   useEffect(() => {
-    // Check localStorage first for faster initial load
-    const cachedRestaurantId = typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : null
-    const effectiveRestaurantId = restaurantId || cachedRestaurantId
-
-    // Don't run if user is null (prevents fetching when signed out)
-    if (!user && !cachedRestaurantId) {
-      setLoading(false)
-      return
-    }
-
-    if (!effectiveRestaurantId) {
-      setLoading(false)
-      return
-    }
+    if (!canLoadMenuData) return
+    if (!effectiveRestaurantId) return
 
     if (loadInFlightRef.current) return
     if (loadedRestaurantRef.current === effectiveRestaurantId) return
@@ -275,7 +269,9 @@ export function MenuManagementV2() {
     }
 
     loadAllData()
-  }, [user?.id, restaurantId, readCache, writeCache]) // Removed selectedMenuCategory from dependencies to prevent reset
+    // selectedMenuCategory is updated inside loadAllData; including it would reset category selection on each load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restaurant/user identity only
+  }, [canLoadMenuData, effectiveRestaurantId, readCache, writeCache])
 
   const searchableQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery])
 
@@ -389,7 +385,7 @@ export function MenuManagementV2() {
   }, [allSubCategories, menuCategories])
 
   useEffect(() => {
-    if (loading) return
+    if (showMenuLoading) return
 
     writeCache({
       menuCategories,
@@ -1197,7 +1193,7 @@ export function MenuManagementV2() {
   }
 
   // Skeleton loading UI
-  if (loading) {
+  if (showMenuLoading) {
     return (
       <div className="min-h-screen bg-muted/30">
         {/* Header Skeleton */}
@@ -1506,7 +1502,7 @@ export function MenuManagementV2() {
                   <div className="text-5xl sm:text-6xl mb-3 sm:mb-4">📁</div>
                   <h3 className="text-lg sm:text-xl font-semibold mb-2">No items yet</h3>
                   <p className="text-sm sm:text-base text-muted-foreground mb-4 sm:mb-6">
-                    Add your first item to "{selectedMenuCategory.name}"
+                    Add your first item to &ldquo;{selectedMenuCategory.name}&rdquo;
                   </p>
                   <Button 
                     onClick={handleAddItem}
@@ -2260,13 +2256,15 @@ export function MenuManagementV2() {
                         itemForm.imageFit === fit ? 'border-[#FF6B35] bg-orange-50' : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
-                      <div className="w-full h-16 bg-gray-100 mb-1 rounded overflow-hidden">
+                      <div className="relative w-full h-16 bg-gray-100 mb-1 rounded overflow-hidden">
                         {imagePreview && (
-                          <img 
-                            src={imagePreview} 
+                          <Image
+                            src={imagePreview}
+                            fill
                             style={{ objectFit: fit }}
                             className="w-full h-full"
                             alt={fit}
+                            unoptimized
                           />
                         )}
                       </div>

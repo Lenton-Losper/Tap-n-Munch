@@ -30,14 +30,16 @@ export function useActiveTableOrders(): {
   orderCount: number
 } {
   const [activeOrders, setActiveOrders] = useState<ActiveTableOrder[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return Boolean(getCurrentTableSession())
+  })
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const tableSessionId = getCurrentTableSession()
 
     if (!tableSessionId) {
-      setLoading(false)
       return
     }
 
@@ -85,4 +87,3 @@ export function useActiveTableOrders(): {
 
   return { activeOrders, loading, error, total, orderCount }
 }
-

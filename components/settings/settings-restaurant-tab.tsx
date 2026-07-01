@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Image from 'next/image'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getRestaurant, updateRestaurantSettings } from '@/lib/supabase/restaurants'
 import { getSettingsAccessToken } from './settings-utils'
@@ -138,11 +139,7 @@ export function SettingsRestaurantTab() {
     void loadSchedules()
   }, [loadSchedules])
 
-  useEffect(() => {
-    if (user?.email && !newScheduleEmail) {
-      setNewScheduleEmail(user.email)
-    }
-  }, [user?.email, newScheduleEmail])
+  const scheduleEmailValue = newScheduleEmail || user?.email || ''
 
   const handleScheduleToggle = async (schedule: ReportSchedule, enabled: boolean) => {
     if (!restaurantId) return
@@ -213,7 +210,7 @@ export function SettingsRestaurantTab() {
 
   const handleAddSchedule = async () => {
     if (!restaurantId) return
-    if (!newScheduleEmail.trim()) {
+    if (!scheduleEmailValue.trim()) {
       toast({
         title: 'Validation error',
         description: 'Email address is required',
@@ -232,7 +229,7 @@ export function SettingsRestaurantTab() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          email: newScheduleEmail.trim(),
+          email: scheduleEmailValue.trim(),
           format: newScheduleFormat,
           send_time: newScheduleSendTime,
         }),
@@ -415,10 +412,13 @@ export function SettingsRestaurantTab() {
         <div className="flex items-center gap-4">
           <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-lg border bg-muted">
             {displayLogo ? (
-              <img
+              <Image
                 src={displayLogo}
                 alt="Restaurant logo"
+                width={96}
+                height={96}
                 className="h-full w-full object-cover"
+                unoptimized
                 onError={() => setLogoLoadFailed(true)}
               />
             ) : (
@@ -584,7 +584,7 @@ export function SettingsRestaurantTab() {
               <Input
                 id="schedule-email"
                 type="email"
-                value={newScheduleEmail}
+                value={scheduleEmailValue}
                 onChange={(e) => setNewScheduleEmail(e.target.value)}
                 placeholder="recipient@example.com"
                 disabled={addingSchedule}
@@ -627,7 +627,7 @@ export function SettingsRestaurantTab() {
             <Button
               type="button"
               onClick={() => void handleAddSchedule()}
-              disabled={addingSchedule || !newScheduleEmail.trim()}
+              disabled={addingSchedule || !scheduleEmailValue.trim()}
               className="text-white"
               style={{ backgroundColor: SETTINGS_BRAND_PRIMARY }}
               onMouseEnter={(e) => {

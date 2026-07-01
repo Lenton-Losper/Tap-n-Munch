@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from './auth-provider'
 import { Button } from '@/components/ui/button'
@@ -10,34 +10,32 @@ import { syncAuthProfile } from '@/lib/supabase/sync-profile'
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, userData, restaurantId, loading } = useAuth()
   const router = useRouter()
-  const [hasRedirected, setHasRedirected] = useState(false)
+  const hasRedirectedRef = useRef(false)
   const [forceLoaded, setForceLoaded] = useState(false)
   const [repairingAccount, setRepairingAccount] = useState(false)
+  const [prevLoading, setPrevLoading] = useState(loading)
+
+  if (prevLoading !== loading) {
+    setPrevLoading(loading)
+    if (!loading) setForceLoaded(false)
+  }
 
   useEffect(() => {
-    if (!loading) {
-      setForceLoaded(false)
-      return
-    }
+    if (!loading) return
 
     const timeout = setTimeout(() => {
-      if (loading) {
-        console.warn('Auth loading timeout — forcing false')
-        setForceLoaded(true)
-      }
+      setForceLoaded(true)
     }, 5000)
 
     return () => clearTimeout(timeout)
   }, [loading])
 
   useEffect(() => {
-    // Only redirect once auth has finished loading and user is not authenticated
-    // Prevent redirect loops by checking hasRedirected flag
-    if (!loading && !user && !hasRedirected) {
-      setHasRedirected(true)
+    if (!loading && !user && !hasRedirectedRef.current) {
+      hasRedirectedRef.current = true
       router.replace('/signin')
     }
-  }, [user, loading, router, hasRedirected])
+  }, [user, loading, router])
 
   // If user is null, immediately return null (don't wait for loading to finish)
   // This prevents components from trying to access restaurantId when user is signed out
@@ -67,7 +65,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
             Account Data Missing
           </h2>
           <p className="text-gray-600 mb-6">
-            You're signed in, but your user row is missing from Supabase. We can try to link your account by email.
+            You&apos;re signed in, but your user row is missing from Supabase. We can try to link your account by email.
           </p>
 
           <div className="space-y-3">
@@ -113,4 +111,3 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   return <>{children}</>
 }
-

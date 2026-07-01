@@ -12,7 +12,7 @@ function orderPlacedAtMs(order: ActiveOrder): number {
   if (typeof p === 'number' && Number.isFinite(p)) return p
   if (typeof p === 'string') {
     const d = new Date(p)
-    if (!Number.isNaN(d.getTime())) return d.getTime()
+    if (!Number.isNaN(d.getTime())) return d
   }
   if (p && typeof p === 'object' && 'seconds' in p) {
     const sec = Number((p as { seconds: number }).seconds)
@@ -57,14 +57,19 @@ export function useActiveOrders(
   loading: boolean
   error: string | null
 } {
+  const queryKey = `${restaurantId ?? ''}|${tableNumber ?? ''}|${isKiosk ? '1' : '0'}|${sessionId ?? ''}`
   const [activeOrder, setActiveOrder] = useState<ActiveOrder | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
+  const [snapshotKey, setSnapshotKey] = useState(queryKey)
+  if (snapshotKey !== queryKey) {
+    setSnapshotKey(queryKey)
     setActiveOrder(null)
     setError(null)
+    setLoading(true)
+  }
 
+  useEffect(() => {
     if (!restaurantId) {
       console.log('⚠️ useActiveOrders: No restaurantId provided')
       setLoading(false)
@@ -73,8 +78,6 @@ export function useActiveOrders(
 
     if (!tableNumber || tableNumber <= 0) {
       console.log('🔍 Banner hidden - No table number provided')
-      setActiveOrder(null)
-      setError(null)
       setLoading(false)
       return
     }
