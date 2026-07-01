@@ -7,6 +7,14 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 account_id = "b74d9cfb3ba0e345287429ca237ecbfd"
 
+[[routes]]
+pattern = "www.flashtap.app"
+custom_domain = true
+
+[[routes]]
+pattern = "riviera.flashtap.app"
+custom_domain = true
+
 [assets]
 directory = ".open-next/assets"
 binding = "ASSETS"
