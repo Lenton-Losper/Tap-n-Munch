@@ -1,0 +1,44 @@
+name: Deploy flashtap-production Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Build and Deploy flashtap-production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build with OpenNext
+        run: npx @opennextjs/cloudflare@1.20.1 build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: https://flashtap.app
+          NEXT_PUBLIC_BASE_URL: https://flashtap.app
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      - name: Set Cloudflare worker secrets
+        run: |
+          if [ -n "$CRON_SECRET" ]; then
+            echo "$CRON_SECRET" | npx wrangler@3.99.0 secret put CRON_SECRET --config wrangler.production.toml
+          else
+            echo "WARNING: PRODUCTION_CRON_SECRET not set — expire-pending will 401 until configured"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
+      - name: Deploy to flashtap-production
+        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

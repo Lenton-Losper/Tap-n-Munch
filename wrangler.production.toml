@@ -1,0 +1,21 @@
+# flashtap-production — separate from flashtap-staging (wrangler.toml).
+# Runtime secrets via wrangler secret put (never commit credentials).
+name = "flashtap-production"
+main = ".open-next/worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "b74d9cfb3ba0e345287429ca237ecbfd"
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[vars]
+ENVIRONMENT = "production"
+NEXT_PUBLIC_APP_URL = "https://flashtap.app"
+NEXT_PUBLIC_BASE_URL = "https://flashtap.app"
+
+[[kv_namespaces]]
+binding = "NEXT_CACHE_WORKERS_KV"
+id = "7366f83606dc41c2b59bedb2026ef10a"
