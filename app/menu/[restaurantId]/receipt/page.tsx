@@ -309,8 +309,6 @@ export default function ReceiptPage() {
     }
   }, [restaurantId, tableNumber, storedTabId, router, refreshTab])
 
-  const tableNum = tableNumber ? Number(tableNumber) : null
-
   const tabGrandTotal = useMemo(
     () => orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0),
     [orders]
