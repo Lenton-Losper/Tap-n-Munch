@@ -1344,10 +1344,6 @@ CREATE POLICY "Public can read tabs" ON "public"."tabs" FOR SELECT USING (true);
 
 
 
-CREATE POLICY "Public can update orders" ON "public"."orders" FOR UPDATE USING (true);
-
-
-
 CREATE POLICY "Public can update tabs" ON "public"."tabs" FOR UPDATE USING (true);
 
 
@@ -1368,11 +1364,11 @@ CREATE POLICY "Staff can read own record" ON "public"."staff_members" FOR SELECT
 
 
 
-CREATE POLICY "Staff can update orders for their restaurant" ON "public"."orders" FOR UPDATE TO "authenticated" USING (("restaurant_id" IN ( SELECT "staff_members"."restaurant_id"
-   FROM "public"."staff_members"
-  WHERE (("staff_members"."email" = ("auth"."jwt"() ->> 'email'::"text")) AND ("staff_members"."active" = true))))) WITH CHECK (("restaurant_id" IN ( SELECT "staff_members"."restaurant_id"
-   FROM "public"."staff_members"
-  WHERE (("staff_members"."email" = ("auth"."jwt"() ->> 'email'::"text")) AND ("staff_members"."active" = true)))));
+CREATE POLICY "Staff can update orders for their restaurant" ON "public"."orders" FOR UPDATE TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))) WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+
+
+CREATE POLICY "Guest can mark order ready for terminal" ON "public"."orders" FOR UPDATE TO "anon" USING ((COALESCE("is_closed", false) = false) AND (COALESCE("status", ''::"text") <> ALL (ARRAY['completed'::"text", 'cancelled'::"text"]))) WITH CHECK (("status" = 'ready_for_terminal'::"text"));
 
 
 
@@ -1444,8 +1440,7 @@ ALTER TABLE "public"."restaurant_terminals" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."restaurant_users" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "service role can update orders" ON "public"."orders" FOR UPDATE USING (true);
-
+-- Removed: "service role can update orders" (was FOR UPDATE USING (true) on public — P0 lockdown)
 
 
 ALTER TABLE "public"."staff_invites" ENABLE ROW LEVEL SECURITY;

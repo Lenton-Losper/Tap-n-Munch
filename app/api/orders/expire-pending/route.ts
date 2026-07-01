@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { requireCronSecret } from '@/lib/api/require-cron-secret'
 
 const TEN_MIN_MS = 10 * 60 * 1000
 
-async function runExpire() {
+async function runExpire(req: Request) {
+  const cronDenied = requireCronSecret(req)
+  if (cronDenied) return cronDenied
+
   const supabase = createServerSupabaseClient()
   const tenMinutesAgo = new Date(Date.now() - TEN_MIN_MS).toISOString()
 
@@ -64,10 +68,10 @@ async function runExpire() {
   })
 }
 
-export async function POST() {
-  return runExpire()
+export async function POST(req: Request) {
+  return runExpire(req)
 }
 
-export async function GET() {
-  return runExpire()
+export async function GET(req: Request) {
+  return runExpire(req)
 }

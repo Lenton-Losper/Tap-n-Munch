@@ -2,18 +2,26 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { closeTableSession } from '@/lib/session-manager'
+import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
+
+export const dynamic = 'force-dynamic'
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ tableNumber: string }> }
 ) {
   try {
-    const supabase = createServerSupabaseClient()
     const { restaurantId } = await req.json()
     const { tableNumber } = await params
     const parsedTableNumber = Number(tableNumber)
-    const nowIso = new Date().toISOString()
     const restaurantUuid = await resolveRestaurantUuid(String(restaurantId || ''))
+
+    const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.TABLES_MANAGE)
+    if (isAuthError(auth)) return auth
+
+    const supabase = createServerSupabaseClient()
+    const nowIso = new Date().toISOString()
 
     console.log('[TABLE-CLOSE] closing table', {
       restaurantUuid,
