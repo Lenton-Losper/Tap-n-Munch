@@ -22,11 +22,15 @@ const nextConfig = {
           has: [{ type: 'host', value: RIVIERA_HOST }],
           destination: RIVIERA_MENU_PATH,
         },
-        {
-          source: '/session-ended',
-          has: [{ type: 'host', value: RIVIERA_HOST }],
-          destination: `/menu/${RIVIERA_RESTAURANT_ID}/session-ended`,
-        },
+      {
+        source: '/session-ended',
+        has: [{ type: 'host', value: RIVIERA_HOST }],
+        destination: `/menu/${RIVIERA_RESTAURANT_ID}/session-ended`,
+      },
+      {
+        source: '/cf-proxy/:path*',
+        destination: 'https://flashtap-shadow.llosperofficial.workers.dev/:path*',
+      },
       ],
     }
   },
