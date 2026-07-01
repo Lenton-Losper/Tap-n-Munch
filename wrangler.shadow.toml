@@ -1,0 +1,28 @@
+# Phase 2B.1 shadow validation — separate from flashtap-staging (wrangler.toml).
+# Uses production Supabase via wrangler secrets only (never commit credentials).
+name = "flashtap-shadow"
+main = ".open-next/worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "b74d9cfb3ba0e345287429ca237ecbfd"
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[vars]
+ENVIRONMENT = "shadow"
+NEXT_PUBLIC_APP_URL = "https://flashtap-shadow.llosperofficial.workers.dev"
+NEXT_PUBLIC_BASE_URL = "https://flashtap-shadow.llosperofficial.workers.dev"
+# NEXT_PUBLIC_SUPABASE_URL — baked at OpenNext build from production env (not stored here)
+# NEXT_PUBLIC_SUPABASE_ANON_KEY — baked at OpenNext build from production env (not stored here)
+# SUPABASE_URL — set via: wrangler secret put SUPABASE_URL --config wrangler.shadow.toml
+# SUPABASE_ANON_KEY — set via: wrangler secret put SUPABASE_ANON_KEY --config wrangler.shadow.toml
+# SUPABASE_SERVICE_ROLE_KEY — set via: wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config wrangler.shadow.toml
+# NEXTAUTH_SECRET — set via: wrangler secret put NEXTAUTH_SECRET --config wrangler.shadow.toml
+
+# Dedicated KV for shadow ISR cache — must NOT reuse flashtap-staging KV (c12172a326a94cc39e874eb2e7cd9a69).
+[[kv_namespaces]]
+binding = "NEXT_CACHE_WORKERS_KV"
+id = "7366f83606dc41c2b59bedb2026ef10a"
