@@ -26,6 +26,11 @@ jobs:
           NEXT_PUBLIC_BASE_URL: https://flashtap.app
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      - name: Deploy to flashtap-production
+        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Set Cloudflare worker secrets
         run: |
           if [ -n "$CRON_SECRET" ]; then
@@ -37,8 +42,3 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
-      - name: Deploy to flashtap-production
-        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
