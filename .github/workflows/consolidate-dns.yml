@@ -1,0 +1,23 @@
+name: Consolidate www and riviera DNS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cloudflare-staging
+    paths:
+      - '.github/workflows/consolidate-dns.yml'
+      - 'scripts/consolidate-dns.mjs'
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    name: Add www + riviera to flashtap-production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Consolidate DNS and worker custom domains
+        run: node scripts/consolidate-dns.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
