@@ -54,7 +54,7 @@ export function SettingsProfileTab() {
     } finally {
       setLoading(false)
     }
-  }, [toast, user?.email, userData])
+  }, [toast, user, userData])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope

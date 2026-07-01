@@ -45,6 +45,7 @@ export function FoodItemImage({
   const [errorOverrideSrc, setErrorOverrideSrc] = useState<string | null>(null)
   const errorStepRef = useRef(0)
 
+  /* eslint-disable react-hooks/set-state-in-effect -- reset image fallback when item identity changes */
   useEffect(() => {
     errorStepRef.current = 0
     setErrorOverrideSrc(null)
@@ -63,6 +64,7 @@ export function FoodItemImage({
       cancelled = true
     }
   }, [itemName, storedSrc])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const src = errorOverrideSrc ?? storedSrc ?? fetchedSrc
   const loading = !storedSrc && (fetching || !src)

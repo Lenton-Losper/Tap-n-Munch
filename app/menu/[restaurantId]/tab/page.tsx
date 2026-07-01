@@ -122,7 +122,7 @@ export default function TabSummaryPage() {
     return () => {
       cancelled = true
     }
-  }, [restaurantId, tableNumber, storedTabId, router])
+  }, [restaurantId, tableNumber, storedTabId, router, canLoadTab, tableNumVal])
 
   const ordersForDisplay = useMemo(
     () => orders.filter((o) => !String(o.tab_settlement_for_tab_id || '').trim()),

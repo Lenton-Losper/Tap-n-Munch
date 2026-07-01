@@ -12,7 +12,7 @@ function orderPlacedAtMs(order: ActiveOrder): number {
   if (typeof p === 'number' && Number.isFinite(p)) return p
   if (typeof p === 'string') {
     const d = new Date(p)
-    if (!Number.isNaN(d.getTime())) return d
+    if (!Number.isNaN(d.getTime())) return d.getTime()
   }
   if (p && typeof p === 'object' && 'seconds' in p) {
     const sec = Number((p as { seconds: number }).seconds)
@@ -69,6 +69,7 @@ export function useActiveOrders(
     setLoading(true)
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect -- active-order fetch lifecycle guards */
   useEffect(() => {
     if (!restaurantId) {
       console.log('⚠️ useActiveOrders: No restaurantId provided')
@@ -154,6 +155,7 @@ export function useActiveOrders(
       supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, isKiosk, customerName, sessionId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return { activeOrder, loading, error }
 }

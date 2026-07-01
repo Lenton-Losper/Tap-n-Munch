@@ -88,6 +88,7 @@ export function MenuLandingPageV2Content({
   const [table, setTable] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
   const [openTab, setOpenTab] = useState<{
@@ -573,10 +574,15 @@ export function MenuLandingPageV2Content({
     }
   }, [canTrackHostedPending, restaurantId, tableNum])
 
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
   const minutesSince = (iso: string) => {
     const t = new Date(iso).getTime()
     if (Number.isNaN(t)) return 0
-    return Math.floor((Date.now() - t) / 60_000)
+    return Math.floor((nowMs - t) / 60_000)
   }
 
   const blockOrderingForHostedPending = Boolean(

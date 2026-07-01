@@ -32,6 +32,7 @@ export function TableCardGenerator() {
     if (!canLoadTableCards) return
 
     const loadTables = async () => {
+      if (!restaurantId) return
       try {
         const tablesData = (await getTables(restaurantId, true)) as Table[]
         setTables(tablesData)
@@ -46,7 +47,7 @@ export function TableCardGenerator() {
     }
 
     loadTables()
-  }, [user, restaurantId])
+  }, [user, restaurantId, canLoadTableCards])
 
   if (!restaurantId || !restaurant) {
     return (
@@ -103,7 +104,7 @@ export function TableCardGenerator() {
         }
 
         // Create a new image to test loading
-        const testImg = new Image()
+        const testImg = new window.Image()
         testImg.crossOrigin = 'anonymous'
         
         testImg.onload = () => {

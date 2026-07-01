@@ -109,6 +109,7 @@ export function TabProvider({
   const tabIdFromUrl = searchParams?.get('tabId')?.trim() || null
 
   // URL tabId wins when present; persist to storage.
+  /* eslint-disable react-hooks/set-state-in-effect -- hydrate tab id from URL on navigation */
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return
     if (tabIdFromUrl) {
@@ -117,6 +118,7 @@ export function TabProvider({
       setTabId(tabIdFromUrl)
     }
   }, [tabIdFromUrl, searchParams])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const loadTab = async () => {
     if (!restaurantId || !tabId) return

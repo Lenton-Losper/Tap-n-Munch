@@ -24,8 +24,8 @@ function SettingsContent() {
 
   const navigateToTab = (tabId: SettingsTabId, hash: string) => {
     setActiveTab(tabId)
-    if (window.location.hash !== hash) {
-      window.location.hash = hash
+    if (typeof window !== 'undefined' && window.location.hash !== hash) {
+      window.history.replaceState(null, '', hash)
     }
   }
 

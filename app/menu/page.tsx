@@ -86,7 +86,7 @@ function MenuLandingPageContent() {
       cancelled = true
       clearTimeout(timeoutId)
     }
-  }, [restaurantId, loading, restaurant])
+  }, [canLoadRestaurant, restaurantId, loading, restaurant])
 
   useEffect(() => {
     if (!restaurant || !restaurantId) return

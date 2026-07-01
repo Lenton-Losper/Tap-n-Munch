@@ -158,7 +158,9 @@ export function OrdersDashboard() {
   const router = useRouter()
   const { toast } = useToast()
   const toastRef = useRef(toast)
-  toastRef.current = toast
+  useEffect(() => {
+    toastRef.current = toast
+  }, [toast])
   const [activeTab, setActiveTab] = useState<DashboardTabId>('new')
   const [pendingHostedCount, setPendingHostedCount] = useState(0)
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
@@ -176,6 +178,7 @@ export function OrdersDashboard() {
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
   const [terminalDismissedPollingIds, setTerminalDismissedPollingIds] = useState<string[]>([])
   const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const dashboardRestaurantId = String((restaurant as { id?: string } | null)?.id || restaurantId || '')
   const showDashboardLoading = loading && Boolean(user)
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
@@ -195,7 +198,9 @@ export function OrdersDashboard() {
   }
   const orderScopeRef = useRef<OrderRestaurantScope | null>(null)
   const subscribedRestaurantIdRef = useRef<string | null>(null)
-  orderScopeRef.current = orderScope
+  useEffect(() => {
+    orderScopeRef.current = orderScope
+  }, [orderScope])
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -244,6 +249,12 @@ export function OrdersDashboard() {
   }, [isRecentCardPendingOrder])
 
   useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  /* eslint-disable react-hooks/set-state-in-effect -- scope/tab hydration guards; React Query refactor out of scope */
+  useEffect(() => {
     if (!dashboardRestaurantId) {
       return
     }
@@ -268,7 +279,9 @@ export function OrdersDashboard() {
       cancelled = true
     }
   }, [dashboardRestaurantId, restaurant])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
+  /* eslint-disable react-hooks/set-state-in-effect -- tab info hydration; React Query refactor out of scope */
   useEffect(() => {
     const restaurantUuid = orderScope?.restaurantId
     if (!restaurantUuid) {
@@ -313,6 +326,7 @@ export function OrdersDashboard() {
       cancelled = true
     }
   }, [allOrders, orderScope?.restaurantId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     const restaurantUuid = orderScope?.restaurantId
@@ -356,6 +370,7 @@ export function OrdersDashboard() {
   }, [orderScope?.restaurantId])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
+  /* eslint-disable react-hooks/set-state-in-effect -- subscription lifecycle guards; React Query refactor out of scope */
   useEffect(() => {
     if (!user) {
       setLoading(false)
@@ -444,6 +459,7 @@ export function OrdersDashboard() {
       unsubscribe?.()
     }
   }, [user, dashboardRestaurantId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
@@ -645,7 +661,7 @@ export function OrdersDashboard() {
   const minutesSincePlaced = (order: Order) => {
     const d = toDate(order.placed_at) || toDate((order as Order & { created_at?: unknown }).created_at)
     if (!d) return 0
-    return Math.max(0, Math.floor((Date.now() - d.getTime()) / 60_000))
+    return Math.max(0, Math.floor((nowMs - d.getTime()) / 60_000))
   }
 
   const isStatusUpdating = (orderId: string, action: string) =>

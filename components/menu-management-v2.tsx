@@ -393,7 +393,7 @@ export function MenuManagementV2() {
       allMenuItems,
       selectedMenuCategoryId: selectedMenuCategory?.id || null,
     })
-  }, [allMenuItems, allSubCategories, loading, menuCategories, selectedMenuCategory?.id, writeCache])
+  }, [allMenuItems, allSubCategories, loading, menuCategories, selectedMenuCategory?.id, writeCache, showMenuLoading])
 
   // Navigation handlers
   const handleSelectMenuCategory = (category: MenuCategory | null) => {

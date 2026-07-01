@@ -58,6 +58,7 @@ export function AnalyticsDashboard() {
     if (!canFetchAnalytics) return
 
     const loadData = async () => {
+      if (!restaurantId) return
       try {
         setLoading(true)
 
@@ -106,7 +107,7 @@ export function AnalyticsDashboard() {
     }
 
     loadData()
-  }, [user, restaurantId, dateRange])
+  }, [user, restaurantId, dateRange, canFetchAnalytics])
 
   // Calculate aggregated stats
   const totalSales = analytics.reduce((sum, day) => sum + day.total_revenue, 0)

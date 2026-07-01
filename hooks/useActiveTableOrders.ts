@@ -36,6 +36,7 @@ export function useActiveTableOrders(): {
   })
   const [error, setError] = useState<string | null>(null)
 
+  /* eslint-disable react-hooks/set-state-in-effect -- table session order fetch guards */
   useEffect(() => {
     const tableSessionId = getCurrentTableSession()
 
@@ -81,6 +82,7 @@ export function useActiveTableOrders(): {
       supabase.removeChannel(channel)
     }
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const total = activeOrders.reduce((sum, order) => sum + (order.total || 0), 0)
   const orderCount = activeOrders.length

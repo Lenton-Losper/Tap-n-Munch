@@ -57,6 +57,7 @@ function StockAdjustmentForm({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  /* eslint-disable react-hooks/set-state-in-effect -- load stock level when modal opens */
   useEffect(() => {
     let cancelled = false
     setLoadingLevel(true)
@@ -77,6 +78,7 @@ function StockAdjustmentForm({
       cancelled = true
     }
   }, [stockItemId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const parsedQuantity = Number(quantityChange)
   const hasValidQuantity =

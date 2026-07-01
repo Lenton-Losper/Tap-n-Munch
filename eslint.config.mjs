@@ -1,11 +1,12 @@
 import nextCoreWebVitals from 'eslint-config-next/core-web-vitals'
 
-export default [
+const eslintConfig = [
   ...nextCoreWebVitals,
   {
     ignores: [
       '.next/**',
       '.open-next/**',
+      '.tmp-wise-postman/**',
       'node_modules/**',
       'out/**',
       'build/**',
@@ -13,3 +14,5 @@ export default [
     ],
   },
 ]
+
+export default eslintConfig

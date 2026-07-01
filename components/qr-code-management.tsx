@@ -155,6 +155,7 @@ export function QRCodeManagement() {
     if (!canLoadTables) return
 
     const loadData = async () => {
+      if (!restaurantId) return
       try {
         setLoading(true)
         console.log('Loading tables for restaurant:', restaurantId)
@@ -174,7 +175,7 @@ export function QRCodeManagement() {
     }
 
     loadData()
-  }, [user, restaurantId, toast])
+  }, [user, restaurantId, toast, canLoadTables])
 
   useEffect(() => {
     if (!restaurantId) return
