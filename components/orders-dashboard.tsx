@@ -165,8 +165,6 @@ export function OrdersDashboard() {
   const [allOrders, setAllOrders] = useState<Order[]>([])
   const [completedOrders, setCompletedOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
-  const canSubscribeOrders = Boolean(user && dashboardRestaurantId)
-  const showDashboardLoading = canSubscribeOrders && loading
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [markPaidTargetOrderId, setMarkPaidTargetOrderId] = useState<string | null>(null)
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
@@ -179,6 +177,7 @@ export function OrdersDashboard() {
   const [terminalDismissedPollingIds, setTerminalDismissedPollingIds] = useState<string[]>([])
   const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
   const dashboardRestaurantId = String((restaurant as { id?: string } | null)?.id || restaurantId || '')
+  const showDashboardLoading = loading && Boolean(user)
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
   const [orderScopeRestaurantId, setOrderScopeRestaurantId] = useState(dashboardRestaurantId)
   if (orderScopeRestaurantId !== dashboardRestaurantId) {
@@ -358,7 +357,15 @@ export function OrdersDashboard() {
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   useEffect(() => {
-    if (!canSubscribeOrders) return
+    if (!user) {
+      setLoading(false)
+      return
+    }
+
+    if (!dashboardRestaurantId) {
+      setLoading(false)
+      return
+    }
 
     if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
       return
@@ -436,7 +443,7 @@ export function OrdersDashboard() {
       }
       unsubscribe?.()
     }
-  }, [canSubscribeOrders, dashboardRestaurantId])
+  }, [user, dashboardRestaurantId])
 
   useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
