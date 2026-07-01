@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
@@ -17,8 +21,12 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
   }
 
-  const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveRestaurantUuid(restaurantId)
+
+  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ORDERS_READ)
+  if (isAuthError(auth)) return auth
+
+  const supabase = createServerSupabaseClient()
 
   let query = supabase
     .from('orders')

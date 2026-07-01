@@ -2459,13 +2459,6 @@ CREATE POLICY "Public can read tabs" ON "public"."tabs" FOR SELECT USING (true);
 
 
 --
--- Name: orders Public can update orders; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "Public can update orders" ON "public"."orders" FOR UPDATE USING (true);
-
-
---
 -- Name: tabs Public can update tabs; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2501,11 +2494,11 @@ CREATE POLICY "Staff can read own record" ON "public"."staff_members" FOR SELECT
 -- Name: orders Staff can update orders for their restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "Staff can update orders for their restaurant" ON "public"."orders" FOR UPDATE TO "authenticated" USING (("restaurant_id" IN ( SELECT "staff_members"."restaurant_id"
-   FROM "public"."staff_members"
-  WHERE (("staff_members"."email" = ("auth"."jwt"() ->> 'email'::"text")) AND ("staff_members"."active" = true))))) WITH CHECK (("restaurant_id" IN ( SELECT "staff_members"."restaurant_id"
-   FROM "public"."staff_members"
-  WHERE (("staff_members"."email" = ("auth"."jwt"() ->> 'email'::"text")) AND ("staff_members"."active" = true)))));
+CREATE POLICY "Staff can update orders for their restaurant" ON "public"."orders" FOR UPDATE TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))) WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+
+
+CREATE POLICY "Guest can mark order ready for terminal" ON "public"."orders" FOR UPDATE TO "anon" USING ((COALESCE("is_closed", false) = false) AND (COALESCE("status", ''::"text") <> ALL (ARRAY['completed'::"text", 'cancelled'::"text"]))) WITH CHECK (("status" = 'ready_for_terminal'::"text"));
 
 
 --
@@ -2698,8 +2691,7 @@ ALTER TABLE "public"."restaurant_users" ENABLE ROW LEVEL SECURITY;
 -- Name: orders service role can update orders; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "service role can update orders" ON "public"."orders" FOR UPDATE USING (true);
-
+-- Removed: "service role can update orders" (was FOR UPDATE USING (true) on public — P0 lockdown)
 
 --
 -- Name: staff_invites; Type: ROW SECURITY; Schema: public; Owner: postgres
