@@ -8,6 +8,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { requireRecipePermission } from '@/lib/recipes/auth'
 import { getRecipeEditorData } from '@/lib/recipes/queries'
+import { getMeasurementUnitsForRestaurant } from '@/lib/measurement-units/queries'
 import { getActiveStockItems } from '@/lib/stock/queries'
 
 type RecipeEditorPageProps = {
@@ -17,9 +18,10 @@ type RecipeEditorPageProps = {
 export default async function RecipeEditorPage({ params }: RecipeEditorPageProps) {
   const { menuItemId } = await params
   const { supabase, userId, restaurantId } = await requireRecipePermission(PERMISSIONS.RECIPE_VIEW)
-  const [editorData, stockItems, canEdit, canReceive] = await Promise.all([
+  const [editorData, stockItems, measurementUnits, canEdit, canReceive] = await Promise.all([
     getRecipeEditorData(supabase, restaurantId, menuItemId),
     getActiveStockItems(supabase, restaurantId),
+    getMeasurementUnitsForRestaurant(supabase, restaurantId),
     authorize(userId, restaurantId, PERMISSIONS.RECIPE_EDIT),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE),
   ])
@@ -55,7 +57,12 @@ export default async function RecipeEditorPage({ params }: RecipeEditorPageProps
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <RecipeEditorForm data={editorData} stockItems={stockItems} canEdit={canEdit} />
+        <RecipeEditorForm
+          data={editorData}
+          stockItems={stockItems}
+          measurementUnits={measurementUnits}
+          canEdit={canEdit}
+        />
       </div>
     </div>
   )

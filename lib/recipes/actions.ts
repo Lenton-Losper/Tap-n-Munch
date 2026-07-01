@@ -7,7 +7,7 @@ import { requireRecipePermissionOrError } from '@/lib/recipes/auth'
 export type RecipeIngredientInput = {
   stockItemId: string
   quantity: number
-  unit?: string | null
+  unitId: string
 }
 
 export type SaveRecipeInput = {
@@ -25,9 +25,9 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     .map((row) => ({
       stockItemId: row.stockItemId.trim(),
       quantity: Number(row.quantity),
-      unit: row.unit?.trim() || null,
+      unitId: row.unitId.trim(),
     }))
-    .filter((row) => row.stockItemId && Number.isFinite(row.quantity) && row.quantity > 0)
+    .filter((row) => row.stockItemId && row.unitId && Number.isFinite(row.quantity) && row.quantity > 0)
 
   const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
   if ('error' in context) {
@@ -104,7 +104,7 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
         recipe_id: recipeId,
         stock_item_id: row.stockItemId,
         quantity: row.quantity,
-        unit: row.unit,
+        unit_id: row.unitId,
       })),
     )
 

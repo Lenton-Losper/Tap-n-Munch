@@ -1,14 +1,23 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import {
   movementDateRangeStart,
   type MovementDateRange,
   type MovementReason,
 } from '@/lib/stock/format'
 
+type UnitJoin = { name: string; symbol: string | null } | { name: string; symbol: string | null }[] | null
+
+function unitLabelFromJoin(unit: UnitJoin) {
+  const row = Array.isArray(unit) ? unit[0] : unit
+  if (!row) return '—'
+  return formatMeasurementUnitLabel(row)
+}
+
 export type StockOverviewRow = {
   id: string
   name: string
-  base_unit: string
+  unit_label: string
   par_level: number | null
   currentStock: number
   isLow: boolean
@@ -24,7 +33,8 @@ export type StockOverviewData = {
 export type StockItemOption = {
   id: string
   name: string
-  base_unit: string
+  unit_id: string
+  unit_label: string
 }
 
 export type MovementHistoryRow = {
@@ -57,7 +67,7 @@ export async function getStockOverview(
     await Promise.all([
       supabase
         .from('stock_items')
-        .select('id, name, base_unit, par_level')
+        .select('id, name, unit_id, par_level, measurement_units(name, symbol)')
         .eq('restaurant_id', restaurantId)
         .eq('is_active', true)
         .order('name'),
@@ -86,7 +96,7 @@ export async function getStockOverview(
     return {
       id: item.id,
       name: item.name,
-      base_unit: item.base_unit,
+      unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
       par_level: parLevel,
       currentStock,
       isLow: parLevel != null && currentStock <= parLevel,
@@ -104,7 +114,7 @@ export async function getStockOverview(
 export type StockItemLevel = {
   id: string
   name: string
-  base_unit: string
+  unit_label: string
   currentStock: number
 }
 
@@ -117,7 +127,7 @@ export async function getStockItemCurrentLevel(
     await Promise.all([
       supabase
         .from('stock_items')
-        .select('id, name, base_unit')
+        .select('id, name, unit_id, measurement_units(name, symbol)')
         .eq('restaurant_id', restaurantId)
         .eq('id', stockItemId)
         .eq('is_active', true)
@@ -141,7 +151,7 @@ export async function getStockItemCurrentLevel(
   return {
     id: item.id,
     name: item.name,
-    base_unit: item.base_unit,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
     currentStock,
   }
 }
@@ -152,13 +162,19 @@ export async function getActiveStockItems(
 ): Promise<StockItemOption[]> {
   const { data, error } = await supabase
     .from('stock_items')
-    .select('id, name, base_unit')
+    .select('id, name, unit_id, measurement_units(name, symbol)')
     .eq('restaurant_id', restaurantId)
     .eq('is_active', true)
     .order('name')
 
   if (error) throw error
-  return (data ?? []) as StockItemOption[]
+
+  return (data ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit_id: item.unit_id,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
+  }))
 }
 
 export type MovementHistoryFilters = {
@@ -211,60 +227,48 @@ export async function getMovementHistory(
     .filter((movement) => movement.reference_type === 'goods_received_items' && movement.reference_id)
     .map((movement) => movement.reference_id as string)
 
-  const grvNumberByLineItemId = new Map<string, string>()
+  const referenceByLineItemId = new Map<string, string>()
   const unitCostByLineItemId = new Map<string, number | null>()
   if (lineItemIds.length > 0) {
-    type GrvLineItemBase = { id: string; goods_received_id: string }
-    type GrvLineItemWithCost = GrvLineItemBase & {
-      unit_cost: number | string | null
-    }
+    const { data: lineItems, error: lineItemsError } = await supabase
+      .from('goods_received_items')
+      .select('id, goods_received_id, unit_cost')
+      .in('id', lineItemIds)
 
-    let lineItems: GrvLineItemBase[] = []
+    if (lineItemsError) throw lineItemsError
 
     if (filters.includeCosts) {
-      const { data, error: lineItemsError } = await supabase
-        .from('goods_received_items')
-        .select('id, goods_received_id, unit_cost')
-        .in('id', lineItemIds)
-
-      if (lineItemsError) throw lineItemsError
-
-      for (const row of (data ?? []) as GrvLineItemWithCost[]) {
-        const cost = row.unit_cost
+      for (const row of lineItems ?? []) {
+        const cost = (row as { unit_cost?: number | string | null }).unit_cost
         unitCostByLineItemId.set(
           row.id,
           cost != null && cost !== '' ? Number(cost) : null,
         )
       }
-      lineItems = (data ?? []) as GrvLineItemBase[]
-    } else {
-      const { data, error: lineItemsError } = await supabase
-        .from('goods_received_items')
-        .select('id, goods_received_id')
-        .in('id', lineItemIds)
-
-      if (lineItemsError) throw lineItemsError
-      lineItems = data ?? []
     }
 
-    const goodsReceivedIds = [...new Set(lineItems.map((row) => row.goods_received_id))]
-    const lineItemToGrvId = new Map(lineItems.map((row) => [row.id, row.goods_received_id]))
+    const goodsReceivedIds = [...new Set((lineItems ?? []).map((row) => row.goods_received_id))]
+    const lineItemToGrvId = new Map((lineItems ?? []).map((row) => [row.id, row.goods_received_id]))
 
     if (goodsReceivedIds.length > 0) {
       const { data: headers, error: headersError } = await supabase
         .from('goods_received')
-        .select('id, grv_number')
+        .select('id, grv_number, invoice_number')
         .in('id', goodsReceivedIds)
 
       if (headersError) throw headersError
-      const grvNumberById = new Map(
-        (headers ?? []).map((header) => [header.id, header.grv_number || '—']),
+      const referenceByGrvId = new Map(
+        (headers ?? []).map((header) => {
+          const invoice = header.invoice_number?.trim()
+          const grv = header.grv_number?.trim()
+          return [header.id, invoice || grv || '—']
+        }),
       )
 
       for (const lineItemId of lineItemIds) {
         const grvId = lineItemToGrvId.get(lineItemId)
         if (grvId) {
-          grvNumberByLineItemId.set(lineItemId, grvNumberById.get(grvId) ?? '—')
+          referenceByLineItemId.set(lineItemId, referenceByGrvId.get(grvId) ?? '—')
         }
       }
     }
@@ -273,7 +277,7 @@ export async function getMovementHistory(
   return movements.map((movement) => {
     const referenceLabel =
       movement.reference_type === 'goods_received_items' && movement.reference_id
-        ? grvNumberByLineItemId.get(movement.reference_id) ?? '—'
+        ? referenceByLineItemId.get(movement.reference_id) ?? '—'
         : 'Manual'
 
     return {

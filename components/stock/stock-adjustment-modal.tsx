@@ -91,12 +91,12 @@ function StockAdjustmentForm({
       return null
     }
     return {
-      current: formatStockQuantity(level.currentStock, level.base_unit),
+      current: formatStockQuantity(level.currentStock, level.unit_label),
       adjustment: hasValidQuantity
-        ? formatStockQuantity(previewAdjustment, level.base_unit)
+        ? formatStockQuantity(previewAdjustment, level.unit_label)
         : '—',
       newBalance: hasValidQuantity
-        ? formatStockQuantity(previewNewBalance, level.base_unit)
+        ? formatStockQuantity(previewNewBalance, level.unit_label)
         : '—',
     }
   }, [hasValidQuantity, level, previewAdjustment, previewNewBalance])
@@ -138,7 +138,7 @@ function StockAdjustmentForm({
           <div className="rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] px-4 py-3">
             <p className="font-medium text-[#37352F]">{level.name}</p>
             <p className="mt-1 text-sm text-[#6B675F]">
-              Current stock: {formatStockQuantity(level.currentStock, level.base_unit)}
+                Current stock: {formatStockQuantity(level.currentStock, level.unit_label)}
             </p>
           </div>
 

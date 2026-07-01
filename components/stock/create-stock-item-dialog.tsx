@@ -1,16 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -19,32 +12,44 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { createStockItemAction } from '@/lib/stock/actions'
+import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
-
-export const STOCK_ITEM_BASE_UNITS = ['unit', 'kg', 'g', 'l', 'ml']
 
 export function CreateStockItemDialog({
   open,
   onOpenChange,
+  measurementUnits,
+  onMeasurementUnitsChange,
   onCreated,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  measurementUnits: MeasurementUnitOption[]
+  onMeasurementUnitsChange?: (units: MeasurementUnitOption[]) => void
   onCreated: (item: StockItemOption) => void
 }) {
   const [newItemName, setNewItemName] = useState('')
-  const [newItemBaseUnit, setNewItemBaseUnit] = useState('unit')
+  const [newItemUnitId, setNewItemUnitId] = useState('')
   const [createError, setCreateError] = useState<string | null>(null)
   const [creatingItem, setCreatingItem] = useState(false)
 
+  const defaultUnitId = useMemo(() => {
+    const unitUnit = measurementUnits.find((unit) => unit.name === 'unit')
+    return unitUnit?.id ?? measurementUnits[0]?.id ?? ''
+  }, [measurementUnits])
+
   const resetForm = () => {
     setNewItemName('')
-    setNewItemBaseUnit('unit')
+    setNewItemUnitId(defaultUnitId)
     setCreateError(null)
   }
 
   const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen && !newItemUnitId) {
+      setNewItemUnitId(defaultUnitId)
+    }
     if (!nextOpen) {
       resetForm()
     }
@@ -56,7 +61,7 @@ export function CreateStockItemDialog({
     setCreateError(null)
     const result = await createStockItemAction({
       name: newItemName,
-      baseUnit: newItemBaseUnit,
+      unitId: newItemUnitId || defaultUnitId,
     })
     setCreatingItem(false)
 
@@ -91,21 +96,13 @@ export function CreateStockItemDialog({
               className="border-[#E9E9E7]"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label>Base unit</Label>
-            <Select value={newItemBaseUnit} onValueChange={setNewItemBaseUnit}>
-              <SelectTrigger className="w-full border-[#E9E9E7]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STOCK_ITEM_BASE_UNITS.map((unit) => (
-                  <SelectItem key={unit} value={unit}>
-                    {unit}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <MeasurementUnitSelectField
+            measurementUnits={measurementUnits}
+            onMeasurementUnitsChange={onMeasurementUnitsChange}
+            value={newItemUnitId || defaultUnitId}
+            onValueChange={setNewItemUnitId}
+            label="Unit"
+          />
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

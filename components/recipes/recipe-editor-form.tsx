@@ -7,45 +7,50 @@ import { Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
 import { saveRecipeAction } from '@/lib/recipes/actions'
 import type { RecipeEditorData } from '@/lib/recipes/queries'
+import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
 
 type IngredientRow = {
   key: string
   stockItemId: string
   quantity: string
-  unit: string
+  unitId: string
 }
 
 function toIngredientRows(ingredients: RecipeEditorData['ingredients']): IngredientRow[] {
   if (ingredients.length === 0) {
-    return [{ key: crypto.randomUUID(), stockItemId: '', quantity: '', unit: '' }]
+    return [{ key: crypto.randomUUID(), stockItemId: '', quantity: '', unitId: '' }]
   }
   return ingredients.map((row) => ({
     key: crypto.randomUUID(),
     stockItemId: row.stockItemId,
     quantity: String(row.quantity),
-    unit: row.unit ?? row.baseUnit,
+    unitId: row.unitId,
   }))
 }
 
 function emptyRow(): IngredientRow {
-  return { key: crypto.randomUUID(), stockItemId: '', quantity: '', unit: '' }
+  return { key: crypto.randomUUID(), stockItemId: '', quantity: '', unitId: '' }
 }
 
 export function RecipeEditorForm({
   data,
   stockItems: initialStockItems,
+  measurementUnits: initialMeasurementUnits,
   canEdit,
 }: {
   data: RecipeEditorData
   stockItems: StockItemOption[]
+  measurementUnits: MeasurementUnitOption[]
   canEdit: boolean
 }) {
   const router = useRouter()
   const [stockItems, setStockItems] = useState(initialStockItems)
+  const [measurementUnits, setMeasurementUnits] = useState(initialMeasurementUnits)
   const [rows, setRows] = useState<IngredientRow[]>(() => toIngredientRows(data.ingredients))
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -64,7 +69,7 @@ export function RecipeEditorForm({
     const stockItem = stockItemById.get(stockItemId)
     updateRow(key, {
       stockItemId,
-      unit: stockItem?.base_unit ?? '',
+      unitId: stockItem?.unit_id ?? '',
     })
   }
 
@@ -84,11 +89,11 @@ export function RecipeEditorForm({
     setSuccessMessage(null)
 
     const ingredients = rows
-      .filter((row) => row.stockItemId && Number(row.quantity) > 0)
+      .filter((row) => row.stockItemId && row.unitId && Number(row.quantity) > 0)
       .map((row) => ({
         stockItemId: row.stockItemId,
         quantity: Number(row.quantity),
-        unit: row.unit.trim() || null,
+        unitId: row.unitId,
       }))
 
     startTransition(async () => {
@@ -157,6 +162,8 @@ export function RecipeEditorForm({
               <StockItemSelectField
                 stockItems={stockItems}
                 onStockItemsChange={setStockItems}
+                measurementUnits={measurementUnits}
+                onMeasurementUnitsChange={setMeasurementUnits}
                 value={row.stockItemId}
                 onValueChange={(value) => handleStockItemChange(row.key, value)}
                 disabled={!canEdit}
@@ -176,17 +183,15 @@ export function RecipeEditorForm({
                   disabled={!canEdit}
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor={`unit-${row.key}`}>Unit</Label>
-                <Input
-                  id={`unit-${row.key}`}
-                  value={row.unit}
-                  onChange={(event) => updateRow(row.key, { unit: event.target.value })}
-                  className="border-[#E9E9E7] bg-white"
-                  disabled={!canEdit}
-                  placeholder="e.g. g"
-                />
-              </div>
+              <MeasurementUnitSelectField
+                measurementUnits={measurementUnits}
+                onMeasurementUnitsChange={setMeasurementUnits}
+                value={row.unitId}
+                onValueChange={(unitId) => updateRow(row.key, { unitId })}
+                disabled={!canEdit}
+                allowCreate={canEdit}
+                label="Unit"
+              />
               <div className="flex items-end justify-end">
                 <Button
                   type="button"

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
 import { saveGrvAction } from '@/lib/stock/actions'
+import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
 
 type LineRow = {
@@ -29,12 +30,15 @@ function emptyRow(): LineRow {
 
 export function ReceiveStockForm({
   stockItems: initialStockItems,
+  measurementUnits: initialMeasurementUnits,
   showUnitCost = false,
 }: {
   stockItems: StockItemOption[]
+  measurementUnits: MeasurementUnitOption[]
   showUnitCost?: boolean
 }) {
   const [stockItems, setStockItems] = useState(initialStockItems)
+  const [measurementUnits, setMeasurementUnits] = useState(initialMeasurementUnits)
   const [supplier, setSupplier] = useState('')
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [rows, setRows] = useState<LineRow[]>([emptyRow()])
@@ -100,12 +104,13 @@ export function ReceiveStockForm({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="invoice-number">Invoice number</Label>
+              <Label htmlFor="invoice-number">Invoice number (optional)</Label>
               <Input
                 id="invoice-number"
                 value={invoiceNumber}
                 onChange={(event) => setInvoiceNumber(event.target.value)}
                 className="border-[#E9E9E7]"
+                placeholder="Leave blank to use GRV number as reference"
               />
             </div>
           </div>
@@ -136,6 +141,8 @@ export function ReceiveStockForm({
                 <StockItemSelectField
                   stockItems={stockItems}
                   onStockItemsChange={setStockItems}
+                  measurementUnits={measurementUnits}
+                  onMeasurementUnitsChange={setMeasurementUnits}
                   value={row.stockItemId}
                   onValueChange={(value) => updateRow(row.key, { stockItemId: value })}
                 />

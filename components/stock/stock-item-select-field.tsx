@@ -10,11 +10,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { CreateStockItemDialog } from '@/components/stock/create-stock-item-dialog'
+import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
 
 export function StockItemSelectField({
   stockItems,
   onStockItemsChange,
+  measurementUnits,
+  onMeasurementUnitsChange,
   value,
   onValueChange,
   disabled = false,
@@ -23,6 +26,8 @@ export function StockItemSelectField({
 }: {
   stockItems: StockItemOption[]
   onStockItemsChange: (items: StockItemOption[]) => void
+  measurementUnits: MeasurementUnitOption[]
+  onMeasurementUnitsChange?: (units: MeasurementUnitOption[]) => void
   value: string
   onValueChange: (stockItemId: string) => void
   disabled?: boolean
@@ -47,7 +52,7 @@ export function StockItemSelectField({
           <SelectContent>
             {stockItemOptions.map((item) => (
               <SelectItem key={item.id} value={item.id}>
-                {item.name} ({item.base_unit})
+                {item.name} ({item.unit_label})
               </SelectItem>
             ))}
           </SelectContent>
@@ -66,6 +71,8 @@ export function StockItemSelectField({
       <CreateStockItemDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
+        measurementUnits={measurementUnits}
+        onMeasurementUnitsChange={onMeasurementUnitsChange}
         onCreated={(created) => {
           onStockItemsChange([...stockItems, created])
           onValueChange(created.id)

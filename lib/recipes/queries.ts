@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 
 export type RecipeMenuItemRow = {
   menuItemId: string
@@ -17,9 +18,10 @@ export type RecipesOverviewData = {
 export type RecipeIngredientRow = {
   stockItemId: string
   stockItemName: string
-  baseUnit: string
+  stockItemUnitId: string
   quantity: number
-  unit: string | null
+  unitId: string
+  unitLabel: string
 }
 
 export type RecipeEditorData = {
@@ -27,6 +29,14 @@ export type RecipeEditorData = {
   menuItemName: string
   recipeId: string | null
   ingredients: RecipeIngredientRow[]
+}
+
+type UnitJoin = { name: string; symbol: string | null } | { name: string; symbol: string | null }[] | null
+
+function unitLabelFromJoin(unit: UnitJoin) {
+  const row = Array.isArray(unit) ? unit[0] : unit
+  if (!row) return '—'
+  return formatMeasurementUnitLabel(row)
 }
 
 export async function getRecipesOverview(
@@ -124,7 +134,9 @@ export async function getRecipeEditorData(
 
   const { data: recipeItems, error: recipeItemsError } = await supabase
     .from('recipe_items')
-    .select('stock_item_id, quantity, unit, stock_items!inner(id, name, base_unit)')
+    .select(
+      'stock_item_id, quantity, unit_id, measurement_units(name, symbol), stock_items!inner(id, name, unit_id)',
+    )
     .eq('recipe_id', recipe.id)
 
   if (recipeItemsError) throw recipeItemsError
@@ -138,9 +150,10 @@ export async function getRecipeEditorData(
     return {
       stockItemId: row.stock_item_id,
       stockItemName: stockItem.name,
-      baseUnit: stockItem.base_unit,
+      stockItemUnitId: stockItem.unit_id,
       quantity: Number(row.quantity),
-      unit: row.unit,
+      unitId: row.unit_id,
+      unitLabel: unitLabelFromJoin(row.measurement_units as UnitJoin),
     }
   })
 

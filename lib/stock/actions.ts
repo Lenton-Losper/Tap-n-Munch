@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
+import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermissionOrError, type StockAccessContext } from '@/lib/stock/auth'
@@ -21,12 +22,12 @@ export type SaveGrvInput = {
   lineItems: GrvLineItemInput[]
 }
 
-export async function createStockItemAction(input: { name: string; baseUnit: string }) {
+export async function createStockItemAction(input: { name: string; unitId: string }) {
   const name = input.name.trim()
-  const baseUnit = input.baseUnit.trim()
+  const unitId = input.unitId.trim()
 
-  if (!name || !baseUnit) {
-    return { error: 'Name and base unit are required.' }
+  if (!name || !unitId) {
+    return { error: 'Name and unit are required.' }
   }
 
   const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
@@ -47,24 +48,37 @@ export async function createStockItemAction(input: { name: string; baseUnit: str
     .insert({
       restaurant_id: restaurantId,
       name,
-      base_unit: baseUnit,
+      unit_id: unitId,
       is_purchasable: true,
       is_manufactured: false,
       is_active: true,
     })
-    .select('id, name, base_unit')
+    .select('id, name, unit_id, measurement_units(name, symbol)')
     .single()
 
   if (error) {
     return { error: error.message }
   }
 
+  const unitJoin = data.measurement_units as
+    | { name: string; symbol: string | null }
+    | { name: string; symbol: string | null }[]
+    | null
+  const unitRow = Array.isArray(unitJoin) ? unitJoin[0] : unitJoin
+
   revalidatePath('/stock')
   revalidatePath('/stock/receive')
   revalidatePath('/stock/history')
   revalidatePath('/stock/recipes')
 
-  return { data }
+  return {
+    data: {
+      id: data.id,
+      name: data.name,
+      unit_id: data.unit_id,
+      unit_label: unitRow ? formatMeasurementUnitLabel(unitRow) : '—',
+    },
+  }
 }
 
 export async function saveGrvAction(input: SaveGrvInput) {
@@ -209,7 +223,7 @@ export async function saveAdjustmentAction(input: SaveAdjustmentInput) {
   return {
     data: {
       newBalance,
-      baseUnit: level.base_unit,
+      baseUnit: level.unit_label,
       itemName: level.name,
     },
   }

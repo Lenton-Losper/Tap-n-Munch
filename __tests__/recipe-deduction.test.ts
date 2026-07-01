@@ -21,6 +21,8 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
 
   let stockItemId1: string
   let stockItemId2: string
+  let gUnitId: string
+  let mlUnitId: string
   let menuItemWithRecipeId: string
   let menuItemNoRecipeId: string
   let recipeId: string
@@ -73,12 +75,30 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
     jest.setTimeout(60_000)
     await deleteTestData()
 
+    const { data: gUnit, error: gUnitErr } = await admin
+      .from('measurement_units')
+      .select('id')
+      .is('restaurant_id', null)
+      .eq('name', 'g')
+      .single()
+    expect(gUnitErr).toBeNull()
+    gUnitId = gUnit!.id
+
+    const { data: mlUnit, error: mlUnitErr } = await admin
+      .from('measurement_units')
+      .select('id')
+      .is('restaurant_id', null)
+      .eq('name', 'ml')
+      .single()
+    expect(mlUnitErr).toBeNull()
+    mlUnitId = mlUnit!.id
+
     const { data: stock1, error: stock1Err } = await admin
       .from('stock_items')
       .insert({
         restaurant_id: RESTAURANT_ID,
         name: `${runTag} ingredient-a`,
-        base_unit: 'g',
+        unit_id: gUnitId,
         is_purchasable: true,
         is_manufactured: false,
         is_active: true,
@@ -94,7 +114,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
       .insert({
         restaurant_id: RESTAURANT_ID,
         name: `${runTag} ingredient-b`,
-        base_unit: 'ml',
+        unit_id: mlUnitId,
         is_purchasable: true,
         is_manufactured: false,
         is_active: true,
@@ -153,7 +173,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
         recipe_id: recipeId,
         stock_item_id: stockItemId1,
         quantity: RECIPE_QTY_1,
-        unit: 'g',
+        unit_id: gUnitId,
       })
       .select('id')
       .single()
@@ -265,7 +285,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
         recipe_id: recipeId,
         stock_item_id: stockItemId2,
         quantity: RECIPE_QTY_2,
-        unit: 'ml',
+        unit_id: mlUnitId,
       })
       .select('id')
       .single()

@@ -6,12 +6,14 @@ import { StockSubNav } from '@/components/stock/stock-sub-nav'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermission } from '@/lib/stock/auth'
+import { getMeasurementUnitsForRestaurant } from '@/lib/measurement-units/queries'
 import { getActiveStockItems } from '@/lib/stock/queries'
 
 export default async function ReceiveStockPage() {
   const { supabase, userId, restaurantId } = await requireStockPermission(PERMISSIONS.STOCK_RECEIVE)
-  const [stockItems, canViewCosts, canViewRecipes] = await Promise.all([
+  const [stockItems, measurementUnits, canViewCosts, canViewRecipes] = await Promise.all([
     getActiveStockItems(supabase, restaurantId),
+    getMeasurementUnitsForRestaurant(supabase, restaurantId),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS),
     authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW),
   ])
@@ -38,7 +40,11 @@ export default async function ReceiveStockPage() {
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <ReceiveStockForm stockItems={stockItems} showUnitCost={canViewCosts} />
+        <ReceiveStockForm
+          stockItems={stockItems}
+          measurementUnits={measurementUnits}
+          showUnitCost={canViewCosts}
+        />
       </div>
     </div>
   )

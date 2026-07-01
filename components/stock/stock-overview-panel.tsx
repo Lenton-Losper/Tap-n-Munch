@@ -85,9 +85,9 @@ export function StockOverviewPanel({
                   <tr key={row.id} className="border-t border-[#E9E9E7]">
                     <td className="px-5 py-3 font-medium text-[#37352F]">{row.name}</td>
                     <td className="px-5 py-3 text-[#37352F]">
-                      {formatStockQuantity(row.currentStock, row.base_unit)}
+                      {formatStockQuantity(row.currentStock, row.unit_label)}
                     </td>
-                    <td className="px-5 py-3 text-[#6B675F]">{row.base_unit}</td>
+                    <td className="px-5 py-3 text-[#6B675F]">{row.unit_label}</td>
                     <td className="px-5 py-3">
                       {row.isLow ? (
                         <Badge className="border-amber-200 bg-amber-50 text-amber-800">Low</Badge>
