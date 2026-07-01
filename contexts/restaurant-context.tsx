@@ -118,7 +118,8 @@ export function RestaurantProvider({
   }, [restaurantId])
 
   useEffect(() => {
-    load()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope
+    void load()
   }, [load])
 
   const paymentMethods = settings?.payment_methods ?? ['cash', 'card']

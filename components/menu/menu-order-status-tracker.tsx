@@ -159,6 +159,7 @@ export function MenuOrderStatusTracker({
         ).trim()
       : ''
 
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurantId) {
       setLastOrder(null)
@@ -236,6 +237,7 @@ export function MenuOrderStatusTracker({
       supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, persistedOrderId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const baseOrder = useMemo(() => {
     if (lastOrder && isBannerEligibleOrder(lastOrder)) return lastOrder

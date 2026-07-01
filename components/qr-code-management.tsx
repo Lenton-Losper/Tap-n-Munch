@@ -178,6 +178,7 @@ export function QRCodeManagement() {
 
   useEffect(() => {
     if (!restaurantId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional polling fetch for table statuses; React Query refactor out of scope
     void refreshTableStatuses()
     const interval = setInterval(() => {
       void refreshTableStatuses()
