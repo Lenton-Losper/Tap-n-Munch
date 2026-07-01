@@ -10,9 +10,10 @@ import { getActiveStockItems } from '@/lib/stock/queries'
 
 export default async function ReceiveStockPage() {
   const { supabase, userId, restaurantId } = await requireStockPermission(PERMISSIONS.STOCK_RECEIVE)
-  const [stockItems, canViewCosts] = await Promise.all([
+  const [stockItems, canViewCosts, canViewRecipes] = await Promise.all([
     getActiveStockItems(supabase, restaurantId),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS),
+    authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW),
   ])
 
   return (
@@ -31,7 +32,7 @@ export default async function ReceiveStockPage() {
             </Link>
           </div>
           <div className="mt-5">
-            <StockSubNav />
+            <StockSubNav showRecipesTab={canViewRecipes} />
           </div>
         </div>
       </div>

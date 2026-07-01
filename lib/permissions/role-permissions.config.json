@@ -16,7 +16,9 @@
     "stock:receive",
     "stock:adjust",
     "stock:view_costs",
-    "stock:delete_grv"
+    "stock:delete_grv",
+    "recipe:view",
+    "recipe:edit"
   ],
   "manager": [
     "orders:read",
@@ -30,7 +32,9 @@
     "settings:read",
     "stock:view",
     "stock:receive",
-    "stock:adjust"
+    "stock:adjust",
+    "recipe:view",
+    "recipe:edit"
   ],
   "cashier": [
     "orders:read",

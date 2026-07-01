@@ -13,10 +13,11 @@ type StockPageProps = {
 
 export default async function StockPage({ searchParams }: StockPageProps) {
   const { supabase, userId, restaurantId } = await requireStockPermission(PERMISSIONS.STOCK_VIEW)
-  const [data, canAdjust, canReceive] = await Promise.all([
+  const [data, canAdjust, canReceive, canViewRecipes] = await Promise.all([
     getStockOverview(supabase, restaurantId),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_ADJUST),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE),
+    authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW),
   ])
   const params = await searchParams
   const receivedCount = params.received ? Number(params.received) : 0
@@ -34,7 +35,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
             Track inventory levels and record goods received.
           </p>
           <div className="mt-5">
-            <StockSubNav showReceiveButton={canReceive} />
+            <StockSubNav showReceiveButton={canReceive} showRecipesTab={canViewRecipes} />
           </div>
         </div>
       </div>

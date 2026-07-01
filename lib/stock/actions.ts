@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermissionOrError } from '@/lib/stock/auth'
+import { requireRecipePermissionOrError } from '@/lib/recipes/auth'
 import { ADJUSTMENT_TYPES, type AdjustmentType } from '@/lib/stock/format'
 import { getStockItemCurrentLevel } from '@/lib/stock/queries'
 
@@ -29,10 +30,15 @@ export async function createStockItemAction(input: { name: string; baseUnit: str
   }
 
   const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
+  let stockContext = context
   if ('error' in context) {
-    return { error: context.error }
+    const recipeContext = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
+    if ('error' in recipeContext) {
+      return { error: context.error }
+    }
+    stockContext = recipeContext
   }
-  const { supabase, restaurantId } = context
+  const { supabase, restaurantId } = stockContext
 
   const { data, error } = await supabase
     .from('stock_items')
@@ -54,6 +60,7 @@ export async function createStockItemAction(input: { name: string; baseUnit: str
   revalidatePath('/stock')
   revalidatePath('/stock/receive')
   revalidatePath('/stock/history')
+  revalidatePath('/stock/recipes')
 
   return { data }
 }

@@ -5,7 +5,13 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 
-export function StockSubNav({ showReceiveButton = false }: { showReceiveButton?: boolean }) {
+export function StockSubNav({
+  showReceiveButton = false,
+  showRecipesTab = false,
+}: {
+  showReceiveButton?: boolean
+  showRecipesTab?: boolean
+}) {
   const pathname = usePathname()
 
   const tabs = [
@@ -15,6 +21,15 @@ export function StockSubNav({ showReceiveButton = false }: { showReceiveButton?:
       label: 'Movement history',
       match: (path: string) => path.startsWith('/stock/history'),
     },
+    ...(showRecipesTab
+      ? [
+          {
+            href: '/stock/recipes',
+            label: 'Recipes',
+            match: (path: string) => path.startsWith('/stock/recipes'),
+          },
+        ]
+      : []),
   ]
 
   return (

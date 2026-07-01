@@ -36,6 +36,7 @@ export default async function StockHistoryPage({ searchParams }: HistoryPageProp
 
   const canViewCosts = await authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS)
   const canReceive = await authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE)
+  const canViewRecipes = await authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW)
 
   const [stockItems, rows] = await Promise.all([
     getActiveStockItems(supabase, restaurantId),
@@ -56,7 +57,7 @@ export default async function StockHistoryPage({ searchParams }: HistoryPageProp
             Read-only ledger of stock changes for your restaurant.
           </p>
           <div className="mt-5">
-            <StockSubNav showReceiveButton={canReceive} />
+            <StockSubNav showReceiveButton={canReceive} showRecipesTab={canViewRecipes} />
           </div>
         </div>
       </div>
