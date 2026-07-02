@@ -8,6 +8,10 @@ workers_dev = true
 account_id = "b74d9cfb3ba0e345287429ca237ecbfd"
 
 [[routes]]
+pattern = "flashtap.app"
+custom_domain = true
+
+[[routes]]
 pattern = "www.flashtap.app"
 custom_domain = true
 
@@ -23,6 +27,7 @@ binding = "ASSETS"
 ENVIRONMENT = "production"
 NEXT_PUBLIC_APP_URL = "https://flashtap.app"
 NEXT_PUBLIC_BASE_URL = "https://flashtap.app"
+GIT_COMMIT_SHA = "unknown"
 
 [[kv_namespaces]]
 binding = "NEXT_CACHE_WORKERS_KV"

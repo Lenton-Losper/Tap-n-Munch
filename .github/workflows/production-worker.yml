@@ -24,10 +24,12 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_APP_URL: https://flashtap.app
           NEXT_PUBLIC_BASE_URL: https://flashtap.app
+          NEXT_PUBLIC_COMMIT_SHA: ${{ github.sha }}
+          GIT_COMMIT_SHA: ${{ github.sha }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       - name: Deploy to flashtap-production
-        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml
+        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -38,7 +40,20 @@ jobs:
           else
             echo "WARNING: PRODUCTION_CRON_SECRET not set — expire-pending will 401 until configured"
           fi
+          if [ -n "$TERMINAL_JWT_SECRET" ]; then
+            echo "$TERMINAL_JWT_SECRET" | npx wrangler@3.99.0 secret put TERMINAL_JWT_SECRET --config wrangler.production.toml
+          else
+            echo "WARNING: PRODUCTION_TERMINAL_JWT_SECRET not set — terminal activation will fail"
+          fi
+          if [ -n "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY length in deploy: ${#RESEND_API_KEY}"
+            echo "$RESEND_API_KEY" | npx wrangler@3.99.0 secret put RESEND_API_KEY --config wrangler.production.toml
+          else
+            echo "WARNING: PRODUCTION_RESEND_API_KEY not set — staff invite emails will not send"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
+          TERMINAL_JWT_SECRET: ${{ secrets.PRODUCTION_TERMINAL_JWT_SECRET }}
+          RESEND_API_KEY: ${{ secrets.PRODUCTION_RESEND_API_KEY }}
