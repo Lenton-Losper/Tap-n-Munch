@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { PDF_EMAIL_UNAVAILABLE_MESSAGE } from '@/lib/reports/pdf-email-unavailable'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,6 +44,9 @@ export async function POST(
     if (!['pdf', 'csv'].includes(format)) {
       return NextResponse.json({ error: 'format must be pdf or csv' }, { status: 400 })
     }
+    if (format === 'pdf') {
+      return NextResponse.json({ error: PDF_EMAIL_UNAVAILABLE_MESSAGE }, { status: 503 })
+    }
 
     const supabase = createServerSupabaseClient()
     const { data, error } = await supabase
@@ -50,7 +54,7 @@ export async function POST(
       .insert({
         restaurant_id: id,
         email,
-        format: format ?? 'pdf',
+        format: 'csv',
         send_time: send_time ?? '20:00',
         timezone: timezone ?? 'Africa/Windhoek',
         enabled: enabled ?? true,

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { PDF_EMAIL_UNAVAILABLE_MESSAGE } from '@/lib/reports/pdf-email-unavailable'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,6 +19,9 @@ export async function PATCH(
     const updates: Record<string, unknown> = {}
     for (const key of allowed) {
       if (key in body) updates[key] = body[key]
+    }
+    if (updates.format === 'pdf') {
+      return NextResponse.json({ error: PDF_EMAIL_UNAVAILABLE_MESSAGE }, { status: 503 })
     }
     updates.updated_at = new Date().toISOString()
 
