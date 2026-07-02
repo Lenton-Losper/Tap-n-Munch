@@ -1,9 +1,9 @@
 name: Deploy to Vercel Production
 
+# Retired from auto-deploy: production traffic is on Cloudflare Worker only.
+# Run manually when a one-off Vercel deploy is still needed.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   test:
