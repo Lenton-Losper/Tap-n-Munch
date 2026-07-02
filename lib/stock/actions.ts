@@ -337,3 +337,66 @@ export async function saveAdjustmentAction(input: SaveAdjustmentInput) {
     },
   }
 }
+
+export type SaveStockCountInput = {
+  stockItemId: string
+  actualCount: number
+  notes?: string
+}
+
+export async function saveStockCountAction(input: SaveStockCountInput) {
+  const stockItemId = input.stockItemId.trim()
+  const notes = input.notes?.trim() ?? ''
+  const actualCount = Number(input.actualCount)
+
+  if (!stockItemId) {
+    return { error: 'Stock item is required.' }
+  }
+
+  if (!Number.isFinite(actualCount) || actualCount < 0) {
+    return { error: 'Enter a valid actual count (zero or greater).' }
+  }
+
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_ADJUST)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, userId, restaurantId } = context
+
+  const level = await getStockItemCurrentLevel(supabase, restaurantId, stockItemId)
+  if (!level) {
+    return { error: 'Stock item not found.' }
+  }
+
+  const quantityDelta = actualCount - level.currentStock
+
+  if (quantityDelta === 0) {
+    return { error: 'Actual count matches system stock — no adjustment needed.' }
+  }
+
+  const { error } = await supabase.from('stock_movements').insert({
+    restaurant_id: restaurantId,
+    stock_item_id: stockItemId,
+    quantity_delta: quantityDelta,
+    reason: 'adjustment',
+    adjustment_type: 'count',
+    created_by: userId,
+    notes: notes || null,
+  })
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  revalidatePath('/stock')
+  revalidatePath('/stock/history')
+
+  return {
+    data: {
+      newBalance: actualCount,
+      quantityDelta,
+      baseUnit: level.unit_label,
+      itemName: level.name,
+    },
+  }
+}

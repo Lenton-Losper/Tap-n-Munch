@@ -1,4 +1,12 @@
-import { computeStockStatus } from '../lib/stock/format'
+import { computeStockStatus, formatSignedStockDelta } from '../lib/stock/format'
+
+describe('formatSignedStockDelta', () => {
+  test('formats positive and negative deltas', () => {
+    expect(formatSignedStockDelta(5, 'g')).toBe('+5 g')
+    expect(formatSignedStockDelta(-15, 'g')).toBe('-15 g')
+    expect(formatSignedStockDelta(0, 'g')).toBe('0 g')
+  })
+})
 
 describe('computeStockStatus', () => {
   test('not tracked when par_level is null', () => {

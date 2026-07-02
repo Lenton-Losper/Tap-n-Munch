@@ -246,7 +246,7 @@ export function StockOverviewPanel({
                               className="border-[#E9E9E7]"
                               onClick={() => openAdjustment(row.id)}
                             >
-                              Adjust
+                              Count Inventory
                             </Button>
                           ) : null}
                         </div>

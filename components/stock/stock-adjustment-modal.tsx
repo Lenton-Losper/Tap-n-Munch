@@ -5,13 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -19,8 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { getStockItemLevelAction, saveAdjustmentAction } from '@/lib/stock/actions'
-import { ADJUSTMENT_TYPES, formatStockQuantity, type AdjustmentType } from '@/lib/stock/format'
+import { getStockItemLevelAction, saveStockCountAction } from '@/lib/stock/actions'
+import { formatSignedStockDelta, formatStockQuantity } from '@/lib/stock/format'
 import type { StockItemLevel } from '@/lib/stock/queries'
 
 type StockAdjustmentModalProps = {
@@ -30,16 +23,7 @@ type StockAdjustmentModalProps = {
   onSaved: (message: string) => void
 }
 
-function PreviewRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4 text-sm">
-      <span className="text-[#6B675F]">{label}</span>
-      <span className="font-medium text-[#37352F]">{value}</span>
-    </div>
-  )
-}
-
-function StockAdjustmentForm({
+function StockCountForm({
   stockItemId,
   onOpenChange,
   onSaved,
@@ -51,8 +35,7 @@ function StockAdjustmentForm({
   const [level, setLevel] = useState<StockItemLevel | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadingLevel, setLoadingLevel] = useState(true)
-  const [adjustmentType, setAdjustmentType] = useState<AdjustmentType>('waste')
-  const [quantityChange, setQuantityChange] = useState('')
+  const [actualCount, setActualCount] = useState('')
   const [note, setNote] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -80,46 +63,35 @@ function StockAdjustmentForm({
   }, [stockItemId])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const parsedQuantity = Number(quantityChange)
-  const hasValidQuantity =
-    quantityChange.trim() !== '' && Number.isFinite(parsedQuantity) && parsedQuantity !== 0
-  const previewAdjustment = hasValidQuantity ? parsedQuantity : 0
-  const previewNewBalance = level ? level.currentStock + previewAdjustment : 0
+  const parsedActualCount = Number(actualCount)
+  const hasValidActualCount =
+    actualCount.trim() !== '' && Number.isFinite(parsedActualCount) && parsedActualCount >= 0
 
-  const previewValues = useMemo(() => {
-    if (!level) {
-      return null
-    }
-    return {
-      current: formatStockQuantity(level.currentStock, level.unit_label),
-      adjustment: hasValidQuantity
-        ? formatStockQuantity(previewAdjustment, level.unit_label)
-        : '—',
-      newBalance: hasValidQuantity
-        ? formatStockQuantity(previewNewBalance, level.unit_label)
-        : '—',
-    }
-  }, [hasValidQuantity, level, previewAdjustment, previewNewBalance])
+  const previewDelta = useMemo(() => {
+    if (!level || !hasValidActualCount) return null
+    return parsedActualCount - level.currentStock
+  }, [hasValidActualCount, level, parsedActualCount])
+
+  const noChange = previewDelta === 0
 
   const handleSave = () => {
-    if (!level) return
+    if (!level || !hasValidActualCount || noChange) return
     setSubmitError(null)
 
     startTransition(async () => {
-      const result = await saveAdjustmentAction({
+      const result = await saveStockCountAction({
         stockItemId,
-        adjustmentType,
-        quantityDelta: parsedQuantity,
+        actualCount: parsedActualCount,
         notes: note,
       })
 
       if (result.error || !result.data) {
-        setSubmitError(result.error ?? 'Failed to save adjustment.')
+        setSubmitError(result.error ?? 'Failed to save count.')
         return
       }
 
       onSaved(
-        `Adjustment recorded. New balance: ${formatStockQuantity(result.data.newBalance, result.data.baseUnit)}.`,
+        `Count saved. ${result.data.itemName} is now ${formatStockQuantity(result.data.newBalance, result.data.baseUnit)}.`,
       )
       onOpenChange(false)
     })
@@ -137,8 +109,9 @@ function StockAdjustmentForm({
         <div className="space-y-4">
           <div className="rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] px-4 py-3">
             <p className="font-medium text-[#37352F]">{level.name}</p>
-            <p className="mt-1 text-sm text-[#6B675F]">
-                Current stock: {formatStockQuantity(level.currentStock, level.unit_label)}
+            <p className="mt-1 text-sm text-[#6B675F]">Unit: {level.unit_label}</p>
+            <p className="mt-1 text-sm text-[#37352F]">
+              System shows: {formatStockQuantity(level.currentStock, level.unit_label)}
             </p>
           </div>
 
@@ -149,58 +122,53 @@ function StockAdjustmentForm({
           ) : null}
 
           <div className="space-y-1.5">
-            <Label>Reason</Label>
-            <Select
-              value={adjustmentType}
-              onValueChange={(value) => setAdjustmentType(value as AdjustmentType)}
-            >
-              <SelectTrigger className="w-full border-[#E9E9E7]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {ADJUSTMENT_TYPES.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="quantity-change">Quantity change</Label>
+            <Label htmlFor="actual-count">Actual Count</Label>
             <Input
-              id="quantity-change"
+              id="actual-count"
               type="number"
+              min="0"
               step="any"
-              value={quantityChange}
-              onChange={(event) => setQuantityChange(event.target.value)}
+              value={actualCount}
+              onChange={(event) => setActualCount(event.target.value)}
               className="border-[#E9E9E7]"
-              placeholder="e.g. -2 or 5"
+              placeholder={`e.g. ${level.currentStock}`}
             />
-            <p className="text-xs text-[#6B675F]">Positive adds stock; negative removes stock.</p>
+            <p className="text-xs text-[#6B675F]">
+              Enter the quantity you physically counted — not a plus/minus adjustment.
+            </p>
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="adjustment-note">Note (optional)</Label>
+            <Label htmlFor="count-note">Note (optional)</Label>
             <Input
-              id="adjustment-note"
+              id="count-note"
               value={note}
               onChange={(event) => setNote(event.target.value)}
               className="border-[#E9E9E7]"
+              placeholder="e.g. Weekly shelf count"
             />
           </div>
 
-          <div className="space-y-2 rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-[#6B675F]">Preview</p>
-            {previewValues ? (
-              <div className="space-y-2">
-                <PreviewRow label="Current" value={previewValues.current} />
-                <PreviewRow label="Adjustment" value={previewValues.adjustment} />
-                <PreviewRow label="New balance" value={previewValues.newBalance} />
-              </div>
-            ) : null}
-          </div>
+          {hasValidActualCount ? (
+            <div
+              className={`rounded-xl border px-4 py-3 text-sm ${
+                noChange
+                  ? 'border-[#E9E9E7] bg-[#FAFAF8] text-[#6B675F]'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              {noChange ? (
+                <p>No change — actual count matches system stock.</p>
+              ) : previewDelta != null ? (
+                <p>
+                  This will adjust stock by{' '}
+                  <span className="font-medium">
+                    {formatSignedStockDelta(previewDelta, level.unit_label)}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -211,10 +179,17 @@ function StockAdjustmentForm({
         <Button
           type="button"
           onClick={handleSave}
-          disabled={loadingLevel || !!loadError || !level || !hasValidQuantity || isPending}
+          disabled={
+            loadingLevel ||
+            !!loadError ||
+            !level ||
+            !hasValidActualCount ||
+            noChange ||
+            isPending
+          }
           className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]"
         >
-          {isPending ? 'Saving...' : 'Save adjustment'}
+          {isPending ? 'Saving...' : noChange && hasValidActualCount ? 'No change' : 'Save Count'}
         </Button>
       </DialogFooter>
     </>
@@ -231,14 +206,15 @@ export function StockAdjustmentModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="border-[#E9E9E7] sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Adjust stock</DialogTitle>
+          <DialogTitle>Count Inventory</DialogTitle>
           <DialogDescription>
-            Record a manual adjustment. This writes directly to the stock ledger.
+            Enter what you physically counted. We&apos;ll compute the adjustment from the system
+            balance.
           </DialogDescription>
         </DialogHeader>
 
         {open && stockItemId ? (
-          <StockAdjustmentForm
+          <StockCountForm
             key={stockItemId}
             stockItemId={stockItemId}
             onOpenChange={onOpenChange}
