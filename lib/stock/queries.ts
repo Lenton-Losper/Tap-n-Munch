@@ -17,10 +17,16 @@ function unitLabelFromJoin(unit: UnitJoin) {
 export type StockOverviewRow = {
   id: string
   name: string
+  unit_id: string
   unit_label: string
   par_level: number | null
   currentStock: number
   isLow: boolean
+  is_active: boolean
+}
+
+export type StockOverviewOptions = {
+  includeInactive?: boolean
 }
 
 export type StockOverviewData = {
@@ -62,15 +68,23 @@ function aggregateStockByItem(
 export async function getStockOverview(
   supabase: SupabaseClient,
   restaurantId: string,
+  options: StockOverviewOptions = {},
 ): Promise<StockOverviewData> {
+  const includeInactive = options.includeInactive ?? false
+
+  let itemsQuery = supabase
+    .from('stock_items')
+    .select('id, name, unit_id, par_level, is_active, measurement_units(name, symbol)')
+    .eq('restaurant_id', restaurantId)
+    .order('name')
+
+  if (!includeInactive) {
+    itemsQuery = itemsQuery.eq('is_active', true)
+  }
+
   const [{ data: items, error: itemsError }, { data: movements, error: movementsError }, { data: lastDelivery, error: lastDeliveryError }] =
     await Promise.all([
-      supabase
-        .from('stock_items')
-        .select('id, name, unit_id, par_level, measurement_units(name, symbol)')
-        .eq('restaurant_id', restaurantId)
-        .eq('is_active', true)
-        .order('name'),
+      itemsQuery,
       supabase
         .from('stock_movements')
         .select('stock_item_id, quantity_delta')
@@ -96,16 +110,20 @@ export async function getStockOverview(
     return {
       id: item.id,
       name: item.name,
+      unit_id: item.unit_id,
       unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
       par_level: parLevel,
       currentStock,
       isLow: parLevel != null && currentStock <= parLevel,
+      is_active: item.is_active ?? true,
     }
   })
 
+  const activeRows = rows.filter((row) => row.is_active)
+
   return {
-    trackedItems: rows.length,
-    lowStock: rows.filter((row) => row.isLow).length,
+    trackedItems: activeRows.length,
+    lowStock: activeRows.filter((row) => row.isLow).length,
     lastDeliveryAt: lastDelivery?.received_at ?? null,
     rows,
   }

@@ -81,6 +81,104 @@ export async function createStockItemAction(input: { name: string; unitId: strin
   }
 }
 
+export async function updateStockItemAction(input: {
+  stockItemId: string
+  name: string
+  unitId: string
+}) {
+  const stockItemId = input.stockItemId.trim()
+  const name = input.name.trim()
+  const unitId = input.unitId.trim()
+
+  if (!stockItemId) {
+    return { error: 'Stock item is required.' }
+  }
+
+  if (!name || !unitId) {
+    return { error: 'Name and unit are required.' }
+  }
+
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
+
+  const { data, error } = await supabase
+    .from('stock_items')
+    .update({ name, unit_id: unitId })
+    .eq('id', stockItemId)
+    .eq('restaurant_id', restaurantId)
+    .select('id, name, unit_id, measurement_units(name, symbol)')
+    .single()
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  const unitJoin = data.measurement_units as
+    | { name: string; symbol: string | null }
+    | { name: string; symbol: string | null }[]
+    | null
+  const unitRow = Array.isArray(unitJoin) ? unitJoin[0] : unitJoin
+
+  revalidatePath('/stock')
+  revalidatePath('/stock/receive')
+  revalidatePath('/stock/history')
+  revalidatePath('/stock/recipes')
+
+  return {
+    data: {
+      id: data.id,
+      name: data.name,
+      unit_id: data.unit_id,
+      unit_label: unitRow ? formatMeasurementUnitLabel(unitRow) : '—',
+    },
+  }
+}
+
+export async function setStockItemActiveAction(input: {
+  stockItemId: string
+  isActive: boolean
+}) {
+  const stockItemId = input.stockItemId.trim()
+
+  if (!stockItemId) {
+    return { error: 'Stock item is required.' }
+  }
+
+  const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
+
+  const { data, error } = await supabase
+    .from('stock_items')
+    .update({ is_active: input.isActive })
+    .eq('id', stockItemId)
+    .eq('restaurant_id', restaurantId)
+    .select('id, name, is_active')
+    .single()
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  revalidatePath('/stock')
+  revalidatePath('/stock/receive')
+  revalidatePath('/stock/history')
+  revalidatePath('/stock/recipes')
+
+  return {
+    data: {
+      id: data.id,
+      name: data.name,
+      is_active: data.is_active,
+    },
+  }
+}
+
 export async function saveGrvAction(input: SaveGrvInput) {
   const supplier = input.supplier.trim()
   const invoiceNumber = input.invoiceNumber.trim()

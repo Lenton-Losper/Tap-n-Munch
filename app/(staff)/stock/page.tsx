@@ -2,24 +2,27 @@ export const dynamic = 'force-dynamic'
 
 import { StockSubNav } from '@/components/stock/stock-sub-nav'
 import { StockOverviewPanel } from '@/components/stock/stock-overview-panel'
+import { getMeasurementUnitsForRestaurant } from '@/lib/measurement-units/queries'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermission } from '@/lib/stock/auth'
 import { getStockOverview } from '@/lib/stock/queries'
 
 type StockPageProps = {
-  searchParams: Promise<{ received?: string }>
+  searchParams: Promise<{ received?: string; showInactive?: string }>
 }
 
 export default async function StockPage({ searchParams }: StockPageProps) {
   const { supabase, userId, restaurantId } = await requireStockPermission(PERMISSIONS.STOCK_VIEW)
-  const [data, canAdjust, canReceive, canViewRecipes] = await Promise.all([
-    getStockOverview(supabase, restaurantId),
+  const params = await searchParams
+  const showInactive = params.showInactive === '1'
+  const [data, canAdjust, canReceive, canViewRecipes, measurementUnits] = await Promise.all([
+    getStockOverview(supabase, restaurantId, { includeInactive: showInactive }),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_ADJUST),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE),
     authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW),
+    getMeasurementUnitsForRestaurant(supabase, restaurantId),
   ])
-  const params = await searchParams
   const receivedCount = params.received ? Number(params.received) : 0
   const successMessage =
     receivedCount > 0
@@ -41,7 +44,14 @@ export default async function StockPage({ searchParams }: StockPageProps) {
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <StockOverviewPanel data={data} successMessage={successMessage} canAdjust={canAdjust} />
+        <StockOverviewPanel
+          data={data}
+          successMessage={successMessage}
+          canAdjust={canAdjust}
+          canManage={canReceive}
+          showInactive={showInactive}
+          measurementUnits={measurementUnits}
+        />
       </div>
     </div>
   )
