@@ -42,5 +42,9 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
   if (data.has_addons !== undefined) payload.has_addons = Boolean(data.has_addons)
   if (data.addons !== undefined) payload.addons = data.addons
 
+  if (data.track_inventory !== undefined) {
+    payload.track_inventory = Boolean(data.track_inventory)
+  }
+
   return payload
 }

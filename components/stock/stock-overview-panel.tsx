@@ -11,7 +11,9 @@ import { StockAdjustmentModal } from '@/components/stock/stock-adjustment-modal'
 import { setStockItemActiveAction } from '@/lib/stock/actions'
 import { formatLastDelivery, formatStockQuantity } from '@/lib/stock/format'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
+import type { InventorySetupData } from '@/lib/recipes/queries'
 import type { StockOverviewData, StockOverviewRow } from '@/lib/stock/queries'
+import { InventorySetupStockCard } from '@/components/menu/inventory-setup-ui'
 
 function StockStatusBadge({ row }: { row: StockOverviewRow }) {
   if (!row.is_active) {
@@ -52,6 +54,7 @@ export function StockOverviewPanel({
   canManage = false,
   showInactive = false,
   measurementUnits = [],
+  inventorySetup = null,
 }: {
   data: StockOverviewData
   successMessage?: string | null
@@ -59,6 +62,7 @@ export function StockOverviewPanel({
   canManage?: boolean
   showInactive?: boolean
   measurementUnits?: MeasurementUnitOption[]
+  inventorySetup?: InventorySetupData | null
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -136,10 +140,11 @@ export function StockOverviewPanel({
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className={`grid gap-4 ${inventorySetup ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'}`}>
         <SummaryCard label="Tracked items" value={data.trackedItems} />
         <SummaryCard label="Low stock" value={data.lowStock} />
         <SummaryCard label="Last delivery" value={formatLastDelivery(data.lastDeliveryAt)} />
+        {inventorySetup ? <InventorySetupStockCard setup={inventorySetup} /> : null}
       </div>
 
       <div className="rounded-2xl border border-[#E9E9E7] bg-white">

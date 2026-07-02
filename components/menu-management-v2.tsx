@@ -37,6 +37,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Skeleton } from '@/components/ui/skeleton'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 import { MenuItemFormModal } from '@/components/menu/menu-item-form-modal'
+import { InventorySetupBanner } from '@/components/menu/inventory-setup-ui'
+import { MenuItemInventoryBadge } from '@/components/menu/menu-item-inventory-badge'
+import { loadInventorySetupAction } from '@/lib/recipes/actions'
+import type { InventorySetupData } from '@/lib/recipes/queries'
 
 const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
 const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
@@ -50,10 +54,19 @@ type MenuManagementCachePayload = {
   timestamp: number
 }
 
-export function MenuManagementV2() {
+export function MenuManagementV2({
+  initialInventorySetup = null,
+  missingInventoryFilter = false,
+}: {
+  initialInventorySetup?: InventorySetupData | null
+  missingInventoryFilter?: boolean
+}) {
   const { user, restaurantId } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
+  const [inventorySetup, setInventorySetup] = useState<InventorySetupData | null>(
+    initialInventorySetup,
+  )
   
   // Data state
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
@@ -245,10 +258,25 @@ export function MenuManagementV2() {
 
   const searchableQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery])
 
-  const visibleMenuItems = useMemo(
-    () => (showHidden ? allMenuItems : allMenuItems.filter((item) => item.status !== 'hidden')),
-    [allMenuItems, showHidden]
+  const missingMenuItemIds = useMemo(
+    () => new Set(inventorySetup?.missingItems.map((item) => item.menuItemId) ?? []),
+    [inventorySetup],
   )
+
+  const refreshInventorySetup = useCallback(async () => {
+    const result = await loadInventorySetupAction()
+    if (result.data) {
+      setInventorySetup(result.data)
+    }
+  }, [])
+
+  const visibleMenuItems = useMemo(() => {
+    let items = showHidden ? allMenuItems : allMenuItems.filter((item) => item.status !== 'hidden')
+    if (missingInventoryFilter) {
+      items = items.filter((item) => missingMenuItemIds.has(item.id))
+    }
+    return items
+  }, [allMenuItems, showHidden, missingInventoryFilter, missingMenuItemIds])
 
   const subCategoriesByMenuCategory = useMemo(() => {
     const map: Record<string, SubCategory[]> = {}
@@ -731,6 +759,7 @@ export function MenuManagementV2() {
     const items = await getMenuItems(restaurantId)
     setAllMenuItems(items)
     await invalidateServerMenuCache()
+    await refreshInventorySetup()
   }
 
   const handleDeleteItem = async (item: MenuItem) => {
@@ -852,6 +881,9 @@ export function MenuManagementV2() {
       </header>
 
       <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
+        {inventorySetup ? (
+          <InventorySetupBanner setup={inventorySetup} filterActive={missingInventoryFilter} />
+        ) : null}
         {/* Category Tabs */}
         <div
           className="flex overflow-x-auto gap-2 pb-2 categories-scroll mb-4 sm:mb-6 -mx-4 sm:mx-0 px-4 sm:px-0"
@@ -1002,6 +1034,9 @@ export function MenuManagementV2() {
                                 <p className="text-xs text-muted-foreground mb-2 line-clamp-1">
                                   {item.description}
                                 </p>
+                                <div className="mb-2">
+                                  <MenuItemInventoryBadge item={item} setup={inventorySetup} />
+                                </div>
                                 <div className="flex items-center justify-between">
                                   <span className="text-sm font-bold text-[#FF6B35]">
                                     N${item.base_price.toFixed(2)}
@@ -1182,6 +1217,9 @@ export function MenuManagementV2() {
                               <p className="text-xs text-muted-foreground mb-2 line-clamp-1">
                                 {item.description}
                               </p>
+                              <div className="mb-2">
+                                <MenuItemInventoryBadge item={item} setup={inventorySetup} />
+                              </div>
                               <div className="flex items-center justify-between">
                                 <span className="text-sm font-bold text-[#FF6B35]">
                                   N${item.base_price.toFixed(2)}

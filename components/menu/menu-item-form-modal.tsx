@@ -195,10 +195,10 @@ function MenuItemFormContent({
         setInventoryLoadError(null)
         setStockItems(result.data?.stockItems ?? [])
         setMeasurementUnits(result.data?.measurementUnits ?? [])
-        const hasInventory = Boolean(result.data?.hasInventory)
-        setTrackInventory(hasInventory)
+        const trackingOn = Boolean(result.data?.trackInventory)
+        setTrackInventory(trackingOn)
         setIngredientRows(
-          hasInventory
+          trackingOn
             ? toIngredientRowsFromLoaded(result.data?.ingredients ?? [])
             : [emptyIngredientRow()],
         )
@@ -323,6 +323,7 @@ function MenuItemFormContent({
     allow_special_instructions: itemForm.allow_special_instructions,
     is_popular: itemForm.is_popular,
     status: itemForm.status,
+    ...(canEditInventory ? { track_inventory: trackInventory } : {}),
   })
 
   const saveInventoryOnly = async (menuItemId: string) => {
