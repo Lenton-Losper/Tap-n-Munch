@@ -45,8 +45,14 @@ jobs:
           else
             echo "WARNING: PRODUCTION_TERMINAL_JWT_SECRET not set — terminal activation will fail"
           fi
+          if [ -n "$RESEND_API_KEY" ]; then
+            echo "$RESEND_API_KEY" | npx wrangler@3.99.0 secret put RESEND_API_KEY --config wrangler.production.toml
+          else
+            echo "WARNING: PRODUCTION_RESEND_API_KEY not set — staff invite emails will not send"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
           TERMINAL_JWT_SECRET: ${{ secrets.PRODUCTION_TERMINAL_JWT_SECRET }}
+          RESEND_API_KEY: ${{ secrets.PRODUCTION_RESEND_API_KEY }}
