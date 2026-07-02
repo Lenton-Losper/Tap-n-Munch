@@ -22,7 +22,7 @@ export async function sendStaffInviteEmail({
 }: StaffInviteEmailParams) {
   const displayRole = formatRole(role)
 
-  return getResend().emails.send({
+  const result = await getResend().emails.send({
     from: 'FlashTap <noreply@flashtap.app>',
     to: [to],
     subject: `You've been invited to join ${restaurantName} on FlashTap`,
@@ -42,4 +42,16 @@ export async function sendStaffInviteEmail({
       </div>
     `,
   })
+
+  if (result.error) {
+    const message =
+      typeof result.error.message === 'string'
+        ? result.error.message
+        : 'Resend rejected the staff invite email'
+    throw new Error(
+      `Resend send failed (${result.error.name || 'error'}): ${message}`
+    )
+  }
+
+  return result
 }

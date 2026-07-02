@@ -46,6 +46,7 @@ jobs:
             echo "WARNING: PRODUCTION_TERMINAL_JWT_SECRET not set — terminal activation will fail"
           fi
           if [ -n "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY length in deploy: ${#RESEND_API_KEY}"
             echo "$RESEND_API_KEY" | npx wrangler@3.99.0 secret put RESEND_API_KEY --config wrangler.production.toml
           else
             echo "WARNING: PRODUCTION_RESEND_API_KEY not set — staff invite emails will not send"
