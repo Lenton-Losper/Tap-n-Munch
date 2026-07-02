@@ -8,8 +8,17 @@ jobs:
     runs-on: ubuntu-latest
     name: Build and Deploy flashtap-production
     steps:
+      - name: Require main branch ref
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "ERROR: Production deploy must be triggered from main only."
+            echo "Got ref: ${{ github.ref }}"
+            exit 1
+          fi
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: main
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -28,6 +37,16 @@ jobs:
           GIT_COMMIT_SHA: ${{ github.sha }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      - name: Assert production custom domains in wrangler.production.toml
+        run: |
+          set -euo pipefail
+          for pattern in 'flashtap.app' 'www.flashtap.app' 'riviera.flashtap.app'; do
+            if ! grep -Fq "pattern = \"$pattern\"" wrangler.production.toml; then
+              echo "MISSING wrangler custom domain route: $pattern"
+              exit 1
+            fi
+          done
+          echo "wrangler.production.toml custom domain routes OK"
       - name: Deploy to flashtap-production
         run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }}
         env:
