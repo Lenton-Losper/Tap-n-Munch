@@ -195,7 +195,7 @@ export function MenuLandingPageV2Content({
         if (!tableData) {
           setTable(null)
           setLoading(false)
-          setError(null)
+          setError('This table is not available for ordering.')
           return
         }
 

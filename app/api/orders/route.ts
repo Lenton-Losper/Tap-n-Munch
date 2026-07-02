@@ -161,11 +161,19 @@ export async function POST(req: Request) {
     if (normalizedTableNumber > 0) {
       const { data: tableRow } = await supabase
         .from('restaurant_tables')
-        .select('id')
+        .select('id, active')
         .eq('restaurant_id', restaurantUuid)
         .eq('table_number', normalizedTableNumber)
-        .single()
-      tableUuid = tableRow?.id ?? null
+        .eq('active', true)
+        .maybeSingle()
+
+      if (!tableRow?.id) {
+        return NextResponse.json(
+          { error: 'This table is not available for ordering.' },
+          { status: 403 },
+        )
+      }
+      tableUuid = tableRow.id
     }
 
     // Create order in Supabase

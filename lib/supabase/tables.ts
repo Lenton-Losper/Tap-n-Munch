@@ -1,40 +1,85 @@
-import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
-import { resolveRestaurantUuid } from './restaurants'
+import type { OrderingPointRow } from '@/lib/tables/ordering-points'
 
-export async function getSupabaseTables(restaurantId: string, isFirebaseId = false) {
+export async function getSupabaseTables(
+  restaurantId: string,
+  isFirebaseId = false,
+  options: { includeInactive?: boolean } = {},
+) {
+  const { resolveRestaurantUuid } = await import('./restaurants')
   const resolvedRestaurantId = isFirebaseId
     ? await resolveRestaurantUuid(restaurantId)
     : restaurantId
-  const { data, error } = await supabase
+
+  let query = supabase
     .from('restaurant_tables')
     .select('*')
     .eq('restaurant_id', resolvedRestaurantId)
     .order('table_number')
+
+  if (!options.includeInactive) {
+    query = query.eq('active', true)
+  }
+
+  const { data, error } = await query
   if (error) throw error
-  return data
+  return data as OrderingPointRow[]
 }
 
-export async function createSupabaseTable(data: {
+export async function createOrderingPointViaApi(
+  body: Record<string, unknown>,
+  options: { restaurantId: string; accessToken: string },
+) {
+  const res = await fetch('/api/admin/tables', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${options.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(payload?.error || `Failed to create (${res.status})`)
+  }
+  return payload.table as OrderingPointRow
+}
+
+export async function updateOrderingPointViaApi(
+  tableId: string,
+  body: Record<string, unknown>,
+  options: { restaurantId: string; accessToken: string },
+) {
+  const res = await fetch(`/api/admin/tables/${encodeURIComponent(tableId)}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${options.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ...body, restaurantId: options.restaurantId }),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(payload?.error || `Failed to update (${res.status})`)
+  }
+  return payload.table as OrderingPointRow
+}
+
+/** @deprecated Use createOrderingPointViaApi */
+export async function createSupabaseTable(_data: {
   restaurant_id: string
   table_number: number
   table_name?: string
   qr_code_url?: string
 }) {
-  const supabase = createServerSupabaseClient()
-  const { data: table, error } = await supabase
-    .from('restaurant_tables')
-    .insert(data)
-    .select()
-    .single()
-  if (error) throw error
-  return table
+  throw new Error('createSupabaseTable is deprecated — use createOrderingPointViaApi')
 }
 
 export async function updateSupabaseTable(
   tableId: string,
-  updates: Record<string, any>
+  updates: Record<string, unknown>,
 ) {
+  const { createServerSupabaseClient } = await import('./server')
   const supabase = createServerSupabaseClient()
   const { error } = await supabase
     .from('restaurant_tables')
@@ -45,7 +90,7 @@ export async function updateSupabaseTable(
 
 export async function deleteSupabaseTable(
   tableId: string,
-  options: { restaurantId: string; accessToken: string }
+  options: { restaurantId: string; accessToken: string },
 ) {
   const res = await fetch(`/api/admin/tables/${encodeURIComponent(tableId)}`, {
     method: 'DELETE',
@@ -64,19 +109,26 @@ export async function deleteSupabaseTable(
 export async function getSupabaseTableByNumber(
   restaurantId: string,
   tableNumber: number,
-  isFirebaseId = false
+  isFirebaseId = false,
+  options: { includeInactive?: boolean } = {},
 ) {
+  const { resolveRestaurantUuid } = await import('./restaurants')
   const resolvedRestaurantId = isFirebaseId
     ? await resolveRestaurantUuid(restaurantId)
     : restaurantId
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('restaurant_tables')
     .select('*')
     .eq('restaurant_id', resolvedRestaurantId)
     .eq('table_number', tableNumber)
-    .single()
+
+  if (!options.includeInactive) {
+    query = query.eq('active', true)
+  }
+
+  const { data, error } = await query.single()
 
   if (error) throw error
-  return data
+  return data as OrderingPointRow
 }

@@ -36,7 +36,7 @@ const NAV_ITEMS = [
   },
   {
     href: '/qr-codes',
-    label: 'Tables',
+    label: 'Ordering Channels',
     icon: Table2,
     roles: ['owner', 'manager'] as StaffRole[],
     match: (path: string) => path.startsWith('/qr-codes'),

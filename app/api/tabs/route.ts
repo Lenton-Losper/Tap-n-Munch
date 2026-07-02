@@ -40,9 +40,10 @@ export async function POST(req: Request) {
     console.log('[TABS] looking up restaurant_tables row', { restaurantUuid, tableNumber })
     const { data: tableRow, error: tableError } = await supabase
       .from('restaurant_tables')
-      .select('id, table_number, current_session_version')
+      .select('id, table_number, current_session_version, active')
       .eq('restaurant_id', restaurantUuid)
       .eq('table_number', tableNumber)
+      .eq('active', true)
       .maybeSingle()
 
     if (tableError) {
