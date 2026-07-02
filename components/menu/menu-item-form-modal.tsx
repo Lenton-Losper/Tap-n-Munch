@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Image from 'next/image'
 import { Loader2, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -138,31 +138,35 @@ function SubCategorySelect({
   )
 }
 
-export function MenuItemFormModal({
-  open,
-  onOpenChange,
+function MenuItemFormContent({
   editingItem,
+  defaultSubCategoryId,
   restaurantId,
   categoryId,
-  defaultSubCategoryId = '',
   subCategoryOptions,
+  onOpenChange,
   onSaved,
 }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
   editingItem: MenuItem | null
+  defaultSubCategoryId: string
   restaurantId: string | null
   categoryId: string | null
-  defaultSubCategoryId?: string
   subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  onOpenChange: (open: boolean) => void
   onSaved: () => void | Promise<void>
 }) {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState('general')
-  const [itemForm, setItemForm] = useState<ItemFormState>(() => emptyItemForm(defaultSubCategoryId))
+  const [itemForm, setItemForm] = useState<ItemFormState>(() =>
+    editingItem ? itemToForm(editingItem) : emptyItemForm(defaultSubCategoryId),
+  )
   const [uploadingImage, setUploadingImage] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(() =>
+    editingItem?.image_url
+      ? menuItemImageDisplayUrl(editingItem.id, editingItem.image_url) || editingItem.image_url
+      : null,
+  )
   const [canEditInventory, setCanEditInventory] = useState(false)
   const [trackInventory, setTrackInventory] = useState(false)
   const [ingredientRows, setIngredientRows] = useState<MenuItemIngredientRow[]>([emptyIngredientRow()])
@@ -172,37 +176,7 @@ export function MenuItemFormModal({
   const [inventorySaveError, setInventorySaveError] = useState<string | null>(null)
   const [savedMenuItemId, setSavedMenuItemId] = useState<string | null>(null)
 
-  const resetModalState = useCallback(() => {
-    setActiveTab('general')
-    setItemForm(emptyItemForm(defaultSubCategoryId))
-    setImagePreview(null)
-    setTrackInventory(false)
-    setIngredientRows([emptyIngredientRow()])
-    setStockItems([])
-    setMeasurementUnits([])
-    setInventoryLoadError(null)
-    setInventorySaveError(null)
-    setSavedMenuItemId(null)
-  }, [defaultSubCategoryId])
-
   useEffect(() => {
-    if (!open) return
-
-    if (editingItem) {
-      setItemForm(itemToForm(editingItem))
-      setImagePreview(
-        editingItem.image_url
-          ? menuItemImageDisplayUrl(editingItem.id, editingItem.image_url) || editingItem.image_url
-          : null,
-      )
-    } else {
-      setItemForm(emptyItemForm(defaultSubCategoryId))
-      setImagePreview(null)
-    }
-    setInventorySaveError(null)
-    setSavedMenuItemId(null)
-    setActiveTab('general')
-
     let cancelled = false
     ;(async () => {
       const perm = await canEditMenuInventoryAction()
@@ -246,7 +220,7 @@ export function MenuItemFormModal({
     return () => {
       cancelled = true
     }
-  }, [open, editingItem, defaultSubCategoryId])
+  }, [editingItem?.id])
 
   const handleImageFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -373,7 +347,6 @@ export function MenuItemFormModal({
       if (ok) {
         toast({ title: 'Success', description: 'Inventory ingredients saved.' })
         onOpenChange(false)
-        resetModalState()
         await onSaved()
       }
     } finally {
@@ -473,7 +446,6 @@ export function MenuItemFormModal({
         description: editingItem ? 'Menu item updated successfully' : 'Menu item created successfully',
       })
       onOpenChange(false)
-      resetModalState()
       await onSaved()
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to save menu item'
@@ -620,23 +592,7 @@ export function MenuItemFormModal({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) resetModalState()
-        onOpenChange(nextOpen)
-      }}
-    >
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{editingItem ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
-          <DialogDescription>
-            {editingItem
-              ? 'Modify item details across tabs — your changes are kept while switching tabs.'
-              : 'Create a menu item with pricing, options, media, and optional inventory tracking.'}
-          </DialogDescription>
-        </DialogHeader>
-
+    <>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
             <TabsTrigger value="general">General</TabsTrigger>
@@ -1173,6 +1129,55 @@ export function MenuItemFormModal({
             )}
           </Button>
         </div>
+    </>
+  )
+}
+
+export function MenuItemFormModal({
+  open,
+  onOpenChange,
+  editingItem,
+  restaurantId,
+  categoryId,
+  defaultSubCategoryId = '',
+  subCategoryOptions,
+  onSaved,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  editingItem: MenuItem | null
+  restaurantId: string | null
+  categoryId: string | null
+  defaultSubCategoryId?: string
+  subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  onSaved: () => void | Promise<void>
+}) {
+  const formKey = editingItem?.id ? `edit-${editingItem.id}` : `new-${defaultSubCategoryId}`
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{editingItem ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
+          <DialogDescription>
+            {editingItem
+              ? 'Modify item details across tabs — your changes are kept while switching tabs.'
+              : 'Create a menu item with pricing, options, media, and optional inventory tracking.'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {open ? (
+          <MenuItemFormContent
+            key={formKey}
+            editingItem={editingItem}
+            defaultSubCategoryId={defaultSubCategoryId}
+            restaurantId={restaurantId}
+            categoryId={categoryId}
+            subCategoryOptions={subCategoryOptions}
+            onOpenChange={onOpenChange}
+            onSaved={onSaved}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   )
