@@ -1,17 +1,34 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import {
+  computeStockStatus,
   movementDateRangeStart,
   type MovementDateRange,
   type MovementReason,
+  type StockStatus,
 } from '@/lib/stock/format'
+
+type UnitJoin = { name: string; symbol: string | null } | { name: string; symbol: string | null }[] | null
+
+function unitLabelFromJoin(unit: UnitJoin) {
+  const row = Array.isArray(unit) ? unit[0] : unit
+  if (!row) return '—'
+  return formatMeasurementUnitLabel(row)
+}
 
 export type StockOverviewRow = {
   id: string
   name: string
-  base_unit: string
+  unit_id: string
+  unit_label: string
   par_level: number | null
   currentStock: number
-  isLow: boolean
+  stockStatus: StockStatus
+  is_active: boolean
+}
+
+export type StockOverviewOptions = {
+  includeInactive?: boolean
 }
 
 export type StockOverviewData = {
@@ -24,7 +41,12 @@ export type StockOverviewData = {
 export type StockItemOption = {
   id: string
   name: string
-  base_unit: string
+  unit_id: string
+  unit_label: string
+}
+
+export type StockItemOptionWithLevel = StockItemOption & {
+  currentStock: number
 }
 
 export type MovementHistoryRow = {
@@ -52,15 +74,23 @@ function aggregateStockByItem(
 export async function getStockOverview(
   supabase: SupabaseClient,
   restaurantId: string,
+  options: StockOverviewOptions = {},
 ): Promise<StockOverviewData> {
+  const includeInactive = options.includeInactive ?? false
+
+  let itemsQuery = supabase
+    .from('stock_items')
+    .select('id, name, unit_id, par_level, is_active, measurement_units(name, symbol)')
+    .eq('restaurant_id', restaurantId)
+    .order('name')
+
+  if (!includeInactive) {
+    itemsQuery = itemsQuery.eq('is_active', true)
+  }
+
   const [{ data: items, error: itemsError }, { data: movements, error: movementsError }, { data: lastDelivery, error: lastDeliveryError }] =
     await Promise.all([
-      supabase
-        .from('stock_items')
-        .select('id, name, base_unit, par_level')
-        .eq('restaurant_id', restaurantId)
-        .eq('is_active', true)
-        .order('name'),
+      itemsQuery,
       supabase
         .from('stock_movements')
         .select('stock_item_id, quantity_delta')
@@ -83,19 +113,26 @@ export async function getStockOverview(
   const rows: StockOverviewRow[] = (items ?? []).map((item) => {
     const currentStock = stockByItem.get(item.id) ?? 0
     const parLevel = item.par_level != null ? Number(item.par_level) : null
+    const stockStatus = computeStockStatus(currentStock, parLevel)
     return {
       id: item.id,
       name: item.name,
-      base_unit: item.base_unit,
+      unit_id: item.unit_id,
+      unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
       par_level: parLevel,
       currentStock,
-      isLow: parLevel != null && currentStock <= parLevel,
+      stockStatus,
+      is_active: item.is_active ?? true,
     }
   })
 
+  const activeRows = rows.filter((row) => row.is_active)
+
   return {
-    trackedItems: rows.length,
-    lowStock: rows.filter((row) => row.isLow).length,
+    trackedItems: activeRows.length,
+    lowStock: activeRows.filter(
+      (row) => row.stockStatus === 'low_stock' || row.stockStatus === 'out_of_stock',
+    ).length,
     lastDeliveryAt: lastDelivery?.received_at ?? null,
     rows,
   }
@@ -104,7 +141,7 @@ export async function getStockOverview(
 export type StockItemLevel = {
   id: string
   name: string
-  base_unit: string
+  unit_label: string
   currentStock: number
 }
 
@@ -117,7 +154,7 @@ export async function getStockItemCurrentLevel(
     await Promise.all([
       supabase
         .from('stock_items')
-        .select('id, name, base_unit')
+        .select('id, name, unit_id, measurement_units(name, symbol)')
         .eq('restaurant_id', restaurantId)
         .eq('id', stockItemId)
         .eq('is_active', true)
@@ -141,7 +178,7 @@ export async function getStockItemCurrentLevel(
   return {
     id: item.id,
     name: item.name,
-    base_unit: item.base_unit,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
     currentStock,
   }
 }
@@ -152,13 +189,51 @@ export async function getActiveStockItems(
 ): Promise<StockItemOption[]> {
   const { data, error } = await supabase
     .from('stock_items')
-    .select('id, name, base_unit')
+    .select('id, name, unit_id, measurement_units(name, symbol)')
     .eq('restaurant_id', restaurantId)
     .eq('is_active', true)
     .order('name')
 
   if (error) throw error
-  return (data ?? []) as StockItemOption[]
+
+  return (data ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit_id: item.unit_id,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
+  }))
+}
+
+export async function getActiveStockItemsWithLevels(
+  supabase: SupabaseClient,
+  restaurantId: string,
+): Promise<StockItemOptionWithLevel[]> {
+  const [{ data: items, error: itemsError }, { data: movements, error: movementsError }] =
+    await Promise.all([
+      supabase
+        .from('stock_items')
+        .select('id, name, unit_id, measurement_units(name, symbol)')
+        .eq('restaurant_id', restaurantId)
+        .eq('is_active', true)
+        .order('name'),
+      supabase
+        .from('stock_movements')
+        .select('stock_item_id, quantity_delta')
+        .eq('restaurant_id', restaurantId),
+    ])
+
+  if (itemsError) throw itemsError
+  if (movementsError) throw movementsError
+
+  const stockByItem = aggregateStockByItem(movements)
+
+  return (items ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit_id: item.unit_id,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
+    currentStock: stockByItem.get(item.id) ?? 0,
+  }))
 }
 
 export type MovementHistoryFilters = {
@@ -211,13 +286,12 @@ export async function getMovementHistory(
     .filter((movement) => movement.reference_type === 'goods_received_items' && movement.reference_id)
     .map((movement) => movement.reference_id as string)
 
-  const grvNumberByLineItemId = new Map<string, string>()
+  const referenceByLineItemId = new Map<string, string>()
   const unitCostByLineItemId = new Map<string, number | null>()
   if (lineItemIds.length > 0) {
-    const lineItemSelect = filters.includeCosts ? 'id, goods_received_id, unit_cost' : 'id, goods_received_id'
     const { data: lineItems, error: lineItemsError } = await supabase
       .from('goods_received_items')
-      .select(lineItemSelect)
+      .select('id, goods_received_id, unit_cost')
       .in('id', lineItemIds)
 
     if (lineItemsError) throw lineItemsError
@@ -238,18 +312,22 @@ export async function getMovementHistory(
     if (goodsReceivedIds.length > 0) {
       const { data: headers, error: headersError } = await supabase
         .from('goods_received')
-        .select('id, grv_number')
+        .select('id, grv_number, invoice_number')
         .in('id', goodsReceivedIds)
 
       if (headersError) throw headersError
-      const grvNumberById = new Map(
-        (headers ?? []).map((header) => [header.id, header.grv_number || '—']),
+      const referenceByGrvId = new Map(
+        (headers ?? []).map((header) => {
+          const invoice = header.invoice_number?.trim()
+          const grv = header.grv_number?.trim()
+          return [header.id, invoice || grv || '—']
+        }),
       )
 
       for (const lineItemId of lineItemIds) {
         const grvId = lineItemToGrvId.get(lineItemId)
         if (grvId) {
-          grvNumberByLineItemId.set(lineItemId, grvNumberById.get(grvId) ?? '—')
+          referenceByLineItemId.set(lineItemId, referenceByGrvId.get(grvId) ?? '—')
         }
       }
     }
@@ -258,7 +336,7 @@ export async function getMovementHistory(
   return movements.map((movement) => {
     const referenceLabel =
       movement.reference_type === 'goods_received_items' && movement.reference_id
-        ? grvNumberByLineItemId.get(movement.reference_id) ?? '—'
+        ? referenceByLineItemId.get(movement.reference_id) ?? '—'
         : 'Manual'
 
     return {

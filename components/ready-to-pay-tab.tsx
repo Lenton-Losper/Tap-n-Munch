@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -28,16 +28,14 @@ export function ReadyToPayTabButton({
   tabAlreadyReady = false,
 }: Props) {
   const [loading, setLoading] = useState(false)
-  const [notified, setNotified] = useState(tabAlreadyReady)
+  const [userNotified, setUserNotified] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (tabAlreadyReady) setNotified(true)
-  }, [tabAlreadyReady])
+  const notified = tabAlreadyReady || userNotified
 
   if (!paymentPreference) return null
 
-  if (tabAlreadyReady || notified) {
+  if (notified) {
     return <ReadyToPayTabNotified className={className} />
   }
 
@@ -79,7 +77,7 @@ export function ReadyToPayTabButton({
               throw new Error(data?.error || `Request failed (${res.status})`)
             }
             console.log('[READY TO PAY TAB] success', data)
-            setNotified(true)
+            setUserNotified(true)
             onSuccess?.()
           } catch (err) {
             console.error('[READY TO PAY TAB] failed', err)

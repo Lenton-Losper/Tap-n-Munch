@@ -126,7 +126,7 @@ export default function HomePage() {
               Live pilot — Windhoek, Namibia
             </p>
             <blockquote className="mb-8 text-3xl font-bold leading-tight md:text-5xl">
-              "FlashTap changed how we handle orders during our busiest hours."
+              &ldquo;FlashTap changed how we handle orders during our busiest hours.&rdquo;
             </blockquote>
             <p className="text-lg text-white/70">Sweet Side of Thingz — Windhoek</p>
           </div>

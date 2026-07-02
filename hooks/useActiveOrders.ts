@@ -57,14 +57,20 @@ export function useActiveOrders(
   loading: boolean
   error: string | null
 } {
+  const queryKey = `${restaurantId ?? ''}|${tableNumber ?? ''}|${isKiosk ? '1' : '0'}|${sessionId ?? ''}`
   const [activeOrder, setActiveOrder] = useState<ActiveOrder | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
+  const [snapshotKey, setSnapshotKey] = useState(queryKey)
+  if (snapshotKey !== queryKey) {
+    setSnapshotKey(queryKey)
     setActiveOrder(null)
     setError(null)
+    setLoading(true)
+  }
 
+  /* eslint-disable react-hooks/set-state-in-effect -- active-order fetch lifecycle guards */
+  useEffect(() => {
     if (!restaurantId) {
       console.log('⚠️ useActiveOrders: No restaurantId provided')
       setLoading(false)
@@ -73,8 +79,6 @@ export function useActiveOrders(
 
     if (!tableNumber || tableNumber <= 0) {
       console.log('🔍 Banner hidden - No table number provided')
-      setActiveOrder(null)
-      setError(null)
       setLoading(false)
       return
     }
@@ -151,6 +155,7 @@ export function useActiveOrders(
       supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, isKiosk, customerName, sessionId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return { activeOrder, loading, error }
 }

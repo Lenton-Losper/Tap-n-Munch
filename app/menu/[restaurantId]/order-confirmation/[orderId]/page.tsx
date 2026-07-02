@@ -155,6 +155,8 @@ export default function OrderConfirmationPage() {
     }, 3000)
 
     return () => clearInterval(interval)
+    // Only restart polling when payment_status changes; full `order` would reset the interval on every poll tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: orderId + payment_status gate the poll lifecycle
   }, [orderId, order?.payment_status])
 
   if (loading) {

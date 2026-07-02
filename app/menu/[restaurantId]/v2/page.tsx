@@ -88,6 +88,7 @@ export function MenuLandingPageV2Content({
   const [table, setTable] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
   const [openTab, setOpenTab] = useState<{
@@ -151,12 +152,11 @@ export function MenuLandingPageV2Content({
   }, [sessionEndedNotice, restaurantId])
 
   // Load restaurant data
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurantId) {
-      if (!restaurantId) {
-        setError('Restaurant ID is missing from URL')
-        setLoading(false)
-      }
+      setError('Restaurant ID is missing from URL')
+      setLoading(false)
       return
     }
     getRestaurant(restaurantId)
@@ -169,8 +169,10 @@ export function MenuLandingPageV2Content({
         setLoading(false)
       })
   }, [restaurantId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Table fetch
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurant || !restaurantId) return
     if (tableNum <= 0) {
@@ -249,7 +251,10 @@ export function MenuLandingPageV2Content({
     }
     
     loadTableData()
+    // clearCart is not memoized in cart context; omit to avoid re-running table load every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run only when restaurant/table identity changes
   }, [restaurant, restaurantId, tableNum])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Loading timeout
   useEffect(() => {
@@ -514,11 +519,16 @@ export function MenuLandingPageV2Content({
     }
   }, [restaurantId, restaurant?.id, tableNum, table?.id, syncTabLandingState, myStoredTab?.id])
 
+  const canTrackHostedPending = Boolean(restaurantId && tableNum > 0)
+  const hostedPendingKey = `${restaurantId}|${tableNum}`
+  const [hostedPendingScopeKey, setHostedPendingScopeKey] = useState(hostedPendingKey)
+  if (hostedPendingScopeKey !== hostedPendingKey) {
+    setHostedPendingScopeKey(hostedPendingKey)
+    setRecentHostedPending(null)
+  }
+
   useEffect(() => {
-    if (!restaurantId || tableNum <= 0) {
-      setRecentHostedPending(null)
-      return
-    }
+    if (!canTrackHostedPending) return
     let cancelled = false
     const run = async () => {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
@@ -562,12 +572,17 @@ export function MenuLandingPageV2Content({
     return () => {
       cancelled = true
     }
-  }, [restaurantId, tableNum])
+  }, [canTrackHostedPending, restaurantId, tableNum])
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
 
   const minutesSince = (iso: string) => {
     const t = new Date(iso).getTime()
     if (Number.isNaN(t)) return 0
-    return Math.floor((Date.now() - t) / 60_000)
+    return Math.floor((nowMs - t) / 60_000)
   }
 
   const blockOrderingForHostedPending = Boolean(

@@ -5,7 +5,11 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 
-export function StockSubNav({ showReceiveButton = false }: { showReceiveButton?: boolean }) {
+export function StockSubNav({
+  showReceiveButton = false,
+}: {
+  showReceiveButton?: boolean
+}) {
   const pathname = usePathname()
 
   const tabs = [
@@ -40,7 +44,7 @@ export function StockSubNav({ showReceiveButton = false }: { showReceiveButton?:
       </nav>
       {showReceiveButton ? (
         <Button asChild className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]">
-          <Link href="/stock/receive">Receive stock</Link>
+          <Link href="/stock/receive">Receive Delivery</Link>
         </Button>
       ) : null}
     </div>

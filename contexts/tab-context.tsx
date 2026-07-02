@@ -90,8 +90,14 @@ export function TabProvider({
 }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [tabId, setTabId] = useState<string | null>(null)
-  const [sessionId, setSessionId] = useState<string>('')
+  const [tabId, setTabId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    const params = new URLSearchParams(window.location.search)
+    const fromUrl = params.get('tabId')?.trim()
+    if (fromUrl) return fromUrl
+    return readStoredTabId()
+  })
+  const [sessionId, setSessionId] = useState(() => ensureTabSessionId())
   const [tabTotal, setTabTotal] = useState(0)
   const [tabMembers, setTabMembers] = useState<TabMember[]>([])
   const [tabStatus, setTabStatus] = useState<string | null>(null)
@@ -102,24 +108,17 @@ export function TabProvider({
   const tableNumber = searchParams?.get('table') || readStoredTableNumber() || null
   const tabIdFromUrl = searchParams?.get('tabId')?.trim() || null
 
-  const canAddToTab = Boolean(tabId) && isActiveTabStatus(tabStatus) && tabStatus === 'open'
-
-  useLayoutEffect(() => {
-    setSessionId(ensureTabSessionId())
-  }, [])
-
-  // URL tabId wins; otherwise restore from localStorage.
+  // URL tabId wins when present; persist to storage.
+  /* eslint-disable react-hooks/set-state-in-effect -- hydrate tab id from URL on navigation */
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return
     if (tabIdFromUrl) {
       const tableFromUrl = searchParams?.get('table')
       persistTabSession(tabIdFromUrl, tableFromUrl || readStoredTableNumber() || '')
       setTabId(tabIdFromUrl)
-      return
     }
-    const storedTabId = readStoredTabId()
-    if (storedTabId) setTabId(storedTabId)
   }, [tabIdFromUrl, searchParams])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const loadTab = async () => {
     if (!restaurantId || !tabId) return
@@ -176,14 +175,25 @@ export function TabProvider({
     setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
   }
 
-  useEffect(() => {
-    if (!pathname?.startsWith('/menu/')) {
+  const isMenuRoute = Boolean(pathname?.startsWith('/menu/'))
+  const [pathnameKey, setPathnameKey] = useState(pathname || '')
+  if ((pathname || '') !== pathnameKey) {
+    setPathnameKey(pathname || '')
+    if (!isMenuRoute) {
       setTabTotal(0)
       setTabMembers([])
       setTabStatus(null)
       setSettlementType(null)
     }
-  }, [pathname])
+  }
+
+  const contextTabTotal = isMenuRoute ? tabTotal : 0
+  const contextTabMembers = isMenuRoute ? tabMembers : []
+  const contextTabStatus = isMenuRoute ? tabStatus : null
+  const contextSettlementType = isMenuRoute ? settlementType : null
+
+  const canAddToTab =
+    Boolean(tabId) && isActiveTabStatus(contextTabStatus) && contextTabStatus === 'open'
 
   useEffect(() => {
     if (!restaurantId || !tabId) return
@@ -211,6 +221,8 @@ export function TabProvider({
       active = false
       supabase.removeChannel(channel)
     }
+    // tabStatus guard prevents double-init; loadTab is recreated each render and would churn subscriptions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once per restaurantId/tabId pair
   }, [restaurantId, tabId])
 
   const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {
@@ -427,13 +439,13 @@ export function TabProvider({
 
   const value: TabContextType = {
     tabId,
-    tabStatus,
+    tabStatus: contextTabStatus,
     sessionId,
     isInTab: Boolean(tabId),
     canAddToTab,
-    tabTotal,
-    tabMembers,
-    settlementType,
+    tabTotal: contextTabTotal,
+    tabMembers: contextTabMembers,
+    settlementType: contextSettlementType,
     tableNumber,
     setTabFromJoin,
     clearTab,

@@ -158,11 +158,12 @@ export function OrdersDashboard() {
   const router = useRouter()
   const { toast } = useToast()
   const toastRef = useRef(toast)
-  toastRef.current = toast
+  useEffect(() => {
+    toastRef.current = toast
+  }, [toast])
   const [activeTab, setActiveTab] = useState<DashboardTabId>('new')
   const [pendingHostedCount, setPendingHostedCount] = useState(0)
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
-  const [orders, setOrders] = useState<Order[]>([])
   const [allOrders, setAllOrders] = useState<Order[]>([])
   const [completedOrders, setCompletedOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -175,16 +176,31 @@ export function OrdersDashboard() {
   const [statusUpdateKey, setStatusUpdateKey] = useState<string | null>(null)
   const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
-  const [terminalPollingOrderIds, setTerminalPollingOrderIds] = useState<string[]>([])
+  const [terminalDismissedPollingIds, setTerminalDismissedPollingIds] = useState<string[]>([])
   const [terminalStatusByOrderId, setTerminalStatusByOrderId] = useState<Record<string, TerminalStatus>>({})
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const dashboardRestaurantId = String((restaurant as { id?: string } | null)?.id || restaurantId || '')
+  const showDashboardLoading = loading && Boolean(user)
   const [orderScope, setOrderScope] = useState<OrderRestaurantScope | null>(null)
+  const [orderScopeRestaurantId, setOrderScopeRestaurantId] = useState(dashboardRestaurantId)
+  if (orderScopeRestaurantId !== dashboardRestaurantId) {
+    setOrderScopeRestaurantId(dashboardRestaurantId)
+    if (!dashboardRestaurantId) setOrderScope(null)
+  }
   const [tabInfoById, setTabInfoById] = useState<
     Record<string, { status: string; payment_preference: string | null; members: any[] }>
   >({})
+  const tabInfoScopeId = orderScope?.restaurantId ?? ''
+  const [tabInfoScopeKey, setTabInfoScopeKey] = useState(tabInfoScopeId)
+  if (tabInfoScopeKey !== tabInfoScopeId) {
+    setTabInfoScopeKey(tabInfoScopeId)
+    if (!tabInfoScopeId) setTabInfoById({})
+  }
   const orderScopeRef = useRef<OrderRestaurantScope | null>(null)
   const subscribedRestaurantIdRef = useRef<string | null>(null)
-  orderScopeRef.current = orderScope
+  useEffect(() => {
+    orderScopeRef.current = orderScope
+  }, [orderScope])
 
   const toDate = (timestamp: unknown): Date | null => {
     if (!timestamp) return null
@@ -200,7 +216,7 @@ export function OrdersDashboard() {
     return null
   }
 
-  const isRecentCardPendingOrder = (order: Order) => {
+  const isRecentCardPendingOrder = useCallback((order: Order) => {
     if (order.payment_method !== 'card' || order.payment_status !== 'pending') return false
     const ch = paymentChannelOf(order)
     if (ch === 'card_manual' || ch === 'other') return false
@@ -208,9 +224,9 @@ export function OrdersDashboard() {
     const createdDate = toDate((order as Order & { created_at?: unknown }).created_at) || toDate(order.placed_at)
     if (!createdDate) return true
     return Date.now() - createdDate.getTime() < 5 * 60 * 1000
-  }
+  }, [])
 
-  const shouldDisplayOrder = (order: Order) => {
+  const shouldDisplayOrder = useCallback((order: Order) => {
     const isPaidSettlementOrder =
       String((order as Order & { tab_settlement_for_tab_id?: string | null }).tab_settlement_for_tab_id || '').trim() !== '' &&
       String(order.payment_status || '').toLowerCase() === 'paid'
@@ -230,11 +246,16 @@ export function OrdersDashboard() {
       return isRecentCardPendingOrder(order)
     }
     return true
-  }
+  }, [isRecentCardPendingOrder])
 
   useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  /* eslint-disable react-hooks/set-state-in-effect -- scope/tab hydration guards; React Query refactor out of scope */
+  useEffect(() => {
     if (!dashboardRestaurantId) {
-      setOrderScope(null)
       return
     }
 
@@ -258,11 +279,12 @@ export function OrdersDashboard() {
       cancelled = true
     }
   }, [dashboardRestaurantId, restaurant])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
+  /* eslint-disable react-hooks/set-state-in-effect -- tab info hydration; React Query refactor out of scope */
   useEffect(() => {
     const restaurantUuid = orderScope?.restaurantId
     if (!restaurantUuid) {
-      setTabInfoById({})
       return
     }
 
@@ -304,6 +326,7 @@ export function OrdersDashboard() {
       cancelled = true
     }
   }, [allOrders, orderScope?.restaurantId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     const restaurantUuid = orderScope?.restaurantId
@@ -347,6 +370,7 @@ export function OrdersDashboard() {
   }, [orderScope?.restaurantId])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
+  /* eslint-disable react-hooks/set-state-in-effect -- subscription lifecycle guards; React Query refactor out of scope */
   useEffect(() => {
     if (!user) {
       setLoading(false)
@@ -435,6 +459,7 @@ export function OrdersDashboard() {
       unsubscribe?.()
     }
   }, [user, dashboardRestaurantId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
@@ -508,8 +533,8 @@ export function OrdersDashboard() {
     } as Record<DashboardTabId, number>
   }, [stationFilteredOrders])
 
-  useEffect(() => {
-    if (!user || !dashboardRestaurantId) return
+  const orders = useMemo(() => {
+    if (!user || !dashboardRestaurantId) return []
 
     const newOrders = mergedSourceOrders
 
@@ -572,11 +597,18 @@ export function OrdersDashboard() {
       return list
     }
 
-    const sorted =
-      activeTab === 'pending_payment' ? visibleOrders : sortOrdersForTab(visibleOrders)
+    return activeTab === 'pending_payment' ? visibleOrders : sortOrdersForTab(visibleOrders)
+  }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders, shouldDisplayOrder, isRecentCardPendingOrder])
 
-    setOrders(sorted)
-  }, [user, dashboardRestaurantId, activeTab, mergedSourceOrders])
+  const terminalPendingFromOrders = useMemo(
+    () => orders.filter((o) => o.payment_status === 'terminal_pending').map((o) => o.id),
+    [orders]
+  )
+
+  const terminalPollingOrderIds = useMemo(
+    () => terminalPendingFromOrders.filter((id) => !terminalDismissedPollingIds.includes(id)),
+    [terminalPendingFromOrders, terminalDismissedPollingIds]
+  )
 
   const groupedOrders = useMemo(() => {
     const kiosk = orders.filter((o) => String(o.channel || '') === 'kiosk')
@@ -629,7 +661,7 @@ export function OrdersDashboard() {
   const minutesSincePlaced = (order: Order) => {
     const d = toDate(order.placed_at) || toDate((order as Order & { created_at?: unknown }).created_at)
     if (!d) return 0
-    return Math.max(0, Math.floor((Date.now() - d.getTime()) / 60_000))
+    return Math.max(0, Math.floor((nowMs - d.getTime()) / 60_000))
   }
 
   const isStatusUpdating = (orderId: string, action: string) =>
@@ -856,22 +888,11 @@ export function OrdersDashboard() {
         }
       }
       if (doneIds.length > 0) {
-        setTerminalPollingOrderIds((prev) => prev.filter((id) => !doneIds.includes(id)))
+        setTerminalDismissedPollingIds((prev) => Array.from(new Set([...prev, ...doneIds])))
       }
     }, 5000)
     return () => clearInterval(timer)
   }, [dashboardRestaurantId, terminalPollingOrderIds, toast])
-
-  useEffect(() => {
-    const terminalPendingIds = orders
-      .filter((o) => o.payment_status === 'terminal_pending')
-      .map((o) => o.id)
-    if (terminalPendingIds.length === 0) return
-    setTerminalPollingOrderIds((prev) => {
-      const next = new Set([...prev, ...terminalPendingIds])
-      return Array.from(next)
-    })
-  }, [orders])
 
   /**
    * STEP 4: Close Table functionality
@@ -1121,7 +1142,7 @@ export function OrdersDashboard() {
     }
   }
 
-  if (loading) {
+  if (showDashboardLoading) {
     return (
       <div className="min-h-screen bg-muted/30 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>
@@ -1437,7 +1458,7 @@ export function OrdersDashboard() {
                         )}
                         {item?.special_instructions && (
                           <div className="text-xs text-muted-foreground italic mt-1">
-                            "{item.special_instructions}"
+                            &ldquo;{item.special_instructions}&rdquo;
                           </div>
                         )}
                       </div>

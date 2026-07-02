@@ -51,6 +51,7 @@ export function useStaffInvites() {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope
     void loadInvites()
   }, [loadInvites])
 
@@ -211,19 +212,18 @@ type InviteStaffDialogProps = {
 export function InviteStaffDialog({ open, onOpenChange, onInviteSent }: InviteStaffDialogProps) {
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    if (!open) {
-      setError('')
-    }
-  }, [open])
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setError('')
+    onOpenChange(nextOpen)
+  }
 
   const handleSuccess = (invite: StaffInviteRow) => {
     onInviteSent?.(invite)
-    onOpenChange(false)
+    handleOpenChange(false)
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="border-[#E9E9E7] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Invite staff</DialogTitle>

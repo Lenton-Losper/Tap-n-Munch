@@ -1,27 +1,14 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { createStockItemAction, saveGrvAction } from '@/lib/stock/actions'
+import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
+import { saveGrvAction } from '@/lib/stock/actions'
+import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
 
 type LineRow = {
@@ -31,7 +18,6 @@ type LineRow = {
   unitCost: string
 }
 
-const BASE_UNITS = ['unit', 'kg', 'g', 'l', 'ml']
 
 function emptyRow(): LineRow {
   return {
@@ -44,29 +30,20 @@ function emptyRow(): LineRow {
 
 export function ReceiveStockForm({
   stockItems: initialStockItems,
+  measurementUnits: initialMeasurementUnits,
   showUnitCost = false,
 }: {
   stockItems: StockItemOption[]
+  measurementUnits: MeasurementUnitOption[]
   showUnitCost?: boolean
 }) {
   const [stockItems, setStockItems] = useState(initialStockItems)
+  const [measurementUnits, setMeasurementUnits] = useState(initialMeasurementUnits)
   const [supplier, setSupplier] = useState('')
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [rows, setRows] = useState<LineRow[]>([emptyRow()])
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
-
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createRowKey, setCreateRowKey] = useState<string | null>(null)
-  const [newItemName, setNewItemName] = useState('')
-  const [newItemBaseUnit, setNewItemBaseUnit] = useState('unit')
-  const [createError, setCreateError] = useState<string | null>(null)
-  const [creatingItem, setCreatingItem] = useState(false)
-
-  const stockItemOptions = useMemo(
-    () => [...stockItems].sort((a, b) => a.name.localeCompare(b.name)),
-    [stockItems],
-  )
 
   const updateRow = (key: string, patch: Partial<LineRow>) => {
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)))
@@ -78,36 +55,6 @@ export function ReceiveStockForm({
 
   const removeRow = (key: string) => {
     setRows((current) => (current.length === 1 ? current : current.filter((row) => row.key !== key)))
-  }
-
-  const openCreateItem = (rowKey: string) => {
-    setCreateRowKey(rowKey)
-    setNewItemName('')
-    setNewItemBaseUnit('unit')
-    setCreateError(null)
-    setCreateOpen(true)
-  }
-
-  const handleCreateItem = async () => {
-    setCreatingItem(true)
-    setCreateError(null)
-    const result = await createStockItemAction({
-      name: newItemName,
-      baseUnit: newItemBaseUnit,
-    })
-    setCreatingItem(false)
-
-    if (result.error || !result.data) {
-      setCreateError(result.error ?? 'Failed to create item.')
-      return
-    }
-
-    const created = result.data
-    setStockItems((current) => [...current, created])
-    if (createRowKey) {
-      updateRow(createRowKey, { stockItemId: created.id })
-    }
-    setCreateOpen(false)
   }
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -136,8 +83,7 @@ export function ReceiveStockForm({
   }
 
   return (
-    <>
-      <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-6">
         {error ? (
           <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             {error}
@@ -158,12 +104,13 @@ export function ReceiveStockForm({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="invoice-number">Invoice number</Label>
+              <Label htmlFor="invoice-number">Supplier reference (optional)</Label>
               <Input
                 id="invoice-number"
                 value={invoiceNumber}
                 onChange={(event) => setInvoiceNumber(event.target.value)}
                 className="border-[#E9E9E7]"
+                placeholder="Leave blank to use the delivery reference number"
               />
             </div>
           </div>
@@ -191,31 +138,14 @@ export function ReceiveStockForm({
                     : 'grid gap-3 rounded-xl border border-[#E9E9E7] bg-[#FAFAF8] p-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto]'
                 }
               >
-                <div className="space-y-1.5">
-                  <Label>Stock item</Label>
-                  <Select
-                    value={row.stockItemId}
-                    onValueChange={(value) => updateRow(row.key, { stockItemId: value })}
-                  >
-                    <SelectTrigger className="w-full border-[#E9E9E7] bg-white">
-                      <SelectValue placeholder="Select item" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {stockItemOptions.map((item) => (
-                        <SelectItem key={item.id} value={item.id}>
-                          {item.name} ({item.base_unit})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <button
-                    type="button"
-                    onClick={() => openCreateItem(row.key)}
-                    className="text-xs font-medium text-[#FF6B35] hover:underline"
-                  >
-                    + Create item
-                  </button>
-                </div>
+                <StockItemSelectField
+                  stockItems={stockItems}
+                  onStockItemsChange={setStockItems}
+                  measurementUnits={measurementUnits}
+                  onMeasurementUnitsChange={setMeasurementUnits}
+                  value={row.stockItemId}
+                  onValueChange={(value) => updateRow(row.key, { stockItemId: value })}
+                />
                 <div className="space-y-1.5">
                   <Label htmlFor={`quantity-${row.key}`}>Quantity</Label>
                   <Input
@@ -265,66 +195,12 @@ export function ReceiveStockForm({
             disabled={isPending}
             className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]"
           >
-            {isPending ? 'Saving...' : 'Save GRV'}
+            {isPending ? 'Saving...' : 'Save Delivery'}
           </Button>
           <Button type="button" variant="outline" className="border-[#E9E9E7]" asChild>
             <Link href="/stock">Cancel</Link>
           </Button>
         </div>
       </form>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="border-[#E9E9E7]">
-          <DialogHeader>
-            <DialogTitle>Create stock item</DialogTitle>
-            <DialogDescription>Add a new tracked item without leaving this form.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            {createError ? (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-                {createError}
-              </div>
-            ) : null}
-            <div className="space-y-1.5">
-              <Label htmlFor="new-item-name">Name</Label>
-              <Input
-                id="new-item-name"
-                value={newItemName}
-                onChange={(event) => setNewItemName(event.target.value)}
-                className="border-[#E9E9E7]"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Base unit</Label>
-              <Select value={newItemBaseUnit} onValueChange={setNewItemBaseUnit}>
-                <SelectTrigger className="w-full border-[#E9E9E7]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {BASE_UNITS.map((unit) => (
-                    <SelectItem key={unit} value={unit}>
-                      {unit}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void handleCreateItem()}
-              disabled={creatingItem}
-              className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]"
-            >
-              {creatingItem ? 'Creating...' : 'Create item'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
   )
 }

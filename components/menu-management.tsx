@@ -58,18 +58,11 @@ export function MenuManagement() {
     status: 'available' as 'available' | 'out_of_stock' | 'hidden',
   })
 
-  useEffect(() => {
-    // Don't run if user is null (prevents fetching when signed out)
-    if (!user) {
-      setLoading(false)
-      return
-    }
+  const canLoadMenuData = Boolean(user && restaurantId)
+  const showMenuLoading = canLoadMenuData && loading
 
-    if (!restaurantId) {
-      console.warn('MenuManagement: restaurantId is missing')
-      setLoading(false)
-      return
-    }
+  useEffect(() => {
+    if (!canLoadMenuData) return
 
     const loadData = async () => {
       try {
@@ -123,7 +116,9 @@ export function MenuManagement() {
     }
 
     loadData()
-  }, [user, restaurantId, toast])
+    // selectedCategory is set inside this effect; including it would re-fetch all menu data on every category change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/restaurant change only
+  }, [canLoadMenuData, restaurantId, toast])
 
   useEffect(() => {
     // Don't run if user is null (prevents fetching when signed out)
@@ -685,7 +680,7 @@ export function MenuManagement() {
     }
   }
 
-  if (loading) {
+  if (showMenuLoading) {
     return (
       <div className="min-h-screen bg-muted/30 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>

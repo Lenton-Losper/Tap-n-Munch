@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
@@ -18,14 +18,16 @@ export default function KioskPage() {
 
   const [name, setName] = useState('')
   const [error, setError] = useState('')
-
-  // Auto-reset: if redirected back with ?reset=true, clear state
-  useEffect(() => {
-    if (searchParams.get('reset') === 'true') {
-      setName('')
-      setError('')
-    }
-  }, [searchParams])
+  const resetRequested = searchParams.get('reset') === 'true'
+  const [clearedReset, setClearedReset] = useState(false)
+  if (resetRequested && !clearedReset) {
+    setClearedReset(true)
+    if (name) setName('')
+    if (error) setError('')
+  }
+  if (!resetRequested && clearedReset) {
+    setClearedReset(false)
+  }
 
   const handleStart = () => {
     const trimmed = name.trim()

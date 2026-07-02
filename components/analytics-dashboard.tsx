@@ -51,19 +51,14 @@ export function AnalyticsDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    // Don't run if user is null (prevents fetching when signed out)
-    if (!user) {
-      setLoading(false)
-      return
-    }
+  const canFetchAnalytics = Boolean(user && restaurantId)
+  const showAnalyticsLoading = canFetchAnalytics && loading
 
-    if (!restaurantId) {
-      setLoading(false)
-      return
-    }
+  useEffect(() => {
+    if (!canFetchAnalytics) return
 
     const loadData = async () => {
+      if (!restaurantId) return
       try {
         setLoading(true)
 
@@ -112,7 +107,7 @@ export function AnalyticsDashboard() {
     }
 
     loadData()
-  }, [user, restaurantId, dateRange])
+  }, [user, restaurantId, dateRange, canFetchAnalytics])
 
   // Calculate aggregated stats
   const totalSales = analytics.reduce((sum, day) => sum + day.total_revenue, 0)
@@ -160,7 +155,7 @@ export function AnalyticsDashboard() {
     .sort((a, b) => b.orders - a.orders)
     .slice(0, 10)
 
-  if (loading) {
+  if (showAnalyticsLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>

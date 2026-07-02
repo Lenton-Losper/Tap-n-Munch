@@ -148,19 +148,14 @@ export function QRCodeManagement() {
     }
   }, [restaurantId, orderScope])
 
-  useEffect(() => {
-    // Don't run if user is null (prevents fetching when signed out)
-    if (!user) {
-      setLoading(false)
-      return
-    }
+  const canLoadTables = Boolean(user && restaurantId)
+  const showTablesLoading = canLoadTables && loading
 
-    if (!restaurantId) {
-      setLoading(false)
-      return
-    }
+  useEffect(() => {
+    if (!canLoadTables) return
 
     const loadData = async () => {
+      if (!restaurantId) return
       try {
         setLoading(true)
         console.log('Loading tables for restaurant:', restaurantId)
@@ -180,10 +175,11 @@ export function QRCodeManagement() {
     }
 
     loadData()
-  }, [user, restaurantId, toast])
+  }, [user, restaurantId, toast, canLoadTables])
 
   useEffect(() => {
     if (!restaurantId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional polling fetch for table statuses; React Query refactor out of scope
     void refreshTableStatuses()
     const interval = setInterval(() => {
       void refreshTableStatuses()
@@ -621,7 +617,7 @@ export function QRCodeManagement() {
     )
   }
 
-  if (loading) {
+  if (showTablesLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#FF6B35]"></div>

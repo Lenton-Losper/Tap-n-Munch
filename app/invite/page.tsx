@@ -29,9 +29,10 @@ function InviteAcceptForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const token = searchParams.get('token') || ''
+  const tokenMissing = !token
   const { signIn } = useAuth()
 
-  const [loading, setLoading] = useState(true)
+  const [tokenCheckLoading, setTokenCheckLoading] = useState(() => Boolean(token))
   const [invalid, setInvalid] = useState(false)
   const [invite, setInvite] = useState<InviteDetails | null>(null)
   const [fullName, setFullName] = useState('')
@@ -43,11 +44,7 @@ function InviteAcceptForm() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!token) {
-      setInvalid(true)
-      setLoading(false)
-      return
-    }
+    if (tokenMissing) return
 
     let cancelled = false
     ;(async () => {
@@ -68,14 +65,17 @@ function InviteAcceptForm() {
       } catch {
         if (!cancelled) setInvalid(true)
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) setTokenCheckLoading(false)
       }
     })()
 
     return () => {
       cancelled = true
     }
-  }, [token])
+  }, [token, tokenMissing])
+
+  const showInvalid = tokenMissing || invalid
+  const showLoading = !tokenMissing && tokenCheckLoading
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -122,9 +122,9 @@ function InviteAcceptForm() {
 
       <main className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4 pt-20 sm:px-6 lg:px-8">
         <section className="w-full max-w-lg rounded-2xl border border-[#E9E9E7] bg-white p-8 shadow-[0_10px_35px_rgba(55,53,47,0.05)] sm:p-10">
-          {loading ? (
+          {showLoading ? (
             <p className="text-sm text-[#6B675F]">Validating your invitation...</p>
-          ) : invalid || !invite ? (
+          ) : showInvalid || !invite ? (
             <>
               <h1 className="font-serif text-3xl font-semibold">Invitation unavailable</h1>
               <p className="mt-4 text-sm text-[#6B675F]">

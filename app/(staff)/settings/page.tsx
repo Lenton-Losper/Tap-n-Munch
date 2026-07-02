@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { RoleGuard } from '@/components/auth/role-guard'
 import { cn } from '@/lib/utils'
 import { SETTINGS_BRAND_PRIMARY, SETTINGS_TABS, type SettingsTabId } from '@/components/settings/constants'
@@ -12,22 +12,20 @@ import { SettingsRestaurantTab } from '@/components/settings/settings-restaurant
 import { hashToSettingsTab } from '@/components/settings/settings-utils'
 
 function SettingsContent() {
-  const [activeTab, setActiveTab] = useState<SettingsTabId>('profile')
-
-  const syncTabFromHash = useCallback(() => {
-    setActiveTab(hashToSettingsTab(window.location.hash))
-  }, [])
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() =>
+    typeof window !== 'undefined' ? hashToSettingsTab(window.location.hash) : 'profile'
+  )
 
   useEffect(() => {
-    syncTabFromHash()
-    window.addEventListener('hashchange', syncTabFromHash)
-    return () => window.removeEventListener('hashchange', syncTabFromHash)
-  }, [syncTabFromHash])
+    const onHashChange = () => setActiveTab(hashToSettingsTab(window.location.hash))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
   const navigateToTab = (tabId: SettingsTabId, hash: string) => {
     setActiveTab(tabId)
-    if (window.location.hash !== hash) {
-      window.location.hash = hash
+    if (typeof window !== 'undefined' && window.location.hash !== hash) {
+      window.history.replaceState(null, '', hash)
     }
   }
 

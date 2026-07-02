@@ -20,15 +20,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Lint
-        run: npx eslint . --max-warnings=0 || true
+        run: npx eslint . --max-warnings=0
       - name: Typecheck
-        run: npx tsc --noEmit || true
+        run: npx tsc --noEmit
       - name: Unit and schema tests (no HTTP)
         run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - name: Recipe deduction idempotency tests (staging Supabase)
+        run: npx jest --ci --forceExit --testPathPattern="recipe-deduction"
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
 
   deploy:
     runs-on: ubuntu-latest

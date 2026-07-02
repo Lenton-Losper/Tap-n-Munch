@@ -40,6 +40,10 @@ export const PERMISSIONS = {
   STOCK_ADJUST:     'stock:adjust',
   STOCK_VIEW_COSTS: 'stock:view_costs',
   STOCK_DELETE_GRV: 'stock:delete_grv',
+
+  // Recipes
+  RECIPE_VIEW: 'recipe:view',
+  RECIPE_EDIT: 'recipe:edit',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]

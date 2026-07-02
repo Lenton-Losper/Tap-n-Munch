@@ -29,7 +29,9 @@ export function useSessionTokenGuard({
 }: Options) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const shouldValidate = enabled && Boolean(restaurantId) && tableNumber > 0
   const [validating, setValidating] = useState(true)
+  const isValidating = shouldValidate && validating
   const urlToken = readSessionTokenFromSearchParams(searchParams)
   const trackedTokenRef = useRef(urlToken)
   const invalidatedRef = useRef(false)
@@ -72,10 +74,7 @@ export function useSessionTokenGuard({
     invalidatedRef.current = false
     trackedTokenRef.current = urlToken
 
-    if (!enabled || !restaurantId || tableNumber <= 0) {
-      setValidating(false)
-      return
-    }
+    if (!shouldValidate) return
 
     if (!urlToken) {
       invalidate()
@@ -130,7 +129,7 @@ export function useSessionTokenGuard({
       supabase.removeChannel(channel)
     }
   }, [
-    enabled,
+    shouldValidate,
     restaurantId,
     tableNumber,
     tableId,
@@ -139,5 +138,5 @@ export function useSessionTokenGuard({
     evaluateTabRow,
   ])
 
-  return { validating, sessionToken: urlToken }
+  return { validating: isValidating, sessionToken: urlToken }
 }

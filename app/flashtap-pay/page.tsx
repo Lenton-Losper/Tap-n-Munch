@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 
 export default function FlashTapPayPage() {
   const [amount, setAmount] = useState('')
@@ -96,7 +97,16 @@ export default function FlashTapPayPage() {
               Send link
             </a>
           </p>
-          {result.qrBase64 && <img src={result.qrBase64} alt="Payment QR code" className="w-56 h-56 border" />}
+          {result.qrBase64 && (
+            <Image
+              src={result.qrBase64}
+              alt="Payment QR code"
+              width={224}
+              height={224}
+              className="border"
+              unoptimized
+            />
+          )}
           {result.qrSvg && <textarea className="w-full border p-2 text-xs" rows={8} readOnly value={result.qrSvg} />}
           {result.expiresAt && <p className="text-xs text-muted-foreground">Expires at: {result.expiresAt}</p>}
         </div>

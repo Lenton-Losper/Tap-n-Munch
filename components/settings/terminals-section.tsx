@@ -75,6 +75,7 @@ export function TerminalsSection() {
   }, [toast])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope
     void loadTerminals()
   }, [loadTerminals])
 

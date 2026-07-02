@@ -5,13 +5,13 @@ test.describe('Auth and protected routes', () => {
 
   test('dashboard redirects to login when not authenticated', async ({ page }) => {
     await page.goto(`${STAGING_BASE}/dashboard`)
-    // Wait up to 5 seconds for client-side auth redirect
-    await page.waitForTimeout(3000)
+    // Client-side guard in (staff)/layout redirects to /signin once auth resolves.
+    await page.waitForURL(/\/signin(?:\?|$|\/)/i, { timeout: 15_000 })
     const url = page.url()
     const body = await page.textContent('body')
-    const isAuthPage = url.includes('sign-in') || url.includes('login') ||
-      url.includes('auth') || body?.includes('Sign in') || body?.includes('Log in') ||
-      body?.includes('Sign up')
+    const isAuthPage =
+      /signin|sign-in|login|auth/i.test(url) ||
+      /sign in|log in|sign up/i.test(body ?? '')
     expect(isAuthPage).toBe(true)
   })
 

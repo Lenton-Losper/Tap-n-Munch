@@ -92,6 +92,10 @@ function getPeriodRange(period: PeriodKey) {
   return { start, end }
 }
 
+function AnalyticsSkeletonCard() {
+  return <div className="h-28 animate-pulse rounded-2xl border border-[#E9E9E7] bg-white" />
+}
+
 function AnalyticsContent() {
   const { restaurantId, restaurant } = useAuth()
   const router = useRouter()
@@ -286,8 +290,6 @@ function AnalyticsContent() {
 
   const currencySymbol = restaurant?.currency || 'N$'
 
-  const SkeletonCard = () => <div className="h-28 animate-pulse rounded-2xl border border-[#E9E9E7] bg-white" />
-
   return (
     <div className="min-h-screen bg-[#F7F6F3] px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -339,10 +341,10 @@ function AnalyticsContent() {
         {loading ? (
           <div className="space-y-6">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
+              <AnalyticsSkeletonCard />
+              <AnalyticsSkeletonCard />
+              <AnalyticsSkeletonCard />
+              <AnalyticsSkeletonCard />
             </div>
             <div className="h-80 animate-pulse rounded-2xl border border-[#E9E9E7] bg-white" />
             <div className="h-80 animate-pulse rounded-2xl border border-[#E9E9E7] bg-white" />

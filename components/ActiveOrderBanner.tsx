@@ -62,6 +62,7 @@ export function ActiveOrderBanner() {
     return ['pending', 'accepted', 'ready', 'ready_for_terminal'].includes(status)
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurantId) {
       setLastOrder(null)
@@ -135,6 +136,7 @@ export function ActiveOrderBanner() {
       supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, persistedOrderId])
+  /* eslint-enable react-hooks/set-state-in-effect */
   
   // Debug logging
   if (loading) {

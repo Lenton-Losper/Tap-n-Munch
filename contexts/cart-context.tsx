@@ -29,29 +29,27 @@ interface CartContextType {
 
 const CartContext = createContext<CartContextType | undefined>(undefined)
 
-export function CartProvider({ children }: { children: React.ReactNode }) {
-  const [items, setItems] = useState<CartItem[]>([])
+function hydrateCartFromStorage(): CartItem[] {
+  if (typeof window === 'undefined') return []
+  const sessionId = getCurrentSession()
+  const saved = localStorage.getItem('cart')
+  const savedSessionId = localStorage.getItem('cart_session_id')
 
-  // Load cart from localStorage on mount
-  useEffect(() => {
-    const sessionId = getCurrentSession()
-    const saved = localStorage.getItem('cart')
-    const savedSessionId = localStorage.getItem('cart_session_id')
-
-    if (saved && sessionId && savedSessionId === sessionId) {
-      try {
-        setItems(JSON.parse(saved))
-        return
-      } catch (e) {
-        console.error('Failed to load cart from localStorage', e)
-      }
+  if (saved && sessionId && savedSessionId === sessionId) {
+    try {
+      return JSON.parse(saved) as CartItem[]
+    } catch (e) {
+      console.error('Failed to load cart from localStorage', e)
     }
+  }
 
-    // Cart is tied to a session id; if the session changed (new QR scan) we must start empty.
-    localStorage.removeItem('cart')
-    localStorage.removeItem('cart_session_id')
-    setItems([])
-  }, [])
+  localStorage.removeItem('cart')
+  localStorage.removeItem('cart_session_id')
+  return []
+}
+
+export function CartProvider({ children }: { children: React.ReactNode }) {
+  const [items, setItems] = useState<CartItem[]>(hydrateCartFromStorage)
 
   // Save cart to localStorage whenever it changes
   useEffect(() => {
@@ -115,4 +113,3 @@ export function useCart() {
   }
   return context
 }
-

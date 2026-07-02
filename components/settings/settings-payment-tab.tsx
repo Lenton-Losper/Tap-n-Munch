@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Copy, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { supabase } from '@/lib/supabase/client'
@@ -158,13 +158,12 @@ export function SettingsPaymentTab() {
   const [generatingCode, setGeneratingCode] = useState(false)
   const [deactivatingId, setDeactivatingId] = useState<string | null>(null)
   const [showInactive, setShowInactive] = useState(false)
+  const storedActivation = useMemo(
+    () => (restaurantId ? readStoredActivation(restaurantId) : null),
+    [restaurantId]
+  )
   const [activationResult, setActivationResult] = useState<ActivationResult | null>(null)
-
-  useEffect(() => {
-    if (!restaurantId) return
-    const stored = readStoredActivation(restaurantId)
-    if (stored) setActivationResult(stored)
-  }, [restaurantId])
+  const effectiveActivationResult = activationResult ?? storedActivation
 
   const loadAccount = useCallback(async () => {
     if (!restaurantId) {
@@ -252,6 +251,7 @@ export function SettingsPaymentTab() {
   }, [restaurantId, toast])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope
     void loadAccount()
     void loadTerminals()
   }, [loadAccount, loadTerminals])
@@ -453,9 +453,9 @@ export function SettingsPaymentTab() {
   }
 
   const handleCopyCode = async () => {
-    if (!activationResult?.code) return
+    if (!effectiveActivationResult?.code) return
     try {
-      await navigator.clipboard.writeText(activationResult.code)
+      await navigator.clipboard.writeText(effectiveActivationResult.code)
       toast({ title: 'Copied', description: 'Activation code copied to clipboard.' })
     } catch {
       toast({
@@ -634,10 +634,10 @@ export function SettingsPaymentTab() {
         </div>
       ) : null}
 
-      {activationResult ? (
+      {effectiveActivationResult ? (
         <div id="terminal-activation-success">
           <TerminalActivationSuccessCard
-            result={activationResult}
+            result={effectiveActivationResult}
             onCopy={handleCopyCode}
             onDone={dismissActivationCode}
           />

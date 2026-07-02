@@ -1,6 +1,24 @@
+export type StockStatus = 'out_of_stock' | 'low_stock' | 'healthy' | 'not_tracked'
+
+export function computeStockStatus(currentStock: number, parLevel: number | null): StockStatus {
+  if (parLevel == null) return 'not_tracked'
+  if (currentStock <= 0) return 'out_of_stock'
+  if (currentStock <= parLevel) return 'low_stock'
+  return 'healthy'
+}
+
 export function formatStockQuantity(value: number, baseUnit: string) {
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
   return `${formatted} ${baseUnit}`
+}
+
+/** Signed delta for count/adjustment previews, e.g. "+5 g" or "-12 g". */
+export function formatSignedStockDelta(delta: number, baseUnit: string) {
+  if (delta === 0) return `0 ${baseUnit}`
+  const abs = Math.abs(delta)
+  const formatted = Number.isInteger(abs) ? String(abs) : abs.toFixed(2).replace(/\.?0+$/, '')
+  const sign = delta > 0 ? '+' : '-'
+  return `${sign}${formatted} ${baseUnit}`
 }
 
 export function formatUnitCost(value: number | null | undefined) {

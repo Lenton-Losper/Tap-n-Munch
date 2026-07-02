@@ -1,6 +1,7 @@
 'use client'
 
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
+import Image from 'next/image'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -178,10 +179,13 @@ export const StepProfile = forwardRef<StepHandle, StepProfileProps>(function Ste
           className="rounded-lg border-[#E9E9E7]"
         />
         {logoPreview ? (
-          <img
+          <Image
             src={logoPreview}
             alt="Restaurant logo preview"
+            width={80}
+            height={80}
             className="mt-2 h-20 w-20 rounded-lg border border-[#E9E9E7] object-cover"
+            unoptimized
           />
         ) : null}
       </div>

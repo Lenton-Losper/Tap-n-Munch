@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
+import Image from 'next/image'
 import { useAuth } from '@/components/auth/auth-provider'
 import { QRCodeSVG } from 'qrcode.react'
 import { toPng } from 'html-to-image'
@@ -24,13 +25,14 @@ export function TableCardGenerator() {
   const [tables, setTables] = useState<Table[]>([])
   const [loadingTables, setLoadingTables] = useState(true)
 
+  const canLoadTableCards = Boolean(user && restaurantId)
+  const showTablesLoading = canLoadTableCards && loadingTables
+
   useEffect(() => {
-    if (!user || !restaurantId) {
-      setLoadingTables(false)
-      return
-    }
+    if (!canLoadTableCards) return
 
     const loadTables = async () => {
+      if (!restaurantId) return
       try {
         const tablesData = (await getTables(restaurantId, true)) as Table[]
         setTables(tablesData)
@@ -45,7 +47,7 @@ export function TableCardGenerator() {
     }
 
     loadTables()
-  }, [user, restaurantId])
+  }, [user, restaurantId, canLoadTableCards])
 
   if (!restaurantId || !restaurant) {
     return (
@@ -102,7 +104,7 @@ export function TableCardGenerator() {
         }
 
         // Create a new image to test loading
-        const testImg = new Image()
+        const testImg = new window.Image()
         testImg.crossOrigin = 'anonymous'
         
         testImg.onload = () => {
@@ -213,7 +215,7 @@ export function TableCardGenerator() {
 
         {/* Table Selection */}
         <div className="mb-6 space-y-4">
-          {!loadingTables && tables.length > 0 && (
+          {!showTablesLoading && tables.length > 0 && (
             <div>
               <Label className="text-sm font-medium text-gray-700 mb-2 block">
                 Select Existing Table
@@ -350,19 +352,18 @@ export function TableCardGenerator() {
               {/* Restaurant Logo */}
               <div className="mb-4">
                 {restaurant.logo_url ? (
-                  <img
+                  <Image
                     src={restaurant.logo_url}
                     alt={restaurant.name}
                     width={80}
                     height={80}
                     className="rounded-full object-cover border-2 border-[#B8860B]"
+                    unoptimized
                     crossOrigin="anonymous"
                     onError={(e) => {
-                      // Fallback to placeholder if logo fails to load (CORS issue)
                       console.warn('Logo failed to load, using fallback')
                       const target = e.currentTarget
                       target.style.display = 'none'
-                      // Show fallback div
                       const fallback = target.nextElementSibling as HTMLElement
                       if (fallback) {
                         fallback.style.display = 'flex'

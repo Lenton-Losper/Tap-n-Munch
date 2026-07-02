@@ -26,5 +26,25 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
 
   if (data.is_popular !== undefined) payload.is_popular = Boolean(data.is_popular)
 
+  const imageFit = data.image_fit ?? data.imageFit
+  if (imageFit !== undefined) payload.image_fit = String(imageFit)
+
+  const imagePosition = data.image_position ?? data.imagePosition
+  if (imagePosition !== undefined) payload.image_position = String(imagePosition)
+
+  if (data.allow_special_instructions !== undefined) {
+    payload.allow_special_instructions = Boolean(data.allow_special_instructions)
+  }
+
+  if (data.has_sizes !== undefined) payload.has_sizes = Boolean(data.has_sizes)
+  if (data.sizes !== undefined) payload.sizes = data.sizes
+
+  if (data.has_addons !== undefined) payload.has_addons = Boolean(data.has_addons)
+  if (data.addons !== undefined) payload.addons = data.addons
+
+  if (data.track_inventory !== undefined) {
+    payload.track_inventory = Boolean(data.track_inventory)
+  }
+
   return payload
 }

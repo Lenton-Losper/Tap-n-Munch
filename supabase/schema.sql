@@ -152,6 +152,120 @@ $$;
 ALTER FUNCTION "public"."create_movement_from_goods_received_item"() OWNER TO "postgres";
 
 --
+-- Name: deduct_recipe_stock(uuid); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."deduct_recipe_stock"("p_order_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql"
+    AS $
+DECLARE
+    v_order record;
+    v_line_item jsonb;
+    v_menu_item_id uuid;
+    v_line_qty numeric;
+    v_recipe_id uuid;
+    v_recipe_item record;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM "public"."stock_movements"
+        WHERE reference_type = 'order'
+          AND reference_id = p_order_id
+    ) THEN
+        RETURN;
+    END IF;
+
+    SELECT id, restaurant_id, items
+    INTO v_order
+    FROM "public"."orders"
+    WHERE id = p_order_id;
+
+    IF NOT FOUND THEN
+        RETURN;
+    END IF;
+
+    IF v_order.items IS NULL OR jsonb_typeof(v_order.items) <> 'array' THEN
+        RETURN;
+    END IF;
+
+    FOR v_line_item IN
+        SELECT value FROM jsonb_array_elements(v_order.items)
+    LOOP
+        BEGIN
+            v_menu_item_id := COALESCE(
+                (v_line_item->>'menu_item_id')::uuid,
+                (v_line_item->>'menuItemId')::uuid
+            );
+            v_line_qty := COALESCE((v_line_item->>'quantity')::numeric, 1);
+
+            IF v_menu_item_id IS NULL OR v_line_qty <= 0 THEN
+                CONTINUE;
+            END IF;
+
+            SELECT id
+            INTO v_recipe_id
+            FROM "public"."recipes"
+            WHERE restaurant_id = v_order.restaurant_id
+              AND menu_item_id = v_menu_item_id
+              AND is_active = true
+            LIMIT 1;
+
+            IF v_recipe_id IS NULL THEN
+                CONTINUE;
+            END IF;
+
+            FOR v_recipe_item IN
+                SELECT stock_item_id, quantity
+                FROM "public"."recipe_items"
+                WHERE recipe_id = v_recipe_id
+            LOOP
+                INSERT INTO "public"."stock_movements" (
+                    restaurant_id, stock_item_id, quantity_delta, reason,
+                    reference_type, reference_id, created_by, created_at
+                ) VALUES (
+                    v_order.restaurant_id,
+                    v_recipe_item.stock_item_id,
+                    -(v_recipe_item.quantity * v_line_qty),
+                    'sale',
+                    'order',
+                    p_order_id,
+                    NULL,
+                    now()
+                );
+            END LOOP;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE WARNING 'deduct_recipe_stock line item error for order %: %', p_order_id, SQLERRM;
+        END;
+    END LOOP;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE WARNING 'deduct_recipe_stock error for order %: %', p_order_id, SQLERRM;
+END;
+$;
+
+
+ALTER FUNCTION "public"."deduct_recipe_stock"("p_order_id" "uuid") OWNER TO "postgres";
+
+--
+-- Name: trg_order_completion_deducts_stock(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."trg_order_completion_deducts_stock"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $
+BEGIN
+    PERFORM "public"."deduct_recipe_stock"(NEW.id);
+    RETURN NEW;
+END;
+$;
+
+
+ALTER FUNCTION "public"."trg_order_completion_deducts_stock"() OWNER TO "postgres";
+
+
+
+--
 -- Name: increment_settings_version(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -851,7 +965,7 @@ CREATE TABLE IF NOT EXISTS "public"."stock_items" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "restaurant_id" "uuid" NOT NULL,
     "name" "text" NOT NULL,
-    "base_unit" "text" NOT NULL,
+    "unit_id" "uuid" NOT NULL,
     "is_purchasable" boolean DEFAULT true NOT NULL,
     "is_manufactured" boolean DEFAULT false NOT NULL,
     "is_active" boolean DEFAULT true NOT NULL,
@@ -1569,7 +1683,56 @@ CREATE INDEX "idx_restaurant_terminals_restaurant_id" ON "public"."restaurant_te
 -- Name: idx_stock_items_restaurant; Type: INDEX; Schema: public; Owner: postgres
 --
 
+CREATE INDEX "idx_measurement_units_restaurant" ON "public"."measurement_units" USING "btree" ("restaurant_id");
+
+
+--
+-- Name: idx_recipe_items_recipe; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_recipe_items_recipe" ON "public"."recipe_items" USING "btree" ("recipe_id");
+
+
+--
+-- Name: idx_recipe_items_stock_item; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_recipe_items_stock_item" ON "public"."recipe_items" USING "btree" ("stock_item_id");
+
+
+--
+-- Name: idx_recipe_items_unit; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_recipe_items_unit" ON "public"."recipe_items" USING "btree" ("unit_id");
+
+
+--
+-- Name: idx_recipes_menu_item; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_recipes_menu_item" ON "public"."recipes" USING "btree" ("menu_item_id");
+
+
+--
+-- Name: idx_recipes_restaurant; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_recipes_restaurant" ON "public"."recipes" USING "btree" ("restaurant_id");
+
+
+--
+-- Name: idx_stock_items_restaurant; Type: INDEX; Schema: public; Owner: postgres
+--
+
 CREATE INDEX "idx_stock_items_restaurant" ON "public"."stock_items" USING "btree" ("restaurant_id");
+
+
+--
+-- Name: idx_stock_items_unit; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_stock_items_unit" ON "public"."stock_items" USING "btree" ("unit_id");
 
 
 --
@@ -1696,6 +1859,13 @@ CREATE OR REPLACE TRIGGER "trg_assign_grv_number" BEFORE INSERT ON "public"."goo
 --
 
 CREATE OR REPLACE TRIGGER "trg_goods_received_items_creates_movement" AFTER INSERT ON "public"."goods_received_items" FOR EACH ROW EXECUTE FUNCTION "public"."create_movement_from_goods_received_item"();
+
+
+--
+-- Name: orders trg_order_completion_deducts_stock; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "trg_order_completion_deducts_stock" AFTER UPDATE OF "status" ON "public"."orders" FOR EACH ROW WHEN ((("new"."status" = 'completed'::"text") AND ("old"."status" IS DISTINCT FROM 'completed'::"text"))) EXECUTE FUNCTION "public"."trg_order_completion_deducts_stock"();
 
 
 --
@@ -2240,6 +2410,38 @@ CREATE POLICY "Owners can manage own restaurant goods received items" ON "public
 -- Name: stock_items Owners can manage own restaurant stock items; Type: POLICY; Schema: public; Owner: postgres
 --
 
+CREATE POLICY "Authenticated users can read system measurement units" ON "public"."measurement_units" FOR SELECT TO "authenticated" USING (("restaurant_id" IS NULL));
+
+
+--
+-- Name: measurement_units Owners can manage own restaurant measurement units; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Owners can manage own restaurant measurement units" ON "public"."measurement_units" USING ((("restaurant_id" IS NOT NULL) AND ("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))) WITH CHECK ((("restaurant_id" IS NOT NULL) AND ("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))));
+
+
+--
+-- Name: recipe_items Owners can manage own restaurant recipe items; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Owners can manage own restaurant recipe items" ON "public"."recipe_items" USING (("recipe_id" IN ( SELECT "recipes"."id"
+   FROM "public"."recipes"
+  WHERE ("recipes"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))))) WITH CHECK (("recipe_id" IN ( SELECT "recipes"."id"
+   FROM "public"."recipes"
+  WHERE ("recipes"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))));
+
+
+--
+-- Name: recipes Owners can manage own restaurant recipes; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Owners can manage own restaurant recipes" ON "public"."recipes" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))) WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+
+--
+-- Name: stock_items Owners can manage own restaurant stock items; Type: POLICY; Schema: public; Owner: postgres
+--
+
 CREATE POLICY "Owners can manage own restaurant stock items" ON "public"."stock_items" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids"))) WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 
@@ -2649,6 +2851,18 @@ ALTER TABLE "public"."report_schedules" ENABLE ROW LEVEL SECURITY;
 -- Name: report_send_log; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
+ALTER TABLE "public"."recipe_items" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: recipes; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."recipes" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: report_send_log; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
 ALTER TABLE "public"."report_send_log" ENABLE ROW LEVEL SECURITY;
 
 --
@@ -2779,6 +2993,24 @@ GRANT ALL ON FUNCTION "public"."create_movement_from_goods_received_item"() TO "
 
 
 --
+-- Name: FUNCTION "deduct_recipe_stock"(uuid); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."deduct_recipe_stock"("uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."deduct_recipe_stock"("uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."deduct_recipe_stock"("uuid") TO "service_role";
+
+
+--
+-- Name: FUNCTION "trg_order_completion_deducts_stock"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."trg_order_completion_deducts_stock"() TO "anon";
+GRANT ALL ON FUNCTION "public"."trg_order_completion_deducts_stock"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."trg_order_completion_deducts_stock"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "increment_settings_version"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2893,6 +3125,33 @@ GRANT ALL ON TABLE "public"."menu_categories" TO "service_role";
 GRANT ALL ON TABLE "public"."menu_items" TO "anon";
 GRANT ALL ON TABLE "public"."menu_items" TO "authenticated";
 GRANT ALL ON TABLE "public"."menu_items" TO "service_role";
+
+
+--
+-- Name: TABLE "measurement_units"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."measurement_units" TO "anon";
+GRANT ALL ON TABLE "public"."measurement_units" TO "authenticated";
+GRANT ALL ON TABLE "public"."measurement_units" TO "service_role";
+
+
+--
+-- Name: TABLE "recipe_items"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."recipe_items" TO "anon";
+GRANT ALL ON TABLE "public"."recipe_items" TO "authenticated";
+GRANT ALL ON TABLE "public"."recipe_items" TO "service_role";
+
+
+--
+-- Name: TABLE "recipes"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."recipes" TO "anon";
+GRANT ALL ON TABLE "public"."recipes" TO "authenticated";
+GRANT ALL ON TABLE "public"."recipes" TO "service_role";
 
 
 --

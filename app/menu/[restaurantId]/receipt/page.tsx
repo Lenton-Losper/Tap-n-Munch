@@ -213,17 +213,12 @@ export default function ReceiptPage() {
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
 
-  useEffect(() => {
-    if (!restaurantId) {
-      setLoading(false)
-      return
-    }
+  const tableNum = Number(tableNumber) || 0
+  const canLoadReceipt = Boolean(restaurantId) && tableNum > 0
 
-    const tableNum = Number(tableNumber) || 0
-    if (tableNum <= 0) {
-      setLoading(false)
-      return
-    }
+  /* eslint-disable react-hooks/set-state-in-effect -- receipt session validation and redirect guards */
+  useEffect(() => {
+    if (!canLoadReceipt) return
 
     if (!storedTabId) {
       console.log('[RECEIPT] no tab_id in localStorage — redirect to landing')
@@ -313,9 +308,8 @@ export default function ReceiptPage() {
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [restaurantId, tableNumber, storedTabId, router, refreshTab])
-
-  const tableNum = tableNumber ? Number(tableNumber) : null
+  }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const tabGrandTotal = useMemo(
     () => orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0),
@@ -358,7 +352,9 @@ export default function ReceiptPage() {
   }
 
   // Loading
-  if (loading) {
+  const showReceiptLoading = canLoadReceipt && loading && !redirecting
+
+  if (redirecting || showReceiptLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <OrderStatusBanner restaurantId={restaurantId} tableNumber={tableNum ?? 0} />
@@ -453,7 +449,7 @@ export default function ReceiptPage() {
 
         {/* Orders List */}
         <div className="space-y-4">
-          {orders.map((order) => {
+          {orders.map((order, orderIndex) => {
             if (!order) return null
             
             const displayDate = formatOrderTimestamp(order.placed_at ?? order.created_at)
@@ -462,7 +458,7 @@ export default function ReceiptPage() {
             const customerLabel = getOrderCustomerLabel(order, memberNameMap)
 
             return (
-              <div key={order.id || Math.random()} className="bg-card border border-border p-6">
+              <div key={order.id || `order-${orderIndex}`} className="bg-card border border-border p-6">
                 {/* Order Header */}
                 <div className="flex justify-between items-start mb-4 pb-4 border-b border-border">
                   <div>

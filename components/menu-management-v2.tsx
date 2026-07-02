@@ -20,8 +20,6 @@ import {
 } from '@/lib/supabase/menu'
 import { 
   getMenuItems,
-  createMenuItem, 
-  updateMenuItem, 
   deleteMenuItem,
   normalizeMenuItemForClient,
   normalizeSubCategoryForClient,
@@ -31,17 +29,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Upload, Loader2, Pencil } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Edit, Trash2, X, ChevronRight, Loader2, Pencil } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
-import Image from 'next/image'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { uploadMenuItemImage } from '@/lib/supabase/storage'
-import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
 import { Skeleton } from '@/components/ui/skeleton'
 import { FoodItemImage } from '@/components/menu/food-item-image'
+import { MenuItemFormModal } from '@/components/menu/menu-item-form-modal'
+import { InventorySetupBanner } from '@/components/menu/inventory-setup-ui'
+import { MenuItemInventoryBadge } from '@/components/menu/menu-item-inventory-badge'
+import { loadInventorySetupAction } from '@/lib/recipes/actions'
+import type { InventorySetupData } from '@/lib/recipes/queries'
 
 const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
 const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
@@ -55,10 +54,19 @@ type MenuManagementCachePayload = {
   timestamp: number
 }
 
-export function MenuManagementV2() {
+export function MenuManagementV2({
+  initialInventorySetup = null,
+  missingInventoryFilter = false,
+}: {
+  initialInventorySetup?: InventorySetupData | null
+  missingInventoryFilter?: boolean
+}) {
   const { user, restaurantId } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
+  const [inventorySetup, setInventorySetup] = useState<InventorySetupData | null>(
+    initialInventorySetup,
+  )
   
   // Data state
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
@@ -76,6 +84,7 @@ export function MenuManagementV2() {
   const [showMenuCategoryModal, setShowMenuCategoryModal] = useState(false)
   const [showSubCategoryModal, setShowSubCategoryModal] = useState(false)
   const [showItemModal, setShowItemModal] = useState(false)
+  const [defaultSubCategoryId, setDefaultSubCategoryId] = useState('')
   const [showEditMenuCategoryModal, setShowEditMenuCategoryModal] = useState(false)
   const [showEditSubCategoryModal, setShowEditSubCategoryModal] = useState(false)
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null)
@@ -87,32 +96,6 @@ export function MenuManagementV2() {
   const [subCategoryForm, setSubCategoryForm] = useState({ name: '', description: '' })
   const [editMenuCategoryForm, setEditMenuCategoryForm] = useState({ name: '', description: '', display_order: '', route_to: 'kitchen' as 'kitchen' | 'bar' | 'both' })
   const [editSubCategoryForm, setEditSubCategoryForm] = useState({ name: '', description: '', display_order: '' })
-  const [itemForm, setItemForm] = useState({
-    name: '',
-    description: '',
-    sub_category_id: '',
-    base_price: '',
-    image_url: '',
-    imageFile: null as File | null,
-    imageFit: 'contain' as 'contain' | 'cover' | 'fill' | 'scale-down',
-    imagePosition: 'center' as 'center' | 'top' | 'bottom',
-    has_sizes: false,
-    sizes: [] as Array<{ name: string; price_modifier: number }>,
-    variants: [] as Array<{ size: string; label: string; price: number }>,
-    variantGroups: [] as Array<{
-      name: string
-      required: boolean
-      type: 'text' | 'price'
-      options: Array<string | { label: string; price: number }>
-    }>,
-    has_addons: false,
-    addons: [] as Array<{ name: string; price: number }>,
-    allow_special_instructions: true,
-    is_popular: false,
-    status: 'available' as 'available' | 'out_of_stock' | 'hidden',
-  })
-  const [uploadingImage, setUploadingImage] = useState(false)
-  const [imagePreview, setImagePreview] = useState<string | null>(null)
   const lastMenuInvalidateAtRef = useRef(0)
   const menuInvalidateInFlightRef = useRef(false)
   const loadInFlightRef = useRef(false)
@@ -184,21 +167,15 @@ export function MenuManagementV2() {
   )
 
   // Load all data - Pre-fetch using localStorage restaurantId for faster loading
+  const cachedRestaurantId =
+    typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : null
+  const effectiveRestaurantId = restaurantId || cachedRestaurantId
+  const canLoadMenuData = Boolean(user || cachedRestaurantId) && Boolean(effectiveRestaurantId)
+  const showMenuLoading = canLoadMenuData && loading
+
   useEffect(() => {
-    // Check localStorage first for faster initial load
-    const cachedRestaurantId = typeof window !== 'undefined' ? localStorage.getItem('restaurantId') : null
-    const effectiveRestaurantId = restaurantId || cachedRestaurantId
-
-    // Don't run if user is null (prevents fetching when signed out)
-    if (!user && !cachedRestaurantId) {
-      setLoading(false)
-      return
-    }
-
-    if (!effectiveRestaurantId) {
-      setLoading(false)
-      return
-    }
+    if (!canLoadMenuData) return
+    if (!effectiveRestaurantId) return
 
     if (loadInFlightRef.current) return
     if (loadedRestaurantRef.current === effectiveRestaurantId) return
@@ -275,14 +252,31 @@ export function MenuManagementV2() {
     }
 
     loadAllData()
-  }, [user?.id, restaurantId, readCache, writeCache]) // Removed selectedMenuCategory from dependencies to prevent reset
+    // selectedMenuCategory is updated inside loadAllData; including it would reset category selection on each load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restaurant/user identity only
+  }, [canLoadMenuData, effectiveRestaurantId, readCache, writeCache])
 
   const searchableQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery])
 
-  const visibleMenuItems = useMemo(
-    () => (showHidden ? allMenuItems : allMenuItems.filter((item) => item.status !== 'hidden')),
-    [allMenuItems, showHidden]
+  const missingMenuItemIds = useMemo(
+    () => new Set(inventorySetup?.missingItems.map((item) => item.menuItemId) ?? []),
+    [inventorySetup],
   )
+
+  const refreshInventorySetup = useCallback(async () => {
+    const result = await loadInventorySetupAction()
+    if (result.data) {
+      setInventorySetup(result.data)
+    }
+  }, [])
+
+  const visibleMenuItems = useMemo(() => {
+    let items = showHidden ? allMenuItems : allMenuItems.filter((item) => item.status !== 'hidden')
+    if (missingInventoryFilter) {
+      items = items.filter((item) => missingMenuItemIds.has(item.id))
+    }
+    return items
+  }, [allMenuItems, showHidden, missingInventoryFilter, missingMenuItemIds])
 
   const subCategoriesByMenuCategory = useMemo(() => {
     const map: Record<string, SubCategory[]> = {}
@@ -389,7 +383,7 @@ export function MenuManagementV2() {
   }, [allSubCategories, menuCategories])
 
   useEffect(() => {
-    if (loading) return
+    if (showMenuLoading) return
 
     writeCache({
       menuCategories,
@@ -397,7 +391,7 @@ export function MenuManagementV2() {
       allMenuItems,
       selectedMenuCategoryId: selectedMenuCategory?.id || null,
     })
-  }, [allMenuItems, allSubCategories, loading, menuCategories, selectedMenuCategory?.id, writeCache])
+  }, [allMenuItems, allSubCategories, loading, menuCategories, selectedMenuCategory?.id, writeCache, showMenuLoading])
 
   // Navigation handlers
   const handleSelectMenuCategory = (category: MenuCategory | null) => {
@@ -408,26 +402,8 @@ export function MenuManagementV2() {
 
   // Handle add item for specific sub-category
   const handleAddItemForSubCategory = (subCategory: SubCategory) => {
-    setItemForm({
-      name: '',
-      description: '',
-      sub_category_id: subCategory.id,
-      base_price: '',
-      image_url: '',
-      imageFile: null,
-      imageFit: 'contain',
-      imagePosition: 'center',
-      has_sizes: false,
-      sizes: [],
-      variants: [],
-      variantGroups: [],
-      has_addons: false,
-      addons: [],
-      allow_special_instructions: true,
-      status: 'available',
-    })
+    setDefaultSubCategoryId(subCategory.id)
     setEditingItem(null)
-    setImagePreview(null)
     setShowItemModal(true)
   }
 
@@ -767,401 +743,23 @@ export function MenuManagementV2() {
       return
     }
     const firstCategorySub = (subCategoriesByMenuCategory[selectedMenuCategory.id] || [])[0]
-    setItemForm({
-      name: '',
-      description: '',
-      sub_category_id: firstCategorySub?.id || '',
-      base_price: '',
-      image_url: '',
-      imageFile: null,
-      imageFit: 'contain',
-      imagePosition: 'center',
-      has_sizes: false,
-      sizes: [],
-      variants: [],
-      variantGroups: [],
-      has_addons: false,
-      addons: [],
-      allow_special_instructions: true,
-      is_popular: false,
-      status: 'available',
-    })
+    setDefaultSubCategoryId(firstCategorySub?.id || '')
     setEditingItem(null)
-    setImagePreview(null)
     setShowItemModal(true)
   }
 
   const handleEditItem = (item: MenuItem) => {
     setEditingItem(item)
-    setItemForm({
-      name: item.name,
-      description: item.description || '',
-      sub_category_id: item.sub_category_id,
-      base_price: item.base_price.toString(),
-      image_url: item.image_url || '',
-      imageFile: null,
-      imageFit: item.imageFit || 'contain',
-      imagePosition: item.imagePosition || 'center',
-      has_sizes: item.has_sizes,
-      sizes: item.sizes || [],
-      variants: Array.isArray((item as MenuItem & { variants?: Array<{ size: string; label: string; price: number }> }).variants)
-        ? (item as MenuItem & { variants?: Array<{ size: string; label: string; price: number }> }).variants || []
-        : [],
-      variantGroups: Array.isArray((item as MenuItem & { variantGroups?: Array<{
-        name: string
-        required: boolean
-        type: 'text' | 'price'
-        options: Array<string | { label: string; price: number }>
-      }> }).variantGroups)
-        ? (item as MenuItem & { variantGroups?: Array<{
-            name: string
-            required: boolean
-            type: 'text' | 'price'
-            options: Array<string | { label: string; price: number }>
-          }> }).variantGroups || []
-        : [],
-      has_addons: item.has_addons,
-      addons: item.addons || [],
-      allow_special_instructions: item.allow_special_instructions,
-      is_popular: item.is_popular === true,
-      status: item.status,
-    })
-    setImagePreview(
-      item.image_url
-        ? menuItemImageDisplayUrl(item.id, item.image_url) || item.image_url
-        : null
-    )
+    setDefaultSubCategoryId('')
     setShowItemModal(true)
   }
 
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    // Validate file type
-    if (!file.type.startsWith('image/')) {
-      toast({
-        title: 'Invalid File',
-        description: 'Please select an image file',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    // Validate file size (max 5MB)
-    const maxSize = 5 * 1024 * 1024 // 5MB
-    if (file.size > maxSize) {
-      toast({
-        title: 'File Too Large',
-        description: 'Image must be less than 5MB',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    setItemForm({ ...itemForm, imageFile: file, image_url: '' })
-    
-    // Create preview
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      setImagePreview(reader.result as string)
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const handleRemoveImage = () => {
-    setItemForm({ ...itemForm, imageFile: null, image_url: '' })
-    setImagePreview(null)
-  }
-
-  const handleAddVariantRow = () => {
-    setItemForm((prev) => ({
-      ...prev,
-      variants: [...prev.variants, { size: '', label: '', price: Number(prev.base_price) || 0 }],
-    }))
-  }
-
-  const handleUpdateVariantRow = (
-    index: number,
-    field: 'size' | 'label' | 'price',
-    value: string
-  ) => {
-    setItemForm((prev) => {
-      const next = [...prev.variants]
-      if (!next[index]) return prev
-      if (field === 'price') {
-        next[index] = { ...next[index], price: Number(value) || 0 }
-      } else {
-        next[index] = { ...next[index], [field]: value }
-      }
-      return { ...prev, variants: next }
-    })
-  }
-
-  const handleRemoveVariantRow = (index: number) => {
-    setItemForm((prev) => ({
-      ...prev,
-      variants: prev.variants.filter((_, idx) => idx !== index),
-    }))
-  }
-
-  const handleAddVariantGroup = () => {
-    setItemForm((prev) => ({
-      ...prev,
-      variantGroups: [
-        ...prev.variantGroups,
-        { name: '', required: true, type: 'text', options: [''] },
-      ],
-    }))
-  }
-
-  const handleUpdateVariantGroup = (
-    groupIndex: number,
-    field: 'name' | 'required' | 'type',
-    value: string | boolean
-  ) => {
-    setItemForm((prev) => {
-      const next = [...prev.variantGroups]
-      if (!next[groupIndex]) return prev
-      next[groupIndex] = { ...next[groupIndex], [field]: value } as typeof next[number]
-      return { ...prev, variantGroups: next }
-    })
-  }
-
-  const handleRemoveVariantGroup = (groupIndex: number) => {
-    setItemForm((prev) => ({
-      ...prev,
-      variantGroups: prev.variantGroups.filter((_, idx) => idx !== groupIndex),
-    }))
-  }
-
-  const handleAddVariantGroupOption = (groupIndex: number) => {
-    setItemForm((prev) => {
-      const next = [...prev.variantGroups]
-      if (!next[groupIndex]) return prev
-      const group = next[groupIndex]
-      const newOption = group.type === 'price' ? { label: '', price: Number(prev.base_price) || 0 } : ''
-      next[groupIndex] = { ...group, options: [...group.options, newOption] }
-      return { ...prev, variantGroups: next }
-    })
-  }
-
-  const handleUpdateVariantGroupOption = (
-    groupIndex: number,
-    optionIndex: number,
-    field: 'label' | 'price' | 'value',
-    value: string
-  ) => {
-    setItemForm((prev) => {
-      const next = [...prev.variantGroups]
-      const group = next[groupIndex]
-      if (!group || !group.options[optionIndex]) return prev
-      const nextOptions = [...group.options]
-      const existing = nextOptions[optionIndex]
-      if (group.type === 'price') {
-        const obj = typeof existing === 'string' ? { label: existing, price: 0 } : existing
-        nextOptions[optionIndex] =
-          field === 'price' ? { ...obj, price: Number(value) || 0 } : { ...obj, label: value }
-      } else {
-        nextOptions[optionIndex] = value
-      }
-      next[groupIndex] = { ...group, options: nextOptions }
-      return { ...prev, variantGroups: next }
-    })
-  }
-
-  const handleRemoveVariantGroupOption = (groupIndex: number, optionIndex: number) => {
-    setItemForm((prev) => {
-      const next = [...prev.variantGroups]
-      const group = next[groupIndex]
-      if (!group) return prev
-      next[groupIndex] = {
-        ...group,
-        options: group.options.filter((_, idx) => idx !== optionIndex),
-      }
-      return { ...prev, variantGroups: next }
-    })
-  }
-
-  const handleSaveItem = async () => {
+  const handleItemSaved = async () => {
     if (!restaurantId) return
-
-    if (!itemForm.name || !itemForm.base_price) {
-      toast({
-        title: 'Validation Error',
-        description: 'Please fill in all required fields',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    const price = parseFloat(itemForm.base_price)
-    if (isNaN(price) || price <= 0) {
-      toast({
-        title: 'Validation Error',
-        description: 'Please enter a valid price greater than 0',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    const sanitizedVariants = itemForm.variants
-      .map((variant) => ({
-        size: String(variant.size || '').trim(),
-        label: String(variant.label || '').trim(),
-        price: Number(variant.price),
-      }))
-      .filter((variant) => variant.size && variant.label && Number.isFinite(variant.price) && variant.price > 0)
-
-    const sanitizedVariantGroups = itemForm.variantGroups
-      .map((group) => {
-        const cleanedName = String(group.name || '').trim()
-        const cleanedOptions =
-          group.type === 'price'
-            ? group.options
-                .map((opt) => {
-                  if (typeof opt === 'string') return null
-                  return {
-                    label: String(opt.label || '').trim(),
-                    price: Number(opt.price),
-                  }
-                })
-                .filter((opt) => opt && opt.label && Number.isFinite(opt.price) && opt.price > 0)
-            : group.options
-                .map((opt) => (typeof opt === 'string' ? String(opt).trim() : String(opt?.label || '').trim()))
-                .filter(Boolean)
-        return {
-          name: cleanedName,
-          required: Boolean(group.required),
-          type: group.type,
-          options: cleanedOptions,
-        }
-      })
-      .filter((group) => group.name && group.options.length > 0)
-
-    try {
-      let imageUrl = itemForm.image_url
-
-      // Upload image if file is selected
-      if (itemForm.imageFile) {
-        setUploadingImage(true)
-        try {
-          imageUrl = await uploadMenuItemImage(
-            itemForm.imageFile,
-            restaurantId,
-            editingItem?.id
-          )
-          toast({
-            title: 'Image Uploaded',
-            description: 'Image uploaded successfully',
-          })
-        } catch (uploadError: any) {
-          toast({
-            title: 'Upload Error',
-            description: uploadError.message || 'Failed to upload image',
-            variant: 'destructive',
-          })
-          setUploadingImage(false)
-          return
-        } finally {
-          setUploadingImage(false)
-        }
-      }
-
-      if (editingItem) {
-        // For update, we need the full path - extract from editingItem
-        if (!editingItem.menu_category_id) {
-          throw new Error('Menu item missing category information')
-        }
-        
-        await updateMenuItem(
-          restaurantId,
-          editingItem.menu_category_id,
-          editingItem.sub_category_id || '',
-          editingItem.id,
-          {
-            name: itemForm.name,
-            description: itemForm.description,
-            base_price: price,
-            image_url: imageUrl || undefined,
-            imageFit: itemForm.imageFit,
-            imagePosition: itemForm.imagePosition,
-            has_sizes: itemForm.has_sizes,
-            sizes: itemForm.sizes,
-            variants: sanitizedVariants.length > 0 ? sanitizedVariants : undefined,
-            variantGroups: sanitizedVariantGroups.length > 0 ? sanitizedVariantGroups : undefined,
-            has_addons: itemForm.has_addons,
-            addons: itemForm.addons,
-            allow_special_instructions: itemForm.allow_special_instructions,
-            is_popular: itemForm.is_popular,
-            status: itemForm.status,
-          }
-        )
-        toast({
-          title: 'Success',
-          description: 'Menu item updated successfully',
-        })
-      } else {
-        await createMenuItem({
-          restaurant_id: restaurantId,
-          category_id: selectedMenuCategory?.id || null,
-          sub_category_id: itemForm.sub_category_id || null,
-          name: itemForm.name,
-          description: itemForm.description,
-          image_url: imageUrl || undefined,
-          base_price: price,
-          imageFit: itemForm.imageFit,
-          imagePosition: itemForm.imagePosition,
-          has_sizes: itemForm.has_sizes,
-          sizes: itemForm.sizes,
-          variants: sanitizedVariants.length > 0 ? sanitizedVariants : undefined,
-          variantGroups: sanitizedVariantGroups.length > 0 ? sanitizedVariantGroups : undefined,
-          has_addons: itemForm.has_addons,
-          addons: itemForm.addons,
-          allow_special_instructions: itemForm.allow_special_instructions,
-          is_popular: itemForm.is_popular,
-          status: itemForm.status,
-        })
-        toast({
-          title: 'Success',
-          description: 'Menu item created successfully',
-        })
-      }
-
-      setShowItemModal(false)
-      setItemForm({
-        name: '',
-        description: '',
-        sub_category_id: '',
-        base_price: '',
-        image_url: '',
-        imageFile: null,
-        imageFit: 'contain',
-        imagePosition: 'center',
-        has_sizes: false,
-        sizes: [],
-        variants: [],
-        variantGroups: [],
-        has_addons: false,
-        addons: [],
-        allow_special_instructions: true,
-        is_popular: false,
-        status: 'available',
-      })
-      setEditingItem(null)
-      setImagePreview(null)
-
-      // Reload all items to refresh the view
-      const items = await getMenuItems(restaurantId)
-      setAllMenuItems(items)
-      await invalidateServerMenuCache()
-    } catch (err: any) {
-      toast({
-        title: 'Error',
-        description: err.message || 'Failed to save menu item',
-        variant: 'destructive',
-      })
-    }
+    const items = await getMenuItems(restaurantId)
+    setAllMenuItems(items)
+    await invalidateServerMenuCache()
+    await refreshInventorySetup()
   }
 
   const handleDeleteItem = async (item: MenuItem) => {
@@ -1197,7 +795,7 @@ export function MenuManagementV2() {
   }
 
   // Skeleton loading UI
-  if (loading) {
+  if (showMenuLoading) {
     return (
       <div className="min-h-screen bg-muted/30">
         {/* Header Skeleton */}
@@ -1283,6 +881,9 @@ export function MenuManagementV2() {
       </header>
 
       <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6">
+        {inventorySetup ? (
+          <InventorySetupBanner setup={inventorySetup} filterActive={missingInventoryFilter} />
+        ) : null}
         {/* Category Tabs */}
         <div
           className="flex overflow-x-auto gap-2 pb-2 categories-scroll mb-4 sm:mb-6 -mx-4 sm:mx-0 px-4 sm:px-0"
@@ -1377,9 +978,8 @@ export function MenuManagementV2() {
                       <Button
                         onClick={() => {
                           setSelectedMenuCategory(category)
-                          setItemForm((prev) => ({ ...prev, sub_category_id: '' }))
+                          setDefaultSubCategoryId('')
                           setEditingItem(null)
-                          setImagePreview(null)
                           setShowItemModal(true)
                         }}
                         className="bg-[#FF6B35] hover:bg-[#e55a28] h-11 sm:h-9 text-sm sm:text-sm"
@@ -1434,6 +1034,9 @@ export function MenuManagementV2() {
                                 <p className="text-xs text-muted-foreground mb-2 line-clamp-1">
                                   {item.description}
                                 </p>
+                                <div className="mb-2">
+                                  <MenuItemInventoryBadge item={item} setup={inventorySetup} />
+                                </div>
                                 <div className="flex items-center justify-between">
                                   <span className="text-sm font-bold text-[#FF6B35]">
                                     N${item.base_price.toFixed(2)}
@@ -1506,7 +1109,7 @@ export function MenuManagementV2() {
                   <div className="text-5xl sm:text-6xl mb-3 sm:mb-4">📁</div>
                   <h3 className="text-lg sm:text-xl font-semibold mb-2">No items yet</h3>
                   <p className="text-sm sm:text-base text-muted-foreground mb-4 sm:mb-6">
-                    Add your first item to "{selectedMenuCategory.name}"
+                    Add your first item to &ldquo;{selectedMenuCategory.name}&rdquo;
                   </p>
                   <Button 
                     onClick={handleAddItem}
@@ -1614,6 +1217,9 @@ export function MenuManagementV2() {
                               <p className="text-xs text-muted-foreground mb-2 line-clamp-1">
                                 {item.description}
                               </p>
+                              <div className="mb-2">
+                                <MenuItemInventoryBadge item={item} setup={inventorySetup} />
+                              </div>
                               <div className="flex items-center justify-between">
                                 <span className="text-sm font-bold text-[#FF6B35]">
                                   N${item.base_price.toFixed(2)}
@@ -1900,494 +1506,20 @@ export function MenuManagementV2() {
         </DialogContent>
       </Dialog>
 
-      {/* Add/Edit Menu Item Modal */}
-      <Dialog open={showItemModal} onOpenChange={setShowItemModal}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{editingItem ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
-            <DialogDescription>
-              {editingItem
-                ? 'Modify item details, pricing, variants, and image settings.'
-                : 'Create a new menu item with pricing, variants, and optional image.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label>Sub-category (Optional)</Label>
-              {allSubCategoryOptions.length > 0 ? (
-                <SubCategorySelect
-                  subCategories={allSubCategoryOptions}
-                  value={itemForm.sub_category_id}
-                  onChange={(value) => setItemForm({ ...itemForm, sub_category_id: value })}
-                />
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  No sub-categories available. Item will be saved directly under this category.
-                </p>
-              )}
-            </div>
-            <div>
-              <Label>Item Name *</Label>
-              <Input
-                value={itemForm.name}
-                onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
-                placeholder="e.g., Windhoek Lager"
-              />
-            </div>
-            <div>
-              <Label>Description</Label>
-              <Textarea
-                value={itemForm.description}
-                onChange={(e) => setItemForm({ ...itemForm, description: e.target.value })}
-                placeholder="Describe the item..."
-                rows={3}
-              />
-            </div>
-            <div>
-              <Label>Price (N$) *</Label>
-              <Input
-                type="number"
-                step="0.01"
-                value={itemForm.base_price}
-                onChange={(e) => setItemForm({ ...itemForm, base_price: e.target.value })}
-                placeholder="25.00"
-              />
-            </div>
-            <div className="space-y-3 border border-border rounded-md p-3">
-              <div className="flex items-center justify-between">
-                <Label>Add Variants (Optional)</Label>
-                <Button type="button" variant="outline" size="sm" onClick={handleAddVariantRow}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add Variant
-                </Button>
-              </div>
-              {itemForm.variants.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  Leave empty to use a single default price only.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {itemForm.variants.map((variant, index) => (
-                    <div key={`variant-${index}`} className="grid grid-cols-12 gap-2 items-center">
-                      <Input
-                        className="col-span-2"
-                        placeholder="S"
-                        value={variant.size}
-                        onChange={(e) => handleUpdateVariantRow(index, 'size', e.target.value)}
-                      />
-                      <Input
-                        className="col-span-5"
-                        placeholder="Small"
-                        value={variant.label}
-                        onChange={(e) => handleUpdateVariantRow(index, 'label', e.target.value)}
-                      />
-                      <Input
-                        className="col-span-4"
-                        type="number"
-                        step="0.01"
-                        placeholder="25.00"
-                        value={Number.isFinite(variant.price) ? variant.price : ''}
-                        onChange={(e) => handleUpdateVariantRow(index, 'price', e.target.value)}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="col-span-1"
-                        onClick={() => handleRemoveVariantRow(index)}
-                      >
-                        <Trash2 className="h-4 w-4 text-red-500" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="space-y-3 border border-border rounded-md p-3">
-              <div className="flex items-center justify-between">
-                <Label>Variant Groups (Optional)</Label>
-                <Button type="button" variant="outline" size="sm" onClick={handleAddVariantGroup}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add Group
-                </Button>
-              </div>
-              {itemForm.variantGroups.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No groups configured.</p>
-              ) : (
-                <div className="space-y-3">
-                  {itemForm.variantGroups.map((group, groupIndex) => (
-                    <div key={`variant-group-${groupIndex}`} className="rounded-md border p-3 space-y-2">
-                      <div className="grid grid-cols-12 gap-2 items-center">
-                        <Input
-                          className="col-span-4"
-                          placeholder="Group name (e.g. Size)"
-                          value={group.name}
-                          onChange={(e) => handleUpdateVariantGroup(groupIndex, 'name', e.target.value)}
-                        />
-                        <Select
-                          value={group.type}
-                          onValueChange={(value: 'text' | 'price') =>
-                            handleUpdateVariantGroup(groupIndex, 'type', value)
-                          }
-                        >
-                          <SelectTrigger className="col-span-3">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">text</SelectItem>
-                            <SelectItem value="price">price</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <label className="col-span-3 flex items-center gap-2 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={group.required}
-                            onChange={(e) =>
-                              handleUpdateVariantGroup(groupIndex, 'required', e.target.checked)
-                            }
-                          />
-                          Required
-                        </label>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="col-span-2"
-                          onClick={() => handleRemoveVariantGroup(groupIndex)}
-                        >
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </Button>
-                      </div>
-                      <div className="space-y-2">
-                        {group.options.map((opt, optionIndex) => (
-                          <div key={`group-${groupIndex}-opt-${optionIndex}`} className="grid grid-cols-12 gap-2">
-                            {group.type === 'price' ? (
-                              <>
-                                <Input
-                                  className="col-span-7"
-                                  placeholder="Option label"
-                                  value={typeof opt === 'string' ? opt : opt.label}
-                                  onChange={(e) =>
-                                    handleUpdateVariantGroupOption(
-                                      groupIndex,
-                                      optionIndex,
-                                      'label',
-                                      e.target.value
-                                    )
-                                  }
-                                />
-                                <Input
-                                  className="col-span-4"
-                                  type="number"
-                                  step="0.01"
-                                  placeholder="Price"
-                                  value={
-                                    typeof opt === 'string'
-                                      ? ''
-                                      : Number.isFinite(opt.price)
-                                        ? opt.price
-                                        : ''
-                                  }
-                                  onChange={(e) =>
-                                    handleUpdateVariantGroupOption(
-                                      groupIndex,
-                                      optionIndex,
-                                      'price',
-                                      e.target.value
-                                    )
-                                  }
-                                />
-                              </>
-                            ) : (
-                              <Input
-                                className="col-span-11"
-                                placeholder="Option value"
-                                value={typeof opt === 'string' ? opt : opt.label}
-                                onChange={(e) =>
-                                  handleUpdateVariantGroupOption(
-                                    groupIndex,
-                                    optionIndex,
-                                    'value',
-                                    e.target.value
-                                  )
-                                }
-                              />
-                            )}
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="col-span-1"
-                              onClick={() => handleRemoveVariantGroupOption(groupIndex, optionIndex)}
-                            >
-                              <X className="h-4 w-4 text-red-500" />
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleAddVariantGroupOption(groupIndex)}
-                        >
-                          <Plus className="h-4 w-4 mr-1" />
-                          Add Option
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div>
-              <Label>Image</Label>
-              <div className="space-y-2">
-                {/* File Upload */}
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageFileChange}
-                    className="cursor-pointer"
-                    disabled={uploadingImage}
-                  />
-                  {imagePreview && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRemoveImage}
-                      disabled={uploadingImage}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-                
-                {/* Or URL Input */}
-                <div className="text-sm text-muted-foreground text-center">or</div>
-                <Input
-                  value={itemForm.image_url}
-                  onChange={(e) => {
-                    setItemForm({ ...itemForm, image_url: e.target.value, imageFile: null })
-                    setImagePreview(e.target.value || null)
-                  }}
-                  placeholder="Enter image URL..."
-                  disabled={uploadingImage || !!itemForm.imageFile}
-                />
-                
-                {/* Image Preview */}
-                    {imagePreview && (
-                      <div className="relative w-full h-48 border rounded-lg overflow-hidden bg-gray-50">
-                        <Image
-                          src={imagePreview}
-                          alt="Preview"
-                          fill
-                          style={{
-                            objectFit: itemForm.imageFit,
-                            objectPosition: itemForm.imagePosition,
-                          }}
-                        />
-                    {uploadingImage && (
-                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                        <Loader2 className="h-8 w-8 animate-spin text-white" />
-                      </div>
-                    )}
-                  </div>
-                )}
-                
-                {itemForm.imageFile && (
-                  <p className="text-xs text-muted-foreground">
-                    Selected: {itemForm.imageFile.name} ({(itemForm.imageFile.size / 1024 / 1024).toFixed(2)} MB)
-                  </p>
-                )}
-              </div>
-            </div>
-            
-            {/* Image Display Options */}
-            {imagePreview && (
-              <div className="space-y-4">
-                <div>
-                  <Label>Image Display</Label>
-                  <Select
-                    value={itemForm.imageFit}
-                    onValueChange={(value: 'contain' | 'cover' | 'fill' | 'scale-down') => 
-                      setItemForm({ ...itemForm, imageFit: value })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="contain">Fit (Show full image)</SelectItem>
-                      <SelectItem value="cover">Fill (May crop image)</SelectItem>
-                      <SelectItem value="scale-down">Scale Down</SelectItem>
-                      <SelectItem value="fill">Stretch</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Choose how the image should be displayed in the card
-                  </p>
-                </div>
-                
-                <div>
-                  <Label>Image Position</Label>
-                  <Select
-                    value={itemForm.imagePosition}
-                    onValueChange={(value: 'center' | 'top' | 'bottom') => 
-                      setItemForm({ ...itemForm, imagePosition: value })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="center">Center</SelectItem>
-                      <SelectItem value="top">Top</SelectItem>
-                      <SelectItem value="bottom">Bottom</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                {/* Visual Preview */}
-                <div className="grid grid-cols-2 gap-2">
-                  {(['contain', 'cover', 'fill', 'scale-down'] as const).map((fit) => (
-                    <button
-                      key={fit}
-                      type="button"
-                      onClick={() => setItemForm({ ...itemForm, imageFit: fit })}
-                      className={`p-2 border-2 rounded-lg transition-colors ${
-                        itemForm.imageFit === fit ? 'border-[#FF6B35] bg-orange-50' : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      <div className="w-full h-16 bg-gray-100 mb-1 rounded overflow-hidden">
-                        {imagePreview && (
-                          <img 
-                            src={imagePreview} 
-                            style={{ objectFit: fit }}
-                            className="w-full h-full"
-                            alt={fit}
-                          />
-                        )}
-                      </div>
-                      <span className="text-xs capitalize block text-center">{fit.replace('-', ' ')}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={itemForm.allow_special_instructions}
-                onChange={(e) => setItemForm({ ...itemForm, allow_special_instructions: e.target.checked })}
-                className="rounded"
-              />
-              <Label>Allow special instructions</Label>
-            </div>
-            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
-              <div className="space-y-1">
-                <Label htmlFor="item-is-popular">Popular Pick</Label>
-                <p className="text-sm text-muted-foreground">
-                  Show this item in the Popular Picks section on the customer menu
-                </p>
-              </div>
-              <Switch
-                id="item-is-popular"
-                checked={itemForm.is_popular}
-                onCheckedChange={(checked) => setItemForm({ ...itemForm, is_popular: checked })}
-              />
-            </div>
-            <div>
-              <Label>Status</Label>
-              <Select
-                value={itemForm.status}
-                onValueChange={(value: 'available' | 'out_of_stock' | 'hidden') => 
-                  setItemForm({ ...itemForm, status: value })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="available">Available</SelectItem>
-                  <SelectItem value="out_of_stock">Out of Stock</SelectItem>
-                  <SelectItem value="hidden">Hidden</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button 
-                variant="outline" 
-                onClick={() => {
-                  setShowItemModal(false)
-                  setImagePreview(null)
-                  setItemForm({
-                    ...itemForm,
-                    imageFile: null,
-                    image_url: '',
-                  })
-                }}
-                disabled={uploadingImage}
-              >
-                Cancel
-              </Button>
-              <Button 
-                onClick={handleSaveItem} 
-                className="bg-[#FF6B35] hover:bg-[#e55a28]"
-                disabled={uploadingImage}
-              >
-                {uploadingImage ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  editingItem ? 'Update' : 'Create'
-                )}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <MenuItemFormModal
+        open={showItemModal}
+        onOpenChange={(open) => {
+          setShowItemModal(open)
+          if (!open) setEditingItem(null)
+        }}
+        editingItem={editingItem}
+        restaurantId={restaurantId}
+        categoryId={selectedMenuCategory?.id ?? editingItem?.menu_category_id ?? null}
+        defaultSubCategoryId={defaultSubCategoryId}
+        subCategoryOptions={allSubCategoryOptions}
+        onSaved={handleItemSaved}
+      />
     </div>
-  )
-}
-
-// Helper component for hierarchical sub-category selection
-function SubCategorySelect({ 
-  subCategories,
-  value, 
-  onChange 
-}: { 
-  subCategories: Array<{ id: string; name: string; menuCategoryName: string }>
-  value: string
-  onChange: (value: string) => void
-}) {
-  if (subCategories.length === 0) {
-    return (
-      <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-        <p className="text-sm text-yellow-800">
-          No sub-categories available. Create a sub-category first.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger>
-        <SelectValue placeholder="Select sub-category" />
-      </SelectTrigger>
-      <SelectContent>
-        {subCategories.map((subcat) => (
-          <SelectItem key={subcat.id} value={subcat.id}>
-            {subcat.menuCategoryName} &gt; {subcat.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   )
 }
 
