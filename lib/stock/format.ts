@@ -1,3 +1,12 @@
+export type StockStatus = 'out_of_stock' | 'low_stock' | 'healthy' | 'not_tracked'
+
+export function computeStockStatus(currentStock: number, parLevel: number | null): StockStatus {
+  if (parLevel == null) return 'not_tracked'
+  if (currentStock <= 0) return 'out_of_stock'
+  if (currentStock <= parLevel) return 'low_stock'
+  return 'healthy'
+}
+
 export function formatStockQuantity(value: number, baseUnit: string) {
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
   return `${formatted} ${baseUnit}`

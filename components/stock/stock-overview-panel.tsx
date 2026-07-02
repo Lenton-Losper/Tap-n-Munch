@@ -13,6 +13,29 @@ import { formatLastDelivery, formatStockQuantity } from '@/lib/stock/format'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockOverviewData, StockOverviewRow } from '@/lib/stock/queries'
 
+function StockStatusBadge({ row }: { row: StockOverviewRow }) {
+  if (!row.is_active) {
+    return <span className="text-[#6B675F]">—</span>
+  }
+
+  switch (row.stockStatus) {
+    case 'out_of_stock':
+      return <Badge className="border-red-200 bg-red-50 text-red-800">Out of Stock</Badge>
+    case 'low_stock':
+      return <Badge className="border-amber-200 bg-amber-50 text-amber-800">Low Stock</Badge>
+    case 'healthy':
+      return <Badge className="border-green-200 bg-green-50 text-green-800">Healthy</Badge>
+    case 'not_tracked':
+      return (
+        <Badge variant="outline" className="border-[#E9E9E7] text-[#6B675F]">
+          Not tracked
+        </Badge>
+      )
+    default:
+      return <span className="text-[#6B675F]">—</span>
+  }
+}
+
 function SummaryCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
@@ -175,13 +198,7 @@ export function StockOverviewPanel({
                     </td>
                     <td className="px-5 py-3 text-[#6B675F]">{row.unit_label}</td>
                     <td className="px-5 py-3">
-                      {!row.is_active ? (
-                        <span className="text-[#6B675F]">—</span>
-                      ) : row.isLow ? (
-                        <Badge className="border-amber-200 bg-amber-50 text-amber-800">Low</Badge>
-                      ) : (
-                        <span className="text-[#6B675F]">—</span>
-                      )}
+                      <StockStatusBadge row={row} />
                     </td>
                     {showActions ? (
                       <td className="px-5 py-3 text-right">

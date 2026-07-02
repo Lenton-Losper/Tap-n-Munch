@@ -1,9 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import {
+  computeStockStatus,
   movementDateRangeStart,
   type MovementDateRange,
   type MovementReason,
+  type StockStatus,
 } from '@/lib/stock/format'
 
 type UnitJoin = { name: string; symbol: string | null } | { name: string; symbol: string | null }[] | null
@@ -21,7 +23,7 @@ export type StockOverviewRow = {
   unit_label: string
   par_level: number | null
   currentStock: number
-  isLow: boolean
+  stockStatus: StockStatus
   is_active: boolean
 }
 
@@ -107,6 +109,7 @@ export async function getStockOverview(
   const rows: StockOverviewRow[] = (items ?? []).map((item) => {
     const currentStock = stockByItem.get(item.id) ?? 0
     const parLevel = item.par_level != null ? Number(item.par_level) : null
+    const stockStatus = computeStockStatus(currentStock, parLevel)
     return {
       id: item.id,
       name: item.name,
@@ -114,7 +117,7 @@ export async function getStockOverview(
       unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
       par_level: parLevel,
       currentStock,
-      isLow: parLevel != null && currentStock <= parLevel,
+      stockStatus,
       is_active: item.is_active ?? true,
     }
   })
@@ -123,7 +126,9 @@ export async function getStockOverview(
 
   return {
     trackedItems: activeRows.length,
-    lowStock: activeRows.filter((row) => row.isLow).length,
+    lowStock: activeRows.filter(
+      (row) => row.stockStatus === 'low_stock' || row.stockStatus === 'out_of_stock',
+    ).length,
     lastDeliveryAt: lastDelivery?.received_at ?? null,
     rows,
   }

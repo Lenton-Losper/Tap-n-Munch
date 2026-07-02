@@ -32,16 +32,30 @@ function EditStockItemForm({
 }) {
   const [name, setName] = useState(item.name)
   const [unitId, setUnitId] = useState(item.unit_id)
+  const [parLevel, setParLevel] = useState(item.par_level != null ? String(item.par_level) : '')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
+    const trimmedParLevel = parLevel.trim()
+    const parsedParLevel =
+      trimmedParLevel === '' ? null : Number(trimmedParLevel)
+
+    if (
+      parsedParLevel != null &&
+      (!Number.isFinite(parsedParLevel) || parsedParLevel < 0)
+    ) {
+      setError('Low stock threshold must be zero or greater, or left blank.')
+      return
+    }
+
     setSaving(true)
     setError(null)
     const result = await updateStockItemAction({
       stockItemId: item.id,
       name,
       unitId,
+      parLevel: parsedParLevel,
     })
     setSaving(false)
 
@@ -78,6 +92,22 @@ function EditStockItemForm({
           onValueChange={setUnitId}
           label="Unit"
         />
+        <div className="space-y-1.5">
+          <Label htmlFor="edit-item-par-level">Low stock threshold (optional)</Label>
+          <Input
+            id="edit-item-par-level"
+            type="number"
+            min="0"
+            step="any"
+            value={parLevel}
+            onChange={(event) => setParLevel(event.target.value)}
+            placeholder="Leave blank for no threshold"
+            className="border-[#E9E9E7]"
+          />
+          <p className="text-xs text-[#6B675F]">
+            Same unit as this item ({item.unit_label}). Used for Low Stock alerts on the overview.
+          </p>
+        </div>
       </div>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -116,7 +146,9 @@ export function EditStockItemDialog({
       <DialogContent className="border-[#E9E9E7]">
         <DialogHeader>
           <DialogTitle>Edit stock item</DialogTitle>
-          <DialogDescription>Change the item name or unit. Stock balances are not affected.</DialogDescription>
+          <DialogDescription>
+            Change the item name, unit, or low stock threshold. Stock balances are not affected.
+          </DialogDescription>
         </DialogHeader>
 
         {open && item ? (

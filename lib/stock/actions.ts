@@ -85,10 +85,12 @@ export async function updateStockItemAction(input: {
   stockItemId: string
   name: string
   unitId: string
+  parLevel?: number | null
 }) {
   const stockItemId = input.stockItemId.trim()
   const name = input.name.trim()
   const unitId = input.unitId.trim()
+  const parLevel = input.parLevel
 
   if (!stockItemId) {
     return { error: 'Stock item is required.' }
@@ -96,6 +98,10 @@ export async function updateStockItemAction(input: {
 
   if (!name || !unitId) {
     return { error: 'Name and unit are required.' }
+  }
+
+  if (parLevel != null && (!Number.isFinite(parLevel) || parLevel < 0)) {
+    return { error: 'Low stock threshold must be zero or greater, or left blank.' }
   }
 
   const context = await requireStockPermissionOrError(PERMISSIONS.STOCK_RECEIVE)
@@ -106,10 +112,14 @@ export async function updateStockItemAction(input: {
 
   const { data, error } = await supabase
     .from('stock_items')
-    .update({ name, unit_id: unitId })
+    .update({
+      name,
+      unit_id: unitId,
+      par_level: parLevel,
+    })
     .eq('id', stockItemId)
     .eq('restaurant_id', restaurantId)
-    .select('id, name, unit_id, measurement_units(name, symbol)')
+    .select('id, name, unit_id, par_level, measurement_units(name, symbol)')
     .single()
 
   if (error) {
@@ -133,6 +143,7 @@ export async function updateStockItemAction(input: {
       name: data.name,
       unit_id: data.unit_id,
       unit_label: unitRow ? formatMeasurementUnitLabel(unitRow) : '—',
+      par_level: data.par_level != null ? Number(data.par_level) : null,
     },
   }
 }
