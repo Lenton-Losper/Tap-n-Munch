@@ -40,7 +40,6 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     .select('id')
     .eq('restaurant_id', restaurantId)
     .eq('id', menuItemId)
-    .eq('status', 'active')
     .maybeSingle()
 
   if (menuItemError) {
@@ -115,6 +114,74 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
 
   revalidatePath('/stock/recipes')
   revalidatePath(`/stock/recipes/${menuItemId}`)
+  revalidatePath('/menu-management')
 
   return { data: { recipeId, ingredientCount: ingredients.length } }
+}
+
+export async function loadMenuItemInventoryAction(menuItemId: string) {
+  const id = menuItemId.trim()
+  if (!id) {
+    return { error: 'Menu item is required.' }
+  }
+
+  const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_VIEW)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+
+  const { getMeasurementUnitsForRestaurant } = await import('@/lib/measurement-units/queries')
+  const { getActiveStockItemsWithLevels } = await import('@/lib/stock/queries')
+  const { getRecipeEditorData } = await import('@/lib/recipes/queries')
+
+  try {
+    const [editorData, stockItems, measurementUnits] = await Promise.all([
+      getRecipeEditorData(context.supabase, context.restaurantId, id),
+      getActiveStockItemsWithLevels(context.supabase, context.restaurantId),
+      getMeasurementUnitsForRestaurant(context.supabase, context.restaurantId),
+    ])
+
+    if (!editorData) {
+      return { error: 'Menu item not found.' }
+    }
+
+    return {
+      data: {
+        menuItemId: editorData.menuItemId,
+        ingredients: editorData.ingredients,
+        hasInventory: editorData.ingredients.length > 0 || editorData.recipeId != null,
+        stockItems,
+        measurementUnits,
+      },
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load inventory.'
+    return { error: message }
+  }
+}
+
+export async function canEditMenuInventoryAction(): Promise<{ canEdit: boolean }> {
+  const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
+  return { canEdit: !('error' in context) }
+}
+
+export async function loadInventoryPickerAction() {
+  const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+
+  const { getMeasurementUnitsForRestaurant } = await import('@/lib/measurement-units/queries')
+  const { getActiveStockItemsWithLevels } = await import('@/lib/stock/queries')
+
+  try {
+    const [stockItems, measurementUnits] = await Promise.all([
+      getActiveStockItemsWithLevels(context.supabase, context.restaurantId),
+      getMeasurementUnitsForRestaurant(context.supabase, context.restaurantId),
+    ])
+    return { data: { stockItems, measurementUnits } }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load inventory picker.'
+    return { error: message }
+  }
 }

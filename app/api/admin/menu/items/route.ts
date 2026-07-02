@@ -130,8 +130,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid price' }, { status: 400 })
     }
 
-    const payload = {
-      restaurant_id: restaurantId,
+    const payload = buildMenuItemDbPayload({
+      ...body,
       category_id: categoryId,
       subcategory_id: subCategoryId,
       name,
@@ -139,9 +139,11 @@ export async function POST(request: Request) {
       image_url: imageUrl,
       base_price: basePrice,
       is_popular: Boolean(body.is_popular),
-    }
+    })
 
-    console.log(`${LOG_PREFIX} inserting menu item`, { payload })
+    payload.restaurant_id = restaurantId
+
+    console.log(`${LOG_PREFIX} inserting menu item`, { payloadKeys: Object.keys(payload) })
 
     const { data, error } = await supabase
       .from('menu_items')

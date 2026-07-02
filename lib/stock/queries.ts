@@ -45,6 +45,10 @@ export type StockItemOption = {
   unit_label: string
 }
 
+export type StockItemOptionWithLevel = StockItemOption & {
+  currentStock: number
+}
+
 export type MovementHistoryRow = {
   id: string
   itemName: string
@@ -197,6 +201,38 @@ export async function getActiveStockItems(
     name: item.name,
     unit_id: item.unit_id,
     unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
+  }))
+}
+
+export async function getActiveStockItemsWithLevels(
+  supabase: SupabaseClient,
+  restaurantId: string,
+): Promise<StockItemOptionWithLevel[]> {
+  const [{ data: items, error: itemsError }, { data: movements, error: movementsError }] =
+    await Promise.all([
+      supabase
+        .from('stock_items')
+        .select('id, name, unit_id, measurement_units(name, symbol)')
+        .eq('restaurant_id', restaurantId)
+        .eq('is_active', true)
+        .order('name'),
+      supabase
+        .from('stock_movements')
+        .select('stock_item_id, quantity_delta')
+        .eq('restaurant_id', restaurantId),
+    ])
+
+  if (itemsError) throw itemsError
+  if (movementsError) throw movementsError
+
+  const stockByItem = aggregateStockByItem(movements)
+
+  return (items ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit_id: item.unit_id,
+    unit_label: unitLabelFromJoin(item.measurement_units as UnitJoin),
+    currentStock: stockByItem.get(item.id) ?? 0,
   }))
 }
 

@@ -12,6 +12,14 @@ export function normalizeMenuItemForClient(row: Record<string, any>) {
     menu_category_id: row.menu_category_id ?? row.category_id ?? null,
     sub_category_id: row.sub_category_id ?? row.subcategory_id ?? null,
     base_price: Number(row.base_price ?? 0),
+    imageFit: row.image_fit ?? row.imageFit ?? 'contain',
+    imagePosition: row.image_position ?? row.imagePosition ?? 'center',
+    allow_special_instructions: row.allow_special_instructions ?? true,
+    has_sizes: row.has_sizes ?? false,
+    sizes: Array.isArray(row.sizes) ? row.sizes : [],
+    has_addons: row.has_addons ?? false,
+    addons: Array.isArray(row.addons) ? row.addons : [],
+    variantGroups: row.variant_groups ?? row.variantGroups ?? [],
   }
 }
 

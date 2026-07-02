@@ -49,7 +49,7 @@ export async function getRecipesOverview(
         .from('menu_items')
         .select('id, name, category_id')
         .eq('restaurant_id', restaurantId)
-        .eq('status', 'active')
+        .neq('status', 'hidden')
         .order('name'),
       supabase
         .from('recipes')
@@ -107,7 +107,6 @@ export async function getRecipeEditorData(
     .select('id, name')
     .eq('restaurant_id', restaurantId)
     .eq('id', menuItemId)
-    .eq('status', 'active')
     .maybeSingle()
 
   if (menuItemError) throw menuItemError
