@@ -8,6 +8,10 @@ workers_dev = true
 account_id = "b74d9cfb3ba0e345287429ca237ecbfd"
 
 [[routes]]
+pattern = "flashtap.app"
+custom_domain = true
+
+[[routes]]
 pattern = "www.flashtap.app"
 custom_domain = true
 
