@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import Image from 'next/image'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { startKioskCustomerSession } from '@/lib/session'
+import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 
 export default function KioskPage() {
   const params = useParams()
@@ -14,12 +15,16 @@ export default function KioskPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableParam = searchParams.get('table') || '99'
+  const tableNumber = parseInt(tableParam, 10) || 0
   const { restaurant, loading } = useRestaurant()
 
   const [name, setName] = useState('')
   const [error, setError] = useState('')
+  const [tableReady, setTableReady] = useState(false)
+  const [tableBlocked, setTableBlocked] = useState<string | null>(null)
   const resetRequested = searchParams.get('reset') === 'true'
   const [clearedReset, setClearedReset] = useState(false)
+  const invalidLink = !restaurantId || tableNumber <= 0
   if (resetRequested && !clearedReset) {
     setClearedReset(true)
     if (name) setName('')
@@ -28,6 +33,26 @@ export default function KioskPage() {
   if (!resetRequested && clearedReset) {
     setClearedReset(false)
   }
+
+  useEffect(() => {
+    if (invalidLink) return
+    let cancelled = false
+    void getSupabaseTableByNumber(restaurantId, tableNumber, false)
+      .then((row) => {
+        if (cancelled) return
+        if (!row.is_kiosk) {
+          setTableBlocked('This link is not configured as a kiosk.')
+          return
+        }
+        setTableReady(true)
+      })
+      .catch(() => {
+        if (!cancelled) setTableBlocked('This kiosk is not available for ordering.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [restaurantId, tableNumber, invalidLink])
 
   const handleStart = () => {
     const trimmed = name.trim()
@@ -52,10 +77,20 @@ export default function KioskPage() {
     if (e.key === 'Enter') handleStart()
   }
 
-  if (loading) {
+  if (loading || (tableNumber > 0 && !invalidLink && !tableReady && !tableBlocked)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    )
+  }
+
+  if (invalidLink || tableBlocked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6 text-center">
+        <p className="text-lg text-gray-700">
+          {invalidLink ? 'This kiosk link is invalid.' : tableBlocked}
+        </p>
       </div>
     )
   }

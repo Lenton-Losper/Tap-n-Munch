@@ -43,7 +43,8 @@ function StaffContent() {
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState<string | null>(null)
   const [inviteOpen, setInviteOpen] = useState(false)
-  const { invites, addInvite, loadInvites } = useStaffInvites()
+  const [cancellingInviteId, setCancellingInviteId] = useState<string | null>(null)
+  const { invites, addInvite, loadInvites, cancelInvite } = useStaffInvites()
 
   const load = useCallback(async () => {
     try {
@@ -72,6 +73,22 @@ function StaffContent() {
       title: 'Invite sent',
       description: `Invitation sent to ${invite.email}.`,
     })
+  }
+
+  const handleCancelInvite = async (invite: StaffInviteRow) => {
+    setCancellingInviteId(invite.id)
+    try {
+      await cancelInvite(invite.id)
+      toast({
+        title: 'Invite cancelled',
+        description: `The invitation for ${invite.email} is no longer valid.`,
+      })
+    } catch {
+      await loadInvites()
+      toast({ title: 'Failed to cancel invite', variant: 'destructive' })
+    } finally {
+      setCancellingInviteId(null)
+    }
   }
 
   const changeRole = async (userId: string, role: string) => {
@@ -189,7 +206,11 @@ function StaffContent() {
       </div>
 
       <div className="mt-6">
-        <PendingInvitesList invites={invites} />
+        <PendingInvitesList
+          invites={invites}
+          onCancelInvite={handleCancelInvite}
+          cancellingId={cancellingInviteId}
+        />
       </div>
     </div>
   )

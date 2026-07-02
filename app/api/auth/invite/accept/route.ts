@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 
     if (inviteError) throw inviteError
     if (!invite) {
-      return NextResponse.json({ error: 'Invalid or expired invite' }, { status: 400 })
+      return NextResponse.json({ error: 'This invite is no longer valid' }, { status: 400 })
     }
 
     if (invite.accepted) {
