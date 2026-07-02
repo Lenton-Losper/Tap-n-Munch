@@ -40,7 +40,13 @@ jobs:
           else
             echo "WARNING: PRODUCTION_CRON_SECRET not set — expire-pending will 401 until configured"
           fi
+          if [ -n "$TERMINAL_JWT_SECRET" ]; then
+            echo "$TERMINAL_JWT_SECRET" | npx wrangler@3.99.0 secret put TERMINAL_JWT_SECRET --config wrangler.production.toml
+          else
+            echo "WARNING: PRODUCTION_TERMINAL_JWT_SECRET not set — terminal activation will fail"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
+          TERMINAL_JWT_SECRET: ${{ secrets.PRODUCTION_TERMINAL_JWT_SECRET }}
