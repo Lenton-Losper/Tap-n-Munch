@@ -318,6 +318,7 @@ export function QRCodeManagement() {
 
   useEffect(() => {
     if (!restaurantId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional polling fetch for table statuses
     void refreshTableStatuses()
     const interval = setInterval(() => void refreshTableStatuses(), 30_000)
     return () => clearInterval(interval)

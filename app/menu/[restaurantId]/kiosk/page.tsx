@@ -24,6 +24,7 @@ export default function KioskPage() {
   const [tableBlocked, setTableBlocked] = useState<string | null>(null)
   const resetRequested = searchParams.get('reset') === 'true'
   const [clearedReset, setClearedReset] = useState(false)
+  const invalidLink = !restaurantId || tableNumber <= 0
   if (resetRequested && !clearedReset) {
     setClearedReset(true)
     if (name) setName('')
@@ -34,10 +35,7 @@ export default function KioskPage() {
   }
 
   useEffect(() => {
-    if (!restaurantId || tableNumber <= 0) {
-      setTableBlocked('This kiosk link is invalid.')
-      return
-    }
+    if (invalidLink) return
     let cancelled = false
     void getSupabaseTableByNumber(restaurantId, tableNumber, false)
       .then((row) => {
@@ -54,7 +52,7 @@ export default function KioskPage() {
     return () => {
       cancelled = true
     }
-  }, [restaurantId, tableNumber])
+  }, [restaurantId, tableNumber, invalidLink])
 
   const handleStart = () => {
     const trimmed = name.trim()
@@ -79,7 +77,7 @@ export default function KioskPage() {
     if (e.key === 'Enter') handleStart()
   }
 
-  if (loading || (tableNumber > 0 && !tableReady && !tableBlocked)) {
+  if (loading || (tableNumber > 0 && !invalidLink && !tableReady && !tableBlocked)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
@@ -87,10 +85,12 @@ export default function KioskPage() {
     )
   }
 
-  if (tableBlocked) {
+  if (invalidLink || tableBlocked) {
     return (
       <div className="min-h-screen flex items-center justify-center px-6 text-center">
-        <p className="text-lg text-gray-700">{tableBlocked}</p>
+        <p className="text-lg text-gray-700">
+          {invalidLink ? 'This kiosk link is invalid.' : tableBlocked}
+        </p>
       </div>
     )
   }
