@@ -50,12 +50,23 @@ export function useStaffInvites() {
     setInvites((prev) => [invite, ...prev])
   }, [])
 
+  const removeInvite = useCallback((inviteId: string) => {
+    setInvites((prev) => prev.filter((invite) => invite.id !== inviteId))
+  }, [])
+
+  const cancelInvite = useCallback(async (inviteId: string) => {
+    await onboardingFetch(`/api/admin/invites/${encodeURIComponent(inviteId)}`, {
+      method: 'DELETE',
+    })
+    removeInvite(inviteId)
+  }, [removeInvite])
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope
     void loadInvites()
   }, [loadInvites])
 
-  return { invites, loading, loadInvites, addInvite }
+  return { invites, loading, loadInvites, addInvite, removeInvite, cancelInvite }
 }
 
 type StaffInviteFormProps = {
@@ -170,12 +181,16 @@ type PendingInvitesListProps = {
   invites: StaffInviteRow[]
   title?: string
   emptyMessage?: string
+  onCancelInvite?: (invite: StaffInviteRow) => Promise<void>
+  cancellingId?: string | null
 }
 
 export function PendingInvitesList({
   invites,
   title = 'Pending invites',
   emptyMessage,
+  onCancelInvite,
+  cancellingId = null,
 }: PendingInvitesListProps) {
   const pending = invites.filter((invite) => invite.status === 'pending')
 
@@ -190,12 +205,32 @@ export function PendingInvitesList({
       </div>
       <ul className="divide-y divide-[#E9E9E7]">
         {pending.map((invite) => (
-          <li key={invite.id} className="flex items-center justify-between px-4 py-3 text-sm">
+          <li key={invite.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
             <div>
               <p className="font-medium text-[#37352F]">{invite.email}</p>
               <p className="capitalize text-[#6B675F]">{invite.role}</p>
             </div>
-            <span className="text-[#9B978E]">{invite.status}</span>
+            <div className="flex items-center gap-3">
+              <span className="text-[#9B978E]">{invite.status}</span>
+              {onCancelInvite ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-[#6B675F] hover:text-red-600"
+                  disabled={cancellingId === invite.id}
+                  onClick={async () => {
+                    const confirmed = window.confirm(
+                      `Cancel the invite for ${invite.email}? They will no longer be able to use the invitation link.`,
+                    )
+                    if (!confirmed) return
+                    await onCancelInvite(invite)
+                  }}
+                >
+                  {cancellingId === invite.id ? 'Cancelling...' : 'Cancel'}
+                </Button>
+              ) : null}
+            </div>
           </li>
         ))}
       </ul>

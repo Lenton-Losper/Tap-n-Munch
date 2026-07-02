@@ -128,7 +128,7 @@ function InviteAcceptForm() {
             <>
               <h1 className="font-serif text-3xl font-semibold">Invitation unavailable</h1>
               <p className="mt-4 text-sm text-[#6B675F]">
-                This invite link is invalid or has expired.
+                This invite is no longer valid. It may have been cancelled or has expired.
               </p>
               <div className="mt-6">
                 <Link
