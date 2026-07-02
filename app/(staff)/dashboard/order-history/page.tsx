@@ -19,6 +19,7 @@ import {
 import { downloadCsv } from '@/lib/reports/generate-csv'
 import { downloadPdf } from '@/lib/reports/generate-pdf'
 import { getReportData, GetReportDataParams } from '@/lib/reports/get-report-data'
+import { PDF_EMAIL_UNAVAILABLE_MESSAGE, isPdfEmailUnavailableError } from '@/lib/reports/pdf-email-unavailable'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 
 type OrderItem = {
@@ -120,9 +121,11 @@ function OrderHistoryContent() {
   const [showDownloadMenu, setShowDownloadMenu] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [emailAddress, setEmailAddress] = useState('')
-  const [emailFormat, setEmailFormat] = useState<'pdf' | 'csv'>('pdf')
+  const [emailFormat, setEmailFormat] = useState<'pdf' | 'csv'>('csv')
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailSent, setEmailSent] = useState(false)
+  const [emailError, setEmailError] = useState<string | null>(null)
+  const [showCsvFallback, setShowCsvFallback] = useState(false)
 
   const loadHistory = useCallback(async () => {
     if (!restaurantId) {
@@ -185,10 +188,12 @@ function OrderHistoryContent() {
     }
   }
 
-  const handleSendEmail = async () => {
+  const sendReportEmail = async (format: 'pdf' | 'csv') => {
     if (!restaurantId || !emailAddress) return
     setSendingEmail(true)
     setEmailSent(false)
+    setEmailError(null)
+    setShowCsvFallback(false)
     try {
       const token = await getAccessToken()
 
@@ -202,7 +207,7 @@ function OrderHistoryContent() {
           },
           body: JSON.stringify({
             email: emailAddress,
-            format: emailFormat,
+            format,
             startDate,
             endDate,
             tableNumber: tableNumber.trim() || undefined,
@@ -210,17 +215,46 @@ function OrderHistoryContent() {
           }),
         }
       )
-      if (!res.ok) throw new Error('Failed to send')
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) {
+        const serverError = typeof json.error === 'string' ? json.error : ''
+        if (format === 'pdf' || isPdfEmailUnavailableError(serverError)) {
+          setEmailError(PDF_EMAIL_UNAVAILABLE_MESSAGE)
+          setShowCsvFallback(true)
+          return
+        }
+        throw new Error(serverError || 'Failed to send report')
+      }
       setEmailSent(true)
       setTimeout(() => {
         setShowEmailModal(false)
         setEmailSent(false)
+        setEmailError(null)
+        setShowCsvFallback(false)
       }, 2000)
     } catch (err) {
       console.error('Email send failed', err)
+      setEmailError(err instanceof Error ? err.message : 'Failed to send report')
     } finally {
       setSendingEmail(false)
     }
+  }
+
+  const handleSendEmail = async () => {
+    await sendReportEmail(emailFormat)
+  }
+
+  const handleSendCsvInstead = async () => {
+    setEmailFormat('csv')
+    await sendReportEmail('csv')
+  }
+
+  const openEmailModal = () => {
+    setEmailError(null)
+    setShowCsvFallback(false)
+    setEmailSent(false)
+    setEmailFormat('csv')
+    setShowEmailModal(true)
   }
 
   useEffect(() => {
@@ -244,7 +278,7 @@ function OrderHistoryContent() {
               variant="outline"
               onClick={() => {
                 setEmailAddress(user?.email ?? '')
-                setShowEmailModal(true)
+                openEmailModal()
               }}
               className="border-[#E9E9E7]"
             >
@@ -495,22 +529,57 @@ function OrderHistoryContent() {
             <div className="mb-6">
               <label className="mb-1 block text-sm font-medium text-[#37352F]">Format</label>
               <div className="flex gap-3">
-                {(['pdf', 'csv'] as const).map((fmt) => (
-                  <button
-                    key={fmt}
-                    type="button"
-                    onClick={() => setEmailFormat(fmt)}
-                    className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
-                      emailFormat === fmt
-                        ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
-                        : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
-                    }`}
-                  >
-                    {fmt.toUpperCase()}
-                  </button>
-                ))}
+                {(['csv', 'pdf'] as const).map((fmt) => {
+                  const pdfUnavailable = fmt === 'pdf'
+                  return (
+                    <button
+                      key={fmt}
+                      type="button"
+                      disabled={pdfUnavailable || sendingEmail}
+                      title={
+                        pdfUnavailable
+                          ? 'PDF email is temporarily unavailable — use CSV or Download PDF instead'
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (!pdfUnavailable) setEmailFormat(fmt)
+                      }}
+                      className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+                        pdfUnavailable
+                          ? 'cursor-not-allowed border-[#E9E9E7] bg-[#F7F6F3] text-[#9B9890] line-through'
+                          : emailFormat === fmt
+                            ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
+                            : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
+                      }`}
+                    >
+                      {fmt.toUpperCase()}
+                      {pdfUnavailable ? ' (unavailable)' : ''}
+                    </button>
+                  )
+                })}
               </div>
+              <p className="mt-2 text-xs text-[#6B675F]">
+                PDF by email is temporarily unavailable. CSV reports work normally; use Download for PDF.
+              </p>
             </div>
+
+            {emailError && (
+              <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                <p>{emailError}</p>
+                {showCsvFallback && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2 border-amber-300 bg-white"
+                    disabled={sendingEmail}
+                    onClick={() => void handleSendCsvInstead()}
+                  >
+                    Send CSV instead
+                  </Button>
+                )}
+              </div>
+            )}
 
             {emailSent && (
               <p className="mb-4 text-sm font-medium text-green-600">Report sent successfully.</p>

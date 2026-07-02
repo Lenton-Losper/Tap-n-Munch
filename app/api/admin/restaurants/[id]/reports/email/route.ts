@@ -3,6 +3,7 @@ import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { getReportData } from '@/lib/reports/get-report-data'
 import { generateCsv } from '@/lib/reports/generate-csv'
 import { getResend } from '@/lib/email/resend'
+import { PDF_EMAIL_UNAVAILABLE_MESSAGE } from '@/lib/reports/pdf-email-unavailable'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,6 +24,9 @@ export async function POST(
     if (!['pdf', 'csv'].includes(format)) {
       return NextResponse.json({ error: 'format must be pdf or csv' }, { status: 400 })
     }
+    if (format === 'pdf') {
+      return NextResponse.json({ error: PDF_EMAIL_UNAVAILABLE_MESSAGE }, { status: 503 })
+    }
     if (!startDate || !endDate) {
       return NextResponse.json({ error: 'startDate and endDate are required' }, { status: 400 })
     }
@@ -39,18 +43,9 @@ export async function POST(
     let attachmentName: string
     let attachmentType: string
 
-    if (format === 'csv') {
-      attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
-      attachmentName = `flashtap-report-${startDate}-to-${endDate}.csv`
-      attachmentType = 'text/csv'
-    } else {
-      const { generatePdfBlob } = await import('@/lib/reports/generate-pdf')
-      const blob = await generatePdfBlob(report)
-      const buffer = Buffer.from(await blob.arrayBuffer())
-      attachmentContent = buffer.toString('base64')
-      attachmentName = `flashtap-report-${startDate}-to-${endDate}.pdf`
-      attachmentType = 'application/pdf'
-    }
+    attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
+    attachmentName = `flashtap-report-${startDate}-to-${endDate}.csv`
+    attachmentType = 'text/csv'
 
     const periodLabel = startDate === endDate
       ? startDate
