@@ -65,16 +65,6 @@ export async function updateOrderingPointViaApi(
   return payload.table as OrderingPointRow
 }
 
-/** @deprecated Use createOrderingPointViaApi */
-export async function createSupabaseTable(_data: {
-  restaurant_id: string
-  table_number: number
-  table_name?: string
-  qr_code_url?: string
-}) {
-  throw new Error('createSupabaseTable is deprecated — use createOrderingPointViaApi')
-}
-
 export async function updateSupabaseTable(
   tableId: string,
   updates: Record<string, unknown>,
