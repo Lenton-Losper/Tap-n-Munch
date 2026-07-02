@@ -104,13 +104,13 @@ export function ReceiveStockForm({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="invoice-number">Invoice number (optional)</Label>
+              <Label htmlFor="invoice-number">Supplier reference (optional)</Label>
               <Input
                 id="invoice-number"
                 value={invoiceNumber}
                 onChange={(event) => setInvoiceNumber(event.target.value)}
                 className="border-[#E9E9E7]"
-                placeholder="Leave blank to use GRV number as reference"
+                placeholder="Leave blank to use the delivery reference number"
               />
             </div>
           </div>
@@ -195,7 +195,7 @@ export function ReceiveStockForm({
             disabled={isPending}
             className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]"
           >
-            {isPending ? 'Saving...' : 'Save GRV'}
+            {isPending ? 'Saving...' : 'Save Delivery'}
           </Button>
           <Button type="button" variant="outline" className="border-[#E9E9E7]" asChild>
             <Link href="/stock">Cancel</Link>

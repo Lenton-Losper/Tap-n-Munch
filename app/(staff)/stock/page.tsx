@@ -35,7 +35,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
         <div className="mx-auto max-w-7xl">
           <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Stock Management</h1>
           <p className="mt-1 text-sm text-[#6B675F]">
-            Track inventory levels and record goods received.
+            Track inventory levels and record deliveries.
           </p>
           <div className="mt-5">
             <StockSubNav showReceiveButton={canReceive} showRecipesTab={canViewRecipes} />

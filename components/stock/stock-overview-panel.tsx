@@ -116,7 +116,7 @@ export function StockOverviewPanel({
     }
 
     setSuccessMessage(
-      isActive ? `Reactivated ${row.name}.` : `Deactivated ${row.name}. It is hidden from new GRV and recipe lines.`,
+      isActive ? `Reactivated ${row.name}.` : `Deactivated ${row.name}. It is hidden from new deliveries and ingredient lists.`,
     )
     router.refresh()
   }
@@ -178,7 +178,7 @@ export function StockOverviewPanel({
                   <td colSpan={showActions ? 5 : 4} className="px-5 py-8 text-center text-[#6B675F]">
                     {showInactive
                       ? 'No inactive items.'
-                      : 'No tracked items yet. Receive stock to get started.'}
+                      : 'No tracked items yet. Record a delivery to get started.'}
                   </td>
                 </tr>
               ) : (

@@ -24,9 +24,9 @@ export default async function ReceiveStockPage() {
         <div className="mx-auto max-w-7xl">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Receive stock</h1>
+              <h1 className="font-serif text-3xl font-semibold text-[#37352F]">Receive Delivery</h1>
               <p className="mt-1 text-sm text-[#6B675F]">
-                Record a new goods received voucher for one delivery.
+                Record a new delivery for this restaurant.
               </p>
             </div>
             <Link href="/stock" className="text-sm font-medium text-[#6B675F] hover:text-[#37352F]">
