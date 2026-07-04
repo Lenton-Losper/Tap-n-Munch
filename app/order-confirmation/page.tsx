@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/button'
 import { CheckCircle2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import {
-  fetchGuestOrderById,
   fetchGuestOrdersByPaymentRef,
   fetchGuestOrdersBySession,
   GUEST_ORDER_POLL_MS,
