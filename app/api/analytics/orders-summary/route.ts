@@ -15,7 +15,7 @@ export async function GET(req: Request) {
 
   const restaurantUuid = await resolveRestaurantUuid(restaurantId)
 
-  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ANALYTICS_VIEW)
+  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ANALYTICS_VIEW, req)
   if (isAuthError(auth)) return auth
 
   const { data: orders, error } = await auth.supabase

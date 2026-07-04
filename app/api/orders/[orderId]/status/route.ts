@@ -50,6 +50,7 @@ export async function PATCH(
   const auth = await requireStaffPermission(
     String(existingOrder.restaurant_id),
     PERMISSIONS.ORDERS_UPDATE,
+    req,
   )
   if (isAuthError(auth)) return auth
 

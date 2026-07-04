@@ -106,10 +106,16 @@ async function fetchAnalyticsApi(token: string, restaurantId: string) {
 }
 
 async function fetchAnalyticsPage(token: string) {
-  return fetch(`${STAGING_APP}/analytics`, {
+  const res = await fetch(`${STAGING_APP}/analytics`, {
     headers: { Authorization: `Bearer ${token}` },
     redirect: 'manual',
   })
+  const body = await res.text()
+  const location = res.headers.get('location')
+  const rscRedirect =
+    body.includes('NEXT_REDIRECT') &&
+    (body.includes('/dashboard') || body.includes('/signin'))
+  return { status: res.status, location, rscRedirect, body }
 }
 
 function analyticsNavVisible(permissions: string[]): boolean {
@@ -178,7 +184,8 @@ async function main() {
     report.waiterBlocked = {
       apiStatus: waiterApi.status,
       pageStatus: waiterPage.status,
-      pageLocation: waiterPage.headers.get('location'),
+      pageLocation: waiterPage.location,
+      pageRscRedirect: waiterPage.rscRedirect,
     }
 
     await admin.from('staff_permissions').insert({
@@ -197,6 +204,7 @@ async function main() {
       analyticsNavVisible: analyticsNavVisible(waiterOverrideRoleApi.body.permissions ?? []),
       apiStatus: waiterOverrideApi.status,
       pageStatus: waiterOverridePage.status,
+      pageRscRedirect: waiterOverridePage.rscRedirect,
     }
 
     const disposableEmail = `analytics-leak-${Date.now()}@staging-disposable.local`
@@ -248,14 +256,16 @@ async function main() {
       (report.ownerApi as { status?: number }).status === 200 &&
       !(report.waiter as { hasAnalyticsView?: boolean }).hasAnalyticsView &&
       (report.waiterBlocked as { apiStatus?: number }).apiStatus === 403 &&
-      ((report.waiterBlocked as { pageStatus?: number }).pageStatus === 307 ||
+      (((report.waiterBlocked as { pageStatus?: number }).pageStatus === 307 ||
         (report.waiterBlocked as { pageStatus?: number }).pageStatus === 302 ||
         String((report.waiterBlocked as { pageLocation?: string }).pageLocation || '').includes(
           '/dashboard',
-        )) &&
+        )) ||
+        (report.waiterBlocked as { pageRscRedirect?: boolean }).pageRscRedirect) &&
       (report.waiterOverride as { hasAnalyticsView?: boolean }).hasAnalyticsView &&
       (report.waiterOverride as { apiStatus?: number }).apiStatus === 200 &&
-      (report.waiterOverride as { pageStatus?: number }).pageStatus === 200 &&
+      ((report.waiterOverride as { pageStatus?: number }).pageStatus === 200 &&
+        !(report.waiterOverride as { pageRscRedirect?: boolean }).pageRscRedirect) &&
       (report.crossTenant as { status?: number }).status === 403
 
     if (!ok) {

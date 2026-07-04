@@ -17,7 +17,7 @@ export async function POST(
     const parsedTableNumber = Number(tableNumber)
     const restaurantUuid = await resolveRestaurantUuid(String(restaurantId || ''))
 
-    const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.TABLES_MANAGE)
+    const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.TABLES_MANAGE, req)
     if (isAuthError(auth)) return auth
 
     const supabase = createServerSupabaseClient()

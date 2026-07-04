@@ -23,7 +23,7 @@ export async function GET(req: Request) {
 
   const restaurantUuid = await resolveRestaurantUuid(restaurantId)
 
-  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ORDERS_READ)
+  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ORDERS_READ, req)
   if (isAuthError(auth)) return auth
 
   const supabase = createServerSupabaseClient()
