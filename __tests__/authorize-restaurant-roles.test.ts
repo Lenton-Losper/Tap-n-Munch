@@ -33,6 +33,9 @@ describe('authorize() with restaurant_roles (staging Phase 2)', () => {
     expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_RECEIVE)).toBe(
       false,
     )
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.ANALYTICS_VIEW)).toBe(
+      false,
+    )
   })
 
   test('owner permissions match JSON baseline via DB', async () => {
@@ -51,6 +54,7 @@ describe('authorize() with restaurant_roles (staging Phase 2)', () => {
     const ownerId = String(ownerRow.user_id)
     expect(await authorize(ownerId, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.SETTINGS_WRITE)).toBe(true)
     expect(await authorize(ownerId, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_RECEIVE)).toBe(true)
+    expect(await authorize(ownerId, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.ANALYTICS_VIEW)).toBe(true)
   })
 
   test('manager stock:receive matches JSON baseline via DB', async () => {

@@ -44,6 +44,9 @@ export const PERMISSIONS = {
   // Recipes
   RECIPE_VIEW: 'recipe:view',
   RECIPE_EDIT: 'recipe:edit',
+
+  // Analytics
+  ANALYTICS_VIEW: 'analytics:view',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]

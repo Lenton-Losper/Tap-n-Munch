@@ -117,6 +117,12 @@ export function DashboardSidebar() {
       }
       return hasPermission(PERMISSIONS.STOCK_VIEW)
     }
+    if (item.href === '/analytics') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.ANALYTICS_VIEW)
+    }
     return item.roles.includes(role)
   })
 
