@@ -95,42 +95,56 @@ export async function getRolePermissions(
 }
 
 /**
- * Check if a user has a specific permission for a restaurant.
+ * Resolve the caller's full permission list for a restaurant.
  * 1. Resolves role from DB
  * 2. Applies default role permissions from restaurant_roles (JSON fallback)
- * 3. Applies per-user overrides from staff_permissions
+ * 3. Applies per-user overrides from staff_permissions (allow adds, deny removes)
+ */
+export async function getUserPermissions(
+  userId: string,
+  restaurantId: string,
+): Promise<Permission[]> {
+  const role = await getUserRole(userId, restaurantId)
+  if (!role) return []
+
+  const granted = new Set<Permission>(await getRolePermissions(restaurantId, role))
+
+  const staffMemberId = await resolveStaffMemberId(userId, restaurantId)
+  if (!staffMemberId) {
+    return [...granted]
+  }
+
+  const supabase = createServerSupabaseClient()
+  const { data: overrides, error: overrideError } = await supabase
+    .from('staff_permissions')
+    .select('permission, effect')
+    .eq('staff_id', staffMemberId)
+    .eq('restaurant_id', restaurantId)
+
+  if (overrideError) throw overrideError
+
+  for (const row of overrides ?? []) {
+    const perm = row.permission as Permission
+    if (row.effect === 'allow') {
+      granted.add(perm)
+    } else if (row.effect === 'deny') {
+      granted.delete(perm)
+    }
+  }
+
+  return [...granted]
+}
+
+/**
+ * Check if a user has a specific permission for a restaurant.
  */
 export async function authorize(
   userId: string,
   restaurantId: string,
   permission: Permission
 ): Promise<boolean> {
-  const supabase = createServerSupabaseClient()
-
-  const role = await getUserRole(userId, restaurantId)
-  if (!role) return false
-
-  const defaultPerms = await getRolePermissions(restaurantId, role)
-  let allowed = defaultPerms.includes(permission)
-
-  // Apply per-user overrides from staff_permissions (keyed by staff_members.id)
-  const staffMemberId = await resolveStaffMemberId(userId, restaurantId)
-  if (staffMemberId) {
-    const { data: overrides, error: overrideError } = await supabase
-      .from('staff_permissions')
-      .select('permission, effect')
-      .eq('staff_id', staffMemberId)
-      .eq('permission', permission)
-      .eq('restaurant_id', restaurantId)
-
-    if (overrideError) throw overrideError
-
-    if (overrides && overrides.length > 0) {
-      allowed = overrides[0].effect === 'allow'
-    }
-  }
-
-  return allowed
+  const permissions = await getUserPermissions(userId, restaurantId)
+  return permissions.includes(permission)
 }
 
 /**

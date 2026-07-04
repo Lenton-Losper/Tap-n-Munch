@@ -12,6 +12,7 @@ import {
 import { supabase } from '@/lib/supabase/client'
 import { syncAuthProfile } from '@/lib/supabase/sync-profile'
 import { parseStaffRole, type StaffRole } from '@/lib/permissions/staff-role'
+import type { Permission } from '@/lib/permissions'
 
 export type { StaffRole }
 
@@ -21,6 +22,8 @@ interface AuthContextType {
   restaurant: Record<string, any> | null
   restaurantId: string | null
   role: StaffRole | null
+  permissions: Permission[]
+  permissionsLoaded: boolean
   loading: boolean
   isSupabaseConfigured: boolean
   signUp: (email: string, password: string, restaurantName: string, phone?: string) => Promise<void>
@@ -34,6 +37,8 @@ const AuthContext = createContext<AuthContextType>({
   restaurant: null,
   restaurantId: null,
   role: null,
+  permissions: [],
+  permissionsLoaded: false,
   loading: true,
   isSupabaseConfigured: false,
   signUp: async () => {},
@@ -54,6 +59,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [restaurant, setRestaurant] = useState<Record<string, any> | null>(null)
   const [restaurantId, setRestaurantId] = useState<string | null>(null)
   const [role, setRole] = useState<StaffRole | null>(null)
+  const [permissions, setPermissions] = useState<Permission[]>([])
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false)
   const [loading, setLoading] = useState(isSupabaseEnvConfigured)
   const isSupabaseConfigured = isSupabaseEnvConfigured
 
@@ -64,6 +71,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRestaurant(null)
         setRestaurantId(null)
         setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
         setLoading(false)
         return
       }
@@ -83,6 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setRestaurant(null)
           setRestaurantId(null)
           setRole(null)
+          setPermissions([])
+          setPermissionsLoaded(false)
           return
         }
 
@@ -133,6 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         let linkedRestaurantId: string | null = null
         let resolvedRole: StaffRole | null = null
+        let resolvedPermissions: Permission[] = []
 
         if (roleResult) {
           const res = roleResult
@@ -142,13 +154,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (payload.restaurant_id) {
               linkedRestaurantId = String(payload.restaurant_id)
             }
+            if (Array.isArray(payload.permissions)) {
+              resolvedPermissions = payload.permissions as Permission[]
+            }
+            setPermissionsLoaded(true)
             console.log('[AuthProvider] role API result:', payload)
           } else {
+            setPermissionsLoaded(false)
             console.warn('[AuthProvider] role API failed:', res.status, await res.text())
           }
+        } else {
+          setPermissionsLoaded(false)
         }
 
         setRole(resolvedRole)
+        setPermissions(resolvedPermissions)
 
         if (!linkedRestaurantId && userRecord?.restaurant_id) {
           linkedRestaurantId = String(userRecord.restaurant_id)
@@ -158,6 +178,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setRestaurant(null)
           setRestaurantId(null)
           setRole(null)
+          setPermissions([])
+          setPermissionsLoaded(false)
           return
         }
 
@@ -188,6 +210,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRestaurant(null)
         setRestaurantId(null)
         setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
       } finally {
         setLoading(false)
       }
@@ -233,6 +257,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setRestaurant(null)
     setRestaurantId(null)
     setRole(null)
+    setPermissions([])
+    setPermissionsLoaded(false)
     setLoading(false)
     if (typeof window !== 'undefined') {
       localStorage.removeItem('restaurantId')
@@ -248,6 +274,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         restaurant,
         restaurantId,
         role,
+        permissions,
+        permissionsLoaded,
         loading,
         isSupabaseConfigured,
         signUp,

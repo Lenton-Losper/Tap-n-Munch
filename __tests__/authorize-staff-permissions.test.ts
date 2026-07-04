@@ -1,4 +1,4 @@
-import { resolveStaffMemberId, authorize } from '@/lib/permissions/authorize'
+import { resolveStaffMemberId, authorize, getUserPermissions } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import {
   STAGING_TEST_RESTAURANT_ID,
@@ -69,5 +69,33 @@ describe('authorize staff_permissions via staff_members.id (staging)', () => {
     expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_VIEW)).toBe(
       false,
     )
+  })
+
+  test('getUserPermissions returns resolved list including overrides', async () => {
+    const baseline = await getUserPermissions(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID)
+    expect(baseline).toContain(PERMISSIONS.STOCK_VIEW)
+    expect(baseline).not.toContain(PERMISSIONS.RECIPE_VIEW)
+
+    const { error } = await admin.from('staff_permissions').insert({
+      staff_id: staffMemberId,
+      restaurant_id: STAGING_TEST_RESTAURANT_ID,
+      permission: PERMISSIONS.RECIPE_VIEW,
+      effect: 'allow',
+    })
+    expect(error).toBeNull()
+
+    const withAllow = await getUserPermissions(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID)
+    expect(withAllow).toContain(PERMISSIONS.RECIPE_VIEW)
+
+    await admin.from('staff_permissions').insert({
+      staff_id: staffMemberId,
+      restaurant_id: STAGING_TEST_RESTAURANT_ID,
+      permission: PERMISSIONS.STOCK_VIEW,
+      effect: 'deny',
+    })
+
+    const withDeny = await getUserPermissions(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID)
+    expect(withDeny).not.toContain(PERMISSIONS.STOCK_VIEW)
+    expect(withDeny).toContain(PERMISSIONS.RECIPE_VIEW)
   })
 })

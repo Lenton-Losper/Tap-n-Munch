@@ -18,6 +18,8 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ReportBugButton } from '@/components/dashboard/report-bug-dialog'
 import { useAuth, type StaffRole } from '@/components/auth/auth-provider'
+import { usePermissions } from '@/hooks/use-permissions'
+import { PERMISSIONS } from '@/lib/permissions'
 
 const NAV_ITEMS = [
   {
@@ -91,6 +93,7 @@ export function DashboardSidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const { userData, restaurant, role, signOut } = useAuth()
+  const { hasPermission, permissionsLoaded } = usePermissions()
   const [signingOut, setSigningOut] = useState(false)
 
   const restaurantName = String(restaurant?.name || '').trim()
@@ -108,6 +111,12 @@ export function DashboardSidebar() {
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (!role) return item.href === '/dashboard'
+    if (item.href === '/stock') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.STOCK_VIEW)
+    }
     return item.roles.includes(role)
   })
 
