@@ -1,7 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createBrowserClient } from '@supabase/ssr'
+import {
+  fetchGuestActiveTableOrders,
+  GUEST_ORDER_POLL_MS,
+} from '@/lib/guest-orders/client'
+import type { GuestOrderRow } from '@/lib/guest-orders/types'
 
 interface Notification {
   id: string
@@ -15,20 +19,25 @@ interface OrderStatusBannerProps {
   tableNumber: number
 }
 
-type OrderRow = {
-  table_number?: unknown
-  status?: unknown
-  order_number?: unknown
-  payment_status?: unknown
+type OrderSnapshot = {
+  status: string
+  payment_status: string
+  order_number: number
 }
 
 function normalizePaid(value: unknown): boolean {
   return String(value ?? '').toLowerCase() === 'paid'
 }
 
+function orderNumberFromRow(row: GuestOrderRow): number {
+  if (typeof row.order_number === 'number') return row.order_number
+  return Number(row.order_number) || 0
+}
+
 export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderStatusBannerProps) {
   const [notifications, setNotifications] = useState<Notification[]>([])
   const dismissTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const prevByIdRef = useRef<Map<string, OrderSnapshot>>(new Map())
 
   const addNotification = useCallback((notification: Notification) => {
     setNotifications((prev) => [...prev, notification])
@@ -92,41 +101,25 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
     }
   }
 
-  useEffect(() => {
-    if (!restaurantId || tableNumber <= 0) return
+  const applyOrderDiff = useCallback(
+    (orders: GuestOrderRow[]) => {
+      const prevById = prevByIdRef.current
+      const currentIds = new Set<string>()
 
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    if (!url || !key) return
+      for (const row of orders) {
+        const id = String(row.id || '').trim()
+        if (!id) continue
+        if (Number(row.table_number) !== Number(tableNumber)) continue
 
-    const supabase = createBrowserClient(url, key)
+        currentIds.add(id)
+        const orderNum = orderNumberFromRow(row)
+        const newStatus = String(row.status ?? '')
+        const newPay = String(row.payment_status ?? '')
+        const prev = prevById.get(id)
 
-    const channel = supabase
-      .channel(`customer-notifications-${restaurantId}-table-${tableNumber}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'orders',
-          filter: `restaurant_id=eq.${restaurantId}`,
-        },
-        (payload) => {
-          const newOrder = payload.new as OrderRow
-          const oldOrder = payload.old as OrderRow
-
-          if (Number(newOrder.table_number) !== Number(tableNumber)) return
-
-          const orderNum =
-            typeof newOrder.order_number === 'number'
-              ? newOrder.order_number
-              : Number(newOrder.order_number) || 0
-
-          const oldStatus = String(oldOrder?.status ?? '')
-          const newStatus = String(newOrder.status ?? '')
-
-          if (newStatus !== oldStatus) {
-            const notification = getStatusNotification(newStatus, orderNum, oldStatus)
+        if (prev) {
+          if (newStatus !== prev.status) {
+            const notification = getStatusNotification(newStatus, orderNum, prev.status)
             if (notification) {
               addNotification(notification)
               if ('vibrate' in navigator) {
@@ -135,10 +128,8 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
             }
           }
 
-          const oldPay = oldOrder?.payment_status
-          const newPay = newOrder.payment_status
-          if (String(newPay ?? '') !== String(oldPay ?? '')) {
-            if (normalizePaid(newPay) && !normalizePaid(oldPay)) {
+          if (newPay !== prev.payment_status) {
+            if (normalizePaid(newPay) && !normalizePaid(prev.payment_status)) {
               addNotification({
                 id: `${orderNum}-paid-${Date.now()}`,
                 message: `Payment confirmed for Order #${orderNum} ✓`,
@@ -148,13 +139,56 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
             }
           }
         }
-      )
-      .subscribe()
+
+        prevById.set(id, {
+          status: newStatus,
+          payment_status: newPay,
+          order_number: orderNum,
+        })
+      }
+
+      for (const [id, prev] of prevById.entries()) {
+        if (currentIds.has(id)) continue
+        const wasInProgress = ['accepted', 'preparing', 'ready', 'pending'].includes(prev.status)
+        if (wasInProgress && prev.status !== 'completed') {
+          const notification = getStatusNotification('completed', prev.order_number, prev.status)
+          if (notification) addNotification(notification)
+        }
+        prevById.delete(id)
+      }
+    },
+    [tableNumber, addNotification]
+  )
+
+  useEffect(() => {
+    if (!restaurantId || tableNumber <= 0) return
+
+    let cancelled = false
+    prevByIdRef.current = new Map()
+
+    const tick = async () => {
+      try {
+        const { orders } = await fetchGuestActiveTableOrders({
+          restaurantId,
+          tableNumber,
+        })
+        if (cancelled) return
+        applyOrderDiff(orders || [])
+      } catch (error) {
+        console.error('[OrderStatusBanner] poll failed', error)
+      }
+    }
+
+    void tick()
+    const interval = window.setInterval(() => {
+      void tick()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
-      supabase.removeChannel(channel)
+      cancelled = true
+      window.clearInterval(interval)
     }
-  }, [restaurantId, tableNumber, addNotification])
+  }, [restaurantId, tableNumber, applyOrderDiff])
 
   if (notifications.length === 0) return null
 

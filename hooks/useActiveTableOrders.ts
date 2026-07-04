@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getCurrentTableSession } from '@/lib/table-session'
-import { supabase } from '@/lib/supabase/client'
+import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 export interface ActiveTableOrder {
   id: string
@@ -16,11 +16,8 @@ export interface ActiveTableOrder {
 
 /**
  * Hook to get active orders for current table session
- * 
- * Banner logic (CRITICAL):
- * - Banner appears if localStorage.table_session_id EXISTS
- * - AND there are orders with table_session_id == localStorage.table_session_id
- * - AND status != "completed"
+ *
+ * Data via GET /api/guest/orders/by-session (Stage 1 guest API).
  */
 export function useActiveTableOrders(): {
   activeOrders: ActiveTableOrder[]
@@ -51,35 +48,41 @@ export function useActiveTableOrders(): {
       return
     }
 
+    let cancelled = false
+
     const loadOrders = async () => {
-      const { data, error } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('restaurant_id', restaurantId)
-        .eq('session_id', tableSessionId)
-        .in('status', ['pending', 'accepted', 'ready'])
-        .order('created_at', { ascending: false })
-      if (error) {
-        setError(error.message || 'Failed to load orders')
+      try {
+        const { orders } = await fetchGuestOrdersBySession({
+          restaurantId,
+          sessionId: tableSessionId,
+        })
+        if (cancelled) return
+
+        const filtered = (orders || [])
+          .map((row) => ({ ...(row as ActiveTableOrder), id: String(row.id || '') }))
+          .filter((order) => Boolean(order.id))
+          .filter((order) =>
+            ['pending', 'accepted', 'ready'].includes(String(order.status || '').toLowerCase())
+          )
+
+        setActiveOrders(filtered)
         setLoading(false)
-        return
+        setError(null)
+      } catch (err: unknown) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Failed to load orders')
+        setLoading(false)
       }
-      setActiveOrders((data || []) as ActiveTableOrder[])
-      setLoading(false)
-      setError(null)
     }
 
     void loadOrders()
-    const channel = supabase
-      .channel(`active-table-orders-${restaurantId}-${tableSessionId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${tableSessionId}` },
-        () => void loadOrders()
-      )
-      .subscribe()
+    const interval = window.setInterval(() => {
+      void loadOrders()
+    }, GUEST_ORDER_POLL_MS)
+
     return () => {
-      supabase.removeChannel(channel)
+      cancelled = true
+      window.clearInterval(interval)
     }
   }, [])
   /* eslint-enable react-hooks/set-state-in-effect */

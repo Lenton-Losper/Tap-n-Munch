@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
+import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
 import { clearTabSession, readStoredTabId, readStoredTableNumber } from '@/lib/tab-storage'
 
 export const ACTIVE_TAB_STATUSES = ['open', 'ready_to_pay'] as const
@@ -109,15 +110,16 @@ export async function fetchActiveTabForTable(
 }
 
 export async function fetchOrdersForTab(tabId: string, restaurantId: string) {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('tab_id', tabId)
-    .order('placed_at', { ascending: true })
-
-  if (error) throw error
-  return data || []
+  const { orders } = await fetchGuestOrdersBySession({
+    restaurantId,
+    tabId,
+    excludeSettlement: true,
+  })
+  return [...(orders || [])].sort((a, b) => {
+    const aTime = String(a.placed_at || a.created_at || '')
+    const bTime = String(b.placed_at || b.created_at || '')
+    return aTime.localeCompare(bTime)
+  })
 }
 
 export function landingPath(restaurantId: string, tableNumber: string | number): string {

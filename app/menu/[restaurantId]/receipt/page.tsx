@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
+import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, FileText } from 'lucide-react'
@@ -273,6 +274,10 @@ export default function ReceiptPage() {
 
     void validateAndLoad()
 
+    const ordersPoll = window.setInterval(() => {
+      void validateAndLoad()
+    }, GUEST_ORDER_POLL_MS)
+
     const channel = supabase
       .channel(`receipt-tab-${storedTabId}`)
       .on(
@@ -290,22 +295,11 @@ export default function ReceiptPage() {
           void refreshTab()
         }
       )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-          filter: `tab_id=eq.${storedTabId}`,
-        },
-        () => {
-          void validateAndLoad()
-        }
-      )
       .subscribe()
 
     return () => {
       cancelled = true
+      window.clearInterval(ordersPoll)
       supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum])
