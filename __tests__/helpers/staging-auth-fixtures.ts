@@ -22,6 +22,20 @@ export async function ensureStagingKitchenTestUser(admin: SupabaseClient): Promi
 }
 
 export async function ensureStagingStaffMember(admin: SupabaseClient): Promise<string> {
+  const { data: restaurant, error: restaurantError } = await admin
+    .from('restaurants')
+    .select('id')
+    .eq('id', STAGING_TEST_RESTAURANT_ID)
+    .maybeSingle()
+
+  if (restaurantError) throw restaurantError
+  if (!restaurant?.id) {
+    throw new Error(
+      `Staging fixture restaurant missing (${STAGING_TEST_RESTAURANT_ID}). ` +
+        'These tests require the staging Supabase project (mdqjpxwczrhkxkbqatqa), not production.',
+    )
+  }
+
   const { data: existingMember } = await admin
     .from('staff_members')
     .select('id')

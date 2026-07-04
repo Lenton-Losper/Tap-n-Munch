@@ -35,6 +35,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      - name: Staging authorize tests (staging Supabase)
+        run: npx jest --ci --forceExit --maxWorkers=1 --testPathPattern="authorize-|staff-role"
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
 
   deploy:
     runs-on: ubuntu-latest
@@ -101,13 +107,16 @@ jobs:
           curl -f https://flashtap-staging.llosperofficial.workers.dev/api/menu/ade55dd9-ab0d-46c7-9f53-d65f4bed4305/features || exit 1
           echo "Smoke tests passed"
       - name: Integration tests (HTTP)
-        run: npx jest --ci --forceExit --testPathPattern="permissions|web-routing"
+        run: npx jest --ci --forceExit __tests__/permissions.test.ts __tests__/web-routing.test.ts
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FLASHTAP_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
           RIVIERA_URL: https://riviera.flashtap.app
+      - name: Staging authorize tests (staging Supabase)
+        run: npx jest --ci --forceExit --maxWorkers=1 --testPathPattern="authorize-|staff-role"
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
       - name: Ensure E2E kiosk fixture
         run: node scripts/ensure-e2e-kiosk-fixture.mjs
         env:
