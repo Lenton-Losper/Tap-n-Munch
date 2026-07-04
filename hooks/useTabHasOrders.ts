@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase/client'
+import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 /**
  * True when the given tab has at least one line-item order (excludes settlement rows).
- * Subscribes to Supabase Realtime so the UI updates after the first order is placed.
+ * Uses GET /api/guest/orders/by-session with polling (Stage 2 RLS-safe).
  */
 export function useTabHasOrders(
   restaurantId: string | null | undefined,
@@ -22,41 +22,30 @@ export function useTabHasOrders(
     let cancelled = false
 
     const check = async () => {
-      const { count, error } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', rid)
-        .eq('tab_id', tid)
-        .is('tab_settlement_for_tab_id', null)
-        .not('status', 'in', '("cancelled")')
+      try {
+        const { count } = await fetchGuestOrdersBySession({
+          restaurantId: rid,
+          tabId: tid,
+          countOnly: true,
+        })
 
-      if (cancelled) return
-
-      if (error) {
-        console.warn('[useTabHasOrders] check failed', error)
+        if (cancelled) return
+        setHasOrders(Number(count || 0) > 0)
+      } catch (err) {
+        if (cancelled) return
+        console.warn('[useTabHasOrders] check failed', err)
         setHasOrders(false)
-        return
       }
-
-      setHasOrders(Number(count || 0) > 0)
     }
 
     void check()
-
-    const channel = supabase
-      .channel(`tab-has-orders-${rid}-${tid}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders', filter: `tab_id=eq.${tid}` },
-        () => {
-          void check()
-        }
-      )
-      .subscribe()
+    const interval = window.setInterval(() => {
+      void check()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
   }, [enabled, rid, tid])
 

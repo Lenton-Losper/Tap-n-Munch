@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
+import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
@@ -29,29 +29,22 @@ export default function MyOrdersPage() {
     }
 
     const loadOrders = async () => {
-      const { data } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('restaurant_id', restaurantId)
-        .eq('session_id', sessionId)
-        .order('placed_at', { ascending: false })
-      const ordersList = (data || []).filter((order: any) => order.is_closed !== true)
+      const { orders } = await fetchGuestOrdersBySession({
+        restaurantId,
+        sessionId,
+      })
+      const ordersList = (orders || []).filter((order: any) => order.is_closed !== true)
       setOrders(ordersList)
       setLoading(false)
     }
     void loadOrders()
 
-    const channel = supabase
-      .channel(`my-orders-${restaurantId}-${sessionId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${sessionId}` },
-        () => void loadOrders()
-      )
-      .subscribe()
+    const interval = window.setInterval(() => {
+      void loadOrders()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
   }, [sessionId, restaurantId, tableNumber, router])
 

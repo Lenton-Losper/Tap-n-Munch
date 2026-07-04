@@ -4,7 +4,6 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
@@ -17,9 +16,7 @@ import { getCurrentSession } from '@/lib/session'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
 import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
-
-const ORDER_SELECT =
-  'id, order_number, status, placed_at, payment_method, payment_status, payment_channel, customer_ready_to_pay, total, subtotal, tax, table_number, items'
+import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 type Order = {
   id: string
@@ -35,6 +32,29 @@ type Order = {
   tax?: number
   table_number?: number
   items: Array<{ quantity: number; name: string; subtotal: number }>
+}
+
+function mapGuestRowToOrder(row: Record<string, unknown>): Order {
+  return {
+    id: String(row.id || ''),
+    order_number: Number(row.order_number || 0),
+    status: String(row.status || 'pending') as OrderStatusKey,
+    placed_at: String(row.placed_at || row.created_at || ''),
+    payment_method: String(row.payment_method || ''),
+    payment_status: String(row.payment_status || ''),
+    payment_channel: row.payment_channel != null ? String(row.payment_channel) : null,
+    customer_ready_to_pay:
+      row.customer_ready_to_pay === true || row.customer_ready_to_pay === false
+        ? Boolean(row.customer_ready_to_pay)
+        : null,
+    total: Number(row.total || 0),
+    subtotal: row.subtotal != null ? Number(row.subtotal) : undefined,
+    tax: row.tax != null ? Number(row.tax) : undefined,
+    table_number: row.table_number != null ? Number(row.table_number) : undefined,
+    items: Array.isArray(row.items)
+      ? (row.items as Array<{ quantity: number; name: string; subtotal: number }>)
+      : [],
+  }
 }
 
 function isCashPaymentOrder(order: Order): boolean {
@@ -80,84 +100,67 @@ export default function OrderConfirmationPage() {
   const [terminalNotifiedLocal, setTerminalNotifiedLocal] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
+
     const loadData = async () => {
       try {
         setLoading(true)
-        const orderResult = await supabase.from('orders').select(ORDER_SELECT).eq('id', orderId).single()
-        const orderData = (orderResult.data as Order | null) || null
+        const row = await fetchGuestOrderById(orderId, {
+          tableNumber: tableNumber > 0 ? tableNumber : undefined,
+          sessionId: getCurrentSession() || undefined,
+        })
 
-        if (!orderData) {
+        if (cancelled) return
+
+        if (!row) {
           router.push(`/menu/${restaurantId}`)
           return
         }
 
-        setOrder(orderData)
+        setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
         setLoading(false)
       } catch (err) {
         console.error('Failed to load order:', err)
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     if (orderId && restaurantId) {
-      loadData()
+      void loadData()
     }
-  }, [orderId, restaurantId, router])
-
-  useEffect(() => {
-    if (!orderId) return
-
-    const channel = supabase
-      .channel(`order-confirmation-${orderId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-          filter: `id=eq.${orderId}`,
-        },
-        async () => {
-          const { data: updatedOrder } = await supabase
-            .from('orders')
-            .select(ORDER_SELECT)
-            .eq('id', orderId)
-            .single()
-          if (updatedOrder) {
-            setOrder(updatedOrder as Order)
-          }
-        }
-      )
-      .subscribe()
 
     return () => {
-      supabase.removeChannel(channel)
+      cancelled = true
     }
-  }, [orderId])
+  }, [orderId, restaurantId, router, tableNumber])
 
   useEffect(() => {
     if (!orderId || !order) return
     if (String(order.payment_status || '').toLowerCase() === 'paid') return
 
+    let cancelled = false
+
     const pollPaymentStatus = async () => {
-      const { data: updatedOrder } = await supabase
-        .from('orders')
-        .select(ORDER_SELECT)
-        .eq('id', orderId)
-        .maybeSingle()
-      if (updatedOrder) {
-        setOrder(updatedOrder as Order)
-      }
+      const row = await fetchGuestOrderById(orderId, {
+        tableNumber: tableNumber > 0 ? tableNumber : order.table_number,
+        sessionId: getCurrentSession() || undefined,
+      })
+      if (cancelled || !row) return
+      setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
     }
 
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       void pollPaymentStatus()
-    }, 3000)
+    }, GUEST_ORDER_POLL_MS)
 
-    return () => clearInterval(interval)
-    // Only restart polling when payment_status changes; full `order` would reset the interval on every poll tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: orderId + payment_status gate the poll lifecycle
-  }, [orderId, order?.payment_status])
+    void pollPaymentStatus()
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderId + payment_status gate the poll lifecycle
+  }, [orderId, order?.payment_status, tableNumber])
 
   if (loading) {
     return (

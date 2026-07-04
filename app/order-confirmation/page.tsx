@@ -5,11 +5,17 @@ export const dynamic = 'force-dynamic'
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
+import { supabase } from '@/lib/supabase/client'
 import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabase/client'
+import {
+  fetchGuestOrderById,
+  fetchGuestOrdersByPaymentRef,
+  fetchGuestOrdersBySession,
+  GUEST_ORDER_POLL_MS,
+} from '@/lib/guest-orders/client'
 
 type OrderDoc = {
   id: string
@@ -65,14 +71,11 @@ async function resolveRecentPaidOrderBySession(
   }
 
   const cutoff = Date.now() - RECEIPT_FALLBACK_WINDOW_MS
-  const { data } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('session_id', sessionId)
-    .order('placed_at', { ascending: false })
-    .limit(80)
-  const candidates = (data || []).map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+  const { orders: data } = await fetchGuestOrdersBySession({
+    restaurantId,
+    sessionId,
+  })
+  const candidates = (data || []).map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
 
   const recent = candidates.filter((o: any) => {
     if (!isPaidOrCardOrder(o)) return false
@@ -137,10 +140,6 @@ function getFinaticReturnOrderRef(searchParams: URLSearchParams): string {
     if (v) return v
   }
   return ''
-}
-
-function supabaseOrPaymentRef(tn: string): string {
-  return `paycloud_merchant_order_no.eq.${tn},payment_reference.eq.${tn}`
 }
 
 function combinePaymentStatusFromRows(
@@ -247,12 +246,12 @@ async function resolveOrdersByTn(
   if (!tn.trim()) return { rows: [], restaurantId: restaurantIdHint }
 
   const rid = restaurantIdHint?.trim() || null
-
-  let query = supabase.from('orders').select('*').or(supabaseOrPaymentRef(tn)).limit(15)
-  if (rid) query = query.eq('restaurant_id', rid)
-  const { data } = await query
+  const data = await fetchGuestOrdersByPaymentRef({
+    paymentRef: tn,
+    restaurantId: rid || undefined,
+  })
   if (data && data.length > 0) {
-    const mapped = data.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+    const mapped = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
     const first = data[0] as { restaurant_id?: string | null }
     return { rows: mapped, restaurantId: String(first.restaurant_id || rid || '') || null }
   }
@@ -278,7 +277,7 @@ function OrderConfirmationContent() {
   const [restaurant, setRestaurant] = useState<{ name?: string; currency?: string } | null>(null)
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
-  const [dataSource, setDataSource] = useState<'supabase' | null>(null)
+  const [dataSource, setDataSource] = useState<'guest-api' | null>(null)
   const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
   const isPaymentConfirmed =
@@ -297,15 +296,12 @@ function OrderConfirmationContent() {
         if (orderRef) {
           const urlCancel = inferCancelledFromSearchParams(searchParams)
 
-          const { data: sbRows, error: sbErr } = await supabase
-            .from('orders')
-            .select('*')
-            .or(supabaseOrPaymentRef(orderRef))
+          const sbRows = await fetchGuestOrdersByPaymentRef({ paymentRef: orderRef })
           if (cancelled) return
 
-          if (!sbErr && sbRows && sbRows.length > 0) {
-            setDataSource('supabase')
-            const docs = sbRows.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+          if (sbRows && sbRows.length > 0) {
+            setDataSource('guest-api')
+            const docs = sbRows.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
             const combined = combinePaymentStatusFromRows(sbRows)
             const merged = applyReceiptPaymentState(docs, combined, urlCancel)
             const firstRow = sbRows[0] as { restaurant_id?: string | null }
@@ -367,7 +363,7 @@ function OrderConfirmationContent() {
           return
         }
 
-        setDataSource('supabase')
+        setDataSource('guest-api')
         setResolvedRestaurantId(ridOut)
         setReceipt(aggregateOrders(rows))
         setNotFound(false)
@@ -400,23 +396,23 @@ function OrderConfirmationContent() {
 
   useEffect(() => {
     if (!orderRef || isPaymentConfirmed) return
-    if (dataSource !== 'supabase') return
+    if (dataSource !== 'guest-api') return
     const ps = String(receipt?.payment_status || '').toLowerCase()
     if (ps === 'paid' || ps === 'cancelled' || ps === 'failed') return
 
     let cancelled = false
     const tick = async () => {
       if (cancelled) return
-      const { data } = await supabase.from('orders').select('*').or(supabaseOrPaymentRef(orderRef))
+      const data = await fetchGuestOrdersByPaymentRef({ paymentRef: orderRef })
       if (!data?.length) return
       const combined = combinePaymentStatusFromRows(data)
       const urlCancel = inferCancelledFromSearchParams(searchParams)
-      const docs = data.map((r: any) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
+      const docs = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
       const merged = applyReceiptPaymentState(docs, combined, urlCancel)
       setReceipt(merged)
       if (merged.payment_status === 'paid') setPaymentConfirmed(true)
     }
-    const id = setInterval(() => void tick(), 5000)
+    const id = setInterval(() => void tick(), GUEST_ORDER_POLL_MS)
     void tick()
     return () => {
       cancelled = true

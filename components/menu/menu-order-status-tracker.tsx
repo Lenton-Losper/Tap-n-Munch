@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, ChefHat, Star } from 'lucide-react'
 import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { getCurrentSession } from '@/lib/session'
-import { supabase } from '@/lib/supabase/client'
 import { clearActiveOrderBannerState } from '@/lib/tab-storage'
 import { ReadyToPayTerminalButton, ReadyToPayTerminalNotified } from '@/components/ready-to-pay-terminal'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 const GREEN = '#27AE60'
 
@@ -132,6 +132,39 @@ function ReadyToPayCardButton({
   )
 }
 
+function applyEligibleOrder(
+  data: Record<string, any> | null,
+  tableNumber: number,
+  setLastOrder: (v: Record<string, any> | null) => void,
+  setLiveOrder: (v: Record<string, any> | null) => void,
+  setLastOrderLoaded: (v: boolean) => void,
+) {
+  if (!data) {
+    clearActiveOrderBannerState()
+    setLastOrder(null)
+    setLiveOrder(null)
+    setLastOrderLoaded(true)
+    return
+  }
+  if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
+    setLastOrder(null)
+    setLiveOrder(null)
+    setLastOrderLoaded(true)
+    return
+  }
+  if (!isBannerEligibleOrder(data)) {
+    clearActiveOrderBannerState()
+    setLastOrder(null)
+    setLiveOrder(null)
+    setLastOrderLoaded(true)
+    return
+  }
+  const next = { id: String(data.id), ...data }
+  setLastOrder(next)
+  setLiveOrder(next)
+  setLastOrderLoaded(true)
+}
+
 export function MenuOrderStatusTracker({
   restaurantId,
   tableNumber,
@@ -176,67 +209,36 @@ export function MenuOrderStatusTracker({
     let cancelled = false
 
     const fetchLastOrder = async () => {
-      const { data } = await supabase.from('orders').select('*').eq('id', orderId).single()
+      const data = await fetchGuestOrderById(orderId, {
+        tableNumber,
+        sessionId: sessionId || getCurrentSession() || undefined,
+      })
       if (cancelled) return
-      if (!data) {
-        clearActiveOrderBannerState()
-        setLastOrder(null)
-        setLastOrderLoaded(true)
-        return
-      }
-      if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
-        setLastOrder(null)
-        setLastOrderLoaded(true)
-        return
-      }
-      if (!isBannerEligibleOrder(data)) {
-        clearActiveOrderBannerState()
-        setLastOrder(null)
-        setLastOrderLoaded(true)
-        return
-      }
-      setLastOrder({ id: String(data.id), ...data })
-      setLastOrderLoaded(true)
+      applyEligibleOrder(
+        data as Record<string, any> | null,
+        tableNumber,
+        setLastOrder,
+        setLiveOrder,
+        setLastOrderLoaded,
+      )
     }
 
-    const applyOrderUpdate = (updated: Record<string, any>) => {
-      if (!updated?.id) return
-      if (tableNumber && Number(updated.table_number) !== Number(tableNumber)) return
-      if (!isBannerEligibleOrder(updated)) {
-        clearActiveOrderBannerState()
-        setLastOrder(null)
-        setLiveOrder(null)
-        return
-      }
-      const next = { id: String(updated.id), ...updated }
-      setLastOrder(next)
-      setLiveOrder(next)
-      setLastOrderLoaded(true)
-    }
-
-    fetchLastOrder().catch(() => {
+    void fetchLastOrder().catch(() => {
       if (!cancelled) {
         setLastOrder(null)
         setLastOrderLoaded(true)
       }
     })
 
-    const channel = supabase
-      .channel(`menu-tracker-last-order-${orderId}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
-        (payload: any) => {
-          applyOrderUpdate(payload.new as Record<string, any>)
-        }
-      )
-      .subscribe()
+    const interval = window.setInterval(() => {
+      void fetchLastOrder()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
-  }, [restaurantId, tableNumber, persistedOrderId])
+  }, [restaurantId, tableNumber, persistedOrderId, sessionId])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const baseOrder = useMemo(() => {
@@ -249,35 +251,34 @@ export function MenuOrderStatusTracker({
     if (!baseOrder?.id) return
 
     const orderId = String(baseOrder.id)
-    const channel = supabase
-      .channel(`order-status-${orderId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'orders',
-          filter: `id=eq.${orderId}`,
-        },
-        (payload: any) => {
-          const updated = payload.new as Record<string, any>
-          if (!updated?.id) return
-          if (tableNumber && Number(updated.table_number) !== Number(tableNumber)) return
-          if (!isBannerEligibleOrder(updated)) {
-            clearActiveOrderBannerState()
-            setLiveOrder(null)
-            setLastOrder((prev) => (prev?.id === orderId ? null : prev))
-            return
-          }
-          setLiveOrder({ id: orderId, ...updated })
-        }
-      )
-      .subscribe()
+    let cancelled = false
+
+    const pollOrder = async () => {
+      const updated = await fetchGuestOrderById(orderId, {
+        tableNumber,
+        sessionId: sessionId || getCurrentSession() || undefined,
+      })
+      if (cancelled || !updated) return
+      if (tableNumber && Number(updated.table_number) !== Number(tableNumber)) return
+      if (!isBannerEligibleOrder(updated as Record<string, any>)) {
+        clearActiveOrderBannerState()
+        setLiveOrder(null)
+        setLastOrder((prev) => (prev?.id === orderId ? null : prev))
+        return
+      }
+      setLiveOrder({ id: orderId, ...(updated as Record<string, any>) })
+    }
+
+    void pollOrder()
+    const interval = window.setInterval(() => {
+      void pollOrder()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
-      supabase.removeChannel(channel)
+      cancelled = true
+      window.clearInterval(interval)
     }
-  }, [baseOrder?.id, tableNumber])
+  }, [baseOrder?.id, tableNumber, sessionId])
 
   if (loading && !lastOrderLoaded) return null
   if (error) return null

@@ -1,7 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase/client'
+import {
+  fetchGuestActiveTableOrders,
+  GUEST_ORDER_POLL_MS,
+} from '@/lib/guest-orders/client'
 
 /** Ignore banner orders older than this (stale visits / previous days). */
 const BANNER_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -35,16 +38,9 @@ export interface ActiveOrder {
 
 /**
  * Cross-Device Active Order Banner Hook (Table-Based)
- * 
- * Banner shows orders for this TABLE, not browser session.
- * Query: restaurant_id + table_number + is_closed == false + status in [new, accepted, preparing, ready]
- * 
- * This ensures:
- * - Cross-device visibility: Any device at Table X sees all orders for that table
- * - Banner appears after tab close and refresh
- * - Banner is table-specific
- * - Works for anonymous users (no session required)
- * - Privacy: Orders hidden once table is closed (is_closed == true)
+ *
+ * Data via GET /api/guest/orders/active-table (Stage 1 guest API).
+ * Realtime replaced with polling — Stage 2 RLS lockdown will block guest Realtime on orders.
  */
 export function useActiveOrders(
   restaurantId?: string,
@@ -87,28 +83,19 @@ export function useActiveOrders(
 
     const fetchOrders = async () => {
       try {
-        let query = supabase
-          .from('orders')
-          .select('*')
-          .eq('restaurant_id', restaurantId)
-          .eq('table_number', Number(tableNumber))
-          .eq('is_closed', false)
+        const { orders } = await fetchGuestActiveTableOrders({
+          restaurantId,
+          tableNumber: Number(tableNumber),
+          sessionId: isKiosk && sessionId ? sessionId : undefined,
+        })
 
-        if (isKiosk && sessionId) {
-          query = query.eq('session_id', sessionId)
-        }
-        // TODO removed — session_id is now the authoritative kiosk identity.
-
-        const { data: orders, error: queryError } = await query
-
-        if (queryError) throw queryError
         if (cancelled) return
 
         const placedCutoff = Date.now() - BANNER_ORDER_MAX_AGE_MS
         const activeOrders = (orders || [])
-          .map((row: any) => ({ ...(row as ActiveOrder), id: String((row as { id?: string }).id || '') }))
-          .filter((order: any) => Boolean(order.id))
-          .filter((order: any) => {
+          .map((row) => ({ ...(row as ActiveOrder), id: String(row.id || '') }))
+          .filter((order) => Boolean(order.id))
+          .filter((order) => {
             const tn = Number(order.table_number)
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
             const placedMs = orderPlacedAtMs(order)
@@ -117,7 +104,7 @@ export function useActiveOrders(
               String(order.status || '').toLowerCase()
             )
           })
-          .sort((a: any, b: any) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
+          .sort((a, b) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
 
         setActiveOrder(activeOrders[0] || null)
         setLoading(false)
@@ -130,29 +117,14 @@ export function useActiveOrders(
       }
     }
 
-    fetchOrders()
-
-    const channel = supabase
-      .channel(`active-orders-${restaurantId}-${tableNumber}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-          filter: `restaurant_id=eq.${restaurantId}`,
-        },
-        () => {
-          fetchOrders().catch(() => {
-            // no-op: handled in fetchOrders
-          })
-        }
-      )
-      .subscribe()
+    void fetchOrders()
+    const interval = window.setInterval(() => {
+      void fetchOrders()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
   }, [restaurantId, tableNumber, isKiosk, customerName, sessionId])
   /* eslint-enable react-hooks/set-state-in-effect */

@@ -14,7 +14,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
 import { getSupabaseMenuItemById } from '@/lib/supabase/menu'
-import { supabase } from '@/lib/supabase/client'
+import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
 import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
@@ -77,49 +77,40 @@ export default function CartPage() {
     let cancelled = false
 
     const runOrderChecks = async () => {
-      const sessionOrdersQuery =
+      const sessionOrdersPromise =
         effectiveTabId && sessionId && restaurantId
-          ? supabase
-              .from('orders')
-              .select('id', { count: 'exact', head: true })
-              .eq('restaurant_id', restaurantId)
-              .eq('tab_id', effectiveTabId)
-              .eq('session_id', sessionId)
-              .is('tab_settlement_for_tab_id', null)
+          ? fetchGuestOrdersBySession({
+              restaurantId,
+              sessionId,
+              tabId: effectiveTabId,
+              countOnly: true,
+            })
           : null
 
-      const staleTabOrdersQuery =
+      const staleTabOrdersPromise =
         tabReadyToPay && storedTabId && effectiveTabId && restaurantId
-          ? supabase
-              .from('orders')
-              .select('id', { count: 'exact', head: true })
-              .eq('restaurant_id', restaurantId)
-              .eq('tab_id', effectiveTabId)
-              .is('tab_settlement_for_tab_id', null)
+          ? fetchGuestOrdersBySession({
+              restaurantId,
+              tabId: effectiveTabId,
+              countOnly: true,
+            })
           : null
 
       const [sessionResult, staleTabResult] = await Promise.all([
-        sessionOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
-        staleTabOrdersQuery ?? Promise.resolve({ count: 0, error: null }),
+        sessionOrdersPromise ?? Promise.resolve({ count: 0, orders: [] }),
+        staleTabOrdersPromise ?? Promise.resolve({ count: 0, orders: [] }),
       ])
 
       if (cancelled) return
 
-      if (sessionOrdersQuery) {
-        if (sessionResult.error) {
-          console.warn('[CART] failed to check session tab orders', sessionResult.error)
-          setHasSessionTabOrders(false)
-        } else {
-          setHasSessionTabOrders(Number(sessionResult.count || 0) > 0)
-        }
+      if (sessionOrdersPromise) {
+        setHasSessionTabOrders(Number(sessionResult.count || 0) > 0)
       } else {
         setHasSessionTabOrders(false)
       }
 
       const hasSessionOrders =
-        sessionOrdersQuery && !sessionResult.error
-          ? Number(sessionResult.count || 0) > 0
-          : false
+        sessionOrdersPromise ? Number(sessionResult.count || 0) > 0 : false
 
       if (
         !tabReadyToPay ||
@@ -127,12 +118,11 @@ export default function CartPage() {
         !storedTabId ||
         !effectiveTabId ||
         !restaurantId ||
-        !staleTabOrdersQuery
+        !staleTabOrdersPromise
       ) {
         return
       }
 
-      if (staleTabResult.error) return
       if ((staleTabResult.count || 0) === 0) {
         clearTabSession()
         const q = new URLSearchParams()

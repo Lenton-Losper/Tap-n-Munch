@@ -10,20 +10,14 @@ import {
   ReadyToPayTerminalButton,
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
-import { supabase } from '@/lib/supabase/client'
 import { clearActiveOrderBannerState } from '@/lib/tab-storage'
+import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 /**
  * PART 3: Active Order Banner
- * 
+ *
  * Banner shows orders for this TABLE, not browser session.
- * Query: restaurant_id + table_number + status in [new, accepted, preparing, ready] + table_closed = false
- * 
- * This ensures:
- * - Banner appears after tab close
- * - Banner survives refresh
- * - Banner is table-specific
- * - No order leakage to new customers
+ * Data via guest API + polling (Stage 2 RLS lockdown will block guest Realtime on orders).
  */
 export function ActiveOrderBanner() {
   const router = useRouter()
@@ -32,7 +26,6 @@ export function ActiveOrderBanner() {
   const restaurantId = params?.restaurantId as string | undefined
   const tableNumberParam = searchParams?.get('table')
 
-  // Prefer session-tied table number (prevents any stale URL/query from showing wrong table orders).
   const sessionInfo = typeof window !== 'undefined' ? getSessionInfo() : null
   const sessionTableNumber = sessionInfo?.table ? Number(sessionInfo.table) : undefined
 
@@ -42,8 +35,7 @@ export function ActiveOrderBanner() {
       : tableNumberParam
         ? parseInt(tableNumberParam, 10)
         : undefined
-  
-  // PART 3: Use table-based active orders hook
+
   const { activeOrder, loading, error } = useActiveOrders(restaurantId, tableNumber)
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
@@ -79,11 +71,10 @@ export function ActiveOrderBanner() {
     let cancelled = false
 
     const fetchLastOrder = async () => {
-      const { data } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('id', orderId)
-        .single()
+      const data = await fetchGuestOrderById(orderId, {
+        tableNumber,
+        sessionId: getCurrentSession() || undefined,
+      })
       if (cancelled) return
       if (!data) {
         clearActiveOrderBannerState()
@@ -106,66 +97,38 @@ export function ActiveOrderBanner() {
       setLastOrderLoaded(true)
     }
 
-    fetchLastOrder().catch(() => {
+    void fetchLastOrder().catch(() => {
       if (!cancelled) {
         setLastOrder(null)
         setLastOrderLoaded(true)
       }
     })
 
-    const channel = supabase
-      .channel(`active-banner-last-order-${orderId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-          filter: `id=eq.${orderId}`,
-        },
-        () => {
-          fetchLastOrder().catch(() => {
-            // no-op: handled in fetchLastOrder
-          })
-        }
-      )
-      .subscribe()
+    const interval = window.setInterval(() => {
+      void fetchLastOrder()
+    }, GUEST_ORDER_POLL_MS)
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
   }, [restaurantId, tableNumber, persistedOrderId])
   /* eslint-enable react-hooks/set-state-in-effect */
-  
-  // Debug logging
-  if (loading) {
-    console.log('🔍 ActiveOrderBanner: Loading active orders...')
-  }
-  if (error) {
-    console.error('❌ ActiveOrderBanner error:', error)
-  }
-  if (activeOrder) {
-    console.log('✅ ActiveOrderBanner: Showing banner for order:', activeOrder.id)
+
+  if (loading && !lastOrderLoaded) {
+    return null
   }
 
-  // Don't show banner if loading, error, or no active order
-  if (loading && !lastOrderLoaded) {
-    return null // Still loading, don't show yet
-  }
-  
   if (error) {
     console.error('❌ ActiveOrderBanner error:', error)
     return null
   }
-  
+
   const currentOrder =
     (lastOrder && isBannerEligibleOrder(lastOrder) ? lastOrder : null) ||
     (activeOrder && isBannerEligibleOrder(activeOrder) ? activeOrder : null)
 
   if (!currentOrder) {
-    // Fallback logging: Banner hidden because no active orders found
-    console.log('🔍 Banner hidden: No active orders found for this session.')
     return null
   }
 
@@ -213,13 +176,9 @@ export function ActiveOrderBanner() {
     orderStatusLower !== 'completed'
 
   const handleClick = () => {
-    // Cross-Device Receipt: Route to table-based receipt page instead of order-specific confirmation
-    // This ensures any device at the table can see all orders, not just the specific order ID
     if (restaurantId && tableNumber) {
       router.push(`/menu/${restaurantId}/receipt?table=${tableNumber}`)
     } else {
-      // Fallback: If restaurantId or tableNumber is missing, try order confirmation
-      console.warn('⚠️ Missing restaurantId or tableNumber, falling back to order confirmation')
       router.push(`/order-confirmation?orderId=${currentOrder.id}`)
     }
   }
@@ -289,4 +248,3 @@ export function ActiveOrderBanner() {
     </div>
   )
 }
-

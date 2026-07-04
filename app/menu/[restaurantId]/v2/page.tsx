@@ -17,6 +17,7 @@ import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { supabase } from '@/lib/supabase/client'
+import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import {
   ACTIVE_TAB_STATUSES,
@@ -332,14 +333,12 @@ export function MenuLandingPageV2Content({
 
     if (!storedId) {
       setMyStoredTab(null)
-      const { count: openOrdersCount, error: openOrdersErr } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', restaurantUuid)
-        .eq('table_number', tableNum)
-        .eq('is_closed', false)
-        .not('status', 'in', '("completed","cancelled")')
-      if (!openOrdersErr && (openOrdersCount || 0) === 0) {
+      const { count: openOrdersCount } = await fetchGuestActiveTableOrders({
+        restaurantId: restaurantUuid,
+        tableNumber: tableNum,
+        countOnly: true,
+      })
+      if ((openOrdersCount || 0) === 0) {
         clearActiveOrderBannerState()
       }
     } else {
@@ -532,17 +531,16 @@ export function MenuLandingPageV2Content({
     let cancelled = false
     const run = async () => {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
-      const { data: abandoned } = await supabase
-        .from('orders')
-        .select('id, placed_at')
-        .eq('restaurant_id', restaurantId)
-        .eq('table_number', tableNum)
-        .eq('payment_status', 'pending')
-        .eq('payment_channel', 'hosted')
-        .eq('is_closed', false)
-        .lt('placed_at', tenMinutesAgo)
+      const { count: abandonedCount } = await fetchGuestActiveTableOrders({
+        restaurantId,
+        tableNumber: tableNum,
+        paymentStatus: 'pending',
+        paymentChannel: 'hosted',
+        placedBefore: tenMinutesAgo,
+        countOnly: true,
+      })
 
-      if (!cancelled && abandoned && abandoned.length > 0) {
+      if (!cancelled && (abandonedCount || 0) > 0) {
         try {
           await fetch('/api/orders/expire-pending', { method: 'POST' })
         } catch (e) {
@@ -550,17 +548,13 @@ export function MenuLandingPageV2Content({
         }
       }
 
-      const { data: recentPending } = await supabase
-        .from('orders')
-        .select('id, placed_at')
-        .eq('restaurant_id', restaurantId)
-        .eq('table_number', tableNum)
-        .eq('payment_status', 'pending')
-        .eq('payment_channel', 'hosted')
-        .eq('is_closed', false)
-        .gte('placed_at', tenMinutesAgo)
-        .order('placed_at', { ascending: false })
-        .limit(1)
+      const { orders: recentPending } = await fetchGuestActiveTableOrders({
+        restaurantId,
+        tableNumber: tableNum,
+        paymentStatus: 'pending',
+        paymentChannel: 'hosted',
+        placedAfter: tenMinutesAgo,
+      })
 
       if (cancelled) return
       const row = recentPending?.[0]
