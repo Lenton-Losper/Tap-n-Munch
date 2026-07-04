@@ -36,15 +36,25 @@ export async function ensureStagingStaffMember(admin: SupabaseClient): Promise<s
     )
   }
 
-  const { data: existingMember } = await admin
+  const { data: existingMembers, error: listError } = await admin
     .from('staff_members')
     .select('id')
     .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
     .ilike('email', STAGING_TEST_EMAIL)
-    .maybeSingle()
+    .order('created_at', { ascending: true })
 
-  if (existingMember?.id) {
-    return String(existingMember.id)
+  if (listError) throw listError
+
+  if (existingMembers?.length) {
+    const keepId = String(existingMembers[0].id)
+    const extraIds = existingMembers.slice(1).map((row) => String(row.id))
+    if (extraIds.length > 0) {
+      const { error: permError } = await admin.from('staff_permissions').delete().in('staff_id', extraIds)
+      if (permError) throw permError
+      const { error: memberError } = await admin.from('staff_members').delete().in('id', extraIds)
+      if (memberError) throw memberError
+    }
+    return keepId
   }
 
   const { data: inserted, error } = await admin
@@ -63,6 +73,28 @@ export async function ensureStagingStaffMember(admin: SupabaseClient): Promise<s
 }
 
 export async function cleanupStagingStaffMember(admin: SupabaseClient, staffMemberId: string): Promise<void> {
-  await admin.from('staff_permissions').delete().eq('staff_id', staffMemberId)
-  await admin.from('staff_members').delete().eq('id', staffMemberId)
+  const { error: permError } = await admin.from('staff_permissions').delete().eq('staff_id', staffMemberId)
+  if (permError) throw permError
+  const { error: memberError } = await admin.from('staff_members').delete().eq('id', staffMemberId)
+  if (memberError) throw memberError
+}
+
+export async function clearStagingStaffPermissionOverrides(
+  admin: SupabaseClient,
+  staffMemberId: string,
+): Promise<void> {
+  const { error } = await admin.from('staff_permissions').delete().eq('staff_id', staffMemberId)
+  if (error) throw error
+}
+
+export async function restoreRestaurantRoles(
+  admin: SupabaseClient,
+  restaurantId: string,
+  backup: Array<Record<string, unknown>>,
+): Promise<void> {
+  const { error: deleteError } = await admin.from('restaurant_roles').delete().eq('restaurant_id', restaurantId)
+  if (deleteError) throw deleteError
+  if (backup.length === 0) return
+  const { error: insertError } = await admin.from('restaurant_roles').insert(backup)
+  if (insertError) throw insertError
 }
