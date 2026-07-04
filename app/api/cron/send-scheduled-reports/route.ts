@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getReportData } from '@/lib/reports/get-report-data'
 import { generateCsv } from '@/lib/reports/generate-csv'
+import { generatePdfBlob } from '@/lib/reports/generate-pdf-lib'
 import { getResend } from '@/lib/email/resend'
-import { PDF_EMAIL_UNAVAILABLE_MESSAGE } from '@/lib/reports/pdf-email-unavailable'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -47,27 +47,27 @@ export async function GET(request: Request) {
     const reportPeriod = yesterday.toISOString().split('T')[0] // YYYY-MM-DD
 
     try {
-      let deliveryFormat = schedule.format
-      if (deliveryFormat === 'pdf') {
-        console.warn(
-          `[CRON] Schedule ${schedule.id} (${schedule.email}) is PDF — ${PDF_EMAIL_UNAVAILABLE_MESSAGE} Sending CSV instead and updating schedule.`
-        )
-        deliveryFormat = 'csv'
-        await supabase
-          .from('report_schedules')
-          .update({ format: 'csv' })
-          .eq('id', schedule.id)
-      }
-
       const report = await getReportData({
         restaurantId: schedule.restaurant_id,
         startDate: reportPeriod,
         endDate: reportPeriod,
       })
 
-      const attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
-      const attachmentName = `flashtap-report-${reportPeriod}.csv`
-      const attachmentType = 'text/csv'
+      const isPdf = schedule.format === 'pdf'
+      let attachmentContent: string
+      let attachmentName: string
+      let attachmentType: string
+
+      if (isPdf) {
+        const pdfBlob = await generatePdfBlob(report)
+        attachmentContent = Buffer.from(await pdfBlob.arrayBuffer()).toString('base64')
+        attachmentName = `flashtap-report-${reportPeriod}.pdf`
+        attachmentType = 'application/pdf'
+      } else {
+        attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
+        attachmentName = `flashtap-report-${reportPeriod}.csv`
+        attachmentType = 'text/csv'
+      }
 
       const resend = getResend()
       await resend.emails.send({

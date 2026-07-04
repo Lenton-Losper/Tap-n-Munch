@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { getReportData } from '@/lib/reports/get-report-data'
 import { generateCsv } from '@/lib/reports/generate-csv'
+import { generatePdfBlob } from '@/lib/reports/generate-pdf-lib'
 import { getResend } from '@/lib/email/resend'
-import { PDF_EMAIL_UNAVAILABLE_MESSAGE } from '@/lib/reports/pdf-email-unavailable'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,7 +12,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = await getUserFromRequest(request)
+    await getUserFromRequest(request)
     const { id } = await params
 
     const body = await request.json()
@@ -23,9 +23,6 @@ export async function POST(
     }
     if (!['pdf', 'csv'].includes(format)) {
       return NextResponse.json({ error: 'format must be pdf or csv' }, { status: 400 })
-    }
-    if (format === 'pdf') {
-      return NextResponse.json({ error: PDF_EMAIL_UNAVAILABLE_MESSAGE }, { status: 503 })
     }
     if (!startDate || !endDate) {
       return NextResponse.json({ error: 'startDate and endDate are required' }, { status: 400 })
@@ -43,9 +40,16 @@ export async function POST(
     let attachmentName: string
     let attachmentType: string
 
-    attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
-    attachmentName = `flashtap-report-${startDate}-to-${endDate}.csv`
-    attachmentType = 'text/csv'
+    if (format === 'pdf') {
+      const pdfBlob = await generatePdfBlob(report)
+      attachmentContent = Buffer.from(await pdfBlob.arrayBuffer()).toString('base64')
+      attachmentName = `flashtap-report-${startDate}-to-${endDate}.pdf`
+      attachmentType = 'application/pdf'
+    } else {
+      attachmentContent = Buffer.from(generateCsv(report)).toString('base64')
+      attachmentName = `flashtap-report-${startDate}-to-${endDate}.csv`
+      attachmentType = 'text/csv'
+    }
 
     const periodLabel = startDate === endDate
       ? startDate

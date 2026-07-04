@@ -596,38 +596,22 @@ export function SettingsRestaurantTab() {
             <div className="space-y-2">
               <Label>Format</Label>
               <div className="flex gap-3">
-                {(['csv', 'pdf'] as const).map((fmt) => {
-                  const pdfUnavailable = fmt === 'pdf'
-                  return (
-                    <button
-                      key={fmt}
-                      type="button"
-                      disabled={addingSchedule || pdfUnavailable}
-                      title={
-                        pdfUnavailable
-                          ? 'PDF scheduled reports are temporarily unavailable — CSV is sent instead'
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (!pdfUnavailable) setNewScheduleFormat(fmt)
-                      }}
-                      className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
-                        pdfUnavailable
-                          ? 'cursor-not-allowed border-[#E9E9E7] bg-[#F7F6F3] text-[#9B9890] line-through'
-                          : newScheduleFormat === fmt
-                            ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
-                            : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
-                      }`}
-                    >
-                      {fmt.toUpperCase()}
-                      {pdfUnavailable ? ' (unavailable)' : ''}
-                    </button>
-                  )
-                })}
+                {(['csv', 'pdf'] as const).map((fmt) => (
+                  <button
+                    key={fmt}
+                    type="button"
+                    disabled={addingSchedule}
+                    onClick={() => setNewScheduleFormat(fmt)}
+                    className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+                      newScheduleFormat === fmt
+                        ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
+                        : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
+                    }`}
+                  >
+                    {fmt.toUpperCase()}
+                  </button>
+                ))}
               </div>
-              <p className="text-xs text-[#6B675F]">
-                Scheduled PDF reports are temporarily unavailable; new schedules use CSV.
-              </p>
             </div>
 
             <div className="space-y-2">
