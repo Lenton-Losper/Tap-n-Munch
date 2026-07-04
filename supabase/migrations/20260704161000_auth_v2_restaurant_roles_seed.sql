@@ -1,0 +1,100 @@
+-- Authorization v2 Phase 2: seed restaurant_roles for every existing restaurant.
+-- Permissions must match role-permissions.config.json exactly (1:1 data fidelity).
+
+INSERT INTO public.restaurant_roles (restaurant_id, role_slug, display_name, permissions, is_system)
+SELECT
+  r.id,
+  seed.role_slug,
+  seed.display_name,
+  seed.permissions,
+  seed.is_system
+FROM public.restaurants r
+CROSS JOIN (
+  VALUES
+    (
+      'owner',
+      'Owner',
+      ARRAY[
+        'orders:read',
+        'orders:update',
+        'orders:delete',
+        'menu:read',
+        'menu:write',
+        'tables:read',
+        'tables:manage',
+        'payments:process',
+        'staff:manage',
+        'settings:read',
+        'settings:write',
+        'stock:view',
+        'stock:receive',
+        'stock:adjust',
+        'stock:view_costs',
+        'stock:delete_grv',
+        'recipe:view',
+        'recipe:edit'
+      ]::text[],
+      true
+    ),
+    (
+      'manager',
+      'Manager',
+      ARRAY[
+        'orders:read',
+        'orders:update',
+        'menu:read',
+        'menu:write',
+        'tables:read',
+        'tables:manage',
+        'payments:process',
+        'staff:manage',
+        'settings:read',
+        'stock:view',
+        'stock:receive',
+        'stock:adjust',
+        'recipe:view',
+        'recipe:edit'
+      ]::text[],
+      false
+    ),
+    (
+      'cashier',
+      'Cashier',
+      ARRAY[
+        'orders:read',
+        'tables:read',
+        'payments:process'
+      ]::text[],
+      false
+    ),
+    (
+      'waiter',
+      'Waiter',
+      ARRAY[
+        'orders:read',
+        'orders:update',
+        'tables:read',
+        'tables:manage'
+      ]::text[],
+      false
+    ),
+    (
+      'kitchen',
+      'Kitchen',
+      ARRAY[
+        'orders:read',
+        'orders:update',
+        'stock:view'
+      ]::text[],
+      false
+    ),
+    (
+      'bar',
+      'Bar',
+      ARRAY[
+        'stock:view'
+      ]::text[],
+      false
+    )
+) AS seed(role_slug, display_name, permissions, is_system)
+ON CONFLICT (restaurant_id, role_slug) DO NOTHING;

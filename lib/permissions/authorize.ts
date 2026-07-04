@@ -66,9 +66,38 @@ export async function getUserRole(
 }
 
 /**
+ * Resolve default permissions for a role from restaurant_roles.
+ * Falls back to static ROLE_PERMISSIONS when no DB row exists (seeding gap).
+ */
+export async function getRolePermissions(
+  restaurantId: string,
+  roleSlug: string,
+): Promise<Permission[]> {
+  const supabase = createServerSupabaseClient()
+
+  const { data, error } = await supabase
+    .from('restaurant_roles')
+    .select('permissions')
+    .eq('restaurant_id', restaurantId)
+    .eq('role_slug', roleSlug)
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (data?.permissions) {
+    return data.permissions as Permission[]
+  }
+
+  console.warn(
+    `[authorize] restaurant_roles missing for restaurant=${restaurantId} role=${roleSlug}; falling back to static ROLE_PERMISSIONS`,
+  )
+  return ROLE_PERMISSIONS[roleSlug] ?? []
+}
+
+/**
  * Check if a user has a specific permission for a restaurant.
  * 1. Resolves role from DB
- * 2. Applies default role permissions from code
+ * 2. Applies default role permissions from restaurant_roles (JSON fallback)
  * 3. Applies per-user overrides from staff_permissions
  */
 export async function authorize(
@@ -81,8 +110,7 @@ export async function authorize(
   const role = await getUserRole(userId, restaurantId)
   if (!role) return false
 
-  // Get default permissions for this role
-  const defaultPerms = ROLE_PERMISSIONS[role] ?? []
+  const defaultPerms = await getRolePermissions(restaurantId, role)
   let allowed = defaultPerms.includes(permission)
 
   // Apply per-user overrides from staff_permissions (keyed by staff_members.id)

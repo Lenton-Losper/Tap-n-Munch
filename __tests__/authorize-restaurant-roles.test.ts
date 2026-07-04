@@ -1,0 +1,180 @@
+import { authorize, getRolePermissions } from '@/lib/permissions/authorize'
+import { PERMISSIONS, ROLE_PERMISSIONS } from '@/lib/permissions'
+import {
+  STAGING_TEST_RESTAURANT_ID,
+  STAGING_TEST_USER_ID,
+  cleanupStagingStaffMember,
+  createStagingAdmin,
+  ensureStagingKitchenTestUser,
+  ensureStagingStaffMember,
+} from './helpers/staging-auth-fixtures'
+
+const admin = createStagingAdmin()
+
+jest.mock('@/lib/supabase/server', () => ({
+  createServerSupabaseClient: () => admin,
+}))
+
+describe('authorize() with restaurant_roles (staging Phase 2)', () => {
+  beforeAll(async () => {
+    await ensureStagingKitchenTestUser(admin)
+  })
+
+  test('kitchen user permissions match JSON baseline via DB', async () => {
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.RECIPE_EDIT)).toBe(
+      false,
+    )
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_VIEW)).toBe(
+      true,
+    )
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.ORDERS_UPDATE)).toBe(
+      true,
+    )
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_RECEIVE)).toBe(
+      false,
+    )
+  })
+
+  test('owner permissions match JSON baseline via DB', async () => {
+    const { data: ownerRow } = await admin
+      .from('restaurant_users')
+      .select('user_id')
+      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+      .eq('role', 'owner')
+      .maybeSingle()
+
+    if (!ownerRow?.user_id) {
+      console.warn('No owner row on staging Riviera — skipping owner regression checks')
+      return
+    }
+
+    const ownerId = String(ownerRow.user_id)
+    expect(await authorize(ownerId, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.SETTINGS_WRITE)).toBe(true)
+    expect(await authorize(ownerId, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_RECEIVE)).toBe(true)
+  })
+
+  test('manager stock:receive matches JSON baseline via DB', async () => {
+    const { data: managerRow } = await admin
+      .from('restaurant_users')
+      .select('user_id')
+      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+      .eq('role', 'manager')
+      .maybeSingle()
+
+    if (!managerRow?.user_id) {
+      console.warn('No manager row on staging Riviera — skipping manager regression check')
+      return
+    }
+
+    expect(
+      await authorize(String(managerRow.user_id), STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_RECEIVE),
+    ).toBe(true)
+  })
+})
+
+describe('staff_permissions overrides on DB-backed defaults (staging Phase 2)', () => {
+  let staffMemberId: string | null = null
+
+  beforeAll(async () => {
+    await ensureStagingKitchenTestUser(admin)
+    staffMemberId = await ensureStagingStaffMember(admin)
+  })
+
+  afterAll(async () => {
+    if (!staffMemberId) return
+    await cleanupStagingStaffMember(admin, staffMemberId)
+    staffMemberId = null
+  })
+
+  beforeEach(async () => {
+    if (!staffMemberId) return
+    await admin.from('staff_permissions').delete().eq('staff_id', staffMemberId)
+  })
+
+  test('allow override grants permission not in role defaults', async () => {
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.RECIPE_VIEW)).toBe(
+      false,
+    )
+
+    const { error } = await admin.from('staff_permissions').insert({
+      staff_id: staffMemberId,
+      restaurant_id: STAGING_TEST_RESTAURANT_ID,
+      permission: PERMISSIONS.RECIPE_VIEW,
+      effect: 'allow',
+    })
+    expect(error).toBeNull()
+
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.RECIPE_VIEW)).toBe(
+      true,
+    )
+  })
+
+  test('deny override revokes permission', async () => {
+    const { error } = await admin.from('staff_permissions').insert({
+      staff_id: staffMemberId,
+      restaurant_id: STAGING_TEST_RESTAURANT_ID,
+      permission: PERMISSIONS.STOCK_VIEW,
+      effect: 'deny',
+    })
+    expect(error).toBeNull()
+
+    expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_VIEW)).toBe(
+      false,
+    )
+  })
+})
+
+describe('JSON fallback when restaurant_roles missing (staging Phase 2)', () => {
+  let backup: Array<Record<string, unknown>> = []
+
+  beforeAll(async () => {
+    await ensureStagingKitchenTestUser(admin)
+
+    const { data, error } = await admin
+      .from('restaurant_roles')
+      .select('*')
+      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+
+    if (error) throw error
+    backup = data ?? []
+  })
+
+  afterAll(async () => {
+    await admin.from('restaurant_roles').delete().eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+    if (backup.length > 0) {
+      const { error } = await admin.from('restaurant_roles').insert(backup)
+      if (error) throw error
+    }
+  })
+
+  test('getRolePermissions and authorize fall back to JSON with warning', async () => {
+    const { error: deleteError } = await admin
+      .from('restaurant_roles')
+      .delete()
+      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+
+    expect(deleteError).toBeNull()
+
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+      originalWarn(...args)
+    }
+
+    try {
+      const perms = await getRolePermissions(STAGING_TEST_RESTAURANT_ID, 'kitchen')
+      expect([...perms].sort()).toEqual([...(ROLE_PERMISSIONS.kitchen ?? [])].sort())
+      expect(warnings.some((w) => w.includes('restaurant_roles missing'))).toBe(true)
+      expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_VIEW)).toBe(
+        true,
+      )
+    } finally {
+      console.warn = originalWarn
+      await admin.from('restaurant_roles').delete().eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+      if (backup.length > 0) {
+        await admin.from('restaurant_roles').insert(backup)
+      }
+    }
+  })
+})

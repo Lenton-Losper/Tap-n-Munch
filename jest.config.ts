@@ -6,6 +6,7 @@ const config: Config = {
   setupFiles: [require.resolve('./jest.setup-env.ts')],
   testMatch: ['**/__tests__/**/*.test.ts'],
   testTimeout: 15000,
+  maxWorkers: 1,
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },

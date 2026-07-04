@@ -49,11 +49,10 @@ export const PERMISSIONS = {
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
 
 /**
- * Default permissions per role.
- * These are application-level defaults — they live in code, not the DB.
+ * Static fallback permissions per role (role-permissions.config.json).
+ * Primary source is restaurant_roles in the DB (Authorization v2 Phase 2).
+ * authorize() falls back here when no restaurant_roles row exists.
  * Per-user exceptions are stored in staff_permissions and applied on top.
- *
- * Role → capability mapping is defined in role-permissions.config.json.
  */
 export const ROLE_PERMISSIONS: Record<string, Permission[]> = Object.fromEntries(
   Object.entries(rolePermissionsConfig).filter(([key]) => !key.startsWith('$')),
