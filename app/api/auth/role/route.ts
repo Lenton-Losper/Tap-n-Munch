@@ -1,24 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { parseStaffRole } from '@/lib/permissions/staff-role'
 
 export const dynamic = 'force-dynamic'
-
-type StaffRole = 'owner' | 'manager' | 'waiter' | 'kitchen' | 'bar'
-
-function parseStaffRole(value: unknown): StaffRole | null {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (
-    normalized === 'owner' ||
-    normalized === 'manager' ||
-    normalized === 'waiter' ||
-    normalized === 'kitchen' ||
-    normalized === 'bar'
-  ) {
-    return normalized
-  }
-  return null
-}
 
 export async function GET(request: Request) {
   try {

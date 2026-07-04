@@ -81,6 +81,7 @@ const NAV_ITEMS = [
 const ROLE_LABELS: Record<StaffRole, string> = {
   owner: 'Owner',
   manager: 'Manager',
+  cashier: 'Cashier',
   waiter: 'Waiter',
   kitchen: 'Kitchen',
   bar: 'Bar',

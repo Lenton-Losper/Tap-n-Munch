@@ -10,7 +10,7 @@ export const VALID_ORDER_STATUSES = ['pending', 'accepted', 'ready', 'completed'
 export const VALID_SETTLED_TYPES = ['cash', 'card', 'split', 'qr', 'manual_close'];
 export const CHOWNOW_ID = 'b161c758-582d-4dfa-839a-9fa35c492a49';
 export const CHOWNOW_KIOSK_TABLE_ID = '0cc87cbf-dc65-4687-9bcc-ab2cf1a20952';
-export const VALID_ROLES = ['owner', 'manager', 'cashier', 'waiter', 'kitchen'];
+export const VALID_ROLES = ['owner', 'manager', 'cashier', 'waiter', 'kitchen', 'bar'];
 export const VALID_PAYMENT_METHODS = ['cash', 'card', 'hosted_checkout', 'eft', 'voucher', 'mobile_money'];
 export const VALID_FEATURE_KEYS = [
   'kitchen_enabled', 'inventory_enabled', 'analytics_enabled',

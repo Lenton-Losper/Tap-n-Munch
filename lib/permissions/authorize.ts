@@ -3,6 +3,38 @@ import { ROLE_PERMISSIONS, Permission } from './index'
 import { NextResponse } from 'next/server'
 
 /**
+ * staff_permissions.staff_id references staff_members.id (not users.id).
+ * staff_members links to auth users by email + restaurant_id — there is no user_id column.
+ */
+export async function resolveStaffMemberId(
+  userId: string,
+  restaurantId: string,
+): Promise<string | null> {
+  const supabase = createServerSupabaseClient()
+
+  const { data: userRow, error: userError } = await supabase
+    .from('users')
+    .select('email')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (userError) throw userError
+
+  const email = String(userRow?.email || '').trim().toLowerCase()
+  if (!email) return null
+
+  const { data: member, error: memberError } = await supabase
+    .from('staff_members')
+    .select('id')
+    .eq('restaurant_id', restaurantId)
+    .ilike('email', email)
+    .maybeSingle()
+
+  if (memberError) throw memberError
+  return member?.id ? String(member.id) : null
+}
+
+/**
  * Resolve a user's role for a given restaurant.
  * Checks restaurant_users table. Falls back to restaurants.owner_id.
  */
@@ -53,16 +85,21 @@ export async function authorize(
   const defaultPerms = ROLE_PERMISSIONS[role] ?? []
   let allowed = defaultPerms.includes(permission)
 
-  // Apply per-user overrides from staff_permissions
-  const { data: overrides } = await supabase
-    .from('staff_permissions')
-    .select('permission, effect')
-    .eq('staff_id', userId)
-    .eq('permission', permission)
+  // Apply per-user overrides from staff_permissions (keyed by staff_members.id)
+  const staffMemberId = await resolveStaffMemberId(userId, restaurantId)
+  if (staffMemberId) {
+    const { data: overrides, error: overrideError } = await supabase
+      .from('staff_permissions')
+      .select('permission, effect')
+      .eq('staff_id', staffMemberId)
+      .eq('permission', permission)
+      .eq('restaurant_id', restaurantId)
 
-  if (overrides && overrides.length > 0) {
-    const override = overrides[0]
-    allowed = override.effect === 'allow'
+    if (overrideError) throw overrideError
+
+    if (overrides && overrides.length > 0) {
+      allowed = overrides[0].effect === 'allow'
+    }
   }
 
   return allowed

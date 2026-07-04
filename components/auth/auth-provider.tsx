@@ -11,8 +11,9 @@ import {
 } from '@/lib/supabase/auth'
 import { supabase } from '@/lib/supabase/client'
 import { syncAuthProfile } from '@/lib/supabase/sync-profile'
+import { parseStaffRole, type StaffRole } from '@/lib/permissions/staff-role'
 
-export type StaffRole = 'owner' | 'manager' | 'waiter' | 'kitchen' | 'bar'
+export type { StaffRole }
 
 interface AuthContextType {
   user: User | null
@@ -42,20 +43,6 @@ const AuthContext = createContext<AuthContextType>({
 
 const RESTAURANT_SELECT =
   'id, name, phone, owner_id, subscription_status, subscription_tier, logo_url, updated_at'
-
-function parseStaffRole(value: unknown): StaffRole | null {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (
-    normalized === 'owner' ||
-    normalized === 'manager' ||
-    normalized === 'waiter' ||
-    normalized === 'kitchen' ||
-    normalized === 'bar'
-  ) {
-    return normalized
-  }
-  return null
-}
 
 const isSupabaseEnvConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
