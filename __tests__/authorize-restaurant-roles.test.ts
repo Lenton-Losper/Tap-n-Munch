@@ -16,11 +16,24 @@ jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => admin,
 }))
 
-describe('authorize() with restaurant_roles (staging Phase 2)', () => {
-  beforeAll(async () => {
-    await ensureStagingKitchenTestUser(admin)
-  })
+let sharedStaffMemberId: string | null = null
 
+/** Runs before every describe — clears stray staff_permissions from ad-hoc scripts or prior runs. */
+beforeAll(async () => {
+  await ensureStagingKitchenTestUser(admin)
+  sharedStaffMemberId = await ensureStagingStaffMember(admin)
+  await clearStagingStaffPermissionOverrides(admin, sharedStaffMemberId)
+})
+
+beforeEach(async () => {
+  if (!sharedStaffMemberId) {
+    await ensureStagingKitchenTestUser(admin)
+    sharedStaffMemberId = await ensureStagingStaffMember(admin)
+  }
+  await clearStagingStaffPermissionOverrides(admin, sharedStaffMemberId)
+})
+
+describe('authorize() with restaurant_roles (staging Phase 2)', () => {
   test('kitchen user permissions match JSON baseline via DB', async () => {
     expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.RECIPE_EDIT)).toBe(
       false,

@@ -41,6 +41,14 @@ async function main() {
     .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
     .ilike('email', 'staging.kitchen.test@gmail.com')
 
+  if ((members?.length ?? 0) > 0) {
+    const keep = members![0].id
+    const allIds = members!.map((m) => m.id)
+    const { error: permClearError } = await admin.from('staff_permissions').delete().in('staff_id', allIds)
+    if (permClearError) throw permClearError
+    console.log(`cleared staff_permissions for ${allIds.length} test staff member row(s)`)
+  }
+
   if ((members?.length ?? 0) > 1) {
     const keep = members![0].id
     const extra = members!.slice(1).map((m) => m.id)
