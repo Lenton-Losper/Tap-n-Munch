@@ -48,7 +48,7 @@ jobs:
           done
           echo "wrangler.production.toml custom domain routes OK"
       - name: Deploy to flashtap-production
-        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }}
+        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }} --var NEXT_PUBLIC_COMMIT_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
