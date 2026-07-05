@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { randomUUID } from 'crypto'
 import { PERMISSIONS } from '../lib/permissions'
+import rolePermissionsConfig from '../lib/permissions/role-permissions.config.json'
 
 config({ path: '.env.test', override: true })
 
@@ -70,6 +71,31 @@ function assert(condition: boolean, message: string) {
   if (!condition) throw new Error(message)
 }
 
+async function seedRestaurantRoles(restaurantId: string) {
+  const ownerPerms = (rolePermissionsConfig as Record<string, string[]>).owner
+  const managerPerms = (rolePermissionsConfig as Record<string, string[]>).manager
+  const { error } = await dbAdmin.from('restaurant_roles').upsert(
+    [
+      {
+        restaurant_id: restaurantId,
+        role_slug: 'owner',
+        display_name: 'Owner',
+        permissions: ownerPerms,
+        is_system: true,
+      },
+      {
+        restaurant_id: restaurantId,
+        role_slug: 'manager',
+        display_name: 'Manager',
+        permissions: managerPerms,
+        is_system: false,
+      },
+    ],
+    { onConflict: 'restaurant_id,role_slug' },
+  )
+  if (error) throw error
+}
+
 async function seed() {
   const { data: restA, error: restAErr } = await dbAdmin
     .from('restaurants')
@@ -86,6 +112,9 @@ async function seed() {
     .single()
   if (restBErr) throw restBErr
   restBId = restB.id
+
+  await seedRestaurantRoles(restAId!)
+  await seedRestaurantRoles(restBId!)
 
   for (const [email, restId, role] of [
     [ownerAEmail, restAId, 'owner'],
@@ -111,11 +140,13 @@ async function seed() {
       name: email.split('@')[0],
     })
 
-    await dbAdmin.from('restaurant_users').insert({
+    const { error: ruError } = await dbAdmin.from('restaurant_users').insert({
       user_id: userId,
       restaurant_id: restId,
       role,
+      invite_accepted: true,
     })
+    if (ruError) throw ruError
   }
 
   const { data: category, error: catErr } = await dbAdmin
@@ -162,8 +193,16 @@ async function cleanup() {
   for (const id of [ownerAId, ownerBId, managerAId]) {
     if (id) await authAdmin.auth.admin.deleteUser(id)
   }
-  if (restAId) await dbAdmin.from('restaurants').delete().eq('id', restAId)
-  if (restBId) await dbAdmin.from('restaurants').delete().eq('id', restBId)
+  if (restAId) {
+    await dbAdmin.from('restaurant_users').delete().eq('restaurant_id', restAId)
+    await dbAdmin.from('restaurant_roles').delete().eq('restaurant_id', restAId)
+    await dbAdmin.from('restaurants').delete().eq('id', restAId)
+  }
+  if (restBId) {
+    await dbAdmin.from('restaurant_users').delete().eq('restaurant_id', restBId)
+    await dbAdmin.from('restaurant_roles').delete().eq('restaurant_id', restBId)
+    await dbAdmin.from('restaurants').delete().eq('id', restBId)
+  }
 }
 
 async function main() {
@@ -227,7 +266,7 @@ async function main() {
     )
     assert(
       crossSub.status === 403,
-      `cross-tenant subcategory: expected 403, got ${crossSub.status}`,
+      `cross-tenant subcategory: expected 403, got ${crossSub.status} ${JSON.stringify(crossSub.json)}`,
     )
 
     console.log('OK cross-tenant blocked (403)')

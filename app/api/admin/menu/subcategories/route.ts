@@ -29,7 +29,15 @@ export async function POST(request: Request) {
     }
 
     const supabase = createServerSupabaseClient()
-    const callerRestaurantId = await getRestaurantIdForUser(supabase, user.id)
+    let callerRestaurantId: string
+    try {
+      callerRestaurantId = await getRestaurantIdForUser(supabase, user.id)
+    } catch {
+      return NextResponse.json(
+        { error: 'Restaurant not found for this account.' },
+        { status: 403 },
+      )
+    }
 
     const denied = await requirePermission(user.id, callerRestaurantId, PERMISSIONS.MENU_WRITE)
     if (denied) return denied
@@ -70,7 +78,16 @@ export async function POST(request: Request) {
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      const msg = String((error as { message?: string }).message || '')
+      if (msg.includes('foreign key') || msg.includes('violates')) {
+        return NextResponse.json(
+          { error: 'Category not found for this restaurant' },
+          { status: 403 },
+        )
+      }
+      throw error
+    }
     return NextResponse.json({ success: true, data })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to create sub-category'
