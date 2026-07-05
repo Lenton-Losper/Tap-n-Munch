@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  getRestaurantIdForUser,
-  getUserFromRequest,
-  assertRestaurantOwner,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 import {
   generateTerminalActivationCode,
   pendingTerminalDeviceId,
@@ -40,7 +38,8 @@ export async function GET(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantOwner(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     const { data, error } = await supabase
       .from('restaurant_terminals')
@@ -85,7 +84,8 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantOwner(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     const code = generateTerminalActivationCode()
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()

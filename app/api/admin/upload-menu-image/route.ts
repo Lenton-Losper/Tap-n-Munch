@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
-  assertRestaurantAdmin,
   getUserFromRequest,
+  requireCallerRestaurantId,
   resolveRestaurantId,
 } from '@/lib/supabase/admin-restaurant-auth'
 import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
 import { uploadImageServer } from '@/lib/supabase/storage-server'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,8 +34,17 @@ export async function POST(request: Request) {
     }
 
     const supabase = createServerSupabaseClient()
-    const restaurantId = await resolveRestaurantId(supabase, restaurantIdRaw)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const resolvedRestaurantId = await resolveRestaurantId(supabase, restaurantIdRaw)
+    const restaurantCheck = await requireCallerRestaurantId(
+      supabase,
+      user.id,
+      resolvedRestaurantId,
+    )
+    if (restaurantCheck instanceof NextResponse) return restaurantCheck
+    const restaurantId = restaurantCheck
+
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.MENU_WRITE)
+    if (denied) return denied
 
     const timestamp = Date.now()
     const randomString = Math.random().toString(36).slice(2, 10)

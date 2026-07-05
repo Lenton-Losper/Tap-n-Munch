@@ -159,7 +159,7 @@ function ActionButtonContent({
 }
 
 export function OrdersDashboard() {
-  const { user, restaurantId, restaurant, role } = useAuth()
+  const { user, restaurantId, restaurant } = useAuth()
   const { hasPermission, permissionsLoaded } = usePermissions()
   const router = useRouter()
   const { toast } = useToast()
