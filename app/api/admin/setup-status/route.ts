@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
     if (denied) return denied
 
     await ensureSetupStatusRow(supabase, restaurantId)
@@ -66,7 +66,7 @@ export async function PATCH(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
     if (denied) return denied
 
     await markSetupStepComplete(supabase, restaurantId, flag as never)

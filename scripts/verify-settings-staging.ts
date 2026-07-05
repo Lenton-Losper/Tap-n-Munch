@@ -261,6 +261,10 @@ async function main() {
     body: JSON.stringify({ restaurantId: restAId, updates: { name: `${tag} A Updated` } }),
   })
 
+  const ownerSetupGet = await fetch(`${APP}/api/admin/setup-status`, {
+    headers: { Authorization: `Bearer ${ownerAToken}` },
+  })
+
   const managerSetupGet = await fetch(`${APP}/api/admin/setup-status`, {
     headers: { Authorization: `Bearer ${managerToken}` },
   })
@@ -272,6 +276,9 @@ async function main() {
     headers: { Authorization: `Bearer ${managerToken}` },
   })
 
+  const waiterSetupGet = await fetch(`${APP}/api/admin/setup-status`, {
+    headers: { Authorization: `Bearer ${waiterToken}` },
+  })
   const waiterSettingsPage = await fetchSettingsPage(waiterToken)
   const waiterTerminals = await fetch(`${APP}/api/admin/terminals/list`, {
     headers: { Authorization: `Bearer ${waiterToken}` },
@@ -310,6 +317,7 @@ async function main() {
   })
 
   report.owner = {
+    setupStatusGet: ownerSetupGet.status,
     terminalsList: ownerTerminals.status,
     finaticPatch: ownerFinatic.status,
     settingsPageBlocked: ownerSettingsPage.rscRedirect,
@@ -319,8 +327,8 @@ async function main() {
 
   report.manager = {
     setupStatusGet: managerSetupGet.status,
-    setupStatusRegression:
-      'REGRESSION: setup-status was owner+manager (assertRestaurantAdmin); now PAYMENTS_CONFIGURE (owner only) — manager loses API access',
+    setupStatusNote:
+      'setup-status uses SETTINGS_WRITE — owner and manager both have settings:write (restores pre-migration assertRestaurantAdmin access)',
     terminalsList: managerTerminals.status,
     settingsPageStatus: managerSettingsPage.status,
     settingsPageBlocked: managerSettingsPage.rscRedirect,
@@ -330,6 +338,7 @@ async function main() {
   }
 
   report.waiter = {
+    setupStatusGet: waiterSetupGet.status,
     settingsPageBlocked: waiterSettingsPage.rscRedirect,
     settingsPageStatus: waiterSettingsPage.status,
     settingsPageLocation: waiterSettingsPage.location,
@@ -364,13 +373,15 @@ async function main() {
 
   const pass =
     seed.pass &&
+    owner.setupStatusGet === 200 &&
     owner.terminalsList === 200 &&
     owner.finaticPatch === 200 &&
     owner.reportSchedulesGet === 200 &&
     owner.profileSettingsPost === 200 &&
-    manager.setupStatusGet === 403 &&
+    manager.setupStatusGet === 200 &&
     manager.terminalsList === 403 &&
     manager.reportSchedulesGet === 200 &&
+    waiter.setupStatusGet === 403 &&
     waiter.terminalsListBeforeOverride === 403 &&
     override.terminalsList === 200 &&
     override.generateCode === 403 &&
