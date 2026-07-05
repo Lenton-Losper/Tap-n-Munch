@@ -33,6 +33,7 @@
     "payments:process",
     "staff:manage",
     "settings:read",
+    "settings:write",
     "stock:view",
     "stock:receive",
     "stock:adjust",
