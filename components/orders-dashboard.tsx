@@ -30,7 +30,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { getAccessToken, onboardingFetch } from '@/lib/onboarding/api-client'
-import { orderMatchesStation } from '@/lib/order-routing'
+import {
+  filterOrdersByStationScope,
+  orderVisibleForStationScope,
+} from '@/lib/order-routing'
+import { usePermissions } from '@/hooks/use-permissions'
+import { PERMISSIONS } from '@/lib/permissions'
 
 async function markFirstPaymentSetupComplete() {
   try {
@@ -155,6 +160,7 @@ function ActionButtonContent({
 
 export function OrdersDashboard() {
   const { user, restaurantId, restaurant, role } = useAuth()
+  const { hasPermission, permissionsLoaded } = usePermissions()
   const router = useRouter()
   const { toast } = useToast()
   const toastRef = useRef(toast)
@@ -479,15 +485,19 @@ export function OrdersDashboard() {
     void fetchCompleted()
   }, [activeTab, dashboardRestaurantId])
 
+  const stationScope = useMemo(
+    () => ({
+      hasKitchenStation:
+        permissionsLoaded && hasPermission(PERMISSIONS.ORDERS_STATION_KITCHEN),
+      hasBarStation: permissionsLoaded && hasPermission(PERMISSIONS.ORDERS_STATION_BAR),
+    }),
+    [permissionsLoaded, hasPermission]
+  )
+
   const stationFilteredOrders = useMemo(() => {
-    if (role === 'kitchen') {
-      return allOrders.filter((order) => orderMatchesStation(order, 'kitchen'))
-    }
-    if (role === 'bar') {
-      return allOrders.filter((order) => orderMatchesStation(order, 'bar'))
-    }
-    return allOrders
-  }, [allOrders, role])
+    if (!permissionsLoaded) return allOrders
+    return filterOrdersByStationScope(allOrders, stationScope)
+  }, [allOrders, stationScope, permissionsLoaded])
 
   const mergedSourceOrders = useMemo(() => {
     if (activeTab === 'pending_payment') {
@@ -506,8 +516,7 @@ export function OrdersDashboard() {
       const fromRealtime = stationFilteredOrders.filter((order) => order.status === 'completed')
       const merged = [...fromRealtime]
       for (const order of completedOrders) {
-        if (role === 'kitchen' && !orderMatchesStation(order, 'kitchen')) continue
-        if (role === 'bar' && !orderMatchesStation(order, 'bar')) continue
+        if (!orderVisibleForStationScope(order, stationScope)) continue
         if (!merged.find((existing) => existing.id === order.id)) {
           merged.push(order)
         }
@@ -517,7 +526,7 @@ export function OrdersDashboard() {
     const mappedStatus = supabaseStatusForTab(activeTab)
     if (!mappedStatus) return []
     return stationFilteredOrders.filter((order) => order.status === mappedStatus)
-  }, [activeTab, stationFilteredOrders, completedOrders, role])
+  }, [activeTab, stationFilteredOrders, completedOrders, stationScope])
 
   const tabCounts = useMemo(() => {
     const newCandidates = stationFilteredOrders.filter(

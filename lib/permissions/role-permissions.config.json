@@ -55,9 +55,12 @@
   "kitchen": [
     "orders:read",
     "orders:update",
-    "stock:view"
+    "stock:view",
+    "orders:station:kitchen"
   ],
   "bar": [
-    "stock:view"
+    "stock:view",
+    "orders:read",
+    "orders:station:bar"
   ]
 }
