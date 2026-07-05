@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from './server'
 
 function isUuid(value: string) {
@@ -154,4 +155,33 @@ export async function getRestaurantIdForUser(
     throw new Error('Restaurant not found for this account')
   }
   return String(membership.restaurant_id)
+}
+
+/**
+ * Ensures a requested restaurant id matches the caller's linked restaurant.
+ * Returns 403 on mismatch (does not substitute the caller's id silently).
+ */
+export async function requireCallerRestaurantId(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  userId: string,
+  requestedRestaurantId: string,
+): Promise<string | NextResponse> {
+  const callerRestaurantId = await getRestaurantIdForUser(supabase, userId)
+  let resolvedRequestedId: string
+  try {
+    resolvedRequestedId = await resolveRestaurantId(supabase, requestedRestaurantId.trim())
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Restaurant not found'
+    if (message.includes('not found')) {
+      return NextResponse.json({ error: message }, { status: 404 })
+    }
+    throw err
+  }
+  if (resolvedRequestedId !== callerRestaurantId) {
+    return NextResponse.json(
+      { error: 'You do not have permission to perform this action.' },
+      { status: 403 },
+    )
+  }
+  return callerRestaurantId
 }

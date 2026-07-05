@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import {
+  getUserFromRequest,
+  requireCallerRestaurantId,
+} from '@/lib/supabase/admin-restaurant-auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,19 +15,28 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await getUserFromRequest(request)
+    const user = await getUserFromRequest(request)
     const { id } = await params
     const supabase = createServerSupabaseClient()
+    const restaurantCheck = await requireCallerRestaurantId(supabase, user.id, id)
+    if (restaurantCheck instanceof NextResponse) return restaurantCheck
+    const restaurantId = restaurantCheck
+
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_READ)
+    if (denied) return denied
+
     const { data, error } = await supabase
       .from('report_schedules')
       .select('*')
-      .eq('restaurant_id', id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: true })
     if (error) throw error
     return NextResponse.json({ schedules: data ?? [] })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to fetch schedules'
-    return NextResponse.json({ error: message }, { status: 401 })
+    const status =
+      message.includes('authorization') || message.includes('session') ? 401 : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }
 
@@ -32,7 +46,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await getUserFromRequest(request)
+    const user = await getUserFromRequest(request)
     const { id } = await params
     const body = await request.json()
     const { email, format, send_time, timezone, enabled } = body
@@ -45,10 +59,17 @@ export async function POST(
     }
 
     const supabase = createServerSupabaseClient()
+    const restaurantCheck = await requireCallerRestaurantId(supabase, user.id, id)
+    if (restaurantCheck instanceof NextResponse) return restaurantCheck
+    const restaurantId = restaurantCheck
+
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
+    if (denied) return denied
+
     const { data, error } = await supabase
       .from('report_schedules')
       .insert({
-        restaurant_id: id,
+        restaurant_id: restaurantId,
         email,
         format,
         send_time: send_time ?? '20:00',
@@ -62,6 +83,8 @@ export async function POST(
     return NextResponse.json({ schedule: data })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to create schedule'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const status =
+      message.includes('authorization') || message.includes('session') ? 401 : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }

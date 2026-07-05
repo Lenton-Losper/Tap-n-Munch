@@ -42,4 +42,21 @@ describe('Permission enforcement', () => {
     const res = await fetch(`${BASE}/api/admin/staff`);
     expect([401, 403]).toContain(res.status);
   });
+
+  test('POST /api/admin/restaurant-settings returns 401 without auth token', async () => {
+    const res = await fetch(`${BASE}/api/admin/restaurant-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        restaurantId: RIVIERA_ID,
+        updates: { name: 'Hacked' },
+      }),
+    });
+    expect([401, 403]).toContain(res.status);
+  });
+
+  test('GET /api/admin/restaurants/[id]/report-schedules returns 401 without auth token', async () => {
+    const res = await fetch(`${BASE}/api/admin/restaurants/${RIVIERA_ID}/report-schedules`);
+    expect([401, 403]).toContain(res.status);
+  });
 });

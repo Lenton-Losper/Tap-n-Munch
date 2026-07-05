@@ -124,9 +124,17 @@ export async function updateRestaurantSettings(
   updates: Record<string, any>
 ) {
   if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('Session expired. Please sign in again.')
+    }
     const response = await fetch('/api/admin/restaurant-settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
       body: JSON.stringify({ restaurantId: restaurantIdInput, updates }),
     })
     const payload = await response.json().catch(() => ({}))
