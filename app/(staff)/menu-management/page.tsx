@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
-import { MenuManagementV2 as MenuManagement } from '@/components/menu-management-v2'
-import { RoleGuard } from '@/components/auth/role-guard'
+import { MenuManagementPageContent } from '@/components/menu-management/menu-management-page-content'
+import { requireMenuPermission } from '@/lib/menu/auth'
 import { PERMISSIONS } from '@/lib/permissions'
 import { requireRecipePermissionOrError } from '@/lib/recipes/auth'
 import { getInventorySetupOverview, type InventorySetupData } from '@/lib/recipes/queries'
@@ -11,6 +11,8 @@ type MenuManagementPageProps = {
 }
 
 export default async function MenuManagementPage({ searchParams }: MenuManagementPageProps) {
+  await requireMenuPermission(PERMISSIONS.MENU_READ)
+
   const params = await searchParams
   const missingInventoryFilter = params.missingInventory === 'true'
 
@@ -22,11 +24,9 @@ export default async function MenuManagementPage({ searchParams }: MenuManagemen
   }
 
   return (
-    <RoleGuard allowedRoles={['owner', 'manager']}>
-      <MenuManagement
-        initialInventorySetup={initialInventorySetup}
-        missingInventoryFilter={missingInventoryFilter}
-      />
-    </RoleGuard>
+    <MenuManagementPageContent
+      initialInventorySetup={initialInventorySetup}
+      missingInventoryFilter={missingInventoryFilter}
+    />
   )
 }
