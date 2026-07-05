@@ -8,6 +8,20 @@ export const PRODUCTION_PROJECT_REF = 'ihlmmpmolnpchzgwyhgh'
 const LINKED_PROJECT_REL = join('supabase', '.temp', 'linked-project.json')
 const AUDIT_LOG_REL = join('supabase', '.temp', 'safe-supabase-linked-audit.log')
 
+/** ExecSyncOptions.shell is string-only (not boolean); pick the platform shell explicitly. */
+function resolveExecShell(): string {
+  return process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh'
+}
+
+/** Run a shell command with inherited stdio (cross-platform, tsc-safe). */
+export function runShellCommand(command: string, options?: { cwd?: string }): void {
+  execSync(command, {
+    cwd: options?.cwd,
+    stdio: 'inherit',
+    shell: resolveExecShell(),
+  })
+}
+
 export class SafeSupabaseLinkedError extends Error {
   readonly exitCode: number
 
@@ -130,7 +144,7 @@ export function runSafeSupabaseLinked(
     return `"${arg.replace(/"/g, '\\"')}"`
   })
   const command = `npx supabase ${quotedArgs.join(' ')}`
-  execSync(command, { cwd, stdio: 'inherit', shell: true })
+  runShellCommand(command, { cwd })
 
   appendAuditLog(cwd, expected, linkedRef, supabaseArgs)
   console.log(

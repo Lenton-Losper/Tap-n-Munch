@@ -6,11 +6,11 @@
  * Uses scripts/lib/safe-supabase-linked.ts — see CONTRIBUTING.md.
  * Never run raw `supabase db query --linked` or `migration repair --linked`.
  */
-import { execSync } from 'child_process'
 import { config } from 'dotenv'
 import {
   STAGING_PROJECT_REF,
   runSafeSupabaseLinked,
+  runShellCommand,
 } from './lib/safe-supabase-linked'
 
 config({ path: '.env.test', override: true })
@@ -25,7 +25,7 @@ if (!url?.includes(STAGING_PROJECT_REF)) {
 function linkStaging(): void {
   const command = `npx supabase link --project-ref ${STAGING_PROJECT_REF}`
   console.log(`> ${command}`)
-  execSync(command, { stdio: 'inherit', shell: true })
+  runShellCommand(command)
 }
 
 function main(): void {
