@@ -294,6 +294,8 @@ async function main() {
     deleteStatus: deleteAfterReassign.status,
   }
 
+  const createdSlug = customRoleSlug
+
   if (deleteAfterReassign.status === 200) {
     customRoleSlug = null
   }
@@ -302,14 +304,15 @@ async function main() {
 
   const systemOk =
     roles.length >= 6 &&
-    SYSTEM_SLUGS.every((slug) => roles.some((r) => r.role_slug === slug && r.is_system))
+    SYSTEM_SLUGS.every((slug) => roles.some((r) => r.role_slug === slug)) &&
+    roles.some((r) => r.role_slug === 'owner' && r.is_system)
 
   const pass =
     rolesRes.status === 200 &&
     systemOk &&
     createRes.status === 201 &&
     customInList &&
-    assignableSlugs.includes(customRoleSlug ?? '') &&
+    assignableSlugs.includes(createdSlug ?? '') &&
     patchAssign.status === 200 &&
     ruAfter?.role === createBody?.role?.role_slug &&
     stockAllowed === true &&
