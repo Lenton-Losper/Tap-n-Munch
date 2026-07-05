@@ -5,6 +5,7 @@ import {
   getRestaurantIdForUser,
   getUserFromRequest,
 } from '@/lib/supabase/admin-restaurant-auth'
+import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { authorize, requirePermission } from '@/lib/permissions/authorize'
 import type { Permission } from '@/lib/permissions'
 
@@ -94,4 +95,38 @@ export async function requireCallerRestaurantPermission(
   if (denied) return denied
 
   return { userId: user.id, restaurantId, supabase }
+}
+
+/**
+ * Authorize against the caller's restaurant and ensure the URL restaurant id
+ * matches (after UUID resolution). Rejects cross-tenant URL manipulation.
+ */
+export async function requireUrlRestaurantPermission(
+  urlRestaurantId: string,
+  permission: Permission,
+  request: Request,
+): Promise<StaffAuthContext | NextResponse> {
+  const auth = await requireCallerRestaurantPermission(permission, request)
+  if (isAuthError(auth)) return auth
+
+  const trimmed = String(urlRestaurantId || '').trim()
+  if (!trimmed) {
+    return NextResponse.json({ error: 'Missing restaurant id' }, { status: 400 })
+  }
+
+  let resolvedUrlId: string
+  try {
+    resolvedUrlId = await resolveRestaurantUuid(trimmed)
+  } catch {
+    return NextResponse.json({ error: 'Invalid restaurant id' }, { status: 400 })
+  }
+
+  if (resolvedUrlId !== auth.restaurantId) {
+    return NextResponse.json(
+      { error: 'You do not have permission to access this restaurant.' },
+      { status: 403 },
+    )
+  }
+
+  return auth
 }
