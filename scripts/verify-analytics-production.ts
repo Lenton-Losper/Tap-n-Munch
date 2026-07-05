@@ -290,16 +290,20 @@ async function main() {
       .select('id')
       .single()
     if (restBErr) throw restBErr
-    restBId = restB.id
+    const leakRestaurantId = restB?.id
+    if (!leakRestaurantId) {
+      throw new Error('Cross-tenant leak restaurant B insert returned no id; aborting crossTenant test')
+    }
+    restBId = leakRestaurantId
 
     await dbAdmin.from('restaurant_users').insert({
-      restaurant_id: restBId,
+      restaurant_id: leakRestaurantId,
       user_id: restBOwnerId,
       role: 'owner',
       invite_accepted: true,
     })
 
-    report.crossTenant = await fetchAnalyticsApi(ownerTok, restBId)
+    report.crossTenant = await fetchAnalyticsApi(ownerTok, leakRestaurantId)
 
     console.log(JSON.stringify(report, null, 2))
 
