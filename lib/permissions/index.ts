@@ -8,7 +8,7 @@
  * The client never participates in authorization decisions.
  */
 
-import rolePermissionsConfig from './role-permissions.config.json'
+import { ROLE_PERMISSIONS_BY_ROLE } from './role-permissions-config'
 
 export const PERMISSIONS = {
   // Orders
@@ -61,6 +61,7 @@ export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
  * authorize() falls back here when no restaurant_roles row exists.
  * Per-user exceptions are stored in staff_permissions and applied on top.
  */
-export const ROLE_PERMISSIONS: Record<string, Permission[]> = Object.fromEntries(
-  Object.entries(rolePermissionsConfig).filter(([key]) => !key.startsWith('$')),
-) as Record<string, Permission[]>
+export const ROLE_PERMISSIONS: Record<string, Permission[]> = ROLE_PERMISSIONS_BY_ROLE as Record<
+  string,
+  Permission[]
+>

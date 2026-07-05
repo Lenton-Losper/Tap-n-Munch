@@ -5,8 +5,11 @@
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { randomUUID } from 'crypto'
-import rolePermissionsConfig from '../lib/permissions/role-permissions.config.json'
 import { PERMISSIONS } from '../lib/permissions'
+import {
+  getRolePermissionsFromConfig,
+  rolePermissionConfigEntries,
+} from '../lib/permissions/role-permissions-config'
 import { authorize } from '../lib/permissions/authorize'
 import { filterOrdersByStationScope } from '../lib/order-routing'
 import {
@@ -47,7 +50,7 @@ const anon = createClient(url, anonKey!, {
 })
 
 const SYSTEM_SLUGS = ['owner', 'manager', 'cashier', 'waiter', 'kitchen', 'bar'] as const
-const STATION_PERMS = new Set([
+const STATION_PERMS = new Set<string>([
   PERMISSIONS.ORDERS_STATION_KITCHEN,
   PERMISSIONS.ORDERS_STATION_BAR,
 ])
@@ -80,9 +83,9 @@ function sorted(perms: string[]) {
 }
 
 function expectedPermissionsForSlug(slug: string): string[] {
-  const configPerms = (rolePermissionsConfig as Record<string, string[]>)[slug]
+  const configPerms = getRolePermissionsFromConfig(slug)
   if (!configPerms) throw new Error(`Missing config for ${slug}`)
-  return sorted(configPerms)
+  return sorted([...configPerms])
 }
 
 async function signIn(email: string, password = pw) {
@@ -100,12 +103,11 @@ async function fetchRoleApi(token: string) {
 }
 
 async function seedRestaurantRoles(restaurantId: string) {
-  const entries = Object.entries(rolePermissionsConfig).filter(([k]) => !k.startsWith('$'))
-  const rows = entries.map(([slug, perms]) => ({
+  const rows = rolePermissionConfigEntries().map(([slug, perms]) => ({
     restaurant_id: restaurantId,
     role_slug: slug,
     display_name: DISPLAY_NAMES[slug] ?? slug,
-    permissions: perms as string[],
+    permissions: [...perms],
     is_system: slug === 'owner',
     is_invite_eligible: slug === 'manager' || slug === 'waiter',
   }))
@@ -170,7 +172,51 @@ async function cleanup() {
   }
 }
 
-async function verifySeedFidelity() {
+interface SeedFidelityResult {
+  restaurantRoleRows: number
+  uniqueSlugs: string[]
+  mismatches: string[]
+  ok: boolean
+}
+
+interface StationAccountResult {
+  email: string
+  permissions: string[]
+  hasOrdersRead?: boolean
+  hasOrdersReadNow?: boolean
+  hadOrdersReadBeforeMigration?: boolean
+  hasKitchenStation: boolean
+  hasBarStation: boolean
+  filteredIds: string[]
+}
+
+interface Phase5aReport {
+  app: string
+  tag: string
+  barBehaviorClarification: {
+    beforeFix: string
+    afterFix: string
+  }
+  seedFidelity: SeedFidelityResult
+  kitchenTestAccount: StationAccountResult
+  kitchenAuthorize: { ordersRead: boolean; kitchenStation: boolean }
+  barTestAccount: StationAccountResult
+  barAuthorize: { ordersRead: boolean; barStation: boolean }
+  ownerUnscoped: {
+    permissionsIncludeOrdersRead: boolean
+    hasKitchenStation: boolean
+    hasBarStation: boolean
+    filteredCount: number
+  }
+  customDualStationRole: {
+    createStatus: number
+    role_slug: string | null
+    permissions: string[] | undefined
+    unionFilteredIds: string[]
+  }
+}
+
+async function verifySeedFidelity(): Promise<SeedFidelityResult> {
   const { data: rows, error } = await dbAdmin.from('restaurant_roles').select('role_slug, permissions')
   if (error) throw error
 
@@ -195,7 +241,7 @@ async function verifySeedFidelity() {
       mismatches.push(`${slug}: expected ${expected}, got ${actual}`)
     }
     const actualPerms = actual.split('|')
-    const hasStation = actualPerms.some((p) => STATION_PERMS.has(p as typeof PERMISSIONS[keyof typeof PERMISSIONS]))
+    const hasStation = actualPerms.some((p) => STATION_PERMS.has(p))
     const shouldHaveStation = slug === 'kitchen' || slug === 'bar'
     if (hasStation !== shouldHaveStation) {
       mismatches.push(`${slug}: station scope presence mismatch`)
@@ -214,7 +260,7 @@ async function verifySeedFidelity() {
 }
 
 async function main() {
-  const report: Record<string, unknown> = {
+  const report: Phase5aReport = {
     app: APP,
     tag,
     barBehaviorClarification: {
@@ -223,9 +269,39 @@ async function main() {
       afterFix:
         'Bar seed now includes orders:read + orders:station:bar. Dashboard filtering uses permissions; bar staff see bar-station orders only.',
     },
+    seedFidelity: await verifySeedFidelity(),
+    kitchenTestAccount: {
+      email: STAGING_TEST_EMAIL,
+      permissions: [],
+      hasOrdersRead: false,
+      hasKitchenStation: false,
+      hasBarStation: false,
+      filteredIds: [],
+    },
+    kitchenAuthorize: { ordersRead: false, kitchenStation: false },
+    barTestAccount: {
+      email: barEmail,
+      permissions: [],
+      hadOrdersReadBeforeMigration: false,
+      hasOrdersReadNow: false,
+      hasKitchenStation: false,
+      hasBarStation: false,
+      filteredIds: [],
+    },
+    barAuthorize: { ordersRead: false, barStation: false },
+    ownerUnscoped: {
+      permissionsIncludeOrdersRead: false,
+      hasKitchenStation: false,
+      hasBarStation: false,
+      filteredCount: 0,
+    },
+    customDualStationRole: {
+      createStatus: 0,
+      role_slug: null,
+      permissions: undefined,
+      unionFilteredIds: [],
+    },
   }
-
-  report.seedFidelity = await verifySeedFidelity()
 
   const kitchenTok = await signIn(STAGING_TEST_EMAIL, STAGING_TEST_PASSWORD)
   const kitchenRoleApi = await fetchRoleApi(kitchenTok)
@@ -267,13 +343,12 @@ async function main() {
     hadOrdersReadBeforeMigration: false,
     hasOrdersReadNow: barPerms.includes(PERMISSIONS.ORDERS_READ),
     hasBarStation: barPerms.includes(PERMISSIONS.ORDERS_STATION_BAR),
-    hasKitchenStation: barPerms.includes(PERMISSIONS.ORDERS_STATION_BAR),
+    hasKitchenStation: barPerms.includes(PERMISSIONS.ORDERS_STATION_KITCHEN),
     filteredIds: filterOrdersByStationScope(sampleOrders, {
       hasKitchenStation: false,
       hasBarStation: true,
     }).map((o) => o.id),
   }
-  report.barTestAccount.hasKitchenStation = barPerms.includes(PERMISSIONS.ORDERS_STATION_KITCHEN)
 
   const barOrdersRead = await authorize(barUserId!, restId!, PERMISSIONS.ORDERS_READ)
   const barStation = await authorize(barUserId!, restId!, PERMISSIONS.ORDERS_STATION_BAR)
