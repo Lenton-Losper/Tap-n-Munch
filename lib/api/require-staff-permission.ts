@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createServerSessionClient } from '@/lib/supabase/server-session'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
-import { authorize } from '@/lib/permissions/authorize'
+import {
+  getRestaurantIdForUser,
+  getUserFromRequest,
+} from '@/lib/supabase/admin-restaurant-auth'
+import { authorize, requirePermission } from '@/lib/permissions/authorize'
 import type { Permission } from '@/lib/permissions'
 
 export type StaffAuthContext = {
@@ -61,4 +64,34 @@ export async function requireStaffPermission(
   }
 
   return { userId: user.id, restaurantId: trimmed, supabase: createServerSupabaseClient() }
+}
+
+/**
+ * Authenticate the caller and authorize against their linked restaurant
+ * (from session / Bearer), not a client-supplied restaurant id.
+ */
+export async function requireCallerRestaurantPermission(
+  permission: Permission,
+  request: Request,
+): Promise<StaffAuthContext | NextResponse> {
+  const user = await resolveAuthenticatedUser(request)
+  if (!user) {
+    return NextResponse.json({ error: 'Authentication required.' }, { status: 401 })
+  }
+
+  const supabase = createServerSupabaseClient()
+  let restaurantId: string
+  try {
+    restaurantId = await getRestaurantIdForUser(supabase, user.id)
+  } catch {
+    return NextResponse.json(
+      { error: 'Restaurant not found for this account.' },
+      { status: 403 },
+    )
+  }
+
+  const denied = await requirePermission(user.id, restaurantId, permission)
+  if (denied) return denied
+
+  return { userId: user.id, restaurantId, supabase }
 }

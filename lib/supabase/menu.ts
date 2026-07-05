@@ -316,9 +316,18 @@ export async function createSubCategory(
   description?: string
 ) {
   if (typeof window !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      throw new Error('You must be signed in to create sub-categories.')
+    }
+
     const response = await fetch('/api/admin/menu/subcategories', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
       body: JSON.stringify({ restaurantId: firebaseRestaurantId, categoryId, name, description }),
     })
     const payload = await response.json().catch(() => ({}))

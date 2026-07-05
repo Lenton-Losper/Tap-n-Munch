@@ -1,19 +1,21 @@
 import { NextResponse } from 'next/server'
 import { paycloudWireMerchantOrderNo, signRequest } from '@/payments/paycloud'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import {
+  isAuthError,
+  requireCallerRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.PAYMENTS_PROCESS, req)
+    if (isAuthError(auth)) return auth
+
     const body = await req.json()
-    const { orderId, restaurantId: restaurantIdRaw } = body || {}
+    const { orderId } = body || {}
     if (!orderId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
-    }
-
-    const restaurantId = String(restaurantIdRaw || '').trim()
-    if (!restaurantId) {
-      return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
     }
 
     const appId = process.env.PAYCLOUD_APP_ID
@@ -22,7 +24,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing PayCloud configuration' }, { status: 500 })
     }
 
-    const supabase = createServerSupabaseClient()
+    const { supabase, restaurantId: callerRestaurantId } = auth
     const { data: order } = await supabase
       .from('orders')
       .select('*')
@@ -34,14 +36,14 @@ export async function POST(req: Request) {
     }
 
     const orderRestaurantId = String((order as { restaurant_id?: string }).restaurant_id || '').trim()
-    if (orderRestaurantId && orderRestaurantId !== restaurantId) {
-      return NextResponse.json({ error: 'Order does not belong to this restaurant' }, { status: 400 })
+    if (!orderRestaurantId || orderRestaurantId !== callerRestaurantId) {
+      return NextResponse.json({ error: 'Order does not belong to this restaurant' }, { status: 403 })
     }
 
     let merchantNo: string
     let storeNo: string
     try {
-      const creds = await getRestaurantFinaticCredentials(restaurantId)
+      const creds = await getRestaurantFinaticCredentials(callerRestaurantId)
       merchantNo = creds.merchantNo
       storeNo = creds.storeNo
     } catch (e) {
