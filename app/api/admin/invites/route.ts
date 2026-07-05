@@ -2,10 +2,11 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
-  assertRestaurantAdmin,
   getRestaurantIdForUser,
   getUserFromRequest,
 } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 import { sendStaffInviteEmail } from '@/lib/email/templates/staff-invite'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
 
@@ -34,7 +35,8 @@ export async function GET(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.STAFF_MANAGE)
+    if (denied) return denied
 
     const { data, error } = await supabase
       .from('staff_invites')
@@ -80,7 +82,8 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.STAFF_MANAGE)
+    if (denied) return denied
 
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
