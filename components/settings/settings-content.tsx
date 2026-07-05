@@ -19,26 +19,22 @@ export function SettingsContent() {
   const canViewPayments = !permissionsLoaded || hasPermission(PERMISSIONS.PAYMENTS_VIEW)
   const visibleTabs = SETTINGS_TABS.filter((tab) => tab.id !== 'bank' || canViewPayments)
 
+  const effectiveActiveTab: SettingsTabId =
+    activeTab === 'bank' && permissionsLoaded && !hasPermission(PERMISSIONS.PAYMENTS_VIEW)
+      ? 'profile'
+      : activeTab
+
   useEffect(() => {
     const onHashChange = () => {
-      const next = hashToSettingsTab(window.location.hash)
-      if (next === 'bank' && permissionsLoaded && !hasPermission(PERMISSIONS.PAYMENTS_VIEW)) {
-        setActiveTab('profile')
-        if (window.location.hash === '#bank') {
-          window.history.replaceState(null, '', '#profile')
-        }
-        return
-      }
-      setActiveTab(next)
+      setActiveTab(hashToSettingsTab(window.location.hash))
     }
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
-  }, [hasPermission, permissionsLoaded])
+  }, [])
 
   useEffect(() => {
     if (!permissionsLoaded) return
     if (activeTab === 'bank' && !hasPermission(PERMISSIONS.PAYMENTS_VIEW)) {
-      setActiveTab('profile')
       if (typeof window !== 'undefined' && window.location.hash === '#bank') {
         window.history.replaceState(null, '', '#profile')
       }
@@ -70,7 +66,7 @@ export function SettingsContent() {
           aria-label="Settings sections"
         >
           {visibleTabs.map((tab) => {
-            const isActive = activeTab === tab.id
+            const isActive = effectiveActiveTab === tab.id
             return (
               <button
                 key={tab.id}
@@ -91,9 +87,9 @@ export function SettingsContent() {
           })}
         </nav>
 
-        {activeTab === 'profile' ? <SettingsProfileTab /> : null}
-        {activeTab === 'bank' && canViewPayments ? <SettingsPaymentTab /> : null}
-        {activeTab === 'restaurant' ? <SettingsRestaurantTab /> : null}
+        {effectiveActiveTab === 'profile' ? <SettingsProfileTab /> : null}
+        {effectiveActiveTab === 'bank' && canViewPayments ? <SettingsPaymentTab /> : null}
+        {effectiveActiveTab === 'restaurant' ? <SettingsRestaurantTab /> : null}
       </div>
     </div>
   )
