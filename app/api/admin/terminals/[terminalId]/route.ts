@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantOwner,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,7 +15,8 @@ export async function DELETE(
     const { terminalId } = await params
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantOwner(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     const { data: terminal, error: findError } = await supabase
       .from('restaurant_terminals')

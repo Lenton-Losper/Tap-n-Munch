@@ -1,12 +1,10 @@
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic'
 
-import { OrdersDashboard } from "@/components/orders-dashboard"
-import { RoleGuard } from "@/components/auth/role-guard"
+import { OrdersDashboard } from '@/components/orders-dashboard'
+import { requireOrdersPermission } from '@/lib/orders/auth'
+import { PERMISSIONS } from '@/lib/permissions'
 
-export default function DashboardPage() {
-  return (
-    <RoleGuard allowedRoles={['owner', 'manager', 'waiter', 'kitchen', 'bar']}>
-      <OrdersDashboard />
-    </RoleGuard>
-  )
+export default async function DashboardPage() {
+  await requireOrdersPermission(PERMISSIONS.ORDERS_READ)
+  return <OrdersDashboard />
 }

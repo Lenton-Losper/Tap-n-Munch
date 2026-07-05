@@ -13,69 +13,78 @@ import {
   Table2,
   Users,
   UtensilsCrossed,
+  type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ReportBugButton } from '@/components/dashboard/report-bug-dialog'
 import { useAuth, type StaffRole } from '@/components/auth/auth-provider'
 import { usePermissions } from '@/hooks/use-permissions'
-import { PERMISSIONS } from '@/lib/permissions'
+import { PERMISSIONS, type Permission } from '@/lib/permissions'
 
-const NAV_ITEMS = [
+type NavItem = {
+  href: string
+  label: string
+  icon: LucideIcon
+  permission: Permission
+  match: (path: string) => boolean
+}
+
+const NAV_ITEMS: NavItem[] = [
   {
     href: '/dashboard',
     label: 'Live Orders',
     icon: ClipboardList,
-    roles: ['owner', 'manager', 'waiter', 'kitchen', 'bar'] as StaffRole[],
+    permission: PERMISSIONS.ORDERS_READ,
     match: (path: string) => path === '/dashboard',
   },
   {
     href: '/dashboard/order-history',
     label: 'Order History',
     icon: History,
-    roles: ['owner', 'manager'] as StaffRole[],
+    permission: PERMISSIONS.ORDERS_READ,
     match: (path: string) => path.startsWith('/dashboard/order-history'),
   },
   {
     href: '/qr-codes',
     label: 'Ordering Channels',
     icon: Table2,
-    roles: ['owner', 'manager'] as StaffRole[],
+    permission: PERMISSIONS.TABLES_READ,
     match: (path: string) => path.startsWith('/qr-codes'),
   },
   {
     href: '/menu-management',
     label: 'Menu Management',
     icon: UtensilsCrossed,
-    roles: ['owner', 'manager'] as StaffRole[],
+    permission: PERMISSIONS.MENU_READ,
     match: (path: string) => path.startsWith('/menu-management'),
   },
   {
     href: '/staff',
     label: 'Staff',
     icon: Users,
-    roles: ['owner', 'manager'] as StaffRole[],
+    permission: PERMISSIONS.STAFF_MANAGE,
     match: (path: string) => path.startsWith('/staff'),
   },
   {
     href: '/analytics',
     label: 'Analytics',
     icon: BarChart3,
-    roles: ['owner', 'manager'] as StaffRole[],
+    permission: PERMISSIONS.ANALYTICS_VIEW,
     match: (path: string) => path.startsWith('/analytics'),
   },
   {
     href: '/stock',
     label: 'Stock',
     icon: Package,
-    roles: ['owner', 'manager', 'kitchen', 'bar'] as StaffRole[],
+    permission: PERMISSIONS.STOCK_VIEW,
     match: (path: string) => path.startsWith('/stock'),
   },
   {
     href: '/settings',
     label: 'Settings',
     icon: Settings,
-    roles: ['owner'] as StaffRole[],
+    permission: PERMISSIONS.SETTINGS_READ,
     match: (path: string) => path.startsWith('/settings'),
   },
 ]
@@ -109,52 +118,9 @@ export function DashboardSidebar() {
     }
   }
 
-  const visibleItems = NAV_ITEMS.filter((item) => {
-    if (!role) return item.href === '/dashboard'
-    if (item.href === '/stock') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.STOCK_VIEW)
-    }
-    if (item.href === '/analytics') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.ANALYTICS_VIEW)
-    }
-    if (item.href === '/settings') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.SETTINGS_READ)
-    }
-    if (item.href === '/staff') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.STAFF_MANAGE)
-    }
-    if (item.href === '/dashboard/order-history') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.ORDERS_READ)
-    }
-    if (item.href === '/qr-codes') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.TABLES_READ)
-    }
-    if (item.href === '/menu-management') {
-      if (!permissionsLoaded) {
-        return item.roles.includes(role)
-      }
-      return hasPermission(PERMISSIONS.MENU_READ)
-    }
-    return item.roles.includes(role)
-  })
+  const visibleItems = permissionsLoaded
+    ? NAV_ITEMS.filter((item) => hasPermission(item.permission))
+    : []
 
   return (
     <aside className="flex h-full w-56 shrink-0 flex-col border-r border-[#E9E9E7] bg-white">
@@ -182,25 +148,37 @@ export function DashboardSidebar() {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
-        {visibleItems.map((item) => {
-          const active = item.match(pathname)
-          const Icon = item.icon
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-[#F1F0EC] text-[#37352F]'
-                  : 'text-[#6B675F] hover:bg-[#FAFAF8] hover:text-[#37352F]',
-              )}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </Link>
-          )
-        })}
+        {!permissionsLoaded ? (
+          <>
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="mx-0 h-10 animate-pulse rounded-lg bg-[#F1F0EC]"
+                aria-hidden
+              />
+            ))}
+          </>
+        ) : (
+          visibleItems.map((item) => {
+            const active = item.match(pathname)
+            const Icon = item.icon
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                  active
+                    ? 'bg-[#F1F0EC] text-[#37352F]'
+                    : 'text-[#6B675F] hover:bg-[#FAFAF8] hover:text-[#37352F]',
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {item.label}
+              </Link>
+            )
+          })
+        )}
       </nav>
 
       <div className="mt-auto space-y-1 border-t border-[#E9E9E7] p-3">

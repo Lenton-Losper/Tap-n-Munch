@@ -1,11 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantAdmin,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,7 +43,8 @@ export async function PATCH(request: Request) {
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
     console.log('[profile] restaurantId:', restaurantId)
 
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
+    if (denied) return denied
 
     const updates: Record<string, unknown> = {
       name,
