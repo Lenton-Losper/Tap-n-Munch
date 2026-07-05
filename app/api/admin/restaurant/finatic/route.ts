@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantOwner,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getUserFromRequest, getRestaurantIdForUser } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,7 +15,8 @@ export async function PATCH(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantOwner(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     const { error } = await supabase
       .from('restaurants')
@@ -36,7 +35,7 @@ export async function PATCH(request: Request) {
     const status =
       message.includes('authorization') || message.includes('session')
         ? 401
-        : message.includes('owner')
+        : message.includes('permission')
           ? 403
           : 500
     return NextResponse.json({ error: message }, { status })

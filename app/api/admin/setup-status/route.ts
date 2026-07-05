@@ -1,15 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantAdmin,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { computeCompletionPercentage } from '@/lib/onboarding/setup-status'
 import {
   ensureSetupStatusRow,
   markSetupStepComplete,
 } from '@/lib/onboarding/setup-status-server'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,7 +22,8 @@ export async function GET(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     await ensureSetupStatusRow(supabase, restaurantId)
 
@@ -67,7 +66,8 @@ export async function PATCH(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     await markSetupStepComplete(supabase, restaurantId, flag as never)
 

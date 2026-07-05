@@ -9,6 +9,8 @@
     "tables:read",
     "tables:manage",
     "payments:process",
+    "payments:view",
+    "payments:configure",
     "staff:manage",
     "settings:read",
     "settings:write",

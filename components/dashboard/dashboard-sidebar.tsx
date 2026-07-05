@@ -123,6 +123,12 @@ export function DashboardSidebar() {
       }
       return hasPermission(PERMISSIONS.ANALYTICS_VIEW)
     }
+    if (item.href === '/settings') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.SETTINGS_READ)
+    }
     return item.roles.includes(role)
   })
 

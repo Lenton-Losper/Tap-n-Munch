@@ -1,12 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantOwner,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { generateTerminalActivationCode } from '@/lib/terminals/activation-code'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +13,8 @@ export async function POST(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantOwner(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_CONFIGURE)
+    if (denied) return denied
 
     const body = await request.json().catch(() => ({} as Record<string, unknown>))
     const serialNumber = String(body?.serialNumber || '').trim()
@@ -73,7 +72,7 @@ export async function POST(request: Request) {
           activation_code_expires_at: expiresAt,
           status: 'active',
         },
-        { onConflict: 'device_serial' }
+        { onConflict: 'device_serial' },
       )
       .select('id, activation_code, activation_code_expires_at')
       .single()
@@ -94,7 +93,7 @@ export async function POST(request: Request) {
     const status =
       message.includes('authorization') || message.includes('session')
         ? 401
-        : message.includes('owner') || message.includes('permission')
+        : message.includes('permission')
           ? 403
           : 500
     console.error('[terminals/generate-code] failed:', error)

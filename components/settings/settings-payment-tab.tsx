@@ -17,6 +17,8 @@ import {
 } from './constants'
 import { getSettingsAccessToken } from './settings-utils'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
+import { usePermissions } from '@/hooks/use-permissions'
+import { PERMISSIONS } from '@/lib/permissions'
 
 const ACTIVATION_STORAGE_PREFIX = 'settings_terminal_activation_result'
 const SUCCESS_BG = '#FFF8F4'
@@ -143,6 +145,9 @@ function TerminalActivationSuccessCard({
 export function SettingsPaymentTab() {
   const { restaurantId } = useAuth()
   const { toast } = useToast()
+  const { hasPermission, permissionsLoaded } = usePermissions()
+  const canConfigure =
+    !permissionsLoaded || hasPermission(PERMISSIONS.PAYMENTS_CONFIGURE)
   const [merchantNo, setMerchantNo] = useState('')
   const [storeNo, setStoreNo] = useState('')
   const [paymentMethods, setPaymentMethods] = useState<string[]>(['cash', 'card'])
@@ -497,7 +502,7 @@ export function SettingsPaymentTab() {
                   id="finatic-merchant-no"
                   value={merchantNo}
                   onChange={(e) => setMerchantNo(e.target.value)}
-                  disabled={savingAccount}
+                  disabled={savingAccount || !canConfigure}
                   placeholder="e.g. 342600032359"
                 />
               </div>
@@ -507,14 +512,14 @@ export function SettingsPaymentTab() {
                   id="finatic-store-no"
                   value={storeNo}
                   onChange={(e) => setStoreNo(e.target.value)}
-                  disabled={savingAccount}
+                  disabled={savingAccount || !canConfigure}
                   placeholder="e.g. 4426012791"
                 />
               </div>
             </div>
             <Button
               onClick={handleSaveAccount}
-              disabled={savingAccount}
+              disabled={savingAccount || !canConfigure}
               className="text-white"
               style={primaryButtonStyle}
               onMouseEnter={(e) => {
@@ -553,7 +558,7 @@ export function SettingsPaymentTab() {
                 id="payment-method-cash"
                 checked={paymentMethods.includes('cash')}
                 onCheckedChange={(checked) => void handlePaymentMethodToggle('cash', checked)}
-                disabled={savingPaymentMethods}
+                disabled={savingPaymentMethods || !canConfigure}
               />
             </div>
             <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
@@ -567,7 +572,7 @@ export function SettingsPaymentTab() {
                 id="payment-method-card"
                 checked={paymentMethods.includes('card')}
                 onCheckedChange={(checked) => void handlePaymentMethodToggle('card', checked)}
-                disabled={savingPaymentMethods}
+                disabled={savingPaymentMethods || !canConfigure}
               />
             </div>
           </div>
@@ -598,7 +603,7 @@ export function SettingsPaymentTab() {
                   id="kiosk-payment-method-cash"
                   checked={kioskMethods.includes('cash')}
                   onCheckedChange={(checked) => void handleKioskMethodToggle('cash', checked)}
-                  disabled={savingKioskMethods}
+                  disabled={savingKioskMethods || !canConfigure}
                 />
               </div>
               <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
@@ -612,7 +617,7 @@ export function SettingsPaymentTab() {
                   id="kiosk-payment-method-card"
                   checked={kioskMethods.includes('card')}
                   onCheckedChange={(checked) => void handleKioskMethodToggle('card', checked)}
-                  disabled={savingKioskMethods}
+                  disabled={savingKioskMethods || !canConfigure}
                 />
               </div>
               <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
@@ -626,7 +631,7 @@ export function SettingsPaymentTab() {
                   id="kiosk-payment-method-other"
                   checked={kioskMethods.includes('other')}
                   onCheckedChange={(checked) => void handleKioskMethodToggle('other', checked)}
-                  disabled={savingKioskMethods}
+                  disabled={savingKioskMethods || !canConfigure}
                 />
               </div>
             </div>
@@ -654,7 +659,7 @@ export function SettingsPaymentTab() {
           </div>
           <Button
             onClick={handleAddTerminal}
-            disabled={generatingCode}
+            disabled={generatingCode || !canConfigure}
             className="shrink-0 text-white"
             style={primaryButtonStyle}
             onMouseEnter={(e) => {
@@ -703,7 +708,7 @@ export function SettingsPaymentTab() {
                     size="sm"
                     className="shrink-0 text-red-600 hover:text-red-700"
                     onClick={() => handleDeactivateTerminal(terminal)}
-                    disabled={deactivatingId === terminal.id}
+                    disabled={deactivatingId === terminal.id || !canConfigure}
                   >
                     {deactivatingId === terminal.id ? 'Deactivating...' : 'Deactivate'}
                   </Button>

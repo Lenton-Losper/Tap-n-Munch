@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest, getRestaurantIdForUser } from '@/lib/supabase/admin-restaurant-auth'
+import { requirePermission } from '@/lib/permissions/authorize'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -9,6 +11,8 @@ export async function GET(request: Request) {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.PAYMENTS_VIEW)
+    if (denied) return denied
 
     const { data, error } = await supabase
       .from('restaurant_terminals')
@@ -21,6 +25,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ terminals: data || [] })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to load terminals'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const status =
+      message.includes('authorization') || message.includes('session')
+        ? 401
+        : message.includes('permission')
+          ? 403
+          : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }
