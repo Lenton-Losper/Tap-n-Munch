@@ -141,6 +141,18 @@ export function DashboardSidebar() {
       }
       return hasPermission(PERMISSIONS.ORDERS_READ)
     }
+    if (item.href === '/qr-codes') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.TABLES_READ)
+    }
+    if (item.href === '/menu-management') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.MENU_READ)
+    }
     return item.roles.includes(role)
   })
 

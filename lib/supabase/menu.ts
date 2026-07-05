@@ -259,6 +259,15 @@ export type MenuItem = Record<string, any> & {
 }
 export type Category = Record<string, any>
 
+async function getStaffAccessToken() {
+  const { data: sessionData } = await supabase.auth.getSession()
+  const accessToken = sessionData.session?.access_token
+  if (!accessToken) {
+    throw new Error('You must be signed in to manage the menu.')
+  }
+  return accessToken
+}
+
 export async function getMenuCategories(firebaseRestaurantId: string) {
   return getSupabaseCategories(firebaseRestaurantId, true)
 }
@@ -269,6 +278,25 @@ export async function createMenuCategory(
   description?: string,
   routeTo?: 'kitchen' | 'bar' | 'both'
 ) {
+  if (typeof window !== 'undefined') {
+    const accessToken = await getStaffAccessToken()
+    const response = await fetch('/api/admin/menu/categories', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        name,
+        description,
+        route_to: routeTo || 'kitchen',
+      }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Failed to create category')
+    return payload?.data
+  }
+
   const restaurantId = await resolveRestaurantUuid(firebaseRestaurantId)
   return createSupabaseCategory({
     restaurant_id: restaurantId,
@@ -283,6 +311,21 @@ export async function updateMenuCategory(
   categoryId: string,
   updates: Record<string, any>
 ) {
+  if (typeof window !== 'undefined') {
+    const accessToken = await getStaffAccessToken()
+    const response = await fetch('/api/admin/menu/categories', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ categoryId, ...updates }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Failed to update category')
+    return
+  }
+
   await resolveRestaurantUuid(firebaseRestaurantId)
   return updateSupabaseCategory(categoryId, updates)
 }
@@ -345,6 +388,21 @@ export async function updateSubCategory(
   subCategoryId: string,
   updates: Record<string, any>
 ) {
+  if (typeof window !== 'undefined') {
+    const accessToken = await getStaffAccessToken()
+    const response = await fetch('/api/admin/menu/subcategories', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ categoryId, subCategoryId, ...updates }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Failed to update sub-category')
+    return
+  }
+
   const restaurantId = await resolveRestaurantUuid(firebaseRestaurantId)
   const { error } = await supabase
     .from('menu_subcategories')
@@ -475,6 +533,21 @@ export async function deleteMenuItem(
 }
 
 export async function deleteMenuCategoryCascade(firebaseRestaurantId: string, categoryId: string) {
+  if (typeof window !== 'undefined') {
+    const accessToken = await getStaffAccessToken()
+    const response = await fetch('/api/admin/menu/categories', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ categoryId }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete category')
+    return
+  }
+
   const restaurantId = await resolveRestaurantUuid(firebaseRestaurantId)
   const { data: subcats, error: subErr } = await supabase
     .from('menu_subcategories')
@@ -499,6 +572,21 @@ export async function deleteSubCategoryCascade(
   _categoryId: string,
   subCategoryId: string
 ) {
+  if (typeof window !== 'undefined') {
+    const accessToken = await getStaffAccessToken()
+    const response = await fetch('/api/admin/menu/subcategories', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ subCategoryId }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete sub-category')
+    return
+  }
+
   await resolveRestaurantUuid(firebaseRestaurantId)
   const { error: itemErr } = await supabase.from('menu_items').delete().eq('subcategory_id', subCategoryId)
   if (itemErr) throw itemErr

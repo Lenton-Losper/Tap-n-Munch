@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
-  assertRestaurantAdmin,
   getUserFromRequest,
 } from '@/lib/supabase/admin-restaurant-auth'
 import { requirePermission } from '@/lib/permissions/authorize'
@@ -274,7 +273,8 @@ export async function DELETE(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await resolveRestaurantId(supabase, restaurantInput)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
+    const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.MENU_WRITE)
+    if (denied) return denied
 
     console.log(`${LOG_PREFIX} DELETE`, { itemId, restaurantId })
 

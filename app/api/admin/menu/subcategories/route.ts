@@ -1,20 +1,21 @@
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import {
-  getRestaurantIdForUser,
-  getUserFromRequest,
-  resolveRestaurantId,
-} from '@/lib/supabase/admin-restaurant-auth'
-import { requirePermission } from '@/lib/permissions/authorize'
-import { PERMISSIONS } from '@/lib/permissions'
+  loadCategoryForRestaurant,
+  loadSubcategoryForRestaurant,
+  requireMenuWriteContext,
+} from '@/lib/api/menu-route-auth'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
   try {
     const user = await getUserFromRequest(request)
+    const auth = await requireMenuWriteContext(user.id)
+    if (auth instanceof NextResponse) return auth
+
+    const { supabase, restaurantId } = auth
     const body = (await request.json()) as {
-      restaurantId?: string
       categoryId?: string
       name?: string
       description?: string
@@ -28,39 +29,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    const supabase = createServerSupabaseClient()
-    let callerRestaurantId: string
-    try {
-      callerRestaurantId = await getRestaurantIdForUser(supabase, user.id)
-    } catch {
-      return NextResponse.json(
-        { error: 'Restaurant not found for this account.' },
-        { status: 403 },
-      )
-    }
-
-    const denied = await requirePermission(user.id, callerRestaurantId, PERMISSIONS.MENU_WRITE)
-    if (denied) return denied
-
-    const bodyRestaurantId = String(body?.restaurantId || '').trim()
-    if (bodyRestaurantId) {
-      const resolvedBodyRestaurantId = await resolveRestaurantId(supabase, bodyRestaurantId)
-      if (resolvedBodyRestaurantId !== callerRestaurantId) {
-        return NextResponse.json(
-          { error: 'You do not have permission to perform this action.' },
-          { status: 403 },
-        )
-      }
-    }
-
-    const { data: category, error: categoryError } = await supabase
-      .from('menu_categories')
-      .select('id, restaurant_id')
-      .eq('id', categoryId)
-      .maybeSingle()
-
-    if (categoryError) throw categoryError
-    if (!category?.id || String(category.restaurant_id) !== callerRestaurantId) {
+    const category = await loadCategoryForRestaurant(supabase, categoryId, restaurantId)
+    if (!category) {
       return NextResponse.json(
         { error: 'Category not found for this restaurant' },
         { status: 403 },
@@ -70,7 +40,7 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from('menu_subcategories')
       .insert({
-        restaurant_id: callerRestaurantId,
+        restaurant_id: restaurantId,
         category_id: categoryId,
         name,
         description,
@@ -94,5 +64,124 @@ export async function POST(request: Request) {
     const status =
       message.includes('authorization') || message.includes('session') ? 401 : 500
     return NextResponse.json({ error: message }, { status })
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const user = await getUserFromRequest(request)
+    const auth = await requireMenuWriteContext(user.id)
+    if (auth instanceof NextResponse) return auth
+
+    const { supabase, restaurantId } = auth
+    const body = (await request.json()) as Record<string, unknown>
+    const subCategoryId = String(body?.subCategoryId || body?.id || '').trim()
+    const categoryId = String(body?.categoryId || '').trim()
+
+    if (!subCategoryId) {
+      return NextResponse.json({ error: 'Missing sub-category id' }, { status: 400 })
+    }
+
+    const subcategory = await loadSubcategoryForRestaurant(supabase, subCategoryId, restaurantId)
+    if (!subcategory) {
+      return NextResponse.json(
+        { error: 'Sub-category not found for this restaurant' },
+        { status: 403 },
+      )
+    }
+
+    if (categoryId) {
+      const category = await loadCategoryForRestaurant(supabase, categoryId, restaurantId)
+      if (!category) {
+        return NextResponse.json(
+          { error: 'Category not found for this restaurant' },
+          { status: 403 },
+        )
+      }
+    }
+
+    const updates: Record<string, unknown> = {}
+    if (categoryId) updates.category_id = categoryId
+    if ('name' in body) {
+      const name = String(body.name || '').trim()
+      if (!name) {
+        return NextResponse.json({ error: 'Sub-category name is required' }, { status: 400 })
+      }
+      updates.name = name
+    }
+    if ('description' in body) {
+      const description = body.description
+      updates.description =
+        typeof description === 'string' && description.trim() ? description.trim() : null
+    }
+    if ('display_order' in body) {
+      updates.display_order = Number(body.display_order)
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: 'No updates provided' }, { status: 400 })
+    }
+
+    updates.updated_at = new Date().toISOString()
+
+    const { data, error } = await supabase
+      .from('menu_subcategories')
+      .update(updates)
+      .eq('id', subCategoryId)
+      .eq('restaurant_id', restaurantId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return NextResponse.json({ success: true, data })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to update sub-category'
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const user = await getUserFromRequest(request)
+    const auth = await requireMenuWriteContext(user.id)
+    if (auth instanceof NextResponse) return auth
+
+    const { supabase, restaurantId } = auth
+    const body = (await request.json()) as {
+      subCategoryId?: string
+      id?: string
+    }
+    const subCategoryId = String(body?.subCategoryId || body?.id || '').trim()
+
+    if (!subCategoryId) {
+      return NextResponse.json({ error: 'Missing sub-category id' }, { status: 400 })
+    }
+
+    const subcategory = await loadSubcategoryForRestaurant(supabase, subCategoryId, restaurantId)
+    if (!subcategory) {
+      return NextResponse.json(
+        { error: 'Sub-category not found for this restaurant' },
+        { status: 403 },
+      )
+    }
+
+    const { error: itemErr } = await supabase
+      .from('menu_items')
+      .delete()
+      .eq('subcategory_id', subCategoryId)
+    if (itemErr) throw itemErr
+
+    const { error: subErr } = await supabase
+      .from('menu_subcategories')
+      .delete()
+      .eq('id', subCategoryId)
+      .eq('restaurant_id', restaurantId)
+    if (subErr) throw subErr
+
+    return NextResponse.json({ success: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to delete sub-category'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
