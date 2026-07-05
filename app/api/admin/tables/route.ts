@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantAdmin,
-  getRestaurantIdForUser,
-  getUserFromRequest,
-} from '@/lib/supabase/admin-restaurant-auth'
 import { buildMenuUrl } from '@/lib/base-url'
 import { nextKioskTableNumber } from '@/lib/tables/ordering-points'
+import {
+  isAuthError,
+  requireCallerRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,13 +20,12 @@ type CreateTableBody = {
 
 export async function POST(request: Request) {
   try {
-    const user = await getUserFromRequest(request)
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.TABLES_MANAGE, request)
+    if (isAuthError(auth)) return auth
+
+    const { supabase, restaurantId } = auth
     const body = (await request.json()) as CreateTableBody
     const kind = body.kind === 'kiosk' ? 'kiosk' : 'table'
-
-    const supabase = createServerSupabaseClient()
-    const restaurantId = await getRestaurantIdForUser(supabase, user.id)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
 
     const location =
       typeof body.location === 'string' && body.location.trim()
@@ -115,13 +113,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ table: data })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to create ordering point'
-    const status =
-      message.includes('authorization') || message.includes('session')
-        ? 401
-        : message.includes('permission')
-          ? 403
-          : 500
     console.error('[admin/tables POST]', error)
-    return NextResponse.json({ error: message }, { status })
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

@@ -1,36 +1,28 @@
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
-import {
-  assertRestaurantAdmin,
-  getUserFromRequest,
-  resolveRestaurantId,
-} from '@/lib/supabase/admin-restaurant-auth'
 import { buildMenuUrl } from '@/lib/base-url'
+import {
+  isAuthError,
+  requireCallerRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
 export async function PATCH(
   request: Request,
-  { params }: { params: Promise<{ tableId: string }> }
+  { params }: { params: Promise<{ tableId: string }> },
 ) {
   try {
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.TABLES_MANAGE, request)
+    if (isAuthError(auth)) return auth
+
+    const { supabase, restaurantId } = auth
     const { tableId } = await params
     const body = await request.json().catch(() => ({}))
-    const restaurantIdRaw = String(
-      (body as { restaurantId?: string }).restaurantId || '',
-    ).trim()
 
     if (!tableId?.trim()) {
       return NextResponse.json({ error: 'Missing tableId' }, { status: 400 })
     }
-    if (!restaurantIdRaw) {
-      return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
-    }
-
-    const user = await getUserFromRequest(request)
-    const supabase = createServerSupabaseClient()
-    const restaurantId = await resolveRestaurantId(supabase, restaurantIdRaw)
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
 
     const { data: tableRow, error: tableError } = await supabase
       .from('restaurant_tables')
@@ -101,41 +93,25 @@ export async function PATCH(
     return NextResponse.json({ table: data })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update table'
-    const status =
-      message.includes('permission') ||
-      message.includes('Forbidden') ||
-      message.includes('authorization') ||
-      message.includes('session')
-        ? 403
-        : 500
     console.error('[PATCH TABLE API]', error)
-    return NextResponse.json({ error: message }, { status })
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
 
 export async function DELETE(
   request: Request,
-  { params }: { params: Promise<{ tableId: string }> }
+  { params }: { params: Promise<{ tableId: string }> },
 ) {
   try {
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.TABLES_MANAGE, request)
+    if (isAuthError(auth)) return auth
+
+    const { supabase, restaurantId } = auth
     const { tableId } = await params
-    const body = await request.json().catch(() => ({}))
-    const restaurantIdRaw = String(
-      (body as { restaurantId?: string }).restaurantId || ''
-    ).trim()
 
     if (!tableId?.trim()) {
       return NextResponse.json({ error: 'Missing tableId' }, { status: 400 })
     }
-    if (!restaurantIdRaw) {
-      return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
-    }
-
-    const user = await getUserFromRequest(request)
-    const supabase = createServerSupabaseClient()
-    const restaurantId = await resolveRestaurantId(supabase, restaurantIdRaw)
-
-    await assertRestaurantAdmin(supabase, user.id, restaurantId)
 
     const { data: tableRow, error: tableError } = await supabase
       .from('restaurant_tables')
@@ -210,14 +186,7 @@ export async function DELETE(
     return NextResponse.json({ success: true, tableId })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to delete table'
-    const status =
-      message.includes('permission') ||
-      message.includes('Forbidden') ||
-      message.includes('authorization') ||
-      message.includes('session')
-        ? 403
-        : 500
     console.error('[DELETE TABLE API]', error)
-    return NextResponse.json({ error: message }, { status })
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
