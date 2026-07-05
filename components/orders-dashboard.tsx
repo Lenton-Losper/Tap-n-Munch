@@ -29,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { onboardingFetch } from '@/lib/onboarding/api-client'
+import { getAccessToken, onboardingFetch } from '@/lib/onboarding/api-client'
 import { orderMatchesStation } from '@/lib/order-routing'
 
 async function markFirstPaymentSetupComplete() {
@@ -794,15 +794,17 @@ export function OrdersDashboard() {
     try {
       setSendingToTerminalOrderId(order.id)
       setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: 'pending' }))
+      const token = await getAccessToken()
       const response = await fetch('/api/payments/push-to-terminal', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           orderId: order.id,
-          amount: Number(order.total) || 0,
           tableNumber: order.table_number,
           orderNumber: order.order_number,
-          restaurantId: dashboardRestaurantId,
           bypassReadyCheck,
         }),
       })
@@ -829,10 +831,14 @@ export function OrdersDashboard() {
     if (!dashboardRestaurantId) return
     try {
       setCancelingTerminalOrderId(order.id)
+      const token = await getAccessToken()
       const response = await fetch('/api/payments/cancel-terminal', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: order.id, restaurantId: dashboardRestaurantId }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ orderId: order.id }),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok || data?.success === false) {

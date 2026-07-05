@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { formatPaycloudRequestSignature, loadPrivateKey, signUtf8WithForgePkcs1RsaSha256 } from '@/payments/signature'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import {
+  isAuthError,
+  requireCallerRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -14,21 +18,20 @@ function buildCanonicalString(payload: Record<string, unknown>) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.PAYMENTS_PROCESS, req)
+    if (isAuthError(auth)) return auth
+
     const body = await req.json()
     console.log('[PUSH-TO-TERMINAL] Request body:', JSON.stringify(body))
-    const { orderId, restaurantId, amount, tableNumber, orderNumber } = body || {}
-    const normalizedRestaurantId = String(restaurantId || '').trim()
+    const { orderId, tableNumber, orderNumber } = body || {}
     const normalizedOrderId = String(orderId || '').trim()
-    if (!normalizedOrderId || !normalizedRestaurantId) {
-      console.error('[PUSH-TO-TERMINAL] Missing required fields', {
-        orderId,
-        restaurantId,
-      })
-      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Missing required fields')
+    if (!normalizedOrderId) {
+      console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Missing orderId')
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    const supabase = createServerSupabaseClient()
+    const { supabase, restaurantId: callerRestaurantId } = auth
+
     const { data: order, error: orderLookupError } = await supabase
       .from('orders')
       .select('*')
@@ -57,6 +60,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
+    const orderRestaurantId = String(order.restaurant_id || '').trim()
+    if (!orderRestaurantId || orderRestaurantId !== callerRestaurantId) {
+      return NextResponse.json(
+        { error: 'Order does not belong to this restaurant' },
+        { status: 403 },
+      )
+    }
+
     if (String(order.payment_status || '').toLowerCase() === 'paid') {
       console.log('[PUSH-TO-TERMINAL] Order already paid, blocking duplicate:', normalizedOrderId)
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Order already paid')
@@ -69,7 +80,7 @@ export async function POST(req: Request) {
       )
     }
 
-    const resolvedAmount = amount === undefined || amount === null ? Number(order.total) : Number(amount)
+    const resolvedAmount = Number(order.total)
     if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Invalid amount')
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
@@ -79,7 +90,7 @@ export async function POST(req: Request) {
     let storeNo: string
     let terminalSn: string | null
     try {
-      const credentials = await getRestaurantFinaticCredentials(normalizedRestaurantId)
+      const credentials = await getRestaurantFinaticCredentials(callerRestaurantId)
       merchantNo = credentials.merchantNo
       storeNo = credentials.storeNo
       terminalSn = credentials.terminalSn
