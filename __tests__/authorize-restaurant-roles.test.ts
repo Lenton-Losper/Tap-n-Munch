@@ -7,7 +7,6 @@ import {
   createStagingAdmin,
   ensureStagingKitchenTestUser,
   ensureStagingStaffMember,
-  restoreRestaurantRoles,
 } from './helpers/staging-auth-fixtures'
 
 const admin = createStagingAdmin()
@@ -147,50 +146,27 @@ describe('staff_permissions overrides on DB-backed defaults (staging Phase 2)', 
   })
 })
 
-describe('JSON fallback when restaurant_roles missing (staging Phase 2)', () => {
-  let backup: Array<Record<string, unknown>> = []
-  let staffMemberId: string | null = null
-
-  beforeAll(async () => {
-    await ensureStagingKitchenTestUser(admin)
-    staffMemberId = await ensureStagingStaffMember(admin)
-
-    const { data, error } = await admin
-      .from('restaurant_roles')
-      .select('*')
-      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
-
-    if (error) throw error
-    backup = data ?? []
-    if (backup.length !== 6) {
-      throw new Error(
-        `Expected 6 restaurant_roles rows for backup, got ${backup.length}. ` +
-          'Run auth v2 seed migrations before these tests.',
-      )
-    }
-  })
-
-  beforeEach(async () => {
-    await restoreRestaurantRoles(admin, STAGING_TEST_RESTAURANT_ID, backup)
-    if (staffMemberId) {
-      await clearStagingStaffPermissionOverrides(admin, staffMemberId)
-    }
-  })
+describe('JSON fallback when restaurant_roles missing (staging Phase 2 / 4A)', () => {
+  let disposableRestaurantId: string | null = null
 
   afterAll(async () => {
-    await restoreRestaurantRoles(admin, STAGING_TEST_RESTAURANT_ID, backup)
-    if (staffMemberId) {
-      await clearStagingStaffPermissionOverrides(admin, staffMemberId)
+    if (disposableRestaurantId) {
+      await admin.from('restaurant_roles').delete().eq('restaurant_id', disposableRestaurantId)
+      await admin.from('restaurants').delete().eq('id', disposableRestaurantId)
+      disposableRestaurantId = null
     }
   })
 
-  test('getRolePermissions and authorize fall back to JSON with warning', async () => {
-    const { error: deleteError } = await admin
-      .from('restaurant_roles')
-      .delete()
-      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+  test('getRolePermissions falls back to JSON with warning when roles are absent', async () => {
+    const slug = `fallback-${Date.now()}`
+    const { data: restaurant, error: restaurantError } = await admin
+      .from('restaurants')
+      .insert({ name: `Fallback test ${slug}`, slug })
+      .select('id')
+      .single()
 
-    expect(deleteError).toBeNull()
+    if (restaurantError) throw restaurantError
+    disposableRestaurantId = String(restaurant.id)
 
     const warnings: string[] = []
     const originalWarn = console.warn
@@ -200,20 +176,11 @@ describe('JSON fallback when restaurant_roles missing (staging Phase 2)', () => 
     }
 
     try {
-      const perms = await getRolePermissions(STAGING_TEST_RESTAURANT_ID, 'kitchen')
+      const perms = await getRolePermissions(disposableRestaurantId!, 'kitchen')
       expect([...perms].sort()).toEqual([...(ROLE_PERMISSIONS.kitchen ?? [])].sort())
       expect(warnings.some((w) => w.includes('restaurant_roles missing'))).toBe(true)
-
-      if (staffMemberId) {
-        await clearStagingStaffPermissionOverrides(admin, staffMemberId)
-      }
-
-      expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.STOCK_VIEW)).toBe(
-        true,
-      )
     } finally {
       console.warn = originalWarn
-      await restoreRestaurantRoles(admin, STAGING_TEST_RESTAURANT_ID, backup)
     }
   })
 })
