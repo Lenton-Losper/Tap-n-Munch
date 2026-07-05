@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { isAuthError, requireUrlRestaurantPermission } from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 import { getReportData } from '@/lib/reports/get-report-data'
 import { generateCsv } from '@/lib/reports/generate-csv'
 import { generatePdfBlob } from '@/lib/reports/generate-pdf-lib'
@@ -12,8 +13,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await getUserFromRequest(request)
     const { id } = await params
+
+    const auth = await requireUrlRestaurantPermission(id, PERMISSIONS.ORDERS_READ, request)
+    if (isAuthError(auth)) return auth
 
     const body = await request.json()
     const { email, format, startDate, endDate, tableNumber, status } = body
@@ -29,7 +32,7 @@ export async function POST(
     }
 
     const report = await getReportData({
-      restaurantId: id,
+      restaurantId: auth.restaurantId,
       startDate,
       endDate,
       tableNumber: tableNumber ? Number(tableNumber) : undefined,
@@ -95,7 +98,13 @@ export async function POST(
     console.error('Report email error:', err)
     const message = err instanceof Error ? err.message : 'Failed to send report'
     const status =
-      message.includes('authorization') || message.includes('session') ? 401 : 500
+      message.includes('authorization') ||
+      message.includes('session') ||
+      message.includes('Authentication')
+        ? 401
+        : message.includes('permission') || message.includes('Forbidden')
+          ? 403
+          : 500
     return NextResponse.json({ error: message }, { status })
   }
 }

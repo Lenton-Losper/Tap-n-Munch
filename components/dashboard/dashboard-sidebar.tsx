@@ -135,6 +135,12 @@ export function DashboardSidebar() {
       }
       return hasPermission(PERMISSIONS.STAFF_MANAGE)
     }
+    if (item.href === '/dashboard/order-history') {
+      if (!permissionsLoaded) {
+        return item.roles.includes(role)
+      }
+      return hasPermission(PERMISSIONS.ORDERS_READ)
+    }
     return item.roles.includes(role)
   })
 

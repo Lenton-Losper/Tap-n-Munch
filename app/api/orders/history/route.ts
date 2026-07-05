@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
+import {
+  isAuthError,
+  requireUrlRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
@@ -23,7 +26,11 @@ export async function GET(req: Request) {
 
   const restaurantUuid = await resolveRestaurantUuid(restaurantId)
 
-  const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ORDERS_READ, req)
+  const auth = await requireUrlRestaurantPermission(
+    restaurantUuid,
+    PERMISSIONS.ORDERS_READ,
+    req,
+  )
   if (isAuthError(auth)) return auth
 
   const supabase = createServerSupabaseClient()
