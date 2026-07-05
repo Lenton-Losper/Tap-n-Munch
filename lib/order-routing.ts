@@ -30,6 +30,39 @@ export function orderMatchesStation(
   })
 }
 
+export type StationScopeOptions = {
+  hasKitchenStation: boolean
+  hasBarStation: boolean
+}
+
+export function shouldFilterByStationScope(options: StationScopeOptions): boolean {
+  return options.hasKitchenStation || options.hasBarStation
+}
+
+export function orderVisibleForStationScope(
+  order: { items?: unknown },
+  options: StationScopeOptions
+): boolean {
+  const { hasKitchenStation, hasBarStation } = options
+  if (!shouldFilterByStationScope(options)) {
+    return true
+  }
+  return (
+    (hasKitchenStation && orderMatchesStation(order, 'kitchen')) ||
+    (hasBarStation && orderMatchesStation(order, 'bar'))
+  )
+}
+
+export function filterOrdersByStationScope<T extends { items?: unknown }>(
+  orders: T[],
+  options: StationScopeOptions
+): T[] {
+  if (!shouldFilterByStationScope(options)) {
+    return orders
+  }
+  return orders.filter((order) => orderVisibleForStationScope(order, options))
+}
+
 export async function enrichOrderItemsWithRouteTo(
   supabase: { from: (table: string) => any },
   items: unknown

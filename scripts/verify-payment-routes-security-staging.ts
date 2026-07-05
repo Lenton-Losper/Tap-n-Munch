@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { randomUUID } from 'crypto'
 import { PERMISSIONS } from '../lib/permissions'
-import rolePermissionsConfig from '../lib/permissions/role-permissions.config.json'
+import { getRolePermissionsFromConfig } from '../lib/permissions/role-permissions-config'
 
 config({ path: '.env.test', override: true })
 
@@ -72,22 +72,25 @@ function assert(condition: boolean, message: string) {
 }
 
 async function seedRestaurantRoles(restaurantId: string) {
-  const ownerPerms = (rolePermissionsConfig as Record<string, string[]>).owner
-  const managerPerms = (rolePermissionsConfig as Record<string, string[]>).manager
+  const ownerPerms = getRolePermissionsFromConfig('owner')
+  const managerPerms = getRolePermissionsFromConfig('manager')
+  if (!ownerPerms || !managerPerms) {
+    throw new Error('owner/manager permissions missing from role-permissions.config.json')
+  }
   const { error } = await dbAdmin.from('restaurant_roles').upsert(
     [
       {
         restaurant_id: restaurantId,
         role_slug: 'owner',
         display_name: 'Owner',
-        permissions: ownerPerms,
+        permissions: [...ownerPerms],
         is_system: true,
       },
       {
         restaurant_id: restaurantId,
         role_slug: 'manager',
         display_name: 'Manager',
-        permissions: managerPerms,
+        permissions: [...managerPerms],
         is_system: false,
       },
     ],
