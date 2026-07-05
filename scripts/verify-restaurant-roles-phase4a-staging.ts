@@ -56,6 +56,55 @@ let customRoleSlug: string | null = null
 const ownerAEmail = `${tag}.owner-a@flashtap-test.invalid`
 const ownerBEmail = `${tag}.owner-b@flashtap-test.invalid`
 
+type FkViolation = { table: string; restaurant_id: string; role: string }
+
+interface AuthorizeRegressionResult {
+  ownerStaffManage: boolean
+  ownerSettingsWrite: boolean
+}
+
+interface CrossTenantResult {
+  createStatus: number
+  createdOnRestaurantA: boolean
+  createdOnRestaurantB: boolean
+  createdRestaurantId: string | null
+}
+
+interface Phase4aReport {
+  app: string
+  tag: string
+  permissionGate: string
+  postMigrationFkIntegrity: { violationCount: number; violations: FkViolation[] }
+  authorizeRegression: AuthorizeRegressionResult
+  listRoles: { status: number; count: number }
+  createCustomRole: {
+    status: number
+    role_slug: string | null
+    permissions: string[] | undefined
+    is_system: boolean | undefined
+  }
+  systemRoleProtection: {
+    patchStatus: number
+    patchError: string | undefined
+    deleteStatus: number
+    deleteError: string | undefined
+  }
+  deleteWithAssignment: { status: number; error: string | undefined }
+  deleteAfterReassign: { status: number }
+  crossTenant: CrossTenantResult
+}
+
+type ApiRoleBody = {
+  role?: {
+    role_slug?: string
+    permissions?: string[]
+    is_system?: boolean
+    restaurant_id?: string
+  }
+  roles?: unknown[]
+  error?: string
+}
+
 async function signIn(email: string) {
   const { data, error } = await anon.auth.signInWithPassword({ email, password: pw })
   if (error || !data.session?.access_token) throw new Error(`Sign-in failed: ${error?.message}`)
@@ -152,7 +201,7 @@ async function api(
   method: string,
   path: string,
   body?: Record<string, unknown>,
-) {
+): Promise<{ status: number; body: ApiRoleBody }> {
   const res = await fetch(`${APP}${path}`, {
     method,
     headers: {
@@ -161,7 +210,7 @@ async function api(
     },
     body: body ? JSON.stringify(body) : undefined,
   })
-  const json = await res.json().catch(() => ({}))
+  const json = (await res.json().catch(() => ({}))) as ApiRoleBody
   return { status: res.status, body: json }
 }
 
@@ -188,23 +237,26 @@ async function verifyExistingAssignments() {
 }
 
 async function main() {
-  const report: Record<string, unknown> = { app: APP, tag, permissionGate: PERMISSIONS.STAFF_MANAGE }
-
   const fkViolations = await verifyExistingAssignments()
-  report.postMigrationFkIntegrity = { violationCount: fkViolations.length, violations: fkViolations }
+  const postMigrationFkIntegrity = {
+    violationCount: fkViolations.length,
+    violations: fkViolations,
+  }
 
   await setup()
   const ownerTok = await signIn(ownerAEmail)
   const ownerBTok = await signIn(ownerBEmail)
 
-  // authorize() regression on disposable owner
-  report.authorizeRegression = {
+  const authorizeRegression: AuthorizeRegressionResult = {
     ownerStaffManage: await authorize(ownerAId!, restAId!, PERMISSIONS.STAFF_MANAGE),
     ownerSettingsWrite: await authorize(ownerAId!, restAId!, PERMISSIONS.SETTINGS_WRITE),
   }
 
   const listRes = await api(ownerTok, 'GET', '/api/admin/restaurant-roles')
-  report.listRoles = { status: listRes.status, count: (listRes.body.roles ?? []).length }
+  const listRoles = {
+    status: listRes.status,
+    count: Array.isArray(listRes.body.roles) ? listRes.body.roles.length : 0,
+  }
 
   const createRes = await api(ownerTok, 'POST', '/api/admin/restaurant-roles', {
     display_name: 'Head Chef',
@@ -212,23 +264,23 @@ async function main() {
     permissions: [PERMISSIONS.ORDERS_READ, PERMISSIONS.STOCK_VIEW],
     restaurant_id: restBId,
   })
-  customRoleSlug = createRes.body?.role?.role_slug ?? 'head_chef'
-  report.createCustomRole = {
+  customRoleSlug = createRes.body.role?.role_slug ?? 'head_chef'
+  const createCustomRole = {
     status: createRes.status,
     role_slug: customRoleSlug,
-    permissions: createRes.body?.role?.permissions,
-    is_system: createRes.body?.role?.is_system,
+    permissions: createRes.body.role?.permissions,
+    is_system: createRes.body.role?.is_system,
   }
 
   const patchOwner = await api(ownerTok, 'PATCH', '/api/admin/restaurant-roles/owner', {
     display_name: 'Hacked Owner',
   })
   const deleteOwner = await api(ownerTok, 'DELETE', '/api/admin/restaurant-roles/owner')
-  report.systemRoleProtection = {
+  const systemRoleProtection = {
     patchStatus: patchOwner.status,
-    patchError: patchOwner.body?.error,
+    patchError: patchOwner.body.error,
     deleteStatus: deleteOwner.status,
-    deleteError: deleteOwner.body?.error,
+    deleteError: deleteOwner.body.error,
   }
 
   const { data: disposable, error: dispErr } = await dbAdmin
@@ -245,16 +297,16 @@ async function main() {
   disposableStaffId = disposable.id
 
   const deleteBlocked = await api(ownerTok, 'DELETE', `/api/admin/restaurant-roles/${customRoleSlug}`)
-  report.deleteWithAssignment = {
+  const deleteWithAssignment = {
     status: deleteBlocked.status,
-    error: deleteBlocked.body?.error,
+    error: deleteBlocked.body.error,
   }
 
   await dbAdmin.from('staff_members').delete().eq('id', disposableStaffId)
   disposableStaffId = null
 
   const deleteOk = await api(ownerTok, 'DELETE', `/api/admin/restaurant-roles/${customRoleSlug}`)
-  report.deleteAfterReassign = { status: deleteOk.status }
+  const deleteAfterReassign = { status: deleteOk.status }
   if (deleteOk.status === 200) customRoleSlug = null
 
   const crossCreate = await api(ownerBTok, 'POST', '/api/admin/restaurant-roles', {
@@ -274,11 +326,11 @@ async function main() {
     .eq('restaurant_id', restBId!)
     .eq('role_slug', 'cross_tenant')
 
-  report.crossTenant = {
+  const crossTenant: CrossTenantResult = {
     createStatus: crossCreate.status,
     createdOnRestaurantA: (rolesOnA ?? []).length > 0,
     createdOnRestaurantB: (rolesOnB ?? []).length > 0,
-    createdRestaurantId: crossCreate.body?.role?.restaurant_id ?? null,
+    createdRestaurantId: crossCreate.body.role?.restaurant_id ?? null,
   }
 
   if ((rolesOnB ?? []).length > 0) {
@@ -289,24 +341,38 @@ async function main() {
       .eq('role_slug', 'cross_tenant')
   }
 
+  const report: Phase4aReport = {
+    app: APP,
+    tag,
+    permissionGate: PERMISSIONS.STAFF_MANAGE,
+    postMigrationFkIntegrity,
+    authorizeRegression,
+    listRoles,
+    createCustomRole,
+    systemRoleProtection,
+    deleteWithAssignment,
+    deleteAfterReassign,
+    crossTenant,
+  }
+
   console.log(JSON.stringify(report, null, 2))
 
   const pass =
     fkViolations.length === 0 &&
-    report.authorizeRegression.ownerStaffManage === true &&
-    report.authorizeRegression.ownerSettingsWrite === true &&
+    authorizeRegression.ownerStaffManage === true &&
+    authorizeRegression.ownerSettingsWrite === true &&
     listRes.status === 200 &&
-    (listRes.body.roles ?? []).length >= 6 &&
+    listRoles.count >= 6 &&
     createRes.status === 201 &&
-    createRes.body?.role?.is_system === false &&
+    createCustomRole.is_system === false &&
     patchOwner.status === 403 &&
     deleteOwner.status === 403 &&
     deleteBlocked.status === 409 &&
-    String(deleteBlocked.body?.error || '').includes('1 staff member') &&
+    String(deleteWithAssignment.error || '').includes('1 staff member') &&
     deleteOk.status === 200 &&
     crossCreate.status === 201 &&
-    report.crossTenant.createdOnRestaurantA === false &&
-    report.crossTenant.createdOnRestaurantB === true
+    crossTenant.createdOnRestaurantA === false &&
+    crossTenant.createdOnRestaurantB === true
 
   if (!pass) {
     console.error('RESTAURANT_ROLES_PHASE4A_FAIL')
