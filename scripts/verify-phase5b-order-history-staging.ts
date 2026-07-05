@@ -11,6 +11,10 @@ import { authorize } from '../lib/permissions/authorize'
 
 config({ path: '.env.test', override: true })
 
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_URL) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL
+}
+
 const APP =
   process.env.STAGING_APP_URL || 'https://flashtap-staging.llosperofficial.workers.dev'
 const STAGING_REF = 'mdqjpxwczrhkxkbqatqa'
