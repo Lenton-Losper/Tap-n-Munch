@@ -8,7 +8,10 @@ import { randomUUID } from 'crypto'
 
 config({ path: '.env.test', override: true })
 
-const APP = process.env.FLASHTAP_BASE_URL ?? 'https://flashtap-staging.llosperofficial.workers.dev'
+const APP =
+  process.env.SECURITY_VERIFY_APP_URL ??
+  process.env.FLASHTAP_BASE_URL ??
+  'https://flashtap-staging.llosperofficial.workers.dev'
 const STAGING_REF = 'mdqjpxwczrhkxkbqatqa'
 const ts = Date.now()
 const tag = `sec-fix-${ts}`
