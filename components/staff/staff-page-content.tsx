@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Trash2, UserPlus } from 'lucide-react'
+import { Trash2, UserPlus, Shield } from 'lucide-react'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
   InviteStaffDialog,
@@ -147,10 +148,18 @@ export function StaffPageContent() {
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Staff</h1>
-        <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
-          <UserPlus className="w-4 h-4 mr-2" />
-          Invite Staff
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/staff/roles">
+              <Shield className="w-4 h-4 mr-2" />
+              Manage Roles
+            </Link>
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
+            <UserPlus className="w-4 h-4 mr-2" />
+            Invite Staff
+          </Button>
+        </div>
       </div>
 
       <InviteStaffDialog

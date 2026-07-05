@@ -4,6 +4,7 @@ import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { normalizePermissionsInput } from '@/lib/restaurant-roles/utils'
+import { countRoleAssignments } from '@/lib/restaurant-roles/assignments'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,37 +12,6 @@ function errorStatus(message: string): number {
   if (message.includes('authorization') || message.includes('session')) return 401
   if (message.includes('permission')) return 403
   return 500
-}
-
-async function countRoleAssignments(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  restaurantId: string,
-  roleSlug: string,
-): Promise<number> {
-  const [users, invites, members] = await Promise.all([
-    supabase
-      .from('restaurant_users')
-      .select('id', { count: 'exact', head: true })
-      .eq('restaurant_id', restaurantId)
-      .eq('role', roleSlug)
-      .is('deleted_at', null),
-    supabase
-      .from('staff_invites')
-      .select('id', { count: 'exact', head: true })
-      .eq('restaurant_id', restaurantId)
-      .eq('role', roleSlug),
-    supabase
-      .from('staff_members')
-      .select('id', { count: 'exact', head: true })
-      .eq('restaurant_id', restaurantId)
-      .eq('role', roleSlug),
-  ])
-
-  if (users.error) throw users.error
-  if (invites.error) throw invites.error
-  if (members.error) throw members.error
-
-  return (users.count ?? 0) + (invites.count ?? 0) + (members.count ?? 0)
 }
 
 export async function PATCH(
@@ -92,6 +62,9 @@ export async function PATCH(
       }
       updates.permissions = permissions
     }
+    if (body?.is_invite_eligible !== undefined) {
+      updates.is_invite_eligible = body.is_invite_eligible === true
+    }
 
     if (Object.keys(updates).length === 1) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
@@ -101,7 +74,9 @@ export async function PATCH(
       .from('restaurant_roles')
       .update(updates)
       .eq('id', existing.id)
-      .select('id, role_slug, display_name, permissions, is_system, created_at, updated_at')
+      .select(
+        'id, role_slug, display_name, permissions, is_system, is_invite_eligible, created_at, updated_at',
+      )
       .single()
 
     if (error) throw error

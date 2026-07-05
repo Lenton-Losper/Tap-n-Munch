@@ -8,6 +8,7 @@ import {
   normalizePermissionsInput,
   slugifyRoleDisplayName,
 } from '@/lib/restaurant-roles/utils'
+import { getAssignmentCountsByRole } from '@/lib/restaurant-roles/assignments'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,7 +36,14 @@ export async function GET(request: Request) {
       .order('display_name', { ascending: true })
 
     if (error) throw error
-    return NextResponse.json({ roles: data ?? [] })
+
+    const assignmentCounts = await getAssignmentCountsByRole(supabase, restaurantId)
+    const roles = (data ?? []).map((role) => ({
+      ...role,
+      assigned_count: assignmentCounts[role.role_slug] ?? 0,
+    }))
+
+    return NextResponse.json({ roles })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to list roles'
     return NextResponse.json({ error: message }, { status: errorStatus(message) })
@@ -68,6 +76,7 @@ export async function POST(request: Request) {
     }
 
     const roleSlug = await ensureUniqueRoleSlug(supabase, restaurantId, baseSlug)
+    const isInviteEligible = body?.is_invite_eligible === true
 
     const { data, error } = await supabase
       .from('restaurant_roles')
@@ -77,7 +86,7 @@ export async function POST(request: Request) {
         display_name: displayName,
         permissions,
         is_system: false,
-        is_invite_eligible: false,
+        is_invite_eligible: isInviteEligible,
       })
       .select('id, role_slug, display_name, permissions, is_system, is_invite_eligible, created_at, updated_at')
       .single()
