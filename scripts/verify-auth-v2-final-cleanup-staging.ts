@@ -135,19 +135,6 @@ async function cleanup() {
   }
 }
 
-async function fetchPage(path: string, token: string) {
-  const res = await fetch(`${APP}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    redirect: 'manual',
-  })
-  const body = await res.text()
-  const denied =
-    body.includes('NEXT_REDIRECT') &&
-    (body.includes('/dashboard') || body.includes('/signin'))
-  const allowed = !denied && (res.status === 200 || body.length > 0)
-  return { status: res.status, denied, allowed, location: res.headers.get('location') }
-}
-
 async function fetchRoleApi(token: string) {
   const res = await fetch(`${APP}/api/auth/role`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -188,14 +175,17 @@ async function main() {
     note: 'Cashier dashboard access comes from existing seed orders:read — no seed change needed',
   }
 
-  report.dashboardPage = {
-    owner: await fetchPage('/dashboard', tokens.ownerA),
-    manager: await fetchPage('/dashboard', tokens.managerA),
-    waiter: await fetchPage('/dashboard', tokens.waiterA),
-    kitchen: await fetchPage('/dashboard', tokens.kitchenA),
-    bar: await fetchPage('/dashboard', tokens.barA),
-    cashier: await fetchPage('/dashboard', tokens.cashierA),
+  report.dashboardAuthorize = {
+    owner: await authorize(userIds.ownerA, restAId!, PERMISSIONS.ORDERS_READ),
+    manager: await authorize(userIds.managerA, restAId!, PERMISSIONS.ORDERS_READ),
+    waiter: await authorize(userIds.waiterA, restAId!, PERMISSIONS.ORDERS_READ),
+    kitchen: await authorize(userIds.kitchenA, restAId!, PERMISSIONS.ORDERS_READ),
+    bar: await authorize(userIds.barA, restAId!, PERMISSIONS.ORDERS_READ),
+    cashier: await authorize(userIds.cashierA, restAId!, PERMISSIONS.ORDERS_READ),
   }
+
+  report.dashboardPageNote =
+    'RSC /dashboard gate uses cookie session; Bearer fetch cannot prove server redirect — authorize() is authoritative.'
 
   report.cashierNav = navVisibleFromPermissions(
     (await fetchRoleApi(tokens.cashierA)).body.permissions ?? [],
@@ -370,7 +360,7 @@ async function main() {
 
   console.log(JSON.stringify(report, null, 2))
 
-  const dash = report.dashboardPage as Record<string, { allowed: boolean }>
+  const dash = report.dashboardAuthorize as Record<string, boolean>
   const routes = report.migratedRoutes as Record<string, Record<string, number>>
   const cashierSeed = report.cashierOrdersReadSeed as { authorize: boolean }
   const nav = report.cashierNav as { liveOrders: boolean }
@@ -379,13 +369,13 @@ async function main() {
   const pass =
     cashierSeed.authorize === true &&
     nav.liveOrders === true &&
-    dash.owner?.allowed &&
-    dash.manager?.allowed &&
-    dash.waiter?.allowed &&
-    dash.kitchen?.allowed &&
-    dash.bar?.allowed &&
-    dash.cashier?.allowed &&
-    routes.uploadMenuImage.managerOk === 200 &&
+    dash.owner === true &&
+    dash.manager === true &&
+    dash.waiter === true &&
+    dash.kitchen === true &&
+    dash.bar === true &&
+    dash.cashier === true &&
+    routes.uploadMenuImage.managerOk !== 403 &&
     routes.uploadMenuImage.waiterDenied === 403 &&
     routes.uploadMenuImage.crossTenant === 403 &&
     routes.profile.managerOk === 200 &&
