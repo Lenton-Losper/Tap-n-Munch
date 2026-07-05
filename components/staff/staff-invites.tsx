@@ -20,6 +20,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
+import {
+  fetchRestaurantRoles,
+  filterInviteEligibleRoles,
+  type RestaurantRoleOption,
+} from '@/components/staff/restaurant-roles-client'
 
 export type StaffInviteRow = {
   id: string
@@ -28,8 +33,6 @@ export type StaffInviteRow = {
   status: string
   created_at?: string
 }
-
-export type InvitableRole = 'manager' | 'waiter'
 
 export function useStaffInvites() {
   const [invites, setInvites] = useState<StaffInviteRow[]>([])
@@ -85,13 +88,36 @@ export function StaffInviteForm({
   submitLabel = 'Send Invite',
 }: StaffInviteFormProps) {
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<InvitableRole>('waiter')
+  const [inviteRoles, setInviteRoles] = useState<RestaurantRoleOption[]>([])
+  const [role, setRole] = useState('')
   const [sending, setSending] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const roles = filterInviteEligibleRoles(await fetchRestaurantRoles())
+        if (cancelled) return
+        setInviteRoles(roles)
+        const preferred = roles.find((r) => r.role_slug === 'waiter') ?? roles[0]
+        if (preferred) setRole(preferred.role_slug)
+      } catch {
+        if (!cancelled) onError?.('Failed to load invite roles')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [onError])
 
   const handleSendInvite = async () => {
     const trimmedEmail = email.trim().toLowerCase()
     if (!trimmedEmail) {
       onError?.('Enter an email address')
+      return
+    }
+    if (!role) {
+      onError?.('Select a role')
       return
     }
 
@@ -133,15 +159,18 @@ export function StaffInviteForm({
       <Label htmlFor={`${idPrefix}-role`}>Role</Label>
       <Select
         value={role}
-        onValueChange={(value) => setRole(value as InvitableRole)}
-        disabled={sending}
+        onValueChange={setRole}
+        disabled={sending || inviteRoles.length === 0}
       >
         <SelectTrigger id={`${idPrefix}-role`} className="w-full rounded-lg border-[#E9E9E7] sm:w-36">
-          <SelectValue />
+          <SelectValue placeholder="Role" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="manager">Manager</SelectItem>
-          <SelectItem value="waiter">Waiter</SelectItem>
+          {inviteRoles.map((inviteRole) => (
+            <SelectItem key={inviteRole.role_slug} value={inviteRole.role_slug}>
+              {inviteRole.display_name}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
     </div>

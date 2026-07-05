@@ -9,14 +9,9 @@ import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { sendStaffInviteEmail } from '@/lib/email/templates/staff-invite'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
+import { resolveInviteEligibleRoleSlug } from '@/lib/restaurant-roles/server-roles'
 
 export const dynamic = 'force-dynamic'
-
-function normalizeRole(value: string): 'manager' | 'waiter' | null {
-  const role = value.trim().toLowerCase()
-  if (role === 'manager' || role === 'waiter') return role
-  return null
-}
 
 function createInviteToken(): string {
   return crypto.randomUUID()
@@ -71,19 +66,24 @@ export async function POST(request: Request) {
     const email = String(body?.email || '')
       .trim()
       .toLowerCase()
-    const role = normalizeRole(String(body?.role || ''))
-
-    if (!email || !role) {
-      return NextResponse.json(
-        { error: 'Valid email and role (manager or waiter) are required' },
-        { status: 400 }
-      )
-    }
 
     const supabase = createServerSupabaseClient()
     const restaurantId = await getRestaurantIdForUser(supabase, user.id)
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.STAFF_MANAGE)
     if (denied) return denied
+
+    const role = await resolveInviteEligibleRoleSlug(
+      supabase,
+      restaurantId,
+      String(body?.role || ''),
+    )
+
+    if (!email || !role) {
+      return NextResponse.json(
+        { error: 'Valid email and an invite-eligible role are required' },
+        { status: 400 },
+      )
+    }
 
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')

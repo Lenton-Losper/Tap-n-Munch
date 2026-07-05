@@ -3,10 +3,9 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest, getRestaurantIdForUser } from '@/lib/supabase/admin-restaurant-auth'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
+import { resolveStaffAssignableRoleSlug } from '@/lib/restaurant-roles/server-roles'
 
 export const dynamic = 'force-dynamic'
-
-const VALID_ROLES = ['manager', 'cashier', 'waiter', 'kitchen']
 
 export async function PATCH(
   request: Request,
@@ -21,8 +20,12 @@ export async function PATCH(
     if (denied) return denied
 
     const body = await request.json()
-    const newRole = String(body.role || '').toLowerCase()
-    if (!VALID_ROLES.includes(newRole)) {
+    const newRole = await resolveStaffAssignableRoleSlug(
+      supabase,
+      restaurantId,
+      String(body.role || ''),
+    )
+    if (!newRole) {
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
     }
 

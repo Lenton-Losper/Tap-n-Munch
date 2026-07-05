@@ -18,6 +18,11 @@ import {
   useStaffInvites,
   type StaffInviteRow,
 } from '@/components/staff/staff-invites'
+import {
+  fetchRestaurantRoles,
+  filterStaffAssignableRoles,
+  type RestaurantRoleOption,
+} from '@/components/staff/restaurant-roles-client'
 
 const ROLE_COLORS: Record<string, string> = {
   owner: 'bg-purple-100 text-purple-800',
@@ -25,9 +30,8 @@ const ROLE_COLORS: Record<string, string> = {
   cashier: 'bg-green-100 text-green-800',
   waiter: 'bg-yellow-100 text-yellow-800',
   kitchen: 'bg-orange-100 text-orange-800',
+  bar: 'bg-slate-100 text-slate-800',
 }
-
-const ASSIGNABLE_ROLES = ['manager', 'cashier', 'waiter', 'kitchen']
 
 interface StaffMember {
   id: string
@@ -40,6 +44,7 @@ interface StaffMember {
 export function StaffPageContent() {
   const { toast } = useToast()
   const [staff, setStaff] = useState<StaffMember[]>([])
+  const [assignableRoles, setAssignableRoles] = useState<RestaurantRoleOption[]>([])
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState<string | null>(null)
   const [inviteOpen, setInviteOpen] = useState(false)
@@ -49,11 +54,15 @@ export function StaffPageContent() {
   const load = useCallback(async () => {
     try {
       const token = await getAccessToken()
-      const res = await fetch('/api/admin/staff', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
+      const [staffRes, roles] = await Promise.all([
+        fetch('/api/admin/staff', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetchRestaurantRoles(),
+      ])
+      const data = await staffRes.json()
       setStaff(data.staff ?? [])
+      setAssignableRoles(filterStaffAssignableRoles(roles))
     } catch {
       toast({ title: 'Failed to load staff', variant: 'destructive' })
     } finally {
@@ -186,9 +195,13 @@ export function StaffPageContent() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {ASSIGNABLE_ROLES.map((r) => (
-                        <SelectItem key={r} value={r} className="text-xs capitalize">
-                          {r}
+                      {assignableRoles.map((role) => (
+                        <SelectItem
+                          key={role.role_slug}
+                          value={role.role_slug}
+                          className="text-xs capitalize"
+                        >
+                          {role.display_name}
                         </SelectItem>
                       ))}
                     </SelectContent>

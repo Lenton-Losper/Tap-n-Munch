@@ -27,7 +27,9 @@ export async function GET(request: Request) {
 
     const { data, error } = await supabase
       .from('restaurant_roles')
-      .select('id, role_slug, display_name, permissions, is_system, created_at, updated_at')
+      .select(
+        'id, role_slug, display_name, permissions, is_system, is_invite_eligible, created_at, updated_at',
+      )
       .eq('restaurant_id', restaurantId)
       .order('is_system', { ascending: false })
       .order('display_name', { ascending: true })
@@ -75,8 +77,9 @@ export async function POST(request: Request) {
         display_name: displayName,
         permissions,
         is_system: false,
+        is_invite_eligible: false,
       })
-      .select('id, role_slug, display_name, permissions, is_system, created_at, updated_at')
+      .select('id, role_slug, display_name, permissions, is_system, is_invite_eligible, created_at, updated_at')
       .single()
 
     if (error) throw error
