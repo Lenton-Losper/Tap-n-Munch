@@ -5,6 +5,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { randomUUID } from 'crypto'
+import rolePermissionsConfig from '../lib/permissions/role-permissions.config.json'
 import { isStaffAssignableRole } from '../lib/restaurant-roles/assignable'
 
 config({ path: '.env.test', override: true })
@@ -47,6 +48,15 @@ const waiterEmail = `${tag}.waiter@flashtap-test.invalid`
 const LEGACY_ASSIGNABLE = ['cashier', 'kitchen', 'manager', 'waiter']
 const LEGACY_INVITE_ELIGIBLE = ['manager', 'waiter']
 
+const DISPLAY_NAMES: Record<string, string> = {
+  owner: 'Owner',
+  manager: 'Manager',
+  cashier: 'Cashier',
+  waiter: 'Waiter',
+  kitchen: 'Kitchen',
+  bar: 'Bar',
+}
+
 async function signIn(email: string) {
   const { data, error } = await anon.auth.signInWithPassword({ email, password: pw })
   if (error || !data.session?.access_token) throw new Error(`Sign-in failed: ${error?.message}`)
@@ -54,21 +64,14 @@ async function signIn(email: string) {
 }
 
 async function seedRestaurantRoles(restaurantId: string) {
-  const entries: Array<[string, string, boolean]> = [
-    ['owner', 'Owner', false],
-    ['manager', 'Manager', true],
-    ['cashier', 'Cashier', false],
-    ['waiter', 'Waiter', true],
-    ['kitchen', 'Kitchen', false],
-    ['bar', 'Bar', false],
-  ]
-  const rows = entries.map(([slug, name, invite]) => ({
+  const entries = Object.entries(rolePermissionsConfig).filter(([k]) => !k.startsWith('$'))
+  const rows = entries.map(([slug, perms]) => ({
     restaurant_id: restaurantId,
     role_slug: slug,
-    display_name: name,
-    permissions: [] as string[],
+    display_name: DISPLAY_NAMES[slug] ?? slug,
+    permissions: perms as string[],
     is_system: slug === 'owner',
-    is_invite_eligible: invite,
+    is_invite_eligible: LEGACY_INVITE_ELIGIBLE.includes(slug),
   }))
   const { error } = await dbAdmin.from('restaurant_roles').insert(rows)
   if (error) throw error
@@ -264,7 +267,7 @@ async function main() {
     rolesRes.status === 200 &&
     JSON.stringify(assignableSlugs) === JSON.stringify([...LEGACY_ASSIGNABLE].sort()) &&
     JSON.stringify(inviteSlugs) === JSON.stringify([...LEGACY_INVITE_ELIGIBLE].sort()) &&
-    report.includesBarInAssignable === false &&
+    (report.rolesApi as { includesBarInAssignable: boolean }).includesBarInAssignable === false &&
     patchKitchen.status === 200 &&
     report.roleAfterChange === 'kitchen' &&
     inviteManager.status === 200 &&
