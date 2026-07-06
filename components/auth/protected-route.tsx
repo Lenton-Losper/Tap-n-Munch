@@ -7,6 +7,9 @@ import { Button } from '@/components/ui/button'
 import { signOutSupabase } from '@/lib/supabase/auth'
 import { syncAuthProfile } from '@/lib/supabase/sync-profile'
 
+const isStagingDiag = () =>
+  (process.env.NEXT_PUBLIC_APP_URL || '').includes('flashtap-staging')
+
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, userData, restaurantId, loading } = useAuth()
   const router = useRouter()
@@ -33,6 +36,13 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!loading && !user && !hasRedirectedRef.current) {
       hasRedirectedRef.current = true
+      if (isStagingDiag()) {
+        console.log('[PROTECTED_ROUTE_REDIRECT]', {
+          user,
+          loading,
+          timestamp: new Date().toISOString(),
+        })
+      }
       router.replace('/signin')
     }
   }, [user, loading, router])
