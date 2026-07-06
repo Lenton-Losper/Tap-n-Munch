@@ -40,10 +40,10 @@ export async function getSupabaseSession() {
 }
 
 export function onSupabaseAuthChange(
-  callback: (session: any) => void
+  callback: (event: string, session: any) => void
 ) {
-  return supabase.auth.onAuthStateChange((_event: string, session: { access_token: string } | null) => {
-    callback(session)
+  return supabase.auth.onAuthStateChange((event: string, session) => {
+    callback(event, session)
   })
 }
 
