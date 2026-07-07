@@ -1,6 +1,6 @@
 'use client'
 
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import {
   onSupabaseAuthChange,
@@ -15,6 +15,8 @@ import type { Permission } from '@/lib/permissions'
 
 export type { StaffRole }
 
+export type AccountStatus = 'loading' | 'ready' | 'missing' | 'failed'
+
 interface AuthContextType {
   user: User | null
   userData: Record<string, any> | null
@@ -24,7 +26,9 @@ interface AuthContextType {
   permissions: Permission[]
   permissionsLoaded: boolean
   loading: boolean
+  accountStatus: AccountStatus
   isSupabaseConfigured: boolean
+  retryLoadUserData: () => Promise<void>
   signUp: (email: string, password: string, restaurantName: string, phone?: string) => Promise<void>
   signIn: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
@@ -39,7 +43,9 @@ const AuthContext = createContext<AuthContextType>({
   permissions: [],
   permissionsLoaded: false,
   loading: true,
+  accountStatus: 'loading',
   isSupabaseConfigured: false,
+  retryLoadUserData: async () => {},
   signUp: async () => {},
   signIn: async () => {},
   signOut: async () => {},
@@ -71,8 +77,250 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [permissionsLoaded, setPermissionsLoaded] = useState(false)
   const [loading, setLoading] = useState(isSupabaseEnvConfigured)
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>('loading')
   const [authResolved, setAuthResolved] = useState(false)
   const isSupabaseConfigured = isSupabaseEnvConfigured
+
+  const loadUserData = useCallback(async (_sessionUser: User | null) => {
+    const diagUserId = _sessionUser?.id
+
+    if (isStagingDiag()) {
+      console.log('[LOAD_USER_DATA]', {
+        phase: 'start',
+        user: diagUserId,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    if (!_sessionUser) {
+      setAccountStatus('loading')
+      setUserData(null)
+      setRestaurant(null)
+      setRestaurantId(null)
+      setRole(null)
+      setPermissions([])
+      setPermissionsLoaded(false)
+      setLoading(false)
+      if (isStagingDiag()) {
+        console.log('[LOAD_USER_DATA]', {
+          phase: 'end',
+          user: diagUserId,
+          timestamp: new Date().toISOString(),
+        })
+      }
+      return
+    }
+
+    setAccountStatus('loading')
+    setLoading(true)
+
+    try {
+      const [{ data: { user: authUser }, error: authUserError }, { data: sessionData }] =
+        await Promise.all([
+          supabase.auth.getUser(),
+          supabase.auth.getSession(),
+        ])
+
+      if (authUserError || !authUser) {
+        console.error('[AuthProvider] getUser failed:', authUserError)
+        setAccountStatus('failed')
+        setUserData(null)
+        setRestaurant(null)
+        setRestaurantId(null)
+        setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
+        return
+      }
+
+      const accessToken = sessionData.session?.access_token
+
+      const [userLookup, roleResult] = await Promise.all([
+        supabase.from('users').select('*').eq('id', authUser.id).maybeSingle(),
+        accessToken
+          ? fetch('/api/auth/role', { headers: { Authorization: `Bearer ${accessToken}` } })
+          : Promise.resolve(null),
+      ])
+
+      let { data: userRecord, error: userRowError } = userLookup
+
+      console.log('[AuthProvider] user lookup:', {
+        authUserId: authUser.id,
+        userRecord,
+        error: userRowError,
+      })
+
+      if (userRowError) {
+        console.error('[AuthProvider] users lookup failed', {
+          query: 'users',
+          error: userRowError,
+          code: (userRowError as { code?: string }).code,
+          message: userRowError.message,
+          ...authDiagContext(),
+        })
+        setAccountStatus('failed')
+        setUserData(null)
+        setRestaurant(null)
+        setRestaurantId(null)
+        setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
+        return
+      }
+
+      if (!userRecord) {
+        const synced = await syncAuthProfile()
+        if (synced) {
+          const retry = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', authUser.id)
+            .maybeSingle()
+
+          console.log('[AuthProvider] user lookup retry:', {
+            authUserId: authUser.id,
+            userRecord: retry.data,
+            error: retry.error,
+          })
+
+          userRecord = retry.data
+          if (retry.error) {
+            console.error('[AuthProvider] users lookup retry failed', {
+              query: 'users retry',
+              error: retry.error,
+              code: (retry.error as { code?: string }).code,
+              message: retry.error.message,
+              ...authDiagContext(),
+            })
+            throw retry.error
+          }
+        }
+      }
+
+      if (!userRecord) {
+        setAccountStatus('missing')
+        setUserData(null)
+        setRestaurant(null)
+        setRestaurantId(null)
+        setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
+        return
+      }
+
+      setUserData(userRecord as Record<string, any>)
+      setAccountStatus('ready')
+
+      let linkedRestaurantId: string | null = null
+      let resolvedRole: StaffRole | null = null
+      let resolvedPermissions: Permission[] = []
+
+      if (roleResult) {
+        const res = roleResult
+        if (res.ok) {
+          const payload = await res.json()
+          resolvedRole = parseStaffRole(payload.role)
+          if (payload.restaurant_id) {
+            linkedRestaurantId = String(payload.restaurant_id)
+          }
+          if (Array.isArray(payload.permissions)) {
+            resolvedPermissions = payload.permissions as Permission[]
+          }
+          setPermissionsLoaded(true)
+          console.log('[AuthProvider] role API result:', payload)
+        } else {
+          const roleErrorBody = await res.text()
+          console.error('[AuthProvider] role fetch failed', {
+            query: 'role fetch',
+            status: res.status,
+            body: roleErrorBody,
+            ...authDiagContext(),
+          })
+          setPermissionsLoaded(false)
+          console.warn('[AuthProvider] role API failed:', res.status, roleErrorBody)
+        }
+      } else {
+        setPermissionsLoaded(false)
+      }
+
+      setRole(resolvedRole)
+      setPermissions(resolvedPermissions)
+
+      if (!linkedRestaurantId && userRecord?.restaurant_id) {
+        linkedRestaurantId = String(userRecord.restaurant_id)
+      }
+
+      if (!linkedRestaurantId) {
+        setRestaurant(null)
+        setRestaurantId(null)
+        setRole(null)
+        setPermissions([])
+        setPermissionsLoaded(false)
+        return
+      }
+
+      const { data: restaurantRow, error: restErr } = await supabase
+        .from('restaurants')
+        .select(RESTAURANT_SELECT)
+        .eq('id', linkedRestaurantId)
+        .single()
+
+      if (restErr) {
+        console.error('[AuthProvider] restaurant fetch failed', {
+          query: 'restaurants',
+          error: restErr,
+          code: (restErr as { code?: string }).code,
+          message: restErr.message,
+          ...authDiagContext(),
+        })
+        console.error('Failed to load restaurant row:', restErr)
+        setRestaurant(null)
+        setRestaurantId(linkedRestaurantId)
+        return
+      }
+
+      const restaurantRecord = (restaurantRow || null) as Record<string, any> | null
+      setRestaurant(restaurantRecord)
+      setRestaurantId(
+        (restaurantRecord?.id as string | undefined) || linkedRestaurantId
+      )
+      if (restaurantRecord?.id && typeof window !== 'undefined') {
+        localStorage.setItem('restaurantId', String(restaurantRecord.id))
+      }
+    } catch (error) {
+      console.error('[AuthProvider] loadUserData failed', {
+        error,
+        code:
+          error && typeof error === 'object' && 'code' in error
+            ? (error as { code?: string }).code
+            : undefined,
+        message: error instanceof Error ? error.message : String(error),
+        ...authDiagContext(),
+      })
+      console.error('Failed to load Supabase auth data:', error)
+      setUserData(null)
+      setRestaurant(null)
+      setRestaurantId(null)
+      setRole(null)
+      setPermissions([])
+      setPermissionsLoaded(false)
+      setAccountStatus((prev) => (prev === 'missing' ? prev : 'failed'))
+    } finally {
+      if (isStagingDiag()) {
+        console.log('[LOAD_USER_DATA]', {
+          phase: 'end',
+          user: diagUserId,
+          timestamp: new Date().toISOString(),
+        })
+      }
+      setLoading(false)
+    }
+  }, [])
+
+  const retryLoadUserData = useCallback(async () => {
+    if (!user) return
+    await loadUserData(user)
+  }, [user, loadUserData])
 
   useEffect(() => {
     if (isStagingDiag()) {
@@ -93,222 +341,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!authResolved) return
-
-    const loadUserData = async (_sessionUser: User | null) => {
-      const diagUserId = _sessionUser?.id
-
-      if (isStagingDiag()) {
-        console.log('[LOAD_USER_DATA]', {
-          phase: 'start',
-          user: diagUserId,
-          timestamp: new Date().toISOString(),
-        })
-      }
-
-      if (!_sessionUser) {
-        setUserData(null)
-        setRestaurant(null)
-        setRestaurantId(null)
-        setRole(null)
-        setPermissions([])
-        setPermissionsLoaded(false)
-        setLoading(false)
-        if (isStagingDiag()) {
-          console.log('[LOAD_USER_DATA]', {
-            phase: 'end',
-            user: diagUserId,
-            timestamp: new Date().toISOString(),
-          })
-        }
-        return
-      }
-
-      setLoading(true)
-
-      try {
-        const [{ data: { user: authUser }, error: authUserError }, { data: sessionData }] =
-          await Promise.all([
-            supabase.auth.getUser(),
-            supabase.auth.getSession(),
-          ])
-
-        if (authUserError || !authUser) {
-          console.error('[AuthProvider] getUser failed:', authUserError)
-          setUserData(null)
-          setRestaurant(null)
-          setRestaurantId(null)
-          setRole(null)
-          setPermissions([])
-          setPermissionsLoaded(false)
-          return
-        }
-
-        const accessToken = sessionData.session?.access_token
-
-        const [userLookup, roleResult] = await Promise.all([
-          supabase.from('users').select('*').eq('id', authUser.id).maybeSingle(),
-          accessToken
-            ? fetch('/api/auth/role', { headers: { Authorization: `Bearer ${accessToken}` } })
-            : Promise.resolve(null),
-        ])
-
-        let { data: userRecord, error: userRowError } = userLookup
-
-        console.log('[AuthProvider] user lookup:', {
-          authUserId: authUser.id,
-          userRecord,
-          error: userRowError,
-        })
-
-        if (userRowError) {
-          console.error('[AuthProvider] users lookup failed', {
-            query: 'users',
-            error: userRowError,
-            code: (userRowError as { code?: string }).code,
-            message: userRowError.message,
-            ...authDiagContext(),
-          })
-          throw userRowError
-        }
-
-        if (!userRecord) {
-          const synced = await syncAuthProfile()
-          if (synced) {
-            const retry = await supabase
-              .from('users')
-              .select('*')
-              .eq('id', authUser.id)
-              .maybeSingle()
-
-            console.log('[AuthProvider] user lookup retry:', {
-              authUserId: authUser.id,
-              userRecord: retry.data,
-              error: retry.error,
-            })
-
-            userRecord = retry.data
-            if (retry.error) {
-              console.error('[AuthProvider] users lookup retry failed', {
-                query: 'users retry',
-                error: retry.error,
-                code: (retry.error as { code?: string }).code,
-                message: retry.error.message,
-                ...authDiagContext(),
-              })
-              throw retry.error
-            }
-          }
-        }
-
-        setUserData((userRecord || null) as Record<string, any> | null)
-
-        let linkedRestaurantId: string | null = null
-        let resolvedRole: StaffRole | null = null
-        let resolvedPermissions: Permission[] = []
-
-        if (roleResult) {
-          const res = roleResult
-          if (res.ok) {
-            const payload = await res.json()
-            resolvedRole = parseStaffRole(payload.role)
-            if (payload.restaurant_id) {
-              linkedRestaurantId = String(payload.restaurant_id)
-            }
-            if (Array.isArray(payload.permissions)) {
-              resolvedPermissions = payload.permissions as Permission[]
-            }
-            setPermissionsLoaded(true)
-            console.log('[AuthProvider] role API result:', payload)
-          } else {
-            const roleErrorBody = await res.text()
-            console.error('[AuthProvider] role fetch failed', {
-              query: 'role fetch',
-              status: res.status,
-              body: roleErrorBody,
-              ...authDiagContext(),
-            })
-            setPermissionsLoaded(false)
-            console.warn('[AuthProvider] role API failed:', res.status, roleErrorBody)
-          }
-        } else {
-          setPermissionsLoaded(false)
-        }
-
-        setRole(resolvedRole)
-        setPermissions(resolvedPermissions)
-
-        if (!linkedRestaurantId && userRecord?.restaurant_id) {
-          linkedRestaurantId = String(userRecord.restaurant_id)
-        }
-
-        if (!linkedRestaurantId) {
-          setRestaurant(null)
-          setRestaurantId(null)
-          setRole(null)
-          setPermissions([])
-          setPermissionsLoaded(false)
-          return
-        }
-
-        const { data: restaurantRow, error: restErr } = await supabase
-          .from('restaurants')
-          .select(RESTAURANT_SELECT)
-          .eq('id', linkedRestaurantId)
-          .single()
-
-        if (restErr) {
-          console.error('[AuthProvider] restaurant fetch failed', {
-            query: 'restaurants',
-            error: restErr,
-            code: (restErr as { code?: string }).code,
-            message: restErr.message,
-            ...authDiagContext(),
-          })
-          console.error('Failed to load restaurant row:', restErr)
-          setRestaurant(null)
-          setRestaurantId(linkedRestaurantId)
-          return
-        }
-
-        const restaurantRecord = (restaurantRow || null) as Record<string, any> | null
-        setRestaurant(restaurantRecord)
-        setRestaurantId(
-          (restaurantRecord?.id as string | undefined) || linkedRestaurantId
-        )
-        if (restaurantRecord?.id && typeof window !== 'undefined') {
-          localStorage.setItem('restaurantId', String(restaurantRecord.id))
-        }
-      } catch (error) {
-        console.error('[AuthProvider] loadUserData failed', {
-          error,
-          code:
-            error && typeof error === 'object' && 'code' in error
-              ? (error as { code?: string }).code
-              : undefined,
-          message: error instanceof Error ? error.message : String(error),
-          ...authDiagContext(),
-        })
-        console.error('Failed to load Supabase auth data:', error)
-        setUserData(null)
-        setRestaurant(null)
-        setRestaurantId(null)
-        setRole(null)
-        setPermissions([])
-        setPermissionsLoaded(false)
-      } finally {
-        if (isStagingDiag()) {
-          console.log('[LOAD_USER_DATA]', {
-            phase: 'end',
-            user: diagUserId,
-            timestamp: new Date().toISOString(),
-          })
-        }
-        setLoading(false)
-      }
-    }
-
     loadUserData(user)
-  }, [user, authResolved])
+  }, [user, authResolved, loadUserData])
 
   useEffect(() => {
     if (!isSupabaseConfigured) return
@@ -346,6 +380,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setRole(null)
     setPermissions([])
     setPermissionsLoaded(false)
+    setAccountStatus('loading')
     setLoading(false)
     if (typeof window !== 'undefined') {
       localStorage.removeItem('restaurantId')
@@ -364,7 +399,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         permissions,
         permissionsLoaded,
         loading,
+        accountStatus,
         isSupabaseConfigured,
+        retryLoadUserData,
         signUp,
         signIn,
         signOut,
