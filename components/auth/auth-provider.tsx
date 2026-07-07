@@ -71,6 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [permissionsLoaded, setPermissionsLoaded] = useState(false)
   const [loading, setLoading] = useState(isSupabaseEnvConfigured)
+  const [authResolved, setAuthResolved] = useState(false)
   const isSupabaseConfigured = isSupabaseEnvConfigured
 
   useEffect(() => {
@@ -91,6 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    if (!authResolved) return
+
     const loadUserData = async (_sessionUser: User | null) => {
       const diagUserId = _sessionUser?.id
 
@@ -305,7 +308,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     loadUserData(user)
-  }, [user])
+  }, [user, authResolved])
 
   useEffect(() => {
     if (!isSupabaseConfigured) return
@@ -318,6 +321,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         online: typeof navigator !== 'undefined' ? navigator.onLine : null,
       })
       setUser((session?.user as User | null) ?? null)
+      setAuthResolved(true)
       setLoading(false)
     })
 
