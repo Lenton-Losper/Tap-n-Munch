@@ -92,10 +92,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const loadUserData = async (_sessionUser: User | null) => {
+      const diagUserId = _sessionUser?.id
+
       if (isStagingDiag()) {
         console.log('[LOAD_USER_DATA]', {
           phase: 'start',
-          user: _sessionUser?.id,
+          user: diagUserId,
           timestamp: new Date().toISOString(),
         })
       }
@@ -111,7 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isStagingDiag()) {
           console.log('[LOAD_USER_DATA]', {
             phase: 'end',
-            user: _sessionUser?.id,
+            user: diagUserId,
             timestamp: new Date().toISOString(),
           })
         }
@@ -294,7 +296,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isStagingDiag()) {
           console.log('[LOAD_USER_DATA]', {
             phase: 'end',
-            user: _sessionUser?.id,
+            user: diagUserId,
             timestamp: new Date().toISOString(),
           })
         }
