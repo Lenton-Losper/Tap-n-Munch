@@ -54,6 +54,7 @@ export function DocumentsListContent() {
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [modalType, setModalType] = useState<DocumentType>('quote')
+  const [modalInstance, setModalInstance] = useState(0)
 
   const loadDocuments = useCallback(async () => {
     if (!restaurantId) {
@@ -90,6 +91,7 @@ export function DocumentsListContent() {
 
   const openCreateModal = (type: DocumentType) => {
     setModalType(type)
+    setModalInstance((n) => n + 1)
     setModalOpen(true)
   }
 
@@ -168,6 +170,7 @@ export function DocumentsListContent() {
       </div>
 
       <DocumentFormModal
+        key={modalInstance}
         open={modalOpen}
         onOpenChange={setModalOpen}
         documentType={modalType}

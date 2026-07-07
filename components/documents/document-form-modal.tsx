@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getSettingsAccessToken } from '@/components/settings/settings-utils'
@@ -97,17 +97,6 @@ export function DocumentFormModal({
   const [referenceNote, setReferenceNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    if (!open) return
-    setShipTo(emptyParty())
-    setBillTo(emptyParty())
-    setLineItems([emptyLineItem()])
-    setDueDate('')
-    setReferenceNote('')
-    setErrors({})
-    setSaving(false)
-  }, [open, documentType])
 
   const taxRate = useMemo(() => {
     const raw = Number(restaurant?.tax_rate ?? 0)
