@@ -3,7 +3,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import {
-  getSupabaseSession,
   onSupabaseAuthChange,
   signInWithSupabase,
   signOutSupabase,
@@ -266,16 +265,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isSupabaseConfigured) return
-
-    getSupabaseSession()
-      .then((session) => {
-        setUser(session?.user ?? null)
-      })
-      .catch((error) => {
-        console.error('Failed to get Supabase session:', error)
-        setUser(null)
-        setLoading(false)
-      })
 
     const { data: listener } = onSupabaseAuthChange((event, session) => {
       console.log('[AUTH_EVENT]', {
