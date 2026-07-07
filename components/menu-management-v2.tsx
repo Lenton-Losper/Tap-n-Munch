@@ -278,6 +278,17 @@ export function MenuManagementV2({
     return items
   }, [allMenuItems, showHidden, missingInventoryFilter, missingMenuItemIds])
 
+  const existingItemsForValidation = useMemo(
+    () =>
+      allMenuItems.map((item) => ({
+        id: String(item.id),
+        name: String(item.name ?? ''),
+        subCategoryId: item.sub_category_id ?? null,
+        categoryId: item.menu_category_id ?? item.category_id ?? null,
+      })),
+    [allMenuItems],
+  )
+
   const subCategoriesByMenuCategory = useMemo(() => {
     const map: Record<string, SubCategory[]> = {}
     for (const subCategory of allSubCategories) {
@@ -1517,6 +1528,7 @@ export function MenuManagementV2({
         categoryId={selectedMenuCategory?.id ?? editingItem?.menu_category_id ?? null}
         defaultSubCategoryId={defaultSubCategoryId}
         subCategoryOptions={allSubCategoryOptions}
+        existingItems={existingItemsForValidation}
         onSaved={handleItemSaved}
       />
     </div>

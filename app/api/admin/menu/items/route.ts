@@ -6,6 +6,11 @@ import {
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
+import {
+  validateMenuItemDraft,
+  type ExistingMenuItem,
+  type MenuItemDraft,
+} from '@/lib/menu/validate-menu-item'
 
 export const dynamic = 'force-dynamic'
 
@@ -92,6 +97,46 @@ async function resolveRestaurantId(supabase: ReturnType<typeof createServerSupab
   throw notFoundError
 }
 
+async function fetchExistingMenuItems(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  restaurantId: string,
+): Promise<ExistingMenuItem[]> {
+  const { data, error } = await supabase
+    .from('menu_items')
+    .select('id, name, subcategory_id, category_id')
+    .eq('restaurant_id', restaurantId)
+
+  if (error) throw error
+
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    subCategoryId: (row.subcategory_id as string | null) ?? null,
+    categoryId: (row.category_id as string | null) ?? null,
+  }))
+}
+
+/** Ingredients are saved via saveRecipeAction, not this route — only parse if ever sent. */
+function parseIngredientRowsFromBody(
+  body: Record<string, unknown>,
+): MenuItemDraft['ingredientRows'] {
+  const raw = body.ingredient_rows ?? body.ingredientRows ?? body.ingredients
+  if (!Array.isArray(raw)) return []
+
+  return raw.map((row) => {
+    const record = row as Record<string, unknown>
+    return {
+      stockItemId: String(record.stockItemId ?? record.stock_item_id ?? ''),
+      quantity: (record.quantity ?? '') as string | number,
+      unitId: String(record.unitId ?? record.unit_id ?? ''),
+    }
+  })
+}
+
+function validationErrorResponse(blockingErrors: string[]) {
+  return NextResponse.json({ error: blockingErrors.join(' ') }, { status: 400 })
+}
+
 export async function POST(request: Request) {
   try {
     const user = await getUserFromRequest(request)
@@ -127,6 +172,20 @@ export async function POST(request: Request) {
     }
     if (!Number.isFinite(basePrice) || basePrice <= 0) {
       return NextResponse.json({ error: 'Invalid price' }, { status: 400 })
+    }
+
+    const existingItems = await fetchExistingMenuItems(supabase, restaurantId)
+    const { blockingErrors } = validateMenuItemDraft(
+      {
+        name,
+        categoryId: categoryId ? String(categoryId) : null,
+        subCategoryId: subCategoryId || null,
+        ingredientRows: parseIngredientRowsFromBody(body),
+      },
+      existingItems,
+    )
+    if (blockingErrors.length > 0) {
+      return validationErrorResponse(blockingErrors)
     }
 
     const payload = buildMenuItemDbPayload({
@@ -193,6 +252,37 @@ export async function PATCH(request: Request) {
     const categoryId = body.category_id ?? body.menu_category_id ?? undefined
     const subCategoryId =
       body.subcategory_id ?? body.sub_category_id ?? body.sub_categoryId ?? undefined
+
+    const existingItems = await fetchExistingMenuItems(supabase, restaurantId)
+    const existingItem = existingItems.find((item) => item.id === itemId)
+    const draftName =
+      body.name !== undefined ? String(body.name || '').trim() : (existingItem?.name ?? '')
+    const draftCategoryId =
+      categoryId !== undefined
+        ? categoryId
+          ? String(categoryId)
+          : null
+        : (existingItem?.categoryId ?? null)
+    const draftSubCategoryId =
+      subCategoryId !== undefined
+        ? subCategoryId
+          ? String(subCategoryId)
+          : null
+        : (existingItem?.subCategoryId ?? null)
+
+    const { blockingErrors } = validateMenuItemDraft(
+      {
+        itemId,
+        name: draftName,
+        categoryId: draftCategoryId,
+        subCategoryId: draftSubCategoryId,
+        ingredientRows: parseIngredientRowsFromBody(body),
+      },
+      existingItems,
+    )
+    if (blockingErrors.length > 0) {
+      return validationErrorResponse(blockingErrors)
+    }
 
     const payload = buildMenuItemDbPayload({
       ...body,

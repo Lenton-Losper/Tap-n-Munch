@@ -20,6 +20,10 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
 import {
+  validateMenuItemDraft,
+  type ExistingMenuItem,
+} from '@/lib/menu/validate-menu-item'
+import {
   canEditMenuInventoryAction,
   loadInventoryPickerAction,
   loadMenuItemInventoryAction,
@@ -144,6 +148,7 @@ function MenuItemFormContent({
   restaurantId,
   categoryId,
   subCategoryOptions,
+  existingItems,
   onOpenChange,
   onSaved,
 }: {
@@ -152,6 +157,7 @@ function MenuItemFormContent({
   restaurantId: string | null
   categoryId: string | null
   subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  existingItems: ExistingMenuItem[]
   onOpenChange: (open: boolean) => void
   onSaved: () => void | Promise<void>
 }) {
@@ -357,6 +363,29 @@ function MenuItemFormContent({
 
   const handleSaveItem = async () => {
     if (!restaurantId) return
+
+    const { blockingErrors } = validateMenuItemDraft(
+      {
+        itemId: editingItem?.id ?? null,
+        name: itemForm.name,
+        subCategoryId: itemForm.sub_category_id || null,
+        categoryId: categoryId ?? editingItem?.menu_category_id ?? null,
+        ingredientRows: ingredientRows.map(({ stockItemId, quantity, unitId }) => ({
+          stockItemId,
+          quantity,
+          unitId,
+        })),
+      },
+      existingItems,
+    )
+    if (blockingErrors.length > 0) {
+      toast({
+        title: 'Validation Error',
+        description: blockingErrors.join('\n'),
+        variant: 'destructive',
+      })
+      return
+    }
 
     if (!itemForm.name || !itemForm.base_price) {
       toast({
@@ -620,6 +649,26 @@ function MenuItemFormContent({
                 placeholder="e.g., Windhoek Lager"
               />
             </div>
+            {canEditInventory ? (
+              <div className="flex items-center justify-between gap-4 rounded-lg border border-border p-4">
+                <div className="space-y-1">
+                  <Label htmlFor="track-inventory-general">Track Inventory</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Link ingredients to this menu item for automatic stock deduction on sale.
+                  </p>
+                </div>
+                <Switch
+                  id="track-inventory-general"
+                  checked={trackInventory}
+                  onCheckedChange={setTrackInventory}
+                />
+              </div>
+            ) : null}
+            {canEditInventory && trackInventory ? (
+              <p className="text-sm text-muted-foreground">
+                Set which ingredients and quantities are used on the Inventory tab.
+              </p>
+            ) : null}
             <div>
               <Label>Description</Label>
               <Textarea
@@ -851,7 +900,6 @@ function MenuItemFormContent({
               ) : null}
               <MenuItemInventoryTab
                 trackInventory={trackInventory}
-                onTrackInventoryChange={setTrackInventory}
                 rows={ingredientRows}
                 onRowsChange={setIngredientRows}
                 stockItems={stockItems}
@@ -1142,6 +1190,7 @@ export function MenuItemFormModal({
   categoryId,
   defaultSubCategoryId = '',
   subCategoryOptions,
+  existingItems,
   onSaved,
 }: {
   open: boolean
@@ -1151,6 +1200,7 @@ export function MenuItemFormModal({
   categoryId: string | null
   defaultSubCategoryId?: string
   subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  existingItems: ExistingMenuItem[]
   onSaved: () => void | Promise<void>
 }) {
   const formKey = editingItem?.id ? `edit-${editingItem.id}` : `new-${defaultSubCategoryId}`
@@ -1175,6 +1225,7 @@ export function MenuItemFormModal({
             restaurantId={restaurantId}
             categoryId={categoryId}
             subCategoryOptions={subCategoryOptions}
+            existingItems={existingItems}
             onOpenChange={onOpenChange}
             onSaved={onSaved}
           />

@@ -5,7 +5,6 @@ import { Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { SearchableStockItemSelectField } from '@/components/stock/searchable-stock-item-select-field'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
@@ -36,7 +35,6 @@ export function toIngredientRowsFromLoaded(
 
 export function MenuItemInventoryTab({
   trackInventory,
-  onTrackInventoryChange,
   rows,
   onRowsChange,
   stockItems,
@@ -46,7 +44,6 @@ export function MenuItemInventoryTab({
   disabled = false,
 }: {
   trackInventory: boolean
-  onTrackInventoryChange: (value: boolean) => void
   rows: MenuItemIngredientRow[]
   onRowsChange: (rows: MenuItemIngredientRow[]) => void
   stockItems: StockItemOptionWithLevel[]
@@ -94,21 +91,6 @@ export function MenuItemInventoryTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4 rounded-lg border border-border p-4">
-        <div className="space-y-1">
-          <Label htmlFor="track-inventory">Track Inventory</Label>
-          <p className="text-sm text-muted-foreground">
-            Link ingredients to this menu item for automatic stock deduction on sale.
-          </p>
-        </div>
-        <Switch
-          id="track-inventory"
-          checked={trackInventory}
-          onCheckedChange={onTrackInventoryChange}
-          disabled={disabled}
-        />
-      </div>
-
       {trackInventory ? (
         <>
           {completeness ? (

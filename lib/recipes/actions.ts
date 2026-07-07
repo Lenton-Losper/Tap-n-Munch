@@ -21,13 +21,18 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     return { error: 'Menu item is required.' }
   }
 
-  const ingredients = input.ingredients
-    .map((row) => ({
-      stockItemId: row.stockItemId.trim(),
-      quantity: Number(row.quantity),
-      unitId: row.unitId.trim(),
-    }))
-    .filter((row) => row.stockItemId && row.unitId && Number.isFinite(row.quantity) && row.quantity > 0)
+  const ingredients = input.ingredients.map((row) => ({
+    stockItemId: row.stockItemId.trim(),
+    quantity: Number(row.quantity),
+    unitId: row.unitId.trim(),
+  }))
+
+  const invalidRow = ingredients.find(
+    (row) => !row.stockItemId || !row.unitId || !Number.isFinite(row.quantity) || row.quantity <= 0
+  )
+  if (invalidRow) {
+    return { error: 'One or more ingredient rows are incomplete or invalid — every linked ingredient needs a stock item, unit, and quantity greater than zero.' }
+  }
 
   const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
   if ('error' in context) {
