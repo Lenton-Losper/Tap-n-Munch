@@ -341,6 +341,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!authResolved) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional async data load when auth resolves/user changes; setState in loadUserData runs after network awaits, not synchronously in the effect body
     loadUserData(user)
   }, [user, authResolved, loadUserData])
 
