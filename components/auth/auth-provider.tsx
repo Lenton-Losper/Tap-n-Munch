@@ -52,6 +52,9 @@ const isSupabaseEnvConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 )
 
+const isStagingDiag = () =>
+  (process.env.NEXT_PUBLIC_APP_URL || '').includes('flashtap-staging')
+
 function authDiagContext() {
   return {
     timestamp: new Date().toISOString(),
@@ -71,7 +74,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isSupabaseConfigured = isSupabaseEnvConfigured
 
   useEffect(() => {
+    if (isStagingDiag()) {
+      console.log('[AUTH_PROVIDER]', {
+        phase: 'mount',
+        timestamp: new Date().toISOString(),
+      })
+    }
+    return () => {
+      if (isStagingDiag()) {
+        console.log('[AUTH_PROVIDER]', {
+          phase: 'unmount',
+          timestamp: new Date().toISOString(),
+        })
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     const loadUserData = async (_sessionUser: User | null) => {
+      if (isStagingDiag()) {
+        console.log('[LOAD_USER_DATA]', {
+          phase: 'start',
+          user: _sessionUser?.id,
+          timestamp: new Date().toISOString(),
+        })
+      }
+
       if (!_sessionUser) {
         setUserData(null)
         setRestaurant(null)
@@ -80,6 +108,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPermissions([])
         setPermissionsLoaded(false)
         setLoading(false)
+        if (isStagingDiag()) {
+          console.log('[LOAD_USER_DATA]', {
+            phase: 'end',
+            user: _sessionUser?.id,
+            timestamp: new Date().toISOString(),
+          })
+        }
         return
       }
 
@@ -256,6 +291,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPermissions([])
         setPermissionsLoaded(false)
       } finally {
+        if (isStagingDiag()) {
+          console.log('[LOAD_USER_DATA]', {
+            phase: 'end',
+            user: _sessionUser?.id,
+            timestamp: new Date().toISOString(),
+          })
+        }
         setLoading(false)
       }
     }
