@@ -30,6 +30,8 @@ export const PERMISSIONS = {
   PAYMENTS_PROCESS: 'payments:process',
   PAYMENTS_VIEW: 'payments:view',
   PAYMENTS_CONFIGURE: 'payments:configure',
+  PAYMENTS_READ: 'payments:read',
+  PAYMENTS_REFUND: 'payments:refund',
 
   // Staff
   STAFF_MANAGE:   'staff:manage',

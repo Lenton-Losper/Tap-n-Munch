@@ -60,6 +60,14 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Configure Payments',
     description: 'Change payment providers, terminals, and methods.',
   },
+  [PERMISSIONS.PAYMENTS_READ]: {
+    label: 'View Payment Events',
+    description: 'View refund and payment event history.',
+  },
+  [PERMISSIONS.PAYMENTS_REFUND]: {
+    label: 'Issue Refunds',
+    description: 'Initiate card and cash refunds against paid orders.',
+  },
   [PERMISSIONS.STAFF_MANAGE]: {
     label: 'Manage Staff',
     description: 'Invite staff, assign roles, and manage permissions.',
@@ -145,6 +153,8 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       PERMISSIONS.PAYMENTS_PROCESS,
       PERMISSIONS.PAYMENTS_VIEW,
       PERMISSIONS.PAYMENTS_CONFIGURE,
+      PERMISSIONS.PAYMENTS_READ,
+      PERMISSIONS.PAYMENTS_REFUND,
     ].map((key) => ({ key, ...LABELS[key] })),
   },
   {
