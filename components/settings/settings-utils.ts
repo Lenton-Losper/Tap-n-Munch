@@ -33,6 +33,7 @@ export function profileInitials(firstName: string, lastName: string, email: stri
 export function hashToSettingsTab(hash: string): SettingsTabId {
   const normalized = String(hash || '').toLowerCase()
   if (normalized === '#bank') return 'bank'
+  if (normalized === '#billing') return 'billing'
   if (normalized === '#restaurant') return 'restaurant'
   return 'profile'
 }
