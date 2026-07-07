@@ -104,6 +104,14 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'View Analytics',
     description: 'Open sales analytics, charts, and performance reports.',
   },
+  [PERMISSIONS.DOCUMENTS_READ]: {
+    label: 'View Documents',
+    description: 'View quotes, invoices, and billing profile details.',
+  },
+  [PERMISSIONS.DOCUMENTS_WRITE]: {
+    label: 'Create Documents',
+    description: 'Issue and manage quotes and invoices.',
+  },
 }
 
 export const PERMISSION_GROUPS: PermissionGroup[] = [
@@ -170,6 +178,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     domain: 'Analytics',
     permissions: [PERMISSIONS.ANALYTICS_VIEW].map((key) => ({ key, ...LABELS[key] })),
+  },
+  {
+    domain: 'Documents',
+    permissions: [PERMISSIONS.DOCUMENTS_READ, PERMISSIONS.DOCUMENTS_WRITE].map((key) => ({
+      key,
+      ...LABELS[key],
+    })),
   },
 ]
 

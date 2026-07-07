@@ -51,6 +51,10 @@ export const PERMISSIONS = {
 
   // Analytics
   ANALYTICS_VIEW: 'analytics:view',
+
+  // Business documents (quotes / invoices)
+  DOCUMENTS_READ: 'documents:read',
+  DOCUMENTS_WRITE: 'documents:write',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]

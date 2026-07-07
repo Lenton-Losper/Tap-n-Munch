@@ -21,7 +21,9 @@
     "stock:delete_grv",
     "recipe:view",
     "recipe:edit",
-    "analytics:view"
+    "analytics:view",
+    "documents:read",
+    "documents:write"
   ],
   "manager": [
     "orders:read",
@@ -39,7 +41,9 @@
     "stock:adjust",
     "recipe:view",
     "recipe:edit",
-    "analytics:view"
+    "analytics:view",
+    "documents:read",
+    "documents:write"
   ],
   "cashier": [
     "orders:read",
