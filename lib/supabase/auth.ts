@@ -1,3 +1,4 @@
+import type { Session } from '@supabase/supabase-js'
 import { supabase } from './client'
 
 export async function signUpWithSupabase(
@@ -40,10 +41,10 @@ export async function getSupabaseSession() {
 }
 
 export function onSupabaseAuthChange(
-  callback: (session: any) => void
+  callback: (event: string, session: Session | null) => void
 ) {
-  return supabase.auth.onAuthStateChange((_event: string, session: { access_token: string } | null) => {
-    callback(session)
+  return supabase.auth.onAuthStateChange((event: string, session: Session | null) => {
+    callback(event, session)
   })
 }
 

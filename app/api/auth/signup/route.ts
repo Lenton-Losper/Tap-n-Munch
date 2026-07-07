@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { seedDefaultRestaurantRoles } from '@/lib/permissions/seed-default-roles'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
@@ -77,6 +78,8 @@ export async function POST(request: Request) {
     }
 
     const restaurantId = String(restaurant.id)
+
+    await seedDefaultRestaurantRoles(supabase, restaurantId)
 
     const { error: restaurantUserError } = await supabase.from('restaurant_users').insert({
       restaurant_id: restaurantId,

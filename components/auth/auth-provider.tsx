@@ -3,7 +3,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import {
-  getSupabaseSession,
   onSupabaseAuthChange,
   signInWithSupabase,
   signOutSupabase,
@@ -53,6 +52,16 @@ const isSupabaseEnvConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 )
 
+const isStagingDiag = () =>
+  (process.env.NEXT_PUBLIC_APP_URL || '').includes('flashtap-staging')
+
+function authDiagContext() {
+  return {
+    timestamp: new Date().toISOString(),
+    online: typeof navigator !== 'undefined' ? navigator.onLine : null,
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [userData, setUserData] = useState<Record<string, any> | null>(null)
@@ -62,10 +71,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [permissionsLoaded, setPermissionsLoaded] = useState(false)
   const [loading, setLoading] = useState(isSupabaseEnvConfigured)
+  const [authResolved, setAuthResolved] = useState(false)
   const isSupabaseConfigured = isSupabaseEnvConfigured
 
   useEffect(() => {
+    if (isStagingDiag()) {
+      console.log('[AUTH_PROVIDER]', {
+        phase: 'mount',
+        timestamp: new Date().toISOString(),
+      })
+    }
+    return () => {
+      if (isStagingDiag()) {
+        console.log('[AUTH_PROVIDER]', {
+          phase: 'unmount',
+          timestamp: new Date().toISOString(),
+        })
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!authResolved) return
+
     const loadUserData = async (_sessionUser: User | null) => {
+      const diagUserId = _sessionUser?.id
+
+      if (isStagingDiag()) {
+        console.log('[LOAD_USER_DATA]', {
+          phase: 'start',
+          user: diagUserId,
+          timestamp: new Date().toISOString(),
+        })
+      }
+
       if (!_sessionUser) {
         setUserData(null)
         setRestaurant(null)
@@ -74,6 +113,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPermissions([])
         setPermissionsLoaded(false)
         setLoading(false)
+        if (isStagingDiag()) {
+          console.log('[LOAD_USER_DATA]', {
+            phase: 'end',
+            user: diagUserId,
+            timestamp: new Date().toISOString(),
+          })
+        }
         return
       }
 
@@ -115,6 +161,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         })
 
         if (userRowError) {
+          console.error('[AuthProvider] users lookup failed', {
+            query: 'users',
+            error: userRowError,
+            code: (userRowError as { code?: string }).code,
+            message: userRowError.message,
+            ...authDiagContext(),
+          })
           throw userRowError
         }
 
@@ -135,6 +188,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
             userRecord = retry.data
             if (retry.error) {
+              console.error('[AuthProvider] users lookup retry failed', {
+                query: 'users retry',
+                error: retry.error,
+                code: (retry.error as { code?: string }).code,
+                message: retry.error.message,
+                ...authDiagContext(),
+              })
               throw retry.error
             }
           }
@@ -160,8 +220,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setPermissionsLoaded(true)
             console.log('[AuthProvider] role API result:', payload)
           } else {
+            const roleErrorBody = await res.text()
+            console.error('[AuthProvider] role fetch failed', {
+              query: 'role fetch',
+              status: res.status,
+              body: roleErrorBody,
+              ...authDiagContext(),
+            })
             setPermissionsLoaded(false)
-            console.warn('[AuthProvider] role API failed:', res.status, await res.text())
+            console.warn('[AuthProvider] role API failed:', res.status, roleErrorBody)
           }
         } else {
           setPermissionsLoaded(false)
@@ -190,6 +257,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .single()
 
         if (restErr) {
+          console.error('[AuthProvider] restaurant fetch failed', {
+            query: 'restaurants',
+            error: restErr,
+            code: (restErr as { code?: string }).code,
+            message: restErr.message,
+            ...authDiagContext(),
+          })
           console.error('Failed to load restaurant row:', restErr)
           setRestaurant(null)
           setRestaurantId(linkedRestaurantId)
@@ -205,6 +279,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.setItem('restaurantId', String(restaurantRecord.id))
         }
       } catch (error) {
+        console.error('[AuthProvider] loadUserData failed', {
+          error,
+          code:
+            error && typeof error === 'object' && 'code' in error
+              ? (error as { code?: string }).code
+              : undefined,
+          message: error instanceof Error ? error.message : String(error),
+          ...authDiagContext(),
+        })
         console.error('Failed to load Supabase auth data:', error)
         setUserData(null)
         setRestaurant(null)
@@ -213,28 +296,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPermissions([])
         setPermissionsLoaded(false)
       } finally {
+        if (isStagingDiag()) {
+          console.log('[LOAD_USER_DATA]', {
+            phase: 'end',
+            user: diagUserId,
+            timestamp: new Date().toISOString(),
+          })
+        }
         setLoading(false)
       }
     }
 
     loadUserData(user)
-  }, [user])
+  }, [user, authResolved])
 
   useEffect(() => {
     if (!isSupabaseConfigured) return
 
-    getSupabaseSession()
-      .then((session) => {
-        setUser(session?.user ?? null)
+    const { data: listener } = onSupabaseAuthChange((event, session) => {
+      console.log('[AUTH_EVENT]', {
+        event,
+        hasSession: !!session,
+        timestamp: new Date().toISOString(),
+        online: typeof navigator !== 'undefined' ? navigator.onLine : null,
       })
-      .catch((error) => {
-        console.error('Failed to get Supabase session:', error)
-        setUser(null)
-        setLoading(false)
-      })
-
-    const { data: listener } = onSupabaseAuthChange((session) => {
       setUser((session?.user as User | null) ?? null)
+      setAuthResolved(true)
       setLoading(false)
     })
 
