@@ -56,9 +56,9 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
 
   let query = supabase
     .from('orders')
-    .select('order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, total, items')
+    .select('order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
     .eq('restaurant_id', params.restaurantId)
-    .or('is_closed.eq.true,status.eq.completed')
+    .neq('status', 'cancelled')
     .gte('placed_at', `${params.startDate}T00:00:00.000Z`)
     .lte('placed_at', `${params.endDate}T23:59:59.999Z`)
     .order('placed_at', { ascending: false })
@@ -94,8 +94,9 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     }
   })
 
-  const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0)
-  const totalOrders = orders.length
+  const paidOrders = (rawOrders ?? []).filter((o: any) => o.payment_status === 'paid')
+  const totalRevenue = paidOrders.reduce((sum, o: any) => sum + Number(o.total ?? 0), 0)
+  const totalOrders = paidOrders.length
   const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0
 
   return {
