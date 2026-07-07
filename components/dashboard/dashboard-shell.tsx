@@ -2,6 +2,7 @@
 
 import { DashboardSidebar } from '@/components/dashboard/dashboard-sidebar'
 import { SetupChecklistBanner } from '@/components/dashboard/setup-checklist-banner'
+import { Toaster } from '@/components/ui/toaster'
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
@@ -11,6 +12,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <SetupChecklistBanner />
         {children}
       </main>
+      <Toaster />
     </div>
   )
 }

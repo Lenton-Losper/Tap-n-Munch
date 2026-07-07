@@ -370,11 +370,13 @@ function MenuItemFormContent({
         name: itemForm.name,
         subCategoryId: itemForm.sub_category_id || null,
         categoryId: categoryId ?? editingItem?.menu_category_id ?? null,
-        ingredientRows: ingredientRows.map(({ stockItemId, quantity, unitId }) => ({
-          stockItemId,
-          quantity,
-          unitId,
-        })),
+        ingredientRows: trackInventory
+          ? ingredientRows.map(({ stockItemId, quantity, unitId }) => ({
+              stockItemId,
+              quantity,
+              unitId,
+            }))
+          : [],
       },
       existingItems,
     )
