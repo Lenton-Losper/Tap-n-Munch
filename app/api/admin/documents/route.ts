@@ -179,6 +179,18 @@ function computeLineItems(items: LineItemInput[]): {
   return { lineItems, subtotal }
 }
 
+function resolveDocumentTaxRate(rawRate: unknown, restaurantId: string): number {
+  const taxRate = Number(rawRate ?? 0)
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
+    console.error('[documents] invalid tax_rate; falling back to 0', {
+      restaurant_id: restaurantId,
+      tax_rate: rawRate,
+    })
+    return 0
+  }
+  return taxRate
+}
+
 export async function POST(request: Request) {
   let user
   try {
@@ -227,8 +239,7 @@ export async function POST(request: Request) {
     if (billingError) throw billingError
 
     const { lineItems, subtotal } = computeLineItems(input.line_items)
-    const taxRate = Number(restaurant.tax_rate ?? 0)
-    const safeTaxRate = Number.isFinite(taxRate) ? taxRate : 0
+    const safeTaxRate = resolveDocumentTaxRate(restaurant.tax_rate, restaurantId)
     const vatAmount = round2(subtotal * safeTaxRate)
     const total = round2(subtotal + vatAmount)
     const balance = total

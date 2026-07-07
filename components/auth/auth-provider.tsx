@@ -52,7 +52,7 @@ const AuthContext = createContext<AuthContextType>({
 })
 
 const RESTAURANT_SELECT =
-  'id, name, phone, owner_id, subscription_status, subscription_tier, logo_url, updated_at'
+  'id, name, phone, owner_id, subscription_status, subscription_tier, logo_url, tax_rate, updated_at'
 
 const isSupabaseEnvConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
