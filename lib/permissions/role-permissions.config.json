@@ -23,7 +23,8 @@
     "recipe:edit",
     "analytics:view",
     "documents:read",
-    "documents:write"
+    "documents:write",
+    "terminal:auth:manage"
   ],
   "manager": [
     "orders:read",
@@ -43,7 +44,8 @@
     "recipe:edit",
     "analytics:view",
     "documents:read",
-    "documents:write"
+    "documents:write",
+    "terminal:auth:manage"
   ],
   "cashier": [
     "orders:read",

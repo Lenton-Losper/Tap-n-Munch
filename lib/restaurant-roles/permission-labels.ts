@@ -120,6 +120,10 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Create Documents',
     description: 'Issue and manage quotes and invoices.',
   },
+  [PERMISSIONS.TERMINAL_AUTH_MANAGE]: {
+    label: 'Manage Terminal PINs',
+    description: 'Set manager PINs and view terminal authorization audit history.',
+  },
 }
 
 export const PERMISSION_GROUPS: PermissionGroup[] = [
@@ -195,6 +199,10 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       key,
       ...LABELS[key],
     })),
+  },
+  {
+    domain: 'Terminal authorization',
+    permissions: [PERMISSIONS.TERMINAL_AUTH_MANAGE].map((key) => ({ key, ...LABELS[key] })),
   },
 ]
 

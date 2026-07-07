@@ -57,6 +57,9 @@ export const PERMISSIONS = {
   // Business documents (quotes / invoices)
   DOCUMENTS_READ: 'documents:read',
   DOCUMENTS_WRITE: 'documents:write',
+
+  // Terminal authorization
+  TERMINAL_AUTH_MANAGE: 'terminal:auth:manage',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
