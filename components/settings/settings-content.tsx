@@ -7,6 +7,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { SETTINGS_BRAND_PRIMARY, SETTINGS_TABS, type SettingsTabId } from '@/components/settings/constants'
 import { SettingsProfileTab } from '@/components/settings/settings-profile-tab'
 import { SettingsPaymentTab } from '@/components/settings/settings-payment-tab'
+import { SettingsBillingTab } from '@/components/settings/settings-billing-tab'
 import { SettingsRestaurantTab } from '@/components/settings/settings-restaurant-tab'
 import { hashToSettingsTab } from '@/components/settings/settings-utils'
 
@@ -17,12 +18,18 @@ export function SettingsContent() {
   )
 
   const canViewPayments = !permissionsLoaded || hasPermission(PERMISSIONS.PAYMENTS_VIEW)
-  const visibleTabs = SETTINGS_TABS.filter((tab) => tab.id !== 'bank' || canViewPayments)
+  const canViewBilling = !permissionsLoaded || hasPermission(PERMISSIONS.DOCUMENTS_READ)
+  const visibleTabs = SETTINGS_TABS.filter(
+    (tab) =>
+      (tab.id !== 'bank' || canViewPayments) && (tab.id !== 'billing' || canViewBilling),
+  )
 
   const effectiveActiveTab: SettingsTabId =
     activeTab === 'bank' && permissionsLoaded && !hasPermission(PERMISSIONS.PAYMENTS_VIEW)
       ? 'profile'
-      : activeTab
+      : activeTab === 'billing' && permissionsLoaded && !hasPermission(PERMISSIONS.DOCUMENTS_READ)
+        ? 'profile'
+        : activeTab
 
   useEffect(() => {
     const onHashChange = () => {
@@ -39,10 +46,18 @@ export function SettingsContent() {
         window.history.replaceState(null, '', '#profile')
       }
     }
+    if (activeTab === 'billing' && !hasPermission(PERMISSIONS.DOCUMENTS_READ)) {
+      if (typeof window !== 'undefined' && window.location.hash === '#billing') {
+        window.history.replaceState(null, '', '#profile')
+      }
+    }
   }, [activeTab, hasPermission, permissionsLoaded])
 
   const navigateToTab = (tabId: SettingsTabId, hash: string) => {
     if (tabId === 'bank' && permissionsLoaded && !hasPermission(PERMISSIONS.PAYMENTS_VIEW)) {
+      return
+    }
+    if (tabId === 'billing' && permissionsLoaded && !hasPermission(PERMISSIONS.DOCUMENTS_READ)) {
       return
     }
     setActiveTab(tabId)
@@ -89,6 +104,7 @@ export function SettingsContent() {
 
         {effectiveActiveTab === 'profile' ? <SettingsProfileTab /> : null}
         {effectiveActiveTab === 'bank' && canViewPayments ? <SettingsPaymentTab /> : null}
+        {effectiveActiveTab === 'billing' && canViewBilling ? <SettingsBillingTab /> : null}
         {effectiveActiveTab === 'restaurant' ? <SettingsRestaurantTab /> : null}
       </div>
     </div>

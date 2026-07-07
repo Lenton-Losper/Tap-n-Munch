@@ -4,6 +4,7 @@ export const SETTINGS_BRAND_PRIMARY_HOVER = '#c45a30'
 export const SETTINGS_TABS = [
   { id: 'profile', hash: '#profile', label: 'My profile' },
   { id: 'bank', hash: '#bank', label: 'Payment & terminals' },
+  { id: 'billing', hash: '#billing', label: 'Billing' },
   { id: 'restaurant', hash: '#restaurant', label: 'Restaurant' },
 ] as const
 

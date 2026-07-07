@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   BarChart3,
   ClipboardList,
+  FileText,
   History,
   LogOut,
   Package,
@@ -72,6 +73,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: BarChart3,
     permission: PERMISSIONS.ANALYTICS_VIEW,
     match: (path: string) => path.startsWith('/analytics'),
+  },
+  {
+    href: '/documents',
+    label: 'Documents',
+    icon: FileText,
+    permission: PERMISSIONS.DOCUMENTS_READ,
+    match: (path: string) => path.startsWith('/documents'),
   },
   {
     href: '/stock',
