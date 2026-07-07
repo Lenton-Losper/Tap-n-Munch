@@ -106,7 +106,7 @@ export async function GET(req: Request) {
     page,
     pageSize,
     totalRevenue,
-    totalOrders: count || 0,
+    totalOrders: summary?.length ?? 0,
     avgOrderValue,
   })
 }
