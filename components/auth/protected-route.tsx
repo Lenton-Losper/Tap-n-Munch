@@ -11,11 +11,12 @@ const isStagingDiag = () =>
   (process.env.NEXT_PUBLIC_APP_URL || '').includes('flashtap-staging')
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, userData, restaurantId, loading } = useAuth()
+  const { user, accountStatus, loading, retryLoadUserData } = useAuth()
   const router = useRouter()
   const hasRedirectedRef = useRef(false)
   const [forceLoaded, setForceLoaded] = useState(false)
   const [repairingAccount, setRepairingAccount] = useState(false)
+  const [retryingLoad, setRetryingLoad] = useState(false)
   const [prevLoading, setPrevLoading] = useState(loading)
 
   if (prevLoading !== loading) {
@@ -65,8 +66,8 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // Check if user is authenticated but app user row is missing
-  if (user && !userData) {
+  // Authenticated but no app user row — repair flow
+  if (accountStatus === 'missing') {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-sm border border-border p-8 text-center">
@@ -102,6 +103,47 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
               className="w-full"
             >
               Sign Out & Create New Account
+            </Button>
+            <Button
+              onClick={async () => {
+                await signOutSupabase()
+                router.push('/signin')
+              }}
+              variant="outline"
+              className="w-full"
+            >
+              Sign Out
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (accountStatus === 'failed') {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-sm border border-border p-8 text-center">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
+            Something went wrong loading your account
+          </h2>
+          <p className="text-gray-600 mb-6">
+            We couldn&apos;t load your account details right now. This is usually temporary — please try again.
+          </p>
+          <div className="space-y-3">
+            <Button
+              onClick={async () => {
+                setRetryingLoad(true)
+                try {
+                  await retryLoadUserData()
+                } finally {
+                  setRetryingLoad(false)
+                }
+              }}
+              className="w-full bg-black hover:bg-black/90 text-white"
+              disabled={retryingLoad}
+            >
+              {retryingLoad ? 'Retrying...' : 'Try Again'}
             </Button>
             <Button
               onClick={async () => {
