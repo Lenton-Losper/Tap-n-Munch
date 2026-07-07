@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Download, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { DocumentFormModal } from '@/components/documents/document-form-modal'
 import { Badge } from '@/components/ui/badge'
@@ -55,6 +55,7 @@ export function DocumentsListContent() {
   const [modalOpen, setModalOpen] = useState(false)
   const [modalType, setModalType] = useState<DocumentType>('quote')
   const [modalInstance, setModalInstance] = useState(0)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
   const loadDocuments = useCallback(async () => {
     if (!restaurantId) {
@@ -93,6 +94,37 @@ export function DocumentsListContent() {
     setModalType(type)
     setModalInstance((n) => n + 1)
     setModalOpen(true)
+  }
+
+  const handleDownloadPdf = async (doc: DocumentListItem) => {
+    setDownloadingId(doc.id)
+    try {
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/documents/${encodeURIComponent(doc.id)}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload?.error || 'Download failed')
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${doc.type}-${doc.document_number}.pdf`
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+      URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      toast({
+        title: 'Download failed',
+        description: error instanceof Error ? error.message : 'Could not download PDF',
+        variant: 'destructive',
+      })
+    } finally {
+      setDownloadingId(null)
+    }
   }
 
   return (
@@ -139,12 +171,13 @@ export function DocumentsListContent() {
                     <th className="px-5 py-3">Issued</th>
                     <th className="px-5 py-3">Total</th>
                     <th className="px-5 py-3">Balance</th>
+                    <th className="px-5 py-3">PDF</th>
                   </tr>
                 </thead>
                 <tbody>
                   {documents.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-5 py-8 text-center text-[#6B675F]">
+                      <td colSpan={7} className="px-5 py-8 text-center text-[#6B675F]">
                         No documents yet. Create a quote or invoice to get started.
                       </td>
                     </tr>
@@ -159,6 +192,18 @@ export function DocumentsListContent() {
                         <td className="px-5 py-3 text-[#6B675F]">{formatDate(doc.issued_at)}</td>
                         <td className="px-5 py-3 text-[#37352F]">{formatMoney(doc.total)}</td>
                         <td className="px-5 py-3 text-[#37352F]">{formatMoney(doc.balance)}</td>
+                        <td className="px-5 py-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleDownloadPdf(doc)}
+                            disabled={downloadingId === doc.id}
+                          >
+                            <Download className="mr-1.5 h-3.5 w-3.5" />
+                            {downloadingId === doc.id ? 'Downloading...' : 'Download PDF'}
+                          </Button>
+                        </td>
                       </tr>
                     ))
                   )}
