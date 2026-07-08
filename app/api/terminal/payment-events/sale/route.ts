@@ -189,3 +189,95 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 }
+
+export async function GET(req: Request) {
+  try {
+    const terminal = await requireTerminalAuth(req)
+    const supabase = createServerSupabaseClient()
+    await validateTerminalRecord(supabase, terminal)
+
+    const url = new URL(req.url)
+    const orderId = String(url.searchParams.get('order_id') ?? '').trim()
+    if (!orderId) {
+      return NextResponse.json({ error: 'order_id is required' }, { status: 400 })
+    }
+    if (!isUuid(orderId)) {
+      return NextResponse.json({ error: 'order_id must be a valid UUID' }, { status: 400 })
+    }
+
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('id', orderId)
+      .eq('restaurant_id', terminal.restaurantId)
+      .maybeSingle()
+
+    if (orderError) {
+      return NextResponse.json({ error: 'Failed to validate order_id' }, { status: 500 })
+    }
+    if (!order) {
+      return NextResponse.json(
+        { error: 'Invalid order_id', invalid_order_ids: [orderId] },
+        { status: 400 },
+      )
+    }
+
+    const { data: sales, error: saleError } = await supabase
+      .from('payment_events')
+      .select('business_order_no, amount, currency, order_ids, created_at')
+      .eq('restaurant_id', terminal.restaurantId)
+      .eq('event_type', 'sale')
+      .contains('order_ids', [orderId])
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (saleError) {
+      return NextResponse.json({ error: 'Failed to look up sale record' }, { status: 500 })
+    }
+
+    const sale = sales?.[0]
+    if (!sale) {
+      return NextResponse.json(
+        { error: 'No sale record found for this order' },
+        { status: 404 },
+      )
+    }
+
+    const originBusinessOrderNo = String(sale.business_order_no)
+    const { data: priorRefunds, error: priorError } = await supabase
+      .from('payment_events')
+      .select('amount')
+      .eq('restaurant_id', terminal.restaurantId)
+      .eq('event_type', 'refund_succeeded')
+      .eq('origin_business_order_no', originBusinessOrderNo)
+
+    if (priorError) {
+      return NextResponse.json(
+        { error: 'Failed to compute refunded balance' },
+        { status: 500 },
+      )
+    }
+
+    const saleAmount = Number(sale.amount)
+    const refundedSoFar = (priorRefunds ?? []).reduce(
+      (sum, row) => sum + Number(row.amount),
+      0,
+    )
+
+    return NextResponse.json({
+      business_order_no: originBusinessOrderNo,
+      amount: saleAmount,
+      currency: String(sale.currency || 'NAD'),
+      order_ids: Array.isArray(sale.order_ids)
+        ? sale.order_ids.map((id: unknown) => String(id))
+        : [],
+      refunded_so_far: refundedSoFar,
+      remaining: saleAmount - refundedSoFar,
+      sale_recorded_at: sale.created_at,
+    })
+  } catch (err: unknown) {
+    if (err instanceof Response) return err
+    console.error('[terminal/payment-events/sale]', err)
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+}
