@@ -9,15 +9,20 @@ import { PERMISSIONS } from '../lib/permissions'
 
 config({ path: '.env.test', override: true })
 
+const STAGING_TEST_PASSWORD = process.env.STAGING_TEST_PASSWORD?.trim()
+if (!STAGING_TEST_PASSWORD) {
+  throw new Error('Refusing: STAGING_TEST_PASSWORD is not set (.env.test)')
+}
+
 const STAGING_APP =
   process.env.STAGING_APP_URL || 'https://flashtap-staging.llosperofficial.workers.dev'
 const STAGING_REF = 'mdqjpxwczrhkxkbqatqa'
 const RESTA = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 const OWNER_EMAIL = 'flashtap.staging.test@gmail.com'
-const OWNER_PASSWORD = '!Flash01'
+const OWNER_PASSWORD = STAGING_TEST_PASSWORD
 const KITCHEN_USER_ID = 'e65059f8-0727-4c9f-a268-4661eadb0325'
 const KITCHEN_EMAIL = 'staging.kitchen.test@gmail.com'
-const KITCHEN_PASSWORD = '!Flash01'
+const KITCHEN_PASSWORD = STAGING_TEST_PASSWORD
 
 const url = process.env.SUPABASE_URL!
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -210,7 +215,7 @@ async function main() {
     const disposableEmail = `analytics-leak-${Date.now()}@staging-disposable.local`
     const { data: createdUser, error: createUserErr } = await admin.auth.admin.createUser({
       email: disposableEmail,
-      password: '!Flash01',
+      password: STAGING_TEST_PASSWORD,
       email_confirm: true,
     })
     if (createUserErr) throw createUserErr

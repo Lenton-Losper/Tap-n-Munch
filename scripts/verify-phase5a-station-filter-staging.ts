@@ -18,9 +18,12 @@ import {
   STAGING_TEST_USER_ID,
 } from '../__tests__/helpers/staging-auth-fixtures'
 
-const STAGING_TEST_PASSWORD = '!Flash01'
-
 config({ path: '.env.test', override: true })
+
+const STAGING_TEST_PASSWORD = process.env.STAGING_TEST_PASSWORD?.trim()
+if (!STAGING_TEST_PASSWORD) {
+  throw new Error('Refusing: STAGING_TEST_PASSWORD is not set (.env.test)')
+}
 
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_URL) {
   process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL
