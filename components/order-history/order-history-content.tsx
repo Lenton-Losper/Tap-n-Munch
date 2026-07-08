@@ -31,6 +31,8 @@ type HistoryOrder = {
   placed_at?: string | null
   items?: OrderItem[] | null
   memberName?: string
+  paymentStatus?: 'paid' | 'partially_refunded' | 'refunded' | null
+  refundedAmount?: number
 }
 
 type HistoryResponse = {
@@ -87,6 +89,26 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
     default:
       return <Badge variant="outline">{status || '—'}</Badge>
   }
+}
+
+function PaymentStatusBadge({
+  paymentStatus,
+}: {
+  paymentStatus?: 'paid' | 'partially_refunded' | 'refunded' | null
+}) {
+  if (paymentStatus === 'refunded') {
+    return (
+      <Badge className="bg-gray-100 text-gray-700 border-gray-200">Refunded</Badge>
+    )
+  }
+  if (paymentStatus === 'partially_refunded') {
+    return (
+      <Badge className="bg-amber-50 text-amber-800 border-amber-200">
+        Partially Refunded
+      </Badge>
+    )
+  }
+  return null
 }
 
 export function OrderHistoryContent() {
@@ -452,13 +474,21 @@ export function OrderHistoryContent() {
                             <span className="line-clamp-2">{formatItemsSummary(order.items)}</span>
                           </td>
                           <td className="px-4 py-3 font-medium text-[#37352F]">
-                            {currency(Number(order.total) || 0, currencySymbol)}
+                            <div>{currency(Number(order.total) || 0, currencySymbol)}</div>
+                            {Number(order.refundedAmount) > 0 && (
+                              <div className="mt-0.5 text-xs font-normal text-[#8A867E]">
+                                -{currency(Number(order.refundedAmount), currencySymbol)} refunded
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 capitalize text-[#37352F]">
                             {formatPaymentMethod(order.payment_method)}
                           </td>
                           <td className="px-4 py-3">
-                            <StatusBadge status={order.status} />
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <StatusBadge status={order.status} />
+                              <PaymentStatusBadge paymentStatus={order.paymentStatus} />
+                            </div>
                           </td>
                         </tr>
                       ))
