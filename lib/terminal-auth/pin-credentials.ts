@@ -53,3 +53,73 @@ export async function hashTerminalPin(
     pinSalt: bytesToBase64(salt),
   }
 }
+
+function base64ToBytes(base64: string): Uint8Array | null {
+  try {
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(base64, 'base64'))
+    }
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    return bytes
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Constant-time byte comparison. Web Crypto has no timingSafeEqual; Node's
+ * crypto.timingSafeEqual is not available in the Cloudflare Workers runtime,
+ * so we use a fixed XOR loop here (same approach as Node's primitive).
+ */
+export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i]
+  }
+  return diff === 0
+}
+
+async function derivePinHashBytes(pin: string, salt: Uint8Array): Promise<Uint8Array> {
+  const pinBytes = new TextEncoder().encode(pin)
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    pinBytes,
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: new Uint8Array(salt),
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    PBKDF2_HASH_BITS,
+  )
+
+  return new Uint8Array(derivedBits)
+}
+
+/** Re-derive PBKDF2 hash with stored salt and compare in constant time. */
+export async function verifyTerminalPin(
+  pin: string,
+  storedHashBase64: string,
+  storedSaltBase64: string,
+): Promise<boolean> {
+  if (!validateTerminalPin(pin)) return false
+
+  const salt = base64ToBytes(storedSaltBase64)
+  const expectedHash = base64ToBytes(storedHashBase64)
+  if (!salt || !expectedHash) return false
+
+  const actualHash = await derivePinHashBytes(pin, salt)
+  return constantTimeEqual(actualHash, expectedHash)
+}
