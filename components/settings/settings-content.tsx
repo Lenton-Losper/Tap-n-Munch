@@ -9,6 +9,7 @@ import { SettingsProfileTab } from '@/components/settings/settings-profile-tab'
 import { SettingsPaymentTab } from '@/components/settings/settings-payment-tab'
 import { SettingsBillingTab } from '@/components/settings/settings-billing-tab'
 import { SettingsRestaurantTab } from '@/components/settings/settings-restaurant-tab'
+import { SettingsSignInMethodsSection } from '@/components/settings/settings-sign-in-methods-section'
 import { hashToSettingsTab } from '@/components/settings/settings-utils'
 
 export function SettingsContent() {
@@ -102,7 +103,12 @@ export function SettingsContent() {
           })}
         </nav>
 
-        {effectiveActiveTab === 'profile' ? <SettingsProfileTab /> : null}
+        {effectiveActiveTab === 'profile' ? (
+          <div className="space-y-6">
+            <SettingsProfileTab />
+            <SettingsSignInMethodsSection />
+          </div>
+        ) : null}
         {effectiveActiveTab === 'bank' && canViewPayments ? <SettingsPaymentTab /> : null}
         {effectiveActiveTab === 'billing' && canViewBilling ? <SettingsBillingTab /> : null}
         {effectiveActiveTab === 'restaurant' ? <SettingsRestaurantTab /> : null}

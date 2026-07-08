@@ -355,6 +355,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         timestamp: new Date().toISOString(),
         online: typeof navigator !== 'undefined' ? navigator.onLine : null,
       })
+      if (event === 'USER_UPDATED') return
       setUser((session?.user as User | null) ?? null)
       setAuthResolved(true)
       setLoading(false)

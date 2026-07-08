@@ -24,7 +24,7 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit and schema tests (no HTTP)
-        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal"
+        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
