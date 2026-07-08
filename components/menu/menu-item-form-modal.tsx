@@ -652,9 +652,11 @@ function MenuItemFormContent({
               />
             </div>
             {canEditInventory ? (
-              <div className="flex items-center justify-between gap-4 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between gap-4 rounded-lg border border-border border-l-[3px] border-l-[#FF6B35] p-4">
                 <div className="space-y-1">
-                  <Label htmlFor="track-inventory-general">Track Inventory</Label>
+                  <Label htmlFor="track-inventory-general" className="font-semibold">
+                    Track Inventory
+                  </Label>
                   <p className="text-sm text-muted-foreground">
                     Link ingredients to this menu item for automatic stock deduction on sale.
                   </p>
