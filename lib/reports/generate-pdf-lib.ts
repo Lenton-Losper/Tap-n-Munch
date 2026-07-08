@@ -64,7 +64,7 @@ const formatDate = (iso: string) => {
   })
 }
 
-function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+function wrapParagraph(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   const normalized = text.trim() || '—'
   const words = normalized.split(/\s+/)
   const lines: string[] = []
@@ -95,6 +95,22 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
   }
   if (current) lines.push(current)
   return lines.length > 0 ? lines : ['—']
+}
+
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  const paragraphs = String(text ?? '').split('\n')
+  const lines: string[] = []
+  for (const paragraph of paragraphs) {
+    lines.push(...wrapParagraph(paragraph, font, size, maxWidth))
+  }
+  return lines.length > 0 ? lines : ['—']
+}
+
+function formatStatusWithPayment(order: ReportOrder): string {
+  const base = order.status || '—'
+  if (order.paymentStatus === 'refunded') return `${base} (Refunded)`
+  if (order.paymentStatus === 'partially_refunded') return `${base} (Partial Refund)`
+  return base
 }
 
 function columnWidths(contentWidth: number): Record<ColumnKey, number> {
@@ -129,11 +145,14 @@ function orderCellText(order: ReportOrder, key: ColumnKey): string {
     case 'items':
       return order.items || '—'
     case 'total':
+      if (Number(order.refundedAmount) > 0) {
+        return `${formatCurrency(order.total)}\n-${formatCurrency(Number(order.refundedAmount))} refunded`
+      }
       return formatCurrency(order.total)
     case 'payment':
       return order.payment_method ?? '—'
     case 'status':
-      return order.status
+      return formatStatusWithPayment(order)
     default:
       return '—'
   }
@@ -312,13 +331,15 @@ function drawTableRow(
   for (const col of COLUMNS) {
     const lines = layout.cells[col.key]
     let textY = yTop - ROW_PADDING_Y - BODY_SIZE
-    for (const line of lines) {
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]
+      const isRefundLine = col.key === 'total' && lineIndex > 0
       page.drawText(line, {
         x: positions[col.key] + 4,
         y: textY,
-        size: BODY_SIZE,
+        size: isRefundLine ? HEADER_LABEL_SIZE : BODY_SIZE,
         font: fonts.regular,
-        color: TEXT_DARK,
+        color: isRefundLine ? TEXT_MUTED : TEXT_DARK,
       })
       textY -= ROW_LINE_HEIGHT
     }

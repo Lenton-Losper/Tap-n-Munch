@@ -1,4 +1,4 @@
-import { ReportData } from './get-report-data'
+import { ReportData, ReportOrder } from './get-report-data'
 
 const formatCurrency = (amount: number) => amount.toFixed(2)
 
@@ -22,6 +22,13 @@ const escapeCell = (value: string | number | null | undefined): string => {
     return `"${str.replace(/"/g, '""')}"`
   }
   return str
+}
+
+function formatCsvStatus(order: ReportOrder): string {
+  const base = order.status || ''
+  if (order.paymentStatus === 'refunded') return `${base} (refunded)`
+  if (order.paymentStatus === 'partially_refunded') return `${base} (partial refund)`
+  return base
 }
 
 export function generateCsv(report: ReportData): string {
@@ -49,6 +56,7 @@ export function generateCsv(report: ReportData): string {
     'Customer',
     'Items',
     'Total (N$)',
+    'Refunded Amount (N$)',
     'Payment Method',
     'Payment Channel',
     'Status',
@@ -63,9 +71,10 @@ export function generateCsv(report: ReportData): string {
       order.customer_name,
       order.items,
       formatCurrency(order.total),
+      formatCurrency(Number(order.refundedAmount) || 0),
       order.payment_method,
       order.payment_channel,
-      order.status,
+      formatCsvStatus(order),
     ].map(escapeCell).join(','))
   }
 
