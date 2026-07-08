@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,12 +47,32 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Failed to load tables' }, { status: 500 })
     }
 
+    const allOrderIds = (tables ?? []).flatMap((table: any) => {
+      const tab = table.tabs?.[0] ?? null
+      const orders = tab?.orders ?? []
+      return orders.map((o: any) => String(o.id)).filter(Boolean)
+    })
+
+    const projections = await getPaymentProjections(
+      supabase,
+      terminal.restaurantId,
+      allOrderIds,
+    )
+
     // Compute canClose and unpaidTotal server-side
     const enriched = (tables ?? []).map((table: any) => {
       const tab = table.tabs?.[0] ?? null
       if (!tab) return { ...table, tab: null, canClose: false }
 
-      const orders = tab.orders ?? []
+      const orders = (tab.orders ?? []).map((order: any) => {
+        const projection = projections.get(String(order.id)) ?? null
+        return {
+          ...order,
+          // Distinct from orders.payment_status (paid/pending settlement flag).
+          payment_status_derived: projection?.paymentStatus ?? null,
+          refunded_amount: projection?.refundedAmount ?? 0,
+        }
+      })
       const unpaidOrders = orders.filter(
         (o: any) => o.payment_status !== 'paid'
       )
