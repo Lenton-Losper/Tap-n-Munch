@@ -6,6 +6,10 @@ import {
   requireUrlRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import {
+  getPaymentProjections,
+  sumDistinctRefundedAmounts,
+} from '@/lib/payments/get-payment-projection'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,6 +72,13 @@ export async function GET(req: Request) {
     }
   }
 
+  const pageOrderIds = (orders || []).map((o) => String(o.id))
+  const pageProjections = await getPaymentProjections(
+    supabase,
+    restaurantUuid,
+    pageOrderIds,
+  )
+
   const enrichedOrders = (orders || []).map((order) => {
     let memberName = '—'
     if (order.member_session_id && order.tab_id) {
@@ -77,12 +88,18 @@ export async function GET(req: Request) {
       )
       memberName = String(member?.display_name || '').trim() || 'Guest'
     }
-    return { ...order, memberName }
+    const projection = pageProjections.get(String(order.id)) ?? null
+    return {
+      ...order,
+      memberName,
+      paymentStatus: projection?.paymentStatus ?? null,
+      refundedAmount: projection?.refundedAmount ?? 0,
+    }
   })
 
   let summaryQuery = supabase
     .from('orders')
-    .select('total')
+    .select('id, total')
     .eq('restaurant_id', restaurantUuid)
     .eq('payment_status', 'paid')
     .gte('placed_at', `${startDate}T00:00:00.000Z`)
@@ -97,7 +114,19 @@ export async function GET(req: Request) {
 
   const { data: summary } = await summaryQuery
 
-  const totalRevenue = (summary || []).reduce((sum, o) => sum + (Number(o.total) || 0), 0)
+  const summaryOrderIds = (summary || []).map((o) => String(o.id))
+  const summaryProjections = await getPaymentProjections(
+    supabase,
+    restaurantUuid,
+    summaryOrderIds,
+  )
+
+  const grossPaid = (summary || []).reduce((sum, o) => sum + (Number(o.total) || 0), 0)
+  const refundedDistinct = sumDistinctRefundedAmounts(
+    (summary || []).map((o) => String(o.id)),
+    summaryProjections,
+  )
+  const totalRevenue = grossPaid - refundedDistinct
   const avgOrderValue = summary?.length ? totalRevenue / summary.length : 0
 
   return NextResponse.json({

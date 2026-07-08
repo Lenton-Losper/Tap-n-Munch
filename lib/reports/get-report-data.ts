@@ -1,4 +1,9 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import {
+  getPaymentProjections,
+  sumDistinctRefundedAmounts,
+  type PaymentStatus,
+} from '@/lib/payments/get-payment-projection'
 
 export interface ReportOrder {
   order_number: number
@@ -10,6 +15,9 @@ export interface ReportOrder {
   payment_method: string | null
   payment_channel: string | null
   status: string
+  /** Derived from payment_events; null when no SALE row exists for this order. */
+  paymentStatus: PaymentStatus | null
+  refundedAmount: number
 }
 
 export interface ReportData {
@@ -56,7 +64,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
 
   let query = supabase
     .from('orders')
-    .select('order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
+    .select('id, order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
     .eq('restaurant_id', params.restaurantId)
     .neq('status', 'cancelled')
     .gte('placed_at', `${params.startDate}T00:00:00.000Z`)
@@ -73,6 +81,13 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
   const { data: rawOrders, error: ordersError } = await query
   if (ordersError) throw new Error(ordersError.message)
 
+  const orderIds = (rawOrders ?? []).map((o: { id: string }) => String(o.id))
+  const projections = await getPaymentProjections(
+    supabase,
+    params.restaurantId,
+    orderIds,
+  )
+
   const orders: ReportOrder[] = (rawOrders ?? []).map((o: any) => {
     const itemList = Array.isArray(o.items) ? o.items : []
     const itemsSummary = itemList
@@ -80,6 +95,8 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
         item.quantity > 1 ? `${item.name} x${item.quantity}` : item.name
       )
       .join(', ')
+
+    const projection = projections.get(String(o.id)) ?? null
 
     return {
       order_number: o.order_number,
@@ -91,11 +108,18 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
       payment_method: o.payment_method ?? null,
       payment_channel: o.payment_channel ?? null,
       status: o.status,
+      paymentStatus: projection?.paymentStatus ?? null,
+      refundedAmount: projection?.refundedAmount ?? 0,
     }
   })
 
   const paidOrders = (rawOrders ?? []).filter((o: any) => o.payment_status === 'paid')
-  const totalRevenue = paidOrders.reduce((sum, o: any) => sum + Number(o.total ?? 0), 0)
+  const grossPaid = paidOrders.reduce((sum, o: any) => sum + Number(o.total ?? 0), 0)
+  const refundedDistinct = sumDistinctRefundedAmounts(
+    paidOrders.map((o: any) => String(o.id)),
+    projections,
+  )
+  const totalRevenue = grossPaid - refundedDistinct
   const totalOrders = paidOrders.length
   const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0
 
