@@ -5,13 +5,11 @@
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { PERMISSIONS } from '../lib/permissions'
+import { requireStagingTestPassword } from '../lib/staging/require-staging-test-password'
 
 config({ path: '.env.test', override: true })
 
-const STAGING_TEST_PASSWORD = process.env.STAGING_TEST_PASSWORD?.trim()
-if (!STAGING_TEST_PASSWORD) {
-  throw new Error('Refusing: STAGING_TEST_PASSWORD is not set (.env.test)')
-}
+const STAGING_TEST_PASSWORD = requireStagingTestPassword()
 
 const STAGING_APP =
   process.env.STAGING_APP_URL || 'https://flashtap-staging.llosperofficial.workers.dev'
