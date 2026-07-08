@@ -16,6 +16,8 @@ function sampleReport(orderCount: number): ReportData {
     payment_method: i % 2 === 0 ? 'card' : 'cash',
     payment_channel: 'pos',
     status: 'completed',
+    paymentStatus: null,
+    refundedAmount: 0,
   }))
 
   return {

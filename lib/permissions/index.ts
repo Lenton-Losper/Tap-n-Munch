@@ -30,6 +30,8 @@ export const PERMISSIONS = {
   PAYMENTS_PROCESS: 'payments:process',
   PAYMENTS_VIEW: 'payments:view',
   PAYMENTS_CONFIGURE: 'payments:configure',
+  PAYMENTS_READ: 'payments:read',
+  PAYMENTS_REFUND: 'payments:refund',
 
   // Staff
   STAFF_MANAGE:   'staff:manage',
@@ -55,6 +57,9 @@ export const PERMISSIONS = {
   // Business documents (quotes / invoices)
   DOCUMENTS_READ: 'documents:read',
   DOCUMENTS_WRITE: 'documents:write',
+
+  // Terminal authorization
+  TERMINAL_AUTH_MANAGE: 'terminal:auth:manage',
 } as const
 
 export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS]
