@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { ensurePublicUserForOAuth } from '@/lib/auth/ensure-public-user'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,33 +34,39 @@ export async function GET(request: Request) {
 
     if (!error && user) {
       const adminSupabase = createServerSupabaseClient()
-      const { data: existingUser } = await adminSupabase
-        .from('users')
-        .select('id')
-        .eq('id', user.id)
-        .maybeSingle()
-
       const fullName =
         String(user.user_metadata?.full_name || user.user_metadata?.name || '').trim()
 
-      if (!existingUser) {
-        await adminSupabase.from('users').insert({
-          id: user.id,
-          email: user.email,
-          full_name: fullName || null,
-          avatar_url: user.user_metadata?.avatar_url || null,
-        })
+      const ensured = await ensurePublicUserForOAuth(adminSupabase, {
+        id: user.id,
+        email: user.email,
+        fullName,
+        avatarUrl: user.user_metadata?.avatar_url || null,
+      })
 
-        return NextResponse.redirect(
-          `${origin}/signup?google=true&name=${encodeURIComponent(fullName)}`
-        )
+      if (!ensured.ok) {
+        console.error('[auth/callback] ensurePublicUserForOAuth failed', {
+          authUserId: user.id,
+          email: user.email,
+          code: ensured.code,
+          message: ensured.message,
+        })
+        return NextResponse.redirect(`${origin}/signin?error=oauth_profile`)
       }
 
-      const { data: membership } = await adminSupabase
+      const { data: membership, error: membershipError } = await adminSupabase
         .from('restaurant_users')
         .select('restaurant_id')
         .eq('user_id', user.id)
         .maybeSingle()
+
+      if (membershipError) {
+        console.error('[auth/callback] restaurant_users lookup failed', {
+          authUserId: user.id,
+          error: membershipError,
+        })
+        return NextResponse.redirect(`${origin}/signin?error=oauth`)
+      }
 
       if (membership?.restaurant_id) {
         return NextResponse.redirect(`${origin}/dashboard`)
@@ -68,6 +75,10 @@ export async function GET(request: Request) {
       return NextResponse.redirect(
         `${origin}/signup?google=true&name=${encodeURIComponent(fullName)}`
       )
+    }
+
+    if (error) {
+      console.error('[auth/callback] exchangeCodeForSession failed', { error })
     }
   }
 

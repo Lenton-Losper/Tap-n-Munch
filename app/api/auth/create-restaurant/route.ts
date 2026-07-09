@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { seedDefaultRestaurantRoles } from '@/lib/permissions/seed-default-roles'
+import { createRestaurantForUserAtomic, upsertPublicUserProfile } from '@/lib/auth/create-restaurant'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 
@@ -11,6 +11,13 @@ function errorMessage(error: unknown): string {
     return String((error as { message: unknown }).message)
   }
   return 'Failed to create restaurant'
+}
+
+function responseStatusForError(message: string): number {
+  if (message.includes('authorization') || message.includes('session')) return 401
+  if (message.includes('Restaurant already exists')) return 400
+  if (message.includes('Missing required field')) return 400
+  return 500
 }
 
 export async function POST(request: Request) {
@@ -30,11 +37,19 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
 
-    const { data: existingMembership } = await supabase
+    const { data: existingMembership, error: membershipLookupError } = await supabase
       .from('restaurant_users')
       .select('restaurant_id')
       .eq('user_id', authUser.id)
       .maybeSingle()
+
+    if (membershipLookupError) {
+      console.error('[create-restaurant] membership lookup failed', {
+        userId: authUser.id,
+        error: membershipLookupError,
+      })
+      throw membershipLookupError
+    }
 
     if (existingMembership?.restaurant_id) {
       return NextResponse.json(
@@ -43,69 +58,25 @@ export async function POST(request: Request) {
       )
     }
 
-    const { error: userUpdateError } = await supabase
-      .from('users')
-      .update({
-        full_name: fullName,
-        phone: phone || null,
-        email: authUser.email,
-      })
-      .eq('id', authUser.id)
-
-    if (userUpdateError) {
-      throw userUpdateError
-    }
-
-    const { data: restaurant, error: restaurantError } = await supabase
-      .from('restaurants')
-      .insert({
-        name: restaurantName,
-        phone: phone || null,
-        currency: 'NAD',
-      })
-      .select('id')
-      .single()
-
-    if (restaurantError || !restaurant?.id) {
-      throw restaurantError || new Error('Failed to create restaurant')
-    }
-
-    const restaurantId = String(restaurant.id)
-
-    await seedDefaultRestaurantRoles(supabase, restaurantId)
-
-    const { error: restaurantUserError } = await supabase.from('restaurant_users').insert({
-      restaurant_id: restaurantId,
-      user_id: authUser.id,
-      role: 'owner',
+    await upsertPublicUserProfile(supabase, {
+      id: authUser.id,
+      email: authUser.email,
+      fullName,
+      phone,
     })
 
-    if (restaurantUserError) {
-      throw restaurantUserError
-    }
-
-    const { error: setupError } = await supabase.from('restaurant_setup_status').insert({
-      restaurant_id: restaurantId,
-      profile_complete: false,
-      tables_configured: false,
-      menu_added: false,
-      qr_downloaded: false,
-      staff_added: false,
-      terminal_connected: false,
-      test_order_completed: false,
-      first_payment_completed: false,
+    const restaurantId = await createRestaurantForUserAtomic(supabase, {
+      userId: authUser.id,
+      email: authUser.email,
+      fullName,
+      phone,
+      restaurantName,
     })
-
-    if (setupError) {
-      throw setupError
-    }
 
     return NextResponse.json({ success: true, restaurantId })
   } catch (error: unknown) {
     const message = errorMessage(error)
-    const status =
-      message.includes('authorization') || message.includes('session') ? 401 : 500
-    console.error('[create-restaurant] failed:', error)
-    return NextResponse.json({ error: message }, { status })
+    console.error('[create-restaurant] failed:', { message, error })
+    return NextResponse.json({ error: message }, { status: responseStatusForError(message) })
   }
 }

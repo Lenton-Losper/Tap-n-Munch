@@ -36,9 +36,13 @@ export function SignInClient() {
   const [submitting, setSubmitting] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
+  const oauthProfileError =
+    searchParams.get('error') === 'oauth_profile'
+      ? "We couldn't finish setting up your account. Please contact support."
+      : ''
   const oauthError =
     searchParams.get('error') === 'oauth' ? 'Google sign-in failed. Please try again.' : ''
-  const displayError = error || oauthError
+  const displayError = error || oauthProfileError || oauthError
 
   useEffect(() => {
     if (!authLoading && user) {
