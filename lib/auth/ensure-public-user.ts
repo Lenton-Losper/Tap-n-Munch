@@ -159,13 +159,18 @@ export async function isStaleOrphanPublicUser(
     staleRow.id,
   )
   if (authLookupError) {
-    console.error(LOG_PREFIX, 'auth lookup for stale row failed', {
-      staleUserId: staleRow.id,
-      error: authLookupError,
-    })
+    const isNotFound = authLookupError.status === 404 || authLookupError.code === 'user_not_found'
+    if (!isNotFound) {
+      console.error(LOG_PREFIX, 'auth lookup for stale row failed', {
+        staleUserId: staleRow.id,
+        error: authLookupError,
+      })
+      return false
+    }
+    // No auth.users row backs this id — confirms the public.users row is orphaned.
+  } else if (authMatch.user?.id) {
     return false
   }
-  if (authMatch.user?.id) return false
 
   try {
     const referenceHits = await findPublicUserReferences(adminSupabase, staleRow.id)
