@@ -115,7 +115,10 @@ export function SettingsSignInMethodsSection() {
         return
       }
 
-      const { error } = await supabase.auth.updateUser({ password })
+      const { error } = await supabase.auth.updateUser({
+        password,
+        data: { has_password_credential: true },
+      })
 
       if (error) {
         if (isExpiredSessionError(error)) {
