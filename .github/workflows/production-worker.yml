@@ -47,6 +47,11 @@ jobs:
             fi
           done
           echo "wrangler.production.toml custom domain routes OK"
+      - name: Check migration drift (production DB vs supabase/migrations)
+        run: node scripts/check-migration-drift.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       - name: Deploy to flashtap-production
         run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }} --var NEXT_PUBLIC_COMMIT_SHA:${{ github.sha }}
         env:
