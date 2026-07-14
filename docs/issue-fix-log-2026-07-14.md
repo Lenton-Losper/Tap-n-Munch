@@ -119,3 +119,12 @@ Staging Supabase ref: `mdqjpxwczrhkxkbqatqa`. Production ref: `ihlmmpmolnpchzgwy
 **What was done:** Changed light-mode `--input` from `#FFFFFF` to `#E5E5E5` to match `--border`. Deleted `styles/globals.css`. Left `components/ui/switch.tsx`'s explicit border-color override (from the prior Issue #18 fix) alone — the issue only asked to revisit the shared token, not to revert that scoped fix, and it's harmless now that the values match anyway.
 **Verification:** Ran the actual dev server locally against staging Supabase credentials (`.env.test`, not `.env.local` which points to production) and loaded `/signin` in a real headless browser. Confirmed via `getComputedStyle` on `documentElement` that `--input` now resolves to `#e5e5e5`, matching `--border` (previously would have been `#ffffff`). Took a screenshot confirming the page renders normally with no visual regressions.
 **Commit(s):** 28c3cb1
+
+---
+
+## #31 — Rotate staging test account password (flashtap.staging.test@gmail.com)
+**Outcome:** Skipped — needs manual intervention (left open)
+**What was found:** Confirmed `.env.test` is git-ignored (not present in `git ls-files`, and covered by `.gitignore`'s `.env*` pattern) and found no historical commit containing it (`git log --all --full-history -- .env.test` returns nothing) — so no git-history leak beyond the plaintext-in-Cursor-output exposure already described in the issue.
+**What was done:** Deliberately did not rotate the actual account password or touch `.env.test`/CI secrets. Rotating a real, currently-shared team credential is a hard-to-reverse action with a blast radius I can't fully verify from inside this repo — I don't know every place the current password might be referenced (a GitHub Actions secret such as `STAGING_TEST_PASSWORD`/`SIGNIN_METHODS_EMAIL_ONLY_PASSWORD` that CI relies on, a password manager, other docs/notes, other team members' local `.env.test` copies). Rotating it here without full visibility risks silently breaking CI or someone else's local setup. This is exactly the class of action the task instructions call out as needing sign-off rather than a guess.
+**Verification:** N/A — no change made. Confirmed `.env.test` git-ignored / never committed via `git check-ignore` and `git log --all --full-history`.
+**Commit(s):** none (investigation only, no changes)
