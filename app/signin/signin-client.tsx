@@ -63,6 +63,10 @@ export function SignInClient() {
   const oauthError =
     searchParams.get('error') === 'oauth' ? 'Google sign-in failed. Please try again.' : ''
   const displayError = error || oauthProfileError || oauthError
+  const resetSuccessMessage =
+    searchParams.get('reset') === 'success'
+      ? 'Your password has been updated. Sign in with your new password.'
+      : ''
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -113,6 +117,12 @@ export function SignInClient() {
         <section className="w-full max-w-lg rounded-2xl border border-[#E9E9E7] bg-white p-8 shadow-[0_10px_35px_rgba(55,53,47,0.05)] sm:p-10">
           <h1 className="font-serif text-3xl font-semibold">Sign In</h1>
           <p className="mt-2 text-sm text-[#6B675F]">Access your FlashTap dashboard.</p>
+
+          {resetSuccessMessage ? (
+            <p className="mt-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+              {resetSuccessMessage}
+            </p>
+          ) : null}
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
             <div className="space-y-2">
