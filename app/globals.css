@@ -41,7 +41,7 @@
   --destructive: #DC2626;
   --destructive-foreground: #FFFFFF;
   --border: #E5E5E5; /* Light gray border for cards */
-  --input: #FFFFFF;
+  --input: #E5E5E5; /* Matches --border (#30) */
   --ring: #37352F;
   --chart-1: #0A0A0A;
   --chart-2: #1A1A1A;
