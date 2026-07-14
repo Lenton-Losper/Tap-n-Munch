@@ -77,6 +77,15 @@ Staging Supabase ref: `mdqjpxwczrhkxkbqatqa`. Production ref: `ihlmmpmolnpchzgwy
 
 ---
 
+## #32 — Confirm Supabase staging Auth settings before Sign-in Methods prod rollout
+**Outcome:** Skipped — needs manual intervention (left open)
+**What was found:** The two settings this issue needs confirmed ("Secure password change" and the password-changed security notification email) are Supabase Dashboard-only Auth config, not exposed by the public GoTrue `/auth/v1/settings` endpoint (checked for real against staging — it returns `external`/`disable_signup`/`mailer_autoconfirm`/etc., nothing about secure password change or notification emails). The Supabase CLI's `config` command only has a `push` subcommand in the installed version (no `pull`/`show`), and pushing local config would be a write that could silently overwrite real dashboard settings — not something to attempt just to read state. Fetching this would require the Supabase Management API (`GET /v1/projects/{ref}/config/auth`), which needs a personal access token; none is available in this environment (checked `~/.supabase`, environment variables — nothing found, and `supabase link` apparently works without one being stored locally in a way I can access).
+**What was done:** No config change attempted (nothing to change, and no way to safely read remote state without dashboard/Management API access). Did not query production's Auth settings either — this needs Dashboard login access for both `mdqjpxwczrhkxkbqatqa` (staging) and `ihlmmpmolnpchzgwyhgh` (production), which I don't have.
+**Verification:** N/A. Confirmed for real that the public settings endpoint doesn't expose these two fields (curl against staging), and confirmed no Management API token is available to this environment.
+**Commit(s):** none (investigation only, no changes)
+
+---
+
 ## #24 — orders.paycloud_transaction_id and payment_trans_no used in app code but missing from committed migrations
 **Outcome:** Fixed
 **What was found:** Confirmed exactly as described: `lib/supabase/apply-tab-settlement.ts` (`buildWebhookPaidPatch`/`buildWebhookTerminalPaidPatch`) and `app/api/payments/reconcile/route.ts` both write `orders.paycloud_transaction_id`, and the former also writes `orders.payment_trans_no` — neither column appears in `supabase/migrations/00000000000000_baseline.sql` or any later migration. A direct `information_schema.columns` query against staging confirmed both were genuinely absent (not a naming mismatch) — real drift, matching option (a) in the issue. While building the fix verification, also found `orders.updated_at` is included in the same two patch-builder functions (`markPaidAndAcceptPatch`/`markPaidAndCompletedPatch`) and is *also* missing from every committed migration (the `orders` table has never had an `updated_at` column) — so even after adding the two named columns, the exact webhook code path #24 is about would still fail. Did not expand scope further: found `tabs.updated_at` is separately missing too, but that's a different table/code path not referenced by #24, so left it alone (worth its own drift-audit issue, related to #20's CI enforcement work).
