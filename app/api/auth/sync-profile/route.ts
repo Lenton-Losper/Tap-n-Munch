@@ -57,6 +57,18 @@ export async function POST(request: Request) {
         }
 
         if (userByEmail.id !== authUser.id) {
+          // The old row may still be referenced by restaurants.owner_id
+          // (restaurants_owner_id_fkey has no ON DELETE action), so detach it
+          // first or the delete below fails outright when the account being
+          // repaired is the current owner.
+          if (userByEmail.role === 'owner') {
+            await supabase
+              .from('restaurants')
+              .update({ owner_id: null })
+              .eq('id', userByEmail.restaurant_id)
+              .eq('owner_id', userByEmail.id)
+          }
+
           await supabase.from('users').delete().eq('id', userByEmail.id)
         }
 
@@ -70,10 +82,15 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: relinkError.message }, { status: 400 })
         }
 
-        await supabase
-          .from('restaurants')
-          .update({ owner_id: authUser.id, updated_at: now })
-          .eq('id', userByEmail.restaurant_id)
+        // Only follow the relinked account into restaurants.owner_id when it's
+        // actually the owner — otherwise a manager/staff repair would silently
+        // reassign ownership away from the real owner (#8).
+        if (payload.role === 'owner') {
+          await supabase
+            .from('restaurants')
+            .update({ owner_id: authUser.id, updated_at: now })
+            .eq('id', userByEmail.restaurant_id)
+        }
 
         return NextResponse.json({ ok: true, user: relinked, created: true, relinked: true })
       }

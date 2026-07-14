@@ -29,6 +29,15 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - name: Check migration drift (staging DB vs supabase/migrations)
+        # Non-blocking for now: staging has known pre-existing drift (see #20/#38
+        # investigation) that needs its own reviewed cleanup pass before this can
+        # safely gate deploys. Surfaces the mismatch visibly without blocking.
+        continue-on-error: true
+        run: node scripts/check-migration-drift.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
       - name: Recipe deduction idempotency tests (staging Supabase)
         run: npx jest --ci --forceExit --testPathPattern="recipe-deduction"
         env:

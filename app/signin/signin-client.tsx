@@ -26,6 +26,26 @@ function isInvalidCredentialsError(message: string): boolean {
   )
 }
 
+/**
+ * Only show the Google hint when the account is confirmed Google-only —
+ * never on a generic invalid-credentials error alone (#34). Fails closed
+ * (no hint) on any lookup error.
+ */
+async function shouldShowGoogleHint(email: string): Promise<boolean> {
+  try {
+    const response = await fetch('/api/auth/signin-hint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+    if (!response.ok) return false
+    const payload = await response.json()
+    return payload?.showGoogleHint === true
+  } catch {
+    return false
+  }
+}
+
 export function SignInClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -65,7 +85,7 @@ export function SignInClient() {
     } catch (submitError: any) {
       const message =
         submitError?.message || 'Failed to sign in. Please check your credentials.'
-      if (isInvalidCredentialsError(message)) {
+      if (isInvalidCredentialsError(message) && (await shouldShowGoogleHint(email))) {
         setError(`${message}\n\n${GOOGLE_SIGNIN_HINT}`)
       } else {
         setError(message)

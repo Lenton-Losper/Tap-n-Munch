@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { seedDefaultRestaurantRoles } from '@/lib/permissions/seed-default-roles'
+import { createRestaurantForUserAtomic } from '@/lib/auth/create-restaurant'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
@@ -53,59 +53,13 @@ export async function POST(request: Request) {
 
     authUserId = authData.user.id
 
-    const { error: userError } = await supabase.from('users').insert({
-      id: authUserId,
+    const restaurantId = await createRestaurantForUserAtomic(supabase, {
+      userId: authUserId,
       email,
-      full_name: fullName,
-      phone: phone || null,
+      fullName,
+      phone,
+      restaurantName,
     })
-
-    if (userError) {
-      throw userError
-    }
-
-    const { data: restaurant, error: restaurantError } = await supabase
-      .from('restaurants')
-      .insert({
-        name: restaurantName,
-        currency: 'NAD',
-      })
-      .select('id')
-      .single()
-
-    if (restaurantError || !restaurant?.id) {
-      throw restaurantError || new Error('Failed to create restaurant')
-    }
-
-    const restaurantId = String(restaurant.id)
-
-    await seedDefaultRestaurantRoles(supabase, restaurantId)
-
-    const { error: restaurantUserError } = await supabase.from('restaurant_users').insert({
-      restaurant_id: restaurantId,
-      user_id: authUserId,
-      role: 'owner',
-    })
-
-    if (restaurantUserError) {
-      throw restaurantUserError
-    }
-
-    const { error: setupError } = await supabase.from('restaurant_setup_status').insert({
-      restaurant_id: restaurantId,
-      profile_complete: false,
-      tables_configured: false,
-      menu_added: false,
-      qr_downloaded: false,
-      staff_added: false,
-      terminal_connected: false,
-      test_order_completed: false,
-      first_payment_completed: false,
-    })
-
-    if (setupError) {
-      throw setupError
-    }
 
     return NextResponse.json({ success: true, restaurantId })
   } catch (error: unknown) {
