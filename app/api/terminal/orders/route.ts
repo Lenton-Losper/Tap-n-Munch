@@ -4,6 +4,7 @@ import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { createOrder } from '@/lib/orders/create-order'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
+import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,14 +25,27 @@ export async function GET(req: Request) {
       .from('orders')
       .select('*')
       .eq('restaurant_id', terminal.restaurantId)
-      .in('status', ['pending', 'confirmed', 'preparing', 'ready'])
+      .in('status', ['pending', 'confirmed', 'preparing', 'ready', 'completed'])
       .order('placed_at', { ascending: false })
 
     if (error) {
       return NextResponse.json({ error: 'Failed to load orders' }, { status: 500 })
     }
 
-    return NextResponse.json({ orders: data })
+    const orderIds = (data ?? []).map((o: any) => String(o.id)).filter(Boolean)
+    const projections = await getPaymentProjections(supabase, terminal.restaurantId, orderIds)
+
+    const enriched = (data ?? []).map((order: any) => {
+      const projection = projections.get(String(order.id)) ?? null
+      return {
+        ...order,
+        // Distinct from orders.payment_status (paid/pending settlement flag).
+        payment_status_derived: projection?.paymentStatus ?? null,
+        refunded_amount: projection?.refundedAmount ?? 0,
+      }
+    })
+
+    return NextResponse.json({ orders: enriched })
   } catch (err: unknown) {
     if (err instanceof Response) return err
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
