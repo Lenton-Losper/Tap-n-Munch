@@ -31,13 +31,12 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   }
 
   const adminSupabase = createServerSupabaseClient()
-  const { data: platformAdmin } = await adminSupabase
-    .from('platform_admins')
-    .select('id')
-    .eq('user_id', user.id)
-    .maybeSingle()
+  const { data: isPlatformAdmin, error: isPlatformAdminError } = await adminSupabase.rpc(
+    'is_platform_admin',
+    { p_user_id: user.id },
+  )
 
-  if (!platformAdmin) {
+  if (isPlatformAdminError || !isPlatformAdmin) {
     redirect('/signin')
   }
 

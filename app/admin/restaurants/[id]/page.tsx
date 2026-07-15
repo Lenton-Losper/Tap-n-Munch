@@ -15,6 +15,8 @@ type RestaurantDetail = {
   slug: string | null
   owner_email: string | null
   created_at: string
+  is_active: boolean
+  online_ordering_enabled: boolean
 }
 
 function formatDate(iso: string) {
@@ -44,7 +46,7 @@ async function loadRestaurant(id: string): Promise<{
     const [restaurantRes, featuresRes, subRes] = await Promise.all([
       supabase
         .from('restaurants')
-        .select('id, name, slug, created_at, owner_id')
+        .select('id, name, slug, created_at, owner_id, is_active, online_ordering_enabled')
         .eq('id', id)
         .maybeSingle(),
       supabase
@@ -76,6 +78,8 @@ async function loadRestaurant(id: string): Promise<{
           slug: restaurantRes.data.slug ?? null,
           owner_email: ownerEmail,
           created_at: restaurantRes.data.created_at,
+          is_active: Boolean(restaurantRes.data.is_active),
+          online_ordering_enabled: Boolean(restaurantRes.data.online_ordering_enabled),
         }
       : null
 
@@ -130,6 +134,26 @@ export default async function AdminRestaurantDetailPage({
               <dt className="text-[#6B675F]">Created</dt>
               <dd className="font-medium text-[#37352F]">{formatDate(restaurant.created_at)}</dd>
             </div>
+            <div>
+              <dt className="text-[#6B675F]">Status</dt>
+              <dd className="font-medium text-[#37352F]">
+                <span
+                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    restaurant.is_active
+                      ? 'bg-green-100 text-green-800'
+                      : 'bg-gray-100 text-gray-600'
+                  }`}
+                >
+                  {restaurant.is_active ? 'Active' : 'Inactive'}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[#6B675F]">Ordering Channels</dt>
+              <dd className="font-medium text-[#37352F]">
+                {['Table', ...(featureState.kiosk_enabled ? ['Kiosk'] : []), ...(restaurant.online_ordering_enabled ? ['Online'] : []), ...(featureState.whatsapp_enabled ? ['WhatsApp'] : [])].join(', ')}
+              </dd>
+            </div>
             {subscription && (
               <div>
                 <dt className="text-[#6B675F]">Subscription</dt>
@@ -151,6 +175,16 @@ export default async function AdminRestaurantDetailPage({
           <div className="mt-6">
             <FeatureFlagsPanel restaurantId={id} initialFeatures={featureState} />
           </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-dashed border-[#E9E9E7] bg-white p-5 sm:p-6">
+          <h2 className="text-lg font-semibold text-[#37352F]">Connections</h2>
+          <p className="mt-1 text-sm text-[#6B675F]">
+            {/* TODO(#13 follow-up): WhatsApp/Connections management depends on a tenancy-model
+                decision not yet made (design note section 2.8). Intentionally out of scope
+                for this pass -- do not build WhatsApp-specific UI here until that's resolved. */}
+            Not yet available — pending a tenancy-model decision.
+          </p>
         </div>
       </div>
     </div>
