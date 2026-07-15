@@ -420,7 +420,7 @@ export function DocumentFormModal({
                 return (
                   <div key={item.id} className="rounded-lg border p-3 space-y-3">
                     <div className="grid gap-3 sm:grid-cols-12">
-                      <div className="sm:col-span-5 space-y-2">
+                      <div className="sm:col-span-4 space-y-2">
                         <Label>Description</Label>
                         <Input
                           value={item.description}
@@ -449,7 +449,7 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-2 space-y-2">
+                      <div className="sm:col-span-3 space-y-2">
                         <Label>Unit price</Label>
                         <Input
                           type="number"
