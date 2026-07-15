@@ -21,4 +21,4 @@ export const RESTAURANT_NAME_STORAGE_KEY = 'flashtap_restaurant_name';
 export const MERCHANT_NO_STORAGE_KEY = 'flashtap_merchant_no';
 export const STORE_NO_STORAGE_KEY = 'flashtap_store_no';
 export const PAYMENT_STATE_STORAGE_KEY = 'flashtap_payment_state';
-export const APP_VERSION = '1.28';
+export const APP_VERSION = '1.34';

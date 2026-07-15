@@ -469,6 +469,251 @@ export async function completePayment(
   return {canClose: Boolean(data.canClose)};
 }
 
+// ─── Authorization / Payment events ───────────────────────────────────────
+
+export interface AuthorizedUser {
+  user_id: string;
+  name: string;
+}
+
+/**
+ * Business-logic auth failure (wrong PIN / not authorized).
+ * Distinct from TerminalAuthError so callers don't treat it as session expiry.
+ */
+export class AuthorizationDeniedError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'AuthorizationDeniedError';
+    this.status = status;
+  }
+}
+
+export interface SaleLookupResult {
+  business_order_no: string;
+  amount: number;
+  currency: string;
+  order_ids: string[];
+  refunded_so_far: number;
+  remaining: number;
+  sale_recorded_at: string;
+}
+
+/**
+ * No sale payment event exists for this order — not refundable via this flow.
+ */
+export class SaleRecordNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SaleRecordNotFoundError';
+  }
+}
+
+export async function getSaleRecordForOrder(
+  orderId: string,
+  token: string,
+): Promise<SaleLookupResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/payment-events/sale?order_id=${encodeURIComponent(orderId)}`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (response.status === 404) {
+    throw new SaleRecordNotFoundError(await parseApiError(response));
+  }
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  return response.json() as Promise<SaleLookupResult>;
+}
+
+export interface PaymentEventRow {
+  id: string;
+  event_type: string;
+  order_ids: string[];
+  business_order_no: string;
+  origin_business_order_no?: string | null;
+  transaction_id?: string | null;
+  amount: number;
+  reason_code?: string | null;
+  reason_note?: string | null;
+  gateway_result?: string | null;
+  gateway_result_code?: string | null;
+  gateway_result_message?: string | null;
+  authorized_by_user_id?: string | null;
+  authorization_token_id?: string | null;
+  created_at?: string;
+}
+
+export async function getAuthorizedUsers(
+  purpose: string,
+  token: string,
+): Promise<AuthorizedUser[]> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/authorized-users?purpose=${encodeURIComponent(purpose)}`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {users?: AuthorizedUser[]};
+  return data.users ?? [];
+}
+
+/**
+ * PIN / staff authorization for a privileged terminal action.
+ *
+ * IMPORTANT: Does NOT use terminalFetch. A 401 here means "Invalid PIN" (or
+ * not authorized), not an expired terminal session. terminalFetch would
+ * otherwise refresh the device JWT and retry — which is wrong for this route.
+ *
+ * throwIfUnauthorized also does not distinguish session vs business 401/403;
+ * it blindly throws TerminalAuthError. So this function handles 401/403 itself.
+ */
+export async function authorizeAction(
+  params: {userId: string; pin: string; purpose: string},
+  token: string,
+): Promise<{token_id: string; expires_at: string}> {
+  const response = await fetch(`${FLASHTAP_API_URL}/api/terminal/authorize`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      user_id: params.userId,
+      pin: params.pin,
+      purpose: params.purpose,
+    }),
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthorizationDeniedError(
+      await parseApiError(response),
+      response.status,
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  return response.json() as Promise<{token_id: string; expires_at: string}>;
+}
+
+/**
+ * Records a SALE payment event. Does not throw — returns { ok, error? } so the
+ * caller can surface a failure to staff without blocking payment success UI.
+ * Contrast with recordRefundEvent, which throws on failure.
+ */
+export async function recordSaleEvent(
+  params: {
+    orderIds: string[];
+    businessOrderNo: string;
+    transactionId: string;
+    amount: number;
+  },
+  token: string,
+): Promise<{ok: boolean; error?: string}> {
+  try {
+    const response = await terminalFetch(
+      `${FLASHTAP_API_URL}/api/terminal/payment-events/sale`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          order_ids: params.orderIds,
+          business_order_no: params.businessOrderNo,
+          transaction_id: params.transactionId,
+          amount: params.amount,
+        }),
+      },
+      token,
+    );
+
+    if (response.status === 401 || response.status === 403) {
+      throw new TerminalAuthError();
+    }
+
+    if (!response.ok) {
+      throw new Error(await parseApiError(response));
+    }
+
+    return {ok: true};
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to record sale event';
+    console.error('[recordSaleEvent] Failed to record sale payment event', {
+      orderIds: params.orderIds,
+      businessOrderNo: params.businessOrderNo,
+      transactionId: params.transactionId,
+      amount: params.amount,
+      error,
+    });
+    return {ok: false, error: message};
+  }
+}
+
+export async function recordRefundEvent(
+  params: {
+    tokenId: string;
+    userId: string;
+    originBusinessOrderNo: string;
+    orderIds: string[];
+    businessOrderNo: string;
+    amount: number;
+    reasonCode: string;
+    reasonNote?: string;
+    gatewayResult: 'success' | 'failure';
+    transactionId?: string;
+    gatewayResultCode?: string;
+    gatewayResultMessage?: string;
+  },
+  token: string,
+): Promise<PaymentEventRow> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/payment-events/refund`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        token_id: params.tokenId,
+        user_id: params.userId,
+        origin_business_order_no: params.originBusinessOrderNo,
+        order_ids: params.orderIds,
+        business_order_no: params.businessOrderNo,
+        amount: params.amount,
+        reason_code: params.reasonCode,
+        reason_note: params.reasonNote,
+        gateway_result: params.gatewayResult,
+        transaction_id: params.transactionId,
+        gateway_result_code: params.gatewayResultCode,
+        gateway_result_message: params.gatewayResultMessage,
+      }),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  return response.json() as Promise<PaymentEventRow>;
+}
+
 // ─── POS / Menu ────────────────────────────────────────────────────────────
 
 export interface MenuCategory {

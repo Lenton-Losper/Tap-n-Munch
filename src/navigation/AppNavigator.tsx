@@ -9,13 +9,16 @@ import {NavigatorScreenParams} from '@react-navigation/native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {AuthProvider, useAuth} from '../context/AuthContext';
+import {CartProvider} from '../context/CartContext';
 import {StreamProvider} from '../context/StreamContext';
 import {Colors, Typography} from '../constants/theme';
-import {POSOrderItem} from '../lib/api';
 import ActivationScreen from '../screens/ActivationScreen';
 import OrderDetailScreen from '../screens/OrderDetailScreen';
 import OrdersScreen from '../screens/OrdersScreen';
 import PaymentScreen from '../screens/PaymentScreen';
+import RefundAuthScreen from '../screens/RefundAuthScreen';
+import RefundConfirmScreen from '../screens/RefundConfirmScreen';
+import RefundPinScreen from '../screens/RefundPinScreen';
 import POSCartScreen from '../screens/POSCartScreen';
 import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
@@ -45,9 +48,31 @@ export type MainStackParamList = {
     orderNumber?: number;
     placedAt?: string;
   };
+  RefundAuth: {
+    orderId: string;
+    tableId: string;
+    tableNumber: number;
+    total: number;
+  };
+  RefundPin: {
+    userId: string;
+    userName: string;
+    orderId: string;
+    tableId: string;
+    tableNumber: number;
+    total: number;
+  };
+  RefundConfirm: {
+    authTokenId: string;
+    userId: string;
+    orderId: string;
+    tableId: string;
+    tableNumber: number;
+    total: number;
+  };
   Settings: undefined;
   POSSale: undefined;
-  POSCart: {cart: POSOrderItem[]; restaurantId: string};
+  POSCart: {restaurantId: string};
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
@@ -120,7 +145,8 @@ function MainTabNavigator() {
 function MainNavigator() {
   return (
     <StreamProvider>
-      <MainStack.Navigator
+      <CartProvider>
+        <MainStack.Navigator
         initialRouteName="MainTabs"
         screenOptions={{
           headerStyle: {backgroundColor: '#FFFFFF'},
@@ -148,6 +174,21 @@ function MainNavigator() {
           options={{headerShown: false}}
         />
         <MainStack.Screen
+          name="RefundAuth"
+          component={RefundAuthScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="RefundPin"
+          component={RefundPinScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="RefundConfirm"
+          component={RefundConfirmScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
           name="POSCart"
           component={POSCartScreen}
           options={{headerShown: false}}
@@ -161,6 +202,7 @@ function MainNavigator() {
           }}
         />
       </MainStack.Navigator>
+      </CartProvider>
     </StreamProvider>
   );
 }

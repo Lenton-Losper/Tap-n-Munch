@@ -12,7 +12,7 @@ import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {closeTable, getTables, settleTab} from '../lib/api';
+import {closeTable, getTables, recordSaleEvent, settleTab} from '../lib/api';
 import {processPaymentIntent} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -38,7 +38,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [settling, setSettling] = useState(false);
 
   const tab = table.tab;
-  const orders = tab?.orders ?? [];
+  const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
 
   const unpaidOrders = useMemo(
     () => orders.filter(order => !isPaid(order)),
@@ -153,6 +153,35 @@ export default function TableDetailScreen({route, navigation}: Props) {
         token,
       );
 
+      const businessOrderNo = paymentResult.businessOrderNo;
+      const transactionId = paymentResult.voucherNo;
+      if (businessOrderNo && transactionId) {
+        recordSaleEvent(
+          {
+            orderIds,
+            businessOrderNo,
+            transactionId,
+            amount,
+          },
+          token,
+        ).then(saleRecord => {
+          if (!saleRecord.ok) {
+            console.warn(
+              '[TableDetail] recordSaleEvent failed:',
+              saleRecord.error,
+            );
+          }
+        });
+      } else {
+        console.warn(
+          '[TableDetail] Skipping recordSaleEvent — missing businessOrderNo or voucherNo',
+          {
+            businessOrderNo,
+            voucherNo: transactionId,
+          },
+        );
+      }
+
       setSelectedIds(new Set());
       setTable(prev => ({
         ...prev,
@@ -191,16 +220,59 @@ export default function TableDetailScreen({route, navigation}: Props) {
     runSettle(unpaidIds);
   };
 
+  const handlePaidOrderPress = (order: TabOrder) => {
+    if (order.payment_status_derived === 'refunded') {
+      return;
+    }
+    navigation.navigate('RefundAuth', {
+      orderId: order.id,
+      tableId: table.id,
+      tableNumber: table.table_number,
+      total: order.total,
+    });
+  };
+
+  const renderPaymentBadge = (order: TabOrder) => {
+    const derived = order.payment_status_derived;
+    if (derived === 'refunded') {
+      return (
+        <View style={[styles.paidBadge, styles.refundedBadge]}>
+          <Text style={[styles.paidBadgeText, styles.refundedBadgeText]}>
+            REFUNDED
+          </Text>
+        </View>
+      );
+    }
+    if (derived === 'partially_refunded') {
+      return (
+        <View style={[styles.paidBadge, styles.partiallyRefundedBadge]}>
+          <Text
+            style={[styles.paidBadgeText, styles.partiallyRefundedBadgeText]}>
+            PARTIALLY REFUNDED
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.paidBadge}>
+        <Text style={styles.paidBadgeText}>PAID</Text>
+      </View>
+    );
+  };
+
   const renderOrderRow = ({item}: {item: TabOrder}) => {
     const paid = isPaid(item);
+    const fullyRefunded = item.payment_status_derived === 'refunded';
     const selected = selectedIds.has(item.id);
     const itemCount = item.items.length;
 
     return (
       <Pressable
         style={[styles.orderRow, paid && styles.orderRowPaid]}
-        disabled={paid || settling}
-        onPress={() => toggleOrderSelection(item)}>
+        disabled={settling || fullyRefunded}
+        onPress={() =>
+          paid ? handlePaidOrderPress(item) : toggleOrderSelection(item)
+        }>
         <MaterialCommunityIcons
           name={
             paid
@@ -218,11 +290,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
             <Text style={styles.memberName}>
               {item.member_name || 'Guest'}
             </Text>
-            {paid ? (
-              <View style={styles.paidBadge}>
-                <Text style={styles.paidBadgeText}>PAID</Text>
-              </View>
-            ) : null}
+            {paid ? renderPaymentBadge(item) : null}
           </View>
           <Text style={styles.orderMeta}>
             Order #{item.order_number} · {itemCount}{' '}
@@ -455,6 +523,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.green,
     letterSpacing: 0.5,
+  },
+  refundedBadge: {
+    backgroundColor: Colors.surface,
+    borderColor: Colors.textMuted,
+  },
+  refundedBadgeText: {
+    color: Colors.textMuted,
+  },
+  partiallyRefundedBadge: {
+    backgroundColor: Colors.orangeLight,
+    borderColor: Colors.orange,
+  },
+  partiallyRefundedBadgeText: {
+    color: Colors.orange,
   },
   orderMeta: {
     ...Typography.small,

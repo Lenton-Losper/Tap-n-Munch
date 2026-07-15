@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -17,26 +17,21 @@ import {
   getMenuItems,
   MenuCategory,
   MenuItem,
-  POSOrderItem,
 } from '../lib/api';
+import {useCart} from '../context/CartContext';
 import {getRestaurantId, getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
-type POSSaleStackParamList = MainStackParamList & {
-  POSCart: {cart: POSOrderItem[]; restaurantId: string};
-};
-
-type NavProp = NativeStackNavigationProp<POSSaleStackParamList>;
+type NavProp = NativeStackNavigationProp<MainStackParamList>;
 
 export default function POSSaleScreen() {
   const navigation = useNavigation<NavProp>();
-
+  const {cart, addItem} = useCart();
   const [token, setToken] = useState<string | null>(null);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [items, setItems] = useState<MenuItem[]>([]);
-  const [cart, setCart] = useState<POSOrderItem[]>([]);
   const [loadingCats, setLoadingCats] = useState(true);
   const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,33 +69,6 @@ export default function POSSaleScreen() {
       .finally(() => setLoadingItems(false));
   }, [token, restaurantId, selectedCategory]);
 
-  const addToCart = useCallback((item: MenuItem) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.menuItemId === item.id);
-      if (existing) {
-        return prev.map(i =>
-          i.menuItemId === item.id
-            ? {
-                ...i,
-                quantity: i.quantity + 1,
-                subtotal: (i.quantity + 1) * i.basePrice,
-              }
-            : i,
-        );
-      }
-      return [
-        ...prev,
-        {
-          menuItemId: item.id,
-          name: item.name,
-          quantity: 1,
-          basePrice: item.base_price,
-          subtotal: item.base_price,
-        },
-      ];
-    });
-  }, []);
-
   const cartTotal = cart.reduce((sum, i) => sum + i.subtotal, 0);
   const cartCount = cart.reduce((sum, i) => sum + i.quantity, 0);
 
@@ -108,10 +76,7 @@ export default function POSSaleScreen() {
     if (cart.length === 0) {
       return;
     }
-    navigation.navigate('POSCart', {
-      cart,
-      restaurantId: restaurantId ?? '',
-    });
+    navigation.navigate('POSCart', {restaurantId: restaurantId ?? ''});
   };
 
   if (loadingCats) {
@@ -182,7 +147,7 @@ export default function POSSaleScreen() {
             return (
               <TouchableOpacity
                 style={styles.itemCard}
-                onPress={() => addToCart(item)}
+                onPress={() => addItem(item)}
                 activeOpacity={0.7}>
                 <Text style={styles.itemName}>{item.name}</Text>
                 <Text style={styles.itemPrice}>

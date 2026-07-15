@@ -42,6 +42,8 @@ export interface TabOrder {
   total: number;
   status: string;
   payment_status: string;
+  payment_status_derived?: 'paid' | 'partially_refunded' | 'refunded' | null;
+  refunded_amount?: number;
   member_name?: string;
   items: OrderItem[];
   placed_at: string;
