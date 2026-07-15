@@ -13,7 +13,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {closeTable, completePayment, getOrder} from '../lib/api';
+import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api';
 import {formatCurrency, getItemUnitPrice} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {processPaymentIntent} from '../lib/payment';
@@ -93,6 +93,35 @@ export default function PaymentScreen({route, navigation}: Props) {
           amount: total,
           paymentMethod: 'card',
         });
+
+        const businessOrderNo = result.businessOrderNo;
+        const transactionId = result.voucherNo;
+        if (businessOrderNo && transactionId) {
+          recordSaleEvent(
+            {
+              orderIds: [orderId],
+              businessOrderNo,
+              transactionId,
+              amount: total,
+            },
+            token,
+          ).then(saleRecord => {
+            if (!saleRecord.ok) {
+              console.warn(
+                '[PaymentScreen] recordSaleEvent failed:',
+                saleRecord.error,
+              );
+            }
+          });
+        } else {
+          console.warn(
+            '[PaymentScreen] Skipping recordSaleEvent — missing businessOrderNo or voucherNo',
+            {
+              businessOrderNo,
+              voucherNo: transactionId,
+            },
+          );
+        }
 
         const orderForAction: Order =
           order ?? {

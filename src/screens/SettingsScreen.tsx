@@ -1,7 +1,8 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,7 @@ import {useStreamConnection} from '../context/StreamContext';
 import {APP_VERSION} from '../constants';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {clearAllData, getRestaurantName, getTerminalId} from '../lib/storage';
+import DiagnosticsScreen from './DiagnosticsScreen';
 
 export default function SettingsScreen() {
   const {signOut} = useAuth();
@@ -20,6 +22,17 @@ export default function SettingsScreen() {
   const [restaurantName, setRestaurantName] = useState('—');
   const [terminalId, setTerminalId] = useState('—');
   const [deactivating, setDeactivating] = useState(false);
+  const [, setTapCount] = useState(0);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const tapResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (tapResetRef.current) {
+        clearTimeout(tapResetRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     async function loadInfo() {
@@ -37,6 +50,28 @@ export default function SettingsScreen() {
 
     loadInfo();
   }, []);
+
+  const handleVersionPress = () => {
+    if (tapResetRef.current) {
+      clearTimeout(tapResetRef.current);
+      tapResetRef.current = null;
+    }
+
+    setTapCount(prev => {
+      const next = prev + 1;
+      if (next >= 5) {
+        setShowDiagnostics(true);
+        return 0;
+      }
+
+      tapResetRef.current = setTimeout(() => {
+        setTapCount(0);
+        tapResetRef.current = null;
+      }, 2000);
+
+      return next;
+    });
+  };
 
   const handleDeactivate = () => {
     Alert.alert(
@@ -73,50 +108,61 @@ export default function SettingsScreen() {
         : 'Checking…';
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Settings</Text>
+    <>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <Text style={styles.title}>Settings</Text>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Terminal Info</Text>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Restaurant</Text>
-          <Text style={styles.rowValue}>{restaurantName}</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Terminal Info</Text>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Restaurant</Text>
+            <Text style={styles.rowValue}>{restaurantName}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Terminal ID</Text>
+            <Text style={styles.rowValue}>{terminalId}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>App version</Text>
+            <Pressable onPress={handleVersionPress}>
+              <Text style={styles.rowValue}>{APP_VERSION}</Text>
+            </Pressable>
+          </View>
         </View>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Terminal ID</Text>
-          <Text style={styles.rowValue}>{terminalId}</Text>
-        </View>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>App version</Text>
-          <Text style={styles.rowValue}>{APP_VERSION}</Text>
-        </View>
-      </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Connection</Text>
-        <View style={styles.statusRow}>
-          <View style={[styles.statusDot, {backgroundColor: statusColor}]} />
-          <Text style={styles.rowValue}>FlashTap — {statusLabel}</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Connection</Text>
+          <View style={styles.statusRow}>
+            <View style={[styles.statusDot, {backgroundColor: statusColor}]} />
+            <Text style={styles.rowValue}>FlashTap — {statusLabel}</Text>
+          </View>
+          <Text style={styles.hintText}>
+            Live order stream status. Polling continues every 30s as backup.
+          </Text>
         </View>
-        <Text style={styles.hintText}>
-          Live order stream status. Polling continues every 30s as backup.
-        </Text>
-      </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Actions</Text>
-        <Pressable
-          disabled={deactivating}
-          onPress={handleDeactivate}
-          style={styles.deactivateRow}>
-          {deactivating ? (
-            <ActivityIndicator color={Colors.red} />
-          ) : (
-            <Text style={styles.deactivateText}>Deactivate Terminal</Text>
-          )}
-        </Pressable>
-      </View>
-    </ScrollView>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Actions</Text>
+          <Pressable
+            disabled={deactivating}
+            onPress={handleDeactivate}
+            style={styles.deactivateRow}>
+            {deactivating ? (
+              <ActivityIndicator color={Colors.red} />
+            ) : (
+              <Text style={styles.deactivateText}>Deactivate Terminal</Text>
+            )}
+          </Pressable>
+        </View>
+      </ScrollView>
+
+      <Modal
+        visible={showDiagnostics}
+        animationType="slide"
+        onRequestClose={() => setShowDiagnostics(false)}>
+        <DiagnosticsScreen onClose={() => setShowDiagnostics(false)} />
+      </Modal>
+    </>
   );
 }
 

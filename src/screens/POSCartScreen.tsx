@@ -11,6 +11,7 @@ import {
 import {RouteProp, useNavigation, useRoute} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {createPOSOrder, POSOrderItem} from '../lib/api';
+import {useCart} from '../context/CartContext';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -20,7 +21,8 @@ type NavProp = NativeStackNavigationProp<MainStackParamList>;
 export default function POSCartScreen() {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<POSCartRouteProp>();
-  const {cart, restaurantId} = route.params;
+  const {cart, updateQuantity, clearCart} = useCart();
+  const {restaurantId} = route.params;
   const [charging, setCharging] = useState(false);
 
   const total = cart.reduce((sum, i) => sum + i.subtotal, 0);
@@ -44,6 +46,7 @@ export default function POSCartScreen() {
         total,
       });
 
+      clearCart();
       navigation.replace('Payment', {
         orderId: result.orderId,
         tableNumber: 0,
@@ -59,6 +62,22 @@ export default function POSCartScreen() {
     }
   };
 
+  if (cart.length === 0) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>Order Summary</Text>
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>Your cart is empty.</Text>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}>
+            <Text style={styles.backButtonText}>Back to Sale</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Order Summary</Text>
@@ -71,7 +90,19 @@ export default function POSCartScreen() {
           <View style={styles.row}>
             <View style={styles.rowLeft}>
               <Text style={styles.itemName}>{item.name}</Text>
-              <Text style={styles.itemQty}>x{item.quantity}</Text>
+            </View>
+            <View style={styles.qtyControls}>
+              <TouchableOpacity
+                style={styles.qtyButton}
+                onPress={() => updateQuantity(item.menuItemId, -1)}>
+                <Text style={styles.qtyButtonText}>−</Text>
+              </TouchableOpacity>
+              <Text style={styles.itemQty}>{item.quantity}</Text>
+              <TouchableOpacity
+                style={styles.qtyButton}
+                onPress={() => updateQuantity(item.menuItemId, 1)}>
+                <Text style={styles.qtyButtonText}>+</Text>
+              </TouchableOpacity>
             </View>
             <Text style={styles.itemSubtotal}>N${item.subtotal.toFixed(2)}</Text>
           </View>
@@ -87,7 +118,7 @@ export default function POSCartScreen() {
       <TouchableOpacity
         style={[styles.chargeButton, charging && styles.chargeButtonDisabled]}
         onPress={handleCharge}
-        disabled={charging}>
+        disabled={charging || cart.length === 0}>
         {charging ? (
           <ActivityIndicator color="#fff" />
         ) : (
@@ -114,11 +145,56 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 8,
   },
-  rowLeft: {flex: 1},
+  rowLeft: {flex: 1, marginRight: 8},
   itemName: {fontSize: 15, fontWeight: '600', color: '#1a1a1a'},
-  itemQty: {fontSize: 13, color: '#666', marginTop: 2},
+  qtyControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  qtyButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#F0F0F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qtyButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    lineHeight: 20,
+  },
+  itemQty: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    minWidth: 28,
+    textAlign: 'center',
+    marginHorizontal: 4,
+  },
   itemSubtotal: {fontSize: 15, fontWeight: '700', color: '#1a1a1a'},
   separator: {height: 4},
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  backButton: {
+    backgroundColor: '#2E7D32',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+  },
+  backButtonText: {color: '#fff', fontSize: 16, fontWeight: '700'},
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

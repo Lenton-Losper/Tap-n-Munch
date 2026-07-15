@@ -44,9 +44,14 @@ export function mapRowToOrder(row: Record<string, unknown>): Order {
     kiosk_order_number: row.kiosk_order_number
       ? Number(row.kiosk_order_number)
       : undefined,
+    payment_status: row.payment_status ? String(row.payment_status) : undefined,
+    payment_status_derived:
+      (row.payment_status_derived as Order['payment_status_derived']) ?? null,
+    refunded_amount:
+      row.refunded_amount != null ? Number(row.refunded_amount) : undefined,
   };
 }
 
-export function isActiveOrder(order: Order): boolean {
-  return order.status !== 'completed' && order.status !== 'cancelled';
+export function isRefunded(order: Order): boolean {
+  return order.payment_status_derived === 'refunded';
 }

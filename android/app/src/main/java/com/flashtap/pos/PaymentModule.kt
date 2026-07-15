@@ -2,6 +2,7 @@ package com.flashtap.pos
 
 import android.content.Intent
 import android.util.Log
+import com.flashtapterminal.BuildConfig
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -43,7 +44,7 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
           put("businessOrderNo", merchantOrderNo)
           put("paymentScenario", "CARD")
           put("amt", paddedAmount)
-          put("notifyUrl", "https://www.flashtap.app/api/webhooks/paycloud")
+          put("notifyUrl", BuildConfig.NOTIFY_URL)
           put("POSMode", "1")
         }
 
@@ -67,8 +68,60 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod
+  fun launchRefund(
+    amount: String,
+    originBusinessOrderNo: String,
+    promise: Promise,
+  ) {
+    val activity = getCurrentActivity() ?: run {
+      promise.reject("NO_ACTIVITY", "No current activity")
+      return
+    }
+
+    try {
+      val refundBusinessOrderNo = generateMerchantOrderNo(originBusinessOrderNo)
+
+      Log.d(
+        "PaymentModule",
+        "refundBusinessOrderNo=$refundBusinessOrderNo originBusinessOrderNo=$originBusinessOrderNo",
+      )
+
+      val paddedAmount = String.format(Locale.US, "%012d", amount.toLong())
+
+      val transData =
+        JSONObject().apply {
+          put("originBusinessOrderNo", originBusinessOrderNo)
+          put("businessOrderNo", refundBusinessOrderNo)
+          put("amt", paddedAmount)
+          put("paymentScenario", "CARD")
+          put("notifyUrl", BuildConfig.NOTIFY_URL)
+          put("POSMode", "1")
+        }
+
+      Log.d("PaymentModule", "refund transData=$transData")
+
+      val intent =
+        Intent().apply {
+          action = "com.wiseasy.transaction.call"
+          putExtra("version", "A01")
+          putExtra("appId", "wz66363c6bb9592fb5")
+          putExtra("transType", "REFUND")
+          putExtra("loginMode", "LoginFree")
+          putExtra("transData", transData.toString())
+        }
+
+      pendingPromise = promise
+      activity.startActivityForResult(intent, REFUND_REQUEST_CODE)
+    } catch (e: Exception) {
+      pendingPromise = null
+      promise.reject("INTENT_ERROR", e.message, e)
+    }
+  }
+
   companion object {
     const val PAYMENT_REQUEST_CODE = 1001
+    const val REFUND_REQUEST_CODE = 1002
     var pendingPromise: Promise? = null
   }
 }
