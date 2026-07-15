@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
-import {useNavigation} from '@react-navigation/native';
+import {useFocusEffect, useNavigation} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
@@ -126,6 +126,22 @@ export default function TablesScreen() {
   useEffect(() => {
     loadTables();
   }, [loadTables]);
+
+  // Refetch on every focus (not just mount) — the initial mount fetch above
+  // already covers first load, so skip the redundant fetch on that first
+  // focus. Without this, returning here after a refund (or any settle
+  // elsewhere) shows the pre-refund table list until a manual pull-to-refresh
+  // — the root cause of #29.
+  const hasFocusedOnceRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (hasFocusedOnceRef.current) {
+        loadTables(true);
+      } else {
+        hasFocusedOnceRef.current = true;
+      }
+    }, [loadTables]),
+  );
 
   const showErrorState = Boolean(error) && !loading && tables.length === 0;
 

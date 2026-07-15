@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
-import {useNavigation} from '@react-navigation/native';
+import {useFocusEffect, useNavigation} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import OrderCard from '../components/OrderCard';
@@ -18,7 +18,6 @@ import {APP_VERSION} from '../constants';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {useStreamConnection} from '../context/StreamContext';
 import {connectToOrderStream, getOrders, sendHeartbeat} from '../lib/api';
-import {isActiveOrder} from '../lib/orderMapper';
 import {
   getRestaurantId,
   getRestaurantName,
@@ -27,7 +26,7 @@ import {
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {Order} from '../types';
 
-type Tab = 'new' | 'preparing' | 'ready';
+type Tab = 'new' | 'preparing' | 'ready' | 'completed';
 
 const POLL_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60_000;
@@ -59,6 +58,13 @@ const TAB_CONFIG: {
     color: Colors.green,
     match: o => o.status === 'ready',
     emptyMessage: 'No orders ready to serve',
+  },
+  {
+    key: 'completed',
+    label: 'Completed',
+    color: Colors.textMuted,
+    match: o => o.status === 'completed',
+    emptyMessage: 'No completed orders yet',
   },
 ];
 
@@ -114,7 +120,10 @@ export default function OrdersScreen() {
       }
 
       const fetched = await getOrders(token);
-      setOrders(sortOrders(fetched.filter(isActiveOrder)));
+      // Completed orders stay visible (Completed tab) so staff can reach the
+      // refund entry point on OrderDetail; cancelled orders were never paid
+      // and have nothing to show here.
+      setOrders(sortOrders(fetched.filter(o => o.status !== 'cancelled')));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load orders');
     } finally {
@@ -140,6 +149,20 @@ export default function OrdersScreen() {
 
     init();
   }, [loadOrders, setConnectionStatus]);
+
+  // Refetch whenever this screen regains focus (e.g. returning from a
+  // refund) so the Completed tab never shows a stale PAID badge — mirrors
+  // the same fix applied to TablesScreen/TableDetailScreen for #29.
+  const hasFocusedOnceRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (hasFocusedOnceRef.current) {
+        loadOrders(true);
+      } else {
+        hasFocusedOnceRef.current = true;
+      }
+    }, [loadOrders]),
+  );
 
   useEffect(() => {
     const pollId = setInterval(() => {

@@ -13,6 +13,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   getSaleRecordForOrder,
+  getTables,
   recordRefundEvent,
   SaleLookupResult,
   SaleRecordNotFoundError,
@@ -58,7 +59,8 @@ function formatAmount(amount: number, currency: string): string {
 
 export default function RefundConfirmScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
-  const {authTokenId, userId, orderId, tableNumber} = route.params;
+  const {authTokenId, userId, orderId, tableId, tableNumber, orderNumber} =
+    route.params;
 
   const [phase, setPhase] = useState<ScreenPhase>('loading');
   const [sale, setSale] = useState<SaleLookupResult | null>(null);
@@ -200,9 +202,33 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
     }
   };
 
-  const goToTables = () => {
-    navigation.navigate('MainTabs', {screen: 'Tables'});
+  // Navigates back through the screen the refund was launched from — with
+  // freshly refetched data — instead of jumping straight to the Tables/Orders
+  // list. A stale table/order object here is exactly what caused #29 (PAID
+  // badge surviving a refund).
+  const goBackToOrigin = async () => {
+    if (tableId) {
+      try {
+        const token = await getTerminalToken();
+        if (token) {
+          const tables = await getTables(token);
+          const updated = tables.find(t => t.id === tableId);
+          if (updated) {
+            navigation.navigate('TableDetail', {table: updated});
+            return;
+          }
+        }
+      } catch {
+        // Table may have been closed, or the refetch failed — fall back below.
+      }
+      navigation.navigate('MainTabs', {screen: 'Tables'});
+      return;
+    }
+
+    navigation.navigate('OrderDetail', {orderId});
   };
+
+  const originLabel = tableId ? 'Back to Tables' : 'Back to Orders';
 
   const renderTopBar = (title: string) => (
     <View style={[styles.topBar, {paddingTop: insets.top + Spacing.sm}]}>
@@ -280,7 +306,7 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
             {formatAmount(refundAmount, sale?.currency ?? 'NAD')} has been
             refunded.
           </Text>
-          <Pressable style={styles.primaryButton} onPress={goToTables}>
+          <Pressable style={styles.primaryButton} onPress={goBackToOrigin}>
             <Text style={styles.primaryButtonText}>Done</Text>
           </Pressable>
         </View>
@@ -303,11 +329,10 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
             <Text style={styles.failureSubtitle}>{failureDetail}</Text>
           ) : null}
           <Text style={styles.failureHint}>
-            To try again, start a new refund from the table — manager PIN will
-            be required.
+            To try again, start a new refund — manager PIN will be required.
           </Text>
-          <Pressable style={styles.outlinedButton} onPress={goToTables}>
-            <Text style={styles.outlinedButtonText}>Back to Tables</Text>
+          <Pressable style={styles.outlinedButton} onPress={goBackToOrigin}>
+            <Text style={styles.outlinedButtonText}>{originLabel}</Text>
           </Pressable>
         </View>
       </View>
@@ -328,10 +353,10 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
           <Text style={styles.failureSubtitle}>{recordError}</Text>
           <Text style={styles.failureHint}>
             If the card was charged, contact support with the transaction details.
-            Otherwise, start a new refund from the table.
+            Otherwise, start a new refund.
           </Text>
-          <Pressable style={styles.outlinedButton} onPress={goToTables}>
-            <Text style={styles.outlinedButtonText}>Back to Tables</Text>
+          <Pressable style={styles.outlinedButton} onPress={goBackToOrigin}>
+            <Text style={styles.outlinedButtonText}>{originLabel}</Text>
           </Pressable>
         </View>
       </View>
@@ -346,8 +371,20 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
         style={styles.container}
         contentContainerStyle={styles.content}>
         <View style={styles.topCard}>
-          <Text style={styles.tableLabel}>TABLE</Text>
-          <Text style={styles.tableNumber}>{tableNumber}</Text>
+          {tableId ? (
+            <>
+              <Text style={styles.tableLabel}>TABLE</Text>
+              <Text style={styles.tableNumber}>{tableNumber}</Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.tableLabel}>ORDER</Text>
+              <Text style={styles.tableNumber}>
+                #{orderNumber ?? '—'}
+              </Text>
+              <Text style={styles.walkInLabel}>Walk-in</Text>
+            </>
+          )}
         </View>
 
         <Text style={styles.sectionHeader}>Refund Remaining Balance</Text>
@@ -520,6 +557,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.green,
     marginVertical: Spacing.xs,
+  },
+  walkInLabel: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    fontWeight: '600',
   },
   sectionHeader: {
     ...Typography.subheading,

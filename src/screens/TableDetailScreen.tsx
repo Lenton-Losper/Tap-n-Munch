@@ -9,9 +9,11 @@ import {
   View,
 } from 'react-native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
+import {useFocusEffect} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
+import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import {closeTable, getTables, recordSaleEvent, settleTab} from '../lib/api';
 import {processPaymentIntent} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
@@ -76,6 +78,15 @@ export default function TableDetailScreen({route, navigation}: Props) {
       setRefreshing(false);
     }
   }, [table.id]);
+
+  // Refetch on every focus — not just mount — so returning here (e.g. from a
+  // refund or after backing out to Tables and back) never shows stale
+  // payment/refund state. See #29.
+  useFocusEffect(
+    useCallback(() => {
+      refreshTable();
+    }, [refreshTable]),
+  );
 
   const toggleOrderSelection = (order: TabOrder) => {
     if (isPaid(order)) {
@@ -232,34 +243,6 @@ export default function TableDetailScreen({route, navigation}: Props) {
     });
   };
 
-  const renderPaymentBadge = (order: TabOrder) => {
-    const derived = order.payment_status_derived;
-    if (derived === 'refunded') {
-      return (
-        <View style={[styles.paidBadge, styles.refundedBadge]}>
-          <Text style={[styles.paidBadgeText, styles.refundedBadgeText]}>
-            REFUNDED
-          </Text>
-        </View>
-      );
-    }
-    if (derived === 'partially_refunded') {
-      return (
-        <View style={[styles.paidBadge, styles.partiallyRefundedBadge]}>
-          <Text
-            style={[styles.paidBadgeText, styles.partiallyRefundedBadgeText]}>
-            PARTIALLY REFUNDED
-          </Text>
-        </View>
-      );
-    }
-    return (
-      <View style={styles.paidBadge}>
-        <Text style={styles.paidBadgeText}>PAID</Text>
-      </View>
-    );
-  };
-
   const renderOrderRow = ({item}: {item: TabOrder}) => {
     const paid = isPaid(item);
     const fullyRefunded = item.payment_status_derived === 'refunded';
@@ -290,7 +273,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
             <Text style={styles.memberName}>
               {item.member_name || 'Guest'}
             </Text>
-            {paid ? renderPaymentBadge(item) : null}
+            {paid ? (
+              <PaymentStatusBadge status={item.payment_status_derived} />
+            ) : null}
           </View>
           <Text style={styles.orderMeta}>
             Order #{item.order_number} · {itemCount}{' '}
@@ -509,34 +494,6 @@ const styles = StyleSheet.create({
     ...Typography.subheading,
     color: Colors.textPrimary,
     flex: 1,
-  },
-  paidBadge: {
-    backgroundColor: Colors.greenLight,
-    borderRadius: 6,
-    paddingVertical: 2,
-    paddingHorizontal: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.green,
-  },
-  paidBadgeText: {
-    ...Typography.tiny,
-    fontWeight: '800',
-    color: Colors.green,
-    letterSpacing: 0.5,
-  },
-  refundedBadge: {
-    backgroundColor: Colors.surface,
-    borderColor: Colors.textMuted,
-  },
-  refundedBadgeText: {
-    color: Colors.textMuted,
-  },
-  partiallyRefundedBadge: {
-    backgroundColor: Colors.orangeLight,
-    borderColor: Colors.orange,
-  },
-  partiallyRefundedBadgeText: {
-    color: Colors.orange,
   },
   orderMeta: {
     ...Typography.small,

@@ -50,24 +50,28 @@ export type MainStackParamList = {
   };
   RefundAuth: {
     orderId: string;
-    tableId: string;
-    tableNumber: number;
+    /** Absent for individually-paid (walk-up/Sale) orders — no table involved. */
+    tableId?: string;
+    tableNumber?: number;
+    orderNumber?: number;
     total: number;
   };
   RefundPin: {
     userId: string;
     userName: string;
     orderId: string;
-    tableId: string;
-    tableNumber: number;
+    tableId?: string;
+    tableNumber?: number;
+    orderNumber?: number;
     total: number;
   };
   RefundConfirm: {
     authTokenId: string;
     userId: string;
     orderId: string;
-    tableId: string;
-    tableNumber: number;
+    tableId?: string;
+    tableNumber?: number;
+    orderNumber?: number;
     total: number;
   };
   Settings: undefined;

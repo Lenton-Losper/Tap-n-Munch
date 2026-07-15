@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,9 +10,10 @@ import {
 } from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
-import {useNavigation} from '@react-navigation/native';
+import {useFocusEffect, useNavigation} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StatusBadge from '../components/StatusBadge';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {getOrder, updateOrderStatus} from '../lib/api';
@@ -60,9 +61,13 @@ export default function OrderDetailScreen({route}: Props) {
     }
   }, [orderId]);
 
-  useEffect(() => {
-    loadOrder();
-  }, [loadOrder]);
+  // Refetch on every focus, not just mount — returning here from a refund
+  // must not show stale payment/refund state (same fix as #29 for tabs).
+  useFocusEffect(
+    useCallback(() => {
+      loadOrder();
+    }, [loadOrder]),
+  );
 
   const handleStatusUpdate = async (newStatus: OrderStatus) => {
     if (!order) {
@@ -151,6 +156,9 @@ export default function OrderDetailScreen({route}: Props) {
         <View style={styles.metaRow}>
           <Text style={styles.orderNumber}>Order #{order.order_number}</Text>
           <StatusBadge status={order.status} />
+          {order.status === 'completed' ? (
+            <PaymentStatusBadge status={order.payment_status_derived} />
+          ) : null}
         </View>
 
         <View style={styles.timeRow}>
@@ -251,6 +259,34 @@ export default function OrderDetailScreen({route}: Props) {
                 onPress={() => handleStatusUpdate('completed')}>
                 <Text style={styles.outlinedButtonText}>Mark Completed</Text>
               </Pressable>
+            </>
+          )}
+
+          {order.status === 'completed' && (
+            <>
+              {order.payment_status_derived === 'refunded' ? (
+                <Text style={styles.fullyRefundedText}>
+                  This order has been fully refunded.
+                </Text>
+              ) : (
+                <Pressable
+                  style={styles.outlinedButton}
+                  onPress={() =>
+                    navigation.navigate('RefundAuth', {
+                      orderId: order.id,
+                      tableId: order.table_id,
+                      tableNumber: order.table_number,
+                      orderNumber: order.order_number,
+                      total: order.total,
+                    })
+                  }>
+                  <Text style={styles.outlinedButtonText}>
+                    {order.payment_status_derived === 'partially_refunded'
+                      ? 'Refund Remaining Balance'
+                      : 'Refund'}
+                  </Text>
+                </Pressable>
+              )}
             </>
           )}
         </View>
@@ -409,6 +445,12 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  fullyRefundedText: {
+    ...Typography.body,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingVertical: Spacing.md,
   },
   errorText: {
     color: Colors.red,

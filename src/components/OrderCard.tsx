@@ -3,6 +3,7 @@ import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {formatCurrency} from '../lib/currency';
 import {Order} from '../types';
+import PaymentStatusBadge from './PaymentStatusBadge';
 import StatusBadge from './StatusBadge';
 
 interface OrderCardProps {
@@ -41,6 +42,9 @@ export default function OrderCard({order, onPress}: OrderCardProps) {
         <View style={styles.topRight}>
           <Text style={styles.orderNumber}>#{order.order_number}</Text>
           <StatusBadge status={order.status} />
+          {order.status === 'completed' ? (
+            <PaymentStatusBadge status={order.payment_status_derived} />
+          ) : null}
           <Text style={styles.time}>{formatTime(order.placed_at)}</Text>
         </View>
       </View>

@@ -34,6 +34,14 @@ export interface Order {
   channel?: string;
   customer_name?: string;
   kiosk_order_number?: number;
+  /**
+   * Not yet populated by /api/terminal/orders as of this writing — that route
+   * neither returns completed orders nor attaches payment projections the way
+   * /api/terminal/tables does. See getPaymentProjections in the web repo.
+   */
+  payment_status?: string;
+  payment_status_derived?: 'paid' | 'partially_refunded' | 'refunded' | null;
+  refunded_amount?: number;
 }
 
 export interface TabOrder {
