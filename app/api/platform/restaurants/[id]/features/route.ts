@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,17 +16,10 @@ export async function PATCH(
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
   }
 
+  const denied = await assertPlatformAdmin(req)
+  if (denied) return denied
+
   const supabase = createServerSupabaseClient()
-  const { data: platformAdmin } = await supabase
-    .from('platform_admins')
-    .select('id')
-    .eq('user_id', user.id)
-    .maybeSingle()
-
-  if (!platformAdmin) {
-    return NextResponse.json({ error: 'Platform admin access required.' }, { status: 403 })
-  }
-
   const { id } = await params
   try {
     const body = await req.json()

@@ -25,6 +25,8 @@ interface AuthContextType {
   role: StaffRole | null
   permissions: Permission[]
   permissionsLoaded: boolean
+  isPlatformAdmin: boolean
+  roleResolved: boolean
   loading: boolean
   accountStatus: AccountStatus
   isSupabaseConfigured: boolean
@@ -42,6 +44,8 @@ const AuthContext = createContext<AuthContextType>({
   role: null,
   permissions: [],
   permissionsLoaded: false,
+  isPlatformAdmin: false,
+  roleResolved: false,
   loading: true,
   accountStatus: 'loading',
   isSupabaseConfigured: false,
@@ -76,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [role, setRole] = useState<StaffRole | null>(null)
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [permissionsLoaded, setPermissionsLoaded] = useState(false)
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false)
+  const [roleResolved, setRoleResolved] = useState(false)
   const [loading, setLoading] = useState(isSupabaseEnvConfigured)
   const [accountStatus, setAccountStatus] = useState<AccountStatus>('loading')
   const [authResolved, setAuthResolved] = useState(false)
@@ -100,6 +106,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setRole(null)
       setPermissions([])
       setPermissionsLoaded(false)
+      setIsPlatformAdmin(false)
+      setRoleResolved(false)
       setLoading(false)
       if (isStagingDiag()) {
         console.log('[LOAD_USER_DATA]', {
@@ -130,6 +138,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRole(null)
         setPermissions([])
         setPermissionsLoaded(false)
+        setIsPlatformAdmin(false)
+        setRoleResolved(false)
         return
       }
 
@@ -165,6 +175,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRole(null)
         setPermissions([])
         setPermissionsLoaded(false)
+        setIsPlatformAdmin(false)
+        setRoleResolved(false)
         return
       }
 
@@ -205,6 +217,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRole(null)
         setPermissions([])
         setPermissionsLoaded(false)
+        setIsPlatformAdmin(false)
+        setRoleResolved(false)
         return
       }
 
@@ -227,6 +241,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             resolvedPermissions = payload.permissions as Permission[]
           }
           setPermissionsLoaded(true)
+          setIsPlatformAdmin(payload.is_platform_admin === true)
+          setRoleResolved(true)
           console.log('[AuthProvider] role API result:', payload)
         } else {
           const roleErrorBody = await res.text()
@@ -237,10 +253,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ...authDiagContext(),
           })
           setPermissionsLoaded(false)
+          setIsPlatformAdmin(false)
+          setRoleResolved(false)
           console.warn('[AuthProvider] role API failed:', res.status, roleErrorBody)
         }
       } else {
         setPermissionsLoaded(false)
+        setIsPlatformAdmin(false)
+        setRoleResolved(false)
       }
 
       setRole(resolvedRole)
@@ -251,6 +271,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!linkedRestaurantId) {
+        // No restaurant is a valid, resolved outcome (e.g. a platform-admin-only
+        // account) -- isPlatformAdmin was just correctly set above from the role API
+        // result and must not be wiped out here just because there's no restaurant.
         setRestaurant(null)
         setRestaurantId(null)
         setRole(null)
@@ -304,6 +327,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setRole(null)
       setPermissions([])
       setPermissionsLoaded(false)
+      setIsPlatformAdmin(false)
+      setRoleResolved(false)
       setAccountStatus((prev) => (prev === 'missing' ? prev : 'failed'))
     } finally {
       if (isStagingDiag()) {
@@ -382,6 +407,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setRole(null)
     setPermissions([])
     setPermissionsLoaded(false)
+    setIsPlatformAdmin(false)
+    setRoleResolved(false)
     setAccountStatus('loading')
     setLoading(false)
     if (typeof window !== 'undefined') {
@@ -400,6 +427,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         role,
         permissions,
         permissionsLoaded,
+        isPlatformAdmin,
+        roleResolved,
         loading,
         accountStatus,
         isSupabaseConfigured,

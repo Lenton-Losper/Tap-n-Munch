@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic'
 type RestaurantFeatures = {
   kiosk_enabled?: boolean
   staff_app_enabled?: boolean
+  whatsapp_enabled?: boolean
 }
 
 type RestaurantRow = {
@@ -14,6 +15,8 @@ type RestaurantRow = {
   slug?: string | null
   owner_email?: string | null
   created_at: string
+  is_active: boolean
+  online_ordering_enabled: boolean
   features: RestaurantFeatures | null
   subscription: { plan: string; status: string } | null
 }
@@ -22,6 +25,14 @@ const FEATURE_BADGES: { key: keyof RestaurantFeatures; label: string }[] = [
   { key: 'kiosk_enabled', label: 'kiosk' },
   { key: 'staff_app_enabled', label: 'staff_app' },
 ]
+
+function orderingChannels(restaurant: Pick<RestaurantRow, 'online_ordering_enabled' | 'features'>): string[] {
+  const channels = ['Table']
+  if (restaurant.features?.kiosk_enabled) channels.push('Kiosk')
+  if (restaurant.online_ordering_enabled) channels.push('Online')
+  if (restaurant.features?.whatsapp_enabled) channels.push('WhatsApp')
+  return channels
+}
 
 function formatDate(iso: string) {
   const date = new Date(iso)
@@ -44,7 +55,7 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
 
     const { data: restaurants, error } = await supabase
       .from('restaurants')
-      .select('id, name, slug, created_at')
+      .select('id, name, slug, created_at, is_active, online_ordering_enabled')
       .order('created_at', { ascending: false })
 
     if (error) throw error
@@ -74,7 +85,7 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
         const [featuresRes, subRes] = await Promise.all([
           supabase
             .from('restaurant_features')
-            .select('kiosk_enabled, staff_app_enabled')
+            .select('kiosk_enabled, staff_app_enabled, whatsapp_enabled')
             .eq('restaurant_id', r.id)
             .maybeSingle(),
           supabase
@@ -89,6 +100,8 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
           slug: r.slug ?? null,
           owner_email: ownerEmails.get(r.id) ?? null,
           created_at: r.created_at,
+          is_active: Boolean(r.is_active),
+          online_ordering_enabled: Boolean(r.online_ordering_enabled),
           features: featuresRes.data,
           subscription: subRes.data,
         }
@@ -108,15 +121,23 @@ export default async function AdminRestaurantsPage() {
   return (
     <div className="min-h-screen bg-[#F7F6F3]">
       <div className="border-b border-[#E9E9E7] bg-white px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-7xl">
-          <h1 className="font-serif text-3xl font-semibold text-[#37352F]">
-            Platform {'\u2014'} Restaurants
-          </h1>
-          <p className="mt-1 text-sm text-[#6B675F]">
-            {failed
-              ? 'Unable to load restaurants.'
-              : `${restaurants.length} restaurant${restaurants.length === 1 ? '' : 's'} on the platform`}
-          </p>
+        <div className="mx-auto flex max-w-7xl items-start justify-between">
+          <div>
+            <h1 className="font-serif text-3xl font-semibold text-[#37352F]">
+              Platform {'\u2014'} Restaurants
+            </h1>
+            <p className="mt-1 text-sm text-[#6B675F]">
+              {failed
+                ? 'Unable to load restaurants.'
+                : `${restaurants.length} restaurant${restaurants.length === 1 ? '' : 's'} on the platform`}
+            </p>
+          </div>
+          <Link
+            href="/admin/platform-admins"
+            className="text-sm font-medium text-[#2E75B6] hover:underline"
+          >
+            Platform Admins {'\u2192'}
+          </Link>
         </div>
       </div>
 
@@ -140,6 +161,8 @@ export default async function AdminRestaurantsPage() {
                     <th className="px-4 py-3 font-medium">Slug</th>
                     <th className="px-4 py-3 font-medium">Owner Email</th>
                     <th className="px-4 py-3 font-medium">Created Date</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Ordering Channels</th>
                     <th className="px-4 py-3 font-medium">Features</th>
                     <th className="px-4 py-3 font-medium">Actions</th>
                   </tr>
@@ -147,6 +170,7 @@ export default async function AdminRestaurantsPage() {
                 <tbody>
                   {restaurants.map((restaurant) => {
                     const badges = enabledFeatureBadges(restaurant.features)
+                    const channels = orderingChannels(restaurant)
                     return (
                       <tr
                         key={restaurant.id}
@@ -163,6 +187,20 @@ export default async function AdminRestaurantsPage() {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-[#37352F]">
                           {formatDate(restaurant.created_at)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              restaurant.is_active
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {restaurant.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-[#6B675F]">
+                          {channels.join(', ')}
                         </td>
                         <td className="px-4 py-3">
                           {badges.length === 0 ? (

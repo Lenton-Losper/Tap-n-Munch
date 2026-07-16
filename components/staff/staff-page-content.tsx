@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Trash2, UserPlus, Shield } from 'lucide-react'
+import { Trash2, UserPlus, Shield, KeyRound } from 'lucide-react'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
   InviteStaffDialog,
@@ -153,6 +153,12 @@ export function StaffPageContent() {
             <Link href="/staff/roles">
               <Shield className="w-4 h-4 mr-2" />
               Manage Roles
+            </Link>
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/staff/pins">
+              <KeyRound className="w-4 h-4 mr-2" />
+              Terminal PINs
             </Link>
           </Button>
           <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>

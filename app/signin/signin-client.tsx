@@ -49,7 +49,7 @@ async function shouldShowGoogleHint(email: string): Promise<boolean> {
 export function SignInClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user, loading: authLoading, isSupabaseConfigured, signIn } = useAuth()
+  const { user, loading: authLoading, isSupabaseConfigured, signIn, restaurantId, roleResolved, isPlatformAdmin } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -69,10 +69,17 @@ export function SignInClient() {
       : ''
 
   useEffect(() => {
-    if (!authLoading && user) {
-      router.replace('/dashboard')
-    }
-  }, [authLoading, user, router])
+    // authLoading can briefly go false (set by the Supabase auth-event listener itself)
+    // before loadUserData has actually resolved restaurantId/isPlatformAdmin -- wait for
+    // roleResolved too, which is only set once the role API call genuinely completes
+    // (independent of whether a restaurant was found), so this doesn't redirect on
+    // stale/default values.
+    if (authLoading || !user || !roleResolved) return
+    // A platform-admin-only account (no restaurant_users row by design) has nothing to
+    // land on at /dashboard, which is restaurant-scoped -- send it straight to /admin.
+    const destination = restaurantId ? '/dashboard' : isPlatformAdmin ? '/admin' : '/dashboard'
+    router.replace(destination)
+  }, [authLoading, user, restaurantId, roleResolved, isPlatformAdmin, router])
 
   if (!isSupabaseConfigured) {
     return <SupabaseConfigError />
@@ -85,7 +92,8 @@ export function SignInClient() {
 
     try {
       await signIn(email, password)
-      router.replace('/dashboard')
+      // Redirect handled by the effect above once AuthProvider resolves restaurantId /
+      // isPlatformAdmin, so a platform-admin-only account goes to /admin, not /dashboard.
     } catch (submitError: any) {
       const message =
         submitError?.message || 'Failed to sign in. Please check your credentials.'

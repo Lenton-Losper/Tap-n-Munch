@@ -6,12 +6,11 @@ export async function assertPlatformAdmin(request: Request): Promise<NextRespons
   try {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
-    const { data } = await supabase
-      .from('platform_admins')
-      .select('id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    if (!data) {
+    const { data: isAdmin, error } = await supabase.rpc('is_platform_admin', {
+      p_user_id: user.id,
+    })
+    if (error) throw error
+    if (!isAdmin) {
       return NextResponse.json({ error: 'Platform admin access required.' }, { status: 403 })
     }
     return null

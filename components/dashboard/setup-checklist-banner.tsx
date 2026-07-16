@@ -7,6 +7,7 @@ import {
   type SetupStatus,
 } from '@/lib/onboarding/setup-status'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
+import { useAuth } from '@/components/auth/auth-provider'
 
 const BRAND_ORANGE = '#d96a3b'
 const BAR_BG = '#fdf6f0'
@@ -37,17 +38,27 @@ function PercentageBadge({ value }: { value: number }) {
 }
 
 export function SetupChecklistBanner() {
+  const { restaurantId, loading: authLoading } = useAuth()
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(false)
   const [dismissing, setDismissing] = useState(false)
 
   useEffect(() => {
+    // A platform-admin-only account (or any signed-in user with no restaurant) has
+    // nothing to check setup status for -- don't call the endpoint at all. Wait for
+    // AuthProvider to finish resolving restaurantId before deciding, so this doesn't
+    // fire (and skip) prematurely while auth is still loading.
+    if (authLoading || !restaurantId) return
+
     let cancelled = false
     ;(async () => {
       try {
-        const payload = await onboardingFetch('/api/admin/setup-status')
-        if (!cancelled) setStatus(payload as SetupStatus)
+        const payload = (await onboardingFetch('/api/admin/setup-status')) as
+          | SetupStatus
+          | { hasRestaurant: false }
+        if (cancelled) return
+        setStatus('hasRestaurant' in payload && payload.hasRestaurant === false ? null : (payload as SetupStatus))
       } catch {
         if (!cancelled) setStatus(null)
       } finally {
@@ -57,7 +68,7 @@ export function SetupChecklistBanner() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [restaurantId, authLoading])
 
   const handlePermanentDismiss = async () => {
     if (dismissing) return
@@ -74,6 +85,8 @@ export function SetupChecklistBanner() {
       setDismissing(false)
     }
   }
+
+  if (authLoading || !restaurantId) return null
 
   if (status?.dismissed === true) return null
 
