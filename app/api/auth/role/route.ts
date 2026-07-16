@@ -33,16 +33,30 @@ async function resolveRestaurantId(
   return restaurant?.id ? String(restaurant.id) : null
 }
 
+async function resolveIsPlatformAdmin(userId: string): Promise<boolean> {
+  const supabase = createServerSupabaseClient()
+  const { data, error } = await supabase.rpc('is_platform_admin', { p_user_id: userId })
+  if (error) {
+    console.error('[auth/role] is_platform_admin check failed:', error)
+    return false
+  }
+  return data === true
+}
+
 export async function GET(request: Request) {
   try {
     const authUser = await getUserFromRequest(request)
-    const restaurantId = await resolveRestaurantId(authUser.id)
+    const [restaurantId, isPlatformAdmin] = await Promise.all([
+      resolveRestaurantId(authUser.id),
+      resolveIsPlatformAdmin(authUser.id),
+    ])
 
     if (!restaurantId) {
       return NextResponse.json({
         role: null,
         restaurant_id: null,
         permissions: [],
+        is_platform_admin: isPlatformAdmin,
       })
     }
 
@@ -55,6 +69,7 @@ export async function GET(request: Request) {
       role: parseStaffRole(roleSlug),
       restaurant_id: restaurantId,
       permissions,
+      is_platform_admin: isPlatformAdmin,
     })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unauthorized'

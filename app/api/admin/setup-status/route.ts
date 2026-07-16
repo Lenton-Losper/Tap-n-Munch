@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getRestaurantIdForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { computeCompletionPercentage } from '@/lib/onboarding/setup-status'
 import {
   ensureSetupStatusRow,
@@ -17,11 +17,46 @@ function errorStatus(message: string): number {
   return 500
 }
 
+/**
+ * Non-throwing restaurant lookup (mirrors app/api/auth/role's resolveRestaurantId) --
+ * a signed-in user with no restaurant (e.g. a platform-admin-only account) is a normal,
+ * expected case here, not a server error.
+ */
+async function resolveRestaurantIdOrNull(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  userId: string,
+): Promise<string | null> {
+  const { data: membership, error: membershipError } = await supabase
+    .from('restaurant_users')
+    .select('restaurant_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (membershipError) throw membershipError
+  if (membership?.restaurant_id) {
+    return String(membership.restaurant_id)
+  }
+
+  const { data: restaurant, error: restaurantError } = await supabase
+    .from('restaurants')
+    .select('id')
+    .eq('owner_id', userId)
+    .limit(1)
+    .maybeSingle()
+
+  if (restaurantError) throw restaurantError
+  return restaurant?.id ? String(restaurant.id) : null
+}
+
 export async function GET(request: Request) {
   try {
     const user = await getUserFromRequest(request)
     const supabase = createServerSupabaseClient()
-    const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    const restaurantId = await resolveRestaurantIdOrNull(supabase, user.id)
+    if (!restaurantId) {
+      return NextResponse.json({ hasRestaurant: false })
+    }
+
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
     if (denied) return denied
 
@@ -44,6 +79,7 @@ export async function GET(request: Request) {
         : computeCompletionPercentage(data)
 
     return NextResponse.json({
+      hasRestaurant: true,
       ...data,
       completion_percentage,
       restaurant_id: restaurantId,
@@ -65,7 +101,11 @@ export async function PATCH(request: Request) {
     }
 
     const supabase = createServerSupabaseClient()
-    const restaurantId = await getRestaurantIdForUser(supabase, user.id)
+    const restaurantId = await resolveRestaurantIdOrNull(supabase, user.id)
+    if (!restaurantId) {
+      return NextResponse.json({ hasRestaurant: false })
+    }
+
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.SETTINGS_WRITE)
     if (denied) return denied
 
