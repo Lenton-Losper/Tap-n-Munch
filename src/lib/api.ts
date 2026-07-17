@@ -1018,3 +1018,18 @@ export async function savePrinterConfig(
   const data = (await response.json()) as {config: TerminalPrinterConfig};
   return data.config;
 }
+
+/** "Forget this printer" in Settings. Idempotent -- deleting when nothing is configured still succeeds. */
+export async function deletePrinterConfig(token: string): Promise<void> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/printer-config`,
+    {method: 'DELETE'},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+}

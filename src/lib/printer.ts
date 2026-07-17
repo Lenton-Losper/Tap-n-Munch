@@ -40,6 +40,33 @@ function errorMessageOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+const PLAIN_LANGUAGE_ERRORS: Record<string, string> = {
+  BLUETOOTH_DISABLED:
+    'Bluetooth is turned off. Turn it on in your device settings and try again.',
+  BLUETOOTH_NOT_SUPPORTED: "This device doesn't support Bluetooth.",
+  BLUETOOTH_PERMISSION_DENIED:
+    'This app needs Bluetooth permission to find printers. Grant it in your device settings and try again.',
+  BLUETOOTH_UNAVAILABLE: "Couldn't check for printers right now. Try again in a moment.",
+  UNSUPPORTED_PLATFORM: 'Receipt printing is only available on this terminal app.',
+  PRINTER_NOT_FOUND:
+    "That printer is no longer available. Make sure it's still paired and try again.",
+  CONNECT_FAILED: "Couldn't connect. Make sure the printer is powered on and in range.",
+  NOT_CONNECTED: 'No printer is connected.',
+  PRINT_FAILED:
+    'The print failed partway through. Make sure the printer is powered on and in range.',
+  INVALID_PAYLOAD: 'Something went wrong preparing that print job.',
+  NO_PRINTER_CONFIGURED: 'No receipt printer is set up on this device yet.',
+  RECEIPT_NOT_READY: "The receipt isn't ready yet. Wait a moment and try again.",
+};
+
+/** Maps a native/API error code to a plain-language message a non-technical user can act on. */
+export function describePrinterError(errorCode?: string, fallbackMessage?: string): string {
+  if (errorCode && PLAIN_LANGUAGE_ERRORS[errorCode]) {
+    return PLAIN_LANGUAGE_ERRORS[errorCode];
+  }
+  return fallbackMessage || 'Something went wrong with the printer. Please try again.';
+}
+
 /**
  * Paired-device lookup only (no active scanning), so on API 31+ only BLUETOOTH_CONNECT is
  * strictly required; BLUETOOTH_SCAN is requested too for completeness since some OEM builds
@@ -65,19 +92,45 @@ async function ensureBluetoothPermissions(): Promise<boolean> {
   }
 }
 
-export async function listPairedPrinters(): Promise<PrinterInfo[]> {
+export interface ListPrintersResult {
+  printers: PrinterInfo[];
+  /** Set when printers is empty because of a real failure, not just "nothing paired". */
+  errorCode?: string;
+  error?: string;
+}
+
+/**
+ * Distinguishes *why* the list came back empty -- "Bluetooth is off", "no permission", and
+ * "Bluetooth is on but nothing is paired" all look the same as a bare empty array, but need
+ * different plain-language messages in the UI.
+ */
+export async function listPairedPrinters(): Promise<ListPrintersResult> {
   if (Platform.OS !== 'android' || !PrinterModule?.getPrinters) {
-    return [];
+    return {
+      printers: [],
+      errorCode: 'UNSUPPORTED_PLATFORM',
+      error: 'Receipt printing is only available on this terminal app',
+    };
   }
+
   const granted = await ensureBluetoothPermissions();
   if (!granted) {
-    return [];
+    return {
+      printers: [],
+      errorCode: 'BLUETOOTH_PERMISSION_DENIED',
+      error: 'Bluetooth permission is required to find printers',
+    };
   }
+
   try {
-    return await PrinterModule.getPrinters();
-  } catch (error) {
-    console.warn('[printer] Failed to list paired printers', error);
-    return [];
+    const printers = await PrinterModule.getPrinters();
+    return {printers};
+  } catch (error: unknown) {
+    return {
+      printers: [],
+      errorCode: errorCodeOf(error),
+      error: errorMessageOf(error, 'Failed to list paired printers'),
+    };
   }
 }
 

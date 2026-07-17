@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,12 +9,27 @@ import {
   Text,
   View,
 } from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useAuth} from '../context/AuthContext';
 import {useStreamConnection} from '../context/StreamContext';
 import {APP_VERSION} from '../constants';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {clearAllData, getRestaurantName, getTerminalId} from '../lib/storage';
+import {
+  TerminalPrinterConfig,
+  deletePrinterConfig,
+  getPrinterConfig,
+} from '../lib/api';
+import {
+  connectToPrinter,
+  describePrinterError,
+  getPrinterStatus,
+  printEscPosBytes,
+  PrinterStatus,
+} from '../lib/printer';
+import {clearAllData, getRestaurantName, getTerminalId, getTerminalToken} from '../lib/storage';
+import {buildTestPrintPayload} from '../lib/testPrintPayload';
 import DiagnosticsScreen from './DiagnosticsScreen';
+import PrinterPickerScreen from './PrinterPickerScreen';
 
 export default function SettingsScreen() {
   const {signOut} = useAuth();
@@ -25,6 +40,19 @@ export default function SettingsScreen() {
   const [, setTapCount] = useState(0);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const tapResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [printerConfig, setPrinterConfig] = useState<TerminalPrinterConfig | null>(null);
+  const [printerConfigLoading, setPrinterConfigLoading] = useState(true);
+  const [printerConnectionStatus, setPrinterConnectionStatus] = useState<PrinterStatus>({
+    connected: false,
+    id: null,
+  });
+  const [showPrinterPicker, setShowPrinterPicker] = useState(false);
+  const [testPrinting, setTestPrinting] = useState(false);
+  const [testPrintResult, setTestPrintResult] = useState<
+    {success: boolean; message: string} | null
+  >(null);
+  const [forgettingPrinter, setForgettingPrinter] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -50,6 +78,111 @@ export default function SettingsScreen() {
 
     loadInfo();
   }, []);
+
+  const loadPrinterConfig = useCallback(async () => {
+    setPrinterConfigLoading(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        return;
+      }
+      const config = await getPrinterConfig(token);
+      setPrinterConfig(config);
+      if (config) {
+        const status = await getPrinterStatus();
+        setPrinterConnectionStatus(status);
+      }
+    } catch {
+      // Leave as "not set up" -- staff can retry via Select/Change Printer.
+    } finally {
+      setPrinterConfigLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPrinterConfig();
+  }, [loadPrinterConfig]);
+
+  const handlePrinterPaired = (config: TerminalPrinterConfig) => {
+    setPrinterConfig(config);
+    setPrinterConnectionStatus({connected: true, id: config.printer_address});
+    setTestPrintResult(null);
+    setShowPrinterPicker(false);
+  };
+
+  const handleTestPrint = async () => {
+    if (!printerConfig?.printer_address) {
+      return;
+    }
+    setTestPrinting(true);
+    setTestPrintResult(null);
+    try {
+      let status = await getPrinterStatus();
+      if (!status.connected || status.id !== printerConfig.printer_address) {
+        const connectResult = await connectToPrinter(printerConfig.printer_address);
+        if (!connectResult.success) {
+          setTestPrintResult({
+            success: false,
+            message: describePrinterError(connectResult.errorCode, connectResult.error),
+          });
+          return;
+        }
+        status = {connected: true, id: printerConfig.printer_address};
+        setPrinterConnectionStatus(status);
+      }
+
+      const payload = buildTestPrintPayload(printerConfig.printer_name ?? 'Receipt Printer');
+      const printResult = await printEscPosBytes(payload);
+      if (printResult.success) {
+        setTestPrintResult({success: true, message: 'Test print sent successfully.'});
+      } else {
+        setTestPrintResult({
+          success: false,
+          message: describePrinterError(printResult.errorCode, printResult.error),
+        });
+      }
+    } catch (err) {
+      setTestPrintResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Test print failed',
+      });
+    } finally {
+      setTestPrinting(false);
+    }
+  };
+
+  const handleForgetPrinter = () => {
+    Alert.alert(
+      'Forget This Printer',
+      `Remove ${printerConfig?.printer_name || 'this printer'} from this terminal? You'll need to select it again before you can print receipts.`,
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Forget',
+          style: 'destructive',
+          onPress: async () => {
+            setForgettingPrinter(true);
+            try {
+              const token = await getTerminalToken();
+              if (token) {
+                await deletePrinterConfig(token);
+              }
+              setPrinterConfig(null);
+              setPrinterConnectionStatus({connected: false, id: null});
+              setTestPrintResult(null);
+            } catch (err) {
+              Alert.alert(
+                'Error',
+                err instanceof Error ? err.message : 'Failed to forget this printer',
+              );
+            } finally {
+              setForgettingPrinter(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const handleVersionPress = () => {
     if (tapResetRef.current) {
@@ -142,6 +275,121 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Receipt Printer</Text>
+
+          {printerConfigLoading ? (
+            <ActivityIndicator color={Colors.primary} />
+          ) : printerConfig ? (
+            <>
+              <View style={styles.printerStatusRow}>
+                <MaterialCommunityIcons
+                  name="printer-outline"
+                  size={28}
+                  color={Colors.primary}
+                />
+                <View style={styles.printerStatusText}>
+                  <Text style={styles.printerNameText}>
+                    {printerConfig.printer_name || 'Receipt Printer'}
+                  </Text>
+                  <View style={styles.statusRow}>
+                    <View
+                      style={[
+                        styles.statusDot,
+                        {
+                          backgroundColor: printerConnectionStatus.connected
+                            ? Colors.green
+                            : Colors.textMuted,
+                        },
+                      ]}
+                    />
+                    <Text style={styles.hintText}>
+                      {printerConnectionStatus.connected
+                        ? 'Connected'
+                        : 'Ready — connects automatically when printing'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {testPrintResult ? (
+                <View
+                  style={[
+                    styles.testPrintBanner,
+                    testPrintResult.success
+                      ? styles.testPrintSuccess
+                      : styles.testPrintFailure,
+                  ]}>
+                  <MaterialCommunityIcons
+                    name={
+                      testPrintResult.success
+                        ? 'check-circle-outline'
+                        : 'alert-circle-outline'
+                    }
+                    size={18}
+                    color={testPrintResult.success ? Colors.green : Colors.red}
+                  />
+                  <Text
+                    style={[
+                      styles.testPrintText,
+                      {color: testPrintResult.success ? Colors.green : Colors.red},
+                    ]}>
+                    {testPrintResult.message}
+                  </Text>
+                </View>
+              ) : null}
+
+              <View style={styles.printerActions}>
+                <Pressable
+                  style={[
+                    styles.printerActionButton,
+                    testPrinting && styles.buttonDisabled,
+                  ]}
+                  disabled={testPrinting}
+                  onPress={handleTestPrint}>
+                  {testPrinting ? (
+                    <ActivityIndicator color={Colors.primary} size="small" />
+                  ) : (
+                    <Text style={styles.printerActionText}>Test Print</Text>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={styles.printerActionButton}
+                  onPress={() => setShowPrinterPicker(true)}>
+                  <Text style={styles.printerActionText}>Change Printer</Text>
+                </Pressable>
+              </View>
+
+              <Pressable
+                disabled={forgettingPrinter}
+                onPress={handleForgetPrinter}
+                style={styles.deactivateRow}>
+                {forgettingPrinter ? (
+                  <ActivityIndicator color={Colors.red} />
+                ) : (
+                  <Text style={styles.deactivateText}>Forget This Printer</Text>
+                )}
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <View style={styles.printerStatusRow}>
+                <MaterialCommunityIcons
+                  name="printer-off-outline"
+                  size={28}
+                  color={Colors.textMuted}
+                />
+                <Text style={styles.hintText}>No printer set up yet</Text>
+              </View>
+              <Pressable
+                style={styles.primaryPrinterButton}
+                onPress={() => setShowPrinterPicker(true)}>
+                <Text style={styles.primaryPrinterButtonText}>Select Printer</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>Actions</Text>
           <Pressable
             disabled={deactivating}
@@ -161,6 +409,16 @@ export default function SettingsScreen() {
         animationType="slide"
         onRequestClose={() => setShowDiagnostics(false)}>
         <DiagnosticsScreen onClose={() => setShowDiagnostics(false)} />
+      </Modal>
+
+      <Modal
+        visible={showPrinterPicker}
+        animationType="slide"
+        onRequestClose={() => setShowPrinterPicker(false)}>
+        <PrinterPickerScreen
+          onClose={() => setShowPrinterPicker(false)}
+          onPaired={handlePrinterPaired}
+        />
       </Modal>
     </>
   );
@@ -237,5 +495,71 @@ const styles = StyleSheet.create({
     ...Typography.body,
     fontWeight: '600',
     color: Colors.red,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  printerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  printerStatusText: {
+    flex: 1,
+    gap: 4,
+  },
+  printerNameText: {
+    ...Typography.body,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  printerActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  printerActionButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  printerActionText: {
+    ...Typography.small,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  primaryPrinterButton: {
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  primaryPrinterButtonText: {
+    ...Typography.small,
+    fontWeight: '600',
+    color: Colors.white,
+  },
+  testPrintBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderRadius: 10,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  testPrintSuccess: {
+    backgroundColor: Colors.greenLight,
+  },
+  testPrintFailure: {
+    backgroundColor: Colors.redLight,
+  },
+  testPrintText: {
+    ...Typography.small,
+    flex: 1,
   },
 });

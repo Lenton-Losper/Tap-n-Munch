@@ -1,5 +1,8 @@
 package com.flashtap.pos
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.dantsu.escposprinter.connection.bluetooth.BluetoothConnection
@@ -29,9 +32,27 @@ class PrinterModule(private val reactContext: ReactApplicationContext) :
   private fun pairedConnections(): Array<BluetoothConnection> =
     BluetoothPrintersConnections().list ?: emptyArray()
 
+  private fun bluetoothAdapter(): BluetoothAdapter? {
+    val manager = reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    return manager?.adapter
+  }
+
   @ReactMethod
   fun getPrinters(promise: Promise) {
     try {
+      // Checked up front so the JS side can show an accurate plain-language message
+      // ("Bluetooth is off") instead of guessing from an empty list, which is
+      // indistinguishable from "Bluetooth is on but nothing is paired".
+      val adapter = bluetoothAdapter()
+      if (adapter == null) {
+        promise.reject("BLUETOOTH_NOT_SUPPORTED", "This device does not support Bluetooth")
+        return
+      }
+      if (!adapter.isEnabled) {
+        promise.reject("BLUETOOTH_DISABLED", "Bluetooth is turned off")
+        return
+      }
+
       val result: WritableArray = Arguments.createArray()
       for (connection in pairedConnections()) {
         val device = connection.device ?: continue
