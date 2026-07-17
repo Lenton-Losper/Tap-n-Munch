@@ -3458,6 +3458,84 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 
 
 --
+-- Name: rct_number_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+-- Receipt capability Phase 1 (supabase/migrations/20260717140000_receipt_documents.sql).
+-- Mirrors the grv_number_seq pattern: dedicated sequence, RCT- prefix, LPAD-6.
+--
+
+CREATE SEQUENCE IF NOT EXISTS "public"."rct_number_seq" START WITH 1;
+
+ALTER SEQUENCE "public"."rct_number_seq" OWNER TO "postgres";
+
+--
+-- Name: generate_document_number(text, text); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+BEGIN
+  RETURN p_prefix || '-' || LPAD(nextval(p_sequence_name)::text, 6, '0');
+END;
+$$;
+
+ALTER FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") OWNER TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") TO "service_role";
+
+--
+-- Name: receipt_documents; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."receipt_documents" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "restaurant_id" "uuid" NOT NULL,
+    "outlet_id" "uuid",
+    "order_id" "uuid" NOT NULL,
+    "document_type" "text" DEFAULT 'SALE_RECEIPT'::"text" NOT NULL,
+    "document_number" "text" NOT NULL,
+    "version" integer DEFAULT 1 NOT NULL,
+    "status" "text" DEFAULT 'issued'::"text" NOT NULL,
+    "currency" "text" DEFAULT 'NAD'::"text" NOT NULL,
+    "snapshot_json" "jsonb" NOT NULL,
+    "issued_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "receipt_documents_document_type_check" CHECK (("document_type" = 'SALE_RECEIPT'::"text")),
+    CONSTRAINT "receipt_documents_status_check" CHECK (("status" = ANY (ARRAY['issued'::"text", 'void'::"text"])))
+);
+
+-- outlet_id: no outlets table exists yet. Nullable so this is forward-compatible with
+-- future multi-outlet modeling; not wired to anything today.
+
+ALTER TABLE "public"."receipt_documents" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_order_id_document_type_version_key" UNIQUE ("order_id", "document_type", "version");
+
+CREATE INDEX "receipt_documents_restaurant_id_idx" ON "public"."receipt_documents" USING "btree" ("restaurant_id");
+
+CREATE INDEX "receipt_documents_order_id_idx" ON "public"."receipt_documents" USING "btree" ("order_id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id");
+
+ALTER TABLE "public"."receipt_documents" ENABLE ROW LEVEL SECURITY;
+
+-- No insert/update/delete policies and no grants beyond the schema-wide default ACLs below --
+-- rows are written exclusively by the service role (bypasses RLS), so the table is immutable
+-- at the database level for application users, not just by convention.
+CREATE POLICY "Staff can read receipt documents for their restaurant" ON "public"."receipt_documents" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+--
 -- PostgreSQL database dump complete
 --
 

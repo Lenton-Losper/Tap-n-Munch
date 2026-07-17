@@ -1,8 +1,42 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
 
 export const dynamic = 'force-dynamic'
+
+/**
+ * Runs `promise` in the background without making the caller wait for it. The promise
+ * starts executing immediately either way; when running as a real Cloudflare Worker we
+ * additionally register it with ctx.waitUntil so it's guaranteed to finish before the
+ * isolate is torn down after the response is sent. Falls back to a plain unawaited
+ * promise when there's no Workers context (e.g. local `next dev`, where the process
+ * stays alive independent of the response).
+ */
+function runInBackground(promise: Promise<unknown>): void {
+  const guarded = promise.catch((error) => console.error('[terminal/payment-events/sale] background task failed', error))
+
+  import('@opennextjs/cloudflare')
+    .then(({ getCloudflareContext }) => {
+      const { ctx } = getCloudflareContext()
+      ctx.waitUntil(guarded)
+    })
+    .catch(() => {
+      // Not running in a Cloudflare Workers context -- `guarded` is already running
+      // unawaited above, which is sufficient there.
+    })
+}
+
+/** No delivery mechanism exists yet (Phase 2-4) -- issuance failure must never affect the payment response. */
+function issueReceiptsForOrders(orderIds: string[]): void {
+  for (const orderId of orderIds) {
+    runInBackground(
+      issueReceiptForOrder(orderId).catch((error) => {
+        console.error(`[terminal/payment-events/sale] receipt issuance failed for order ${orderId}:`, error)
+      }),
+    )
+  }
+}
 
 type SaleBody = {
   order_ids?: unknown
@@ -136,6 +170,7 @@ export async function POST(req: Request) {
       .single()
 
     if (!insertError && created) {
+      issueReceiptsForOrders(orderIds)
       return NextResponse.json(created)
     }
 
@@ -178,6 +213,7 @@ export async function POST(req: Request) {
         )
       }
 
+      issueReceiptsForOrders(orderIds)
       return NextResponse.json(existing)
     }
 
