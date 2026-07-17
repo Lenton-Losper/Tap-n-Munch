@@ -39,12 +39,15 @@ COMMENT ON SCHEMA "public" IS 'standard public schema';
 -- Name: assign_grv_number(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
+-- Delegates to generate_document_number() (see receipt_documents below) instead of
+-- reimplementing the prefix + LPAD(nextval(...)) logic inline -- one numbering
+-- mechanism, not two. grv_number_seq is unchanged (supabase/migrations/20260717150000).
 CREATE OR REPLACE FUNCTION "public"."assign_grv_number"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     AS $$
 BEGIN
     IF NEW.grv_number IS NULL THEN
-        NEW.grv_number := 'GRV-' || LPAD(nextval('grv_number_seq')::text, 6, '0');
+        NEW.grv_number := public.generate_document_number('GRV', 'grv_number_seq');
     END IF;
     RETURN NEW;
 END;
