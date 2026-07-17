@@ -260,6 +260,33 @@ async function main() {
     .eq('terminal_id', terminal.id)
   assert(printerConfigCount === 1, `expected exactly 1 printer config row, got ${printerConfigCount}`)
 
+  // --- DELETE /api/terminal/printer-config: "forget this printer" ---
+  const { DELETE: deletePrinterConfigRoute } = await import('../app/api/terminal/printer-config/route')
+
+  const deleteReq = new Request('https://staging.test/api/terminal/printer-config', {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${jwt}` },
+  })
+  const deleteRes = await deletePrinterConfigRoute(deleteReq)
+  assert(deleteRes.status === 200, `printer-config DELETE should return 200, got ${deleteRes.status}`)
+
+  const afterDeleteReq = new Request('https://staging.test/api/terminal/printer-config', {
+    headers: { Authorization: `Bearer ${jwt}` },
+  })
+  const afterDeleteRes = await getPrinterConfigRoute(afterDeleteReq)
+  const afterDeleteBody = (await afterDeleteRes.json()) as { config: unknown }
+  assert(afterDeleteBody.config === null, 'printer config should be null after DELETE')
+
+  const { count: printerConfigCountAfterDelete } = await db
+    .from('terminal_printer_configs')
+    .select('id', { count: 'exact', head: true })
+    .eq('terminal_id', terminal.id)
+  assert(printerConfigCountAfterDelete === 0, `expected 0 printer config rows after delete, got ${printerConfigCountAfterDelete}`)
+
+  // Deleting again (nothing to delete) should still succeed, not error -- "forget" is idempotent.
+  const deleteAgainRes = await deletePrinterConfigRoute(deleteReq)
+  assert(deleteAgainRes.status === 200, `repeat printer-config DELETE should still return 200, got ${deleteAgainRes.status}`)
+
   console.log('TERMINAL_RECEIPT_PRINT_ROUTES_STAGING_VERIFY_OK', {
     orderId: order.id,
     receiptId: receipt.id,

@@ -120,3 +120,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 }
+
+// "Forget this printer" (Settings UI). No client-writable RLS policy exists for this table
+// (matches receipt_documents/receipt_deliveries) -- this route, running as the service role
+// after terminal JWT verification, is the only thing that can remove a config row.
+export async function DELETE(req: Request) {
+  try {
+    const terminal = await requireTerminalAuth(req)
+    const supabase = createServerSupabaseClient()
+    await validateTerminalRecord(supabase, terminal)
+
+    const { error } = await supabase
+      .from('terminal_printer_configs')
+      .delete()
+      .eq('terminal_id', terminal.terminalId)
+      .eq('purpose', PURPOSE)
+
+    if (error) {
+      return NextResponse.json({ error: 'Failed to remove printer config' }, { status: 500 })
+    }
+
+    return NextResponse.json({ ok: true })
+  } catch (err: unknown) {
+    if (err instanceof Response) return err
+    console.error('[terminal/printer-config]', err)
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+}
