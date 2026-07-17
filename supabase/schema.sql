@@ -3539,6 +3539,96 @@ ALTER TABLE "public"."receipt_documents" ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Staff can read receipt documents for their restaurant" ON "public"."receipt_documents" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 --
+-- Name: receipt_deliveries; Type: TABLE; Schema: public; Owner: postgres
+--
+-- Receipt capability Phase 2 (supabase/migrations/20260717160000_receipt_deliveries_and_terminal_printer_configs.sql).
+--
+
+CREATE TABLE IF NOT EXISTS "public"."receipt_deliveries" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "receipt_document_id" "uuid" NOT NULL,
+    "method" "text" NOT NULL,
+    "destination" "text",
+    "status" "text" NOT NULL,
+    "attempt_number" integer DEFAULT 1 NOT NULL,
+    "provider" "text",
+    "provider_reference" "text",
+    "device_id" "text",
+    "requested_by" "uuid",
+    "error_code" "text",
+    "error_message" "text",
+    "requested_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "completed_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "receipt_deliveries_method_check" CHECK (("method" = 'PRINT'::"text")),
+    CONSTRAINT "receipt_deliveries_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'sent'::"text", 'failed'::"text"])))
+);
+
+ALTER TABLE "public"."receipt_deliveries" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_pkey" PRIMARY KEY ("id");
+
+CREATE INDEX "receipt_deliveries_receipt_document_id_idx" ON "public"."receipt_deliveries" USING "btree" ("receipt_document_id");
+
+CREATE INDEX "receipt_deliveries_status_idx" ON "public"."receipt_deliveries" USING "btree" ("status");
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_receipt_document_id_fkey" FOREIGN KEY ("receipt_document_id") REFERENCES "public"."receipt_documents"("id");
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_requested_by_fkey" FOREIGN KEY ("requested_by") REFERENCES "auth"."users"("id");
+
+ALTER TABLE "public"."receipt_deliveries" ENABLE ROW LEVEL SECURITY;
+
+-- No update policy -- a retry is a new row (attempt_number incremented), never an edit to a
+-- prior attempt. No insert/delete policy or grants either: rows are written exclusively by
+-- the service role, same as receipt_documents.
+CREATE POLICY "Staff can read receipt deliveries for their restaurant" ON "public"."receipt_deliveries" FOR SELECT TO "authenticated" USING (("receipt_document_id" IN ( SELECT "receipt_documents"."id" FROM "public"."receipt_documents" WHERE ("receipt_documents"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))));
+
+--
+-- Name: terminal_printer_configs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."terminal_printer_configs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "terminal_id" "text" NOT NULL,
+    "purpose" "text" DEFAULT 'CUSTOMER_RECEIPT'::"text" NOT NULL,
+    "connection_type" "text" DEFAULT 'BLUETOOTH'::"text" NOT NULL,
+    "printer_name" "text",
+    "printer_address" "text",
+    "paper_width_mm" integer DEFAULT 80 NOT NULL,
+    "character_width" integer,
+    "is_default" boolean DEFAULT true NOT NULL,
+    "last_connected_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "terminal_printer_configs_purpose_check" CHECK (("purpose" = 'CUSTOMER_RECEIPT'::"text")),
+    CONSTRAINT "terminal_printer_configs_connection_type_check" CHECK (("connection_type" = 'BLUETOOTH'::"text"))
+);
+
+-- terminal_id matches the terminal identity convention already used elsewhere (e.g.
+-- payment_events.terminal_id): restaurant_terminals.id, the JWT `sub` issued by
+-- requireTerminalAuth() -- not device_id/device_serial/sn.
+
+ALTER TABLE "public"."terminal_printer_configs" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."terminal_printer_configs"
+    ADD CONSTRAINT "terminal_printer_configs_pkey" PRIMARY KEY ("id");
+
+CREATE INDEX "terminal_printer_configs_terminal_id_idx" ON "public"."terminal_printer_configs" USING "btree" ("terminal_id");
+
+ALTER TABLE "public"."terminal_printer_configs" ENABLE ROW LEVEL SECURITY;
+
+-- No restaurant_id column -- this is device-level data, not staff-level, so
+-- user_restaurant_ids() can't apply directly. Scope reads by joining through
+-- restaurant_terminals (the same join-through-parent shape already used for e.g.
+-- goods_received_items, which also has no restaurant_id of its own). Writes are
+-- service-role only (the terminal's own authenticated API) -- no insert/update/delete
+-- policy or grants here.
+CREATE POLICY "Staff can read printer configs for their restaurant's terminals" ON "public"."terminal_printer_configs" FOR SELECT TO "authenticated" USING (("terminal_id" IN ( SELECT ("restaurant_terminals"."id")::"text" AS "id" FROM "public"."restaurant_terminals" WHERE ("restaurant_terminals"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))));
+
+--
 -- PostgreSQL database dump complete
 --
 
