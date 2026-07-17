@@ -17,6 +17,7 @@ import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api
 import {formatCurrency, getItemUnitPrice} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {processPaymentIntent} from '../lib/payment';
+import {printReceiptForOrder} from '../lib/receiptPrinting';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import StatusBadge from '../components/StatusBadge';
@@ -48,6 +49,10 @@ export default function PaymentScreen({route, navigation}: Props) {
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
   const [canCloseTable, setCanCloseTable] = useState(false);
+  const [printState, setPrintState] = useState<
+    'idle' | 'printing' | 'success' | 'failed'
+  >('idle');
+  const [printError, setPrintError] = useState<string | null>(null);
 
   const resolvedTableId = order?.table_id ?? tableId;
 
@@ -70,6 +75,39 @@ export default function PaymentScreen({route, navigation}: Props) {
   useEffect(() => {
     loadOrder();
   }, [loadOrder]);
+
+  const attemptPrintReceipt = useCallback(async () => {
+    setPrintState('printing');
+    setPrintError(null);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        setPrintState('failed');
+        setPrintError('Session expired');
+        return;
+      }
+      const result = await printReceiptForOrder(orderId, token);
+      if (result.success) {
+        setPrintState('success');
+      } else {
+        setPrintState('failed');
+        setPrintError(result.error ?? 'Receipt printing failed');
+      }
+    } catch (err) {
+      setPrintState('failed');
+      setPrintError(err instanceof Error ? err.message : 'Receipt printing failed');
+    }
+  }, [orderId]);
+
+  // Auto-print as soon as the payment succeeds — payment success and receipt printing are
+  // independent outcomes, so a print failure here must never look like or affect the payment
+  // result above it; it only ever offers Retry / Skip.
+  useEffect(() => {
+    if (machineState.state === 'PAYMENT_SUCCESS') {
+      attemptPrintReceipt();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machineState.state]);
 
   const goToOrders = () => {
     reset();
@@ -212,6 +250,39 @@ export default function PaymentScreen({route, navigation}: Props) {
             />
             <Text style={styles.successTitle}>Payment successful</Text>
             <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
+
+            {printState === 'printing' && (
+              <View style={styles.printingPill}>
+                <ActivityIndicator color={Colors.blue} size="small" />
+                <Text style={styles.printingText}>Printing receipt…</Text>
+              </View>
+            )}
+
+            {printState === 'failed' && (
+              <View style={styles.failedCard}>
+                <MaterialCommunityIcons
+                  name="printer-off-outline"
+                  size={32}
+                  color={Colors.red}
+                />
+                <Text style={styles.failedTitle}>RECEIPT PRINTING FAILED</Text>
+                {printError ? (
+                  <Text style={styles.failedError}>{printError}</Text>
+                ) : null}
+                <View style={styles.printFailedActions}>
+                  <Pressable
+                    style={styles.outlinedRedButton}
+                    onPress={attemptPrintReceipt}>
+                    <Text style={styles.outlinedRedText}>Retry</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.printSkipButton}
+                    onPress={() => setPrintState('idle')}>
+                    <Text style={styles.printSkipText}>Skip</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
           </View>
 
           <View style={styles.successActions}>
@@ -549,6 +620,39 @@ const styles = StyleSheet.create({
   processingText: {
     ...Typography.subheading,
     color: Colors.blue,
+  },
+  printingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: Colors.blueLight,
+    borderRadius: 24,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+  },
+  printingText: {
+    ...Typography.small,
+    color: Colors.blue,
+  },
+  printFailedActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  printSkipButton: {
+    marginTop: Spacing.sm,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: Spacing.lg,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  printSkipText: {
+    ...Typography.subheading,
+    color: Colors.textSecondary,
   },
   failedCard: {
     backgroundColor: Colors.redLight,

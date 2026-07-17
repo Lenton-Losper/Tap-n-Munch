@@ -82,8 +82,8 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 36
-        versionName "1.35"
+        versionCode 37
+        versionName "1.36"
     }
     buildFeatures {
         buildConfig = true
@@ -143,6 +143,11 @@ android {
 
 apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
 
+// DantSu's ESCPOS-ThermalPrinter-Android is published via JitPack, not Maven Central/Google.
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
@@ -152,4 +157,7 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Bluetooth ESC/POS transport for PrinterModule.kt (receipt printing).
+    implementation("com.github.DantSu:ESCPOS-ThermalPrinter-Android:3.3.0")
 }

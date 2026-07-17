@@ -863,3 +863,158 @@ export async function createPOSOrder(
   };
   return data;
 }
+
+// ─── Receipt printing (Phase 2) ────────────────────────────────────────────
+
+export interface TerminalReceipt {
+  id: string;
+  documentNumber: string;
+  status: string;
+  escposBase64: string;
+}
+
+/**
+ * Fetches the already-rendered ESC/POS bytes for an order's issued receipt. Returns null
+ * (not a throw) when the receipt isn't issued yet — issuance is fire-and-forget server-side
+ * (Phase 1), so a brief "not found" right after payment is an expected, retryable state, not
+ * an error.
+ */
+export async function getReceiptForOrder(
+  orderId: string,
+  token: string,
+  characterWidth?: number,
+): Promise<TerminalReceipt | null> {
+  const query = characterWidth ? `?characterWidth=${characterWidth}` : '';
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/receipts/${orderId}${query}`,
+    {method: 'GET'},
+    token,
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    throw new TerminalAuthError();
+  }
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  return (await response.json()) as TerminalReceipt;
+}
+
+/**
+ * Records a print attempt. attempt_number is derived server-side (count of prior attempts
+ * for this receipt + 1) — a retry is always a new row, never an edit to a prior attempt.
+ * Does not throw — returns { ok, error? } so a logging failure never blocks the retry UX.
+ */
+export async function recordReceiptDelivery(
+  params: {
+    receiptDocumentId: string;
+    status: 'sent' | 'failed';
+    provider?: string;
+    errorCode?: string;
+    errorMessage?: string;
+  },
+  token: string,
+): Promise<{ok: boolean; error?: string}> {
+  try {
+    const response = await terminalFetch(
+      `${FLASHTAP_API_URL}/api/terminal/receipt-deliveries`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          receipt_document_id: params.receiptDocumentId,
+          status: params.status,
+          provider: params.provider ?? 'bluetooth_escpos',
+          error_code: params.errorCode,
+          error_message: params.errorMessage,
+        }),
+      },
+      token,
+    );
+
+    if (response.status === 401 || response.status === 403) {
+      throw new TerminalAuthError();
+    }
+    if (!response.ok) {
+      throw new Error(await parseApiError(response));
+    }
+    return {ok: true};
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to record receipt delivery';
+    console.error('[recordReceiptDelivery] Failed to record delivery attempt', {
+      receiptDocumentId: params.receiptDocumentId,
+      status: params.status,
+      error,
+    });
+    return {ok: false, error: message};
+  }
+}
+
+export interface TerminalPrinterConfig {
+  id: string;
+  terminal_id: string;
+  printer_name: string | null;
+  printer_address: string | null;
+  paper_width_mm: number;
+  character_width: number | null;
+}
+
+export async function getPrinterConfig(
+  token: string,
+): Promise<TerminalPrinterConfig | null> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/printer-config`,
+    {method: 'GET'},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {config: TerminalPrinterConfig | null};
+  return data.config;
+}
+
+export async function savePrinterConfig(
+  params: {
+    printerName: string;
+    printerAddress: string;
+    paperWidthMm?: number;
+    characterWidth?: number;
+  },
+  token: string,
+): Promise<TerminalPrinterConfig> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/printer-config`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        printer_name: params.printerName,
+        printer_address: params.printerAddress,
+        paper_width_mm: params.paperWidthMm ?? 80,
+        character_width: params.characterWidth,
+      }),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {config: TerminalPrinterConfig};
+  return data.config;
+}

@@ -2,6 +2,16 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Bluetooth receipt printer (PrinterModule.kt / DantSu ESCPOS-ThermalPrinter-Android).
+         Legacy permissions for API 30 and below, new granular ones for API 31+. Paired device
+         lookup only, never active discovery, so BLUETOOTH_SCAN never needs location. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+      android:name="android.permission.BLUETOOTH_SCAN"
+      android:usesPermissionFlags="neverForLocation" />
+
     <queries>
         <intent>
             <action android:name="com.wiseasy.transaction.call" />
