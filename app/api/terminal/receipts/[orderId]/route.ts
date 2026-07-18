@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { renderReceiptEscPos } from '@/lib/receipts/renderers/escposRenderer'
+import { renderReceiptSdk6 } from '@/lib/receipts/renderers/sdk6Renderer'
 import type { ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
 
 export const dynamic = 'force-dynamic'
@@ -53,15 +54,16 @@ export async function GET(
       return NextResponse.json({ error: 'Receipt not found for this order' }, { status: 404 })
     }
 
-    const escposBytes = renderReceiptEscPos(receipt.snapshot_json as ReceiptSnapshot, {
-      characterWidth,
-    })
+    const snapshot = receipt.snapshot_json as ReceiptSnapshot
+    const escposBytes = renderReceiptEscPos(snapshot, { characterWidth })
+    const sdk6Lines = renderReceiptSdk6(snapshot)
 
     return NextResponse.json({
       id: receipt.id,
       documentNumber: receipt.document_number,
       status: receipt.status,
       escposBase64: Buffer.from(escposBytes).toString('base64'),
+      sdk6Lines,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
