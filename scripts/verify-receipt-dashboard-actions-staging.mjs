@@ -149,9 +149,17 @@ async function main() {
     await card.getByRole('button', { name: /Print from this computer/i }).click()
     const popup = await popupPromise
     await popup.waitForLoadState('load', { timeout: 20_000 })
-    await popup.waitForTimeout(1000)
+    // The popup opens blank ('load' fires immediately); content arrives later via
+    // document.write() once the receipt fetch resolves, with no further 'load' event.
+    await popup
+      .waitForFunction(() => document.body && document.body.innerText.trim().length > 0, {
+        timeout: 20_000,
+      })
+      .catch(() => {})
+    await popup.waitForTimeout(1500)
 
-    const popupText = await popup.evaluate(() => document.body.innerText)
+    const popupText = await popup.evaluate(() => document.body?.innerText ?? '')
+    report.popupText = popupText.slice(0, 300)
     report.popupHasItem = popupText.includes(`${tag} Burger`)
     report.popupHasTotal = popupText.includes('57.50')
     report.printCallCount = await popup.evaluate(() => window.__printCallCount)
