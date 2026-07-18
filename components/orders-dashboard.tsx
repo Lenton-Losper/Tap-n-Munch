@@ -16,7 +16,7 @@ import {
 } from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2 } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
@@ -29,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { getAccessToken, onboardingFetch } from '@/lib/onboarding/api-client'
 import {
   filterOrdersByStationScope,
@@ -179,6 +180,11 @@ export function OrdersDashboard() {
   const [closeTableTargetNumber, setCloseTableTargetNumber] = useState<number | null>(null)
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
+  const [emailReceiptTargetOrderId, setEmailReceiptTargetOrderId] = useState<string | null>(null)
+  const [showEmailReceiptDialog, setShowEmailReceiptDialog] = useState(false)
+  const [emailReceiptAddress, setEmailReceiptAddress] = useState('')
+  const [sendingReceiptEmailOrderId, setSendingReceiptEmailOrderId] = useState<string | null>(null)
+  const [printingReceiptOrderId, setPrintingReceiptOrderId] = useState<string | null>(null)
   const [statusUpdateKey, setStatusUpdateKey] = useState<string | null>(null)
   const [sendingToTerminalOrderId, setSendingToTerminalOrderId] = useState<string | null>(null)
   const [cancelingTerminalOrderId, setCancelingTerminalOrderId] = useState<string | null>(null)
@@ -794,6 +800,89 @@ export function OrdersDashboard() {
       })
     } finally {
       setMarkingPaidOrderId(null)
+    }
+  }
+
+  const openEmailReceiptDialog = (orderId: string) => {
+    setEmailReceiptTargetOrderId(orderId)
+    setEmailReceiptAddress('')
+    setShowEmailReceiptDialog(true)
+  }
+
+  const closeEmailReceiptDialog = () => {
+    setShowEmailReceiptDialog(false)
+    setEmailReceiptTargetOrderId(null)
+    setEmailReceiptAddress('')
+  }
+
+  const handleSendReceiptEmail = async () => {
+    const orderId = emailReceiptTargetOrderId
+    const email = emailReceiptAddress.trim()
+    if (!orderId || !email) return
+    if (sendingReceiptEmailOrderId) return
+
+    setSendingReceiptEmailOrderId(orderId)
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/receipt/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to send receipt email')
+      }
+
+      closeEmailReceiptDialog()
+      toast({
+        title: 'Receipt emailed',
+        description: `Sent to ${email}`,
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast({
+        title: 'Failed to email receipt',
+        description: error.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSendingReceiptEmailOrderId(null)
+    }
+  }
+
+  // "Print from this computer" -- renders the receipt in a new tab and calls window.print()
+  // there. Deliberately separate from the terminal's own Bluetooth/built-in printer flow,
+  // which prints from the terminal device itself, not the manager's machine.
+  const handlePrintReceipt = async (orderId: string) => {
+    if (printingReceiptOrderId) return
+    setPrintingReceiptOrderId(orderId)
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/receipt`)
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to load receipt')
+      }
+
+      const printWindow = window.open('', '_blank')
+      if (!printWindow) {
+        throw new Error('Pop-up blocked -- allow pop-ups to print receipts from this computer')
+      }
+      printWindow.document.open()
+      printWindow.document.write(String(data.html || ''))
+      printWindow.document.close()
+      printWindow.focus()
+      printWindow.onload = () => {
+        printWindow.print()
+      }
+    } catch (error: any) {
+      console.error(error)
+      toast({
+        title: 'Failed to print receipt',
+        description: error.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setPrintingReceiptOrderId(null)
     }
   }
 
@@ -1720,6 +1809,37 @@ export function OrdersDashboard() {
                       />
                     </Button>
                   )}
+                  {normalizedOrder.status === 'completed' && (
+                    <>
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => openEmailReceiptDialog(normalizedOrder.id)}
+                        disabled={sendingReceiptEmailOrderId === normalizedOrder.id}
+                      >
+                        <ActionButtonContent
+                          loading={sendingReceiptEmailOrderId === normalizedOrder.id}
+                          icon={Mail}
+                          label="Email receipt"
+                          loadingLabel="Sending..."
+                        />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        title="Print from this computer -- not the terminal's Bluetooth or built-in printer"
+                        onClick={() => handlePrintReceipt(normalizedOrder.id)}
+                        disabled={printingReceiptOrderId === normalizedOrder.id}
+                      >
+                        <ActionButtonContent
+                          loading={printingReceiptOrderId === normalizedOrder.id}
+                          icon={Printer}
+                          label="Print from this computer"
+                          loadingLabel="Preparing..."
+                        />
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
               </Fragment>
@@ -1768,6 +1888,53 @@ export function OrdersDashboard() {
                 loading={Boolean(markingPaidOrderId)}
                 label="Mark as Paid"
                 loadingLabel="Marking as Paid..."
+              />
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Email Receipt Dialog */}
+      <Dialog
+        open={showEmailReceiptDialog}
+        onOpenChange={(open) => {
+          if (!open) closeEmailReceiptDialog()
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Email Receipt</DialogTitle>
+            <DialogDescription>
+              Enter the customer&apos;s email address to send this receipt.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            type="email"
+            placeholder="customer@example.com"
+            value={emailReceiptAddress}
+            onChange={(e) => setEmailReceiptAddress(e.target.value)}
+            disabled={Boolean(sendingReceiptEmailOrderId)}
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={closeEmailReceiptDialog}
+              disabled={Boolean(sendingReceiptEmailOrderId)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#FF6B35] hover:bg-[#e55a28]"
+              onClick={() => void handleSendReceiptEmail()}
+              disabled={!emailReceiptAddress.trim() || Boolean(sendingReceiptEmailOrderId)}
+            >
+              <ActionButtonContent
+                loading={Boolean(sendingReceiptEmailOrderId)}
+                icon={Mail}
+                label="Send Receipt"
+                loadingLabel="Sending..."
               />
             </Button>
           </DialogFooter>

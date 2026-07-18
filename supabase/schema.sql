@@ -3560,7 +3560,7 @@ CREATE TABLE IF NOT EXISTS "public"."receipt_deliveries" (
     "requested_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "completed_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "receipt_deliveries_method_check" CHECK (("method" = 'PRINT'::"text")),
+    CONSTRAINT "receipt_deliveries_method_check" CHECK (("method" = ANY (ARRAY['PRINT'::"text", 'EMAIL'::"text"]))),
     CONSTRAINT "receipt_deliveries_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'sent'::"text", 'failed'::"text"])))
 );
 
@@ -3604,7 +3604,7 @@ CREATE TABLE IF NOT EXISTS "public"."terminal_printer_configs" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "terminal_printer_configs_purpose_check" CHECK (("purpose" = 'CUSTOMER_RECEIPT'::"text")),
-    CONSTRAINT "terminal_printer_configs_connection_type_check" CHECK (("connection_type" = 'BLUETOOTH'::"text"))
+    CONSTRAINT "terminal_printer_configs_connection_type_check" CHECK (("connection_type" = ANY (ARRAY['BLUETOOTH'::"text", 'BUILTIN'::"text"])))
 );
 
 -- terminal_id matches the terminal identity convention already used elsewhere (e.g.
