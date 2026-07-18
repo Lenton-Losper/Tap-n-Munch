@@ -6,11 +6,21 @@ export const dynamic = 'force-dynamic'
 
 const PURPOSE = 'CUSTOMER_RECEIPT' as const
 
+// Must match the terminal_printer_configs_connection_type_check CHECK constraint.
+const CONNECTION_TYPES = ['BLUETOOTH', 'BUILTIN'] as const
+type ConnectionType = (typeof CONNECTION_TYPES)[number]
+const DEFAULT_CONNECTION_TYPE: ConnectionType = 'BLUETOOTH'
+
 type PrinterConfigBody = {
+  connection_type?: unknown
   printer_name?: unknown
   printer_address?: unknown
   paper_width_mm?: unknown
   character_width?: unknown
+}
+
+function isConnectionType(value: unknown): value is ConnectionType {
+  return typeof value === 'string' && (CONNECTION_TYPES as readonly string[]).includes(value)
 }
 
 export async function GET(req: Request) {
@@ -46,6 +56,17 @@ export async function POST(req: Request) {
 
     const body = (await req.json().catch(() => ({}))) as PrinterConfigBody
 
+    let connectionType: ConnectionType = DEFAULT_CONNECTION_TYPE
+    if (body.connection_type != null) {
+      if (!isConnectionType(body.connection_type)) {
+        return NextResponse.json(
+          { error: `connection_type must be one of: ${CONNECTION_TYPES.join(', ')}` },
+          { status: 400 },
+        )
+      }
+      connectionType = body.connection_type
+    }
+
     const printerName = String(body.printer_name ?? '').trim()
     if (!printerName) {
       return NextResponse.json({ error: 'printer_name is required' }, { status: 400 })
@@ -78,6 +99,7 @@ export async function POST(req: Request) {
       const { data: updated, error: updateError } = await supabase
         .from('terminal_printer_configs')
         .update({
+          connection_type: connectionType,
           printer_name: printerName,
           printer_address: printerAddress,
           paper_width_mm: Number.isFinite(paperWidthMm) && paperWidthMm > 0 ? paperWidthMm : 80,
@@ -100,7 +122,7 @@ export async function POST(req: Request) {
       .insert({
         terminal_id: terminal.terminalId,
         purpose: PURPOSE,
-        connection_type: 'BLUETOOTH',
+        connection_type: connectionType,
         printer_name: printerName,
         printer_address: printerAddress,
         paper_width_mm: Number.isFinite(paperWidthMm) && paperWidthMm > 0 ? paperWidthMm : 80,
