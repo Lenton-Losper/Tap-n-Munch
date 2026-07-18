@@ -856,17 +856,20 @@ export function OrdersDashboard() {
   const handlePrintReceipt = async (orderId: string) => {
     if (printingReceiptOrderId) return
     setPrintingReceiptOrderId(orderId)
+    // Open synchronously, before the await below -- opening after an async gap can lose
+    // the user-activation flag and get silently popup-blocked in some browsers.
+    const printWindow = window.open('', '_blank')
     try {
+      if (!printWindow) {
+        throw new Error('Pop-up blocked -- allow pop-ups to print receipts from this computer')
+      }
+
       const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/receipt`)
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
         throw new Error(data?.error || 'Failed to load receipt')
       }
 
-      const printWindow = window.open('', '_blank')
-      if (!printWindow) {
-        throw new Error('Pop-up blocked -- allow pop-ups to print receipts from this computer')
-      }
       printWindow.document.open()
       printWindow.document.write(String(data.html || ''))
       printWindow.document.close()
@@ -875,6 +878,7 @@ export function OrdersDashboard() {
         printWindow.print()
       }
     } catch (error: any) {
+      printWindow?.close()
       console.error(error)
       toast({
         title: 'Failed to print receipt',
