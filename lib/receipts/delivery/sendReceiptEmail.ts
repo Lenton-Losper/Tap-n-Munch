@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getResend } from '@/lib/email/resend'
 import { renderReceiptHtml } from '@/lib/receipts/renderers/htmlRenderer'
+import { renderReceiptPdf } from '@/lib/receipts/renderers/pdfRenderer'
 import type { ReceiptDocument, ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
 
 const PROVIDER = 'resend'
@@ -43,11 +44,24 @@ export async function sendReceiptEmail(
   let errorMessage: string | null = null
 
   try {
+    const pdfBytes = await renderReceiptPdf(snapshot, {
+      documentNumber: receipt.document_number,
+      issuedAt: receipt.issued_at,
+    })
+    const pdfBase64 = Buffer.from(pdfBytes).toString('base64')
+
     const result = await getResend().emails.send({
       from: 'FlashTap <noreply@flashtap.app>',
       to: [to],
       subject: `Receipt ${receipt.document_number} - ${snapshot.outlet.restaurant_name}`,
       html,
+      attachments: [
+        {
+          filename: `Receipt-${receipt.document_number}.pdf`,
+          content: pdfBase64,
+          contentType: 'application/pdf',
+        },
+      ],
     })
 
     if (result.error) {
