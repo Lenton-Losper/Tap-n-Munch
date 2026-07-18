@@ -1,0 +1,116 @@
+import {NativeModules, Platform} from 'react-native';
+
+export type Sdk6TextAlign = 'LEFT' | 'CENTER' | 'RIGHT';
+
+/**
+ * Matches the backend's real contract exactly (GET /api/terminal/receipts/[orderId] ->
+ * sdk6Lines, derived from the same receipt snapshot as escposBase64). WisePosSdk's Printer has
+ * no raw-byte-write method (unlike the Bluetooth ESC/POS transport) -- only structured calls
+ * (addSingleText, addMultiText) -- so this is the structured counterpart to escposBase64;
+ * WiseSdk6PrinterModule.kt just executes it, same as PrinterModule.printEscPos() executes raw
+ * bytes verbatim. No qrCode/barCode variant exists -- the backend doesn't emit them.
+ */
+export type Sdk6ReceiptLine =
+  | {type: 'text'; text: string; align: Sdk6TextAlign; bold?: boolean; large?: boolean}
+  | {type: 'row'; columns: string[]}
+  | {type: 'feed'; lines: number}
+  | {type: 'divider'};
+
+export interface WiseSdk6PrintOptions {
+  /** How far to feed the paper after printing finishes, in dots (Y-axis). Defaults to 30 natively. */
+  feedAfterDots?: number;
+}
+
+export interface WiseSdk6Status {
+  connected: boolean;
+  hasPaper: boolean;
+}
+
+interface WiseSdk6PrinterModuleType {
+  isAvailable: () => Promise<boolean>;
+  getStatus: () => Promise<WiseSdk6Status>;
+  printJob: (lines: Sdk6ReceiptLine[], options: WiseSdk6PrintOptions) => Promise<boolean>;
+}
+
+const {WiseSdk6PrinterModule} = NativeModules as {
+  WiseSdk6PrinterModule?: WiseSdk6PrinterModuleType;
+};
+
+function errorCodeOf(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as {code?: unknown}).code)
+    : undefined;
+}
+
+function errorMessageOf(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+const PLAIN_LANGUAGE_ERRORS: Record<string, string> = {
+  UNSUPPORTED_PLATFORM: 'Receipt printing is only available on this terminal app.',
+  UNAVAILABLE: "This device doesn't have a built-in receipt printer.",
+  SDK_INIT_FAILED: "Couldn't reach the built-in printer. Try again in a moment.",
+  SDK_NOT_CONNECTED: "Couldn't reach the built-in printer. Try again in a moment.",
+  OUT_OF_PAPER: 'The printer is out of paper. Load a new roll and try again.',
+  PRINTER_OVERHEATED: 'The printer is too hot to print right now. Wait a moment and try again.',
+  LOW_BATTERY: 'The terminal battery is too low to print. Charge the device and try again.',
+  PRINTER_ERROR: 'The built-in printer reported an error. Try again.',
+  STATUS_UNAVAILABLE: "Couldn't check the printer's status. Try again.",
+  STATUS_FAILED: "Couldn't check the printer's status. Try again.",
+  PRINT_FAILED: 'The print failed partway through. Try again.',
+};
+
+/** Maps a native/API error code to a plain-language message a non-technical user can act on. */
+export function describeWiseSdk6PrinterError(errorCode?: string, fallbackMessage?: string): string {
+  if (errorCode && PLAIN_LANGUAGE_ERRORS[errorCode]) {
+    return PLAIN_LANGUAGE_ERRORS[errorCode];
+  }
+  return fallbackMessage || 'Something went wrong with the printer. Please try again.';
+}
+
+export interface WiseSdk6ActionResult {
+  success: boolean;
+  error?: string;
+  errorCode?: string;
+}
+
+/** Whether this device has a working built-in printer at all (some Wiseasy models don't). */
+export async function isBuiltInPrinterAvailable(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.isAvailable) return false;
+  try {
+    return await WiseSdk6PrinterModule.isAvailable();
+  } catch {
+    return false;
+  }
+}
+
+export async function getBuiltInPrinterStatus(): Promise<WiseSdk6Status> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.getStatus) {
+    return {connected: false, hasPaper: false};
+  }
+  try {
+    return await WiseSdk6PrinterModule.getStatus();
+  } catch {
+    return {connected: false, hasPaper: false};
+  }
+}
+
+/** Sends a pre-rendered sdk6Lines list (from the receipts endpoint) to the built-in printer. */
+export async function printBuiltInJob(
+  lines: Sdk6ReceiptLine[],
+  options: WiseSdk6PrintOptions = {},
+): Promise<WiseSdk6ActionResult> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.printJob) {
+    return {success: false, error: 'Printer module not available on this platform'};
+  }
+  try {
+    await WiseSdk6PrinterModule.printJob(lines, options);
+    return {success: true};
+  } catch (error: unknown) {
+    return {
+      success: false,
+      error: errorMessageOf(error, 'Print failed'),
+      errorCode: errorCodeOf(error),
+    };
+  }
+}

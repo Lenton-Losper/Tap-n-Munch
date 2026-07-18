@@ -146,6 +146,10 @@ apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
 // DantSu's ESCPOS-ThermalPrinter-Android is published via JitPack, not Maven Central/Google.
 repositories {
     maven { url 'https://jitpack.io' }
+    // Wiseasy SDK6 (WiseSdk6PrinterModule.kt) ships as local AARs, not a Maven artifact.
+    flatDir {
+        dirs 'libs'
+    }
 }
 
 dependencies {
@@ -160,4 +164,10 @@ dependencies {
 
     // Bluetooth ESC/POS transport for PrinterModule.kt (receipt printing).
     implementation("com.github.DantSu:ESCPOS-ThermalPrinter-Android:3.3.0")
+
+    // Wiseasy SDK6 for the P5's built-in printer (WiseSdk6PrinterModule.kt). "P" is the POS SDK
+    // (WisePosSdk, printer access); "D" is the device SDK it binds alongside during init,
+    // matching the SDK6 demo app's own MainActivity.onCreate() sequence.
+    implementation(name: 'WiseSdk_P_1.29_00a_24041501', ext: 'aar')
+    implementation(name: 'WiseSdk_D_1.09_00a_24032501', ext: 'aar')
 }

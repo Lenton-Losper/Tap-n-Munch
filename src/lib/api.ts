@@ -21,6 +21,7 @@ import {
   TableWithTab,
 } from '../types';
 import {mapRowToOrder} from './orderMapper';
+import {Sdk6ReceiptLine} from './wiseSdk6Printer';
 
 interface ApiErrorBody {
   error?: string;
@@ -871,6 +872,14 @@ export interface TerminalReceipt {
   documentNumber: string;
   status: string;
   escposBase64: string;
+  /**
+   * Structured counterpart to escposBase64 for the P5 built-in printer path (WisePosSdk's
+   * Printer has no raw-byte-write method) -- derived from the same receipt snapshot. Optional
+   * because older/cached responses or a receipt fetched with an outdated route may omit it;
+   * printReceiptForOrder() fails closed with RECEIPT_FORMAT_UNAVAILABLE if so, rather than
+   * guessing at receipt content client-side.
+   */
+  sdk6Lines?: Sdk6ReceiptLine[];
 }
 
 /**
@@ -916,6 +925,8 @@ export async function recordReceiptDelivery(
     receiptDocumentId: string;
     status: 'sent' | 'failed';
     provider?: string;
+    /** The terminal's own id -- required for provider 'wiseasy_sdk6' (no printer_address to identify it by). */
+    deviceId?: string;
     errorCode?: string;
     errorMessage?: string;
   },
@@ -931,6 +942,7 @@ export async function recordReceiptDelivery(
           receipt_document_id: params.receiptDocumentId,
           status: params.status,
           provider: params.provider ?? 'bluetooth_escpos',
+          device_id: params.deviceId,
           error_code: params.errorCode,
           error_message: params.errorMessage,
         }),
@@ -957,9 +969,13 @@ export async function recordReceiptDelivery(
   }
 }
 
+export type TerminalPrinterConnectionType = 'BLUETOOTH' | 'BUILTIN';
+
 export interface TerminalPrinterConfig {
   id: string;
   terminal_id: string;
+  /** Defaults to 'BLUETOOTH' when reading configs saved before this field existed. */
+  connection_type: TerminalPrinterConnectionType;
   printer_name: string | null;
   printer_address: string | null;
   paper_width_mm: number;
@@ -981,14 +997,23 @@ export async function getPrinterConfig(
     throw new Error(await parseApiError(response));
   }
 
-  const data = (await response.json()) as {config: TerminalPrinterConfig | null};
-  return data.config;
+  const data = (await response.json()) as {
+    config: (Omit<TerminalPrinterConfig, 'connection_type'> & {connection_type?: TerminalPrinterConnectionType}) | null;
+  };
+  // Configs saved before connection_type existed (or a route that doesn't echo it back yet)
+  // come back without the field -- treat that as Bluetooth, the only kind that used to exist.
+  return data.config ? {...data.config, connection_type: data.config.connection_type ?? 'BLUETOOTH'} : null;
 }
 
+/**
+ * printerAddress is omitted entirely for BUILTIN -- there's nothing to pair, it's the device
+ * itself.
+ */
 export async function savePrinterConfig(
   params: {
+    connectionType: TerminalPrinterConnectionType;
     printerName: string;
-    printerAddress: string;
+    printerAddress?: string;
     paperWidthMm?: number;
     characterWidth?: number;
   },
@@ -1000,8 +1025,9 @@ export async function savePrinterConfig(
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
+        connection_type: params.connectionType,
         printer_name: params.printerName,
-        printer_address: params.printerAddress,
+        printer_address: params.connectionType === 'BUILTIN' ? undefined : params.printerAddress,
         paper_width_mm: params.paperWidthMm ?? 80,
         character_width: params.characterWidth,
       }),

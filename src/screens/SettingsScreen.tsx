@@ -27,7 +27,13 @@ import {
   PrinterStatus,
 } from '../lib/printer';
 import {clearAllData, getRestaurantName, getTerminalId, getTerminalToken} from '../lib/storage';
-import {buildTestPrintPayload} from '../lib/testPrintPayload';
+import {buildTestPrintPayload, buildSdk6TestPrintLines} from '../lib/testPrintPayload';
+import {
+  describeWiseSdk6PrinterError,
+  getBuiltInPrinterStatus,
+  printBuiltInJob,
+  WiseSdk6Status,
+} from '../lib/wiseSdk6Printer';
 import DiagnosticsScreen from './DiagnosticsScreen';
 import PrinterPickerScreen from './PrinterPickerScreen';
 
@@ -46,6 +52,10 @@ export default function SettingsScreen() {
   const [printerConnectionStatus, setPrinterConnectionStatus] = useState<PrinterStatus>({
     connected: false,
     id: null,
+  });
+  const [builtInStatus, setBuiltInStatus] = useState<WiseSdk6Status>({
+    connected: false,
+    hasPaper: true,
   });
   const [showPrinterPicker, setShowPrinterPicker] = useState(false);
   const [testPrinting, setTestPrinting] = useState(false);
@@ -88,9 +98,10 @@ export default function SettingsScreen() {
       }
       const config = await getPrinterConfig(token);
       setPrinterConfig(config);
-      if (config) {
-        const status = await getPrinterStatus();
-        setPrinterConnectionStatus(status);
+      if (config?.connection_type === 'BUILTIN') {
+        setBuiltInStatus(await getBuiltInPrinterStatus());
+      } else if (config) {
+        setPrinterConnectionStatus(await getPrinterStatus());
       }
     } catch {
       // Leave as "not set up" -- staff can retry via Select/Change Printer.
@@ -105,18 +116,40 @@ export default function SettingsScreen() {
 
   const handlePrinterPaired = (config: TerminalPrinterConfig) => {
     setPrinterConfig(config);
-    setPrinterConnectionStatus({connected: true, id: config.printer_address});
     setTestPrintResult(null);
     setShowPrinterPicker(false);
+    if (config.connection_type === 'BUILTIN') {
+      getBuiltInPrinterStatus().then(setBuiltInStatus);
+    } else {
+      setPrinterConnectionStatus({connected: true, id: config.printer_address});
+    }
   };
 
   const handleTestPrint = async () => {
-    if (!printerConfig?.printer_address) {
+    if (!printerConfig) {
       return;
     }
     setTestPrinting(true);
     setTestPrintResult(null);
     try {
+      if (printerConfig.connection_type === 'BUILTIN') {
+        const lines = buildSdk6TestPrintLines(printerConfig.printer_name ?? 'Built-in Printer');
+        const printResult = await printBuiltInJob(lines);
+        setBuiltInStatus(await getBuiltInPrinterStatus());
+        if (printResult.success) {
+          setTestPrintResult({success: true, message: 'Test print sent successfully.'});
+        } else {
+          setTestPrintResult({
+            success: false,
+            message: describeWiseSdk6PrinterError(printResult.errorCode, printResult.error),
+          });
+        }
+        return;
+      }
+
+      if (!printerConfig.printer_address) {
+        return;
+      }
       let status = await getPrinterStatus();
       if (!status.connected || status.id !== printerConfig.printer_address) {
         const connectResult = await connectToPrinter(printerConfig.printer_address);
@@ -169,6 +202,7 @@ export default function SettingsScreen() {
               }
               setPrinterConfig(null);
               setPrinterConnectionStatus({connected: false, id: null});
+              setBuiltInStatus({connected: false, hasPaper: true});
               setTestPrintResult(null);
             } catch (err) {
               Alert.alert(
@@ -283,7 +317,7 @@ export default function SettingsScreen() {
             <>
               <View style={styles.printerStatusRow}>
                 <MaterialCommunityIcons
-                  name="printer-outline"
+                  name={printerConfig.connection_type === 'BUILTIN' ? 'printer-check-outline' : 'printer-outline'}
                   size={28}
                   color={Colors.primary}
                 />
@@ -292,21 +326,37 @@ export default function SettingsScreen() {
                     {printerConfig.printer_name || 'Receipt Printer'}
                   </Text>
                   <View style={styles.statusRow}>
-                    <View
-                      style={[
-                        styles.statusDot,
-                        {
-                          backgroundColor: printerConnectionStatus.connected
-                            ? Colors.green
-                            : Colors.textMuted,
-                        },
-                      ]}
-                    />
-                    <Text style={styles.hintText}>
-                      {printerConnectionStatus.connected
-                        ? 'Connected'
-                        : 'Ready — connects automatically when printing'}
-                    </Text>
+                    {printerConfig.connection_type === 'BUILTIN' ? (
+                      <>
+                        <View
+                          style={[
+                            styles.statusDot,
+                            {backgroundColor: builtInStatus.hasPaper ? Colors.green : Colors.red},
+                          ]}
+                        />
+                        <Text style={styles.hintText}>
+                          {builtInStatus.hasPaper ? 'Ready' : 'Out of paper'}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <View
+                          style={[
+                            styles.statusDot,
+                            {
+                              backgroundColor: printerConnectionStatus.connected
+                                ? Colors.green
+                                : Colors.textMuted,
+                            },
+                          ]}
+                        />
+                        <Text style={styles.hintText}>
+                          {printerConnectionStatus.connected
+                            ? 'Connected'
+                            : 'Ready — connects automatically when printing'}
+                        </Text>
+                      </>
+                    )}
                   </View>
                 </View>
               </View>

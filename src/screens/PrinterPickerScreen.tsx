@@ -17,6 +17,9 @@ import {
   listPairedPrinters,
 } from '../lib/printer';
 import {getTerminalToken} from '../lib/storage';
+import {isBuiltInPrinterAvailable} from '../lib/wiseSdk6Printer';
+
+const BUILT_IN_PRINTER_NAME = "This device's built-in printer";
 
 interface Props {
   onClose: () => void;
@@ -27,14 +30,19 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
   const [loading, setLoading] = useState(true);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [listError, setListError] = useState<string | null>(null);
+  const [builtInAvailable, setBuiltInAvailable] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
 
   const loadPrinters = useCallback(async () => {
     setLoading(true);
     setListError(null);
-    const result = await listPairedPrinters();
+    const [result, builtIn] = await Promise.all([
+      listPairedPrinters(),
+      isBuiltInPrinterAvailable(),
+    ]);
     setPrinters(result.printers);
+    setBuiltInAvailable(builtIn);
     if (result.errorCode) {
       setListError(describePrinterError(result.errorCode, result.error));
     }
@@ -65,6 +73,7 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
 
       const config = await savePrinterConfig(
         {
+          connectionType: 'BLUETOOTH',
           printerName: printer.name,
           printerAddress: printer.id,
           paperWidthMm: 80,
@@ -81,6 +90,57 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
     } finally {
       setConnectingId(null);
     }
+  };
+
+  const handleSelectBuiltIn = async () => {
+    setConnectingId('BUILTIN');
+    setConnectError(null);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        setConnectError('Session expired. Please re-activate this terminal.');
+        return;
+      }
+
+      // Nothing to pair -- it's the device itself, so there's no printerAddress.
+      const config = await savePrinterConfig(
+        {connectionType: 'BUILTIN', printerName: BUILT_IN_PRINTER_NAME},
+        token,
+      );
+
+      onPaired(config);
+    } catch (err) {
+      setConnectError(
+        err instanceof Error ? err.message : 'Failed to save the built-in printer',
+      );
+    } finally {
+      setConnectingId(null);
+    }
+  };
+
+  const renderBuiltInRow = () => {
+    const isConnecting = connectingId === 'BUILTIN';
+    return (
+      <Pressable
+        style={({pressed}) => [
+          styles.row,
+          pressed && styles.rowPressed,
+          isConnecting && styles.rowDisabled,
+        ]}
+        disabled={connectingId !== null}
+        onPress={handleSelectBuiltIn}>
+        <MaterialCommunityIcons name="printer-check-outline" size={24} color={Colors.primary} />
+        <View style={styles.rowText}>
+          <Text style={styles.printerName}>{BUILT_IN_PRINTER_NAME}</Text>
+          <Text style={styles.printerAddress}>No pairing needed</Text>
+        </View>
+        {isConnecting ? (
+          <ActivityIndicator color={Colors.primary} />
+        ) : (
+          <MaterialCommunityIcons name="chevron-right" size={22} color={Colors.textMuted} />
+        )}
+      </Pressable>
+    );
   };
 
   const renderPrinterRow = ({item}: {item: PrinterInfo}) => {
@@ -144,20 +204,28 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
       {loading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.hintText}>Looking for paired printers…</Text>
+          <Text style={styles.hintText}>Looking for printers…</Text>
         </View>
       ) : listError ? (
-        <View style={styles.centered}>
-          <MaterialCommunityIcons
-            name="bluetooth-off"
-            size={40}
-            color={Colors.textMuted}
-          />
-          <Text style={styles.errorText}>{listError}</Text>
-          <Pressable style={styles.retryButton} onPress={loadPrinters}>
-            <Text style={styles.retryButtonText}>Try Again</Text>
-          </Pressable>
-        </View>
+        <>
+          {builtInAvailable ? (
+            <View style={styles.list}>
+              {renderBuiltInRow()}
+              <Text style={styles.sectionLabel}>Bluetooth</Text>
+            </View>
+          ) : null}
+          <View style={styles.centered}>
+            <MaterialCommunityIcons
+              name="bluetooth-off"
+              size={40}
+              color={Colors.textMuted}
+            />
+            <Text style={styles.errorText}>{listError}</Text>
+            <Pressable style={styles.retryButton} onPress={loadPrinters}>
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </Pressable>
+          </View>
+        </>
       ) : (
         <FlatList
           data={printers}
@@ -165,6 +233,14 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
           renderItem={renderPrinterRow}
           contentContainerStyle={
             printers.length === 0 ? styles.emptyList : styles.list
+          }
+          ListHeaderComponent={
+            builtInAvailable ? (
+              <>
+                {renderBuiltInRow()}
+                <Text style={styles.sectionLabel}>Bluetooth</Text>
+              </>
+            ) : null
           }
           ListEmptyComponent={
             <View style={styles.emptyState}>
@@ -225,6 +301,12 @@ const styles = StyleSheet.create({
   hintText: {
     ...Typography.small,
     color: Colors.textMuted,
+  },
+  sectionLabel: {
+    ...Typography.small,
+    color: Colors.textMuted,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
   },
   list: {
     padding: Spacing.md,

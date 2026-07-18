@@ -1,5 +1,6 @@
 /* eslint-disable no-bitwise -- byte masking, not a typo'd logical op */
 import {encodeBase64} from './base64';
+import {Sdk6ReceiptLine} from './wiseSdk6Printer';
 
 const ESC = 0x1b;
 const GS = 0x1d;
@@ -41,4 +42,22 @@ export function buildTestPrintPayload(printerName: string): string {
   bytes.push(GS, 0x56, 0x01); // cut
 
   return encodeBase64(Uint8Array.from(bytes));
+}
+
+/**
+ * Same diagnostic role as buildTestPrintPayload() above, but in the built-in printer's
+ * sdk6Lines shape instead of ESC/POS bytes -- also never logged to receipt_deliveries, for the
+ * same reason (no real receipt_document behind it).
+ */
+export function buildSdk6TestPrintLines(printerName: string): Sdk6ReceiptLine[] {
+  return [
+    {type: 'text', text: 'FlashTap Test Print', align: 'CENTER', bold: true, large: true},
+    {type: 'text', text: printerName, align: 'CENTER'},
+    {type: 'text', text: new Date().toLocaleString(), align: 'CENTER'},
+    {type: 'divider'},
+    {type: 'text', text: 'If you can read this, the', align: 'LEFT'},
+    {type: 'text', text: 'built-in printer is working.', align: 'LEFT'},
+    {type: 'row', columns: ['Sample item', '$1.00']},
+    {type: 'feed', lines: 2},
+  ];
 }
