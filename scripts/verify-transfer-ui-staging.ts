@@ -37,6 +37,11 @@ if (!SUPABASE_URL.includes(STAGING_REF) || !SERVICE_KEY) {
   throw new Error('Refusing: staging Supabase credentials missing (.env.test)')
 }
 
+// lib/supabase/server.ts (createServerSupabaseClient, used by lib/stock/transfers.ts via
+// lib/permissions/authorize.ts) reads NEXT_PUBLIC_SUPABASE_URL, not SUPABASE_URL.
+process.env.NEXT_PUBLIC_SUPABASE_URL = SUPABASE_URL
+process.env.SUPABASE_SERVICE_ROLE_KEY = SERVICE_KEY
+
 const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
 
 const tag = `txui-${Date.now()}`
@@ -153,11 +158,14 @@ async function setupFixtures() {
 
   // Owner also needs an "owner" restaurant_roles + restaurant_users row for the source
   // restaurant, mirroring how a real org owner always has restaurant-level access at their
-  // primary location -- used only to satisfy requireStockPermission(STOCK_VIEW) when the
-  // owner loads the Transfers pages, not for any transfer permission itself.
+  // primary location. Uses the full TRANSFER_PERMISSIONS set (matching what
+  // role-permissions.config.json's real "owner" array actually grants, since WS4 added
+  // stock:transfer_create/dispatch/receive to owner by default) -- not just stock:view.
+  // A restaurant owner missing those would be an unrealistic fixture, not a real-world case:
+  // every actual owner role includes them.
   const { error: ownerRoleError } = await db
     .from('restaurant_roles')
-    .insert({ restaurant_id: restA.id, role_slug: 'owner', display_name: 'Owner', permissions: ['stock:view'], is_system: true })
+    .insert({ restaurant_id: restA.id, role_slug: 'owner', display_name: 'Owner', permissions: TRANSFER_PERMISSIONS, is_system: true })
   if (ownerRoleError) throw ownerRoleError
   const { error: ownerMembershipError } = await db
     .from('restaurant_users')
@@ -238,14 +246,24 @@ async function setupFixtures() {
 }
 
 async function waitForDeploy() {
-  const res = await fetch(`${BASE_URL}/api/version`)
-  const body = (await res.json().catch(() => ({}))) as { commit?: string }
-  const commit = String(body.commit || '')
-  if (EXPECTED_COMMIT && !commit.startsWith(EXPECTED_COMMIT.slice(0, 7))) {
-    throw new Error(`Expected commit ${EXPECTED_COMMIT}, got ${commit || '(missing)'}`)
+  let lastErr: unknown
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/version`)
+      const body = (await res.json().catch(() => ({}))) as { commit?: string }
+      const commit = String(body.commit || '')
+      if (EXPECTED_COMMIT && !commit.startsWith(EXPECTED_COMMIT.slice(0, 7))) {
+        throw new Error(`Expected commit ${EXPECTED_COMMIT}, got ${commit || '(missing)'}`)
+      }
+      console.log('Deployed commit:', commit || '(unknown)')
+      return commit
+    } catch (err) {
+      lastErr = err
+      console.log(`waitForDeploy attempt ${attempt} failed (transient network?), retrying...`, String(err))
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+    }
   }
-  console.log('Deployed commit:', commit || '(unknown)')
-  return commit
+  throw lastErr
 }
 
 async function loginAs(browser: Browser, userId: string): Promise<Page> {
@@ -315,7 +333,8 @@ async function main() {
     console.log('Created draft via UI:', draft1!.transfer_number)
 
     await managerAPage.goto(`${BASE_URL}/stock/transfers`, { waitUntil: 'domcontentloaded' })
-    const draft1Row = managerAPage.locator('div', { hasText: draft1!.transfer_number }).last()
+    const draft1Row = managerAPage.locator('div.rounded-2xl', { hasText: draft1!.transfer_number })
+    await draft1Row.waitFor({ state: 'visible', timeout: 20000 })
     await draft1Row.getByRole('button', { name: /^dispatch$/i }).click()
     await managerAPage.waitForTimeout(2000)
 
@@ -338,7 +357,8 @@ async function main() {
 
     await managerAPage.goto(`${BASE_URL}/stock/transfers`, { waitUntil: 'domcontentloaded' })
     managerAPage.once('dialog', (dialog) => void dialog.accept())
-    const draft2Row = managerAPage.locator('div', { hasText: draft2!.transfer_number }).last()
+    const draft2Row = managerAPage.locator('div.rounded-2xl', { hasText: draft2!.transfer_number })
+    await draft2Row.waitFor({ state: 'visible', timeout: 20000 })
     await draft2Row.getByRole('button', { name: /^cancel$/i }).click()
     await managerAPage.waitForTimeout(2000)
 
@@ -362,8 +382,41 @@ async function main() {
 
     await managerAPage.getByRole('button', { name: new RegExp(fixtures.unconfiguredItemName) }).first().click()
     await managerAPage.getByRole('heading', { name: /configure/i }).waitFor({ timeout: 10000 })
+
+    // managerA has stock:receive at restaurant A only -- not a member of restaurant B at
+    // all -- so this must be rejected, not silently succeed. Confirms configuring a location
+    // isn't something any staff member can do just because they're sending a transfer there.
     await managerAPage.getByRole('button', { name: /^configure at/i }).click()
-    await managerAPage.waitForTimeout(1500)
+    await managerAPage.getByText(/do not have permission/i).waitFor({ timeout: 10000 })
+    const { data: stillUnconfigured } = await db
+      .from('stock_items')
+      .select('id')
+      .eq('restaurant_id', fixtures.restaurantBId)
+      .eq('organization_stock_item_id', created.orgStockItemIds[1])
+      .eq('is_active', true)
+      .maybeSingle()
+    assert(!stillUnconfigured, 'managerA (no access to restaurant B) should NOT be able to configure an item there')
+    console.log('managerA correctly blocked from configuring an item at a restaurant they have no access to -- OK')
+    await managerAPage.getByRole('button', { name: /^cancel$/i }).click()
+    await managerAPage.close()
+
+    // The org OWNER has the create_cross_location_transfer fallback (Workstream 4), so the
+    // same flow should succeed for them -- proving the block above is a real permission
+    // boundary, not a broken feature.
+    const ownerConfigurePage = await loginAs(browser, fixtures.ownerUserId)
+    await ownerConfigurePage.goto(`${BASE_URL}/stock/transfers/new`, { waitUntil: 'domcontentloaded' })
+    await ownerConfigurePage.locator('#to-restaurant').click()
+    await ownerConfigurePage.getByRole('option', { name: fixtures.restaurantBName }).click()
+    const ownerSugarInput = ownerConfigurePage.getByPlaceholder('Search items...')
+    await ownerSugarInput.click()
+    await ownerSugarInput.fill(fixtures.unconfiguredItemName)
+    await ownerConfigurePage.getByRole('button', { name: new RegExp(fixtures.unconfiguredItemName) }).first().click()
+    await ownerConfigurePage.getByRole('heading', { name: /configure/i }).waitFor({ timeout: 10000 })
+    await ownerConfigurePage.getByRole('button', { name: /^configure at/i }).click()
+    await ownerConfigurePage.waitForTimeout(1500)
+    if (process.env.PW_DEBUG) {
+      await ownerConfigurePage.screenshot({ path: 'C:\\Users\\223125~1\\AppData\\Local\\Temp\\claude\\C--Users-223125318-Desktop-mvp\\52b59ec7-460a-4e28-80e4-94489912ec42\\scratchpad\\pw-debug/owner-configure.png', fullPage: true })
+    }
 
     const { data: nowConfigured } = await db
       .from('stock_items')
@@ -372,11 +425,10 @@ async function main() {
       .eq('organization_stock_item_id', created.orgStockItemIds[1])
       .eq('is_active', true)
       .maybeSingle()
-    assert(nowConfigured, 'expected the unconfigured item to now have an active stock_items row at restaurant B after configuring via UI')
+    assert(nowConfigured, 'expected the org OWNER to successfully configure the item at restaurant B via UI')
     created.stockItemIds.push(nowConfigured!.id)
-    console.log('Configured via UI dialog -- item now has a local mapping at the destination -- OK')
-
-    await managerAPage.close()
+    console.log('Org OWNER configured the item at the destination via UI (cross-location fallback) -- OK')
+    await ownerConfigurePage.close()
 
     // ============================================================
     // Part 3: destination manager confirms all received, then reports a difference
@@ -385,7 +437,8 @@ async function main() {
     const managerBPage = await loginAs(browser, fixtures.managerBId)
 
     await managerBPage.goto(`${BASE_URL}/stock/transfers/incoming`, { waitUntil: 'domcontentloaded' })
-    const incomingRow = managerBPage.locator('div', { hasText: draft1!.transfer_number }).last()
+    const incomingRow = managerBPage.locator('div.rounded-2xl', { hasText: draft1!.transfer_number })
+    await incomingRow.waitFor({ state: 'visible', timeout: 20000 })
     await incomingRow.getByRole('button', { name: /confirm all received/i }).click()
     await managerBPage.waitForTimeout(2000)
 
@@ -411,7 +464,8 @@ async function main() {
 
     await managerBPage.goto(`${BASE_URL}/stock/transfers/incoming`, { waitUntil: 'domcontentloaded' })
     const { data: draft3Row } = await db.from('stock_transfers').select('transfer_number').eq('id', draft3.data.transferId).single()
-    const reportRow = managerBPage.locator('div', { hasText: draft3Row!.transfer_number }).last()
+    const reportRow = managerBPage.locator('div.rounded-2xl', { hasText: draft3Row!.transfer_number })
+    await reportRow.waitFor({ state: 'visible', timeout: 20000 })
     await reportRow.getByRole('button', { name: /report difference/i }).click()
     await managerBPage.getByLabel('Received').first().fill('18')
     await managerBPage.getByLabel(/variance reason/i).first().fill('Damaged in transit')
@@ -441,7 +495,8 @@ async function main() {
     console.log('\n--- Part 4: organization location switcher visibility ---')
     const ownerPage = await loginAs(browser, fixtures.ownerUserId)
     await ownerPage.goto(`${BASE_URL}/stock/transfers`, { waitUntil: 'domcontentloaded' })
-    await ownerPage.getByLabel('Location switcher').waitFor({ timeout: 10000 })
+    await ownerPage.getByRole('heading', { name: /stock management/i }).waitFor({ timeout: 30000 })
+    await ownerPage.locator('[aria-label="Location switcher"]').waitFor({ timeout: 10000 })
     console.log('Org owner sees the location switcher -- OK')
 
     await ownerPage.getByRole('link', { name: /all locations/i }).click()
@@ -454,7 +509,11 @@ async function main() {
 
     const managerACheckPage = await loginAs(browser, fixtures.managerAId)
     await managerACheckPage.goto(`${BASE_URL}/stock/transfers`, { waitUntil: 'domcontentloaded' })
-    const switcherCount = await managerACheckPage.getByLabel('Location switcher').count()
+    // Wait for real content (not the client-side "Loading..." splash) before asserting
+    // absence -- otherwise "not found" could just mean "hasn't rendered yet", not "correctly
+    // never rendered".
+    await managerACheckPage.getByRole('heading', { name: /stock management/i }).waitFor({ timeout: 30000 })
+    const switcherCount = await managerACheckPage.locator('[aria-label="Location switcher"]').count()
     assert(switcherCount === 0, `expected single-location manager to see NO location switcher, found ${switcherCount}`)
     console.log('Single-location manager sees no location switcher at all -- OK')
     await managerACheckPage.close()
@@ -465,6 +524,7 @@ async function main() {
     console.log('\n--- Part 5: History tab correctness ---')
     const managerAHistoryPage = await loginAs(browser, fixtures.managerAId)
     await managerAHistoryPage.goto(`${BASE_URL}/stock/transfers/history?dateRange=all`, { waitUntil: 'domcontentloaded' })
+    await managerAHistoryPage.getByRole('heading', { name: /stock management/i }).waitFor({ timeout: 30000 })
 
     const receivedVisible = await managerAHistoryPage.getByText(draft1!.transfer_number).count()
     const cancelledVisible = await managerAHistoryPage.getByText(draft2!.transfer_number).count()
@@ -476,6 +536,7 @@ async function main() {
     // point, so instead verify the Outgoing view has emptied out (proving History and
     // Outgoing are disjoint, not that History merely includes everything).
     await managerAHistoryPage.goto(`${BASE_URL}/stock/transfers`, { waitUntil: 'domcontentloaded' })
+    await managerAHistoryPage.getByRole('heading', { name: /stock management/i }).waitFor({ timeout: 30000 })
     const outgoingLeftover = await managerAHistoryPage.getByText(/no outgoing transfers in progress/i).count()
     assert(outgoingLeftover > 0, 'expected the Outgoing view to be empty now that every draft/in-transit transfer has been resolved')
     console.log('Outgoing view correctly excludes RECEIVED/CANCELLED transfers -- OK')
