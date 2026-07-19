@@ -764,6 +764,25 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_invites" (
 ALTER TABLE "public"."restaurant_invites" OWNER TO "postgres";
 
 --
+-- Name: restaurant_roles; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."restaurant_roles" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "restaurant_id" "uuid" NOT NULL,
+    "role_slug" "text" NOT NULL,
+    "display_name" "text" NOT NULL,
+    "permissions" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
+    "is_system" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "is_invite_eligible" boolean DEFAULT false NOT NULL
+);
+
+
+ALTER TABLE "public"."restaurant_roles" OWNER TO "postgres";
+
+--
 -- Name: restaurant_setup_status; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -858,8 +877,7 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_users" (
     "invite_accepted" boolean DEFAULT true,
     "deleted_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "updated_at" timestamp with time zone DEFAULT "now"(),
-    CONSTRAINT "restaurant_users_role_check" CHECK (("role" = ANY (ARRAY['owner'::"text", 'manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "updated_at" timestamp with time zone DEFAULT "now"()
 );
 
 
@@ -920,8 +938,7 @@ CREATE TABLE IF NOT EXISTS "public"."staff_invites" (
     "accepted" boolean DEFAULT false,
     "expires_at" timestamp with time zone DEFAULT ("now"() + '7 days'::interval),
     "accepted_at" timestamp with time zone,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    CONSTRAINT "staff_invites_role_check" CHECK (("role" = ANY (ARRAY['manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "created_at" timestamp with time zone DEFAULT "now"()
 );
 
 
@@ -938,8 +955,7 @@ CREATE TABLE IF NOT EXISTS "public"."staff_members" (
     "role" "text",
     "active" boolean DEFAULT true,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "push_token" "text",
-    CONSTRAINT "staff_members_role_check" CHECK (("role" = ANY (ARRAY['manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "push_token" "text"
 );
 
 
@@ -1115,7 +1131,6 @@ CREATE TABLE IF NOT EXISTS "public"."users" (
     "name" "text",
     "phone" "text",
     "role" "text" DEFAULT 'owner'::"text",
-    "restaurant_id" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"(),
     "last_login" timestamp with time zone,
     "firebase_uid" "text",
@@ -1301,6 +1316,22 @@ ALTER TABLE ONLY "public"."restaurant_features"
 
 ALTER TABLE ONLY "public"."restaurant_invites"
     ADD CONSTRAINT "restaurant_invites_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: restaurant_roles restaurant_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: restaurant_roles restaurant_roles_restaurant_id_role_slug_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_restaurant_id_role_slug_key" UNIQUE ("restaurant_id", "role_slug");
 
 
 --
@@ -1802,6 +1833,13 @@ CREATE INDEX "restaurant_invites_restaurant_id_idx" ON "public"."restaurant_invi
 
 
 --
+-- Name: restaurant_roles_restaurant_id_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "restaurant_roles_restaurant_id_idx" ON "public"."restaurant_roles" USING "btree" ("restaurant_id");
+
+
+--
 -- Name: restaurant_terminals_activation_code_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -2128,6 +2166,14 @@ ALTER TABLE ONLY "public"."restaurant_invites"
 
 
 --
+-- Name: restaurant_roles restaurant_roles_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id") ON DELETE CASCADE;
+
+
+--
 -- Name: restaurant_settings restaurant_settings_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -2176,6 +2222,14 @@ ALTER TABLE ONLY "public"."restaurant_users"
 
 
 --
+-- Name: restaurant_users restaurant_users_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_users"
+    ADD CONSTRAINT "restaurant_users_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: restaurant_users restaurant_users_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -2216,11 +2270,27 @@ ALTER TABLE ONLY "public"."staff_invites"
 
 
 --
+-- Name: staff_invites staff_invites_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."staff_invites"
+    ADD CONSTRAINT "staff_invites_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: staff_members staff_members_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY "public"."staff_members"
     ADD CONSTRAINT "staff_members_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id");
+
+
+--
+-- Name: staff_members staff_members_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."staff_members"
+    ADD CONSTRAINT "staff_members_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -2696,6 +2766,58 @@ CREATE POLICY "Staff can read own record" ON "public"."staff_members" FOR SELECT
 
 
 --
+-- Name: restaurant_roles Staff can read restaurant roles; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Staff can read restaurant roles" ON "public"."restaurant_roles" FOR SELECT USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+
+--
+-- Name: restaurant_roles Authorized staff can manage restaurant roles; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Authorized staff can manage restaurant roles"
+  ON public.restaurant_roles
+  FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.restaurant_users ru
+      WHERE ru.user_id = auth.uid()
+        AND ru.restaurant_id = restaurant_roles.restaurant_id
+        AND (
+          ru.role IN ('owner', 'manager')
+          OR EXISTS (
+            SELECT 1
+            FROM public.restaurant_roles rr
+            WHERE rr.restaurant_id = ru.restaurant_id
+              AND rr.role_slug = ru.role
+              AND 'staff:manage' = ANY (rr.permissions)
+          )
+        )
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.restaurant_users ru
+      WHERE ru.user_id = auth.uid()
+        AND ru.restaurant_id = restaurant_roles.restaurant_id
+        AND (
+          ru.role IN ('owner', 'manager')
+          OR EXISTS (
+            SELECT 1
+            FROM public.restaurant_roles rr
+            WHERE rr.restaurant_id = ru.restaurant_id
+              AND rr.role_slug = ru.role
+              AND 'staff:manage' = ANY (rr.permissions)
+          )
+        )
+    )
+  );
+
+
+--
 -- Name: orders Staff can update orders for their restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2718,15 +2840,6 @@ CREATE POLICY "Staff can update own push token" ON "public"."staff_members" FOR 
 --
 
 CREATE POLICY "Staff can update own record" ON "public"."staff_members" FOR UPDATE TO "authenticated" USING (("email" = ("auth"."jwt"() ->> 'email'::"text"))) WITH CHECK (("email" = ("auth"."jwt"() ->> 'email'::"text")));
-
-
---
--- Name: restaurants Users can read own restaurant; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "Users can read own restaurant" ON "public"."restaurants" FOR SELECT USING (("id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
 
 
 --
@@ -2794,18 +2907,14 @@ ALTER TABLE "public"."bug_reports" ENABLE ROW LEVEL SECURITY;
 -- Name: bug_reports bug_reports_insert_own_restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "bug_reports_insert_own_restaurant" ON "public"."bug_reports" FOR INSERT TO "authenticated" WITH CHECK (("restaurant_id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
+CREATE POLICY "bug_reports_insert_own_restaurant" ON "public"."bug_reports" FOR INSERT TO "authenticated" WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 
 --
 -- Name: bug_reports bug_reports_select_own_restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "bug_reports_select_own_restaurant" ON "public"."bug_reports" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
+CREATE POLICY "bug_reports_select_own_restaurant" ON "public"."bug_reports" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 
 --
@@ -2879,6 +2988,12 @@ ALTER TABLE "public"."restaurant_features" ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE "public"."restaurant_invites" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: restaurant_roles; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."restaurant_roles" ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: restaurant_settings; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -3254,6 +3369,15 @@ GRANT ALL ON TABLE "public"."restaurant_features" TO "service_role";
 GRANT ALL ON TABLE "public"."restaurant_invites" TO "anon";
 GRANT ALL ON TABLE "public"."restaurant_invites" TO "authenticated";
 GRANT ALL ON TABLE "public"."restaurant_invites" TO "service_role";
+
+
+--
+-- Name: TABLE "restaurant_roles"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "anon";
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "authenticated";
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "service_role";
 
 
 --

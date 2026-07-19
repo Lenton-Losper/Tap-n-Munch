@@ -65,6 +65,54 @@ export async function upsertPublicUserProfile(
   }
 }
 
+/**
+ * Idempotently seeds the default role set for a restaurant that predates
+ * create_restaurant_for_user (or otherwise never got roles seeded) -- restaurant_users.role
+ * is now FK'd to restaurant_roles(restaurant_id, role_slug), so a membership insert will
+ * fail outright if the target restaurant has no matching role row yet.
+ */
+export async function ensureRestaurantRolesSeeded(
+  supabase: SupabaseClient,
+  restaurantId: string,
+): Promise<void> {
+  const rolesSeed = buildDefaultRestaurantRolesSeed()
+  const { error } = await supabase
+    .from('restaurant_roles')
+    .upsert(
+      rolesSeed.map((role) => ({ restaurant_id: restaurantId, ...role })),
+      { onConflict: 'restaurant_id,role_slug', ignoreDuplicates: true },
+    )
+
+  if (error) {
+    console.error(LOG_PREFIX, 'restaurant_roles seed failed', { restaurantId, error })
+    throw error
+  }
+}
+
+/**
+ * Idempotently ensures a restaurant_users membership row exists, seeding default roles
+ * first if needed (see ensureRestaurantRolesSeeded). Safe to call for a membership that
+ * already exists.
+ */
+export async function ensureRestaurantUserMembership(
+  supabase: SupabaseClient,
+  params: { restaurantId: string; userId: string; role: string },
+): Promise<void> {
+  await ensureRestaurantRolesSeeded(supabase, params.restaurantId)
+
+  const { error } = await supabase
+    .from('restaurant_users')
+    .upsert(
+      { restaurant_id: params.restaurantId, user_id: params.userId, role: params.role },
+      { onConflict: 'restaurant_id,user_id', ignoreDuplicates: true },
+    )
+
+  if (error) {
+    console.error(LOG_PREFIX, 'restaurant_users membership upsert failed', { params, error })
+    throw error
+  }
+}
+
 export async function createRestaurantForUserAtomic(
   supabase: SupabaseClient,
   params: {

@@ -9,7 +9,6 @@ export type EnsurePublicUserResult =
 type PublicUserRow = {
   id: string
   email: string | null
-  restaurant_id: string | null
 }
 
 /**
@@ -146,6 +145,10 @@ export async function findPublicUserReferences(
 /**
  * A stale orphan public.users row blocks OAuth callback insert via users_email_key.
  * Same shape as the three production rows remediated manually for #35.
+ *
+ * "Safe to delete" is decided entirely by findPublicUserReferences below (which already
+ * checks restaurant_users.user_id, among every other FK into public.users) -- no separate
+ * users.restaurant_id check is needed on top of that.
  */
 export async function isStaleOrphanPublicUser(
   adminSupabase: SupabaseClient,
@@ -153,7 +156,6 @@ export async function isStaleOrphanPublicUser(
   authUserId: string,
 ): Promise<boolean> {
   if (staleRow.id === authUserId) return false
-  if (staleRow.restaurant_id) return false
 
   const { data: authMatch, error: authLookupError } = await adminSupabase.auth.admin.getUserById(
     staleRow.id,
@@ -249,7 +251,7 @@ export async function ensurePublicUserForOAuth(
 
   const { data: existingByEmail, error: existingByEmailError } = await adminSupabase
     .from('users')
-    .select('id, email, restaurant_id')
+    .select('id, email')
     .ilike('email', email)
     .maybeSingle()
 
@@ -279,7 +281,6 @@ export async function ensurePublicUserForOAuth(
       authUserId: params.id,
       email,
       existingPublicUserId: existingByEmail.id,
-      existingRestaurantId: existingByEmail.restaurant_id,
       referenceHits,
       fkChecksPerformed: PUBLIC_USERS_FOREIGN_KEY_REFERENCES.length,
     })

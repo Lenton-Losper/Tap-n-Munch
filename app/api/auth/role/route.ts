@@ -1,25 +1,27 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdsForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { getUserPermissions, getUserRole } from '@/lib/permissions/authorize'
 import { parseStaffRole } from '@/lib/permissions/staff-role'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * Resolves the restaurant to bootstrap the client session with. A bare `.maybeSingle()` on
+ * restaurant_users used to live here and would throw (PGRST116) for any user belonging to
+ * more than one restaurant -- getRestaurantIdsForUser is deterministic (owner rows first)
+ * and never throws on multiple memberships. There's no "active restaurant" selector yet, so
+ * a multi-restaurant user's session still bootstraps against their first/owner restaurant
+ * until that's built; this just stops it from hard-crashing.
+ */
 async function resolveRestaurantId(
   userId: string,
 ): Promise<string | null> {
   const supabase = createServerSupabaseClient()
 
-  const { data: membership, error: membershipError } = await supabase
-    .from('restaurant_users')
-    .select('restaurant_id')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  if (membershipError) throw membershipError
-  if (membership?.restaurant_id) {
-    return String(membership.restaurant_id)
+  const restaurantIds = await getRestaurantIdsForUser(supabase, userId)
+  if (restaurantIds.length > 0) {
+    return restaurantIds[0]
   }
 
   const { data: restaurant, error: restaurantError } = await supabase

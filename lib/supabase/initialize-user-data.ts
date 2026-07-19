@@ -1,78 +1,40 @@
 import { createServerSupabaseClient } from './server'
 import { createSupabaseCategory, createSupabaseSubcategory } from './menu'
+import { createRestaurantForUserAtomic } from '@/lib/auth/create-restaurant'
+import { getRestaurantIdsForUser } from './admin-restaurant-auth'
 
+/**
+ * Legacy signup fallback (reachable via POST /api/auth/sync-profile with a restaurantName
+ * body field -- not exercised by the current UI, but still live/callable). Used to insert
+ * restaurants/users directly, including users.restaurant_id, and never inserted a
+ * restaurant_users row at all -- meaning any account actually provisioned through this path
+ * would silently fail getRestaurantIdForUser (restaurant_users-only) and every permission
+ * check, despite looking "signed up." Now delegates to the same atomic
+ * create_restaurant_for_user RPC the real signup flow uses, so this path produces a
+ * consistent, working account instead of a broken one.
+ */
 export async function initializeUserData(
   userId: string,
   email: string,
   restaurantName?: string
 ): Promise<{ userId: string; restaurantId: string }> {
   const supabase = createServerSupabaseClient()
-  const { data: existingUser } = await supabase.from('users').select('*').eq('id', userId).maybeSingle()
-  if (existingUser?.restaurant_id) {
-    return { userId, restaurantId: String(existingUser.restaurant_id) }
+
+  const existingRestaurantIds = await getRestaurantIdsForUser(supabase, userId)
+  if (existingRestaurantIds.length > 0) {
+    return { userId, restaurantId: existingRestaurantIds[0] }
   }
 
-  const now = new Date().toISOString()
   const defaultRestaurantName = restaurantName || email.split('@')[0].replace(/[^a-z0-9]/gi, ' ')
-  const slug = defaultRestaurantName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const fullName = `${defaultRestaurantName} Owner`
 
-  const { data: restaurant, error: restaurantError } = await supabase
-    .from('restaurants')
-    .insert({
-      owner_id: userId,
-      owner_uid: userId,
-      name: defaultRestaurantName,
-      slug,
-      description: '',
-      email,
-      phone: '',
-      address: '',
-      logo_url: null,
-      primary_color: '#FF6B35',
-      currency: 'NAD',
-      timezone: 'Africa/Windhoek',
-      online_ordering_enabled: false,
-      payment_methods: ['cash', 'card'],
-      tax_rate: 0.15,
-      service_fee: 0,
-      subscription_tier: 'starter',
-      subscription_status: 'trial',
-      created_at: now,
-      updated_at: now,
-    })
-    .select('*')
-    .single()
-  if (restaurantError || !restaurant?.id) throw restaurantError || new Error('Failed to create restaurant')
-
-  const restaurantId = String(restaurant.id)
-
-  await supabase.from('restaurant_features').insert({
-    restaurant_id: restaurantId,
-  })
-
-  await supabase.from('subscriptions').insert({
-    restaurant_id: restaurantId,
-    plan: 'starter',
-    status: 'trial',
-    price: 0,
-    currency: 'NAD',
-    trial_ends_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-  })
-  const userPayload = {
-    id: userId,
+  const restaurantId = await createRestaurantForUserAtomic(supabase, {
+    userId,
     email,
-    name: `${defaultRestaurantName} Owner`,
+    fullName,
     phone: '',
-    role: 'owner',
-    restaurant_id: restaurantId,
-    created_at: now,
-    last_login: now,
-  }
-  if (existingUser) {
-    await supabase.from('users').update(userPayload).eq('id', userId)
-  } else {
-    await supabase.from('users').insert(userPayload)
-  }
+    restaurantName: defaultRestaurantName,
+  })
 
   try {
     const drinks = await createSupabaseCategory({ restaurant_id: restaurantId, name: 'Drinks', description: 'All beverages' })
