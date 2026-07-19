@@ -12,17 +12,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: TEMP DIAGNOSTIC -- classify SUPABASE_URL as staging/production (no value printed)
-        run: |
-          if [[ "$SUPABASE_URL" == *"mdqjpxwczrhkxkbqatqa"* ]]; then
-            echo "CLASSIFICATION: secrets.SUPABASE_URL matches the STAGING project ref"
-          elif [[ "$SUPABASE_URL" == *"ihlmmpmolnpchzgwyhgh"* ]]; then
-            echo "CLASSIFICATION: secrets.SUPABASE_URL matches the PRODUCTION project ref"
-          else
-            echo "CLASSIFICATION: secrets.SUPABASE_URL matches NEITHER known ref"
-          fi
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
