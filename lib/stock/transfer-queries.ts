@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 /** Gates the Transfers tab: visible if the user holds any one of the three transfer permissions. */
 export async function canAccessStockTransfers(userId: string, restaurantId: string): Promise<boolean> {
@@ -99,10 +100,19 @@ export async function getOrganizationRestaurants(
 }
 
 export async function getOrganizationStockItemsWithConfig(
-  supabase: SupabaseClient,
   organizationId: string,
 ): Promise<OrganizationStockItemOption[]> {
-  const { data: orgItems, error: orgItemsError } = await supabase
+  // Uses the service-role client, not a caller-supplied session client: "is this item
+  // configured at the destination" is inherently cross-location information (the caller is
+  // very often NOT a restaurant_users member of the destination they're transferring to),
+  // and stock_items RLS is scoped strictly to the caller's own restaurant membership with no
+  // org-wide read path. A session-scoped read here would silently omit every other
+  // location's mapping and make "configured at destination" unable to ever be true for a
+  // location the caller doesn't personally belong to -- caught for real running this against
+  // staging with two different restaurant managers, not just reasoned about.
+  const admin = createServerSupabaseClient()
+
+  const { data: orgItems, error: orgItemsError } = await admin
     .from('organization_stock_items')
     .select('id, name, base_unit_id, is_manufactured, measurement_units(name, symbol)')
     .eq('organization_id', organizationId)
@@ -112,7 +122,7 @@ export async function getOrganizationStockItemsWithConfig(
   const orgItemIds = (orgItems ?? []).map((item) => item.id as string)
   if (orgItemIds.length === 0) return []
 
-  const { data: localMappings, error: localMappingsError } = await supabase
+  const { data: localMappings, error: localMappingsError } = await admin
     .from('stock_items')
     .select('organization_stock_item_id, restaurant_id')
     .in('organization_stock_item_id', orgItemIds)

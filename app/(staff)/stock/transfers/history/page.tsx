@@ -58,7 +58,7 @@ export default async function TransferHistoryPage({ searchParams }: HistoryPageP
   const [rows, orgItems, outgoing, incoming, canCreate, canReceive, canViewAllLocations, restaurantName] =
     await Promise.all([
       getTransferHistory(supabase, restaurantId, filters),
-      organizationId ? getOrganizationStockItemsWithConfig(supabase, organizationId) : Promise.resolve([]),
+      organizationId ? getOrganizationStockItemsWithConfig(organizationId) : Promise.resolve([]),
       getOutgoingTransfers(supabase, restaurantId),
       getIncomingTransfers(supabase, restaurantId),
       authorize(userId, restaurantId, PERMISSIONS.STOCK_TRANSFER_CREATE),

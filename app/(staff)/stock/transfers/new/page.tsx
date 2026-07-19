@@ -37,7 +37,7 @@ export default async function NewTransferPage() {
 
   const [destinations, orgItems] = await Promise.all([
     getOrganizationRestaurants(supabase, organizationId, restaurantId),
-    getOrganizationStockItemsWithConfig(supabase, organizationId),
+    getOrganizationStockItemsWithConfig(organizationId),
   ])
 
   return (
