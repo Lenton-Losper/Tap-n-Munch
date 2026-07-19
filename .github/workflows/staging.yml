@@ -12,6 +12,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: TEMP DIAGNOSTIC -- print SUPABASE_URL project ref only (removed immediately after use)
+        run: |
+          echo "$SUPABASE_URL" | grep -oE 'https://[a-z0-9]+\.supabase\.co' || echo "SUPABASE_URL did not match the expected https://<ref>.supabase.co pattern"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
