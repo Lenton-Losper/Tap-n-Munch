@@ -27,6 +27,7 @@ export async function POST(request: Request) {
     const restaurantName = String(body?.restaurantName || '').trim()
     const fullName = String(body?.fullName || '').trim()
     const phone = String(body?.phone || '').trim()
+    const businessName = String(body?.businessName || '').trim()
 
     if (!restaurantName || !fullName) {
       return NextResponse.json(
@@ -71,6 +72,7 @@ export async function POST(request: Request) {
       fullName,
       phone,
       restaurantName,
+      organizationName: businessName,
     })
 
     return NextResponse.json({ success: true, restaurantId })

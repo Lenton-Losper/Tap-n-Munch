@@ -29,6 +29,8 @@ function SignUpForm() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [restaurantName, setRestaurantName] = useState('')
+  const [businessName, setBusinessName] = useState('')
+  const [businessNameEdited, setBusinessNameEdited] = useState(false)
   const [phone, setPhone] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
@@ -63,6 +65,21 @@ function SignUpForm() {
     }
   }
 
+  // Business name pre-fills from the location (restaurant) name and stays in sync until the
+  // user edits it directly -- at that point it diverges and stops auto-following. Never a
+  // separate mandatory question ahead of the location name.
+  const handleRestaurantNameChange = (value: string) => {
+    setRestaurantName(value)
+    if (!businessNameEdited) {
+      setBusinessName(value)
+    }
+  }
+
+  const handleBusinessNameChange = (value: string) => {
+    setBusinessName(value)
+    setBusinessNameEdited(true)
+  }
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError('')
@@ -91,6 +108,7 @@ function SignUpForm() {
           },
           body: JSON.stringify({
             restaurantName,
+            businessName,
             fullName,
             phone,
           }),
@@ -113,6 +131,7 @@ function SignUpForm() {
           email,
           password,
           restaurantName,
+          businessName,
           phone,
         }),
       })
@@ -269,12 +288,32 @@ function SignUpForm() {
                 id="restaurantName"
                 type="text"
                 value={restaurantName}
-                onChange={(event) => setRestaurantName(event.target.value)}
+                onChange={(event) => handleRestaurantNameChange(event.target.value)}
                 required
                 disabled={busy}
                 placeholder="The Riverside Bistro"
                 className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="businessName" className="text-[#37352F]">
+                Business Name
+              </Label>
+              <Input
+                id="businessName"
+                type="text"
+                value={businessName}
+                onChange={(event) => handleBusinessNameChange(event.target.value)}
+                required
+                disabled={busy}
+                placeholder="The Riverside Bistro"
+                className="rounded-lg border-[#E9E9E7] bg-white text-[#37352F] placeholder:text-[#9B978E]"
+              />
+              <p className="text-xs text-[#9B978E]">
+                The name of your overall business. You&apos;ll be able to add more locations
+                under it later.
+              </p>
             </div>
 
             <div className="space-y-2">

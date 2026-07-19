@@ -121,6 +121,8 @@ export async function createRestaurantForUserAtomic(
     fullName: string
     phone: string
     restaurantName: string
+    /** Distinct organization/"business" name. Defaults to restaurantName in SQL if omitted. */
+    organizationName?: string
   },
 ): Promise<string> {
   const rolesSeed = buildDefaultRestaurantRolesSeed()
@@ -132,6 +134,7 @@ export async function createRestaurantForUserAtomic(
     p_phone: params.phone || null,
     p_restaurant_name: params.restaurantName,
     p_roles: rolesSeed,
+    p_organization_name: params.organizationName?.trim() || null,
   })
 
   if (error) {

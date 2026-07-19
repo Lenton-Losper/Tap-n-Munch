@@ -3,6 +3,16 @@ import { formatMeasurementUnitLabel } from '@/lib/measurement-units/format'
 import { PERMISSIONS } from '@/lib/permissions'
 import { authorize } from '@/lib/permissions/authorize'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import {
+  getOrganizationIdForRestaurant,
+  getOrganizationRestaurants,
+  type OrganizationRestaurantOption,
+} from '@/lib/organizations/queries'
+
+// Re-exported for existing callers (Transfer UI pages/actions) -- the actual
+// implementations now live in lib/organizations/queries.ts, shared with Business & Locations.
+export { getOrganizationIdForRestaurant, getOrganizationRestaurants }
+export type { OrganizationRestaurantOption }
 
 /** Gates the Transfers tab: visible if the user holds any one of the three transfer permissions. */
 export async function canAccessStockTransfers(userId: string, restaurantId: string): Promise<boolean> {
@@ -12,12 +22,6 @@ export async function canAccessStockTransfers(userId: string, restaurantId: stri
     authorize(userId, restaurantId, PERMISSIONS.STOCK_TRANSFER_RECEIVE),
   ])
   return canCreate || canDispatch || canReceive
-}
-
-export type OrganizationRestaurantOption = {
-  id: string
-  name: string
-  locationType: string
 }
 
 export type OrganizationStockItemOption = {
@@ -59,44 +63,6 @@ export type TransferItemRow = {
 export type TransferDetail = TransferListRow & {
   organizationId: string
   items: TransferItemRow[]
-}
-
-export async function getOrganizationIdForRestaurant(
-  supabase: SupabaseClient,
-  restaurantId: string,
-): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('restaurants')
-    .select('organization_id')
-    .eq('id', restaurantId)
-    .maybeSingle()
-  if (error) throw error
-  return data?.organization_id ?? null
-}
-
-export async function getOrganizationRestaurants(
-  supabase: SupabaseClient,
-  organizationId: string,
-  excludeRestaurantId?: string,
-): Promise<OrganizationRestaurantOption[]> {
-  let query = supabase
-    .from('restaurants')
-    .select('id, name, location_type')
-    .eq('organization_id', organizationId)
-    .order('name')
-
-  if (excludeRestaurantId) {
-    query = query.neq('id', excludeRestaurantId)
-  }
-
-  const { data, error } = await query
-  if (error) throw error
-
-  return (data ?? []).map((row) => ({
-    id: row.id as string,
-    name: row.name as string,
-    locationType: row.location_type as string,
-  }))
 }
 
 export async function getOrganizationStockItemsWithConfig(

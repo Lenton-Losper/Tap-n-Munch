@@ -151,14 +151,16 @@ export async function authorize(
  * Organization-level permission (distinct namespace from restaurant Permission --
  * see PERMISSIONS.STOCK_TRANSFER_* for the location-internal counterparts).
  */
-export type OrganizationPermission = 'view_all_locations' | 'create_cross_location_transfer'
+export type OrganizationPermission =
+  | 'view_all_locations'
+  | 'create_cross_location_transfer'
+  | 'create_location'
 
 /**
  * Check if a user has an organization-wide capability.
  *
- * Backed by organization_users -- in v1 this returns true only if the user has an
- * OWNER-role row for that organization_id. MEMBER rows return false for both
- * permissions in v1 (Workstream 2's role semantics: MEMBER is a placeholder for a
+ * Backed by organization_users -- OWNER-role rows only. MEMBER rows return false for
+ * every permission in v1 (Workstream 2's role semantics: MEMBER is a placeholder for a
  * future non-owner org-level role, not wired to any capability yet).
  *
  * Deliberately does NOT fall back to restaurant_users -- belonging to a restaurant
@@ -170,9 +172,6 @@ export type OrganizationPermission = 'view_all_locations' | 'create_cross_locati
 export async function authorizeOrganization(
   userId: string,
   organizationId: string,
-  // v1 grants both permissions identically to OWNER (unused for now); kept as a
-  // parameter so call sites are self-documenting and won't need to change shape
-  // once a real MEMBER-level capability is introduced.
   permission: OrganizationPermission,
 ): Promise<boolean> {
   const supabase = createServerSupabaseClient()
@@ -187,7 +186,18 @@ export async function authorizeOrganization(
 
   if (error) throw error
 
-  return !!data
+  const isOwner = !!data
+  if (!isOwner) return false
+
+  if (permission === 'create_location') {
+    // OWNER-only in v1. A subscription-tier/location-count gate belongs here as a single
+    // additional check -- e.g. `if (!(await orgIsOnPlanThatAllowsAnotherLocation(organizationId))) return false`
+    // -- once billing supports it. The call site (lib/organizations/actions.ts) never
+    // needs to change shape to pick that up.
+    return true
+  }
+
+  return true
 }
 
 /**

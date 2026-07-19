@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     const password = String(body?.password || '')
     const restaurantName = String(body?.restaurantName || '').trim()
     const phone = String(body?.phone || '').trim()
+    const businessName = String(body?.businessName || '').trim()
 
     if (!fullName || !email || !password || !restaurantName) {
       return NextResponse.json(
@@ -59,6 +60,7 @@ export async function POST(request: Request) {
       fullName,
       phone,
       restaurantName,
+      organizationName: businessName,
     })
 
     return NextResponse.json({ success: true, restaurantId })

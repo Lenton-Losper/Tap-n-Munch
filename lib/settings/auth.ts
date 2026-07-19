@@ -41,7 +41,7 @@ async function resolveStaffRestaurantId(
   return null
 }
 
-async function getAuthenticatedSettingsContext(): Promise<
+export async function getAuthenticatedSettingsContext(): Promise<
   SettingsAccessContext | { error: string }
 > {
   const supabase = await createServerSessionClient()
