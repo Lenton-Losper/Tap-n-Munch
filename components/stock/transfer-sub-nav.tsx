@@ -5,36 +5,38 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 
-export function StockSubNav({
-  showReceiveButton = false,
-  showTransfersTab = false,
+export function TransferSubNav({
+  showCreateButton = false,
+  outgoingCount,
+  incomingCount,
 }: {
-  showReceiveButton?: boolean
-  showTransfersTab?: boolean
+  showCreateButton?: boolean
+  outgoingCount?: number
+  incomingCount?: number
 }) {
   const pathname = usePathname()
 
   const tabs = [
-    { href: '/stock', label: 'Overview', match: (path: string) => path === '/stock' },
     {
-      href: '/stock/history',
-      label: 'Movement history',
-      match: (path: string) => path.startsWith('/stock/history'),
+      href: '/stock/transfers',
+      label: outgoingCount ? `Outgoing (${outgoingCount})` : 'Outgoing',
+      match: (path: string) => path === '/stock/transfers',
     },
-    ...(showTransfersTab
-      ? [
-          {
-            href: '/stock/transfers',
-            label: 'Transfers',
-            match: (path: string) => path.startsWith('/stock/transfers'),
-          },
-        ]
-      : []),
+    {
+      href: '/stock/transfers/incoming',
+      label: incomingCount ? `Incoming (${incomingCount})` : 'Incoming',
+      match: (path: string) => path.startsWith('/stock/transfers/incoming'),
+    },
+    {
+      href: '/stock/transfers/history',
+      label: 'History',
+      match: (path: string) => path.startsWith('/stock/transfers/history'),
+    },
   ]
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <nav className="flex flex-wrap gap-2" aria-label="Stock sections">
+      <nav className="flex flex-wrap gap-2" aria-label="Transfer sections">
         {tabs.map((tab) => {
           const active = tab.match(pathname)
           return (
@@ -53,9 +55,9 @@ export function StockSubNav({
           )
         })}
       </nav>
-      {showReceiveButton ? (
+      {showCreateButton ? (
         <Button asChild className="bg-[#FF6B35] text-white hover:bg-[#e85f2f]">
-          <Link href="/stock/receive">Receive Delivery</Link>
+          <Link href="/stock/transfers/new">Create Transfer</Link>
         </Button>
       ) : null}
     </div>

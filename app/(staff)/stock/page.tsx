@@ -8,6 +8,7 @@ import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermission } from '@/lib/stock/auth'
 import { getStockOverview } from '@/lib/stock/queries'
 import { getInventorySetupOverview } from '@/lib/recipes/queries'
+import { canAccessStockTransfers } from '@/lib/stock/transfer-queries'
 
 type StockPageProps = {
   searchParams: Promise<{ received?: string; showInactive?: string }>
@@ -18,7 +19,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
   const params = await searchParams
   const showInactive = params.showInactive === '1'
   const canViewInventorySetup = await authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW)
-  const [data, canAdjust, canReceive, measurementUnits, inventorySetup] = await Promise.all([
+  const [data, canAdjust, canReceive, measurementUnits, inventorySetup, showTransfersTab] = await Promise.all([
     getStockOverview(supabase, restaurantId, { includeInactive: showInactive }),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_ADJUST),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE),
@@ -26,6 +27,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
     canViewInventorySetup
       ? getInventorySetupOverview(supabase, restaurantId)
       : Promise.resolve(null),
+    canAccessStockTransfers(userId, restaurantId),
   ])
   const receivedCount = params.received ? Number(params.received) : 0
   const successMessage =
@@ -42,7 +44,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
             Track inventory levels and record deliveries.
           </p>
           <div className="mt-5">
-            <StockSubNav showReceiveButton={canReceive} />
+            <StockSubNav showReceiveButton={canReceive} showTransfersTab={showTransfersTab} />
           </div>
         </div>
       </div>

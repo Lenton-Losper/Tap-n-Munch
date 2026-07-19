@@ -8,6 +8,7 @@ import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermission } from '@/lib/stock/auth'
 import type { MovementDateRange, MovementReason } from '@/lib/stock/format'
 import { getActiveStockItems, getMovementHistory } from '@/lib/stock/queries'
+import { canAccessStockTransfers } from '@/lib/stock/transfer-queries'
 
 type HistoryPageProps = {
   searchParams: Promise<{
@@ -37,7 +38,7 @@ export default async function StockHistoryPage({ searchParams }: HistoryPageProp
   const canViewCosts = await authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS)
   const canReceive = await authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE)
 
-  const [stockItems, rows] = await Promise.all([
+  const [stockItems, rows, showTransfersTab] = await Promise.all([
     getActiveStockItems(supabase, restaurantId),
     getMovementHistory(supabase, restaurantId, {
       stockItemId,
@@ -45,6 +46,7 @@ export default async function StockHistoryPage({ searchParams }: HistoryPageProp
       dateRange,
       includeCosts: canViewCosts,
     }),
+    canAccessStockTransfers(userId, restaurantId),
   ])
 
   return (
@@ -56,7 +58,7 @@ export default async function StockHistoryPage({ searchParams }: HistoryPageProp
             Read-only ledger of stock changes for your restaurant.
           </p>
           <div className="mt-5">
-            <StockSubNav showReceiveButton={canReceive} />
+            <StockSubNav showReceiveButton={canReceive} showTransfersTab={showTransfersTab} />
           </div>
         </div>
       </div>

@@ -8,13 +8,15 @@ import { authorize } from '@/lib/permissions/authorize'
 import { requireStockPermission } from '@/lib/stock/auth'
 import { getMeasurementUnitsForRestaurant } from '@/lib/measurement-units/queries'
 import { getActiveStockItems } from '@/lib/stock/queries'
+import { canAccessStockTransfers } from '@/lib/stock/transfer-queries'
 
 export default async function ReceiveStockPage() {
   const { supabase, userId, restaurantId } = await requireStockPermission(PERMISSIONS.STOCK_RECEIVE)
-  const [stockItems, measurementUnits, canViewCosts] = await Promise.all([
+  const [stockItems, measurementUnits, canViewCosts, showTransfersTab] = await Promise.all([
     getActiveStockItems(supabase, restaurantId),
     getMeasurementUnitsForRestaurant(supabase, restaurantId),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_VIEW_COSTS),
+    canAccessStockTransfers(userId, restaurantId),
   ])
 
   return (
@@ -33,7 +35,7 @@ export default async function ReceiveStockPage() {
             </Link>
           </div>
           <div className="mt-5">
-            <StockSubNav />
+            <StockSubNav showTransfersTab={showTransfersTab} />
           </div>
         </div>
       </div>
