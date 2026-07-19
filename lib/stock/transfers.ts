@@ -8,10 +8,11 @@ import { authorize, authorizeOrganization } from '@/lib/permissions/authorize'
  * stock:transfer_create/dispatch/receive permissions and authorizeOrganization's
  * create_cross_location_transfer fallback actually enforced, not just available.
  *
- * dispatch_transfer/receive_transfer/create_transfer are service_role-only in the database
- * (see 20260719230000_create_transfer_function.sql) -- calling them directly with a user's
- * own session would bypass every check below entirely, so these wrappers are the only
- * supported way to reach them from application code.
+ * dispatch_transfer/receive_transfer/create_transfer/cancel_transfer are service_role-only
+ * in the database (see 20260719230000_create_transfer_function.sql and the cancel_transfer
+ * grant tightening in 20260719250000_cancel_transfer_permission.sql) -- calling them
+ * directly with a user's own session would bypass every check below entirely, so these
+ * wrappers are the only supported way to reach them from application code.
  */
 
 export type TransferItemInput = {
@@ -84,6 +85,49 @@ export async function dispatchTransfer(
   }
 
   const { error } = await supabase.rpc('dispatch_transfer', {
+    p_transfer_id: transferId,
+    p_user_id: userId,
+  })
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  return { data: true }
+}
+
+/**
+ * Cancel a DRAFT transfer. Same authorization shape as createTransfer -- cancelling is
+ * treated as undoing a create, not a source-location operational action like dispatch --
+ * so it's stock:transfer_create at the source restaurant, OR the authorizeOrganization
+ * create_cross_location_transfer fallback, not stock:transfer_dispatch.
+ */
+export async function cancelTransfer(
+  userId: string,
+  transferId: string,
+): Promise<{ data: true } | { error: string }> {
+  const supabase = createServerSupabaseClient()
+
+  const { data: transfer, error: transferError } = await supabase
+    .from('stock_transfers')
+    .select('organization_id, from_restaurant_id')
+    .eq('id', transferId)
+    .maybeSingle()
+
+  if (transferError) throw transferError
+  if (!transfer) {
+    return { error: 'Transfer not found.' }
+  }
+
+  const canCreateAtSource = await authorize(userId, transfer.from_restaurant_id, PERMISSIONS.STOCK_TRANSFER_CREATE)
+  if (!canCreateAtSource) {
+    const canCreateForOrg = await authorizeOrganization(userId, transfer.organization_id, 'create_cross_location_transfer')
+    if (!canCreateForOrg) {
+      return { error: 'You do not have permission to cancel this transfer.' }
+    }
+  }
+
+  const { error } = await supabase.rpc('cancel_transfer', {
     p_transfer_id: transferId,
     p_user_id: userId,
   })

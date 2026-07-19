@@ -194,7 +194,7 @@ async function main() {
   if (gUnitError || !gUnit) throw gUnitError ?? new Error('system unit "g" missing')
   unitGId = gUnit.id
 
-  const { createTransfer, dispatchTransfer, receiveTransfer } = await import('../lib/stock/transfers')
+  const { createTransfer, dispatchTransfer, receiveTransfer, cancelTransfer } = await import('../lib/stock/transfers')
 
   const org = await createOrgWithTwoRestaurants('perm')
   const orgItem = await createOrgStockItem(org.organizationId, `${tag} beans`)
@@ -350,6 +350,35 @@ async function main() {
   assert('data' in createByOrgOwner, `expected org OWNER (no restaurant_users row) to create a transfer via the org-level fallback, got: ${JSON.stringify(createByOrgOwner)}`)
   created.transferIds.push(createByOrgOwner.data.transferId)
   console.log('org OWNER with zero restaurant-level access created a transfer via the authorizeOrganization fallback -- OK')
+
+  // ============================================================
+  // Part 6: cancel_transfer authorization (same shape as create_transfer)
+  // ============================================================
+  console.log('\n--- Part 6: cancel_transfer authorization ---')
+
+  const draftForCancelTest = await createTransfer({
+    userId: managerA,
+    organizationId: org.organizationId,
+    fromRestaurantId: org.restaurantAId,
+    toRestaurantId: org.restaurantBId,
+    items: [{ organizationStockItemId: orgItem, quantitySent: 3, unitId: unitGId }],
+  })
+  assert('data' in draftForCancelTest, 'setup: managerA should be able to create a draft transfer for the cancel test')
+  const draftIdForCancel = draftForCancelTest.data.transferId
+  created.transferIds.push(draftIdForCancel)
+
+  const cancelByManagerB = await cancelTransfer(managerB, draftIdForCancel)
+  assert('error' in cancelByManagerB, 'expected managerB (no stock:transfer_create at restaurant A) to be rejected cancelling restaurant A\'s draft')
+  console.log('managerB correctly rejected cancelling a draft they have no create access to:', cancelByManagerB.error)
+
+  const { data: stillDraftAfterRejectedCancel } = await db.from('stock_transfers').select('status').eq('id', draftIdForCancel).single()
+  assert(stillDraftAfterRejectedCancel?.status === 'DRAFT', `transfer should remain DRAFT after a rejected cancel attempt, got ${stillDraftAfterRejectedCancel?.status}`)
+
+  const cancelByManagerA = await cancelTransfer(managerA, draftIdForCancel)
+  assert('data' in cancelByManagerA, `expected managerA (has stock:transfer_create at the source restaurant) to cancel their own draft, got: ${JSON.stringify(cancelByManagerA)}`)
+  const { data: cancelledTransfer } = await db.from('stock_transfers').select('status').eq('id', draftIdForCancel).single()
+  assert(cancelledTransfer?.status === 'CANCELLED', `expected CANCELLED, got ${cancelledTransfer?.status}`)
+  console.log('managerA (create access at the source restaurant) cancelled their own draft -- OK')
 
   console.log('\nWS4_STOCK_TRANSFER_PERMISSIONS_STAGING_VERIFY_OK')
 
