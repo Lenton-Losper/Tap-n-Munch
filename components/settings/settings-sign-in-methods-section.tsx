@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import { Plus } from 'lucide-react'
+import { Plus, KeyRound } from 'lucide-react'
 import { isAuthSessionMissingError, isAuthWeakPasswordError } from '@supabase/auth-js'
 import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import {
 import {
   canAddPasswordCredential,
   getConnectedSignInMethodLabels,
+  hasPasswordCredential,
 } from '@/lib/auth/capabilities'
 import {
   hasPasswordFieldErrors,
@@ -76,6 +77,8 @@ export function SettingsSignInMethodsSection() {
   const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [passwordJustAdded, setPasswordJustAdded] = useState(false)
+  const [changePasswordSubmitting, setChangePasswordSubmitting] = useState(false)
+  const [changePasswordSent, setChangePasswordSent] = useState(false)
 
   if (!user) {
     return null
@@ -83,6 +86,40 @@ export function SettingsSignInMethodsSection() {
 
   const connectedMethods = getConnectedSignInMethodLabels(user)
   const showAddPassword = canAddPasswordCredential(user) && !passwordJustAdded
+  const showChangePassword = hasPasswordCredential(user)
+
+  const handleChangePassword = async () => {
+    const email = user.email
+    if (!email) {
+      toast({
+        title: 'Cannot send reset link',
+        description: 'Your account has no email address on file.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      setChangePasswordSubmitting(true)
+      const redirectTo = `${window.location.origin}/reset-password`
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+      if (error) throw error
+
+      setChangePasswordSent(true)
+      toast({
+        title: 'Password reset email sent',
+        description: `Check your inbox at ${email} for a link to set a new password.`,
+      })
+    } catch (error: unknown) {
+      toast({
+        title: 'Could not send reset email',
+        description: error instanceof Error ? error.message : 'Failed to send reset email',
+        variant: 'destructive',
+      })
+    } finally {
+      setChangePasswordSubmitting(false)
+    }
+  }
 
   const handleDialogOpenChange = (open: boolean) => {
     setAddPasswordOpen(open)
@@ -200,6 +237,25 @@ export function SettingsSignInMethodsSection() {
             <Plus className="h-4 w-4 mr-2" />
             Add Email &amp; Password
           </Button>
+        ) : null}
+
+        {showChangePassword ? (
+          <div className="space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleChangePassword}
+              disabled={changePasswordSubmitting}
+            >
+              <KeyRound className="h-4 w-4 mr-2" />
+              {changePasswordSubmitting ? 'Sending reset link...' : 'Change password'}
+            </Button>
+            {changePasswordSent ? (
+              <p className="text-xs text-muted-foreground">
+                Check your inbox at {user.email} for a link to set a new password.
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
