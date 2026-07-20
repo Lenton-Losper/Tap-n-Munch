@@ -152,7 +152,13 @@ export default function MenuBrowsePage() {
     tableNumber,
     tabId: effectiveTabId || null,
     tabStatus,
-    enabled: Boolean(effectiveTabId),
+    // viewOnlyChecked gates this, not just Boolean(effectiveTabId): the view-only lookup
+    // is async, so on first mount effectiveTabId can still briefly reflect a stale tab id
+    // from a different table before isViewOnly resolves. Without this gate, this hook
+    // would race ahead, find that stale tab id doesn't exist, and fire a hard
+    // window.location redirect to /session-ended before the view-only override ever
+    // takes effect -- exactly the "honoring stale localStorage" bug this page must avoid.
+    enabled: viewOnlyChecked && Boolean(effectiveTabId),
     onSessionEnded: () => clearCart(),
   })
 
