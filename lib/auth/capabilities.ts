@@ -18,9 +18,9 @@ function hasPasswordCredentialMetadata(user: User): boolean {
 
 /**
  * Whether the user already has an email/password credential (Supabase identity provider `email`).
- * Callers must use {@link canAddPasswordCredential} instead of inspecting `user.identities`.
+ * Callers must use this (or {@link canAddPasswordCredential}) instead of inspecting `user.identities` directly.
  */
-function hasPasswordCredential(user: User): boolean {
+export function hasPasswordCredential(user: User): boolean {
   if (hasPasswordCredentialMetadata(user)) {
     return true
   }
