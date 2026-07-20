@@ -459,6 +459,13 @@ export function MenuLandingPageV2Content({
   }, [restaurantId, restaurant?.id, tableNum, table, endTabSession, isViewOnlyTable])
 
   useEffect(() => {
+    // Wait for the table fetch (and therefore isViewOnlyTable) to resolve first. Without
+    // this gate, this effect and the table-fetch effect both kick off async work on
+    // mount independently -- syncTabLandingState's own isViewOnlyTable check reads a
+    // value that's still `false` (not yet resolved) on that first pass, so it can find a
+    // stale/nonexistent stored tab id, treat it as a genuinely ended session, and fire
+    // handleSessionExpired's hard redirect before the view-only table is ever detected.
+    if (loading) return
     let cancelled = false
     const run = async () => {
       if (cancelled) return
@@ -468,7 +475,7 @@ export function MenuLandingPageV2Content({
     return () => {
       cancelled = true
     }
-  }, [syncTabLandingState])
+  }, [syncTabLandingState, loading])
 
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) return
