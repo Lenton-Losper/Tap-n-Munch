@@ -12,6 +12,25 @@ export async function GET(request: Request) {
   const code = searchParams.get('code')
   const type = searchParams.get('type')
 
+  // Secure Email Change requires confirming from BOTH the new and current
+  // inbox. The first of the two links GoTrue sends produces no `code` --
+  // just a message in the URL hash telling the user to also check their
+  // other inbox (hash fragments never reach the server) -- so this
+  // intermediate state must be detected here, before the code-exchange
+  // branch below, which would otherwise fall through to a confusing
+  // "/signin?error=oauth" redirect for what is actually an expected step.
+  if (type === 'email_change' && !code) {
+    const linkError = searchParams.get('error') || searchParams.get('error_code')
+    if (linkError) {
+      console.error('[auth/callback] email_change link error', {
+        error: linkError,
+        description: searchParams.get('error_description'),
+      })
+      return NextResponse.redirect(`${origin}/settings?error=email_change_link#profile`)
+    }
+    return NextResponse.redirect(`${origin}/settings?email_change_pending=1#profile`)
+  }
+
   if (code) {
     const cookieStore = await cookies()
     const supabase = createServerClient(

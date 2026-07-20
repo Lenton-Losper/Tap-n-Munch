@@ -30,16 +30,38 @@ export function SettingsProfileTab() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
-    if (params.get('email_changed') !== '1') return
-    toast({ title: 'Email updated', description: 'Your sign-in email has been changed successfully.' })
+    const hadParam =
+      params.has('email_changed') || params.has('email_change_pending') || params.get('error') === 'email_change_link'
+    if (!hadParam) return
+
+    if (params.get('email_changed') === '1') {
+      toast({ title: 'Email updated', description: 'Your sign-in email has been changed successfully.' })
+    } else if (params.get('email_change_pending') === '1') {
+      toast({
+        title: 'Almost done — check your other inbox',
+        description:
+          'That confirms one of the two required links. Check your other inbox (new or current, whichever you haven\'t clicked yet) for the second link to finish changing your email.',
+      })
+    } else if (params.get('error') === 'email_change_link') {
+      toast({
+        title: 'Email change link could not be confirmed',
+        description: 'That link may have expired or already been used. Try changing your email again from below.',
+        variant: 'destructive',
+      })
+    }
+
     params.delete('email_changed')
+    params.delete('email_change_pending')
+    if (params.get('error') === 'email_change_link') {
+      params.delete('error')
+    }
     const search = params.toString()
     window.history.replaceState(
       null,
       '',
       `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`,
     )
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount to consume the redirect param
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount to consume the redirect params
   }, [])
 
   const loadProfile = useCallback(async () => {
@@ -128,8 +150,8 @@ export function SettingsProfileTab() {
 
       setEmailChangeSentTo(trimmed)
       toast({
-        title: 'Confirmation email sent',
-        description: `Check your NEW inbox at ${trimmed} — not your current one — and click the link there to finish changing your email.`,
+        title: 'Two confirmations required',
+        description: `We've sent a link to your NEW inbox at ${trimmed} — click that first. It'll then ask you to also confirm via a second link sent to your CURRENT inbox (${originalEmail}). Both are required to finish the change.`,
       })
     } catch (error: unknown) {
       toast({
@@ -223,7 +245,8 @@ export function SettingsProfileTab() {
         ) : null}
         {emailChangeSentTo ? (
           <p className="text-xs text-muted-foreground">
-            Confirmation sent to {emailChangeSentTo}. Check that inbox — not your current one — to finish the change.
+            Confirmation sent to {emailChangeSentTo} — click that link first, then check your current
+            inbox ({originalEmail}) for a second confirmation link. Both are required to finish the change.
           </p>
         ) : null}
       </div>
