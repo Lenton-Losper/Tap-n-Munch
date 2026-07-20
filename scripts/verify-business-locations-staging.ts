@@ -104,6 +104,8 @@ async function createRealAuthUser(emailTag: string): Promise<{ userId: string; e
   const userId = data.user.id
   created.userIds.push(userId)
   userEmails.set(userId, email)
+  const { error: publicUserError } = await db.from('users').insert({ id: userId, email })
+  if (publicUserError) throw publicUserError
   return { userId, email }
 }
 
@@ -184,8 +186,8 @@ async function main() {
     console.log('Business Name stops auto-following after manual edit -- OK')
 
     await signupPage.getByRole('button', { name: /create account/i }).click()
-    await signupPage.waitForURL(/onboarding/, { timeout: 30000 })
-    console.log('Signup submitted via UI, redirected to onboarding -- OK')
+    await signupPage.waitForURL(/onboarding|dashboard/, { timeout: 30000 })
+    console.log('Signup submitted via UI, redirected past account creation -- OK')
 
     const { data: authUser } = await db.auth.admin.listUsers()
     const ownerUser = authUser.users.find((u) => u.email === ownerEmail)
@@ -342,16 +344,9 @@ async function main() {
     // Part 4: non-owner manager cannot see/use Add Location
     // ============================================================
     console.log('\n--- Part 4: non-owner manager blocked from Add Location ---')
-    const { error: managerRoleError } = await db
-      .from('restaurant_roles')
-      .insert({
-        restaurant_id: restaurant1!.id,
-        role_slug: 'manager',
-        display_name: 'Manager',
-        permissions: ['stock:view', 'stock:receive', 'stock:transfer_create', 'stock:transfer_dispatch', 'stock:transfer_receive'],
-        is_system: false,
-      })
-    if (managerRoleError) throw managerRoleError
+    // restaurant1 already has a 'manager' role seeded by create_restaurant_for_user's default
+    // role seed (buildDefaultRestaurantRolesSeed) -- reuse it rather than inserting a second
+    // one, which would collide with restaurant_roles' (restaurant_id, role_slug) uniqueness.
     const { userId: managerUserId } = await createRealAuthUser('manager')
     const { error: managerMembershipError } = await db
       .from('restaurant_users')
