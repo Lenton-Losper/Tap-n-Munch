@@ -4,12 +4,14 @@
  * (20260712120000, 20260717120000, 20260717130000) are permanently excluded from this
  * script -- not a batch argument, never wired in here at all.
  *
- * Explicitly EXCLUDED from every batch below, pending a separate app-code-deploy decision:
+ * Also absent from every batch below:
  *   - 20260719100000_retire_users_restaurant_id.sql
  *   - 20260719150000_organization_stock_items_not_null.sql
- * Both require currently-deployed production app code (which still reads/writes
- * users.restaurant_id, and still inserts stock_items without organization_stock_item_id)
- * to be replaced first. Applying either now would break live behavior immediately.
+ * Originally paused here pending the app-code deploy that replaces reads/writes of
+ * users.restaurant_id and stock_items without organization_stock_item_id. That deploy
+ * has since shipped, and both migrations were applied to production directly (confirmed
+ * via schema_migrations and live schema, 2026-07-20) -- not through this script. Nothing
+ * left for this script to do for them.
  *
  *   npx tsx scripts/apply-ws1-bl-production.ts <batch>
  *   batch one of: 0 1 2 3 4 5
