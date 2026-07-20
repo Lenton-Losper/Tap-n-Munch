@@ -148,6 +148,59 @@ export async function authorize(
 }
 
 /**
+ * Organization-level permission (distinct namespace from restaurant Permission --
+ * see PERMISSIONS.STOCK_TRANSFER_* for the location-internal counterparts).
+ */
+export type OrganizationPermission =
+  | 'view_all_locations'
+  | 'create_cross_location_transfer'
+  | 'create_location'
+
+/**
+ * Check if a user has an organization-wide capability.
+ *
+ * Backed by organization_users -- OWNER-role rows only. MEMBER rows return false for
+ * every permission in v1 (Workstream 2's role semantics: MEMBER is a placeholder for a
+ * future non-owner org-level role, not wired to any capability yet).
+ *
+ * Deliberately does NOT fall back to restaurant_users -- belonging to a restaurant
+ * inside the organization is not the same as holding organization-wide access, even
+ * though today every organization happens to be 1:1 with a single restaurant. This
+ * must go through organization_users explicitly, or it would silently grant
+ * cross-location access the moment an organization gains a second restaurant.
+ */
+export async function authorizeOrganization(
+  userId: string,
+  organizationId: string,
+  permission: OrganizationPermission,
+): Promise<boolean> {
+  const supabase = createServerSupabaseClient()
+
+  const { data, error } = await supabase
+    .from('organization_users')
+    .select('role')
+    .eq('organization_id', organizationId)
+    .eq('user_id', userId)
+    .eq('role', 'OWNER')
+    .maybeSingle()
+
+  if (error) throw error
+
+  const isOwner = !!data
+  if (!isOwner) return false
+
+  if (permission === 'create_location') {
+    // OWNER-only in v1. A subscription-tier/location-count gate belongs here as a single
+    // additional check -- e.g. `if (!(await orgIsOnPlanThatAllowsAnotherLocation(organizationId))) return false`
+    // -- once billing supports it. The call site (lib/organizations/actions.ts) never
+    // needs to change shape to pick that up.
+    return true
+  }
+
+  return true
+}
+
+/**
  * Require a permission or throw a 403 response.
  * Use in API route handlers.
  *

@@ -7,8 +7,10 @@ import { Button } from '@/components/ui/button'
 
 export function StockSubNav({
   showReceiveButton = false,
+  showTransfersTab = false,
 }: {
   showReceiveButton?: boolean
+  showTransfersTab?: boolean
 }) {
   const pathname = usePathname()
 
@@ -19,6 +21,15 @@ export function StockSubNav({
       label: 'Movement history',
       match: (path: string) => path.startsWith('/stock/history'),
     },
+    ...(showTransfersTab
+      ? [
+          {
+            href: '/stock/transfers',
+            label: 'Transfers',
+            match: (path: string) => path.startsWith('/stock/transfers'),
+          },
+        ]
+      : []),
   ]
 
   return (

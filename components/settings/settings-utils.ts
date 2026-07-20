@@ -35,5 +35,6 @@ export function hashToSettingsTab(hash: string): SettingsTabId {
   if (normalized === '#bank') return 'bank'
   if (normalized === '#billing') return 'billing'
   if (normalized === '#restaurant') return 'restaurant'
+  if (normalized === '#business') return 'business'
   return 'profile'
 }

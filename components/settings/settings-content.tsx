@@ -9,6 +9,7 @@ import { SettingsProfileTab } from '@/components/settings/settings-profile-tab'
 import { SettingsPaymentTab } from '@/components/settings/settings-payment-tab'
 import { SettingsBillingTab } from '@/components/settings/settings-billing-tab'
 import { SettingsRestaurantTab } from '@/components/settings/settings-restaurant-tab'
+import { SettingsBusinessTab } from '@/components/settings/settings-business-tab'
 import { SettingsSignInMethodsSection } from '@/components/settings/settings-sign-in-methods-section'
 import { hashToSettingsTab } from '@/components/settings/settings-utils'
 
@@ -112,6 +113,7 @@ export function SettingsContent() {
         {effectiveActiveTab === 'bank' && canViewPayments ? <SettingsPaymentTab /> : null}
         {effectiveActiveTab === 'billing' && canViewBilling ? <SettingsBillingTab /> : null}
         {effectiveActiveTab === 'restaurant' ? <SettingsRestaurantTab /> : null}
+        {effectiveActiveTab === 'business' ? <SettingsBusinessTab /> : null}
       </div>
     </div>
   )

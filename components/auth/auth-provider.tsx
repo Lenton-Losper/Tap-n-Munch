@@ -266,10 +266,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setRole(resolvedRole)
       setPermissions(resolvedPermissions)
 
-      if (!linkedRestaurantId && userRecord?.restaurant_id) {
-        linkedRestaurantId = String(userRecord.restaurant_id)
-      }
-
       if (!linkedRestaurantId) {
         // No restaurant is a valid, resolved outcome (e.g. a platform-admin-only
         // account) -- isPlatformAdmin was just correctly set above from the role API

@@ -43,10 +43,39 @@ export async function createStockItemAction(input: { name: string; unitId: strin
   }
   const { supabase, restaurantId } = stockContext
 
+  const { data: restaurant, error: restaurantError } = await supabase
+    .from('restaurants')
+    .select('organization_id')
+    .eq('id', restaurantId)
+    .single()
+
+  if (restaurantError || !restaurant?.organization_id) {
+    return { error: restaurantError?.message ?? 'Restaurant is not linked to an organization.' }
+  }
+
+  // Every stock_item now maps to a canonical organization_stock_items row (Workstream 2:
+  // canonical item identity). Today every organization is 1:1 with its single restaurant,
+  // so this is just a paired insert -- no cross-location dedup is attempted here.
+  const { data: orgStockItem, error: orgStockItemError } = await supabase
+    .from('organization_stock_items')
+    .insert({
+      organization_id: restaurant.organization_id,
+      name,
+      base_unit_id: unitId,
+      is_manufactured: false,
+    })
+    .select('id')
+    .single()
+
+  if (orgStockItemError || !orgStockItem) {
+    return { error: orgStockItemError?.message ?? 'Failed to create canonical stock item.' }
+  }
+
   const { data, error } = await supabase
     .from('stock_items')
     .insert({
       restaurant_id: restaurantId,
+      organization_stock_item_id: orgStockItem.id,
       name,
       unit_id: unitId,
       is_purchasable: true,
@@ -57,6 +86,7 @@ export async function createStockItemAction(input: { name: string; unitId: strin
     .single()
 
   if (error) {
+    await supabase.from('organization_stock_items').delete().eq('id', orgStockItem.id)
     return { error: error.message }
   }
 

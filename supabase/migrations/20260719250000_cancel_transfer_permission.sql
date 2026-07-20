@@ -1,0 +1,15 @@
+-- Workstream 4 follow-up: close the open item flagged when WS4 shipped -- cancel_transfer
+-- had no permission model and was left callable by any authenticated session.
+--
+-- Authorization for cancel matches create_transfer exactly: stock:transfer_create at the
+-- transfer's source restaurant (via authorize(), enforced in the TypeScript wrapper --
+-- lib/stock/transfers.ts cancelTransfer), OR authorizeOrganization's
+-- create_cross_location_transfer fallback. Cancelling is treated as undoing a create, not
+-- a source-location operational action like dispatch, so it deliberately does not use
+-- stock:transfer_dispatch.
+--
+-- Same tightening reasoning as dispatch_transfer/receive_transfer (20260719230000): leaving
+-- cancel_transfer grantable to `authenticated` would make the new TypeScript-side check
+-- optional rather than real, since any authenticated session could call the RPC directly
+-- and skip it.
+REVOKE EXECUTE ON FUNCTION "public"."cancel_transfer"(uuid, uuid) FROM authenticated;

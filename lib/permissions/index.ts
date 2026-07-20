@@ -47,6 +47,11 @@ export const PERMISSIONS = {
   STOCK_VIEW_COSTS: 'stock:view_costs',
   STOCK_DELETE_GRV: 'stock:delete_grv',
 
+  // Stock transfers (location-internal: create/dispatch at the source, receive at the destination)
+  STOCK_TRANSFER_CREATE:   'stock:transfer_create',
+  STOCK_TRANSFER_DISPATCH: 'stock:transfer_dispatch',
+  STOCK_TRANSFER_RECEIVE:  'stock:transfer_receive',
+
   // Recipes
   RECIPE_VIEW: 'recipe:view',
   RECIPE_EDIT: 'recipe:edit',

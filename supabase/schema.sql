@@ -39,12 +39,15 @@ COMMENT ON SCHEMA "public" IS 'standard public schema';
 -- Name: assign_grv_number(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
+-- Delegates to generate_document_number() (see receipt_documents below) instead of
+-- reimplementing the prefix + LPAD(nextval(...)) logic inline -- one numbering
+-- mechanism, not two. grv_number_seq is unchanged (supabase/migrations/20260717150000).
 CREATE OR REPLACE FUNCTION "public"."assign_grv_number"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     AS $$
 BEGIN
     IF NEW.grv_number IS NULL THEN
-        NEW.grv_number := 'GRV-' || LPAD(nextval('grv_number_seq')::text, 6, '0');
+        NEW.grv_number := public.generate_document_number('GRV', 'grv_number_seq');
     END IF;
     RETURN NEW;
 END;
@@ -761,6 +764,25 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_invites" (
 ALTER TABLE "public"."restaurant_invites" OWNER TO "postgres";
 
 --
+-- Name: restaurant_roles; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."restaurant_roles" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "restaurant_id" "uuid" NOT NULL,
+    "role_slug" "text" NOT NULL,
+    "display_name" "text" NOT NULL,
+    "permissions" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
+    "is_system" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "is_invite_eligible" boolean DEFAULT false NOT NULL
+);
+
+
+ALTER TABLE "public"."restaurant_roles" OWNER TO "postgres";
+
+--
 -- Name: restaurant_setup_status; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -855,8 +877,7 @@ CREATE TABLE IF NOT EXISTS "public"."restaurant_users" (
     "invite_accepted" boolean DEFAULT true,
     "deleted_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "updated_at" timestamp with time zone DEFAULT "now"(),
-    CONSTRAINT "restaurant_users_role_check" CHECK (("role" = ANY (ARRAY['owner'::"text", 'manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "updated_at" timestamp with time zone DEFAULT "now"()
 );
 
 
@@ -917,8 +938,7 @@ CREATE TABLE IF NOT EXISTS "public"."staff_invites" (
     "accepted" boolean DEFAULT false,
     "expires_at" timestamp with time zone DEFAULT ("now"() + '7 days'::interval),
     "accepted_at" timestamp with time zone,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    CONSTRAINT "staff_invites_role_check" CHECK (("role" = ANY (ARRAY['manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "created_at" timestamp with time zone DEFAULT "now"()
 );
 
 
@@ -935,8 +955,7 @@ CREATE TABLE IF NOT EXISTS "public"."staff_members" (
     "role" "text",
     "active" boolean DEFAULT true,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "push_token" "text",
-    CONSTRAINT "staff_members_role_check" CHECK (("role" = ANY (ARRAY['manager'::"text", 'cashier'::"text", 'waiter'::"text", 'kitchen'::"text"])))
+    "push_token" "text"
 );
 
 
@@ -1112,7 +1131,6 @@ CREATE TABLE IF NOT EXISTS "public"."users" (
     "name" "text",
     "phone" "text",
     "role" "text" DEFAULT 'owner'::"text",
-    "restaurant_id" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"(),
     "last_login" timestamp with time zone,
     "firebase_uid" "text",
@@ -1298,6 +1316,22 @@ ALTER TABLE ONLY "public"."restaurant_features"
 
 ALTER TABLE ONLY "public"."restaurant_invites"
     ADD CONSTRAINT "restaurant_invites_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: restaurant_roles restaurant_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: restaurant_roles restaurant_roles_restaurant_id_role_slug_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_restaurant_id_role_slug_key" UNIQUE ("restaurant_id", "role_slug");
 
 
 --
@@ -1799,6 +1833,13 @@ CREATE INDEX "restaurant_invites_restaurant_id_idx" ON "public"."restaurant_invi
 
 
 --
+-- Name: restaurant_roles_restaurant_id_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "restaurant_roles_restaurant_id_idx" ON "public"."restaurant_roles" USING "btree" ("restaurant_id");
+
+
+--
 -- Name: restaurant_terminals_activation_code_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -2125,6 +2166,14 @@ ALTER TABLE ONLY "public"."restaurant_invites"
 
 
 --
+-- Name: restaurant_roles restaurant_roles_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_roles"
+    ADD CONSTRAINT "restaurant_roles_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id") ON DELETE CASCADE;
+
+
+--
 -- Name: restaurant_settings restaurant_settings_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -2173,6 +2222,14 @@ ALTER TABLE ONLY "public"."restaurant_users"
 
 
 --
+-- Name: restaurant_users restaurant_users_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."restaurant_users"
+    ADD CONSTRAINT "restaurant_users_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: restaurant_users restaurant_users_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -2213,11 +2270,27 @@ ALTER TABLE ONLY "public"."staff_invites"
 
 
 --
+-- Name: staff_invites staff_invites_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."staff_invites"
+    ADD CONSTRAINT "staff_invites_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: staff_members staff_members_restaurant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY "public"."staff_members"
     ADD CONSTRAINT "staff_members_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id");
+
+
+--
+-- Name: staff_members staff_members_role_slug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."staff_members"
+    ADD CONSTRAINT "staff_members_role_slug_fkey" FOREIGN KEY ("restaurant_id", "role") REFERENCES "public"."restaurant_roles"("restaurant_id", "role_slug") ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -2693,6 +2766,58 @@ CREATE POLICY "Staff can read own record" ON "public"."staff_members" FOR SELECT
 
 
 --
+-- Name: restaurant_roles Staff can read restaurant roles; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Staff can read restaurant roles" ON "public"."restaurant_roles" FOR SELECT USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+
+--
+-- Name: restaurant_roles Authorized staff can manage restaurant roles; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "Authorized staff can manage restaurant roles"
+  ON public.restaurant_roles
+  FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.restaurant_users ru
+      WHERE ru.user_id = auth.uid()
+        AND ru.restaurant_id = restaurant_roles.restaurant_id
+        AND (
+          ru.role IN ('owner', 'manager')
+          OR EXISTS (
+            SELECT 1
+            FROM public.restaurant_roles rr
+            WHERE rr.restaurant_id = ru.restaurant_id
+              AND rr.role_slug = ru.role
+              AND 'staff:manage' = ANY (rr.permissions)
+          )
+        )
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.restaurant_users ru
+      WHERE ru.user_id = auth.uid()
+        AND ru.restaurant_id = restaurant_roles.restaurant_id
+        AND (
+          ru.role IN ('owner', 'manager')
+          OR EXISTS (
+            SELECT 1
+            FROM public.restaurant_roles rr
+            WHERE rr.restaurant_id = ru.restaurant_id
+              AND rr.role_slug = ru.role
+              AND 'staff:manage' = ANY (rr.permissions)
+          )
+        )
+    )
+  );
+
+
+--
 -- Name: orders Staff can update orders for their restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2715,15 +2840,6 @@ CREATE POLICY "Staff can update own push token" ON "public"."staff_members" FOR 
 --
 
 CREATE POLICY "Staff can update own record" ON "public"."staff_members" FOR UPDATE TO "authenticated" USING (("email" = ("auth"."jwt"() ->> 'email'::"text"))) WITH CHECK (("email" = ("auth"."jwt"() ->> 'email'::"text")));
-
-
---
--- Name: restaurants Users can read own restaurant; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "Users can read own restaurant" ON "public"."restaurants" FOR SELECT USING (("id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
 
 
 --
@@ -2791,18 +2907,14 @@ ALTER TABLE "public"."bug_reports" ENABLE ROW LEVEL SECURITY;
 -- Name: bug_reports bug_reports_insert_own_restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "bug_reports_insert_own_restaurant" ON "public"."bug_reports" FOR INSERT TO "authenticated" WITH CHECK (("restaurant_id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
+CREATE POLICY "bug_reports_insert_own_restaurant" ON "public"."bug_reports" FOR INSERT TO "authenticated" WITH CHECK (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 
 --
 -- Name: bug_reports bug_reports_select_own_restaurant; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "bug_reports_select_own_restaurant" ON "public"."bug_reports" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "users"."restaurant_id"
-   FROM "public"."users"
-  WHERE ("users"."id" = "auth"."uid"()))));
+CREATE POLICY "bug_reports_select_own_restaurant" ON "public"."bug_reports" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
 
 
 --
@@ -2876,6 +2988,12 @@ ALTER TABLE "public"."restaurant_features" ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE "public"."restaurant_invites" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: restaurant_roles; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."restaurant_roles" ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: restaurant_settings; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -3254,6 +3372,15 @@ GRANT ALL ON TABLE "public"."restaurant_invites" TO "service_role";
 
 
 --
+-- Name: TABLE "restaurant_roles"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "anon";
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "authenticated";
+GRANT ALL ON TABLE "public"."restaurant_roles" TO "service_role";
+
+
+--
 -- Name: TABLE "restaurant_setup_status"; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -3456,6 +3583,174 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
 -- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
 
+
+--
+-- Name: rct_number_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+-- Receipt capability Phase 1 (supabase/migrations/20260717140000_receipt_documents.sql).
+-- Mirrors the grv_number_seq pattern: dedicated sequence, RCT- prefix, LPAD-6.
+--
+
+CREATE SEQUENCE IF NOT EXISTS "public"."rct_number_seq" START WITH 1;
+
+ALTER SEQUENCE "public"."rct_number_seq" OWNER TO "postgres";
+
+--
+-- Name: generate_document_number(text, text); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+BEGIN
+  RETURN p_prefix || '-' || LPAD(nextval(p_sequence_name)::text, 6, '0');
+END;
+$$;
+
+ALTER FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") OWNER TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."generate_document_number"("p_prefix" "text", "p_sequence_name" "text") TO "service_role";
+
+--
+-- Name: receipt_documents; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."receipt_documents" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "restaurant_id" "uuid" NOT NULL,
+    "outlet_id" "uuid",
+    "order_id" "uuid" NOT NULL,
+    "document_type" "text" DEFAULT 'SALE_RECEIPT'::"text" NOT NULL,
+    "document_number" "text" NOT NULL,
+    "version" integer DEFAULT 1 NOT NULL,
+    "status" "text" DEFAULT 'issued'::"text" NOT NULL,
+    "currency" "text" DEFAULT 'NAD'::"text" NOT NULL,
+    "snapshot_json" "jsonb" NOT NULL,
+    "issued_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "receipt_documents_document_type_check" CHECK (("document_type" = 'SALE_RECEIPT'::"text")),
+    CONSTRAINT "receipt_documents_status_check" CHECK (("status" = ANY (ARRAY['issued'::"text", 'void'::"text"])))
+);
+
+-- outlet_id: no outlets table exists yet. Nullable so this is forward-compatible with
+-- future multi-outlet modeling; not wired to anything today.
+
+ALTER TABLE "public"."receipt_documents" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_order_id_document_type_version_key" UNIQUE ("order_id", "document_type", "version");
+
+CREATE INDEX "receipt_documents_restaurant_id_idx" ON "public"."receipt_documents" USING "btree" ("restaurant_id");
+
+CREATE INDEX "receipt_documents_order_id_idx" ON "public"."receipt_documents" USING "btree" ("order_id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_restaurant_id_fkey" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id");
+
+ALTER TABLE ONLY "public"."receipt_documents"
+    ADD CONSTRAINT "receipt_documents_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id");
+
+ALTER TABLE "public"."receipt_documents" ENABLE ROW LEVEL SECURITY;
+
+-- No insert/update/delete policies and no grants beyond the schema-wide default ACLs below --
+-- rows are written exclusively by the service role (bypasses RLS), so the table is immutable
+-- at the database level for application users, not just by convention.
+CREATE POLICY "Staff can read receipt documents for their restaurant" ON "public"."receipt_documents" FOR SELECT TO "authenticated" USING (("restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")));
+
+--
+-- Name: receipt_deliveries; Type: TABLE; Schema: public; Owner: postgres
+--
+-- Receipt capability Phase 2 (supabase/migrations/20260717160000_receipt_deliveries_and_terminal_printer_configs.sql).
+--
+
+CREATE TABLE IF NOT EXISTS "public"."receipt_deliveries" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "receipt_document_id" "uuid" NOT NULL,
+    "method" "text" NOT NULL,
+    "destination" "text",
+    "status" "text" NOT NULL,
+    "attempt_number" integer DEFAULT 1 NOT NULL,
+    "provider" "text",
+    "provider_reference" "text",
+    "device_id" "text",
+    "requested_by" "uuid",
+    "error_code" "text",
+    "error_message" "text",
+    "requested_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "completed_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "receipt_deliveries_method_check" CHECK (("method" = ANY (ARRAY['PRINT'::"text", 'EMAIL'::"text"]))),
+    CONSTRAINT "receipt_deliveries_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'sent'::"text", 'failed'::"text"])))
+);
+
+ALTER TABLE "public"."receipt_deliveries" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_pkey" PRIMARY KEY ("id");
+
+CREATE INDEX "receipt_deliveries_receipt_document_id_idx" ON "public"."receipt_deliveries" USING "btree" ("receipt_document_id");
+
+CREATE INDEX "receipt_deliveries_status_idx" ON "public"."receipt_deliveries" USING "btree" ("status");
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_receipt_document_id_fkey" FOREIGN KEY ("receipt_document_id") REFERENCES "public"."receipt_documents"("id");
+
+ALTER TABLE ONLY "public"."receipt_deliveries"
+    ADD CONSTRAINT "receipt_deliveries_requested_by_fkey" FOREIGN KEY ("requested_by") REFERENCES "auth"."users"("id");
+
+ALTER TABLE "public"."receipt_deliveries" ENABLE ROW LEVEL SECURITY;
+
+-- No update policy -- a retry is a new row (attempt_number incremented), never an edit to a
+-- prior attempt. No insert/delete policy or grants either: rows are written exclusively by
+-- the service role, same as receipt_documents.
+CREATE POLICY "Staff can read receipt deliveries for their restaurant" ON "public"."receipt_deliveries" FOR SELECT TO "authenticated" USING (("receipt_document_id" IN ( SELECT "receipt_documents"."id" FROM "public"."receipt_documents" WHERE ("receipt_documents"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))));
+
+--
+-- Name: terminal_printer_configs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."terminal_printer_configs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "terminal_id" "text" NOT NULL,
+    "purpose" "text" DEFAULT 'CUSTOMER_RECEIPT'::"text" NOT NULL,
+    "connection_type" "text" DEFAULT 'BLUETOOTH'::"text" NOT NULL,
+    "printer_name" "text",
+    "printer_address" "text",
+    "paper_width_mm" integer DEFAULT 80 NOT NULL,
+    "character_width" integer,
+    "is_default" boolean DEFAULT true NOT NULL,
+    "last_connected_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "terminal_printer_configs_purpose_check" CHECK (("purpose" = 'CUSTOMER_RECEIPT'::"text")),
+    CONSTRAINT "terminal_printer_configs_connection_type_check" CHECK (("connection_type" = ANY (ARRAY['BLUETOOTH'::"text", 'BUILTIN'::"text"])))
+);
+
+-- terminal_id matches the terminal identity convention already used elsewhere (e.g.
+-- payment_events.terminal_id): restaurant_terminals.id, the JWT `sub` issued by
+-- requireTerminalAuth() -- not device_id/device_serial/sn.
+
+ALTER TABLE "public"."terminal_printer_configs" OWNER TO "postgres";
+
+ALTER TABLE ONLY "public"."terminal_printer_configs"
+    ADD CONSTRAINT "terminal_printer_configs_pkey" PRIMARY KEY ("id");
+
+CREATE INDEX "terminal_printer_configs_terminal_id_idx" ON "public"."terminal_printer_configs" USING "btree" ("terminal_id");
+
+ALTER TABLE "public"."terminal_printer_configs" ENABLE ROW LEVEL SECURITY;
+
+-- No restaurant_id column -- this is device-level data, not staff-level, so
+-- user_restaurant_ids() can't apply directly. Scope reads by joining through
+-- restaurant_terminals (the same join-through-parent shape already used for e.g.
+-- goods_received_items, which also has no restaurant_id of its own). Writes are
+-- service-role only (the terminal's own authenticated API) -- no insert/update/delete
+-- policy or grants here.
+CREATE POLICY "Staff can read printer configs for their restaurant's terminals" ON "public"."terminal_printer_configs" FOR SELECT TO "authenticated" USING (("terminal_id" IN ( SELECT ("restaurant_terminals"."id")::"text" AS "id" FROM "public"."restaurant_terminals" WHERE ("restaurant_terminals"."restaurant_id" IN ( SELECT "public"."user_restaurant_ids"() AS "user_restaurant_ids")))));
 
 --
 -- PostgreSQL database dump complete

@@ -6,6 +6,7 @@ export const SETTINGS_TABS = [
   { id: 'bank', hash: '#bank', label: 'Payment & terminals' },
   { id: 'billing', hash: '#billing', label: 'Billing' },
   { id: 'restaurant', hash: '#restaurant', label: 'Restaurant' },
+  { id: 'business', hash: '#business', label: 'Business' },
 ] as const
 
 export type SettingsTabId = (typeof SETTINGS_TABS)[number]['id']

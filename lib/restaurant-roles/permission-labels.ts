@@ -100,6 +100,18 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Delete Goods Received',
     description: 'Remove goods-received records (GRV) from stock history.',
   },
+  [PERMISSIONS.STOCK_TRANSFER_CREATE]: {
+    label: 'Create Transfers',
+    description: 'Create draft stock transfers to another location.',
+  },
+  [PERMISSIONS.STOCK_TRANSFER_DISPATCH]: {
+    label: 'Dispatch Transfers',
+    description: 'Dispatch stock transfers out of this location.',
+  },
+  [PERMISSIONS.STOCK_TRANSFER_RECEIVE]: {
+    label: 'Receive Transfers',
+    description: 'Receive incoming stock transfers at this location.',
+  },
   [PERMISSIONS.RECIPE_VIEW]: {
     label: 'View Recipes',
     description: 'See recipe cards and ingredient breakdowns.',
@@ -180,6 +192,9 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       PERMISSIONS.STOCK_ADJUST,
       PERMISSIONS.STOCK_VIEW_COSTS,
       PERMISSIONS.STOCK_DELETE_GRV,
+      PERMISSIONS.STOCK_TRANSFER_CREATE,
+      PERMISSIONS.STOCK_TRANSFER_DISPATCH,
+      PERMISSIONS.STOCK_TRANSFER_RECEIVE,
     ].map((key) => ({ key, ...LABELS[key] })),
   },
   {

@@ -41,7 +41,7 @@ async function resolveStaffRestaurantId(
   return null
 }
 
-async function getAuthenticatedStockContext(): Promise<
+export async function getAuthenticatedStockContext(): Promise<
   StockAccessContext | { error: string }
 > {
   const supabase = await createServerSessionClient()

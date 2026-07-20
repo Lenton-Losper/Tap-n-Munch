@@ -13,6 +13,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
 
   const created = {
     stockItemIds: [] as string[],
+    orgStockItemIds: [] as string[],
     menuItemIds: [] as string[],
     recipeIds: [] as string[],
     recipeItemIds: [] as string[],
@@ -23,6 +24,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
   let stockItemId2: string
   let gUnitId: string
   let mlUnitId: string
+  let organizationId: string
   let menuItemWithRecipeId: string
   let menuItemNoRecipeId: string
   let recipeId: string
@@ -69,6 +71,9 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
       await admin.from('stock_movements').delete().in('stock_item_id', created.stockItemIds)
       await admin.from('stock_items').delete().in('id', created.stockItemIds)
     }
+    if (created.orgStockItemIds.length) {
+      await admin.from('organization_stock_items').delete().in('id', created.orgStockItemIds)
+    }
   }
 
   beforeAll(async () => {
@@ -93,10 +98,28 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
     expect(mlUnitErr).toBeNull()
     mlUnitId = mlUnit!.id
 
+    const { data: restaurant, error: restaurantErr } = await admin
+      .from('restaurants')
+      .select('organization_id')
+      .eq('id', RESTAURANT_ID)
+      .single()
+    expect(restaurantErr).toBeNull()
+    expect(restaurant?.organization_id).toBeTruthy()
+    organizationId = restaurant!.organization_id as string
+
+    const { data: orgStock1, error: orgStock1Err } = await admin
+      .from('organization_stock_items')
+      .insert({ organization_id: organizationId, name: `${runTag} ingredient-a`, base_unit_id: gUnitId })
+      .select('id')
+      .single()
+    expect(orgStock1Err).toBeNull()
+    created.orgStockItemIds.push(orgStock1!.id)
+
     const { data: stock1, error: stock1Err } = await admin
       .from('stock_items')
       .insert({
         restaurant_id: RESTAURANT_ID,
+        organization_stock_item_id: orgStock1!.id,
         name: `${runTag} ingredient-a`,
         unit_id: gUnitId,
         is_purchasable: true,
@@ -109,10 +132,19 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
     stockItemId1 = stock1!.id
     created.stockItemIds.push(stockItemId1)
 
+    const { data: orgStock2, error: orgStock2Err } = await admin
+      .from('organization_stock_items')
+      .insert({ organization_id: organizationId, name: `${runTag} ingredient-b`, base_unit_id: mlUnitId })
+      .select('id')
+      .single()
+    expect(orgStock2Err).toBeNull()
+    created.orgStockItemIds.push(orgStock2!.id)
+
     const { data: stock2, error: stock2Err } = await admin
       .from('stock_items')
       .insert({
         restaurant_id: RESTAURANT_ID,
+        organization_stock_item_id: orgStock2!.id,
         name: `${runTag} ingredient-b`,
         unit_id: mlUnitId,
         is_purchasable: true,
