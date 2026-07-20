@@ -45,34 +45,72 @@ describe('renderReceiptHtml', () => {
     const html = renderReceiptHtml(SNAPSHOT)
     const print = printOnlySection(html)
     expect(print).toContain('1 400g T Bone with Chips')
-    expect(print).toContain('230.00')
+    expect(print).toContain('N$230.00')
     // qty > 1 shows the unit price inline
-    expect(print).toContain('2 Kola Tonic Tot @ 6.00')
-    expect(print).toContain('12.00')
+    expect(print).toContain('2 Kola Tonic Tot @ N$6.00')
+    expect(print).toContain('N$12.00')
+  })
+
+  it('prefixes every money value in the print layout with N$, matching the reference receipt', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).toContain('N$230.00')
+    expect(print).toContain('N$12.00')
+    expect(print).toContain('N$286.00')
+    expect(print).toContain('N$248.69')
+    expect(print).toContain('N$37.31')
+    // every bare (unprefixed) amount that appears should only appear as part of an N$-prefixed one
+    expect(print.match(/(?<!N\$)\b\d+\.\d{2}\b/g)).toBeNull()
   })
 
   it('shows a large, bold Total separated from the items by dashed rules', () => {
     const html = renderReceiptHtml(SNAPSHOT)
     const print = printOnlySection(html)
-    const totalIndex = print.indexOf('Total: 286.00')
+    const totalIndex = print.indexOf('Total: N$286.00')
     expect(totalIndex).toBeGreaterThan(-1)
     const before = print.slice(0, totalIndex)
     const after = print.slice(totalIndex)
     expect(before).toContain('border-top: 1px dashed')
     expect(after).toContain('border-top: 1px dashed')
-    expect(print).toMatch(/font-size:\s*19px[\s\S]*Total: 286\.00/)
+    expect(print).toMatch(/font-size:\s*19px[\s\S]*Total: N\$286\.00/)
   })
 
   it('shows the VAT breakdown after the Total, not folded into it', () => {
     const html = renderReceiptHtml(SNAPSHOT)
     const print = printOnlySection(html)
-    const totalIndex = print.indexOf('Total: 286.00')
+    const totalIndex = print.indexOf('Total: N$286.00')
     const subtotalIndex = print.indexOf('Subtotal (excl. VAT)')
     const vatIndex = print.lastIndexOf('VAT')
     expect(subtotalIndex).toBeGreaterThan(totalIndex)
     expect(vatIndex).toBeGreaterThan(totalIndex)
-    expect(print).toContain('248.69')
-    expect(print).toContain('37.31')
+    expect(print).toContain('N$248.69')
+    expect(print).toContain('N$37.31')
+  })
+
+  it('drops the payment method/masked-card row from the print layout entirely', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).not.toContain('CARD')
+    expect(print).not.toContain('****1234')
+    expect(print.toLowerCase()).not.toContain('payment')
+  })
+
+  it('removing the payment row leaves no orphaned divider: exactly 3 dashed rules, ending cleanly at Thank you', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    const dashedCount = (print.match(/border-top: 1px dashed #000/g) || []).length
+    expect(dashedCount).toBe(3)
+    // breakdown table is immediately followed by the Thank-you line, no leftover divider/gap between them
+    const breakdownEnd = print.indexOf('</table>', print.indexOf('Subtotal (excl. VAT)'))
+    const afterBreakdown = print.slice(breakdownEnd)
+    expect(afterBreakdown).not.toContain('border-top: 1px dashed')
+    expect(afterBreakdown).toContain('Thank you')
+  })
+
+  it('still shows the payment/masked-card row on the screen (email) card -- only print dropped it', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    expect(html).toContain('CARD')
+    expect(html).toContain('****1234')
   })
 
   it('shows the business name bold and larger than the address beneath it', () => {

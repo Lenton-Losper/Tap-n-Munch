@@ -34,6 +34,11 @@ function formatMoney(value: number): string {
   return value.toFixed(2)
 }
 
+/** Print layout only -- matches the reference receipt's "N$230.00" format. */
+function formatMoneyPrint(value: number): string {
+  return `N$${formatMoney(value)}`
+}
+
 const COLORS = {
   ink: '#111827',
   body: '#1f2937',
@@ -137,12 +142,12 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
     .map((item) => {
       const qtyAndName =
         item.quantity > 1
-          ? `${item.quantity} ${escapeHtml(item.name)} @ ${formatMoney(item.unit_price)}`
+          ? `${item.quantity} ${escapeHtml(item.name)} @ ${formatMoneyPrint(item.unit_price)}`
           : `${item.quantity} ${escapeHtml(item.name)}`
       return `
         <tr>
           <td style="padding: 3px 0; font-size: 13px; color: #000; vertical-align: top;">${qtyAndName}</td>
-          <td align="right" style="padding: 3px 0; font-size: 13px; color: #000; white-space: nowrap; vertical-align: top; padding-left: 8px;">${formatMoney(item.line_total)}</td>
+          <td align="right" style="padding: 3px 0; font-size: 13px; color: #000; white-space: nowrap; vertical-align: top; padding-left: 8px;">${formatMoneyPrint(item.line_total)}</td>
         </tr>`
     })
     .join('')
@@ -154,24 +159,10 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
         </tr>`
 
   const breakdownHtml = [
-    breakdownRow('Subtotal (excl. VAT)', formatMoney(snapshot.totals.subtotal)),
-    snapshot.totals.discount > 0 ? breakdownRow('Discount', `-${formatMoney(snapshot.totals.discount)}`) : '',
-    breakdownRow('VAT', formatMoney(snapshot.totals.vat)),
+    breakdownRow('Subtotal (excl. VAT)', formatMoneyPrint(snapshot.totals.subtotal)),
+    snapshot.totals.discount > 0 ? breakdownRow('Discount', `-${formatMoneyPrint(snapshot.totals.discount)}`) : '',
+    breakdownRow('VAT', formatMoneyPrint(snapshot.totals.vat)),
   ].join('')
-
-  const paymentsHtml = snapshot.payments
-    .map(
-      (payment) => `
-        <tr>
-          <td style="padding: 2px 0; font-size: 12px; color: #000;">${escapeHtml(payment.method.toUpperCase())} ${escapeHtml(payment.masked_reference)}</td>
-          <td align="right" style="padding: 2px 0; font-size: 12px; color: #000; white-space: nowrap;">${formatMoney(payment.amount)}</td>
-        </tr>`,
-    )
-    .join('')
-
-  const paymentsSectionHtml = snapshot.payments.length
-    ? `${dashedLine}<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${paymentsHtml}</table>`
-    : ''
 
   return `
   <div class="print-only" style="display: none; width: 100%; box-sizing: border-box; padding: 0 3mm; font-family: 'Courier New', Courier, monospace; color: #000;">
@@ -189,7 +180,7 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
     ${dashedLine}
 
     <div style="text-align: center; font-size: 19px; font-weight: 700; padding: 4px 0;">
-      Total: ${formatMoney(snapshot.totals.grand_total)}
+      Total: ${formatMoneyPrint(snapshot.totals.grand_total)}
     </div>
 
     ${dashedLine}
@@ -197,8 +188,6 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
       ${breakdownHtml}
     </table>
-
-    ${paymentsSectionHtml}
 
     <div style="text-align: center; margin-top: 14px; font-size: 13px; font-weight: 700;">Thank you</div>
   </div>`
