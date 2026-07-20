@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     console.log('[TABS] looking up restaurant_tables row', { restaurantUuid, tableNumber })
     const { data: tableRow, error: tableError } = await supabase
       .from('restaurant_tables')
-      .select('id, table_number, current_session_version, active')
+      .select('id, table_number, current_session_version, active, is_view_only')
       .eq('restaurant_id', restaurantUuid)
       .eq('table_number', tableNumber)
       .eq('active', true)
@@ -55,6 +55,13 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: `Table ${tableNumber} is not set up for this restaurant. Ask staff to add it in FlashTap settings.` },
         { status: 404 }
+      )
+    }
+    if (tableRow.is_view_only) {
+      console.log('[TABS] rejected — view-only ordering point', { tableNumber })
+      return NextResponse.json(
+        { error: 'This is a view-only menu — ordering is not available here.' },
+        { status: 403 }
       )
     }
 

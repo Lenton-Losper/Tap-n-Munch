@@ -23,6 +23,7 @@ import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
+import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 
 type ItemVariant = {
   size: string
@@ -96,10 +97,56 @@ export default function MenuBrowsePage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem, clearCart } = useCart()
-  const { isInTab, tabId, tabTotal, tabMembers, tabStatus } = useTab()
+  const { isInTab, tabId, tabTotal, tabMembers, tabStatus, clearTab } = useTab()
   const { restaurant, currency } = useRestaurant()
 
-  const effectiveTabId = tabIdParam || tabId || readStoredTabId() || ''
+  // Authoritative view-only check: looked up from the real restaurant_tables row for this
+  // table_number, never trusted from a URL flag. Until it resolves, isViewOnly stays false
+  // and the page shows a loading state (see the `loading || !viewOnlyChecked` guard below)
+  // rather than briefly rendering the ordering UI and then yanking it away.
+  const [isViewOnly, setIsViewOnly] = useState(false)
+  const [viewOnlyChecked, setViewOnlyChecked] = useState(false)
+
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch, same pattern used elsewhere in the menu app */
+  useEffect(() => {
+    let cancelled = false
+    if (!(tableNumber > 0) || !restaurantId) {
+      setIsViewOnly(false)
+      setViewOnlyChecked(true)
+      return
+    }
+    getSupabaseTableByNumber(restaurantId, tableNumber, false)
+      .then((tableRow) => {
+        if (cancelled) return
+        setIsViewOnly(Boolean((tableRow as { is_view_only?: boolean } | null)?.is_view_only))
+        setViewOnlyChecked(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setIsViewOnly(false)
+        setViewOnlyChecked(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [restaurantId, tableNumber])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Never honor a tab the customer's browser happens to be carrying (URL tabId or stale
+  // localStorage) once we know this ordering point is view-only -- scrub it, don't just
+  // hide it, so it can't resurface on a later navigation either.
+  useEffect(() => {
+    if (isViewOnly) {
+      clearTab()
+      clearCart()
+    }
+    // clearTab/clearCart are not memoized by their providers; run only when the
+    // authoritative view-only flag actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isViewOnly])
+
+  const effectiveIsInTab = isViewOnly ? false : isInTab
+  const effectiveTabId = isViewOnly ? '' : tabIdParam || tabId || readStoredTabId() || ''
   const { redirecting: tabSessionRedirecting } = useTabSessionEndedRedirect({
     restaurantId,
     tableNumber,
@@ -169,7 +216,7 @@ export default function MenuBrowsePage() {
   }, [])
 
   useEffect(() => {
-    if (!isInTab || !effectiveTabId || !restaurantId) return
+    if (!effectiveIsInTab || !effectiveTabId || !restaurantId) return
 
     let cancelled = false
     void fetchTabById(effectiveTabId, restaurantId).then((tab) => {
@@ -180,7 +227,7 @@ export default function MenuBrowsePage() {
     return () => {
       cancelled = true
     }
-  }, [isInTab, effectiveTabId, restaurantId])
+  }, [effectiveIsInTab, effectiveTabId, restaurantId])
 
   const pushCartToast = (name: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000)
@@ -496,7 +543,7 @@ export default function MenuBrowsePage() {
       type="button"
       onClick={() => handleAddToCart(item)}
       disabled={
-        (!isInTab && !isKiosk) ||
+        (!effectiveIsInTab && !isKiosk) ||
         item.status === 'out_of_stock' ||
         addingItemId === item.id ||
         isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
@@ -527,7 +574,7 @@ export default function MenuBrowsePage() {
   }, [groupedItems])
 
   const handleAddToCart = async (item: MenuItem) => {
-    if (!isInTab && !isKiosk) return
+    if (!effectiveIsInTab && !isKiosk) return
     const hasInlineVariantGroups = getVariantGroups(item).length > 0
     if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
       setAddingItemId(item.id)
@@ -576,7 +623,7 @@ export default function MenuBrowsePage() {
     )
   }
 
-  if (loading) {
+  if (loading || !viewOnlyChecked) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
@@ -635,7 +682,9 @@ export default function MenuBrowsePage() {
               </div>
             </div>
             
-            {/* Right: Action Buttons */}
+            {/* Right: Action Buttons -- none of these apply to a view-only menu (no
+                receipt, no order to track), so the whole block is hidden there. */}
+            {!isViewOnly && (
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               {tableNumber > 0 && (
                 <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}${tabId || tabIdParam ? `&tabId=${encodeURIComponent(tabId || tabIdParam)}` : ''}`}>
@@ -673,11 +722,12 @@ export default function MenuBrowsePage() {
                 ) : null}
               </Button>
             </div>
+            )}
           </div>
         </div>
       </header>
 
-      {isInTab && (
+      {effectiveIsInTab && (
         <div className="border-b border-border bg-foreground text-background">
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
             <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
@@ -884,7 +934,7 @@ export default function MenuBrowsePage() {
                         </p>
                         {item.status === 'out_of_stock' ? (
                           <span className="text-xs text-red-600">Out of stock</span>
-                        ) : (!isInTab && !isKiosk) ? (
+                        ) : (!effectiveIsInTab && !isKiosk && !isViewOnly) ? (
                           <span className="text-[10px] text-gray-400">Create tab to order</span>
                         ) : null}
                       </div>
@@ -946,7 +996,7 @@ export default function MenuBrowsePage() {
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
-            if (!isInTab && !isKiosk) return
+            if (!effectiveIsInTab && !isKiosk) return
             addItem(cartItem)
             pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)
@@ -954,7 +1004,9 @@ export default function MenuBrowsePage() {
         />
       )}
 
-      {!isInTab && !isKiosk && (
+      {/* "Create a tab to start ordering" -- suppressed entirely for a view-only menu:
+          there is no path to ordering here at all, not just a currently-unstarted one. */}
+      {!effectiveIsInTab && !isKiosk && !isViewOnly && (
         <div className="fixed bottom-0 left-0 right-0 bg-foreground text-background px-4 py-3 text-center font-sans text-sm font-medium z-50">
           <button
             onClick={() =>

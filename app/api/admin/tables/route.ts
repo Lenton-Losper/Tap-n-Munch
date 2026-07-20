@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { buildMenuUrl } from '@/lib/base-url'
-import { nextKioskTableNumber } from '@/lib/tables/ordering-points'
+import { nextKioskTableNumber, nextViewOnlyTableNumber } from '@/lib/tables/ordering-points'
 import {
   isAuthError,
   requireCallerRestaurantPermission,
@@ -10,11 +10,12 @@ import { PERMISSIONS } from '@/lib/permissions'
 export const dynamic = 'force-dynamic'
 
 type CreateTableBody = {
-  kind?: 'table' | 'kiosk'
+  kind?: 'table' | 'kiosk' | 'view_only'
   table_number?: number
   capacity?: number | null
   location?: string | null
   kiosk_name?: string
+  view_only_name?: string
   table_name?: string
 }
 
@@ -25,7 +26,8 @@ export async function POST(request: Request) {
 
     const { supabase, restaurantId } = auth
     const body = (await request.json()) as CreateTableBody
-    const kind = body.kind === 'kiosk' ? 'kiosk' : 'table'
+    const kind =
+      body.kind === 'kiosk' ? 'kiosk' : body.kind === 'view_only' ? 'view_only' : 'table'
 
     const location =
       typeof body.location === 'string' && body.location.trim()
@@ -61,6 +63,38 @@ export async function POST(request: Request) {
           location,
           capacity: null,
           is_kiosk: true,
+          is_view_only: false,
+          qr_code_url: qrCodeUrl,
+          active: true,
+        })
+        .select('*')
+        .single()
+
+      if (error) throw error
+      return NextResponse.json({ table: data })
+    }
+
+    if (kind === 'view_only') {
+      const viewOnlyName = String(body.view_only_name || body.table_name || '').trim()
+      if (!viewOnlyName) {
+        return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+      }
+
+      const tableNumber = nextViewOnlyTableNumber(existingNumbers)
+      // Same plain /v2 link shape as a dining table -- the landing page looks up
+      // is_view_only from this table_number and renders the menu-only flow itself.
+      const qrCodeUrl = buildMenuUrl(restaurantId, tableNumber)
+
+      const { data, error } = await supabase
+        .from('restaurant_tables')
+        .insert({
+          restaurant_id: restaurantId,
+          table_number: tableNumber,
+          table_name: viewOnlyName,
+          location,
+          capacity: null,
+          is_kiosk: false,
+          is_view_only: true,
           qr_code_url: qrCodeUrl,
           active: true,
         })
@@ -103,6 +137,7 @@ export async function POST(request: Request) {
         location,
         capacity,
         is_kiosk: false,
+        is_view_only: false,
         qr_code_url: qrCodeUrl,
         active: true,
       })

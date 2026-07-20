@@ -92,6 +92,7 @@ export function MenuLandingPageV2Content({
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
+  const [isViewOnlyTable, setIsViewOnlyTable] = useState(false)
   const [openTab, setOpenTab] = useState<{
     id: string
     total: number
@@ -234,6 +235,20 @@ export function MenuLandingPageV2Content({
         // and the close happened after the customer loaded the page
         setTable(tableData)
 
+        if ((tableData as { is_view_only?: boolean }).is_view_only) {
+          // Menu-only ordering point: never create a tab session, and scrub any tab/cart
+          // state the browser happens to be carrying from a previous visit to a real
+          // table -- a view-only QR must render clean regardless of stale localStorage.
+          setIsViewOnlyTable(true)
+          clearTabSession()
+          clearActiveOrderBannerState()
+          clearTab()
+          clearCart()
+          setLoading(false)
+          setError(null)
+          return
+        }
+
         const session = createFreshSession(restaurantId, String(tableNum))
         if (session) {
           setSessionId(session)
@@ -286,6 +301,15 @@ export function MenuLandingPageV2Content({
   )
 
   const syncTabLandingState = useCallback(async () => {
+    if (isViewOnlyTable) {
+      // No tab/session concept applies to a view-only ordering point -- skip every
+      // tab-related lookup below rather than have it race with the clear performed
+      // when the table was first resolved as view-only.
+      setMyStoredTab(null)
+      setOpenTab(null)
+      setStoredTabChecked(true)
+      return
+    }
     // Check if token is invalid before showing landing UI
     const storedToken = localStorage.getItem('flashtap_session_token') ||
                         sessionStorage.getItem('flashtap_session_token')
@@ -432,7 +456,7 @@ export function MenuLandingPageV2Content({
     } finally {
       setTabLoading(false)
     }
-  }, [restaurantId, restaurant?.id, tableNum, table, endTabSession])
+  }, [restaurantId, restaurant?.id, tableNum, table, endTabSession, isViewOnlyTable])
 
   useEffect(() => {
     let cancelled = false
@@ -805,6 +829,72 @@ export function MenuLandingPageV2Content({
         <div className="text-center max-w-md">
           <h1 className="text-2xl font-serif font-bold text-white mb-4">Error</h1>
           <p className="text-white/60 font-sans">Restaurant ID is missing from URL</p>
+        </div>
+      </div>
+    )
+  }
+
+  // View-only ordering point: menu only, full stop. No tab UI, no display-name entry, no
+  // receipt link -- there is nothing here that could lead to an order, unlike the regular
+  // landing page which always renders some path toward starting/joining a tab.
+  if (isViewOnlyTable) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] relative overflow-hidden">
+        <div className="absolute inset-0">
+          <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/80 z-10" />
+          {restaurant.hero_image_url && (
+            <Image src={restaurant.hero_image_url} alt="" fill className="object-cover" priority />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-br from-[#0A0A0A] via-[#1A1A1A] to-[#0A0A0A]" />
+        </div>
+        <div className="relative z-20 flex flex-col items-center justify-center min-h-screen px-6 py-12">
+          <div className="w-full max-w-md text-center space-y-8">
+            <div className="flex justify-center mb-8">
+              {restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url) ? (
+                <div className="w-28 h-28 border-2 border-white/20 overflow-hidden bg-white/10 backdrop-blur-sm">
+                  <Image
+                    src={restaurantLogoDisplayUrl(restaurantId, restaurant.logo_url)!}
+                    alt={restaurant.name}
+                    width={112}
+                    height={112}
+                    className="object-cover w-full h-full"
+                    priority
+                  />
+                </div>
+              ) : (
+                <div className="w-28 h-28 border-2 border-white/20 flex items-center justify-center bg-white/10 backdrop-blur-sm">
+                  <span className="text-5xl font-serif font-bold text-white">
+                    {restaurant.name?.charAt(0) || 'R'}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="space-y-4">
+              <p className="text-white/60 font-sans text-sm uppercase tracking-[0.3em]">Welcome to</p>
+              <h1 className="text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
+                {restaurant?.name || 'Restaurant'}
+              </h1>
+              {restaurant.description && (
+                <p className="text-white/50 font-sans text-base max-w-xs mx-auto leading-relaxed">
+                  {restaurant.description}
+                </p>
+              )}
+            </div>
+            <div className="pt-8">
+              <Link href={browseBase} className="block">
+                <Button
+                  size="lg"
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
+                >
+                  View Menu
+                  <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
+                </Button>
+              </Link>
+            </div>
+            <div className="pt-12">
+              <p className="text-white/20 font-sans text-xs tracking-wide">Powered by FlashTap</p>
+            </div>
+          </div>
         </div>
       </div>
     )
