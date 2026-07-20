@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { initializeUserData } from '@/lib/supabase/initialize-user-data'
 import { ensureRestaurantUserMembership } from '@/lib/auth/create-restaurant'
+import { syncUserEmailAcrossTables } from '@/lib/auth/sync-user-email'
 
 export const dynamic = 'force-dynamic'
 
@@ -29,6 +30,29 @@ export async function POST(request: Request) {
     }
 
     if (userById?.id) {
+      // Defense in depth: if the callback-based email-change sync ever fails or is
+      // skipped (e.g. the user completed the confirmation link outside this app's
+      // flow), self-heal the mismatch on next login rather than leaving it stale
+      // indefinitely.
+      const authEmail = String(authUser.email || '').trim().toLowerCase()
+      const publicEmail = String(userById.email || '').trim().toLowerCase()
+      if (authEmail && publicEmail && authEmail !== publicEmail) {
+        const syncResult = await syncUserEmailAcrossTables(authUser.id, authUser.email!)
+        if (!syncResult.ok) {
+          console.error('[sync-profile] stale-email repair failed', {
+            authUserId: authUser.id,
+            syncResult,
+          })
+          return NextResponse.json({ ok: true, user: userById, created: false, emailRepairFailed: true })
+        }
+        return NextResponse.json({
+          ok: true,
+          user: { ...userById, email: authUser.email },
+          created: false,
+          emailRepaired: true,
+        })
+      }
+
       return NextResponse.json({ ok: true, user: userById, created: false })
     }
 

@@ -3,12 +3,14 @@ import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ensurePublicUserForOAuth } from '@/lib/auth/ensure-public-user'
+import { syncUserEmailAcrossTables } from '@/lib/auth/sync-user-email'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
+  const type = searchParams.get('type')
 
   if (code) {
     const cookieStore = await cookies()
@@ -31,6 +33,25 @@ export async function GET(request: Request) {
 
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
     const user = data.user
+
+    if (!error && user && type === 'email_change') {
+      const newEmail = String(user.email || '').trim()
+      if (!newEmail) {
+        console.error('[auth/callback] email_change confirmation missing user.email', { authUserId: user.id })
+        return NextResponse.redirect(`${origin}/settings?error=email_change#profile`)
+      }
+
+      const syncResult = await syncUserEmailAcrossTables(user.id, newEmail)
+      if (!syncResult.ok) {
+        console.error('[auth/callback] email-change sync failed', {
+          authUserId: user.id,
+          syncResult,
+        })
+        return NextResponse.redirect(`${origin}/settings?error=email_change_sync#profile`)
+      }
+
+      return NextResponse.redirect(`${origin}/settings?email_changed=1#profile`)
+    }
 
     if (!error && user) {
       const adminSupabase = createServerSupabaseClient()

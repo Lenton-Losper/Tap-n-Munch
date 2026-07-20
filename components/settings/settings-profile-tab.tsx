@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useToast } from '@/hooks/use-toast'
+import { supabase } from '@/lib/supabase/client'
 import { SETTINGS_BRAND_PRIMARY, SETTINGS_BRAND_PRIMARY_HOVER } from './constants'
 import {
   getSettingsAccessToken,
@@ -19,9 +20,27 @@ export function SettingsProfileTab() {
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
+  const [originalEmail, setOriginalEmail] = useState('')
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailChangeSentTo, setEmailChangeSentTo] = useState('')
   const [phone, setPhone] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('email_changed') !== '1') return
+    toast({ title: 'Email updated', description: 'Your sign-in email has been changed successfully.' })
+    params.delete('email_changed')
+    const search = params.toString()
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`,
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount to consume the redirect param
+  }, [])
 
   const loadProfile = useCallback(async () => {
     try {
@@ -37,6 +56,7 @@ export function SettingsProfileTab() {
       setFirstName(payload.profile?.firstName || '')
       setLastName(payload.profile?.lastName || '')
       setEmail(payload.profile?.email || user?.email || '')
+      setOriginalEmail(payload.profile?.email || user?.email || '')
       setPhone(payload.profile?.phone || '')
     } catch (error: unknown) {
       const fallbackName = splitDisplayName(
@@ -45,6 +65,7 @@ export function SettingsProfileTab() {
       setFirstName(fallbackName.firstName)
       setLastName(fallbackName.lastName)
       setEmail(String(user?.email || userData?.email || ''))
+      setOriginalEmail(String(user?.email || userData?.email || ''))
       setPhone(String(userData?.phone || ''))
       toast({
         title: 'Could not load profile',
@@ -92,6 +113,40 @@ export function SettingsProfileTab() {
     }
   }
 
+  const handleEmailSave = async () => {
+    const trimmed = email.trim()
+    if (!trimmed || trimmed === originalEmail) return
+
+    try {
+      setEmailSaving(true)
+      const redirectTo = `${window.location.origin}/auth/callback?type=email_change`
+      const { error } = await supabase.auth.updateUser(
+        { email: trimmed },
+        { emailRedirectTo: redirectTo },
+      )
+      if (error) throw error
+
+      setEmailChangeSentTo(trimmed)
+      toast({
+        title: 'Confirmation email sent',
+        description: `Check your NEW inbox at ${trimmed} — not your current one — and click the link there to finish changing your email.`,
+      })
+    } catch (error: unknown) {
+      toast({
+        title: 'Could not start email change',
+        description: error instanceof Error ? error.message : 'Failed to start email change',
+        variant: 'destructive',
+      })
+      setEmail(originalEmail)
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const handleEmailCancel = () => {
+    setEmail(originalEmail)
+  }
+
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading profile...</p>
   }
@@ -137,7 +192,40 @@ export function SettingsProfileTab() {
 
       <div className="space-y-2">
         <Label htmlFor="settings-email">Email address</Label>
-        <Input id="settings-email" value={email} readOnly disabled className="bg-muted/50" />
+        <Input
+          id="settings-email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={emailSaving}
+        />
+        {email.trim() && email.trim() !== originalEmail ? (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleEmailSave}
+              disabled={emailSaving}
+            >
+              {emailSaving ? 'Sending confirmation...' : 'Save email'}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleEmailCancel}
+              disabled={emailSaving}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : null}
+        {emailChangeSentTo ? (
+          <p className="text-xs text-muted-foreground">
+            Confirmation sent to {emailChangeSentTo}. Check that inbox — not your current one — to finish the change.
+          </p>
+        ) : null}
       </div>
 
       <div className="space-y-2">
