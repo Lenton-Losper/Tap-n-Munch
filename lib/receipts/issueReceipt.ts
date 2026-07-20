@@ -63,20 +63,45 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
-/** order.items is opaque client-supplied JSON with no fixed schema; read defensively. */
-function toLineItem(raw: unknown): ReceiptLineItem {
+/**
+ * order.items is opaque client-supplied JSON with no fixed schema; read defensively.
+ *
+ * The cart (components/menu/item-detail-modal.tsx calculatePrice()) stores the real,
+ * already-quantity-and-addon-inclusive line charge as `subtotal`, and the per-unit menu
+ * price as `basePrice` (camelCase -- not `base_price`). Every real order in production
+ * uses that shape; the old unitPrice/unit_price/price/base_price fallback chain never
+ * matched it, so unit_price and line_total silently rendered as 0 on every receipt ever
+ * issued. `subtotal` is preferred for line_total since it's the authoritative charged
+ * amount (it reflects addons/size modifiers that basePrice alone does not).
+ */
+export function toLineItem(raw: unknown): ReceiptLineItem {
   const item = (raw ?? {}) as Record<string, unknown>
   const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim() : 'Unknown item'
   const quantity =
     typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1
-  const unitPriceRaw = item.unitPrice ?? item.unit_price ?? item.price ?? item.base_price
-  const unitPrice =
-    typeof unitPriceRaw === 'number' && Number.isFinite(unitPriceRaw) ? unitPriceRaw : 0
+
+  const lineTotalRaw = item.subtotal ?? item.lineTotal ?? item.line_total
+  const unitPriceRaw =
+    item.unitPrice ?? item.unit_price ?? item.price ?? item.basePrice ?? item.base_price
+
+  const hasUnitPrice = typeof unitPriceRaw === 'number' && Number.isFinite(unitPriceRaw)
+  const hasLineTotal = typeof lineTotalRaw === 'number' && Number.isFinite(lineTotalRaw)
+
+  const lineTotal = hasLineTotal
+    ? round2(lineTotalRaw as number)
+    : round2(quantity * (hasUnitPrice ? (unitPriceRaw as number) : 0))
+
+  const unitPrice = hasUnitPrice
+    ? (unitPriceRaw as number)
+    : quantity > 0
+      ? round2(lineTotal / quantity)
+      : 0
+
   return {
     name,
     quantity,
     unit_price: unitPrice,
-    line_total: round2(quantity * unitPrice),
+    line_total: lineTotal,
   }
 }
 
