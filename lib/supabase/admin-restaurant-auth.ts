@@ -44,129 +44,77 @@ export async function getUserFromRequest(request: Request) {
   return data.user
 }
 
-/** Ensures the signed-in user may manage this restaurant (users.restaurant_id or restaurants.owner_id). */
-export async function assertRestaurantAdmin(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  userId: string,
-  restaurantId: string
-): Promise<void> {
-  const { data: userRow, error: userError } = await supabase
-    .from('users')
-    .select('restaurant_id')
-    .eq('id', userId)
-    .maybeSingle()
-
-  if (userError) throw userError
-
-  if (String(userRow?.restaurant_id || '') === restaurantId) {
-    return
+/** Thrown by getRestaurantIdForUser when the caller belongs to more than one restaurant and
+ *  the endpoint has no way to disambiguate which one was meant. Callers that CAN accept a
+ *  set should use getRestaurantIdsForUser instead. */
+export class AmbiguousRestaurantError extends Error {
+  readonly restaurantIds: string[]
+  constructor(restaurantIds: string[]) {
+    super('This account belongs to multiple restaurants; this action requires an explicit restaurantId.')
+    this.name = 'AmbiguousRestaurantError'
+    this.restaurantIds = restaurantIds
   }
-
-  const { data: restaurant, error: restError } = await supabase
-    .from('restaurants')
-    .select('owner_id')
-    .eq('id', restaurantId)
-    .maybeSingle()
-
-  if (restError) throw restError
-
-  const ownerId = restaurant?.owner_id != null ? String(restaurant.owner_id).trim() : ''
-  if (ownerId && ownerId === userId) {
-    return
-  }
-
-  const { data: membership, error: membershipError } = await supabase
-    .from('restaurant_users')
-    .select('role')
-    .eq('user_id', userId)
-    .eq('restaurant_id', restaurantId)
-    .maybeSingle()
-
-  if (membershipError) throw membershipError
-
-  const memberRole = String(membership?.role || '').toLowerCase()
-  if (memberRole === 'owner' || memberRole === 'manager') {
-    return
-  }
-
-  throw new Error('You do not have permission to manage this restaurant.')
 }
 
-export async function assertRestaurantOwner(
+/** Every restaurant_id the user belongs to (restaurant_users), in no particular guaranteed
+ *  order beyond "owner rows first" -- use this instead of getRestaurantIdForUser wherever a
+ *  caller can legitimately handle 0, 1, or many restaurants. */
+export async function getRestaurantIdsForUser(
   supabase: ReturnType<typeof createServerSupabaseClient>,
-  userId: string,
-  restaurantId: string
-): Promise<void> {
+  userId: string
+): Promise<string[]> {
   const { data, error } = await supabase
     .from('restaurant_users')
-    .select('role')
+    .select('restaurant_id, role')
     .eq('user_id', userId)
-    .eq('restaurant_id', restaurantId)
-    .maybeSingle()
 
   if (error) throw error
-
-  if (String(data?.role || '').toLowerCase() === 'owner') {
-    return
-  }
-
-  const { data: restaurant, error: restError } = await supabase
-    .from('restaurants')
-    .select('owner_id')
-    .eq('id', restaurantId)
-    .maybeSingle()
-
-  if (restError) throw restError
-
-  const ownerId = restaurant?.owner_id != null ? String(restaurant.owner_id).trim() : ''
-  if (ownerId && ownerId === userId) {
-    return
-  }
-
-  throw new Error('Only restaurant owners can manage terminals.')
+  const rows = data ?? []
+  // Owner rows first (stable, deterministic tie-break for callers that only look at [0]),
+  // otherwise insertion order from the query.
+  rows.sort((a, b) => (a.role === 'owner' ? -1 : 0) - (b.role === 'owner' ? -1 : 0))
+  return rows.map((row) => String(row.restaurant_id))
 }
 
+/**
+ * Resolves the SINGLE restaurant a user belongs to. Throws if the user belongs to zero
+ * restaurants (unchanged from prior behavior), and throws AmbiguousRestaurantError if the
+ * user belongs to more than one -- previously this silently picked one via a non-deterministic
+ * `.limit(1)`, which is a real cross-tenant risk once a user can have multiple memberships.
+ * Callers that can accept a set instead of forcing disambiguation should call
+ * getRestaurantIdsForUser directly.
+ */
 export async function getRestaurantIdForUser(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   userId: string
 ): Promise<string> {
-  const { data: ownerRow, error: ownerError } = await supabase
-    .from('restaurant_users')
-    .select('restaurant_id')
-    .eq('user_id', userId)
-    .eq('role', 'owner')
-    .limit(1)
-    .maybeSingle()
-
-  if (ownerError) throw ownerError
-  if (ownerRow?.restaurant_id) {
-    return String(ownerRow.restaurant_id)
-  }
-
-  const { data: membership, error: membershipError } = await supabase
-    .from('restaurant_users')
-    .select('restaurant_id')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (membershipError) throw membershipError
-  if (!membership?.restaurant_id) {
+  const restaurantIds = await getRestaurantIdsForUser(supabase, userId)
+  if (restaurantIds.length === 0) {
     throw new Error('Restaurant not found for this account')
   }
-  return String(membership.restaurant_id)
+  if (restaurantIds.length > 1) {
+    throw new AmbiguousRestaurantError(restaurantIds)
+  }
+  return restaurantIds[0]
 }
 
 /**
- * Ensures a requested restaurant id matches the caller's linked restaurant.
+ * Ensures a requested restaurant id is one the caller actually belongs to.
  * Returns 403 on mismatch (does not substitute the caller's id silently).
+ * Membership is checked against the caller's full restaurant set, so this works correctly
+ * for a user belonging to more than one restaurant -- unlike getRestaurantIdForUser, this
+ * never needs to throw an ambiguity error, since the caller already told us which
+ * restaurant they mean; we just confirm they're actually a member of it.
  */
 export async function requireCallerRestaurantId(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   userId: string,
   requestedRestaurantId: string,
 ): Promise<string | NextResponse> {
-  const callerRestaurantId = await getRestaurantIdForUser(supabase, userId)
+  const callerRestaurantIds = await getRestaurantIdsForUser(supabase, userId)
+  if (callerRestaurantIds.length === 0) {
+    return NextResponse.json({ error: 'Restaurant not found for this account' }, { status: 403 })
+  }
   let resolvedRequestedId: string
   try {
     resolvedRequestedId = await resolveRestaurantId(supabase, requestedRestaurantId.trim())
@@ -177,11 +125,11 @@ export async function requireCallerRestaurantId(
     }
     throw err
   }
-  if (resolvedRequestedId !== callerRestaurantId) {
+  if (!callerRestaurantIds.includes(resolvedRequestedId)) {
     return NextResponse.json(
       { error: 'You do not have permission to perform this action.' },
       { status: 403 },
     )
   }
-  return callerRestaurantId
+  return resolvedRequestedId
 }

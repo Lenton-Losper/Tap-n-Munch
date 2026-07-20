@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { initializeUserData } from '@/lib/supabase/initialize-user-data'
+import { ensureRestaurantUserMembership } from '@/lib/auth/create-restaurant'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,56 +44,64 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: userByEmailError.message }, { status: 400 })
       }
 
-      if (userByEmail?.restaurant_id) {
-        const now = new Date().toISOString()
-        const payload = {
-          id: authUser.id,
-          email: userByEmail.email || authUser.email,
-          name: userByEmail.name || `${authUser.email?.split('@')[0] || 'Owner'} Owner`,
-          phone: userByEmail.phone || '',
-          role: userByEmail.role || 'owner',
-          restaurant_id: userByEmail.restaurant_id,
-          created_at: userByEmail.created_at || now,
-          last_login: now,
+      if (userByEmail?.id) {
+        const { data: oldMemberships, error: oldMembershipsError } = await supabase
+          .from('restaurant_users')
+          .select('restaurant_id, role')
+          .eq('user_id', userByEmail.id)
+
+        if (oldMembershipsError) {
+          return NextResponse.json({ error: oldMembershipsError.message }, { status: 400 })
         }
 
-        if (userByEmail.id !== authUser.id) {
-          // The old row may still be referenced by restaurants.owner_id
-          // (restaurants_owner_id_fkey has no ON DELETE action), so detach it
-          // first or the delete below fails outright when the account being
-          // repaired is the current owner.
-          if (userByEmail.role === 'owner') {
-            await supabase
-              .from('restaurants')
-              .update({ owner_id: null })
-              .eq('id', userByEmail.restaurant_id)
-              .eq('owner_id', userByEmail.id)
+        if (oldMemberships && oldMemberships.length > 0) {
+          const now = new Date().toISOString()
+          const primaryRole = oldMemberships.find((m) => m.role === 'owner')?.role ?? oldMemberships[0].role
+          const payload = {
+            id: authUser.id,
+            email: userByEmail.email || authUser.email,
+            name: userByEmail.name || `${authUser.email?.split('@')[0] || 'Owner'} Owner`,
+            phone: userByEmail.phone || '',
+            role: primaryRole,
+            created_at: userByEmail.created_at || now,
+            last_login: now,
           }
 
-          await supabase.from('users').delete().eq('id', userByEmail.id)
+          const { data: relinked, error: relinkError } = await supabase
+            .from('users')
+            .insert(payload)
+            .select('*')
+            .single()
+
+          if (relinkError) {
+            return NextResponse.json({ error: relinkError.message }, { status: 400 })
+          }
+
+          // Re-point membership rows to the new auth id BEFORE deleting the old users
+          // row -- restaurant_users.user_id cascades on users delete, so doing this
+          // after would silently destroy the memberships instead of carrying them over.
+          const { error: relinkMembershipsError } = await supabase
+            .from('restaurant_users')
+            .update({ user_id: authUser.id })
+            .eq('user_id', userByEmail.id)
+
+          if (relinkMembershipsError) {
+            return NextResponse.json({ error: relinkMembershipsError.message }, { status: 400 })
+          }
+
+          if (userByEmail.id !== authUser.id) {
+            // Reassign any restaurants this old id directly owned, then it's safe to
+            // delete the old row (nothing still references it).
+            await supabase
+              .from('restaurants')
+              .update({ owner_id: authUser.id, updated_at: now })
+              .eq('owner_id', userByEmail.id)
+
+            await supabase.from('users').delete().eq('id', userByEmail.id)
+          }
+
+          return NextResponse.json({ ok: true, user: relinked, created: true, relinked: true })
         }
-
-        const { data: relinked, error: relinkError } = await supabase
-          .from('users')
-          .insert(payload)
-          .select('*')
-          .single()
-
-        if (relinkError) {
-          return NextResponse.json({ error: relinkError.message }, { status: 400 })
-        }
-
-        // Only follow the relinked account into restaurants.owner_id when it's
-        // actually the owner — otherwise a manager/staff repair would silently
-        // reassign ownership away from the real owner (#8).
-        if (payload.role === 'owner') {
-          await supabase
-            .from('restaurants')
-            .update({ owner_id: authUser.id, updated_at: now })
-            .eq('id', userByEmail.restaurant_id)
-        }
-
-        return NextResponse.json({ ok: true, user: relinked, created: true, relinked: true })
       }
     }
 
@@ -116,7 +125,6 @@ export async function POST(request: Request) {
           name: `${ownedRestaurant.name || 'Restaurant'} Owner`,
           phone: '',
           role: 'owner',
-          restaurant_id: ownedRestaurant.id,
           created_at: now,
           last_login: now,
         })
@@ -126,6 +134,12 @@ export async function POST(request: Request) {
       if (createUserError) {
         return NextResponse.json({ error: createUserError.message }, { status: 400 })
       }
+
+      await ensureRestaurantUserMembership(supabase, {
+        restaurantId: String(ownedRestaurant.id),
+        userId: authUser.id,
+        role: 'owner',
+      })
 
       return NextResponse.json({ ok: true, user: createdUser, created: true })
     }
