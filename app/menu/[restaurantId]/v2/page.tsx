@@ -93,6 +93,10 @@ export function MenuLandingPageV2Content({
   const [sessionId, setSessionId] = useState<string>('')
   const [sessionReady, setSessionReady] = useState(false)
   const [isViewOnlyTable, setIsViewOnlyTable] = useState(false)
+  // Distinct from `loading`: `loading` flips false as soon as the restaurant fetch
+  // resolves, which happens before this table lookup (and therefore isViewOnlyTable) is
+  // known -- gating on `loading` alone still leaves the same race window open.
+  const [tableFetchDone, setTableFetchDone] = useState(false)
   const [openTab, setOpenTab] = useState<{
     id: string
     total: number
@@ -180,6 +184,7 @@ export function MenuLandingPageV2Content({
     if (tableNum <= 0) {
       setLoading(false)
       setError(null)
+      setTableFetchDone(true)
       return
     }
 
@@ -198,6 +203,7 @@ export function MenuLandingPageV2Content({
           setTable(null)
           setLoading(false)
           setError('This table is not available for ordering.')
+          setTableFetchDone(true)
           return
         }
 
@@ -246,6 +252,7 @@ export function MenuLandingPageV2Content({
           clearCart()
           setLoading(false)
           setError(null)
+          setTableFetchDone(true)
           return
         }
 
@@ -264,8 +271,9 @@ export function MenuLandingPageV2Content({
 
       setLoading(false)
       setError(null)
+      setTableFetchDone(true)
     }
-    
+
     loadTableData()
     // clearCart is not memoized in cart context; omit to avoid re-running table load every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run only when restaurant/table identity changes
@@ -459,13 +467,15 @@ export function MenuLandingPageV2Content({
   }, [restaurantId, restaurant?.id, tableNum, table, endTabSession, isViewOnlyTable])
 
   useEffect(() => {
-    // Wait for the table fetch (and therefore isViewOnlyTable) to resolve first. Without
-    // this gate, this effect and the table-fetch effect both kick off async work on
-    // mount independently -- syncTabLandingState's own isViewOnlyTable check reads a
-    // value that's still `false` (not yet resolved) on that first pass, so it can find a
-    // stale/nonexistent stored tab id, treat it as a genuinely ended session, and fire
-    // handleSessionExpired's hard redirect before the view-only table is ever detected.
-    if (loading) return
+    // Wait for the table fetch (and therefore isViewOnlyTable) to resolve first -- NOT
+    // `loading`, which flips false as soon as the restaurant fetch resolves, before the
+    // table lookup even starts. Without this gate, this effect and the table-fetch effect
+    // both kick off async work on mount independently -- syncTabLandingState's own
+    // isViewOnlyTable check reads a value that's still `false` (not yet resolved) on that
+    // first pass, so it can find a stale/nonexistent stored tab id, treat it as a
+    // genuinely ended session, and fire handleSessionExpired's hard redirect before the
+    // view-only table is ever detected.
+    if (!tableFetchDone) return
     let cancelled = false
     const run = async () => {
       if (cancelled) return
@@ -475,7 +485,7 @@ export function MenuLandingPageV2Content({
     return () => {
       cancelled = true
     }
-  }, [syncTabLandingState, loading])
+  }, [syncTabLandingState, tableFetchDone])
 
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) return
