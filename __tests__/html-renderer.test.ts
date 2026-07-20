@@ -3,6 +3,7 @@ import type { ReceiptSnapshot } from '../lib/receipts/issueReceipt'
 
 const SNAPSHOT: ReceiptSnapshot = {
   outlet: { restaurant_name: 'Wanderers Sport Club', address: 'Pionierspark, Windhoek' },
+  customer_name: null,
   line_items: [
     { name: '400g T Bone with Chips', quantity: 1, unit_price: 230, line_total: 230 },
     { name: 'Kola Tonic Tot', quantity: 2, unit_price: 6, line_total: 12 },
@@ -41,14 +42,33 @@ describe('renderReceiptHtml', () => {
     expect(print).not.toContain('420')
   })
 
-  it('renders quantity + item name and price on the same row, right-aligned', () => {
+  it('renders item description, qty, and price as three separate columns', () => {
     const html = renderReceiptHtml(SNAPSHOT)
     const print = printOnlySection(html)
-    expect(print).toContain('1 400g T Bone with Chips')
+    expect(print).toContain('>400g T Bone with Chips')
     expect(print).toContain('N$230.00')
-    // qty > 1 shows the unit price inline
-    expect(print).toContain('2 Kola Tonic Tot @ N$6.00')
+    // qty > 1 still shows the unit price, now as a sub-line under the item name
+    expect(print).toContain('>Kola Tonic Tot')
+    expect(print).toContain('@ N$6.00 each')
     expect(print).toContain('N$12.00')
+    // the qty column carries the bare quantity number, separate from the name/price cells
+    expect(print).toMatch(/align="center"[^>]*>1</)
+    expect(print).toMatch(/align="center"[^>]*>2</)
+  })
+
+  it('shows ITEM DESCRIPTION / QTY / PRICE column headers above the item list', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    const headerIndex = print.indexOf('ITEM DESCRIPTION')
+    const qtyHeaderIndex = print.indexOf('>QTY<')
+    const priceHeaderIndex = print.indexOf('>PRICE<')
+    const firstItemIndex = print.indexOf('400g T Bone with Chips')
+    expect(headerIndex).toBeGreaterThan(-1)
+    expect(qtyHeaderIndex).toBeGreaterThan(-1)
+    expect(priceHeaderIndex).toBeGreaterThan(-1)
+    expect(headerIndex).toBeLessThan(firstItemIndex)
+    expect(qtyHeaderIndex).toBeLessThan(firstItemIndex)
+    expect(priceHeaderIndex).toBeLessThan(firstItemIndex)
   })
 
   it('prefixes every money value in the print layout with N$, matching the reference receipt', () => {
@@ -128,5 +148,82 @@ describe('renderReceiptHtml', () => {
     expect(html).toContain('width="420"')
     expect(html).toContain('>Item<')
     expect(html).toContain('>Qty<')
+  })
+
+  it('surrounds the business header with an asterisk rule top and bottom, not just a plain box', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    const asteriskCount = (print.match(/\*/g) || []).length
+    expect(asteriskCount).toBeGreaterThan(10)
+    const firstAsterisk = print.indexOf('*')
+    const nameIndex = print.indexOf('Wanderers Sport Club')
+    expect(firstAsterisk).toBeGreaterThan(-1)
+    expect(firstAsterisk).toBeLessThan(nameIndex)
+  })
+
+  it('shows the -YOUR RECEIPT- label beneath the header box', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    const nameIndex = print.indexOf('Wanderers Sport Club')
+    const labelIndex = print.indexOf('-YOUR RECEIPT-')
+    expect(labelIndex).toBeGreaterThan(nameIndex)
+  })
+
+  it('shows the receipt document number as plain bold text, never an inverse/highlighted bar', () => {
+    const html = renderReceiptHtml(SNAPSHOT, { documentNumber: 'RCT-000123', issuedAt: '2026-07-20T18:55:00Z' })
+    const print = printOnlySection(html)
+    expect(print).toContain('RCT-000123')
+    expect(print).not.toMatch(/background(-color)?:\s*#000/)
+    expect(print).not.toContain('color: #fff')
+  })
+
+  it('omits the document number line entirely when no documentNumber option is passed', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).not.toContain('Receipt No')
+  })
+
+  it('shows the issued_at date/time when passed, formatted for a human reader', () => {
+    const html = renderReceiptHtml(SNAPSHOT, { issuedAt: '2026-07-20T18:55:00.000Z' })
+    const print = printOnlySection(html)
+    expect(print).toMatch(/20 Jul 2026/)
+  })
+
+  it('omits the date/time line entirely when no issuedAt option is passed', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).not.toMatch(/\d{2} [A-Z][a-z]{2} \d{4}/)
+  })
+
+  it('shows the customer name when present on the snapshot', () => {
+    const withName: ReceiptSnapshot = { ...SNAPSHOT, customer_name: 'Jane Doe' }
+    const html = renderReceiptHtml(withName)
+    const print = printOnlySection(html)
+    expect(print).toContain('Name: Jane Doe')
+  })
+
+  it('never renders a blank Name: line when customer_name is null (table/POS orders)', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).not.toContain('Name:')
+  })
+
+  it('shows an Items: N line with the total quantity across all line items', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    // 1 T-Bone + 2 Kola Tonic Tot = 3
+    expect(print).toContain('Items: 3')
+  })
+
+  it('left-aligns the Thank you line instead of centering it', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).toMatch(/text-align:\s*left;[^"]*">Thank you/)
+  })
+
+  it('still excludes a VAT-rate breakdown line (e.g. "VAT @ 15%") -- unresolved calculation gap', () => {
+    const html = renderReceiptHtml(SNAPSHOT)
+    const print = printOnlySection(html)
+    expect(print).not.toMatch(/VAT\s*@\s*\d/)
   })
 })
