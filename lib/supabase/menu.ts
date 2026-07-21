@@ -20,6 +20,7 @@ export function normalizeMenuItemForClient(row: Record<string, any>) {
     has_addons: row.has_addons ?? false,
     addons: Array.isArray(row.addons) ? row.addons : [],
     track_inventory: row.track_inventory ?? false,
+    tax_rate_id: row.tax_rate_id ?? null,
     variantGroups: row.variant_groups ?? row.variantGroups ?? [],
   }
 }

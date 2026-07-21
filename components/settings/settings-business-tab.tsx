@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { SETTINGS_BRAND_PRIMARY, SETTINGS_BRAND_PRIMARY_HOVER } from './constants'
+import { TaxRatesSection } from './tax-rates-section'
 import {
   createLocationAction,
   getLocationsPageDataAction,
@@ -74,7 +75,8 @@ export function SettingsBusinessTab() {
   }
 
   return (
-    <div className="bg-card border rounded-lg p-6 space-y-6">
+    <div className="space-y-6">
+      <div className="bg-card border rounded-lg p-6 space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold">Locations</h2>
@@ -138,6 +140,9 @@ export function SettingsBusinessTab() {
           onCreated={handleCreated}
         />
       ) : null}
+      </div>
+
+      <TaxRatesSection />
     </div>
   )
 }
