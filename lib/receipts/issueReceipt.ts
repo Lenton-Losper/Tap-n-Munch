@@ -23,6 +23,9 @@ export interface ReceiptSnapshot {
     restaurant_name: string
     address: string | null
   }
+  // Only ever populated for kiosk orders today (table and POS orders always send null),
+  // and even kiosk customers can skip it -- always presence-check before displaying.
+  customer_name: string | null
   line_items: ReceiptLineItem[]
   totals: {
     subtotal: number
@@ -133,7 +136,7 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
 
   const { data: order, error: orderError } = await supabase
     .from('orders')
-    .select('id, restaurant_id, payment_status, payment_method, subtotal, tax, total, items')
+    .select('id, restaurant_id, payment_status, payment_method, subtotal, tax, total, items, customer_name')
     .eq('id', orderId)
     .single()
 
@@ -191,6 +194,7 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
       restaurant_name: restaurant.name,
       address: restaurant.address ?? null,
     },
+    customer_name: order.customer_name ?? null,
     line_items: lineItems,
     totals: {
       subtotal,

@@ -13,6 +13,7 @@ import { supabase } from '@/lib/supabase/client'
 import { buildMenuUrl } from '@/lib/base-url'
 import {
   KIOSK_NAME_PRESETS,
+  VIEW_ONLY_NAME_PRESETS,
   orderingPointDisplayName,
   resolveOrderingPointQrUrl,
   type OrderingPointRow,
@@ -181,7 +182,7 @@ function OrderingPointCard({
           <h3 className="truncate font-semibold text-lg text-gray-900">{displayName}</h3>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={liveStatus} inactive={inactive} />
-            {!point.is_kiosk && point.capacity != null && point.capacity > 0 ? (
+            {!point.is_kiosk && !point.is_view_only && point.capacity != null && point.capacity > 0 ? (
               <Badge variant="outline">{point.capacity} seats</Badge>
             ) : null}
           </div>
@@ -247,6 +248,7 @@ export function QRCodeManagement() {
   const [loading, setLoading] = useState(true)
   const [isAddTableOpen, setIsAddTableOpen] = useState(false)
   const [isAddKioskOpen, setIsAddKioskOpen] = useState(false)
+  const [isAddViewOnlyOpen, setIsAddViewOnlyOpen] = useState(false)
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [editingPoint, setEditingPoint] = useState<OrderingPointRow | null>(null)
   const [newTableNumber, setNewTableNumber] = useState('')
@@ -254,6 +256,8 @@ export function QRCodeManagement() {
   const [newTableLocation, setNewTableLocation] = useState('')
   const [newKioskName, setNewKioskName] = useState('')
   const [newKioskLocation, setNewKioskLocation] = useState('')
+  const [newViewOnlyName, setNewViewOnlyName] = useState('')
+  const [newViewOnlyLocation, setNewViewOnlyLocation] = useState('')
   const [editName, setEditName] = useState('')
   const [editSeats, setEditSeats] = useState('')
   const [editLocation, setEditLocation] = useState('')
@@ -263,11 +267,15 @@ export function QRCodeManagement() {
   const [tableStatusByNumber, setTableStatusByNumber] = useState<Record<number, TableLiveStatus>>({})
 
   const diningTables = useMemo(
-    () => tables.filter((t) => !t.is_kiosk),
+    () => tables.filter((t) => !t.is_kiosk && !t.is_view_only),
     [tables],
   )
   const kiosks = useMemo(
     () => tables.filter((t) => t.is_kiosk),
+    [tables],
+  )
+  const viewOnlyPoints = useMemo(
+    () => tables.filter((t) => t.is_view_only),
     [tables],
   )
 
@@ -422,6 +430,41 @@ export function QRCodeManagement() {
     }
   }
 
+  const handleAddViewOnly = async () => {
+    if (!restaurantId) return
+    const viewOnlyName = newViewOnlyName.trim()
+    if (!viewOnlyName) {
+      toast({ title: 'Name is required', variant: 'destructive' })
+      return
+    }
+
+    try {
+      setSaving(true)
+      const token = await getAccessToken()
+      await createOrderingPointViaApi(
+        {
+          kind: 'view_only',
+          view_only_name: viewOnlyName,
+          location: newViewOnlyLocation.trim() || null,
+        },
+        { restaurantId, accessToken: token },
+      )
+      toast({ title: 'View-only menu QR created', description: `${viewOnlyName} is ready.` })
+      setNewViewOnlyName('')
+      setNewViewOnlyLocation('')
+      setIsAddViewOnlyOpen(false)
+      await loadTables()
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to create view-only menu QR',
+        description: err instanceof Error ? err.message : 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const openEdit = (point: OrderingPointRow) => {
     setEditingPoint(point)
     setEditName(orderingPointDisplayName(point))
@@ -439,7 +482,7 @@ export function QRCodeManagement() {
         table_name: editName.trim(),
         location: editLocation.trim() || null,
       }
-      if (!editingPoint.is_kiosk) {
+      if (!editingPoint.is_kiosk && !editingPoint.is_view_only) {
         body.capacity = editSeats.trim() ? Number(editSeats) : null
       }
       await updateOrderingPointViaApi(editingPoint.id, body, {
@@ -595,7 +638,7 @@ export function QRCodeManagement() {
         )}
       </section>
 
-      <section className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
+      <section className="mb-8 rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold text-gray-900">Self-Service Kiosks</h2>
@@ -616,6 +659,43 @@ export function QRCodeManagement() {
                 point={kiosk}
                 restaurantId={restaurantId}
                 liveStatus={tableStatusByNumber[kiosk.table_number] ?? 'empty'}
+                copiedLinkId={copiedLinkId}
+                onCopyLink={(url, id) => void handleCopyLink(url, id)}
+                onEdit={openEdit}
+                onDeactivate={(p) => void handleDeactivate(p)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">View-Only Menu QRs</h2>
+            <p className="text-sm text-gray-600">
+              Menu only -- customers can browse but can never start a tab or place an order.
+              Good for an entrance or noticeboard, not tied to a specific table.
+            </p>
+          </div>
+          <Button
+            className="bg-[#FF6B35] hover:bg-[#e55a28]"
+            onClick={() => setIsAddViewOnlyOpen(true)}
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add View-Only Menu QR
+          </Button>
+        </div>
+        {viewOnlyPoints.length === 0 ? (
+          <p className="py-8 text-center text-gray-500">No view-only menu QRs yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {viewOnlyPoints.map((point) => (
+              <OrderingPointCard
+                key={point.id}
+                point={point}
+                restaurantId={restaurantId}
+                liveStatus={tableStatusByNumber[point.table_number] ?? 'empty'}
                 copiedLinkId={copiedLinkId}
                 onCopyLink={(url, id) => void handleCopyLink(url, id)}
                 onEdit={openEdit}
@@ -728,17 +808,72 @@ export function QRCodeManagement() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={isAddViewOnlyOpen} onOpenChange={setIsAddViewOnlyOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add view-only menu QR</DialogTitle>
+            <DialogDescription>
+              A table number is assigned automatically, same as a kiosk, but this QR can never
+              start a tab or place an order -- customers can only browse the menu.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="view-only-name">Name *</Label>
+              <Input
+                id="view-only-name"
+                value={newViewOnlyName}
+                onChange={(e) => setNewViewOnlyName(e.target.value)}
+                placeholder="e.g. Entrance"
+              />
+              <div className="mt-2 flex flex-wrap gap-2">
+                {VIEW_ONLY_NAME_PRESETS.map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setNewViewOnlyName(preset)}
+                  >
+                    {preset}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label htmlFor="view-only-location">Location (optional)</Label>
+              <Input
+                id="view-only-location"
+                value={newViewOnlyLocation}
+                onChange={(e) => setNewViewOnlyLocation(e.target.value)}
+                placeholder="e.g. Front noticeboard"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAddViewOnlyOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={saving} onClick={() => void handleAddViewOnly()}>
+              Create view-only menu QR
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit {editingPoint?.is_kiosk ? 'kiosk' : 'table'}</DialogTitle>
+            <DialogTitle>
+              Edit {editingPoint?.is_kiosk ? 'kiosk' : editingPoint?.is_view_only ? 'view-only menu QR' : 'table'}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
               <Label htmlFor="edit-name">Name</Label>
               <Input id="edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
             </div>
-            {!editingPoint?.is_kiosk ? (
+            {!editingPoint?.is_kiosk && !editingPoint?.is_view_only ? (
               <div>
                 <Label htmlFor="edit-seats">Seats (optional)</Label>
                 <Input

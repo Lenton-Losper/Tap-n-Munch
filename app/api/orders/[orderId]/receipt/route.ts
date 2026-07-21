@@ -60,7 +60,10 @@ export async function GET(
     return NextResponse.json({ error: message }, { status: 500 })
   }
 
-  const html = renderReceiptHtml(receipt.snapshot_json as ReceiptSnapshot)
+  const html = renderReceiptHtml(receipt.snapshot_json as ReceiptSnapshot, {
+    documentNumber: receipt.document_number,
+    issuedAt: receipt.issued_at,
+  })
 
   return NextResponse.json({
     id: receipt.id,

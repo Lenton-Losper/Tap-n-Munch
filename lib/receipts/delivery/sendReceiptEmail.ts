@@ -36,7 +36,10 @@ export async function sendReceiptEmail(
 
   const attemptNumber = (priorAttempts ?? 0) + 1
   const snapshot = receipt.snapshot_json as ReceiptSnapshot
-  const html = renderReceiptHtml(snapshot)
+  const html = renderReceiptHtml(snapshot, {
+    documentNumber: receipt.document_number,
+    issuedAt: receipt.issued_at,
+  })
 
   let status: 'sent' | 'failed' = 'sent'
   let providerReference: string | null = null

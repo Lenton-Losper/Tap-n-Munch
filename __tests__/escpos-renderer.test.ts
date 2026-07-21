@@ -6,6 +6,7 @@ const SNAPSHOT: ReceiptSnapshot = {
     restaurant_name: 'Test Diner',
     address: '123 Test Street, Windhoek',
   },
+  customer_name: null,
   line_items: [
     { name: 'Cheeseburger', quantity: 2, unit_price: 50, line_total: 100 },
     { name: 'Coke', quantity: 1, unit_price: 15, line_total: 15 },

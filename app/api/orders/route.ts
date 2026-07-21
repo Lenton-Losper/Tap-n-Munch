@@ -48,6 +48,30 @@ export async function POST(req: Request) {
 
     const normalizedTableNumber = Number(tableNumber) || 0
 
+    // Real enforcement, not just a disabled Add-to-Cart button -- a view-only ordering
+    // point can never accept an order, regardless of channel or whether a (possibly
+    // forged/stale) tabId is present, so this runs unconditionally before any of the
+    // tab-order/kiosk-exemption branches below.
+    if (normalizedTableNumber > 0) {
+      const { data: viewOnlyCheckRow, error: viewOnlyCheckError } = await supabase
+        .from('restaurant_tables')
+        .select('is_view_only')
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', normalizedTableNumber)
+        .maybeSingle()
+
+      if (viewOnlyCheckError) {
+        console.error('[ORDERS] view-only check failed', viewOnlyCheckError)
+        return NextResponse.json({ error: viewOnlyCheckError.message }, { status: 500 })
+      }
+      if (viewOnlyCheckRow?.is_view_only) {
+        return NextResponse.json(
+          { error: 'This is a view-only menu — ordering is not available here.' },
+          { status: 403 },
+        )
+      }
+    }
+
     const normalizedTabId = tabId ? String(tabId).trim() : ''
     const isTabOrder = Boolean(normalizedTabId)
 

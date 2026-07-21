@@ -39,6 +39,24 @@ function formatMoneyPrint(value: number): string {
   return `N$${formatMoney(value)}`
 }
 
+/** Print layout only -- server's local time, same convention as lib/receipts/renderers/pdfRenderer.ts formatDate(). */
+function formatDateTimePrint(iso: string | undefined): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = date.toLocaleString('en-GB', { month: 'short' })
+  const year = date.getFullYear()
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${day} ${month} ${year} ${hours}:${minutes}`
+}
+
+export interface HtmlRenderOptions {
+  documentNumber?: string
+  issuedAt?: string
+}
+
 const COLORS = {
   ink: '#111827',
   body: '#1f2937',
@@ -135,19 +153,28 @@ function renderScreenCard(snapshot: ReceiptSnapshot): string {
   </table>`
 }
 
-function renderPrintLayout(snapshot: ReceiptSnapshot): string {
+function renderPrintLayout(snapshot: ReceiptSnapshot, options: HtmlRenderOptions): string {
   const dashedLine = '<div style="border-top: 1px dashed #000; margin: 8px 0;"></div>'
+
+  // A literal row of asterisks, not a CSS border -- clipped to the container's actual
+  // printable width via overflow/nowrap so it never depends on knowing the driver's
+  // character count (the same class of assumption that clipped price columns before
+  // the 80mm-native layout fix). Repeated enough to outrun any realistic thermal width.
+  const asteriskRule = '<div style="overflow: hidden; white-space: nowrap; font-size: 12px; line-height: 1;">' + '* '.repeat(60) + '</div>'
+
+  const totalItemCount = snapshot.line_items.reduce((sum, item) => sum + item.quantity, 0)
 
   const lineItemsHtml = snapshot.line_items
     .map((item) => {
-      const qtyAndName =
+      const unitPriceNote =
         item.quantity > 1
-          ? `${item.quantity} ${escapeHtml(item.name)} @ ${formatMoneyPrint(item.unit_price)}`
-          : `${item.quantity} ${escapeHtml(item.name)}`
+          ? `<div style="font-size: 11px; color: #333;">@ ${formatMoneyPrint(item.unit_price)} each</div>`
+          : ''
       return `
         <tr>
-          <td style="padding: 3px 0; font-size: 13px; color: #000; vertical-align: top;">${qtyAndName}</td>
-          <td align="right" style="padding: 3px 0; font-size: 13px; color: #000; white-space: nowrap; vertical-align: top; padding-left: 8px;">${formatMoneyPrint(item.line_total)}</td>
+          <td style="width: 56%; padding: 3px 4px 3px 0; font-size: 13px; color: #000; vertical-align: top; word-break: break-word;">${escapeHtml(item.name)}${unitPriceNote}</td>
+          <td align="center" style="width: 12%; padding: 3px 0; font-size: 13px; color: #000; vertical-align: top;">${item.quantity}</td>
+          <td align="right" style="width: 32%; padding: 3px 0 3px 4px; font-size: 13px; color: #000; white-space: nowrap; vertical-align: top;">${formatMoneyPrint(item.line_total)}</td>
         </tr>`
     })
     .join('')
@@ -164,16 +191,33 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
     breakdownRow('VAT', formatMoneyPrint(snapshot.totals.vat)),
   ].join('')
 
+  const issuedAtText = formatDateTimePrint(options.issuedAt)
+
   return `
   <div class="print-only" style="display: none; width: 100%; box-sizing: border-box; padding: 0 3mm; font-family: 'Courier New', Courier, monospace; color: #000;">
-    <div style="text-align: center;">
-      <div style="font-size: 16px; font-weight: 700;">${escapeHtml(snapshot.outlet.restaurant_name)}</div>
-      ${snapshot.outlet.address ? `<div style="margin-top: 2px; font-size: 11px;">${escapeHtml(snapshot.outlet.address)}</div>` : ''}
+    <div style="border-left: 1px solid #000; border-right: 1px solid #000; padding: 2px 4px;">
+      ${asteriskRule}
+      <div style="text-align: center;">
+        <div style="font-size: 16px; font-weight: 700;">${escapeHtml(snapshot.outlet.restaurant_name)}</div>
+        ${snapshot.outlet.address ? `<div style="margin-top: 2px; font-size: 11px;">${escapeHtml(snapshot.outlet.address)}</div>` : ''}
+      </div>
+      ${asteriskRule}
     </div>
+
+    <div style="text-align: center; margin-top: 6px; font-size: 12px;">-YOUR RECEIPT-</div>
+
+    ${options.documentNumber ? `<div style="text-align: center; margin-top: 6px; font-size: 13px; font-weight: 700;">Receipt No: ${escapeHtml(options.documentNumber)}</div>` : ''}
+    ${issuedAtText ? `<div style="text-align: center; font-size: 11px;">${escapeHtml(issuedAtText)}</div>` : ''}
+    ${snapshot.customer_name ? `<div style="text-align: center; font-size: 11px;">Name: ${escapeHtml(snapshot.customer_name)}</div>` : ''}
 
     ${dashedLine}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <th align="left" style="width: 56%; padding: 0 4px 3px 0; font-size: 10px; font-weight: 700;">ITEM DESCRIPTION</th>
+        <th align="center" style="width: 12%; padding: 0 0 3px; font-size: 10px; font-weight: 700;">QTY</th>
+        <th align="right" style="width: 32%; padding: 0 0 3px 4px; font-size: 10px; font-weight: 700;">PRICE</th>
+      </tr>
       ${lineItemsHtml}
     </table>
 
@@ -189,11 +233,13 @@ function renderPrintLayout(snapshot: ReceiptSnapshot): string {
       ${breakdownHtml}
     </table>
 
-    <div style="text-align: center; margin-top: 14px; font-size: 13px; font-weight: 700;">Thank you</div>
+    <div style="font-size: 12px; margin-top: 4px;">Items: ${totalItemCount}</div>
+
+    <div style="text-align: left; margin-top: 14px; font-size: 13px; font-weight: 700;">Thank you</div>
   </div>`
 }
 
-export function renderReceiptHtml(snapshot: ReceiptSnapshot): string {
+export function renderReceiptHtml(snapshot: ReceiptSnapshot, options: HtmlRenderOptions = {}): string {
   return `<!doctype html>
 <html>
 <head>
@@ -212,7 +258,7 @@ export function renderReceiptHtml(snapshot: ReceiptSnapshot): string {
 </head>
 <body>
   ${renderScreenCard(snapshot)}
-  ${renderPrintLayout(snapshot)}
+  ${renderPrintLayout(snapshot, options)}
 </body>
 </html>`
 }
