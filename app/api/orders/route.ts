@@ -5,6 +5,7 @@ import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/pa
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { requireSessionToken } from '@/lib/session-guard'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
+import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
 
 export const dynamic = 'force-dynamic'
 
@@ -163,6 +164,23 @@ export async function POST(req: Request) {
     const orderNumber = (count || 0) + 1
     const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
 
+    const pricing = await calculateOrderPricing(supabase, restaurantUuid, itemsWithRouting)
+    for (const warning of pricing.warnings) {
+      console.warn('[ORDERS] pricing warning:', warning)
+    }
+    const clientSubtotal = Number(subtotal)
+    const clientTotal = Number(total)
+    if (Number.isFinite(clientTotal) && Math.abs(clientTotal - pricing.total) > 0.01) {
+      console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
+        restaurantId: restaurantUuid,
+        clientSubtotal,
+        clientTotal,
+        serverSubtotal: pricing.subtotal,
+        serverTax: pricing.tax,
+        serverTotal: pricing.total,
+      })
+    }
+
     // Validate payment method against restaurant settings
     const { data: settings } = await supabase
       .from('restaurant_settings')
@@ -215,9 +233,10 @@ export async function POST(req: Request) {
         payment_channel: resolvedPaymentChannel,
         payment_status: paymentStatus,
         status: 'pending',
-        subtotal: subtotal || 0,
-        total: total || 0,
-        items: itemsWithRouting,
+        subtotal: pricing.subtotal,
+        tax: pricing.tax,
+        total: pricing.total,
+        items: pricing.items,
         order_instructions: orderInstructions || null,
         tab_id: normalizedTabId || null,
         tab_settlement_for_tab_id: tabSettlementForTabId || null,
@@ -348,7 +367,7 @@ export async function POST(req: Request) {
 
       try {
         const paymentResult = await createPaymentRequest({
-          amount: total,
+          amount: pricing.total,
           currency: 'NAD',
           description: `FlashTap Table ${tableNumber} Order #${orderNumber}`,
           restaurantId,

@@ -1,4 +1,5 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
 
 export interface CreateOrderParams {
   restaurantId: string        // UUID
@@ -40,6 +41,21 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
   const orderNumber = (count || 0) + 1
 
+  const pricing = await calculateOrderPricing(supabase, params.restaurantId, params.items)
+  for (const warning of pricing.warnings) {
+    console.warn('[ORDERS] pricing warning:', warning)
+  }
+  if (Number.isFinite(params.total) && Math.abs(params.total - pricing.total) > 0.01) {
+    console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
+      restaurantId: params.restaurantId,
+      clientSubtotal: params.subtotal,
+      clientTotal: params.total,
+      serverSubtotal: pricing.subtotal,
+      serverTax: pricing.tax,
+      serverTotal: pricing.total,
+    })
+  }
+
   const { data: newOrder, error: orderError } = await supabase
     .from('orders')
     .insert({
@@ -53,9 +69,10 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       payment_channel: params.paymentChannel,
       payment_status: params.paymentStatus,
       status: 'pending',
-      subtotal: params.subtotal,
-      total: params.total,
-      items: params.items,
+      subtotal: pricing.subtotal,
+      tax: pricing.tax,
+      total: pricing.total,
+      items: pricing.items,
       order_instructions: params.orderInstructions,
       tab_id: params.tabId,
       tab_settlement_for_tab_id: params.tabSettlementForTabId,
