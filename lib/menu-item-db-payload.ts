@@ -46,5 +46,9 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
     payload.track_inventory = Boolean(data.track_inventory)
   }
 
+  if (data.tax_rate_id !== undefined) {
+    payload.tax_rate_id = data.tax_rate_id || null
+  }
+
   return payload
 }

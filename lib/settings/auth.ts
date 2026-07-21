@@ -76,3 +76,19 @@ export async function requireSettingsPermission(
 
   return context
 }
+
+export async function requireSettingsPermissionOrError(
+  permission: Permission,
+): Promise<SettingsAccessContext | { error: string }> {
+  const context = await getAuthenticatedSettingsContext()
+  if ('error' in context) {
+    return context
+  }
+
+  const allowed = await authorize(context.userId, context.restaurantId, permission)
+  if (!allowed) {
+    return { error: 'You do not have permission to perform this action.' }
+  }
+
+  return context
+}

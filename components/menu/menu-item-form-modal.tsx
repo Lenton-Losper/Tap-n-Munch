@@ -33,6 +33,8 @@ import { createMenuItem, updateMenuItem, type MenuItem } from '@/lib/supabase/me
 import { uploadMenuItemImage } from '@/lib/supabase/storage'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOptionWithLevel } from '@/lib/stock/queries'
+import { getTaxRatesForMenuFormAction } from '@/lib/tax-rates/actions'
+import { formatTaxRateLabel, type TaxRateOption } from '@/lib/tax-rates/format'
 
 type ItemFormState = {
   name: string
@@ -57,6 +59,7 @@ type ItemFormState = {
   allow_special_instructions: boolean
   is_popular: boolean
   status: 'available' | 'out_of_stock' | 'hidden'
+  tax_rate_id: string
 }
 
 function emptyItemForm(subCategoryId = ''): ItemFormState {
@@ -78,6 +81,7 @@ function emptyItemForm(subCategoryId = ''): ItemFormState {
     allow_special_instructions: true,
     is_popular: false,
     status: 'available',
+    tax_rate_id: '',
   }
 }
 
@@ -106,6 +110,7 @@ function itemToForm(item: MenuItem): ItemFormState {
     allow_special_instructions: item.allow_special_instructions,
     is_popular: item.is_popular === true,
     status: item.status,
+    tax_rate_id: item.tax_rate_id || '',
   }
 }
 
@@ -181,6 +186,22 @@ function MenuItemFormContent({
   const [inventoryLoadError, setInventoryLoadError] = useState<string | null>(null)
   const [inventorySaveError, setInventorySaveError] = useState<string | null>(null)
   const [savedMenuItemId, setSavedMenuItemId] = useState<string | null>(null)
+  const [taxRates, setTaxRates] = useState<TaxRateOption[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const result = await getTaxRatesForMenuFormAction()
+      if (cancelled) return
+      if ('data' in result) {
+        setTaxRates(result.data)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -329,6 +350,7 @@ function MenuItemFormContent({
     allow_special_instructions: itemForm.allow_special_instructions,
     is_popular: itemForm.is_popular,
     status: itemForm.status,
+    tax_rate_id: itemForm.tax_rate_id || null,
     ...(canEditInventory ? { track_inventory: trackInventory } : {}),
   })
 
@@ -698,6 +720,30 @@ function MenuItemFormContent({
                 }
                 placeholder="25.00"
               />
+            </div>
+            <div>
+              <Label>Tax Rate</Label>
+              <Select
+                value={itemForm.tax_rate_id || '__default__'}
+                onValueChange={(value) =>
+                  setItemForm((prev) => ({
+                    ...prev,
+                    tax_rate_id: value === '__default__' ? '' : value,
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Use restaurant default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__default__">Use restaurant default</SelectItem>
+                  {taxRates.map((rate) => (
+                    <SelectItem key={rate.id} value={rate.id}>
+                      {formatTaxRateLabel(rate)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-3 rounded-md border border-border p-3">
               <div className="flex items-center justify-between">

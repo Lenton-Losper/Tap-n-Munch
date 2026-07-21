@@ -76,3 +76,19 @@ export async function requireMenuPermission(
 
   return context
 }
+
+export async function requireMenuPermissionOrError(
+  permission: Permission,
+): Promise<MenuAccessContext | { error: string }> {
+  const context = await getAuthenticatedMenuContext()
+  if ('error' in context) {
+    return context
+  }
+
+  const allowed = await authorize(context.userId, context.restaurantId, permission)
+  if (!allowed) {
+    return { error: 'You do not have permission to perform this action.' }
+  }
+
+  return context
+}
