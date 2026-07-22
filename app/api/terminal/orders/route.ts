@@ -5,6 +5,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { createOrder } from '@/lib/orders/create-order'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
+import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,6 +21,11 @@ export async function GET(req: Request) {
         { status: 403 }
       )
     }
+
+    // Lazy cleanup, same pattern as recomputeInvoiceStatus's lazy overdue check: no scheduled
+    // job needed for the terminal's own polling to self-heal abandoned Sale-tab orders, since
+    // this route is what the terminal calls to list its own orders in the first place.
+    await autoCancelStalePosOrders(supabase, terminal.restaurantId)
 
     const { data, error } = await supabase
       .from('orders')
