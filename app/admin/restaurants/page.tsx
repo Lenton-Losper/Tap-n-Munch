@@ -70,6 +70,7 @@ async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed
         .select('restaurant_id, user_id, users!restaurant_users_user_id_fkey(email)')
         .in('restaurant_id', restaurantIds)
         .eq('role', 'owner')
+        .is('deleted_at', null)
 
       for (const row of ownerRows ?? []) {
         const usersRelation = row.users as { email: string } | { email: string }[] | null

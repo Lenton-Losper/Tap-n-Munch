@@ -67,6 +67,7 @@ export async function getRestaurantIdsForUser(
     .from('restaurant_users')
     .select('restaurant_id, role')
     .eq('user_id', userId)
+    .is('deleted_at', null)
 
   if (error) throw error
   const rows = data ?? []

@@ -49,6 +49,7 @@ export async function getUserRole(
     .select('role')
     .eq('user_id', userId)
     .eq('restaurant_id', restaurantId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (membership?.role) return membership.role

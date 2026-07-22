@@ -30,6 +30,7 @@ async function resolveRestaurantIdOrNull(
     .from('restaurant_users')
     .select('restaurant_id')
     .eq('user_id', userId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (membershipError) throw membershipError

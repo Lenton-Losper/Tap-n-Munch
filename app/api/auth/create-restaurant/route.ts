@@ -42,6 +42,7 @@ export async function POST(request: Request) {
       .from('restaurant_users')
       .select('restaurant_id')
       .eq('user_id', authUser.id)
+      .is('deleted_at', null)
       .maybeSingle()
 
     if (membershipLookupError) {
