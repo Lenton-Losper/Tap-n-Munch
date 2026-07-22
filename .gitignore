@@ -5,6 +5,7 @@ node_modules/
 
 # Testing
 /coverage
+/test-results/
 
 # Next.js
 /.next/
@@ -36,6 +37,11 @@ serviceAccountKey.json
 
 # Local generated auth payload dumps
 uat-auth-request-payload.json
+
+# Command-output / generated snapshots, not source
+eslint-out.json
+eslint-report.json
+staging_live_schema.sql
 
 # Vercel
 .vercel
