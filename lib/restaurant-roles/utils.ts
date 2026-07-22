@@ -16,14 +16,22 @@ export function slugifyRoleDisplayName(displayName: string): string {
   return base || 'custom_role'
 }
 
+/**
+ * Drops unrecognized permission strings instead of rejecting the whole array. Some
+ * restaurant_roles rows carry legacy values (e.g. "orders:amend", "orders:refund") from
+ * before the permission model settled on its current naming -- those are dead data (no code
+ * checks for them), and round-tripping a role's existing permissions through an edit that
+ * only touches one unrelated toggle should not fail just because old cruft is still attached.
+ */
 export function normalizePermissionsInput(value: unknown): Permission[] | null {
   if (!Array.isArray(value)) return null
   const perms = value.map((p) => String(p).trim()).filter(Boolean)
-  if (perms.length === 0) return []
-  for (const perm of perms) {
-    if (!KNOWN_PERMISSIONS.has(perm)) return null
+  const known = perms.filter((perm) => KNOWN_PERMISSIONS.has(perm))
+  const unknown = perms.filter((perm) => !KNOWN_PERMISSIONS.has(perm))
+  if (unknown.length > 0) {
+    console.warn('[restaurant-roles] dropping unrecognized permission values', { unknown })
   }
-  return [...new Set(perms)] as Permission[]
+  return [...new Set(known)] as Permission[]
 }
 
 export async function ensureUniqueRoleSlug(
