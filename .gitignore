@@ -40,6 +40,9 @@ uat-auth-request-payload.json
 # Vercel
 .vercel
 
+# Supabase CLI local cache/scratch
+supabase/.temp/
+
 # Package manager lock files (using npm)
 pnpm-lock.yaml
 yarn.lock
