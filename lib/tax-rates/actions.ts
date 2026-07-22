@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { requireSettingsPermissionOrError } from '@/lib/settings/auth'
 import { requireMenuPermissionOrError } from '@/lib/menu/auth'
+import { requireDocumentsPermissionOrError } from '@/lib/documents/auth'
 import { PERMISSIONS } from '@/lib/permissions'
 import { getTaxRatesForRestaurant } from '@/lib/tax-rates/queries'
 import type { TaxRateOption } from '@/lib/tax-rates/format'
@@ -10,6 +11,7 @@ import type { TaxRateOption } from '@/lib/tax-rates/format'
 function revalidateTaxRatePaths() {
   revalidatePath('/settings')
   revalidatePath('/menu-management')
+  revalidatePath('/documents')
 }
 
 export async function getTaxRatesAction(): Promise<
@@ -30,6 +32,20 @@ export async function getTaxRatesForMenuFormAction(): Promise<
   { data: TaxRateOption[] } | { error: string }
 > {
   const context = await requireMenuPermissionOrError(PERMISSIONS.MENU_READ)
+  if ('error' in context) return context
+
+  try {
+    const data = await getTaxRatesForRestaurant(context.supabase, context.restaurantId)
+    return { data }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to load tax rates.' }
+  }
+}
+
+export async function getTaxRatesForDocumentFormAction(): Promise<
+  { data: TaxRateOption[] } | { error: string }
+> {
+  const context = await requireDocumentsPermissionOrError(PERMISSIONS.DOCUMENTS_READ)
   if ('error' in context) return context
 
   try {

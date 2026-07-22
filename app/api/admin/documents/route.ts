@@ -20,6 +20,7 @@ type LineItemInput = {
   description: string
   quantity: number
   unit_price: number
+  tax_rate_id: string | null
 }
 
 type CreateDocumentBody = {
@@ -114,7 +115,16 @@ function parseCreateDocumentBody(body: unknown): { data: CreateDocumentBody } | 
       return { error: `line_items[${i}].unit_price must be a finite number greater than or equal to 0` }
     }
 
-    lineItems.push({ description, quantity, unit_price: unitPrice })
+    let taxRateId: string | null = null
+    if (row.tax_rate_id != null && row.tax_rate_id !== '') {
+      const raw = String(row.tax_rate_id).trim()
+      if (!isUuid(raw)) {
+        return { error: `line_items[${i}].tax_rate_id must be a valid UUID` }
+      }
+      taxRateId = raw
+    }
+
+    lineItems.push({ description, quantity, unit_price: unitPrice, tax_rate_id: taxRateId })
   }
 
   let dueDate: string | null = null

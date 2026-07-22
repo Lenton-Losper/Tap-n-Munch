@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getSettingsAccessToken } from '@/components/settings/settings-utils'
@@ -14,7 +14,12 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
+import { getTaxRatesForDocumentFormAction } from '@/lib/tax-rates/actions'
+import { defaultTaxRate } from '@/lib/tax-rates/queries'
+import { formatTaxRateLabel, type TaxRateOption } from '@/lib/tax-rates/format'
+import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
 
 type DocumentType = 'quote' | 'invoice'
 
@@ -37,6 +42,7 @@ type LineItemRow = {
   description: string
   quantity: string
   unit_price: string
+  tax_rate_id: string
 }
 
 function emptyParty(): PartyFormState {
@@ -49,11 +55,8 @@ function emptyLineItem(): LineItemRow {
     description: '',
     quantity: '1',
     unit_price: '0',
+    tax_rate_id: '',
   }
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100
 }
 
 function partyToPayload(party: PartyFormState) {
@@ -87,7 +90,7 @@ export function DocumentFormModal({
   documentType,
   onSuccess,
 }: DocumentFormModalProps) {
-  const { restaurant, restaurantId } = useAuth()
+  const { restaurantId } = useAuth()
   const { toast } = useToast()
 
   const [shipTo, setShipTo] = useState<PartyFormState>(emptyParty)
@@ -97,26 +100,43 @@ export function DocumentFormModal({
   const [referenceNote, setReferenceNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [taxRates, setTaxRates] = useState<TaxRateOption[]>([])
 
-  const taxRate = useMemo(() => {
-    const raw = Number(restaurant?.tax_rate ?? 0)
-    return Number.isFinite(raw) ? raw : 0
-  }, [restaurant?.tax_rate])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const result = await getTaxRatesForDocumentFormAction()
+      if (cancelled) return
+      if ('data' in result) setTaxRates(result.data)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  // Preview-only totals — the server recomputes authoritative values on submit.
-  const previewTotals = useMemo(() => {
-    const computedItems = lineItems.map((item) => {
+  const ratesById = useMemo(() => new Map(taxRates.map((rate) => [rate.id, rate])), [taxRates])
+  const fallbackRate = useMemo(() => defaultTaxRate(taxRates), [taxRates])
+
+  const lineItemTax = useCallback(
+    (item: LineItemRow) => {
       const quantity = Number(item.quantity)
       const unitPrice = Number(item.unit_price)
       const safeQty = Number.isFinite(quantity) ? quantity : 0
       const safePrice = Number.isFinite(unitPrice) ? unitPrice : 0
-      return round2(safeQty * safePrice)
-    })
-    const subtotal = round2(computedItems.reduce((sum, value) => sum + value, 0))
-    const vatAmount = round2(subtotal * taxRate)
+      const rate = resolveTaxRate(item.tax_rate_id || null, ratesById, fallbackRate)
+      return applyTaxToAmount(safeQty * safePrice, rate)
+    },
+    [ratesById, fallbackRate],
+  )
+
+  // Preview-only totals — the server recomputes authoritative values on submit.
+  const previewTotals = useMemo(() => {
+    const computed = lineItems.map((item) => lineItemTax(item))
+    const subtotal = round2(computed.reduce((sum, applied) => sum + applied.subtotal, 0))
+    const vatAmount = round2(computed.reduce((sum, applied) => sum + applied.tax, 0))
     const total = round2(subtotal + vatAmount)
     return { subtotal, vatAmount, total }
-  }, [lineItems, taxRate])
+  }, [lineItems, lineItemTax])
 
   const updatePartyField = (
     section: 'ship' | 'bill',
@@ -226,6 +246,7 @@ export function DocumentFormModal({
           description: item.description.trim(),
           quantity: Number(item.quantity),
           unit_price: Number(item.unit_price),
+          tax_rate_id: item.tax_rate_id || null,
         })),
       }
 
@@ -411,16 +432,11 @@ export function DocumentFormModal({
             ) : null}
             <div className="space-y-3">
               {lineItems.map((item, index) => {
-                const quantity = Number(item.quantity)
-                const unitPrice = Number(item.unit_price)
-                const lineTotal = round2(
-                  (Number.isFinite(quantity) ? quantity : 0) *
-                    (Number.isFinite(unitPrice) ? unitPrice : 0),
-                )
+                const applied = lineItemTax(item)
                 return (
                   <div key={item.id} className="rounded-lg border p-3 space-y-3">
                     <div className="grid gap-3 sm:grid-cols-12">
-                      <div className="sm:col-span-4 space-y-2">
+                      <div className="sm:col-span-3 space-y-2">
                         <Label>Description</Label>
                         <Input
                           value={item.description}
@@ -449,7 +465,7 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-3 space-y-2">
+                      <div className="sm:col-span-2 space-y-2">
                         <Label>Unit price</Label>
                         <Input
                           type="number"
@@ -465,10 +481,35 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-2 space-y-2">
-                        <Label>Line total</Label>
+                      <div className="sm:col-span-3 space-y-2">
+                        <Label>Tax</Label>
+                        <Select
+                          value={item.tax_rate_id || '__default__'}
+                          onValueChange={(value) =>
+                            updateLineItem(item.id, 'tax_rate_id', value === '__default__' ? '' : value)
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Use restaurant default" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__default__">
+                              {fallbackRate
+                                ? `Restaurant default (${formatTaxRateLabel(fallbackRate)})`
+                                : 'Restaurant default (none, 0%)'}
+                            </SelectItem>
+                            {taxRates.map((rate) => (
+                              <SelectItem key={rate.id} value={rate.id}>
+                                {formatTaxRateLabel(rate)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="sm:col-span-1 space-y-2">
+                        <Label>Total</Label>
                         <div className="flex h-10 items-center text-sm font-medium text-[#37352F]">
-                          NAD {lineTotal.toFixed(2)}
+                          {applied.total.toFixed(2)}
                         </div>
                       </div>
                       <div className="sm:col-span-1 flex items-end justify-end">
@@ -522,7 +563,7 @@ export function DocumentFormModal({
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-[#6B675F]">VAT ({(taxRate * 100).toFixed(0)}%)</span>
+              <span className="text-[#6B675F]">VAT</span>
               <span className="font-medium text-[#37352F]">
                 NAD {previewTotals.vatAmount.toFixed(2)}
               </span>

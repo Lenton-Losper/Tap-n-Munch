@@ -76,3 +76,21 @@ export async function requireDocumentsPermission(
 
   return context
 }
+
+/** Server-action variant: returns an error instead of redirecting, for callers invoked from an
+ * already-loaded page (e.g. fetching tax rates for the document form) rather than a page load. */
+export async function requireDocumentsPermissionOrError(
+  permission: Permission,
+): Promise<DocumentsAccessContext | { error: string }> {
+  const context = await getAuthenticatedDocumentsContext()
+  if ('error' in context) {
+    return context
+  }
+
+  const allowed = await authorize(context.userId, context.restaurantId, permission)
+  if (!allowed) {
+    return { error: 'You do not have permission to perform this action.' }
+  }
+
+  return context
+}
