@@ -5,6 +5,7 @@ import { Download, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { DocumentFormModal } from '@/components/documents/document-form-modal'
 import { RecordPaymentModal } from '@/components/documents/record-payment-modal'
+import { AgedReceivablesContent } from '@/components/documents/aged-receivables-content'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { usePermissions } from '@/hooks/use-permissions'
@@ -100,6 +101,7 @@ export function DocumentsListContent() {
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [convertingId, setConvertingId] = useState<string | null>(null)
   const [paymentTarget, setPaymentTarget] = useState<DocumentListItem | null>(null)
+  const [view, setView] = useState<'documents' | 'aged-receivables'>('documents')
 
   const loadDocuments = useCallback(async () => {
     if (!restaurantId) {
@@ -255,6 +257,30 @@ export function DocumentsListContent() {
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mb-4 flex gap-2">
+          <Button
+            type="button"
+            variant={view === 'documents' ? 'default' : 'outline'}
+            className={view === 'documents' ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+            size="sm"
+            onClick={() => setView('documents')}
+          >
+            Documents
+          </Button>
+          <Button
+            type="button"
+            variant={view === 'aged-receivables' ? 'default' : 'outline'}
+            className={view === 'aged-receivables' ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+            size="sm"
+            onClick={() => setView('aged-receivables')}
+          >
+            Aged Receivables
+          </Button>
+        </div>
+
+        {view === 'aged-receivables' ? (
+          <AgedReceivablesContent />
+        ) : (
         <div className="bg-card overflow-hidden rounded-lg border">
           {loading ? (
             <p className="px-6 py-8 text-sm text-muted-foreground">Loading documents...</p>
@@ -352,6 +378,7 @@ export function DocumentsListContent() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       <DocumentFormModal
