@@ -98,6 +98,7 @@ export function DocumentsListContent() {
   const [modalInstance, setModalInstance] = useState(0)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
   const [paymentTarget, setPaymentTarget] = useState<DocumentListItem | null>(null)
 
   const loadDocuments = useCallback(async () => {
@@ -192,6 +193,35 @@ export function DocumentsListContent() {
       })
     } finally {
       setSendingId(null)
+    }
+  }
+
+  const handleConvert = async (doc: DocumentListItem) => {
+    setConvertingId(doc.id)
+    try {
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/documents/${encodeURIComponent(doc.id)}/convert`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to convert quote to invoice')
+      }
+      toast({
+        title: 'Converted to invoice',
+        description: `Invoice #${payload?.invoice?.document_number ?? ''} created from ${doc.document_number}.`,
+      })
+      void loadDocuments()
+    } catch (error: unknown) {
+      toast({
+        title: 'Conversion failed',
+        description: error instanceof Error ? error.message : 'Failed to convert quote to invoice',
+        variant: 'destructive',
+      })
+    } finally {
+      setConvertingId(null)
     }
   }
 
@@ -297,6 +327,19 @@ export function DocumentsListContent() {
                                 onClick={() => setPaymentTarget(doc)}
                               >
                                 Record Payment
+                              </Button>
+                            ) : null}
+                            {canWrite &&
+                            doc.type === 'quote' &&
+                            (doc.status === 'draft' || doc.status === 'sent') ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleConvert(doc)}
+                                disabled={convertingId === doc.id}
+                              >
+                                {convertingId === doc.id ? 'Converting...' : 'Convert to Invoice'}
                               </Button>
                             ) : null}
                           </div>
