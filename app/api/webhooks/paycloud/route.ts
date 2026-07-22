@@ -91,7 +91,7 @@ export async function POST(req: Request) {
     existingRows.every((r) => String(r.payment_status || '').toLowerCase() === 'paid')
   ) {
     console.log('[WEBHOOK] Duplicate webhook ignored for:', merchantOrderNo)
-    return NextResponse.json({ success: true, message: 'Already processed' })
+    return webhookAck()
   }
 
   const sign = extractSign(payload, req.headers)
@@ -117,8 +117,15 @@ export async function POST(req: Request) {
     .or(supabaseOrMerchantRef(merchantOrderNo))
 
   if (!orderRows?.length) {
-    console.error('[WEBHOOK] Order not found:', merchantOrderNo)
-    return NextResponse.json({ received: true })
+    // Ack as success even though we couldn't act on it yet: this is a timing race (the order
+    // row may not have been created yet when this notification arrived, e.g. a terminal device
+    // calling Finatic directly and separately/later calling our own order-creation endpoint --
+    // not something under this route's control), not a malformed request. Finatic's own
+    // retry-on-non-success-ack behavior is what actually recovers this once the order exists;
+    // replying with a non-conforming body here (previously {"received":true}) just caused
+    // Finatic to log the delivery attempt as failed even though we received it correctly.
+    console.error('[WEBHOOK] Order not found (will rely on Finatic retry once it exists):', merchantOrderNo)
+    return webhookAck()
   }
 
   await supabase
