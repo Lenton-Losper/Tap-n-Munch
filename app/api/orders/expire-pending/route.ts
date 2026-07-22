@@ -1,71 +1,32 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireCronSecret } from '@/lib/api/require-cron-secret'
+import { expireHostedPendingOrders } from '@/lib/orders/expire-hosted-pending-orders'
 
-const TEN_MIN_MS = 10 * 60 * 1000
+export const dynamic = 'force-dynamic'
 
+/**
+ * Legacy HTTP entry for hosted-order expiry. Prefer /api/cron/cleanup-stale-orders
+ * (Cloudflare Cron Trigger). Kept so existing callers/secrets keep working.
+ */
 async function runExpire(req: Request) {
   const cronDenied = requireCronSecret(req)
   if (cronDenied) return cronDenied
 
-  const supabase = createServerSupabaseClient()
-  const tenMinutesAgo = new Date(Date.now() - TEN_MIN_MS).toISOString()
-
-  const { data: expiredOrders, error } = await supabase
-    .from('orders')
-    .update({
-      payment_status: 'cancelled',
-      status: 'cancelled',
+  try {
+    const supabase = createServerSupabaseClient()
+    const result = await expireHostedPendingOrders(supabase)
+    console.log('[EXPIRE-PENDING] Cancelled', result.expiredCount, 'abandoned orders')
+    return NextResponse.json({
+      success: true,
+      expired: result.expiredCount,
+      closedTabs: result.closedTabCount,
     })
-    .eq('payment_status', 'pending')
-    .eq('payment_channel', 'hosted')
-    .lt('placed_at', tenMinutesAgo)
-    .select('id, restaurant_id, table_number, tab_id')
-
-  if (error) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
     console.error('[EXPIRE-PENDING] Error:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: message }, { status: 500 })
   }
-
-  const rows = expiredOrders || []
-  console.log('[EXPIRE-PENDING] Cancelled', rows.length, 'abandoned orders')
-
-  const nowIso = new Date().toISOString()
-  const seenTabs = new Set<string>()
-
-  for (const order of rows) {
-    const tabId = order.tab_id ? String(order.tab_id).trim() : ''
-    if (!tabId || seenTabs.has(tabId)) continue
-    seenTabs.add(tabId)
-
-    const { data: activeOrders } = await supabase
-      .from('orders')
-      .select('id')
-      .eq('tab_id', tabId)
-      .neq('status', 'cancelled')
-
-    if (!activeOrders || activeOrders.length === 0) {
-      const { error: tabErr } = await supabase
-        .from('tabs')
-        .update({
-          status: 'closed',
-          closed_at: nowIso,
-          updated_at: nowIso,
-        })
-        .eq('id', tabId)
-
-      if (tabErr) {
-        console.warn('[EXPIRE-PENDING] Tab close failed:', tabId, tabErr)
-      } else {
-        console.log('[EXPIRE-PENDING] Closed abandoned tab:', tabId)
-      }
-    }
-  }
-
-  return NextResponse.json({
-    success: true,
-    expired: rows.length,
-  })
 }
 
 export async function POST(req: Request) {
