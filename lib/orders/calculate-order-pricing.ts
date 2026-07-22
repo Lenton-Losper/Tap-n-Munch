@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
 import type { TaxRateOption } from '@/lib/tax-rates/format'
+import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
 
 type MenuItemPricingRow = {
   id: string
@@ -29,10 +30,6 @@ export type OrderPricingResult = {
   total: number
   /** Human-readable notices worth logging (unmatched menu items, unmatched size/addon names). */
   warnings: string[]
-}
-
-function round2(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
 function extractMenuItemId(item: Record<string, unknown>): string {
@@ -76,18 +73,6 @@ function extractClientSubtotal(item: Record<string, unknown>): number {
   return Number.isFinite(value) ? value : 0
 }
 
-function resolveTaxRate(
-  menuItemTaxRateId: string | null,
-  ratesById: Map<string, TaxRateOption>,
-  fallbackDefault: TaxRateOption | null,
-): TaxRateOption | null {
-  if (menuItemTaxRateId) {
-    const explicit = ratesById.get(menuItemTaxRateId)
-    if (explicit) return explicit
-  }
-  return fallbackDefault
-}
-
 /**
  * Prices one line item against a resolved menu_items row: base_price + matched size/addon
  * modifiers (only modifiers found by name in the catalog row ever contribute to the price --
@@ -125,37 +110,18 @@ function priceCatalogLine(
   }
 
   const rate = resolveTaxRate(menuItem.tax_rate_id, ratesById, fallbackDefault)
-  const percentage = rate ? Number(rate.percentage) || 0 : 0
-  const isInclusive = rate?.is_inclusive ?? true
-
-  let lineSubtotal: number
-  let lineTax: number
-  let lineTotal: number
-
-  if (!rate || percentage === 0) {
-    lineTotal = round2(unitPrice * quantity)
-    lineSubtotal = lineTotal
-    lineTax = 0
-  } else if (isInclusive) {
-    lineTotal = round2(unitPrice * quantity)
-    lineTax = round2(lineTotal - lineTotal / (1 + percentage / 100))
-    lineSubtotal = round2(lineTotal - lineTax)
-  } else {
-    lineSubtotal = round2(unitPrice * quantity)
-    lineTax = round2(lineSubtotal * (percentage / 100))
-    lineTotal = round2(lineSubtotal + lineTax)
-  }
+  const applied = applyTaxToAmount(unitPrice * quantity, rate)
 
   return {
     ...item,
     unitPrice: round2(unitPrice),
     quantity,
-    subtotal: lineSubtotal,
-    tax: lineTax,
-    total: lineTotal,
+    subtotal: applied.subtotal,
+    tax: applied.tax,
+    total: applied.total,
     taxRateId: rate?.id ?? null,
-    taxRatePercentage: percentage,
-    taxInclusive: isInclusive,
+    taxRatePercentage: applied.taxRatePercentage,
+    taxInclusive: applied.taxInclusive,
     priceSource: 'catalog',
   }
 }
@@ -175,37 +141,18 @@ function priceUntrustedLine(
   const quantity = extractQuantity(item)
   const clientSubtotal = extractClientSubtotal(item)
   const rate = fallbackDefault
-  const percentage = rate ? Number(rate.percentage) || 0 : 0
-  const isInclusive = rate?.is_inclusive ?? true
-
-  let lineSubtotal: number
-  let lineTax: number
-  let lineTotal: number
-
-  if (!rate || percentage === 0) {
-    lineTotal = round2(clientSubtotal)
-    lineSubtotal = lineTotal
-    lineTax = 0
-  } else if (isInclusive) {
-    lineTotal = round2(clientSubtotal)
-    lineTax = round2(lineTotal - lineTotal / (1 + percentage / 100))
-    lineSubtotal = round2(lineTotal - lineTax)
-  } else {
-    lineSubtotal = round2(clientSubtotal)
-    lineTax = round2(lineSubtotal * (percentage / 100))
-    lineTotal = round2(lineSubtotal + lineTax)
-  }
+  const applied = applyTaxToAmount(clientSubtotal, rate)
 
   return {
     ...item,
     unitPrice: quantity > 0 ? round2(clientSubtotal / quantity) : 0,
     quantity,
-    subtotal: lineSubtotal,
-    tax: lineTax,
-    total: lineTotal,
+    subtotal: applied.subtotal,
+    tax: applied.tax,
+    total: applied.total,
     taxRateId: rate?.id ?? null,
-    taxRatePercentage: percentage,
-    taxInclusive: isInclusive,
+    taxRatePercentage: applied.taxRatePercentage,
+    taxInclusive: applied.taxInclusive,
     priceSource: 'client-trusted',
   }
 }

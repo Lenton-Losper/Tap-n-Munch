@@ -76,6 +76,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       description: String(item.description ?? ''),
       quantity: Number(item.quantity) || 0,
       unit_price: Number(item.unit_price) || 0,
+      tax_rate_id: item.tax_rate_id != null ? String(item.tax_rate_id) : null,
     }))
 
     const { document: invoice, warnings } = await createBusinessDocument(supabase, {

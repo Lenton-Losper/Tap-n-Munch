@@ -1,9 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { Loader2, Plus, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Loader2, Plus, Search, Trash2 } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { getSettingsAccessToken } from '@/components/settings/settings-utils'
+import { getMenuItems } from '@/lib/supabase/menu'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -14,7 +15,30 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { useToast } from '@/hooks/use-toast'
+import { getTaxRatesForDocumentFormAction } from '@/lib/tax-rates/actions'
+import { defaultTaxRate } from '@/lib/tax-rates/queries'
+import { formatTaxRateLabel, type TaxRateOption } from '@/lib/tax-rates/format'
+import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
+
+/** Short trigger-only label -- formatTaxRateLabel's full "Name (X%, incl./excl.)" form is used
+ * in the dropdown option list where there's room, but overflowed the trigger's grid column
+ * (SelectTrigger is w-fit + whitespace-nowrap by design, so it grows to fit whatever content
+ * it's given rather than truncating on its own -- the fix is a shorter string, not just CSS). */
+function shortTaxLabel(rate: TaxRateOption | null): string {
+  if (!rate) return 'No tax (0%)'
+  return `${rate.name} (${rate.percentage}%)`
+}
+
+type MenuItemOption = {
+  id: string
+  name: string
+  base_price: number
+  tax_rate_id: string | null
+}
 
 type DocumentType = 'quote' | 'invoice'
 
@@ -37,6 +61,7 @@ type LineItemRow = {
   description: string
   quantity: string
   unit_price: string
+  tax_rate_id: string
 }
 
 function emptyParty(): PartyFormState {
@@ -49,11 +74,8 @@ function emptyLineItem(): LineItemRow {
     description: '',
     quantity: '1',
     unit_price: '0',
+    tax_rate_id: '',
   }
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100
 }
 
 function partyToPayload(party: PartyFormState) {
@@ -74,6 +96,81 @@ function partyToPayload(party: PartyFormState) {
   }
 }
 
+function MenuItemPicker({
+  menuItems,
+  onSelect,
+  disabled,
+}: {
+  menuItems: MenuItemOption[]
+  onSelect: (item: MenuItemOption) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const filteredMenuItems = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    if (!query) return menuItems
+    return menuItems.filter((menuItem) => menuItem.name.toLowerCase().includes(query))
+  }, [menuItems, search])
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen)
+        if (!nextOpen) setSearch('')
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          disabled={disabled || menuItems.length === 0}
+          aria-label="Pick from menu"
+          title="Pick from menu"
+        >
+          <Search className="h-3.5 w-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="start">
+        {/* shouldFilter=false: filtering the list ourselves via `search` state rather than
+            cmdk's built-in matcher, which doesn't reliably filter under cmdk 1.0.4 + React 19
+            in this project (confirmed empirically -- typing a plain substring match returned
+            zero results even though the item list itself rendered correctly). */}
+        <Command shouldFilter={false}>
+          <CommandInput placeholder="Search menu items..." value={search} onValueChange={setSearch} />
+          <CommandList>
+            <CommandEmpty>No menu items found.</CommandEmpty>
+            <CommandGroup>
+              {filteredMenuItems.map((menuItem) => (
+                <CommandItem
+                  key={menuItem.id}
+                  value={menuItem.id}
+                  onSelect={() => {
+                    onSelect(menuItem)
+                    setOpen(false)
+                    setSearch('')
+                  }}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="truncate">{menuItem.name}</span>
+                    <span className="shrink-0 text-muted-foreground">
+                      NAD {menuItem.base_price.toFixed(2)}
+                    </span>
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 type DocumentFormModalProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -87,7 +184,7 @@ export function DocumentFormModal({
   documentType,
   onSuccess,
 }: DocumentFormModalProps) {
-  const { restaurant, restaurantId } = useAuth()
+  const { restaurantId } = useAuth()
   const { toast } = useToast()
 
   const [shipTo, setShipTo] = useState<PartyFormState>(emptyParty)
@@ -97,26 +194,68 @@ export function DocumentFormModal({
   const [referenceNote, setReferenceNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [taxRates, setTaxRates] = useState<TaxRateOption[]>([])
+  const [menuItems, setMenuItems] = useState<MenuItemOption[]>([])
 
-  const taxRate = useMemo(() => {
-    const raw = Number(restaurant?.tax_rate ?? 0)
-    return Number.isFinite(raw) ? raw : 0
-  }, [restaurant?.tax_rate])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const result = await getTaxRatesForDocumentFormAction()
+      if (cancelled) return
+      if ('data' in result) setTaxRates(result.data)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  // Preview-only totals — the server recomputes authoritative values on submit.
-  const previewTotals = useMemo(() => {
-    const computedItems = lineItems.map((item) => {
+  useEffect(() => {
+    if (!restaurantId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const items = await getMenuItems(restaurantId)
+        if (cancelled) return
+        setMenuItems(
+          (items as Array<Record<string, unknown>>).map((item) => ({
+            id: String(item.id),
+            name: String(item.name ?? ''),
+            base_price: Number(item.base_price) || 0,
+            tax_rate_id: item.tax_rate_id ? String(item.tax_rate_id) : null,
+          })),
+        )
+      } catch {
+        // Non-critical: the picker just has no options if this fails -- manual entry still works.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [restaurantId])
+
+  const ratesById = useMemo(() => new Map(taxRates.map((rate) => [rate.id, rate])), [taxRates])
+  const fallbackRate = useMemo(() => defaultTaxRate(taxRates), [taxRates])
+
+  const lineItemTax = useCallback(
+    (item: LineItemRow) => {
       const quantity = Number(item.quantity)
       const unitPrice = Number(item.unit_price)
       const safeQty = Number.isFinite(quantity) ? quantity : 0
       const safePrice = Number.isFinite(unitPrice) ? unitPrice : 0
-      return round2(safeQty * safePrice)
-    })
-    const subtotal = round2(computedItems.reduce((sum, value) => sum + value, 0))
-    const vatAmount = round2(subtotal * taxRate)
+      const rate = resolveTaxRate(item.tax_rate_id || null, ratesById, fallbackRate)
+      return applyTaxToAmount(safeQty * safePrice, rate)
+    },
+    [ratesById, fallbackRate],
+  )
+
+  // Preview-only totals — the server recomputes authoritative values on submit.
+  const previewTotals = useMemo(() => {
+    const computed = lineItems.map((item) => lineItemTax(item))
+    const subtotal = round2(computed.reduce((sum, applied) => sum + applied.subtotal, 0))
+    const vatAmount = round2(computed.reduce((sum, applied) => sum + applied.tax, 0))
     const total = round2(subtotal + vatAmount)
     return { subtotal, vatAmount, total }
-  }, [lineItems, taxRate])
+  }, [lineItems, lineItemTax])
 
   const updatePartyField = (
     section: 'ship' | 'bill',
@@ -164,6 +303,25 @@ export function DocumentFormModal({
   const updateLineItem = (id: string, field: keyof Omit<LineItemRow, 'id'>, value: string) => {
     setLineItems((current) =>
       current.map((row) => (row.id === id ? { ...row, [field]: value } : row)),
+    )
+  }
+
+  /** Prefills description/unit_price/tax_rate_id from a menu_items row -- a one-time convenience
+   * copy, not a stored link, so later menu price changes never retroactively affect this
+   * already-created document (consistent with documents being immutable snapshots). The user
+   * can still edit any of these fields afterward, same as a fully manual line. */
+  const applyMenuItemToLine = (id: string, menuItem: MenuItemOption) => {
+    setLineItems((current) =>
+      current.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              description: menuItem.name,
+              unit_price: String(menuItem.base_price),
+              tax_rate_id: menuItem.tax_rate_id ?? '',
+            }
+          : row,
+      ),
     )
   }
 
@@ -226,6 +384,7 @@ export function DocumentFormModal({
           description: item.description.trim(),
           quantity: Number(item.quantity),
           unit_price: Number(item.unit_price),
+          tax_rate_id: item.tax_rate_id || null,
         })),
       }
 
@@ -382,7 +541,7 @@ export function DocumentFormModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[90vh] overflow-x-hidden overflow-y-auto sm:max-w-2xl md:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             {documentType === 'invoice' ? 'New Invoice' : 'New Quote'}
@@ -411,20 +570,23 @@ export function DocumentFormModal({
             ) : null}
             <div className="space-y-3">
               {lineItems.map((item, index) => {
-                const quantity = Number(item.quantity)
-                const unitPrice = Number(item.unit_price)
-                const lineTotal = round2(
-                  (Number.isFinite(quantity) ? quantity : 0) *
-                    (Number.isFinite(unitPrice) ? unitPrice : 0),
-                )
+                const applied = lineItemTax(item)
                 return (
                   <div key={item.id} className="rounded-lg border p-3 space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-12">
-                      <div className="sm:col-span-4 space-y-2">
-                        <Label>Description</Label>
+                    <div className="grid gap-3 md:grid-cols-12">
+                      <div className="min-w-0 space-y-2 md:col-span-3">
+                        <div className="flex items-center justify-between gap-1">
+                          <Label>Description</Label>
+                          <MenuItemPicker
+                            menuItems={menuItems}
+                            disabled={saving}
+                            onSelect={(menuItem) => applyMenuItemToLine(item.id, menuItem)}
+                          />
+                        </div>
                         <Input
                           value={item.description}
                           onChange={(e) => updateLineItem(item.id, 'description', e.target.value)}
+                          placeholder="Pick a menu item or type a custom description"
                           disabled={saving}
                         />
                         {errors[`line_items_${index}_description`] ? (
@@ -433,7 +595,7 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-2 space-y-2">
+                      <div className="min-w-0 space-y-2 md:col-span-2">
                         <Label>Quantity</Label>
                         <Input
                           type="number"
@@ -449,7 +611,7 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-3 space-y-2">
+                      <div className="min-w-0 space-y-2 md:col-span-2">
                         <Label>Unit price</Label>
                         <Input
                           type="number"
@@ -465,13 +627,46 @@ export function DocumentFormModal({
                           </p>
                         ) : null}
                       </div>
-                      <div className="sm:col-span-2 space-y-2">
-                        <Label>Line total</Label>
+                      <div className="min-w-0 space-y-2 md:col-span-3">
+                        <Label>Tax</Label>
+                        <Select
+                          value={item.tax_rate_id || '__default__'}
+                          onValueChange={(value) =>
+                            updateLineItem(item.id, 'tax_rate_id', value === '__default__' ? '' : value)
+                          }
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Use restaurant default">
+                              <span className="min-w-0 truncate">
+                                {item.tax_rate_id
+                                  ? shortTaxLabel(ratesById.get(item.tax_rate_id) ?? null)
+                                  : fallbackRate
+                                    ? `Default: ${shortTaxLabel(fallbackRate)}`
+                                    : 'Default (no tax)'}
+                              </span>
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__default__">
+                              {fallbackRate
+                                ? `Restaurant default (${formatTaxRateLabel(fallbackRate)})`
+                                : 'Restaurant default (none, 0%)'}
+                            </SelectItem>
+                            {taxRates.map((rate) => (
+                              <SelectItem key={rate.id} value={rate.id}>
+                                {formatTaxRateLabel(rate)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="min-w-0 space-y-2 md:col-span-1">
+                        <Label>Total</Label>
                         <div className="flex h-10 items-center text-sm font-medium text-[#37352F]">
-                          NAD {lineTotal.toFixed(2)}
+                          {applied.total.toFixed(2)}
                         </div>
                       </div>
-                      <div className="sm:col-span-1 flex items-end justify-end">
+                      <div className="flex items-end justify-end md:col-span-1">
                         <Button
                           type="button"
                           variant="outline"
@@ -522,7 +717,7 @@ export function DocumentFormModal({
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-[#6B675F]">VAT ({(taxRate * 100).toFixed(0)}%)</span>
+              <span className="text-[#6B675F]">VAT</span>
               <span className="font-medium text-[#37352F]">
                 NAD {previewTotals.vatAmount.toFixed(2)}
               </span>

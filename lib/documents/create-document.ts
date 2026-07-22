@@ -1,4 +1,7 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
+import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
+import type { TaxRateOption } from '@/lib/tax-rates/format'
+import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
 
 export type DocumentType = 'quote' | 'invoice'
 export type Party = Record<string, unknown>
@@ -7,10 +10,18 @@ export type LineItemInput = {
   description: string
   quantity: number
   unit_price: number
+  /** Nullable -- falls back to the restaurant's default tax_rates row, then 0%, same
+   * hierarchy as calculateOrderPricing() (lib/orders/calculate-order-pricing.ts). */
+  tax_rate_id?: string | null
 }
 
 type LineItemComputed = LineItemInput & {
+  tax_rate_id: string | null
+  tax_rate_percentage: number
+  tax_inclusive: boolean
   line_total: number
+  line_subtotal: number
+  line_tax: number
 }
 
 export type CreateBusinessDocumentInput = {
@@ -30,32 +41,46 @@ export type CreateBusinessDocumentResult = {
   warnings: string[]
 }
 
-function round2(value: number): number {
-  return Math.round(value * 100) / 100
-}
-
-function computeLineItems(items: LineItemInput[]): {
+/**
+ * Per-line VAT, same hierarchy and math as calculateOrderPricing(): each line's own
+ * tax_rate_id, else the restaurant's tax_rates.is_default row, else 0%. restaurants.tax_rate
+ * (the old flat pre-Phase-C field) plays no part here, matching orders exactly -- document
+ * totals are the sum of correctly-taxed lines, not one rate applied to the whole subtotal.
+ * line_total keeps its original meaning (quantity * unit_price, unchanged) for backward
+ * compatibility with documents created before this change, which have line_total but no
+ * tax_rate_id/line_subtotal/line_tax at all -- those fields are simply absent on old rows,
+ * not defaulted to anything, since business_documents rows (and their line_items) are
+ * immutable once created and are never recomputed after the fact.
+ */
+function computeLineItems(
+  items: LineItemInput[],
+  ratesById: Map<string, TaxRateOption>,
+  fallbackDefault: TaxRateOption | null,
+): {
   lineItems: LineItemComputed[]
   subtotal: number
+  vatAmount: number
+  total: number
 } {
-  const lineItems = items.map((item) => ({
-    ...item,
-    line_total: round2(item.quantity * item.unit_price),
-  }))
-  const subtotal = round2(lineItems.reduce((sum, item) => sum + item.line_total, 0))
-  return { lineItems, subtotal }
-}
+  const lineItems = items.map((item) => {
+    const rate = resolveTaxRate(item.tax_rate_id, ratesById, fallbackDefault)
+    const applied = applyTaxToAmount(item.quantity * item.unit_price, rate)
+    return {
+      ...item,
+      tax_rate_id: rate?.id ?? null,
+      tax_rate_percentage: applied.taxRatePercentage,
+      tax_inclusive: applied.taxInclusive,
+      line_total: round2(item.quantity * item.unit_price),
+      line_subtotal: applied.subtotal,
+      line_tax: applied.tax,
+    }
+  })
 
-function resolveDocumentTaxRate(rawRate: unknown, restaurantId: string): number {
-  const taxRate = Number(rawRate ?? 0)
-  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
-    console.error('[documents] invalid tax_rate; falling back to 0', {
-      restaurant_id: restaurantId,
-      tax_rate: rawRate,
-    })
-    return 0
-  }
-  return taxRate
+  const subtotal = round2(lineItems.reduce((sum, item) => sum + item.line_subtotal, 0))
+  const vatAmount = round2(lineItems.reduce((sum, item) => sum + item.line_tax, 0))
+  const total = round2(subtotal + vatAmount)
+
+  return { lineItems, subtotal, vatAmount, total }
 }
 
 /**
@@ -73,7 +98,7 @@ export async function createBusinessDocument(
 
   const { data: restaurant, error: restaurantError } = await supabase
     .from('restaurants')
-    .select('name, phone, address, logo_url, tax_rate')
+    .select('name, phone, address, logo_url')
     .eq('id', restaurantId)
     .maybeSingle()
   if (restaurantError) throw restaurantError
@@ -81,19 +106,27 @@ export async function createBusinessDocument(
     throw new Error('Restaurant not found')
   }
 
-  const { data: billingProfile, error: billingError } = await supabase
-    .from('restaurant_billing_profiles')
-    .select(
-      'registration_number, vat_number, bank_name, bank_account_name, bank_account_number, bank_branch_code',
-    )
-    .eq('restaurant_id', restaurantId)
-    .maybeSingle()
+  const [{ data: billingProfile, error: billingError }, taxRates] = await Promise.all([
+    supabase
+      .from('restaurant_billing_profiles')
+      .select(
+        'registration_number, vat_number, bank_name, bank_account_name, bank_account_number, bank_branch_code',
+      )
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle(),
+    getTaxRatesForRestaurant(supabase, restaurantId),
+  ])
   if (billingError) throw billingError
 
-  const { lineItems: computedLineItems, subtotal } = computeLineItems(lineItems)
-  const safeTaxRate = resolveDocumentTaxRate(restaurant.tax_rate, restaurantId)
-  const vatAmount = round2(subtotal * safeTaxRate)
-  const total = round2(subtotal + vatAmount)
+  const ratesById = new Map(taxRates.map((rate) => [rate.id, rate]))
+  const fallbackDefault = defaultTaxRate(taxRates)
+
+  const {
+    lineItems: computedLineItems,
+    subtotal,
+    vatAmount,
+    total,
+  } = computeLineItems(lineItems, ratesById, fallbackDefault)
   const balance = total
 
   const { data: nextNumber, error: sequenceError } = await supabase.rpc('get_next_document_number', {
