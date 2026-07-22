@@ -384,6 +384,7 @@ export function MenuManagementV2({
       .map((subCategory) => ({
         id: subCategory.id,
         name: subCategory.name,
+        menuCategoryId: subCategory.menu_category_id as string,
         menuCategoryName: categoryNameById[subCategory.menu_category_id] || 'Uncategorized',
       }))
       .sort((a, b) => {
@@ -1526,6 +1527,7 @@ export function MenuManagementV2({
         editingItem={editingItem}
         restaurantId={restaurantId}
         categoryId={selectedMenuCategory?.id ?? editingItem?.menu_category_id ?? null}
+        categoryOptions={menuCategories.map((category) => ({ id: category.id, name: category.name }))}
         defaultSubCategoryId={defaultSubCategoryId}
         subCategoryOptions={allSubCategoryOptions}
         existingItems={existingItemsForValidation}

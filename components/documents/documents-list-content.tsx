@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Download, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { DocumentFormModal } from '@/components/documents/document-form-modal'
+import { RecordPaymentModal } from '@/components/documents/record-payment-modal'
+import { AgedReceivablesContent } from '@/components/documents/aged-receivables-content'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { usePermissions } from '@/hooks/use-permissions'
@@ -12,6 +14,17 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { getSettingsAccessToken } from '@/components/settings/settings-utils'
 
 type DocumentType = 'quote' | 'invoice'
+
+type DocumentStatus =
+  | 'draft'
+  | 'sent'
+  | 'paid'
+  | 'partially_paid'
+  | 'overdue'
+  | 'void'
+  | 'converted'
+  | 'expired'
+  | 'declined'
 
 type DocumentListItem = {
   id: string
@@ -22,6 +35,7 @@ type DocumentListItem = {
   bill_to: string | null
   total: number
   balance: number
+  status: DocumentStatus
 }
 
 function formatMoney(value: number) {
@@ -44,6 +58,34 @@ function typeBadge(type: DocumentType) {
   return <Badge variant="secondary">Quote</Badge>
 }
 
+const STATUS_LABELS: Record<DocumentStatus, string> = {
+  draft: 'Draft',
+  sent: 'Sent',
+  paid: 'Paid',
+  partially_paid: 'Partially Paid',
+  overdue: 'Overdue',
+  void: 'Void',
+  converted: 'Converted',
+  expired: 'Expired',
+  declined: 'Declined',
+}
+
+const STATUS_CLASSES: Record<DocumentStatus, string> = {
+  draft: 'bg-[#E9E9E7] text-[#6B675F] hover:bg-[#E9E9E7]',
+  sent: 'bg-[#2E75B6] hover:bg-[#2E75B6]',
+  paid: 'bg-green-600 hover:bg-green-600',
+  partially_paid: 'bg-amber-500 hover:bg-amber-500',
+  overdue: 'bg-red-600 hover:bg-red-600',
+  void: 'bg-[#6B675F] hover:bg-[#6B675F]',
+  converted: 'bg-purple-600 hover:bg-purple-600',
+  expired: 'bg-[#6B675F] hover:bg-[#6B675F]',
+  declined: 'bg-[#6B675F] hover:bg-[#6B675F]',
+}
+
+function statusBadge(status: DocumentStatus) {
+  return <Badge className={STATUS_CLASSES[status]}>{STATUS_LABELS[status]}</Badge>
+}
+
 export function DocumentsListContent() {
   const { restaurantId } = useAuth()
   const { toast } = useToast()
@@ -56,6 +98,11 @@ export function DocumentsListContent() {
   const [modalType, setModalType] = useState<DocumentType>('quote')
   const [modalInstance, setModalInstance] = useState(0)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
+  const [paymentTarget, setPaymentTarget] = useState<DocumentListItem | null>(null)
+  const [view, setView] = useState<'documents' | 'aged-receivables'>('documents')
+  const [typeFilter, setTypeFilter] = useState<'all' | DocumentType>('all')
 
   const loadDocuments = useCallback(async () => {
     if (!restaurantId) {
@@ -65,8 +112,9 @@ export function DocumentsListContent() {
     try {
       setLoading(true)
       const token = await getSettingsAccessToken()
+      const typeParam = typeFilter === 'all' ? '' : `&type=${encodeURIComponent(typeFilter)}`
       const response = await fetch(
-        `/api/admin/documents?restaurant_id=${encodeURIComponent(restaurantId)}`,
+        `/api/admin/documents?restaurant_id=${encodeURIComponent(restaurantId)}${typeParam}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       const payload = await response.json()
@@ -83,7 +131,7 @@ export function DocumentsListContent() {
     } finally {
       setLoading(false)
     }
-  }, [restaurantId, toast])
+  }, [restaurantId, toast, typeFilter])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch
@@ -127,6 +175,60 @@ export function DocumentsListContent() {
     }
   }
 
+  const handleMarkSent = async (doc: DocumentListItem) => {
+    setSendingId(doc.id)
+    try {
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/documents/${encodeURIComponent(doc.id)}/send`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to mark as sent')
+      }
+      toast({ title: 'Marked as sent', description: `${doc.document_number} is now sent.` })
+      void loadDocuments()
+    } catch (error: unknown) {
+      toast({
+        title: 'Action failed',
+        description: error instanceof Error ? error.message : 'Failed to mark as sent',
+        variant: 'destructive',
+      })
+    } finally {
+      setSendingId(null)
+    }
+  }
+
+  const handleConvert = async (doc: DocumentListItem) => {
+    setConvertingId(doc.id)
+    try {
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/documents/${encodeURIComponent(doc.id)}/convert`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to convert quote to invoice')
+      }
+      toast({
+        title: 'Converted to invoice',
+        description: `Invoice #${payload?.invoice?.document_number ?? ''} created from ${doc.document_number}.`,
+      })
+      void loadDocuments()
+    } catch (error: unknown) {
+      toast({
+        title: 'Conversion failed',
+        description: error instanceof Error ? error.message : 'Failed to convert quote to invoice',
+        variant: 'destructive',
+      })
+    } finally {
+      setConvertingId(null)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#F7F6F3]">
       <div className="border-b border-[#E9E9E7] bg-white px-4 py-6 sm:px-6 lg:px-8">
@@ -157,6 +259,46 @@ export function DocumentsListContent() {
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mb-4 flex gap-2">
+          <Button
+            type="button"
+            variant={view === 'documents' ? 'default' : 'outline'}
+            className={view === 'documents' ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+            size="sm"
+            onClick={() => setView('documents')}
+          >
+            Documents
+          </Button>
+          <Button
+            type="button"
+            variant={view === 'aged-receivables' ? 'default' : 'outline'}
+            className={view === 'aged-receivables' ? 'bg-[#FF6B35] hover:bg-[#e55a28]' : ''}
+            size="sm"
+            onClick={() => setView('aged-receivables')}
+          >
+            Aged Receivables
+          </Button>
+        </div>
+
+        {view === 'documents' ? (
+          <div className="mb-4 flex gap-2">
+            {(['all', 'quote', 'invoice'] as const).map((option) => (
+              <Button
+                key={option}
+                type="button"
+                variant={typeFilter === option ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setTypeFilter(option)}
+              >
+                {option === 'all' ? 'All' : option === 'quote' ? 'Quotes' : 'Invoices'}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+
+        {view === 'aged-receivables' ? (
+          <AgedReceivablesContent />
+        ) : (
         <div className="bg-card overflow-hidden rounded-lg border">
           {loading ? (
             <p className="px-6 py-8 text-sm text-muted-foreground">Loading documents...</p>
@@ -167,17 +309,18 @@ export function DocumentsListContent() {
                   <tr>
                     <th className="px-5 py-3">Document #</th>
                     <th className="px-5 py-3">Type</th>
+                    <th className="px-5 py-3">Status</th>
                     <th className="px-5 py-3">Bill To</th>
                     <th className="px-5 py-3">Issued</th>
                     <th className="px-5 py-3">Total</th>
                     <th className="px-5 py-3">Balance</th>
-                    <th className="px-5 py-3">PDF</th>
+                    <th className="px-5 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {documents.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-5 py-8 text-center text-[#6B675F]">
+                      <td colSpan={8} className="px-5 py-8 text-center text-[#6B675F]">
                         No documents yet. Create a quote or invoice to get started.
                       </td>
                     </tr>
@@ -188,21 +331,62 @@ export function DocumentsListContent() {
                           {doc.document_number}
                         </td>
                         <td className="px-5 py-3">{typeBadge(doc.type)}</td>
+                        <td className="px-5 py-3">{statusBadge(doc.status)}</td>
                         <td className="px-5 py-3 text-[#37352F]">{doc.bill_to || '—'}</td>
                         <td className="px-5 py-3 text-[#6B675F]">{formatDate(doc.issued_at)}</td>
                         <td className="px-5 py-3 text-[#37352F]">{formatMoney(doc.total)}</td>
                         <td className="px-5 py-3 text-[#37352F]">{formatMoney(doc.balance)}</td>
                         <td className="px-5 py-3">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void handleDownloadPdf(doc)}
-                            disabled={downloadingId === doc.id}
-                          >
-                            <Download className="mr-1.5 h-3.5 w-3.5" />
-                            {downloadingId === doc.id ? 'Downloading...' : 'Download PDF'}
-                          </Button>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void handleDownloadPdf(doc)}
+                              disabled={downloadingId === doc.id}
+                            >
+                              <Download className="mr-1.5 h-3.5 w-3.5" />
+                              {downloadingId === doc.id ? 'Downloading...' : 'PDF'}
+                            </Button>
+                            {canWrite && doc.status === 'draft' ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleMarkSent(doc)}
+                                disabled={sendingId === doc.id}
+                              >
+                                {sendingId === doc.id ? 'Sending...' : 'Mark Sent'}
+                              </Button>
+                            ) : null}
+                            {canWrite &&
+                            doc.type === 'invoice' &&
+                            (doc.status === 'sent' ||
+                              doc.status === 'partially_paid' ||
+                              doc.status === 'overdue') ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                className="bg-[#FF6B35] hover:bg-[#e55a28]"
+                                onClick={() => setPaymentTarget(doc)}
+                              >
+                                Record Payment
+                              </Button>
+                            ) : null}
+                            {canWrite &&
+                            doc.type === 'quote' &&
+                            (doc.status === 'draft' || doc.status === 'sent') ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleConvert(doc)}
+                                disabled={convertingId === doc.id}
+                              >
+                                {convertingId === doc.id ? 'Converting...' : 'Convert to Invoice'}
+                              </Button>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -212,6 +396,7 @@ export function DocumentsListContent() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       <DocumentFormModal
@@ -221,6 +406,19 @@ export function DocumentsListContent() {
         documentType={modalType}
         onSuccess={() => void loadDocuments()}
       />
+
+      {paymentTarget ? (
+        <RecordPaymentModal
+          open={Boolean(paymentTarget)}
+          onOpenChange={(open) => {
+            if (!open) setPaymentTarget(null)
+          }}
+          documentId={paymentTarget.id}
+          documentNumber={paymentTarget.document_number}
+          balance={paymentTarget.balance}
+          onRecorded={() => void loadDocuments()}
+        />
+      ) : null}
     </div>
   )
 }

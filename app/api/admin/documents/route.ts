@@ -6,6 +6,8 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
+import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { createBusinessDocument } from '@/lib/documents/create-document'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,10 +20,6 @@ type LineItemInput = {
   description: string
   quantity: number
   unit_price: number
-}
-
-type LineItemComputed = LineItemInput & {
-  line_total: number
 }
 
 type CreateDocumentBody = {
@@ -38,10 +36,6 @@ type CreateDocumentBody = {
 function unauthorizedResponse(error: unknown) {
   const message = error instanceof Error ? error.message : 'Unauthorized'
   return NextResponse.json({ error: message }, { status: 401 })
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100
 }
 
 function isUuid(value: string): boolean {
@@ -167,30 +161,6 @@ function parseCreateDocumentBody(body: unknown): { data: CreateDocumentBody } | 
   }
 }
 
-function computeLineItems(items: LineItemInput[]): {
-  lineItems: LineItemComputed[]
-  subtotal: number
-} {
-  const lineItems = items.map((item) => ({
-    ...item,
-    line_total: round2(item.quantity * item.unit_price),
-  }))
-  const subtotal = round2(lineItems.reduce((sum, item) => sum + item.line_total, 0))
-  return { lineItems, subtotal }
-}
-
-function resolveDocumentTaxRate(rawRate: unknown, restaurantId: string): number {
-  const taxRate = Number(rawRate ?? 0)
-  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
-    console.error('[documents] invalid tax_rate; falling back to 0', {
-      restaurant_id: restaurantId,
-      tax_rate: rawRate,
-    })
-    return 0
-  }
-  return taxRate
-}
-
 export async function POST(request: Request) {
   let user
   try {
@@ -219,83 +189,17 @@ export async function POST(request: Request) {
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.DOCUMENTS_WRITE)
     if (denied) return denied
 
-    const { data: restaurant, error: restaurantError } = await supabase
-      .from('restaurants')
-      .select('name, phone, address, logo_url, tax_rate')
-      .eq('id', restaurantId)
-      .maybeSingle()
-    if (restaurantError) throw restaurantError
-    if (!restaurant) {
-      return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
-    }
-
-    const { data: billingProfile, error: billingError } = await supabase
-      .from('restaurant_billing_profiles')
-      .select(
-        'registration_number, vat_number, bank_name, bank_account_name, bank_account_number, bank_branch_code',
-      )
-      .eq('restaurant_id', restaurantId)
-      .maybeSingle()
-    if (billingError) throw billingError
-
-    const { lineItems, subtotal } = computeLineItems(input.line_items)
-    const safeTaxRate = resolveDocumentTaxRate(restaurant.tax_rate, restaurantId)
-    const vatAmount = round2(subtotal * safeTaxRate)
-    const total = round2(subtotal + vatAmount)
-    const balance = total
-
-    const { data: nextNumber, error: sequenceError } = await supabase.rpc(
-      'get_next_document_number',
-      {
-        p_restaurant_id: restaurantId,
-        p_document_type: input.type,
-      },
-    )
-    if (sequenceError) throw sequenceError
-    if (typeof nextNumber !== 'number') {
-      throw new Error('Failed to reserve document number')
-    }
-
-    const warnings: string[] = []
-    if (!billingProfile) {
-      warnings.push(
-        'No billing profile is configured for this restaurant. Add billing details in Settings before sending documents.',
-      )
-    }
-
-    const insertRow = {
-      restaurant_id: restaurantId,
-      document_type: input.type,
-      document_number: String(nextNumber),
-      quote_id: input.quote_id,
-      due_date: input.due_date,
-      reference_note: input.reference_note,
-      business_name: restaurant.name ?? null,
-      registration_number: billingProfile?.registration_number ?? null,
-      vat_number: billingProfile?.vat_number ?? null,
-      address: restaurant.address ?? null,
-      phone: restaurant.phone ?? null,
-      logo_url: restaurant.logo_url ?? null,
-      bank_name: billingProfile?.bank_name ?? null,
-      bank_account_name: billingProfile?.bank_account_name ?? null,
-      bank_account_number: billingProfile?.bank_account_number ?? null,
-      bank_branch_code: billingProfile?.bank_branch_code ?? null,
-      ship_to: input.ship_to,
-      bill_to: input.bill_to,
-      line_items: lineItems,
-      subtotal,
-      vat_amount: vatAmount,
-      total,
-      balance,
-      created_by: user.id,
-    }
-
-    const { data: created, error: insertError } = await supabase
-      .from('business_documents')
-      .insert(insertRow)
-      .select('*')
-      .single()
-    if (insertError) throw insertError
+    const { document: created, warnings } = await createBusinessDocument(supabase, {
+      restaurantId,
+      type: input.type,
+      shipTo: input.ship_to,
+      billTo: input.bill_to,
+      lineItems: input.line_items,
+      dueDate: input.due_date,
+      referenceNote: input.reference_note,
+      quoteId: input.quote_id,
+      createdBy: user.id,
+    })
 
     return NextResponse.json(
       {
@@ -344,7 +248,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from('business_documents')
-      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance')
+      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status')
       .eq('restaurant_id', restaurantId)
       .order('issued_at', { ascending: false })
 
@@ -355,7 +259,23 @@ export async function GET(request: Request) {
     const { data, error } = await query
     if (error) throw error
 
-    const documents = (data ?? []).map((row) => {
+    // Lazy overdue recompute: 'overdue' has no write event to trigger off (no row changes
+    // when a due_date simply passes), so candidate invoices are recomputed here on read --
+    // same recomputeInvoiceStatus used after payments/send, cheap no-op when nothing changed.
+    const rows = data ?? []
+    for (const row of rows) {
+      if (
+        row.document_type === 'invoice' &&
+        row.due_date &&
+        (row.status === 'sent' || row.status === 'partially_paid')
+      ) {
+        const recomputed = await recomputeInvoiceStatus(supabase, String(row.id))
+        row.status = recomputed.status
+        row.balance = recomputed.balance
+      }
+    }
+
+    const documents = rows.map((row) => {
       const billTo =
         row.bill_to && typeof row.bill_to === 'object' && !Array.isArray(row.bill_to)
           ? (row.bill_to as Record<string, unknown>)
@@ -369,6 +289,7 @@ export async function GET(request: Request) {
         bill_to: billTo ? String(billTo.name ?? '').trim() || null : null,
         total: row.total,
         balance: row.balance,
+        status: row.status,
       }
     })
 
