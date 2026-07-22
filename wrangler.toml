@@ -1,5 +1,5 @@
 name = "flashtap-staging"
-main = ".open-next/worker.js"
+main = "workers/flashtap-worker.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
@@ -11,6 +11,12 @@ binding = "ASSETS"
 [vars]
 ENVIRONMENT = "staging"
 NEXT_PUBLIC_SUPABASE_URL = "https://mdqjpxwczrhkxkbqatqa.supabase.co"
+NEXT_PUBLIC_APP_URL = "https://flashtap-staging.llosperofficial.workers.dev"
+
+# Backstop for abandoned Sale-tab POS orders (and hosted expiry after Part 3).
+# Hits POST /api/cron/cleanup-stale-orders via workers/flashtap-worker.ts scheduled().
+[triggers]
+crons = ["*/2 * * * *"]
 
 [[kv_namespaces]]
 binding = "NEXT_CACHE_WORKERS_KV"
