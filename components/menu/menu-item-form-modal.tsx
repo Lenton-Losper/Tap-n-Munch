@@ -39,6 +39,7 @@ import { formatTaxRateLabel, type TaxRateOption } from '@/lib/tax-rates/format'
 type ItemFormState = {
   name: string
   description: string
+  category_id: string
   sub_category_id: string
   base_price: string
   image_url: string
@@ -62,10 +63,11 @@ type ItemFormState = {
   tax_rate_id: string
 }
 
-function emptyItemForm(subCategoryId = ''): ItemFormState {
+function emptyItemForm(subCategoryId = '', categoryId = ''): ItemFormState {
   return {
     name: '',
     description: '',
+    category_id: categoryId,
     sub_category_id: subCategoryId,
     base_price: '',
     image_url: '',
@@ -89,6 +91,7 @@ function itemToForm(item: MenuItem): ItemFormState {
   return {
     name: item.name,
     description: item.description || '',
+    category_id: item.menu_category_id || '',
     sub_category_id: item.sub_category_id,
     base_price: item.base_price.toString(),
     image_url: item.image_url || '',
@@ -119,7 +122,7 @@ function SubCategorySelect({
   value,
   onChange,
 }: {
-  subCategories: Array<{ id: string; name: string; menuCategoryName: string }>
+  subCategories: Array<{ id: string; name: string; menuCategoryId: string; menuCategoryName: string }>
   value: string
   onChange: (value: string) => void
 }) {
@@ -139,7 +142,7 @@ function SubCategorySelect({
       <SelectContent>
         {subCategories.map((sub) => (
           <SelectItem key={sub.id} value={sub.id}>
-            {sub.menuCategoryName} / {sub.name}
+            {sub.name}
           </SelectItem>
         ))}
       </SelectContent>
@@ -152,6 +155,7 @@ function MenuItemFormContent({
   defaultSubCategoryId,
   restaurantId,
   categoryId,
+  categoryOptions,
   subCategoryOptions,
   existingItems,
   onOpenChange,
@@ -161,7 +165,8 @@ function MenuItemFormContent({
   defaultSubCategoryId: string
   restaurantId: string | null
   categoryId: string | null
-  subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  categoryOptions: Array<{ id: string; name: string }>
+  subCategoryOptions: Array<{ id: string; name: string; menuCategoryId: string; menuCategoryName: string }>
   existingItems: ExistingMenuItem[]
   onOpenChange: (open: boolean) => void
   onSaved: () => void | Promise<void>
@@ -169,7 +174,7 @@ function MenuItemFormContent({
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState('general')
   const [itemForm, setItemForm] = useState<ItemFormState>(() =>
-    editingItem ? itemToForm(editingItem) : emptyItemForm(defaultSubCategoryId),
+    editingItem ? itemToForm(editingItem) : emptyItemForm(defaultSubCategoryId, categoryId ?? ''),
   )
   const [uploadingImage, setUploadingImage] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -273,6 +278,24 @@ function MenuItemFormContent({
   const handleRemoveImage = () => {
     setItemForm((prev) => ({ ...prev, imageFile: null, image_url: '' }))
     setImagePreview(null)
+  }
+
+  const subCategoriesForSelectedCategory = useMemo(
+    () => subCategoryOptions.filter((sub) => sub.menuCategoryId === itemForm.category_id),
+    [subCategoryOptions, itemForm.category_id],
+  )
+
+  const handleCategoryChange = (newCategoryId: string) => {
+    setItemForm((prev) => {
+      const subStillValid = subCategoryOptions.some(
+        (sub) => sub.id === prev.sub_category_id && sub.menuCategoryId === newCategoryId,
+      )
+      return {
+        ...prev,
+        category_id: newCategoryId,
+        sub_category_id: subStillValid ? prev.sub_category_id : '',
+      }
+    })
   }
 
   const sanitizedVariants = useMemo(
@@ -386,12 +409,22 @@ function MenuItemFormContent({
   const handleSaveItem = async () => {
     if (!restaurantId) return
 
+    if (!itemForm.category_id) {
+      toast({
+        title: 'Validation Error',
+        description: 'Please select a category',
+        variant: 'destructive',
+      })
+      setActiveTab('general')
+      return
+    }
+
     const { blockingErrors } = validateMenuItemDraft(
       {
         itemId: editingItem?.id ?? null,
         name: itemForm.name,
         subCategoryId: itemForm.sub_category_id || null,
-        categoryId: categoryId ?? editingItem?.menu_category_id ?? null,
+        categoryId: itemForm.category_id,
         ingredientRows: trackInventory
           ? ingredientRows.map(({ stockItemId, quantity, unitId }) => ({
               stockItemId,
@@ -456,24 +489,18 @@ function MenuItemFormContent({
       let menuItemId = editingItem?.id ?? null
 
       if (editingItem) {
-        if (!editingItem.menu_category_id) {
-          throw new Error('Menu item missing category information')
-        }
         await updateMenuItem(
           restaurantId,
-          editingItem.menu_category_id,
-          editingItem.sub_category_id || '',
+          itemForm.category_id,
+          itemForm.sub_category_id || '',
           editingItem.id,
           payload,
         )
         menuItemId = editingItem.id
       } else {
-        if (!categoryId) {
-          throw new Error('Please select a category first')
-        }
         menuItemId = await createMenuItem({
           restaurant_id: restaurantId,
-          category_id: categoryId,
+          category_id: itemForm.category_id,
           sub_category_id: itemForm.sub_category_id || null,
           ...payload,
         })
@@ -658,9 +685,24 @@ function MenuItemFormContent({
 
           <TabsContent value="general" className="space-y-4 pt-2">
             <div>
+              <Label>Category *</Label>
+              <Select value={itemForm.category_id} onValueChange={handleCategoryChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categoryOptions.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Sub-category (Optional)</Label>
               <SubCategorySelect
-                subCategories={subCategoryOptions}
+                subCategories={subCategoriesForSelectedCategory}
                 value={itemForm.sub_category_id}
                 onChange={(value) => setItemForm((prev) => ({ ...prev, sub_category_id: value }))}
               />
@@ -1238,6 +1280,7 @@ export function MenuItemFormModal({
   editingItem,
   restaurantId,
   categoryId,
+  categoryOptions,
   defaultSubCategoryId = '',
   subCategoryOptions,
   existingItems,
@@ -1248,8 +1291,9 @@ export function MenuItemFormModal({
   editingItem: MenuItem | null
   restaurantId: string | null
   categoryId: string | null
+  categoryOptions: Array<{ id: string; name: string }>
   defaultSubCategoryId?: string
-  subCategoryOptions: Array<{ id: string; name: string; menuCategoryName: string }>
+  subCategoryOptions: Array<{ id: string; name: string; menuCategoryId: string; menuCategoryName: string }>
   existingItems: ExistingMenuItem[]
   onSaved: () => void | Promise<void>
 }) {
@@ -1274,6 +1318,7 @@ export function MenuItemFormModal({
             defaultSubCategoryId={defaultSubCategoryId}
             restaurantId={restaurantId}
             categoryId={categoryId}
+            categoryOptions={categoryOptions}
             subCategoryOptions={subCategoryOptions}
             existingItems={existingItems}
             onOpenChange={onOpenChange}
