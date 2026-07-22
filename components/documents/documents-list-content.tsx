@@ -102,6 +102,7 @@ export function DocumentsListContent() {
   const [convertingId, setConvertingId] = useState<string | null>(null)
   const [paymentTarget, setPaymentTarget] = useState<DocumentListItem | null>(null)
   const [view, setView] = useState<'documents' | 'aged-receivables'>('documents')
+  const [typeFilter, setTypeFilter] = useState<'all' | DocumentType>('all')
 
   const loadDocuments = useCallback(async () => {
     if (!restaurantId) {
@@ -111,8 +112,9 @@ export function DocumentsListContent() {
     try {
       setLoading(true)
       const token = await getSettingsAccessToken()
+      const typeParam = typeFilter === 'all' ? '' : `&type=${encodeURIComponent(typeFilter)}`
       const response = await fetch(
-        `/api/admin/documents?restaurant_id=${encodeURIComponent(restaurantId)}`,
+        `/api/admin/documents?restaurant_id=${encodeURIComponent(restaurantId)}${typeParam}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       const payload = await response.json()
@@ -129,7 +131,7 @@ export function DocumentsListContent() {
     } finally {
       setLoading(false)
     }
-  }, [restaurantId, toast])
+  }, [restaurantId, toast, typeFilter])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deps-triggered data fetch
@@ -277,6 +279,22 @@ export function DocumentsListContent() {
             Aged Receivables
           </Button>
         </div>
+
+        {view === 'documents' ? (
+          <div className="mb-4 flex gap-2">
+            {(['all', 'quote', 'invoice'] as const).map((option) => (
+              <Button
+                key={option}
+                type="button"
+                variant={typeFilter === option ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setTypeFilter(option)}
+              >
+                {option === 'all' ? 'All' : option === 'quote' ? 'Quotes' : 'Invoices'}
+              </Button>
+            ))}
+          </div>
+        ) : null}
 
         {view === 'aged-receivables' ? (
           <AgedReceivablesContent />
