@@ -6,6 +6,7 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
+import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
 
 export const dynamic = 'force-dynamic'
 
@@ -344,7 +345,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from('business_documents')
-      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance')
+      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status')
       .eq('restaurant_id', restaurantId)
       .order('issued_at', { ascending: false })
 
@@ -355,7 +356,23 @@ export async function GET(request: Request) {
     const { data, error } = await query
     if (error) throw error
 
-    const documents = (data ?? []).map((row) => {
+    // Lazy overdue recompute: 'overdue' has no write event to trigger off (no row changes
+    // when a due_date simply passes), so candidate invoices are recomputed here on read --
+    // same recomputeInvoiceStatus used after payments/send, cheap no-op when nothing changed.
+    const rows = data ?? []
+    for (const row of rows) {
+      if (
+        row.document_type === 'invoice' &&
+        row.due_date &&
+        (row.status === 'sent' || row.status === 'partially_paid')
+      ) {
+        const recomputed = await recomputeInvoiceStatus(supabase, String(row.id))
+        row.status = recomputed.status
+        row.balance = recomputed.balance
+      }
+    }
+
+    const documents = rows.map((row) => {
       const billTo =
         row.bill_to && typeof row.bill_to === 'object' && !Array.isArray(row.bill_to)
           ? (row.bill_to as Record<string, unknown>)
@@ -369,6 +386,7 @@ export async function GET(request: Request) {
         bill_to: billTo ? String(billTo.name ?? '').trim() || null : null,
         total: row.total,
         balance: row.balance,
+        status: row.status,
       }
     })
 
