@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireCronSecret } from '@/lib/api/require-cron-secret'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 import { expireHostedPendingOrders } from '@/lib/orders/expire-hosted-pending-orders'
+import { reconcileOrphanPayments } from '@/lib/payments/reconcile-orphan-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic'
  * Cloudflare Cron Trigger target (workers/flashtap-worker.ts scheduled()).
  * Part 2: abandoned Sale-tab POS orders. Part 3: hosted pay-link expiry
  * (replaces the dead Vercel cron that used to hit /api/orders/expire-pending).
+ * Also reconciles sale payment_events → unpaid orders and paid-without-receipt.
  */
 async function runCleanup(req: Request) {
   const cronDenied = requireCronSecret(req)
@@ -41,12 +43,21 @@ async function runCleanup(req: Request) {
     )
   }
 
+  let reconcile: Awaited<ReturnType<typeof reconcileOrphanPayments>> | null = null
+  try {
+    reconcile = await reconcileOrphanPayments(supabase)
+    console.log('[CLEANUP-STALE-ORDERS] Reconcile orphan payments:', reconcile)
+  } catch (error) {
+    console.error('[CLEANUP-STALE-ORDERS] Reconcile failed:', error)
+  }
+
   return NextResponse.json({
     success: true,
     posCancelled: pos.cancelledCount,
     posCancelledIds: pos.cancelledIds,
     hostedExpired: hosted.expiredCount,
     hostedClosedTabs: hosted.closedTabCount,
+    reconcile,
   })
 }
 

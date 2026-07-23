@@ -52,12 +52,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Receipt not found' }, { status: 404 })
     }
 
-    // attempt_number is server-derived (count of prior attempts + 1), never trusted from the
-    // client -- a retry is always a new row, this is what keeps that guarantee airtight.
+    // attempt_number is server-derived (count of prior PRINT attempts + 1), never trusted from
+    // the client -- a retry is always a new row. Scoped to method=PRINT so EMAIL attempts
+    // (sendReceiptEmail) do not inflate the print counter.
     const { count: priorAttempts, error: countError } = await supabase
       .from('receipt_deliveries')
       .select('id', { count: 'exact', head: true })
       .eq('receipt_document_id', receiptDocumentId)
+      .eq('method', 'PRINT')
 
     if (countError) {
       return NextResponse.json({ error: 'Failed to compute attempt number' }, { status: 500 })

@@ -13,7 +13,7 @@ describe('toLineItem', () => {
       basePrice: 25,
       menuItemId: 'b539d464-7323-41bd-8a10-7a4c507cb6d5',
     })
-    expect(item).toEqual({ name: 'Rice', quantity: 1, unit_price: 25, line_total: 25 })
+    expect(item).toEqual({ name: 'Rice', quantity: 1, unit_price: 25, line_total: 25, modifiers: [] })
   })
 
   it('prefers subtotal (addon/size-inclusive) over quantity * basePrice for line_total', () => {
@@ -29,7 +29,7 @@ describe('toLineItem', () => {
 
   it('falls back to quantity * unit_price when no subtotal/lineTotal field is present', () => {
     const item = toLineItem({ name: 'Coke', quantity: 3, unit_price: 15 })
-    expect(item).toEqual({ name: 'Coke', quantity: 3, unit_price: 15, line_total: 45 })
+    expect(item).toEqual({ name: 'Coke', quantity: 3, unit_price: 15, line_total: 45, modifiers: [] })
   })
 
   it('derives unit_price from line_total/quantity when only a total is given', () => {
@@ -40,7 +40,7 @@ describe('toLineItem', () => {
 
   it('still defaults safely to 0 when neither price field is present or numeric', () => {
     const item = toLineItem({ name: 'Mystery' })
-    expect(item).toEqual({ name: 'Mystery', quantity: 1, unit_price: 0, line_total: 0 })
+    expect(item).toEqual({ name: 'Mystery', quantity: 1, unit_price: 0, line_total: 0, modifiers: [] })
   })
 
   it('defaults missing/invalid name and non-positive quantity', () => {
@@ -49,3 +49,16 @@ describe('toLineItem', () => {
     expect(item.quantity).toBe(1)
   })
 })
+
+  it('extracts size and addon modifiers', () => {
+    const item = toLineItem({
+      name: 'Burger',
+      quantity: 1,
+      basePrice: 50,
+      subtotal: 60,
+      selected_size: { name: 'Large' },
+      selected_addons: [{ name: 'Bacon' }, { name: 'Cheese' }],
+    })
+    expect(item.modifiers).toEqual(['Large', 'Bacon', 'Cheese'])
+  })
+
