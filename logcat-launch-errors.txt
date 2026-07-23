@@ -1,0 +1,194 @@
+﻿--------- beginning of main
+06-30 05:11:25.087  2896  2896 E vicediagnostics: Not starting debugger since process cannot load the jdwp agent.
+--------- beginning of system
+06-30 05:11:25.158   725   880 E AppOps  : attributionTag VCN not declared in manifest of android
+06-30 05:11:25.523  2933  2933 E om.flashtap.pos: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:26.666  2933  2933 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: com.android.dialer.voicemail.service.impl.vvmclients.rest.RestVvmCarrierService.getMsisdn:349 Retrieved phone number in an unexpected format: +15551234567 [CONTEXT disable_client_error_logging=true ]
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: ahis: MEDIUM
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at a.cL(PG:15)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at uqm.apply(PG:1241)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at agly.apply(PG:17)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at ahwa.d(PG:3)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at ahwb.run(PG:47)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at aamr.run(PG:7)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at ahpe.run(PG:44)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at zis.run(PG:142)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at xpy.run(PG:395)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:27.153  2259  2484 E DialerRestVvmCarrierService: 	at aant.run(PG:61)
+06-30 05:11:27.397   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms.supervision, role: android.app.role.SYSTEM_SUPERVISION
+06-30 05:11:27.802   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms, role: android.app.role.SYSTEM_DEPENDENCY_INSTALLER
+06-30 05:11:28.142  2986  2986 E droid.dynsystem: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: com.android.dialer.voicemail.service.impl.vvmclients.rest.RestVvmCarrierService.getMsisdn:349 Retrieved phone number in an unexpected format: +15551234567 [CONTEXT disable_client_error_logging=true ]
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: ahis: MEDIUM
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at a.cL(PG:15)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at uqm.apply(PG:1241)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at agly.apply(PG:17)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at ahwa.d(PG:3)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at ahwb.run(PG:47)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at aamr.run(PG:7)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at ahpe.run(PG:44)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at zis.run(PG:142)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at xpy.run(PG:395)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:28.389  2259  2509 E DialerRestVvmCarrierService: 	at aant.run(PG:61)
+06-30 05:11:28.396   725  1511 E TaskPersister: File error accessing recents directory (directory doesn't exist?).
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: com.android.dialer.voicemail.service.impl.vvmclients.rest.RestVvmCarrierService.getMsisdn:349 Retrieved phone number in an unexpected format: +15551234567 [CONTEXT disable_client_error_logging=true ]
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: ahis: MEDIUM
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at a.cL(PG:15)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at uqm.apply(PG:1241)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at agly.apply(PG:17)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at ahwa.d(PG:3)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at ahwb.run(PG:47)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at aamr.run(PG:7)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at ahpe.run(PG:44)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at zis.run(PG:142)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at xpy.run(PG:395)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:29.160  2259  2484 E DialerRestVvmCarrierService: 	at aant.run(PG:61)
+06-30 05:11:29.410   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms, role: android.app.role.WALLET
+06-30 05:11:29.434  2933  2968 E ReactNativeJS: [Error: [FlashTap] RuntimeConfig.API_BASE_URL is not set. Build is misconfigured.]
+06-30 05:11:29.436  2933  2968 E ReactNativeJS: [Error: [FlashTap] RuntimeConfig.API_BASE_URL is not set. Build is misconfigured.]
+--------- beginning of crash
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: FATAL EXCEPTION: mqt_v_native
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: Process: com.flashtap.pos, PID: 2933
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: com.facebook.react.common.JavascriptException: Error: [FlashTap] RuntimeConfig.API_BASE_URL is not set. Build is misconfigured., stack:
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:162066
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: loadModuleImplementation@1:220599
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: guardedLoadModule@1:220179
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: metroRequire@1:219659
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: ?anon_0_@1:1002446
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: asyncGeneratorStep@1:445275
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:986566
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:821007
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: _getTerminalToken@1:528408
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: getTerminalToken@1:528345
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: ?anon_0_@1:1069226
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: asyncGeneratorStep@1:445275
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:986566
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:821007
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: _checkAuth@1:1001964
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: checkAuth@1:1001898
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:877775
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitHookEffectListMount@1:320478
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326940
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326967
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326967
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326967
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326916
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326916
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326916
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326967
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326916
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326967
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326916
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: recursivelyTraversePassiveMountEffects@1:326109
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: commitPassiveMountOnFiber@1:326774
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: flushPassiveEffects@1:345715
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: anonymous@1:683980
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.react.modules.core.ExceptionsManagerModule.reportException(ExceptionsManagerModule.kt:52)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.jni.NativeRunnable.run(Native Method)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at android.os.Handler.handleCallback(Handler.java:995)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:103)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadHandler.dispatchMessage(MessageQueueThreadHandler.kt:21)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at android.os.Looper.loopOnce(Looper.java:248)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at android.os.Looper.loop(Looper.java:338)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadImpl$Companion.startNewBackgroundThread$lambda$0(MessageQueueThreadImpl.kt:152)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadImpl$Companion.$r8$lambda$YYXYCFexeoKtAeDpeNYkxZZlpbA(Unknown Source:0)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at com.facebook.react.bridge.queue.MessageQueueThreadImpl$Companion$$ExternalSyntheticLambda0.run(D8$$SyntheticClass:0)
+06-30 05:11:29.442  2933  2969 E AndroidRuntime: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:29.493   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms.supervision, role: android.app.role.SYSTEM_SUPERVISION
+06-30 05:11:29.591   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms, role: android.app.role.SYSTEM_DEPENDENCY_INSTALLER
+06-30 05:11:29.652  3020  3020 E gedprovisioning: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:29.710  3016  3016 E ystem:dynsystem: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: com.android.dialer.voicemail.service.impl.vvmclients.rest.RestVvmCarrierService.getMsisdn:349 Retrieved phone number in an unexpected format: +15551234567 [CONTEXT disable_client_error_logging=true ]
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: ahis: MEDIUM
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at a.cL(PG:15)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at uqm.apply(PG:1241)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at agly.apply(PG:17)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at ahwa.d(PG:3)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at ahwb.run(PG:47)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at aamr.run(PG:7)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at ahpe.run(PG:44)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at zis.run(PG:142)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at xpy.run(PG:395)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:29.982  2259  2484 E DialerRestVvmCarrierService: 	at aant.run(PG:61)
+06-30 05:11:30.302   725  2946 E RoleControllerServiceImpl: Default/fallback role holder package doesn't qualify for the role, package: com.google.android.gms, role: android.app.role.WALLET
+06-30 05:11:30.950   725  1625 E IPCThreadState: Binder transaction failure. id: 95871, BR_*: 29189, error: -22 (Invalid argument)
+06-30 05:11:31.054   556   556 E BpTransactionCompletedListener: Failed to transact (-32)
+06-30 05:11:31.699  2177  2177 E .gms.persistent: hiddenapi: Accessing hidden method Landroid/net/ConnectivityManager;->isNetworkTypeMobile(I)Z (runtime_flags=0, domain=platform, api=max-target-p) from Lcdsi; (domain=app) using reflection: denied
+06-30 05:11:31.700  2177  2177 E .gms.persistent: hiddenapi: Accessing hidden method Landroid/os/PowerManager;->isLightDeviceIdleMode()Z (runtime_flags=0, domain=platform, api=max-target-s) from Lcdsi; (domain=app) using reflection: denied
+06-30 05:11:31.878  3020  3020 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
+06-30 05:11:32.068  3071  3071 E viders.calendar: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:32.215  1983  2578 E Finsky  : [97] [EExp] Failed to export experiments for package com.google.android.finsky.stable.
+06-30 05:11:32.215  1983  2578 E Finsky  : java.util.concurrent.TimeoutException: Waited 10000 milliseconds (plus 2 milliseconds, 390000 nanoseconds delay) for bolf@4698022[status=PENDING, setFuture=[boho@2421ab3[status=PENDING, info=[inputFuture=[bhwz@3ba1870[status=PENDING, info=[bgtv@4eb7e9]]], exceptionType=[class com.google.android.gms.common.api.ApiException], fallback=[bbio@4c37c6e]]]]]
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at boif.t(PG:366)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bohx.get(PG:6)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at akun.i(PG:151)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at akun.h(PG:19)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at akun.doInBackground(PG:164)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at akup.f(PG:4)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at akuq.call(PG:3)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bole.a(PG:3)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bokj.run(PG:19)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bolf.run(PG:5)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bokw.run(PG:3)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bokx.run(PG:64)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1156)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:651)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at bphq.run(PG:57)
+06-30 05:11:32.215  1983  2578 E Finsky  : 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:32.429  2177  3097 E ctxmgr  : [FencePendingIntentCache]Expected to find a PendingIntent for pendingIntentKey=70999091-6062-4299-8321-a7705ce5eceb [CONTEXT service_id=47 ]
+06-30 05:11:32.429  2177  3097 E ctxmgr  : [FencePendingIntentCache]Expected to find a PendingIntent for pendingIntentKey=70999091-6062-4299-8321-a7705ce5eceb [CONTEXT service_id=47 ]
+06-30 05:11:32.766  3071  3071 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
+06-30 05:11:33.619  3106  3106 E m.android.shell: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:33.978   725  1511 E TaskPersister: File error accessing recents directory (directory doesn't exist?).
+06-30 05:11:34.218  2346  2873 E AiAiEcho: Reading elements from Geller failed with cause
+06-30 05:11:34.218  2346  2873 E AiAiEcho: ilw: Code: UNKNOWN, Message: Geller data fetch is not enabled
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at imn.a(PG:17)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at lhh.b(PG:20)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at abge.g(PG:11)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at kotlinx.coroutines.DispatchedTask.run(PG:112)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:524)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at xjo.a(PG:3)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at xir.run(PG:19)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at xjp.run(PG:5)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:524)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.FutureTask.run(FutureTask.java:317)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:348)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1156)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:651)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at hxw.run(PG:221)
+06-30 05:11:34.218  2346  2873 E AiAiEcho: 	at java.lang.Thread.run(Thread.java:1119)
+06-30 05:11:35.156  3139  3139 E .apps.safetyhub: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:38.720   725   815 E JobScheduler.Quota: <0>com.google.android.apps.photos has 0 EJ quota without running anything
+06-30 05:11:38.756   725  1652 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:38.887   725  1652 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.167  3205  3205 E id.gms.unstable: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:39.272   725  1652 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.558   725  1656 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.636   725  1669 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.797   725  1668 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.838   725  1559 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:39.911  2346  2723 E AiAiEcho: EchoSearch: SettingsFetcherImpl: DB already exists.
+06-30 05:11:40.300   725  1641 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:40.581   725  1641 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:40.722   725  1559 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:40.873   725  2957 E JobScheduler.JobStatus: App com.google.android.apps.photos became active but still in NEVER bucket
+06-30 05:11:40.948  3165  3255 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
+06-30 05:11:42.036  2177  3197 E ctxmgr  : [ShushGestureSensor] Context hub handle not found [CONTEXT service_id=47 ]
+06-30 05:11:42.122  3262  3262 E droid.deskclock: Not starting debugger since process cannot load the jdwp agent.
+06-30 05:11:42.579  3139  3264 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
