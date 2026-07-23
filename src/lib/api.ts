@@ -969,6 +969,39 @@ export async function recordReceiptDelivery(
   }
 }
 
+/**
+ * Emails the receipt for an order to the given address. Unlike printing, sending happens
+ * entirely server-side -- this route is assumed to log its own receipt_deliveries row
+ * (provider 'email') since the server, not the terminal, knows the outcome; request shape
+ * (POST {email}) is confirmed working since real sends have succeeded on staging. Exact error
+ * response shape still isn't confirmed -- on failure this throws the full raw response (status
+ * + body), not just a parsed .error field, specifically so a caller can route it somewhere
+ * inspectable (there's no on-device log access on this hardware -- see
+ * sendReceiptEmailForOrder in receiptPrinting.ts, which logs it to receipt_deliveries).
+ */
+export async function sendReceiptEmail(
+  orderId: string,
+  email: string,
+  token: string,
+): Promise<void> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/receipts/${orderId}/email`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email}),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    throw new Error(`status=${response.status} body=${rawText}`);
+  }
+}
+
 export type TerminalPrinterConnectionType = 'BLUETOOTH' | 'BUILTIN';
 
 export interface TerminalPrinterConfig {
@@ -1006,8 +1039,12 @@ export async function getPrinterConfig(
 }
 
 /**
- * printerAddress is omitted entirely for BUILTIN -- there's nothing to pair, it's the device
- * itself.
+ * printerAddress is sent as an explicit `null` for BUILTIN, not omitted -- there's nothing to
+ * pair, it's the device itself. Deliberately not `undefined`: JSON.stringify drops keys whose
+ * value is undefined, so the request body would carry no printer_address key at all rather than
+ * a null one. A "required" check on the backend (key-presence) fails identically either way, but
+ * an explicit null is the correct value for a nullable string | null column either way and is
+ * the only form that can satisfy a nullable-but-required-key schema server-side.
  */
 export async function savePrinterConfig(
   params: {
@@ -1027,7 +1064,7 @@ export async function savePrinterConfig(
       body: JSON.stringify({
         connection_type: params.connectionType,
         printer_name: params.printerName,
-        printer_address: params.connectionType === 'BUILTIN' ? undefined : params.printerAddress,
+        printer_address: params.connectionType === 'BUILTIN' ? null : params.printerAddress,
         paper_width_mm: params.paperWidthMm ?? 80,
         character_width: params.characterWidth,
       }),

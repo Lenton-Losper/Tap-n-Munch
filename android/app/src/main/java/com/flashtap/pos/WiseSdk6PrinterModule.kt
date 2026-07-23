@@ -56,6 +56,11 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
     // Printable width in dots -- addMultiText's docs require width+columnSpacing per column to
     // sum to no more than this.
     private const val CANVAS_WIDTH_DOTS = 384
+    // The SDK6 demo calls setGrayLevel() before every print job (never leaves it unset); 3 is
+    // WiseSdkDoc_P's documented factory default ("restored to the default value of 3" on
+    // restart), used here as an explicit value rather than relying on whatever the printer
+    // happens to still have set from a previous job.
+    private const val DEFAULT_GRAY_LEVEL = 3
     // Exact convention from the SDK6 demo's own divider lines (PrinterActivity.java).
     private const val DIVIDER_TEXT = "--------------------------------------------"
     private val UNSUPPORTED_MODELS = setOf("T2", "P5L")
@@ -199,6 +204,7 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
   ) {
     try {
       printerInstance.initPrinter()
+      printerInstance.setGrayLevel(DEFAULT_GRAY_LEVEL)
 
       val status = printerInstance.getPrinterStatus()
       val paper = status?.get("paper") as? Byte

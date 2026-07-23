@@ -2,6 +2,7 @@ import {
   getPrinterConfig,
   getReceiptForOrder,
   recordReceiptDelivery,
+  sendReceiptEmail,
   TerminalPrinterConfig,
 } from './api';
 import {connectToPrinter, getPrinterStatus, printEscPosBytes} from './printer';
@@ -26,8 +27,37 @@ export async function printReceiptForOrder(
   orderId: string,
   token: string,
 ): Promise<PrintReceiptResult> {
-  const config = await getPrinterConfig(token).catch(() => null);
+  let config: TerminalPrinterConfig | null = null;
+  let configFetchError: unknown;
+  try {
+    config = await getPrinterConfig(token);
+  } catch (err) {
+    configFetchError = err;
+  }
+
   if (!config) {
+    // No adb/on-device log access on this hardware -- route the diagnostic through
+    // receipt_deliveries.error_message instead (queryable on staging via Supabase), same as
+    // every other failure here. "No receipt printer is set up on this terminal" is the *only*
+    // place that exact string appears client-side (confirmed by grepping every printer_address
+    // check), so there is no separate client-side gate blocking BUILTIN configs -- this is
+    // either the GET route not returning the saved row, returning it without connection_type,
+    // or the request failing outright, and this is what will tell us which.
+    const receipt = await getReceiptForOrder(orderId, token).catch(() => null);
+    if (receipt) {
+      await recordReceiptDelivery(
+        {
+          receiptDocumentId: receipt.id,
+          status: 'failed',
+          provider: 'config_lookup_failed',
+          errorCode: 'NO_PRINTER_CONFIGURED',
+          errorMessage: configFetchError
+            ? `getPrinterConfig threw: ${configFetchError instanceof Error ? configFetchError.message : String(configFetchError)}`
+            : `getPrinterConfig returned: ${JSON.stringify(config)}`,
+        },
+        token,
+      );
+    }
     return {
       success: false,
       errorCode: 'NO_PRINTER_CONFIGURED',
@@ -170,4 +200,47 @@ async function printViaBuiltIn(orderId: string, token: string): Promise<PrintRec
   }
 
   return {success: true};
+}
+
+export interface SendReceiptEmailResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Emails the receipt for an order, fetching it first so a failure has a receiptDocumentId to
+ * log against. On failure, routes the raw response (see sendReceiptEmail's full status+body
+ * error) into receipt_deliveries.error_message -- no on-device log access on this hardware, so
+ * this is the only way to see what the route actually returned. NOTE: the email route is
+ * assumed (not confirmed) to log its own receipt_deliveries row server-side on send, so a
+ * failed attempt may end up with two rows (this one and the server's) until that's confirmed
+ * either way -- accepted since the diagnostic need outweighs a possible duplicate row. Does not
+ * log on success (the low-risk/lower-priority half of this per the request that added it).
+ */
+export async function sendReceiptEmailForOrder(
+  orderId: string,
+  email: string,
+  token: string,
+): Promise<SendReceiptEmailResult> {
+  const receipt = await getReceiptForOrder(orderId, token).catch(() => null);
+  if (!receipt) {
+    return {success: false, error: 'Receipt has not been issued yet'};
+  }
+
+  try {
+    await sendReceiptEmail(orderId, email, token);
+    return {success: true};
+  } catch (err) {
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    await recordReceiptDelivery(
+      {
+        receiptDocumentId: receipt.id,
+        status: 'failed',
+        provider: 'email',
+        errorMessage: rawMessage,
+      },
+      token,
+    );
+    return {success: false, error: 'Failed to send receipt email'};
+  }
 }

@@ -2,10 +2,12 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
@@ -17,13 +19,19 @@ import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api
 import {formatCurrency, getItemUnitPrice} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {processPaymentIntent} from '../lib/payment';
-import {printReceiptForOrder} from '../lib/receiptPrinting';
+import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import StatusBadge from '../components/StatusBadge';
 import {Order} from '../types';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
+
+// Printing is paused -- built-in printer bug under investigation, Bluetooth changes on hold.
+// Completed transactions default to email only until this flips back on. Flip PRINT_ENABLED to
+// restore the Print button and auto-print-on-success; the underlying print code stays intact,
+// just not wired into the UI or the payment-success flow while this is false.
+const PRINT_ENABLED = false;
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString([], {
@@ -53,6 +61,15 @@ export default function PaymentScreen({route, navigation}: Props) {
     'idle' | 'printing' | 'success' | 'failed'
   >('idle');
   const [printError, setPrintError] = useState<string | null>(null);
+  const [emailState, setEmailState] = useState<
+    'idle' | 'sending' | 'success' | 'failed'
+  >('idle');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [lastEmailSentTo, setLastEmailSentTo] = useState<string | null>(null);
+  const [showEmailPrompt, setShowEmailPrompt] = useState(false);
+  const [emailInput, setEmailInput] = useState('');
+  const [emailPromptError, setEmailPromptError] = useState<string | null>(null);
+  const [receiptSkipped, setReceiptSkipped] = useState(false);
 
   const resolvedTableId = order?.table_id ?? tableId;
 
@@ -101,13 +118,54 @@ export default function PaymentScreen({route, navigation}: Props) {
 
   // Auto-print as soon as the payment succeeds — payment success and receipt printing are
   // independent outcomes, so a print failure here must never look like or affect the payment
-  // result above it; it only ever offers Retry / Skip.
+  // result above it. Print/Email/Skip stay available as peer actions the whole time, not just
+  // after a failure -- staff can print again, email a copy, or do both.
+  // Gated on PRINT_ENABLED: printing is paused, so completed transactions default to email
+  // only -- this must not silently fire against the paused/broken print path in the background.
   useEffect(() => {
-    if (machineState.state === 'PAYMENT_SUCCESS') {
+    if (PRINT_ENABLED && machineState.state === 'PAYMENT_SUCCESS') {
       attemptPrintReceipt();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machineState.state]);
+
+  const openEmailPrompt = () => {
+    setEmailPromptError(null);
+    setShowEmailPrompt(true);
+  };
+
+  const handleSendEmail = async () => {
+    const trimmed = emailInput.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setEmailPromptError('Enter a valid email address');
+      return;
+    }
+
+    setEmailState('sending');
+    setEmailError(null);
+    setEmailPromptError(null);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        setEmailState('failed');
+        setEmailError('Session expired');
+        return;
+      }
+      const result = await sendReceiptEmailForOrder(orderId, trimmed, token);
+      if (result.success) {
+        setEmailState('success');
+        setLastEmailSentTo(trimmed);
+        setShowEmailPrompt(false);
+        setEmailInput('');
+      } else {
+        setEmailState('failed');
+        setEmailError(result.error ?? 'Failed to send receipt email');
+      }
+    } catch (err) {
+      setEmailState('failed');
+      setEmailError(err instanceof Error ? err.message : 'Failed to send receipt email');
+    }
+  };
 
   const goToOrders = () => {
     reset();
@@ -251,36 +309,113 @@ export default function PaymentScreen({route, navigation}: Props) {
             <Text style={styles.successTitle}>Payment successful</Text>
             <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
 
-            {printState === 'printing' && (
-              <View style={styles.printingPill}>
-                <ActivityIndicator color={Colors.blue} size="small" />
-                <Text style={styles.printingText}>Printing receipt…</Text>
-              </View>
-            )}
-
-            {printState === 'failed' && (
-              <View style={styles.failedCard}>
-                <MaterialCommunityIcons
-                  name="printer-off-outline"
-                  size={32}
-                  color={Colors.red}
-                />
-                <Text style={styles.failedTitle}>RECEIPT PRINTING FAILED</Text>
-                {printError ? (
-                  <Text style={styles.failedError}>{printError}</Text>
-                ) : null}
-                <View style={styles.printFailedActions}>
+            {!receiptSkipped && (
+              <View style={styles.receiptCard}>
+                <View style={styles.receiptActions}>
+                  {PRINT_ENABLED ? (
+                    <Pressable
+                      style={[
+                        styles.receiptActionButton,
+                        printState === 'printing' && styles.buttonDisabled,
+                      ]}
+                      disabled={printState === 'printing'}
+                      onPress={attemptPrintReceipt}>
+                      {printState === 'printing' ? (
+                        <ActivityIndicator color={Colors.primary} size="small" />
+                      ) : (
+                        <>
+                          <MaterialCommunityIcons
+                            name="printer-outline"
+                            size={20}
+                            color={Colors.textPrimary}
+                          />
+                          <Text style={styles.receiptActionText}>Print</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  ) : (
+                    <View style={styles.receiptActionComingSoon}>
+                      <MaterialCommunityIcons
+                        name="printer-off-outline"
+                        size={20}
+                        color={Colors.textMuted}
+                      />
+                      <Text style={styles.receiptActionComingSoonText}>Coming soon</Text>
+                    </View>
+                  )}
                   <Pressable
-                    style={styles.outlinedRedButton}
-                    onPress={attemptPrintReceipt}>
-                    <Text style={styles.outlinedRedText}>Retry</Text>
+                    style={[
+                      styles.receiptActionButton,
+                      emailState === 'sending' && styles.buttonDisabled,
+                    ]}
+                    disabled={emailState === 'sending'}
+                    onPress={openEmailPrompt}>
+                    {emailState === 'sending' ? (
+                      <ActivityIndicator color={Colors.primary} size="small" />
+                    ) : (
+                      <>
+                        <MaterialCommunityIcons
+                          name="email-outline"
+                          size={20}
+                          color={Colors.textPrimary}
+                        />
+                        <Text style={styles.receiptActionText}>Email</Text>
+                      </>
+                    )}
                   </Pressable>
                   <Pressable
-                    style={styles.printSkipButton}
-                    onPress={() => setPrintState('idle')}>
-                    <Text style={styles.printSkipText}>Skip</Text>
+                    style={styles.receiptActionButton}
+                    onPress={() => setReceiptSkipped(true)}>
+                    <Text style={styles.receiptActionText}>Skip</Text>
                   </Pressable>
                 </View>
+
+                {PRINT_ENABLED && printState === 'success' && (
+                  <View style={styles.receiptStatusRow}>
+                    <MaterialCommunityIcons
+                      name="check-circle-outline"
+                      size={16}
+                      color={Colors.green}
+                    />
+                    <Text style={styles.receiptStatusTextSuccess}>Receipt printed</Text>
+                  </View>
+                )}
+                {PRINT_ENABLED && printState === 'failed' && (
+                  <View style={styles.receiptStatusRow}>
+                    <MaterialCommunityIcons
+                      name="alert-circle-outline"
+                      size={16}
+                      color={Colors.red}
+                    />
+                    <Text style={styles.receiptStatusTextError}>
+                      {printError ?? 'Receipt printing failed'}
+                    </Text>
+                  </View>
+                )}
+                {emailState === 'success' && (
+                  <View style={styles.receiptStatusRow}>
+                    <MaterialCommunityIcons
+                      name="check-circle-outline"
+                      size={16}
+                      color={Colors.green}
+                    />
+                    <Text style={styles.receiptStatusTextSuccess}>
+                      Emailed to {lastEmailSentTo}
+                    </Text>
+                  </View>
+                )}
+                {emailState === 'failed' && (
+                  <View style={styles.receiptStatusRow}>
+                    <MaterialCommunityIcons
+                      name="alert-circle-outline"
+                      size={16}
+                      color={Colors.red}
+                    />
+                    <Text style={styles.receiptStatusTextError}>
+                      {emailError ?? 'Failed to send receipt email'}
+                    </Text>
+                  </View>
+                )}
               </View>
             )}
           </View>
@@ -316,6 +451,60 @@ export default function PaymentScreen({route, navigation}: Props) {
             </Pressable>
           </View>
         </View>
+
+        <Modal
+          visible={showEmailPrompt}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowEmailPrompt(false)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.emailPromptCard}>
+              <Text style={styles.emailPromptTitle}>Email Receipt</Text>
+              <TextInput
+                style={styles.emailInput}
+                placeholder="customer@example.com"
+                placeholderTextColor={Colors.textMuted}
+                value={emailInput}
+                onChangeText={text => {
+                  setEmailInput(text);
+                  setEmailPromptError(null);
+                }}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+              />
+              {emailPromptError ? (
+                <Text style={styles.failedError}>{emailPromptError}</Text>
+              ) : null}
+              <View style={styles.emailPromptActions}>
+                <Pressable
+                  style={[styles.secondaryButton, styles.emailPromptButtonFlex]}
+                  onPress={() => {
+                    setShowEmailPrompt(false);
+                    setEmailInput('');
+                    setEmailPromptError(null);
+                  }}>
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    styles.emailPromptButtonFlex,
+                    emailState === 'sending' && styles.buttonDisabled,
+                  ]}
+                  disabled={emailState === 'sending'}
+                  onPress={handleSendEmail}>
+                  {emailState === 'sending' ? (
+                    <ActivityIndicator color={Colors.white} />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>Send</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }
@@ -621,38 +810,100 @@ const styles = StyleSheet.create({
     ...Typography.subheading,
     color: Colors.blue,
   },
-  printingPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    backgroundColor: Colors.blueLight,
-    borderRadius: 24,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
+  receiptCard: {
+    width: '100%',
     marginTop: Spacing.md,
+    gap: Spacing.sm,
   },
-  printingText: {
-    ...Typography.small,
-    color: Colors.blue,
-  },
-  printFailedActions: {
+  receiptActions: {
     flexDirection: 'row',
     gap: Spacing.sm,
-    marginTop: Spacing.xs,
   },
-  printSkipButton: {
-    marginTop: Spacing.sm,
+  receiptActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    borderRadius: 12,
+    paddingVertical: 14,
     borderWidth: 1.5,
     borderColor: Colors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: Spacing.lg,
-    minWidth: 120,
-    alignItems: 'center',
   },
-  printSkipText: {
+  receiptActionText: {
+    ...Typography.small,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  receiptActionComingSoon: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    borderRadius: 12,
+    paddingVertical: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderStyle: 'dashed',
+    backgroundColor: Colors.surface,
+  },
+  receiptActionComingSoonText: {
+    ...Typography.small,
+    fontWeight: '600',
+    color: Colors.textMuted,
+  },
+  receiptStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  receiptStatusTextSuccess: {
+    ...Typography.small,
+    color: Colors.green,
+    textAlign: 'center',
+  },
+  receiptStatusTextError: {
+    ...Typography.small,
+    color: Colors.red,
+    textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.lg,
+  },
+  emailPromptCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: Colors.background,
+    borderRadius: 16,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  emailPromptTitle: {
     ...Typography.subheading,
-    color: Colors.textSecondary,
+    color: Colors.textPrimary,
+  },
+  emailInput: {
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: Spacing.md,
+    ...Typography.body,
+    color: Colors.textPrimary,
+  },
+  emailPromptActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  emailPromptButtonFlex: {
+    flex: 1,
+    width: undefined,
   },
   failedCard: {
     backgroundColor: Colors.redLight,
