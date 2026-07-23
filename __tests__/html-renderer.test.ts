@@ -2,11 +2,21 @@ import { renderReceiptHtml } from '../lib/receipts/renderers/htmlRenderer'
 import type { ReceiptSnapshot } from '../lib/receipts/issueReceipt'
 
 const SNAPSHOT: ReceiptSnapshot = {
-  outlet: { restaurant_name: 'Wanderers Sport Club', address: 'Pionierspark, Windhoek' },
+  renderer_version: 'receipt-render-v2',
+  outlet: {
+    restaurant_name: 'Wanderers Sport Club',
+    address: 'Pionierspark, Windhoek',
+    vat_number: null,
+    registration_number: null,
+    currency: 'NAD',
+  },
   customer_name: null,
+  table_number: null,
+  channel: null,
+  staff_name: null,
   line_items: [
-    { name: '400g T Bone with Chips', quantity: 1, unit_price: 230, line_total: 230 },
-    { name: 'Kola Tonic Tot', quantity: 2, unit_price: 6, line_total: 12 },
+    { name: '400g T Bone with Chips', quantity: 1, unit_price: 230, line_total: 230, modifiers: [] },
+    { name: 'Kola Tonic Tot', quantity: 2, unit_price: 6, line_total: 12, modifiers: [] },
   ],
   totals: { subtotal: 248.69, vat: 37.31, discount: 0, grand_total: 286 },
   payments: [

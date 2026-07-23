@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,14 @@ export async function POST(
     const body = await req.json().catch(() => ({}))
     const status = String(body?.status || '').trim()
     const reference = body?.reference != null ? String(body.reference).trim() : ''
+    const voucherNo =
+      body?.voucherNo != null && String(body.voucherNo).trim()
+        ? String(body.voucherNo).trim()
+        : ''
+    const businessOrderNo =
+      body?.businessOrderNo != null && String(body.businessOrderNo).trim()
+        ? String(body.businessOrderNo).trim()
+        : ''
     const amount = Number(body?.amount)
     const paymentMethod = body?.paymentMethod
       ? String(body.paymentMethod).trim()
@@ -32,7 +41,7 @@ export async function POST(
 
     const { data: order, error: orderError } = await supabase
       .from('orders')
-      .select('id, tab_id, restaurant_id, status')
+      .select('id, tab_id, restaurant_id, status, paycloud_merchant_order_no')
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
       .single()
@@ -45,17 +54,23 @@ export async function POST(
 
     if (status === 'success') {
       const paidAt = new Date().toISOString()
+      // Voucher is distinct from Finatic merchant_order_no (paycloud_merchant_order_no).
+      // payment_reference kept for backwards compatibility with older readers.
+      const paymentVoucherNo = voucherNo || reference || null
+
+      const updatePayload: Record<string, unknown> = {
+        status: 'completed',
+        payment_status: 'paid',
+        payment_method: paymentMethod || 'card',
+        payment_reference: reference,
+        payment_voucher_no: paymentVoucherNo,
+        paid_at: paidAt,
+        completed_at: paidAt,
+      }
 
       const { error: updateError } = await supabase
         .from('orders')
-        .update({
-          status: 'completed',
-          payment_status: 'paid',
-          payment_method: paymentMethod || 'card',
-          payment_reference: reference,
-          paid_at: paidAt,
-          completed_at: paidAt,
-        })
+        .update(updatePayload)
         .eq('id', orderId)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -63,7 +78,18 @@ export async function POST(
         return NextResponse.json({ error: 'Failed to update order' }, { status: 500 })
       }
 
-      // Recalculate tab total from remaining unpaid orders
+      // Safety net: if prepare-payment was skipped (stale APK), persist merchant order now.
+      if (businessOrderNo && !order.paycloud_merchant_order_no) {
+        await supabase
+          .from('orders')
+          .update({ paycloud_merchant_order_no: businessOrderNo.slice(0, 32) })
+          .eq('id', orderId)
+          .eq('restaurant_id', terminal.restaurantId)
+          .is('paycloud_merchant_order_no', null)
+      }
+
+      await safeIssueReceiptForOrder(orderId, 'terminal/payment')
+
       if (order.tab_id) {
         const { data: unpaidOrders } = await supabase
           .from('orders')
@@ -72,24 +98,19 @@ export async function POST(
           .neq('payment_status', 'paid')
 
         const newTotal = (unpaidOrders ?? []).reduce(
-          (sum: number, o: any) => sum + Number(o.total), 0
+          (sum: number, o: any) => sum + Number(o.total),
+          0,
         )
 
-        await supabase
-          .from('tabs')
-          .update({ total: newTotal })
-          .eq('id', order.tab_id)
+        await supabase.from('tabs').update({ total: newTotal }).eq('id', order.tab_id)
 
-        // Check if all orders on the tab are now paid
         const { data: remainingOrders } = await supabase
           .from('orders')
           .select('id')
           .eq('tab_id', order.tab_id)
           .neq('payment_status', 'paid')
 
-        const allPaid = (remainingOrders ?? []).length === 0
-
-        canClose = allPaid
+        canClose = (remainingOrders ?? []).length === 0
 
         await supabase
           .from('tabs')
@@ -108,6 +129,8 @@ export async function POST(
         entity_id: orderId,
         metadata: {
           reference,
+          voucherNo: paymentVoucherNo,
+          businessOrderNo: businessOrderNo || order.paycloud_merchant_order_no || null,
           amount,
           paymentMethod,
           terminalId: terminal.terminalId,

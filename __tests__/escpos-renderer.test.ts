@@ -2,14 +2,27 @@ import { renderReceiptEscPos } from '../lib/receipts/renderers/escposRenderer'
 import type { ReceiptSnapshot } from '../lib/receipts/issueReceipt'
 
 const SNAPSHOT: ReceiptSnapshot = {
+  renderer_version: 'receipt-render-v2',
   outlet: {
     restaurant_name: 'Test Diner',
     address: '123 Test Street, Windhoek',
+    vat_number: 'VAT123',
+    registration_number: null,
+    currency: 'NAD',
   },
   customer_name: null,
+  table_number: 5,
+  channel: 'pos',
+  staff_name: null,
   line_items: [
-    { name: 'Cheeseburger', quantity: 2, unit_price: 50, line_total: 100 },
-    { name: 'Coke', quantity: 1, unit_price: 15, line_total: 15 },
+    {
+      name: 'Cheeseburger',
+      quantity: 2,
+      unit_price: 50,
+      line_total: 100,
+      modifiers: ['Large', 'Extra cheese'],
+    },
+    { name: 'Coke', quantity: 1, unit_price: 15, line_total: 15, modifiers: [] },
   ],
   totals: {
     subtotal: 115,
@@ -47,16 +60,45 @@ describe('renderReceiptEscPos', () => {
     expect(tail).toEqual(expect.arrayContaining([0x1d, 0x56, 0x01]))
   })
 
-  it('includes outlet identity, line items, totals, and masked payment reference', () => {
+  it('includes outlet identity, VAT, currency, modifiers, table, totals, and masked payment', () => {
     const ascii = bytesToAscii(renderReceiptEscPos(SNAPSHOT))
     expect(ascii).toContain('Test Diner')
     expect(ascii).toContain('123 Test Street, Windhoek')
+    expect(ascii).toContain('VAT: VAT123')
     expect(ascii).toContain('Cheeseburger')
+    expect(ascii).toContain('+ Large')
     expect(ascii).toContain('Coke')
-    expect(ascii).toContain('115.00')
-    expect(ascii).toContain('17.25')
-    expect(ascii).toContain('132.25')
+    expect(ascii).toContain('N$115.00')
+    expect(ascii).toContain('N$17.25')
+    expect(ascii).toContain('N$132.25')
     expect(ascii).toContain('****9999')
+    expect(ascii).toContain('Table')
+    expect(ascii).toContain('5')
+  })
+
+  it('prints document number and issued time when provided', () => {
+    const ascii = bytesToAscii(
+      renderReceiptEscPos(SNAPSHOT, {
+        documentNumber: 'RCT-000187',
+        issuedAt: '2026-07-23T12:34:00.000Z',
+      }),
+    )
+    expect(ascii).toContain('RCT-000187')
+    expect(ascii).toContain('Receipt')
+    expect(ascii).toContain('Issued')
+  })
+
+  it('omits receipt meta when documentNumber/issuedAt are absent (backwards compatible)', () => {
+    const ascii = bytesToAscii(
+      renderReceiptEscPos({
+        ...SNAPSHOT,
+        table_number: null,
+        staff_name: null,
+      }),
+    )
+    expect(ascii).not.toContain('RCT-')
+    expect(ascii).not.toContain('Receipt')
+    expect(ascii).not.toContain('Issued')
   })
 
   it('never includes a raw unmasked reference beyond what the snapshot already provides', () => {

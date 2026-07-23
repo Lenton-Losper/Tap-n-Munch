@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { generatePaymentReference } from '@/lib/payment-reference'
+import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,6 +24,18 @@ export async function POST(
 
     const orderIds: string[] = body.order_ids ?? []
     const gatewayReference: string = body.gateway_reference ?? ''
+    const voucherNo =
+      body?.voucher_no != null && String(body.voucher_no).trim()
+        ? String(body.voucher_no).trim()
+        : body?.voucherNo != null && String(body.voucherNo).trim()
+          ? String(body.voucherNo).trim()
+          : ''
+    const businessOrderNo =
+      body?.business_order_no != null && String(body.business_order_no).trim()
+        ? String(body.business_order_no).trim()
+        : body?.businessOrderNo != null && String(body.businessOrderNo).trim()
+          ? String(body.businessOrderNo).trim()
+          : ''
     const amount: number = Number(body.amount)
     const method: string = body.method ?? 'card'
 
@@ -47,6 +60,7 @@ export async function POST(
 
     const paidAt = new Date().toISOString()
     const paymentReference = generatePaymentReference()
+    const paymentVoucherNo = voucherNo || gatewayReference || null
 
     // Mark selected orders as paid
     const { error: ordersError } = await supabase
@@ -55,6 +69,7 @@ export async function POST(
         payment_status: 'paid',
         payment_method: method,
         payment_reference: paymentReference,
+        payment_voucher_no: paymentVoucherNo,
         status: 'completed',
         paid_at: paidAt,
         completed_at: paidAt,
@@ -68,6 +83,17 @@ export async function POST(
         { status: 500 }
       )
     }
+
+    if (businessOrderNo) {
+      await supabase
+        .from('orders')
+        .update({ paycloud_merchant_order_no: businessOrderNo.slice(0, 32) })
+        .in('id', orderIds)
+        .eq('restaurant_id', terminal.restaurantId)
+        .is('paycloud_merchant_order_no', null)
+    }
+
+    await safeIssueReceiptsForOrders(orderIds, 'terminal/tabs/settle')
 
     // Recalculate tab total from remaining unpaid orders
     const { data: unpaidOrders } = await supabase

@@ -50,13 +50,10 @@ export interface PdfRenderOptions {
   issuedAt?: string
 }
 
+import { formatReceiptMoney } from '@/lib/receipts/renderers/formatReceiptMoney'
+
 function formatMoney(value: number, currency = 'NAD'): string {
-  const safe = Number.isFinite(value) ? value : 0
-  const formatted = safe.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-  return `${currency} ${formatted}`
+  return formatReceiptMoney(value, currency)
 }
 
 function formatDate(iso: string | null | undefined): string {
@@ -145,7 +142,22 @@ function drawHeaderBlock(
 
   if (snapshot.outlet.address) {
     centeredText(page, snapshot.outlet.address, centerX, y - SMALL_SIZE, fonts.regular, SMALL_SIZE, TEXT_MUTED)
-    y -= SMALL_SIZE + 14
+    y -= SMALL_SIZE + 4
+  }
+  if (snapshot.outlet.vat_number) {
+    centeredText(
+      page,
+      `VAT: ${snapshot.outlet.vat_number}`,
+      centerX,
+      y - SMALL_SIZE,
+      fonts.regular,
+      SMALL_SIZE,
+      TEXT_MUTED,
+    )
+    y -= SMALL_SIZE + 4
+  }
+  if (!snapshot.outlet.address && !snapshot.outlet.vat_number) {
+    y -= 10
   } else {
     y -= 10
   }
@@ -248,7 +260,7 @@ function drawLineItemsTable(
       nameY -= ROW_LINE_HEIGHT
     }
 
-    const unitText = formatMoney(row.item.unit_price)
+    const unitText = formatMoney(row.item.unit_price, snapshot.outlet.currency)
     const unitTextWidth = fonts.regular.widthOfTextAtSize(unitText, BODY_SIZE)
     page.drawText(unitText, {
       x: unitX + unitWidth - unitTextWidth - 4,
@@ -258,7 +270,7 @@ function drawLineItemsTable(
       color: TEXT_DARK,
     })
 
-    const lineTotalText = formatMoney(row.item.line_total)
+    const lineTotalText = formatMoney(row.item.line_total, snapshot.outlet.currency)
     const lineTotalWidth = fonts.regular.widthOfTextAtSize(lineTotalText, BODY_SIZE)
     page.drawText(lineTotalText, {
       x: totalX + totalWidth - lineTotalWidth - 4,
@@ -286,14 +298,20 @@ function drawTotalsBlock(
   const rightX = MARGIN + contentWidth
   const labelX = rightX - 160
 
+  const currency = snapshot.outlet.currency || 'NAD'
   const lines: { label: string; value: string; bold?: boolean; grand?: boolean }[] = [
-    { label: 'Subtotal', value: formatMoney(snapshot.totals.subtotal) },
-    { label: 'VAT', value: formatMoney(snapshot.totals.vat) },
+    { label: 'Subtotal', value: formatMoney(snapshot.totals.subtotal, currency) },
+    { label: 'VAT', value: formatMoney(snapshot.totals.vat, currency) },
   ]
   if (snapshot.totals.discount > 0) {
-    lines.push({ label: 'Discount', value: `-${formatMoney(snapshot.totals.discount)}` })
+    lines.push({ label: 'Discount', value: `-${formatMoney(snapshot.totals.discount, currency)}` })
   }
-  lines.push({ label: 'Total', value: formatMoney(snapshot.totals.grand_total), bold: true, grand: true })
+  lines.push({
+    label: 'Total',
+    value: formatMoney(snapshot.totals.grand_total, currency),
+    bold: true,
+    grand: true,
+  })
 
   let y = yTop
   for (const line of lines) {
@@ -312,6 +330,7 @@ function drawPaymentsBlock(
   payments: ReceiptPayment[],
   fonts: { regular: PDFFont; bold: PDFFont },
   yTop: number,
+  currency = 'NAD',
 ): number {
   if (payments.length === 0) return yTop
 
@@ -328,7 +347,15 @@ function drawPaymentsBlock(
   for (const payment of payments) {
     const label = `${payment.method.toUpperCase()} ${payment.masked_reference}`
     page.drawText(label, { x: MARGIN, y: y - PAYMENT_SIZE, size: PAYMENT_SIZE, font: fonts.regular, color: TEXT_DARK })
-    drawRightText(page, formatMoney(payment.amount), rightX, y - PAYMENT_SIZE, fonts.regular, PAYMENT_SIZE, TEXT_DARK)
+    drawRightText(
+      page,
+      formatMoney(payment.amount, currency),
+      rightX,
+      y - PAYMENT_SIZE,
+      fonts.regular,
+      PAYMENT_SIZE,
+      TEXT_DARK,
+    )
     y -= PAYMENT_SIZE + 8
   }
 
@@ -361,7 +388,7 @@ export async function renderReceiptPdf(
   y = drawHeaderBlock(page, snapshot, options, fonts, y)
   y = drawLineItemsTable(page, snapshot, fonts, y)
   y = drawTotalsBlock(page, snapshot, fonts, y)
-  y = drawPaymentsBlock(page, snapshot.payments, fonts, y)
+  y = drawPaymentsBlock(page, snapshot.payments, fonts, y, snapshot.outlet?.currency ?? 'NAD')
 
   const minContentY = MARGIN + FOOTER_AREA + 20
   if (y < minContentY) {

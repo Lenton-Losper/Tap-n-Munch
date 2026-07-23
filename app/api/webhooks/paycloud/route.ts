@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { enforceWebhookRateLimit } from '@/payments/webhook'
 import { verifyPayloadSignature } from '@/payments/signature'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
+import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
 
 function webhookAck() {
   return new Response('success', {
@@ -49,10 +51,6 @@ function extractWebhookMerchantOrderNo(payload: Record<string, unknown>): string
   return ''
 }
 
-function supabaseOrMerchantRef(merchantOrderNo: string): string {
-  return `paycloud_merchant_order_no.eq.${merchantOrderNo},payment_reference.eq.${merchantOrderNo}`
-}
-
 function isPaidTransStatus(transStatus: unknown): boolean {
   if (transStatus === 2 || transStatus === '2') return true
   const s = String(transStatus ?? '').toLowerCase()
@@ -80,18 +78,30 @@ export async function POST(req: Request) {
 
   const supabase = createServerSupabaseClient()
 
-  const { data: existingRows } = await supabase
-    .from('orders')
-    .select('id, payment_status')
-    .or(supabaseOrMerchantRef(merchantOrderNo))
-
-  if (
-    existingRows &&
-    existingRows.length > 0 &&
-    existingRows.every((r) => String(r.payment_status || '').toLowerCase() === 'paid')
-  ) {
-    console.log('[WEBHOOK] Duplicate webhook ignored for:', merchantOrderNo)
+  let resolved: { orderIds: string[]; source: 'orders' | 'payment_events' | null }
+  try {
+    resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
+  } catch (e) {
+    console.error('[WEBHOOK] order resolve failed:', e)
     return webhookAck()
+  }
+
+  if (resolved.orderIds.length > 0) {
+    const { data: existingRows } = await supabase
+      .from('orders')
+      .select('id, payment_status')
+      .in('id', resolved.orderIds)
+
+    if (
+      existingRows &&
+      existingRows.length > 0 &&
+      existingRows.every((r) => String(r.payment_status || '').toLowerCase() === 'paid')
+    ) {
+      console.log('[WEBHOOK] Duplicate webhook ignored for:', merchantOrderNo, {
+        source: resolved.source,
+      })
+      return webhookAck()
+    }
   }
 
   const sign = extractSign(payload, req.headers)
@@ -109,32 +119,36 @@ export async function POST(req: Request) {
     return webhookAck()
   }
 
-  console.log('[WEBHOOK] Processing payment for:', merchantOrderNo)
+  console.log('[WEBHOOK] Processing payment for:', merchantOrderNo, { source: resolved.source })
 
-  const { data: orderRows } = await supabase
-    .from('orders')
-    .select('id')
-    .or(supabaseOrMerchantRef(merchantOrderNo))
-
-  if (!orderRows?.length) {
-    // Ack as success even though we couldn't act on it yet: this is a timing race (the order
-    // row may not have been created yet when this notification arrived, e.g. a terminal device
-    // calling Finatic directly and separately/later calling our own order-creation endpoint --
-    // not something under this route's control), not a malformed request. Finatic's own
-    // retry-on-non-success-ack behavior is what actually recovers this once the order exists;
-    // replying with a non-conforming body here (previously {"received":true}) just caused
-    // Finatic to log the delivery attempt as failed even though we received it correctly.
-    console.error('[WEBHOOK] Order not found (will rely on Finatic retry once it exists):', merchantOrderNo)
+  if (!resolved.orderIds.length) {
+    console.error(
+      '[WEBHOOK] Order not found via orders or payment_events (will rely on Finatic retry):',
+      merchantOrderNo,
+    )
     return webhookAck()
   }
+
+  const paidAt = new Date().toISOString()
 
   await supabase
     .from('orders')
     .update({
       payment_status: 'paid',
-      paid_at: new Date().toISOString(),
+      paid_at: paidAt,
     })
-    .or(supabaseOrMerchantRef(merchantOrderNo))
+    .in('id', resolved.orderIds)
+
+  // Backfill correlation key when we only found the order via payment_events (legacy POS).
+  if (resolved.source === 'payment_events') {
+    await supabase
+      .from('orders')
+      .update({ paycloud_merchant_order_no: merchantOrderNo })
+      .in('id', resolved.orderIds)
+      .is('paycloud_merchant_order_no', null)
+  }
+
+  await safeIssueReceiptsForOrders(resolved.orderIds, 'webhooks/paycloud')
 
   return webhookAck()
 }
