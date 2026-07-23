@@ -1,4 +1,6 @@
 import {NativeModules, Platform} from 'react-native';
+import {prepareTerminalPayment} from './api';
+import {getTerminalToken} from './storage';
 
 export interface PaymentResult {
   success: boolean;
@@ -31,7 +33,11 @@ interface RefundNativeResult {
 }
 
 interface PaymentModuleType {
-  launchPayment: (amount: string, orderId: string) => Promise<PaymentNativeResult>;
+  launchPayment: (
+    amount: string,
+    orderId: string,
+    merchantOrderNo: string,
+  ) => Promise<PaymentNativeResult>;
   launchRefund: (
     amount: string,
     originBusinessOrderNo: string,
@@ -39,6 +45,30 @@ interface PaymentModuleType {
 }
 
 const {PaymentModule} = NativeModules as {PaymentModule?: PaymentModuleType};
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+/**
+ * Tab settle historically passed comma-joined order ids into launchPayment. Prepare-payment
+ * requires a single order UUID — use the lead id so paycloud_merchant_order_no is persisted
+ * on one row the Finatic webhook can find. settleTab still marks the full set paid via the
+ * terminal callback.
+ */
+function resolvePrepareOrderId(orderIdOrList: string): string {
+  const trimmed = orderIdOrList.trim();
+  if (isUuid(trimmed)) {
+    return trimmed;
+  }
+  const first = trimmed.split(',')[0]?.trim() ?? '';
+  if (isUuid(first)) {
+    return first;
+  }
+  throw new Error('orderId must be a UUID (or comma-separated UUIDs for tab settle)');
+}
 
 export async function processPaymentIntent(
   amount: number,
@@ -52,21 +82,35 @@ export async function processPaymentIntent(
   }
 
   try {
+    const token = await getTerminalToken();
+    if (!token) {
+      return {success: false, error: 'Session expired'};
+    }
+
+    const prepareOrderId = resolvePrepareOrderId(orderId);
+
+    // Persist backend-owned merchant_order_no before Finatic so webhooks can correlate.
+    const prepared = await prepareTerminalPayment(prepareOrderId, token);
+    const merchantOrderNo = prepared.merchantOrderNo;
+
     const amountInCents = String(Math.round(amount * 100));
 
-    const result = await PaymentModule.launchPayment(amountInCents, orderId);
+    const result = await PaymentModule.launchPayment(
+      amountInCents,
+      orderId,
+      merchantOrderNo,
+    );
 
     const voucherNo = result.voucherNo || undefined;
-    const businessOrderNo = result.businessOrderNo || undefined;
+    // Prefer the value we sent (and persisted); fall back to gateway echo.
+    const businessOrderNo =
+      merchantOrderNo || result.businessOrderNo || undefined;
 
     return {
       success: true,
       voucherNo,
       businessOrderNo,
-      reference:
-        voucherNo ||
-        businessOrderNo ||
-        `FT-${Date.now()}`,
+      reference: voucherNo || businessOrderNo || `FT-${Date.now()}`,
     };
   } catch (error: unknown) {
     return {

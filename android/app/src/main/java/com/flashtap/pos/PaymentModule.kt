@@ -25,6 +25,7 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
   fun launchPayment(
     amount: String,
     orderId: String,
+    merchantOrderNo: String,
     promise: Promise,
   ) {
     val activity = getCurrentActivity() ?: run {
@@ -33,15 +34,34 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     }
 
     try {
-      val merchantOrderNo = generateMerchantOrderNo(orderId)
+      // Backend-owned value from POST /api/terminal/orders/{id}/prepare-payment — must match
+      // orders.paycloud_merchant_order_no so Finatic webhooks can correlate. Do not mint here.
+      val trimmedMerchantOrderNo = merchantOrderNo.trim()
+      if (trimmedMerchantOrderNo.isEmpty()) {
+        promise.reject(
+          "MISSING_MERCHANT_ORDER_NO",
+          "merchantOrderNo is required; call prepare-payment before launching Finatic",
+        )
+        return
+      }
+      if (trimmedMerchantOrderNo.length > 32) {
+        promise.reject(
+          "INVALID_MERCHANT_ORDER_NO",
+          "merchantOrderNo exceeds Finatic 32-character limit",
+        )
+        return
+      }
 
-      Log.d("PaymentModule", "merchantOrderNo=$merchantOrderNo length=${merchantOrderNo.length}")
+      Log.d(
+        "PaymentModule",
+        "orderId=$orderId merchantOrderNo=$trimmedMerchantOrderNo length=${trimmedMerchantOrderNo.length}",
+      )
 
       val paddedAmount = String.format(Locale.US, "%012d", amount.toLong())
 
       val transData =
         JSONObject().apply {
-          put("businessOrderNo", merchantOrderNo)
+          put("businessOrderNo", trimmedMerchantOrderNo)
           put("paymentScenario", "CARD")
           put("amt", paddedAmount)
           put("notifyUrl", BuildConfig.NOTIFY_URL)

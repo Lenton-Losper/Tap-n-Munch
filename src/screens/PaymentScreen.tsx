@@ -186,6 +186,8 @@ export default function PaymentScreen({route, navigation}: Props) {
         const paymentResult = await completePayment(orderId, token, {
           status: 'success',
           reference: result.reference,
+          voucherNo: result.voucherNo,
+          businessOrderNo: result.businessOrderNo,
           amount: total,
           paymentMethod: 'card',
         });

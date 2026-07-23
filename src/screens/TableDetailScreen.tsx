@@ -162,6 +162,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
         amount,
         paymentResult.reference,
         token,
+        {
+          voucherNo: paymentResult.voucherNo,
+          businessOrderNo: paymentResult.businessOrderNo,
+        },
       );
 
       const businessOrderNo = paymentResult.businessOrderNo;

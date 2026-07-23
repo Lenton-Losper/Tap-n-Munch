@@ -390,6 +390,7 @@ export async function settleTab(
   amount: number,
   gatewayReference: string,
   token: string,
+  extras?: { voucherNo?: string; businessOrderNo?: string },
 ): Promise<{
   payment_reference: string;
   new_tab_total: number;
@@ -405,6 +406,8 @@ export async function settleTab(
         amount,
         gateway_reference: gatewayReference,
         method: 'card',
+        voucher_no: extras?.voucherNo,
+        business_order_no: extras?.businessOrderNo,
       }),
     },
     token,
@@ -448,6 +451,10 @@ export async function completePayment(
     reference: string;
     amount: number;
     paymentMethod: 'card';
+    /** Wiseasy/Finatic voucher — stored as orders.payment_voucher_no (not merchant order). */
+    voucherNo?: string;
+    /** Finatic businessOrderNo — backfills paycloud_merchant_order_no if prepare was skipped. */
+    businessOrderNo?: string;
   },
 ): Promise<{canClose: boolean}> {
   const response = await terminalFetch(
@@ -468,6 +475,47 @@ export async function completePayment(
 
   const data = (await response.json()) as {canClose?: boolean};
   return {canClose: Boolean(data.canClose)};
+}
+
+/**
+ * Allocates (or returns) the backend-owned Finatic merchant_order_no and persists it on
+ * orders.paycloud_merchant_order_no before WiseCashier launches. Required so
+ * POST /api/webhooks/paycloud can correlate the notify to this order.
+ */
+export async function prepareTerminalPayment(
+  orderId: string,
+  token: string,
+): Promise<{orderId: string; merchantOrderNo: string; created: boolean}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/prepare-payment`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const data = (await response.json()) as {
+    orderId?: string;
+    merchantOrderNo?: string;
+    created?: boolean;
+  };
+  const merchantOrderNo = String(data.merchantOrderNo ?? '').trim();
+  if (!merchantOrderNo) {
+    throw new Error('prepare-payment did not return merchantOrderNo');
+  }
+
+  return {
+    orderId: String(data.orderId ?? orderId),
+    merchantOrderNo,
+    created: Boolean(data.created),
+  };
 }
 
 // ─── Authorization / Payment events ───────────────────────────────────────
@@ -884,9 +932,9 @@ export interface TerminalReceipt {
 
 /**
  * Fetches the already-rendered ESC/POS bytes for an order's issued receipt. Returns null
- * (not a throw) when the receipt isn't issued yet — issuance is fire-and-forget server-side
- * (Phase 1), so a brief "not found" right after payment is an expected, retryable state, not
- * an error.
+ * (not a throw) when the receipt isn't issued yet — issuance is awaited on mark-paid paths,
+ * so a brief "not found" right after payment is an expected, retryable state, not an error.
+ * 404 responses include diagnostics (payment_status, issuance failure audit) logged for support.
  */
 export async function getReceiptForOrder(
   orderId: string,
@@ -905,6 +953,19 @@ export async function getReceiptForOrder(
   }
 
   if (response.status === 404) {
+    try {
+      const body = (await response.json()) as {
+        code?: string;
+        diagnostics?: Record<string, unknown>;
+      };
+      console.warn('[getReceiptForOrder] RECEIPT_NOT_READY', {
+        orderId,
+        code: body.code ?? 'RECEIPT_NOT_READY',
+        diagnostics: body.diagnostics ?? null,
+      });
+    } catch {
+      console.warn('[getReceiptForOrder] RECEIPT_NOT_READY', {orderId});
+    }
     return null;
   }
 
