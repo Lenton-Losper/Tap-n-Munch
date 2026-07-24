@@ -6,29 +6,6 @@ on:
       - cloudflare-staging
 
 jobs:
-  inspect-staging-auth:
-    if: contains(github.event.head_commit.message, '[inspect-auth]')
-    runs-on: ubuntu-latest
-    name: Inspect staging auth user
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - name: Inspect + verify password
-        env:
-          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
-          BOOTSTRAP_EMAIL: llosperofficial@gmail.com
-        run: |
-          BOOTSTRAP_PASSWORD="$(printf '%s' 'Rmxhc2hUYXBTdGFnZTIwMjY=' | base64 -d)"
-          echo "::add-mask::$BOOTSTRAP_PASSWORD"
-          export BOOTSTRAP_PASSWORD
-          npx tsx scripts/inspect-staging-auth-user.ts
-
   build-verification:
     runs-on: ubuntu-latest
     name: Build Verification (Lint, Typecheck, Unit Tests)
