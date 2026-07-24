@@ -446,12 +446,18 @@ export default function MenuBrowsePage() {
         )
 
         const merged: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
-        for (const grouped of categoryPayloads) {
+        for (let i = 0; i < categoryPayloads.length; i++) {
+          const grouped = categoryPayloads[i]
+          const categoryName = menuCategories[i]?.name || ''
           for (const [key, entry] of Object.entries(grouped)) {
             const existing = merged[key]
             if (!existing) {
               merged[key] = {
-                subcategory: entry.subcategory,
+                subcategory: {
+                  ...entry.subcategory,
+                  categoryName,
+                  categoryOrder: i,
+                },
                 items: [...(entry.items || [])],
               }
               continue
@@ -484,13 +490,21 @@ export default function MenuBrowsePage() {
       return { subcategory, items: filteredItems }
     })
     .filter(({ items }) => items.length > 0)
+    .sort((a, b) => {
+      const catA = Number(a.subcategory?.categoryOrder ?? 0)
+      const catB = Number(b.subcategory?.categoryOrder ?? 0)
+      if (catA !== catB) return catA - catB
+      const orderA = Number(a.subcategory?.display_order ?? 999)
+      const orderB = Number(b.subcategory?.display_order ?? 999)
+      if (orderA !== orderB) return orderA - orderB
+      return String(a.subcategory?.name || '').localeCompare(String(b.subcategory?.name || ''))
+    })
 
-  const displayItems = useMemo(
-    () => flattenGroupedItems(
-      Object.fromEntries(filteredGroupedEntries.map(({ subcategory, items }) => [subcategory.id, { subcategory, items }]))
-    ),
-    [filteredGroupedEntries]
-  )
+  const menuSectionTitle = selectedMenuCategory?.name
+    ? selectedMenuCategory.name
+    : normalizedSearchQuery
+      ? 'Search results'
+      : 'All Menu'
 
   const popularItems = useMemo(
     () => flattenGroupedItems(allGroupedItems).filter(isPopularItem),
@@ -568,6 +582,60 @@ export default function MenuBrowsePage() {
       )}
     </button>
   )
+
+  const renderMenuItemCard = (item: MenuItem) => {
+    const resolvedSelection = getResolvedVariantSelection(item)
+    const displayPrice = getItemDisplayPrice(item, resolvedSelection)
+    return (
+      <article
+        key={item.id}
+        className="flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm"
+      >
+        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gray-100">
+          <FoodItemImage
+            itemName={item.name}
+            menuItemId={item.id}
+            storedImageUrl={item.image_url}
+            alt={item.name}
+            className="h-full w-full object-cover"
+          />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-bold leading-tight text-black">{item.name}</h3>
+              {item.description ? (
+                <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{item.description}</p>
+              ) : null}
+            </div>
+            {renderAddButton(item)}
+          </div>
+          {renderVariantSelectors(item)}
+          <div className="mt-auto flex items-center justify-between pt-1">
+            <p className="text-sm font-bold" style={{ color: ACCENT }}>
+              {currency}
+              {displayPrice.toFixed(2)}
+            </p>
+            {item.status === 'out_of_stock' ? (
+              <span className="text-xs text-red-600">Out of stock</span>
+            ) : !effectiveIsInTab && !isKiosk && !isViewOnly ? (
+              <span className="text-[10px] text-gray-400">Create tab to order</span>
+            ) : null}
+          </div>
+        </div>
+      </article>
+    )
+  }
+
+  const subcategorySectionTitle = (subcategory: SubCategory) => {
+    const name = String(subcategory?.name || 'Menu')
+    // Synthetic bucket for items with no subcategory — no extra heading needed if alone.
+    if (subcategory?.id === '__category_items__') return name
+    if (categoryFilter === 'all' && subcategory?.categoryName) {
+      return `${subcategory.categoryName} · ${name}`
+    }
+    return name
+  }
 
   useEffect(() => {
     const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
@@ -885,69 +953,38 @@ export default function MenuBrowsePage() {
           </section>
         ) : null}
 
-        {/* All Menu */}
+        {/* Menu list — heading follows category chip; items grouped by subcategory */}
         <section id="all-menu">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-bold text-black">All Menu</h2>
-            <button
-              type="button"
-              onClick={() => {
-                setCategoryFilter('all')
-                setSelectedMenuCategory(null)
-                setSearchQuery('')
-              }}
-              className="text-sm font-medium"
-              style={{ color: ACCENT }}
-            >
-              View All Items →
-            </button>
+            <h2 className="text-lg font-bold text-black">{menuSectionTitle}</h2>
+            {categoryFilter !== 'all' || normalizedSearchQuery ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCategoryFilter('all')
+                  setSelectedMenuCategory(null)
+                  setSearchQuery('')
+                }}
+                className="text-sm font-medium"
+                style={{ color: ACCENT }}
+              >
+                View All Items →
+              </button>
+            ) : null}
           </div>
 
-          {displayItems.length > 0 ? (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {displayItems.map((item) => {
-                const resolvedSelection = getResolvedVariantSelection(item)
-                const displayPrice = getItemDisplayPrice(item, resolvedSelection)
-                return (
-                  <article
-                    key={item.id}
-                    className="flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm"
-                  >
-                    <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gray-100">
-                      <FoodItemImage
-                        itemName={item.name}
-                        menuItemId={item.id}
-                        storedImageUrl={item.image_url}
-                        alt={item.name}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <h3 className="font-bold leading-tight text-black">{item.name}</h3>
-                          {item.description ? (
-                            <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{item.description}</p>
-                          ) : null}
-                        </div>
-                        {renderAddButton(item)}
-                      </div>
-                      {renderVariantSelectors(item)}
-                      <div className="mt-auto flex items-center justify-between pt-1">
-                        <p className="text-sm font-bold" style={{ color: ACCENT }}>
-                          {currency}
-                          {displayPrice.toFixed(2)}
-                        </p>
-                        {item.status === 'out_of_stock' ? (
-                          <span className="text-xs text-red-600">Out of stock</span>
-                        ) : (!effectiveIsInTab && !isKiosk && !isViewOnly) ? (
-                          <span className="text-[10px] text-gray-400">Create tab to order</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </article>
-                )
-              })}
+          {filteredGroupedEntries.length > 0 ? (
+            <div className="space-y-8">
+              {filteredGroupedEntries.map(({ subcategory, items }) => (
+                <div key={String(subcategory.id)} className="space-y-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    {subcategorySectionTitle(subcategory)}
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {items.map((item) => renderMenuItemCard(item))}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             !loading && (
