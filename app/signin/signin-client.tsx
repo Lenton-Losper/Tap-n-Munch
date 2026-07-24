@@ -91,7 +91,13 @@ export function SignInClient() {
     setSubmitting(true)
 
     try {
-      await signIn(email, password)
+      // Prefer FormData over React state so browser autofill values are what we send
+      // (controlled inputs can visually show autofill while state lags).
+      const form = event.currentTarget
+      const formData = new FormData(form)
+      const submitEmail = String(formData.get('email') || email).trim()
+      const submitPassword = String(formData.get('password') || password)
+      await signIn(submitEmail, submitPassword)
       // Redirect handled by the effect above once AuthProvider resolves restaurantId /
       // isPlatformAdmin, so a platform-admin-only account goes to /admin, not /dashboard.
     } catch (submitError: any) {
@@ -139,7 +145,9 @@ export function SignInClient() {
               </Label>
               <Input
                 id="email"
+                name="email"
                 type="email"
+                autoComplete="username"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 required
@@ -156,7 +164,9 @@ export function SignInClient() {
               <div className="relative">
                 <Input
                   id="password"
+                  name="password"
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   required
