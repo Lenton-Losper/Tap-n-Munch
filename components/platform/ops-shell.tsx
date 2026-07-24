@@ -78,7 +78,7 @@ export function OpsShell({
             <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8A867C]">
               FlashTap
             </div>
-            <div className="mt-1 text-sm font-semibold text-[#1A1A1A]">Ops Console</div>
+            <div className="mt-1 text-sm font-semibold text-[#1A1A1A]">Operations</div>
           </div>
           <nav className="flex flex-1 flex-col gap-0.5">
             {NAV.map((item) => {

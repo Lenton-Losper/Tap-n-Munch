@@ -12,6 +12,7 @@ export const dynamic = 'force-dynamic'
 const FEATURE_COLUMNS = FEATURE_FLAG_KEYS.join(', ')
 const TAB_KEYS = [
   'overview',
+  'timeline',
   'users',
   'menus',
   'orders',
@@ -81,6 +82,131 @@ function StatusBadge({ value }: { value: unknown }) {
       {String(value || 'unknown').replace(/_/g, ' ')}
     </Badge>
   )
+}
+
+type TimelineEvent = {
+  id: string
+  at: string
+  label: string
+  detail?: string
+}
+
+function buildRestaurantTimeline(input: {
+  terminals: DataRow[]
+  orders: DataRow[]
+  payments: DataRow[]
+  receipts: DataRow[]
+  audits: DataRow[]
+  loadedAt: number
+}): TimelineEvent[] {
+  const events: TimelineEvent[] = []
+  const offlineMs = 15 * 60 * 1000
+
+  for (const terminal of input.terminals) {
+    const label = String(terminal.terminal_name || terminal.name || terminal.sn || 'Terminal')
+    if (terminal.last_seen_at) {
+      const seen = new Date(String(terminal.last_seen_at)).getTime()
+      const online =
+        terminal.active &&
+        terminal.status === 'active' &&
+        input.loadedAt - seen < offlineMs
+      events.push({
+        id: `term-seen-${terminal.id}`,
+        at: String(terminal.last_seen_at),
+        label: online ? `Terminal ${label} heartbeat` : `Terminal ${label} disconnected`,
+        detail: online ? 'Last seen within heartbeat window' : 'No heartbeat within 15 minutes',
+      })
+    }
+    if (terminal.created_at) {
+      events.push({
+        id: `term-created-${terminal.id}`,
+        at: String(terminal.created_at),
+        label: `Terminal ${label} registered`,
+      })
+    }
+  }
+
+  for (const order of input.orders) {
+    if (order.placed_at) {
+      events.push({
+        id: `order-placed-${order.id}`,
+        at: String(order.placed_at),
+        label: `Order #${order.order_number || order.id} placed`,
+        detail: `${String(order.channel || 'order')} · ${String(order.payment_status || '')}`,
+      })
+    }
+    if (order.paid_at) {
+      events.push({
+        id: `order-paid-${order.id}`,
+        at: String(order.paid_at),
+        label: `Order #${order.order_number || order.id} marked paid`,
+      })
+    }
+    if (String(order.payment_status || '').toLowerCase() === 'failed' && order.placed_at) {
+      events.push({
+        id: `order-fail-${order.id}`,
+        at: String(order.placed_at),
+        label: `Customer payment failed`,
+        detail: `Order #${order.order_number || order.id}`,
+      })
+    }
+  }
+
+  for (const payment of input.payments) {
+    if (!payment.created_at) continue
+    const type = String(payment.event_type || 'payment')
+    events.push({
+      id: `pay-${payment.id}`,
+      at: String(payment.created_at),
+      label: type.toLowerCase().includes('fail')
+        ? 'Payment event failed'
+        : type.toLowerCase().includes('sale') || type.toLowerCase().includes('success')
+          ? 'Webhook / payment event received'
+          : `Payment event · ${type}`,
+      detail: String(
+        payment.business_order_no ||
+          payment.gateway_result_message ||
+          payment.gateway_result_code ||
+          '',
+      ),
+    })
+  }
+
+  for (const receipt of input.receipts) {
+    if (!receipt.issued_at) continue
+    events.push({
+      id: `rcpt-${receipt.id}`,
+      at: String(receipt.issued_at),
+      label:
+        String(receipt.status || '').toLowerCase().includes('fail')
+          ? 'Receipt issuance failed'
+          : 'Receipt generated',
+      detail: String(receipt.document_number || receipt.document_type || ''),
+    })
+  }
+
+  for (const audit of input.audits) {
+    if (!audit.created_at) continue
+    const action = String(audit.action || 'event')
+    events.push({
+      id: `audit-${audit.id}`,
+      at: String(audit.created_at),
+      label:
+        action === 'receipt.issuance_failed'
+          ? 'Receipt generation failed'
+          : action.includes('print')
+            ? 'Print event'
+            : action.includes('bug') || action.includes('report')
+              ? 'Manager reported issue'
+              : action.replace(/\./g, ' '),
+      detail: String(audit.entity_type || ''),
+    })
+  }
+
+  return events
+    .filter((e) => e.at && !Number.isNaN(new Date(e.at).getTime()))
+    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+    .slice(0, 80)
 }
 
 async function loadRestaurant(id: string) {
@@ -236,6 +362,15 @@ export default async function RestaurantDetailPage({
       ? 'critical'
       : 'ok'
 
+  const timeline = buildRestaurantTimeline({
+    terminals,
+    orders,
+    payments,
+    receipts,
+    audits,
+    loadedAt,
+  })
+
   return (
     <div className="space-y-6">
       <div>
@@ -327,6 +462,46 @@ export default async function RestaurantDetailPage({
               </dl>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="timeline">
+          {timeline.length === 0 ? (
+            <EmptyState
+              title="No timeline events"
+              body="Operational events for this restaurant will appear here as terminals, payments, receipts, and audits occur."
+            />
+          ) : (
+            <Card
+              title="Restaurant timeline"
+              description="Unified sequence for support troubleshooting — terminals, payments, receipts, and audits."
+            >
+              <ol className="relative space-y-0 border-l border-[#E8E6E1] ml-2">
+                {timeline.map((event) => {
+                  const time = new Date(event.at)
+                  const clock = time.toLocaleTimeString('en-NA', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                  })
+                  return (
+                    <li key={event.id} className="relative pb-5 pl-6 last:pb-0">
+                      <span className="absolute -left-[5px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#C4C0B6]" />
+                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                        <time className="font-mono text-[12px] font-semibold tabular-nums text-[#8A867C]">
+                          {clock}
+                        </time>
+                        <span className="text-sm font-medium text-[#1A1A1A]">{event.label}</span>
+                      </div>
+                      {event.detail ? (
+                        <p className="mt-0.5 text-[12px] text-[#8A867C]">{event.detail}</p>
+                      ) : null}
+                      <p className="mt-0.5 text-[11px] text-[#C4C0B6]">{formatDate(event.at)}</p>
+                    </li>
+                  )
+                })}
+              </ol>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="users">

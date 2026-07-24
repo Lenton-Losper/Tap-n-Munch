@@ -6,6 +6,7 @@ export const DASHBOARD_POLL_INTERVAL_MS = 30_000
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 export type HealthLevel = 'operational' | 'degraded' | 'outage' | 'unknown'
+export type OperatorStatus = 'healthy' | 'attention' | 'degraded' | 'outage' | 'unknown'
 export type RestaurantHealthBand = 'healthy' | 'watch' | 'degraded' | 'critical'
 
 export type PlatformAlert = {
@@ -25,7 +26,8 @@ export type SystemComponentStatus = {
   id: string
   label: string
   status: HealthLevel
-  detail: string
+  /** Short relative time or null when healthy / unknown */
+  sinceLabel: string | null
   checkedAt: string
   href?: string
 }
@@ -35,18 +37,39 @@ export type RestaurantHealthScore = {
   name: string
   score: number
   band: RestaurantHealthBand
-  factors: string[]
+  issue: string
+  ownerName: string | null
+  ownerEmail: string | null
   terminalsOnline: number
   terminalsTotal: number
   href: string
 }
 
-function startOfUtcDay(d = new Date()): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+export type LiveIncident = {
+  id: string
+  kind: 'payments' | 'terminals' | 'receipts' | 'bugs'
+  title: string
+  status: OperatorStatus
+  summary: string
+  href: string
+  at: string | null
 }
 
-function startOfUtcMonth(d = new Date()): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))
+export type CurrentIncident = {
+  id: string
+  title: string
+  summary: string
+  status: 'investigating' | 'monitoring' | 'identified'
+  startedAt: string
+  href: string
+} | null
+
+export type ActivityItem = {
+  id: string
+  at: string
+  label: string
+  detail?: string
+  href?: string
 }
 
 function bandForScore(score: number): RestaurantHealthBand {
@@ -61,6 +84,28 @@ function worstHealth(levels: HealthLevel[]): HealthLevel {
   if (levels.includes('degraded')) return 'degraded'
   if (levels.includes('unknown')) return 'unknown'
   return 'operational'
+}
+
+function healthToOperator(status: HealthLevel): OperatorStatus {
+  if (status === 'operational') return 'healthy'
+  if (status === 'degraded') return 'degraded'
+  if (status === 'outage') return 'outage'
+  return 'unknown'
+}
+
+function relativeShort(iso: string | null | undefined, now = Date.now()): string | null {
+  if (!iso) return null
+  const ms = now - new Date(iso).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return null
+  const mins = Math.floor(ms / 60000)
+  if (mins < 1) return 'just now'
+  if (mins === 1) return '1 minute ago'
+  if (mins < 60) return `${mins} minutes ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs === 1) return '1 hour ago'
+  if (hrs < 48) return `${hrs} hours ago`
+  const days = Math.floor(hrs / 24)
+  return days === 1 ? '1 day ago' : `${days} days ago`
 }
 
 export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
@@ -111,7 +156,7 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
       severity: 'critical',
       title: 'Payment failure spike',
       detail: `${failedOrders!.length} failed payments in the last hour`,
-      href: '/admin/payments',
+      href: '/admin/payments?status=failed&range=1h',
       createdAt: new Date().toISOString(),
       customersAffected: true,
     })
@@ -182,56 +227,60 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
   })
 }
 
-async function probeSystemStatus(): Promise<SystemComponentStatus[]> {
-  const checkedAt = new Date().toISOString()
+async function probeSystemStatus(now = Date.now()): Promise<SystemComponentStatus[]> {
+  const checkedAt = new Date(now).toISOString()
   const supabase = createServerSupabaseClient()
   const components: SystemComponentStatus[] = []
 
-  // Database
-  const dbStarted = Date.now()
   const { error: dbError } = await supabase.from('restaurants').select('id').limit(1)
   components.push({
     id: 'database',
     label: 'Database',
     status: dbError ? 'outage' : 'operational',
-    detail: dbError ? dbError.message : `Supabase OK · ${Date.now() - dbStarted}ms`,
+    sinceLabel: null,
     checkedAt,
   })
 
-  // Workers — if this handler runs on Cloudflare, the worker path is up.
   components.push({
     id: 'workers',
-    label: 'Cloudflare Workers',
+    label: 'Workers',
     status: 'operational',
-    detail: 'Request served by production/staging worker',
+    sinceLabel: null,
     checkedAt,
   })
 
-  // Payments (Finatic/Paycloud)
+  let paymentsSince: string | null = null
+  const { data: lastFail } = await supabase
+    .from('orders')
+    .select('placed_at')
+    .eq('payment_status', 'failed')
+    .order('placed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (lastFail?.placed_at) paymentsSince = relativeShort(lastFail.placed_at, now)
+
   try {
     const pay = await checkPaycloudHealth()
+    const payStatus: HealthLevel = pay.ok ? 'operational' : 'degraded'
     components.push({
       id: 'payments',
-      label: 'Payments gateway',
-      status: pay.ok ? 'operational' : 'degraded',
-      detail: pay.ok
-        ? `Paycloud ${pay.status || 'ok'}`
-        : String(pay.error || pay.status || 'gateway unhealthy'),
+      label: 'Payments',
+      status: payStatus,
+      sinceLabel: payStatus === 'operational' ? null : paymentsSince,
       checkedAt,
       href: '/admin/payments',
     })
-  } catch (e) {
+  } catch {
     components.push({
       id: 'payments',
-      label: 'Payments gateway',
+      label: 'Payments',
       status: 'unknown',
-      detail: e instanceof Error ? e.message : 'Health check failed',
+      sinceLabel: paymentsSince,
       checkedAt,
       href: '/admin/payments',
     })
   }
 
-  // Redis / Upstash
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL
   const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN
   if (redisUrl && redisToken) {
@@ -244,15 +293,15 @@ async function probeSystemStatus(): Promise<SystemComponentStatus[]> {
         id: 'redis',
         label: 'Redis',
         status: pingRes.ok ? 'operational' : 'degraded',
-        detail: pingRes.ok ? 'Upstash reachable' : `HTTP ${pingRes.status}`,
+        sinceLabel: null,
         checkedAt,
       })
-    } catch (e) {
+    } catch {
       components.push({
         id: 'redis',
         label: 'Redis',
         status: 'degraded',
-        detail: e instanceof Error ? e.message : 'Unreachable',
+        sinceLabel: null,
         checkedAt,
       })
     }
@@ -261,18 +310,17 @@ async function probeSystemStatus(): Promise<SystemComponentStatus[]> {
       id: 'redis',
       label: 'Redis',
       status: 'unknown',
-      detail: 'Not configured in this environment',
+      sinceLabel: null,
       checkedAt,
     })
   }
 
-  // Email
   const emailConfigured = Boolean(process.env.RESEND_API_KEY)
   components.push({
     id: 'email',
     label: 'Email',
     status: emailConfigured ? 'operational' : 'unknown',
-    detail: emailConfigured ? 'Resend configured' : 'RESEND_API_KEY not set',
+    sinceLabel: null,
     checkedAt,
   })
 
@@ -281,12 +329,11 @@ async function probeSystemStatus(): Promise<SystemComponentStatus[]> {
 
 async function computeRestaurantHealthScores(): Promise<RestaurantHealthScore[]> {
   const supabase = createServerSupabaseClient()
-  const offlineBefore = new Date(Date.now() - TERMINAL_OFFLINE_MS).toISOString()
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
   const { data: restaurants } = await supabase
     .from('restaurants')
-    .select('id, name, is_active')
+    .select('id, name, is_active, owner_id')
     .eq('is_active', true)
     .order('name', { ascending: true })
     .limit(40)
@@ -294,26 +341,36 @@ async function computeRestaurantHealthScores(): Promise<RestaurantHealthScore[]>
   if (!restaurants?.length) return []
 
   const ids = restaurants.map((r) => r.id)
-  const [{ data: terminals }, { data: failedOrders }, { data: receiptFails }] = await Promise.all([
-    supabase
-      .from('restaurant_terminals')
-      .select('id, restaurant_id, last_seen_at, active, status')
-      .in('restaurant_id', ids)
-      .eq('active', true)
-      .eq('status', 'active'),
-    supabase
-      .from('orders')
-      .select('restaurant_id')
-      .in('restaurant_id', ids)
-      .eq('payment_status', 'failed')
-      .gte('placed_at', dayAgo),
-    supabase
-      .from('audit_logs')
-      .select('restaurant_id')
-      .in('restaurant_id', ids)
-      .eq('action', 'receipt.issuance_failed')
-      .gte('created_at', dayAgo),
-  ])
+  const ownerIds = [...new Set(restaurants.map((r) => r.owner_id).filter(Boolean))] as string[]
+
+  const [{ data: terminals }, { data: failedOrders }, { data: receiptFails }, { data: owners }] =
+    await Promise.all([
+      supabase
+        .from('restaurant_terminals')
+        .select('id, restaurant_id, last_seen_at, active, status')
+        .in('restaurant_id', ids)
+        .eq('active', true)
+        .eq('status', 'active'),
+      supabase
+        .from('orders')
+        .select('restaurant_id')
+        .in('restaurant_id', ids)
+        .eq('payment_status', 'failed')
+        .gte('placed_at', dayAgo),
+      supabase
+        .from('audit_logs')
+        .select('restaurant_id')
+        .in('restaurant_id', ids)
+        .eq('action', 'receipt.issuance_failed')
+        .gte('created_at', dayAgo),
+      ownerIds.length
+        ? supabase.from('users').select('id, full_name, email').in('id', ownerIds)
+        : Promise.resolve({ data: [] as Array<{ id: string; full_name: string | null; email: string | null }> }),
+    ])
+
+  const ownerMap = new Map(
+    (owners ?? []).map((o) => [o.id, { name: o.full_name || o.email || null, email: o.email || null }]),
+  )
 
   const termByRest = new Map<string, { total: number; online: number }>()
   for (const t of terminals ?? []) {
@@ -341,7 +398,7 @@ async function computeRestaurantHealthScores(): Promise<RestaurantHealthScore[]>
     if (terms.total > 0 && terms.online < terms.total) {
       const offline = terms.total - terms.online
       score -= Math.min(45, offline * 25)
-      factors.push(`${offline}/${terms.total} terminals offline`)
+      factors.push(offline === 1 ? 'Terminal offline' : `${offline} terminals offline`)
     } else if (terms.total === 0) {
       score -= 5
       factors.push('No active terminals')
@@ -349,31 +406,33 @@ async function computeRestaurantHealthScores(): Promise<RestaurantHealthScore[]>
     const fails = failCount.get(r.id) || 0
     if (fails >= 5) {
       score -= 25
-      factors.push(`${fails} failed payments (24h)`)
+      factors.push('High payment failure rate')
     } else if (fails >= 1) {
       score -= 10
-      factors.push(`${fails} failed payments (24h)`)
+      factors.push('Payment failures')
     }
     const receipts = receiptCount.get(r.id) || 0
     if (receipts > 0) {
       score -= Math.min(20, receipts * 5)
-      factors.push(`${receipts} receipt issuance failures (24h)`)
+      factors.push('Receipt failures')
     }
     if (!r.is_active) {
       score -= 30
       factors.push('Restaurant inactive')
     }
-    if (factors.length === 0) factors.push('No active issues')
     score = Math.max(0, Math.min(100, score))
+    const owner = r.owner_id ? ownerMap.get(r.owner_id) : null
     return {
       restaurantId: r.id,
       name: r.name,
       score,
       band: bandForScore(score),
-      factors,
+      issue: factors[0] || 'No active issues',
+      ownerName: owner?.name ?? null,
+      ownerEmail: owner?.email ?? null,
       terminalsOnline: terms.online,
       terminalsTotal: terms.total,
-      href: `/admin/restaurants/${r.id}`,
+      href: `/admin/restaurants/${r.id}?tab=timeline`,
     }
   })
 
@@ -385,276 +444,241 @@ export type DashboardPayload = {
     generatedAt: string
     pollIntervalMs: number
   }
-  platformHealth: {
-    status: HealthLevel
-    summary: string
-    customersAffected: boolean
-    criticalCount: number
-    warningCount: number
+  platformStatus: {
+    level: HealthLevel
+    label: OperatorStatus
+    headline: string
   }
+  currentIncident: CurrentIncident
+  liveIncidents: LiveIncident[]
   systemStatus: SystemComponentStatus[]
-  needsAttention: PlatformAlert[]
-  customersAffected: PlatformAlert[]
-  goNext: Array<{ label: string; href: string; reason: string }>
-  restaurantHealth: RestaurantHealthScore[]
-  incidentTimeline: Array<{
-    id: string
-    at: string
-    kind: 'incident'
-    severity: AlertSeverity
-    label: string
-    detail?: string
-    href?: string
-  }>
-  recentChanges: Array<{
-    id: string
-    at: string
-    kind: 'audit'
-    label: string
-    detail?: string
-    href?: string
-  }>
-  kpis: {
-    revenueToday: number
-    revenueMonth: number
-    ordersToday: number
-    ordersMonth: number
-    activeRestaurants: number
-    newRestaurantsMonth: number
-    onlineTerminals: number
-    totalActiveTerminals: number
-    failedPaymentsToday: number
-    paidOrdersToday: number
-    paymentSuccessRate: number | null
-    failedWebhooksProxy: number
-    openBugReports: number
+  restaurantsNeedingAttention: RestaurantHealthScore[]
+  activity: {
+    incidents: ActivityItem[]
+    audit: ActivityItem[]
+    deployments: ActivityItem[]
   }
-  /** Kept for analytics section; not the primary ops view. */
-  series24h: Array<{ hour: string; orders: number; revenue: number }>
 }
 
 export async function buildDashboardPayload(): Promise<DashboardPayload> {
   const supabase = createServerSupabaseClient()
-  const now = new Date()
-  const generatedAt = now.toISOString()
-  const dayStart = startOfUtcDay(now).toISOString()
-  const monthStart = startOfUtcMonth(now).toISOString()
-  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
-  const offlineBefore = new Date(now.getTime() - TERMINAL_OFFLINE_MS).toISOString()
+  const now = Date.now()
+  const generatedAt = new Date(now).toISOString()
+  const hourAgo = new Date(now - 60 * 60 * 1000).toISOString()
+  const offlineBefore = new Date(now - TERMINAL_OFFLINE_MS).toISOString()
 
   const [
-    paidTodayRes,
-    paidMonthRes,
-    ordersTodayCount,
-    ordersMonthCount,
-    activeRestaurants,
-    newRestaurants,
-    terminalsOnline,
-    terminalsActive,
-    failedToday,
-    paidTodayCount,
-    receiptFailsHour,
-    openBugs,
-    platformAudits,
     systemStatus,
     allAlerts,
     restaurantHealth,
+    offlineTerminalsRes,
+    failedHourRes,
+    lastPaymentFailRes,
+    receiptFailsHourRes,
+    openBugsRes,
+    platformAudits,
   ] = await Promise.all([
-    supabase.from('orders').select('total').eq('payment_status', 'paid').gte('paid_at', dayStart),
-    supabase.from('orders').select('total').eq('payment_status', 'paid').gte('paid_at', monthStart),
-    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('placed_at', dayStart),
-    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('placed_at', monthStart),
-    supabase.from('restaurants').select('id', { count: 'exact', head: true }).eq('is_active', true),
-    supabase.from('restaurants').select('id', { count: 'exact', head: true }).gte('created_at', monthStart),
+    probeSystemStatus(now),
+    computePlatformAlerts(),
+    computeRestaurantHealthScores(),
     supabase
       .from('restaurant_terminals')
-      .select('id', { count: 'exact', head: true })
+      .select('id, restaurant_id, last_seen_at')
       .eq('active', true)
       .eq('status', 'active')
-      .gte('last_seen_at', offlineBefore),
-    supabase
-      .from('restaurant_terminals')
-      .select('id', { count: 'exact', head: true })
-      .eq('active', true)
-      .eq('status', 'active'),
+      .lt('last_seen_at', offlineBefore),
     supabase
       .from('orders')
-      .select('id', { count: 'exact', head: true })
+      .select('id, restaurant_id')
       .eq('payment_status', 'failed')
-      .gte('placed_at', dayStart),
+      .gte('placed_at', hourAgo)
+      .limit(200),
     supabase
       .from('orders')
-      .select('id', { count: 'exact', head: true })
-      .eq('payment_status', 'paid')
-      .gte('paid_at', dayStart),
+      .select('placed_at')
+      .eq('payment_status', 'failed')
+      .order('placed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
     supabase
       .from('audit_logs')
       .select('id', { count: 'exact', head: true })
       .eq('action', 'receipt.issuance_failed')
-      .gte('created_at', new Date(now.getTime() - 60 * 60 * 1000).toISOString()),
+      .gte('created_at', hourAgo),
     supabase.from('bug_reports').select('id', { count: 'exact', head: true }).eq('status', 'open'),
     supabase
       .from('platform_audit_logs')
-      .select('id, action, actor_email, target_type, target_id, created_at, success')
+      .select('id, action, actor_email, target_type, created_at, success')
       .order('created_at', { ascending: false })
-      .limit(20),
-    probeSystemStatus(),
-    computePlatformAlerts(),
-    computeRestaurantHealthScores(),
+      .limit(12),
   ])
 
-  const sumTotals = (rows: Array<{ total: number | string } | null> | null | undefined) =>
-    (rows ?? []).reduce((s, r) => s + Number(r?.total || 0), 0)
-
-  const paidToday = paidTodayCount.count ?? 0
-  const failedTodayN = failedToday.count ?? 0
-  const attempts = paidToday + failedTodayN
-  const paymentSuccessRate = attempts > 0 ? Math.round((paidToday / attempts) * 1000) / 10 : null
-
-  const { data: recentOrders } = await supabase
-    .from('orders')
-    .select('placed_at, total, payment_status')
-    .gte('placed_at', dayAgo)
-    .order('placed_at', { ascending: true })
-    .limit(5000)
-
-  const buckets = new Map<string, { orders: number; revenue: number }>()
-  for (let i = 23; i >= 0; i--) {
-    const d = new Date(now.getTime() - i * 60 * 60 * 1000)
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}`
-    buckets.set(key, { orders: 0, revenue: 0 })
-  }
-  for (const o of recentOrders ?? []) {
-    const d = new Date(o.placed_at)
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}`
-    const b = buckets.get(key)
-    if (!b) continue
-    b.orders += 1
-    if (String(o.payment_status).toLowerCase() === 'paid') b.revenue += Number(o.total || 0)
-  }
-  const series24h = Array.from(buckets.entries()).map(([hour, v]) => ({
-    hour: `${hour}:00Z`,
-    orders: v.orders,
-    revenue: Math.round(v.revenue * 100) / 100,
-  }))
-
-  const needsAttention = allAlerts.filter(
-    (a) => a.severity !== 'info' && a.ackStatus !== 'resolved' && a.ackStatus !== 'acknowledged',
-  )
-  const customersAffected = needsAttention.filter((a) => a.customersAffected)
-
-  const criticalCount = needsAttention.filter((a) => a.severity === 'critical').length
-  const warningCount = needsAttention.filter((a) => a.severity === 'warning').length
+  const openAlerts = allAlerts.filter((a) => a.ackStatus !== 'resolved' && a.ackStatus !== 'acknowledged')
+  const criticalCount = openAlerts.filter((a) => a.severity === 'critical').length
+  const warningCount = openAlerts.filter((a) => a.severity === 'warning').length
   const systemLevel = worstHealth(systemStatus.map((s) => s.status))
-  let platformStatus: HealthLevel = systemLevel
-  if (criticalCount > 0) platformStatus = worstHealth([platformStatus, 'degraded'])
-  if (criticalCount >= 3 || systemLevel === 'outage') platformStatus = 'outage'
-  else if (warningCount > 0 || customersAffected.length > 0) {
-    platformStatus = worstHealth([platformStatus, 'degraded'])
+
+  let platformLevel: HealthLevel = systemLevel
+  if (criticalCount > 0) platformLevel = worstHealth([platformLevel, 'degraded'])
+  if (criticalCount >= 3 || systemLevel === 'outage') platformLevel = 'outage'
+  else if (warningCount > 0) platformLevel = worstHealth([platformLevel, 'degraded'])
+
+  const offlineRows = offlineTerminalsRes.data ?? []
+  const offlineCount = offlineRows.length
+  const restaurantsOffline = new Set(offlineRows.map((t) => t.restaurant_id)).size
+  const oldestOfflineAt = offlineRows
+    .map((t) => t.last_seen_at)
+    .filter(Boolean)
+    .sort()[0] as string | undefined
+
+  const failedHourRows = failedHourRes.data ?? []
+  const failedHour = failedHourRows.length
+  const restaurantsPaymentFail = new Set(failedHourRows.map((o) => o.restaurant_id)).size
+  const receiptFailsHour = receiptFailsHourRes.count ?? 0
+  const openBugs = openBugsRes.count ?? 0
+  const lastPaymentFailAt = lastPaymentFailRes.data?.placed_at ?? null
+
+  const liveIncidents: LiveIncident[] = []
+
+  const paymentsProbe = systemStatus.find((s) => s.id === 'payments')
+  if (failedHour >= 3 || (paymentsProbe && paymentsProbe.status !== 'operational')) {
+    liveIncidents.push({
+      id: 'payments',
+      kind: 'payments',
+      title: 'Payments',
+      status: failedHour >= 3 || paymentsProbe?.status === 'outage' ? 'degraded' : 'attention',
+      summary: lastPaymentFailAt
+        ? `Last failure ${relativeShort(lastPaymentFailAt, now)}`
+        : `${failedHour} failures in the last hour`,
+      href: '/admin/payments?status=failed&range=1h',
+      at: lastPaymentFailAt,
+    })
   }
 
-  const summary =
-    platformStatus === 'operational'
-      ? 'All systems nominal — no customer-impacting incidents.'
-      : platformStatus === 'outage'
-        ? 'Severe degradation — customer-facing failures detected.'
-        : platformStatus === 'degraded'
-          ? 'Degraded — action required on open incidents.'
-          : 'Health partially unknown — verify system probes.'
+  if (offlineCount > 0) {
+    liveIncidents.push({
+      id: 'terminals',
+      kind: 'terminals',
+      title: 'Offline terminals',
+      status: offlineCount >= 5 ? 'degraded' : 'attention',
+      summary: `${offlineCount} device${offlineCount === 1 ? '' : 's'} · ${restaurantsOffline} restaurant${restaurantsOffline === 1 ? '' : 's'}`,
+      href: '/admin/terminals?status=offline',
+      at: oldestOfflineAt ?? null,
+    })
+  }
 
-  const incidentTimeline = needsAttention.slice(0, 25).map((a) => ({
+  if (receiptFailsHour > 0) {
+    liveIncidents.push({
+      id: 'receipts',
+      kind: 'receipts',
+      title: 'Receipt failures',
+      status: 'attention',
+      summary: `${receiptFailsHour} in last hour`,
+      href: '/admin/alerts',
+      at: null,
+    })
+  }
+
+  if (openBugs > 0) {
+    liveIncidents.push({
+      id: 'bugs',
+      kind: 'bugs',
+      title: 'Open bugs',
+      status: 'attention',
+      summary: `${openBugs} open`,
+      href: '/admin/bug-reports',
+      at: null,
+    })
+  }
+
+  // Current incident — only when something material is on fire; else omit entirely
+  let currentIncident: CurrentIncident = null
+  const paymentSpike = openAlerts.find((a) => a.key.startsWith('payment_fail_spike'))
+  const primary = paymentSpike || openAlerts.find((a) => a.severity === 'critical' && a.customersAffected)
+  if (paymentSpike || failedHour >= 3) {
+    currentIncident = {
+      id: paymentSpike?.key || 'payments-elevated',
+      title: 'Payment provider experiencing elevated failures',
+      summary:
+        restaurantsPaymentFail > 0
+          ? `Payment failures affecting ${restaurantsPaymentFail} restaurants`
+          : `${failedHour} failed payments in the last hour`,
+      status: 'investigating',
+      startedAt: paymentSpike?.createdAt || lastPaymentFailAt || generatedAt,
+      href: '/admin/payments?status=failed&range=1h',
+    }
+  } else if (primary) {
+    currentIncident = {
+      id: primary.key,
+      title: primary.title,
+      summary:
+        primary.key.startsWith('terminal_offline')
+          ? `${offlineCount} terminals offline across ${restaurantsOffline} restaurants`
+          : primary.detail,
+      status: 'investigating',
+      startedAt: primary.createdAt,
+      href: primary.href || '/admin/alerts',
+    }
+  }
+
+  const headline = currentIncident
+    ? currentIncident.summary
+    : platformLevel === 'operational'
+      ? 'All systems nominal'
+      : liveIncidents[0]?.summary || 'Action required on open incidents'
+
+  const restaurantsNeedingAttention = restaurantHealth
+    .filter((r) => r.band === 'critical' || r.band === 'degraded' || r.band === 'watch')
+    .slice(0, 5)
+
+  const activityIncidents: ActivityItem[] = openAlerts.slice(0, 8).map((a) => ({
     id: a.key,
     at: a.createdAt,
-    kind: 'incident' as const,
-    severity: a.severity,
     label: a.title,
-    detail: [a.restaurantName, a.detail].filter(Boolean).join(' · '),
+    detail: a.restaurantName || a.detail,
     href: a.href,
   }))
 
-  const recentChanges = (platformAudits.data ?? []).map((row) => ({
+  const activityAudit: ActivityItem[] = (platformAudits.data ?? []).map((row) => ({
     id: `pa-${row.id}`,
     at: row.created_at,
-    kind: 'audit' as const,
     label: row.action,
-    detail: `${row.actor_email || 'system'} · ${row.target_type}${row.success === false ? ' (failed)' : ''}`,
+    detail: `${row.actor_email || 'system'}${row.success === false ? ' · failed' : ''}`,
     href: '/admin/audit-logs',
   }))
 
-  const goNext: DashboardPayload['goNext'] = []
-  if (needsAttention.length > 0) {
-    goNext.push({
-      label: 'Open alerts inbox',
-      href: '/admin/alerts',
-      reason: `${needsAttention.length} items need action`,
-    })
-  }
-  if (customersAffected.some((a) => a.key.startsWith('terminal_offline'))) {
-    goNext.push({
-      label: 'Terminal fleet',
-      href: '/admin/terminals',
-      reason: 'Offline devices may block card presentment',
-    })
-  }
-  if (customersAffected.some((a) => a.key.startsWith('payment_fail'))) {
-    goNext.push({
-      label: 'Payments hub',
-      href: '/admin/payments',
-      reason: 'Investigate failed card / webhook correlation',
-    })
-  }
-  const worstRestaurants = restaurantHealth.filter((r) => r.band === 'critical' || r.band === 'degraded').slice(0, 3)
-  for (const r of worstRestaurants) {
-    goNext.push({
-      label: r.name,
-      href: r.href,
-      reason: `Health score ${r.score} · ${r.factors[0]}`,
-    })
-  }
-  if (goNext.length === 0) {
-    goNext.push({
-      label: 'Restaurant fleet',
-      href: '/admin/restaurants',
-      reason: 'Review merchant health scores',
-    })
-    goNext.push({
-      label: 'Audit logs',
+  const activityDeployments: ActivityItem[] = (platformAudits.data ?? [])
+    .filter((row) => /deploy|release|worker|migration/i.test(row.action))
+    .map((row) => ({
+      id: `dep-${row.id}`,
+      at: row.created_at,
+      label: row.action,
+      detail: row.actor_email || 'system',
       href: '/admin/audit-logs',
-      reason: 'Review recent privileged changes',
-    })
+    }))
+
+  // Soften payments probe sinceLabel when degraded
+  for (const c of systemStatus) {
+    if (c.id === 'payments' && c.status !== 'operational' && !c.sinceLabel && lastPaymentFailAt) {
+      c.sinceLabel = relativeShort(lastPaymentFailAt, now)
+    }
   }
 
   return {
     meta: { generatedAt, pollIntervalMs: DASHBOARD_POLL_INTERVAL_MS },
-    platformHealth: {
-      status: platformStatus,
-      summary,
-      customersAffected: customersAffected.length > 0,
-      criticalCount,
-      warningCount,
+    platformStatus: {
+      level: platformLevel,
+      label: healthToOperator(platformLevel),
+      headline,
     },
+    currentIncident,
+    liveIncidents,
     systemStatus,
-    needsAttention: needsAttention.slice(0, 12),
-    customersAffected: customersAffected.slice(0, 8),
-    goNext: goNext.slice(0, 6),
-    restaurantHealth: restaurantHealth.slice(0, 12),
-    incidentTimeline,
-    recentChanges,
-    kpis: {
-      revenueToday: Math.round(sumTotals(paidTodayRes.data as Array<{ total: number }> | null) * 100) / 100,
-      revenueMonth: Math.round(sumTotals(paidMonthRes.data as Array<{ total: number }> | null) * 100) / 100,
-      ordersToday: ordersTodayCount.count ?? 0,
-      ordersMonth: ordersMonthCount.count ?? 0,
-      activeRestaurants: activeRestaurants.count ?? 0,
-      newRestaurantsMonth: newRestaurants.count ?? 0,
-      onlineTerminals: terminalsOnline.count ?? 0,
-      totalActiveTerminals: terminalsActive.count ?? 0,
-      failedPaymentsToday: failedTodayN,
-      paidOrdersToday: paidToday,
-      paymentSuccessRate,
-      failedWebhooksProxy: receiptFailsHour.count ?? 0,
-      openBugReports: openBugs.count ?? 0,
+    restaurantsNeedingAttention,
+    activity: {
+      incidents: activityIncidents,
+      audit: activityAudit,
+      deployments: activityDeployments,
     },
-    series24h,
   }
 }

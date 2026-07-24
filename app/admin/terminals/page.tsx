@@ -1,9 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { EmptyState, HealthBadge } from '@/components/platform/ops-shell'
 import { getAccessToken } from '@/lib/onboarding/api-client'
+import { cn } from '@/lib/utils'
 
 type Terminal = {
   id: string
@@ -40,7 +42,9 @@ function isOnline(terminal: Terminal) {
   )
 }
 
-export default function TerminalsPage() {
+function TerminalsPageInner() {
+  const searchParams = useSearchParams()
+  const statusFilter = (searchParams.get('status') || 'all').toLowerCase()
   const [terminals, setTerminals] = useState<Terminal[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -69,13 +73,41 @@ export default function TerminalsPage() {
     void Promise.resolve().then(() => load())
   }, [load])
 
+  const filtered = useMemo(() => {
+    if (statusFilter === 'offline') return terminals.filter((t) => !isOnline(t))
+    if (statusFilter === 'online') return terminals.filter((t) => isOnline(t))
+    return terminals
+  }, [terminals, statusFilter])
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-[#1A1A1A]">Terminals</h1>
-        <p className="mt-1 text-sm text-[#8A867C]">
-          Fleet connectivity, software versions, and device diagnostics.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-[#1A1A1A]">Terminals</h1>
+          <p className="mt-1 text-sm text-[#8A867C]">
+            Fleet connectivity, software versions, and device diagnostics.
+          </p>
+        </div>
+        <div className="flex gap-1 rounded-lg border border-[#E8E6E1] bg-white p-1">
+          {[
+            ['all', 'All'],
+            ['offline', 'Offline'],
+            ['online', 'Online'],
+          ].map(([value, label]) => (
+            <Link
+              key={value}
+              href={value === 'all' ? '/admin/terminals' : `/admin/terminals?status=${value}`}
+              className={cn(
+                'rounded-md px-3 py-1.5 text-[12px] font-medium',
+                statusFilter === value
+                  ? 'bg-[#1A1A1A] text-white'
+                  : 'text-[#5C574E] hover:bg-[#F4F4F2]',
+              )}
+            >
+              {label}
+            </Link>
+          ))}
+        </div>
       </div>
 
       {error ? (
@@ -86,10 +118,17 @@ export default function TerminalsPage() {
 
       {loading ? (
         <p className="text-sm text-[#8A867C]">Loading terminal fleet…</p>
-      ) : terminals.length === 0 ? (
-        <EmptyState title="No terminals" body="No devices are registered on the platform." />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          title={statusFilter === 'offline' ? 'No offline terminals' : 'No terminals'}
+          body={
+            statusFilter === 'offline'
+              ? 'All registered devices are currently online.'
+              : 'No devices are registered on the platform.'
+          }
+        />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
+        <div className="overflow-hidden rounded-xl border border-[#E8E6E1] bg-white shadow-[0_1px_2px_rgb(0_0_0_/0.03)]">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[780px] text-left text-sm">
               <thead className="border-b border-[#E8E6E1] bg-[#FAFAF8] text-[11px] uppercase tracking-wide text-[#8A867C]">
@@ -104,7 +143,7 @@ export default function TerminalsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#EFEDE8]">
-                {terminals.map((terminal) => {
+                {filtered.map((terminal) => {
                   const seen = terminal.last_seen_at || terminal.last_seen
                   return (
                     <tr key={terminal.id} className="hover:bg-[#FAFAF8]">
@@ -150,5 +189,13 @@ export default function TerminalsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function TerminalsPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-[#8A867C]">Loading terminal fleet…</p>}>
+      <TerminalsPageInner />
+    </Suspense>
   )
 }
