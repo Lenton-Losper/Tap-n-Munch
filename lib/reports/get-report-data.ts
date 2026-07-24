@@ -4,6 +4,10 @@ import {
   sumDistinctRefundedAmounts,
   type PaymentStatus,
 } from '@/lib/payments/get-payment-projection'
+import {
+  calendarDateRangeToUtcIso,
+  DEFAULT_REPORT_TIMEZONE,
+} from '@/lib/reports/format-report-datetime'
 
 export interface ReportOrder {
   order_number: number
@@ -25,6 +29,8 @@ export interface ReportData {
     id: string
     name: string
     logo_url: string | null
+    /** IANA timezone used when formatting export timestamps (PDF/CSV). */
+    timezone: string
   }
   filters: {
     startDate: string
@@ -54,7 +60,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
 
   const { data: restaurant, error: restaurantError } = await supabase
     .from('restaurants')
-    .select('id, name, logo_url')
+    .select('id, name, logo_url, timezone')
     .eq('id', params.restaurantId)
     .single()
 
@@ -62,13 +68,24 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     throw new Error('Restaurant not found')
   }
 
+  const timezone =
+    typeof restaurant.timezone === 'string' && restaurant.timezone.trim()
+      ? restaurant.timezone.trim()
+      : DEFAULT_REPORT_TIMEZONE
+
+  const { startIso, endIsoExclusive } = calendarDateRangeToUtcIso(
+    params.startDate,
+    params.endDate,
+    timezone,
+  )
+
   let query = supabase
     .from('orders')
     .select('id, order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
     .eq('restaurant_id', params.restaurantId)
     .neq('status', 'cancelled')
-    .gte('placed_at', `${params.startDate}T00:00:00.000Z`)
-    .lte('placed_at', `${params.endDate}T23:59:59.999Z`)
+    .gte('placed_at', startIso)
+    .lt('placed_at', endIsoExclusive)
     .order('placed_at', { ascending: false })
 
   if (params.tableNumber) {
@@ -128,6 +145,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
       id: restaurant.id,
       name: restaurant.name,
       logo_url: restaurant.logo_url ?? null,
+      timezone,
     },
     filters: {
       startDate: params.startDate,

@@ -10,6 +10,10 @@ import {
   getPaymentProjections,
   sumDistinctRefundedAmounts,
 } from '@/lib/payments/get-payment-projection'
+import {
+  calendarDateRangeToUtcIso,
+  DEFAULT_REPORT_TIMEZONE,
+} from '@/lib/reports/format-report-datetime'
 
 export const dynamic = 'force-dynamic'
 
@@ -39,6 +43,19 @@ export async function GET(req: Request) {
 
   const supabase = createServerSupabaseClient()
 
+  const { data: restaurantRow } = await supabase
+    .from('restaurants')
+    .select('timezone')
+    .eq('id', restaurantUuid)
+    .maybeSingle()
+
+  const timezone =
+    typeof restaurantRow?.timezone === 'string' && restaurantRow.timezone.trim()
+      ? restaurantRow.timezone.trim()
+      : DEFAULT_REPORT_TIMEZONE
+
+  const { startIso, endIsoExclusive } = calendarDateRangeToUtcIso(startDate, endDate, timezone)
+
   let query = supabase
     .from('orders')
     .select(
@@ -46,8 +63,8 @@ export async function GET(req: Request) {
       { count: 'exact' },
     )
     .eq('restaurant_id', restaurantUuid)
-    .gte('placed_at', `${startDate}T00:00:00.000Z`)
-    .lte('placed_at', `${endDate}T23:59:59.999Z`)
+    .gte('placed_at', startIso)
+    .lt('placed_at', endIsoExclusive)
     .order('placed_at', { ascending: false })
     .range((page - 1) * pageSize, page * pageSize - 1)
 
@@ -102,8 +119,8 @@ export async function GET(req: Request) {
     .select('id, total')
     .eq('restaurant_id', restaurantUuid)
     .eq('payment_status', 'paid')
-    .gte('placed_at', `${startDate}T00:00:00.000Z`)
-    .lte('placed_at', `${endDate}T23:59:59.999Z`)
+    .gte('placed_at', startIso)
+    .lt('placed_at', endIsoExclusive)
 
   if (tableNumber) summaryQuery = summaryQuery.eq('table_number', Number(tableNumber))
   if (status && status !== 'all') summaryQuery = summaryQuery.eq('status', status)

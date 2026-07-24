@@ -58,7 +58,17 @@ function formatPlacedAt(value: unknown) {
   if (!value) return '—'
   const date = new Date(String(value))
   if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleString()
+  // Match PDF/CSV exports: restaurant local time (Namibia), not raw UTC.
+  return date.toLocaleString('en-GB', {
+    timeZone: 'Africa/Windhoek',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
 function formatItemsSummary(items: unknown) {

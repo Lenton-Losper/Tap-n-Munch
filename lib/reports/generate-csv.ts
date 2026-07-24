@@ -1,18 +1,7 @@
 import { ReportData, ReportOrder } from './get-report-data'
+import { formatReportDateTime } from './format-report-datetime'
 
 const formatCurrency = (amount: number) => amount.toFixed(2)
-
-const formatDate = (iso: string) => {
-  const d = new Date(iso)
-  return d.toLocaleString('en-NA', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-}
 
 const escapeCell = (value: string | number | null | undefined): string => {
   if (value === null || value === undefined) return ''
@@ -33,12 +22,14 @@ function formatCsvStatus(order: ReportOrder): string {
 
 export function generateCsv(report: ReportData): string {
   const lines: string[] = []
+  const tz = report.restaurant.timezone
 
   // Report header metadata
   lines.push(`FlashTap Order Report`)
   lines.push(`Restaurant,${escapeCell(report.restaurant.name)}`)
   lines.push(`Period,${report.filters.startDate} to ${report.filters.endDate}`)
-  lines.push(`Generated,${formatDate(report.generatedAt)}`)
+  lines.push(`Timezone,${escapeCell(tz)}`)
+  lines.push(`Generated,${formatReportDateTime(report.generatedAt, tz)}`)
   lines.push(``)
 
   // Summary
@@ -66,7 +57,7 @@ export function generateCsv(report: ReportData): string {
   for (const order of report.orders) {
     lines.push([
       order.order_number,
-      formatDate(order.placed_at),
+      formatReportDateTime(order.placed_at, tz),
       order.table_number,
       order.customer_name,
       order.items,

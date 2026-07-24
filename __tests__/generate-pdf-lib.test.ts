@@ -21,7 +21,12 @@ function sampleReport(orderCount: number): ReportData {
   }))
 
   return {
-    restaurant: { id: 'test', name: 'Riviera Test Kitchen', logo_url: null },
+    restaurant: {
+      id: 'test',
+      name: 'Riviera Test Kitchen',
+      logo_url: null,
+      timezone: 'Africa/Windhoek',
+    },
     filters: { startDate: '2026-07-01', endDate: '2026-07-04' },
     summary: {
       totalRevenue: orders.reduce((sum, o) => sum + o.total, 0),

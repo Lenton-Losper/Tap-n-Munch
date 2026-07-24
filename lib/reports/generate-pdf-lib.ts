@@ -1,5 +1,6 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { ReportData, ReportOrder } from './get-report-data'
+import { formatReportDateTime } from './format-report-datetime'
 
 // A4 landscape (points)
 const PAGE_WIDTH = 841.89
@@ -51,18 +52,6 @@ const COLUMNS: { key: ColumnKey; label: string; width: number }[] = [
 ]
 
 const formatCurrency = (amount: number) => `N$${amount.toFixed(2)}`
-
-const formatDate = (iso: string) => {
-  const d = new Date(iso)
-  return d.toLocaleString('en-NA', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-}
 
 function wrapParagraph(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   const normalized = text.trim() || '—'
@@ -132,12 +121,12 @@ function columnXPositions(contentWidth: number): Record<ColumnKey, number> {
   return positions
 }
 
-function orderCellText(order: ReportOrder, key: ColumnKey): string {
+function orderCellText(order: ReportOrder, key: ColumnKey, timeZone: string): string {
   switch (key) {
     case 'orderNo':
       return `#${order.order_number}`
     case 'time':
-      return formatDate(order.placed_at)
+      return formatReportDateTime(order.placed_at, timeZone)
     case 'table':
       return order.table_number != null ? String(order.table_number) : '—'
     case 'customer':
@@ -169,12 +158,18 @@ function layoutRows(
   orders: ReportOrder[],
   font: PDFFont,
   widths: Record<ColumnKey, number>,
+  timeZone: string,
 ): RowLayout[] {
   return orders.map((order, rowIndex) => {
     const cells = {} as Record<ColumnKey, string[]>
     let maxLines = 1
     for (const col of COLUMNS) {
-      const lines = wrapText(orderCellText(order, col.key), font, BODY_SIZE, widths[col.key] - 4)
+      const lines = wrapText(
+        orderCellText(order, col.key, timeZone),
+        font,
+        BODY_SIZE,
+        widths[col.key] - 4,
+      )
       cells[col.key] = lines
       maxLines = Math.max(maxLines, lines.length)
     }
@@ -210,7 +205,7 @@ function drawHeaderBlock(
   })
   y -= RESTAURANT_SIZE + 4
 
-  const meta = `Period: ${report.filters.startDate} to ${report.filters.endDate}   Generated: ${formatDate(report.generatedAt)}`
+  const meta = `Period: ${report.filters.startDate} to ${report.filters.endDate}   Generated: ${formatReportDateTime(report.generatedAt, report.restaurant.timezone)} (${report.restaurant.timezone})`
   page.drawText(meta, {
     x: MARGIN,
     y: y - META_SIZE,
@@ -446,7 +441,7 @@ export async function generatePdfBytes(report: ReportData): Promise<Uint8Array> 
   const contentWidth = PAGE_WIDTH - MARGIN * 2
   const widths = columnWidths(contentWidth)
   const positions = columnXPositions(contentWidth)
-  const rowLayouts = layoutRows(report.orders, regular, widths)
+  const rowLayouts = layoutRows(report.orders, regular, widths, report.restaurant.timezone)
   const pagePlans = buildPagePlans(rowLayouts)
   const totalPages = pagePlans.length
 
