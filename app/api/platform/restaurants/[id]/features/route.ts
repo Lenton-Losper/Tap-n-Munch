@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
-import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
+import {
+  requirePlatformRole,
+  writePlatformAudit,
+} from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -9,15 +11,8 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  let user
-  try {
-    user = await getUserFromRequest(req)
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
-  }
-
-  const denied = await assertPlatformAdmin(req)
-  if (denied) return denied
+  const admin = await requirePlatformRole(req, ['super_admin'])
+  if (admin instanceof NextResponse) return admin
 
   const supabase = createServerSupabaseClient()
   const { id } = await params
@@ -47,16 +42,14 @@ export async function PATCH(
 
     if (error) throw error
 
-    await supabase.from('platform_audit_logs').insert({
-      actor_id: user.id,
-      actor_email: user.email ?? '',
+    await writePlatformAudit({
+      actorId: admin.userId,
+      actorEmail: admin.email,
       action: 'feature_flags_updated',
-      target_type: 'restaurant',
-      target_id: id,
-      payload: body,
-      ip_address: req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? null,
-      user_agent: req.headers.get('user-agent') ?? null,
-      success: true,
+      targetType: 'restaurant',
+      targetId: id,
+      payload: safeUpdates,
+      request: req,
     })
 
     return NextResponse.json({ success: true })

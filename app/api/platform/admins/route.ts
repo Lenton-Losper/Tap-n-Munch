@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { assertPlatformAdmin } from '@/lib/permissions/assert-platform-admin'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import {
+  assertPlatformAdmin,
+  requirePlatformRole,
+  writePlatformAudit,
+} from '@/lib/permissions/assert-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,15 +40,8 @@ export async function GET(request: Request) {
  * A full email-invite flow can be built later if that changes.
  */
 export async function POST(request: Request) {
-  const denied = await assertPlatformAdmin(request)
-  if (denied) return denied
-
-  let actor
-  try {
-    actor = await getUserFromRequest(request)
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
-  }
+  const actor = await requirePlatformRole(request, ['super_admin'])
+  if (actor instanceof NextResponse) return actor
 
   try {
     const body = await request.json().catch(() => ({}))
@@ -89,16 +85,14 @@ export async function POST(request: Request) {
       throw insertError
     }
 
-    await supabase.from('platform_audit_logs').insert({
-      actor_id: actor.id,
-      actor_email: actor.email ?? '',
+    await writePlatformAudit({
+      actorId: actor.userId,
+      actorEmail: actor.email,
       action: 'platform_admin_added',
-      target_type: 'platform_admin',
-      target_id: inserted.id,
+      targetType: 'platform_admin',
+      targetId: inserted.id,
       payload: { email, role },
-      ip_address: request.headers.get('x-forwarded-for') ?? request.headers.get('x-real-ip') ?? null,
-      user_agent: request.headers.get('user-agent') ?? null,
-      success: true,
+      request,
     })
 
     return NextResponse.json({ admin: inserted })
