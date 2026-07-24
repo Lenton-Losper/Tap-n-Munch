@@ -1,241 +1,208 @@
 import Link from 'next/link'
+import { Badge } from '@/components/ui/badge'
+import { EmptyState, HealthBadge } from '@/components/platform/ops-shell'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
-type RestaurantFeatures = {
-  kiosk_enabled?: boolean
-  staff_app_enabled?: boolean
-  whatsapp_enabled?: boolean
-}
-
-type RestaurantRow = {
+type RestaurantFleetRow = {
   id: string
   name: string
-  slug?: string | null
-  owner_email?: string | null
   created_at: string
   is_active: boolean
-  online_ordering_enabled: boolean
-  features: RestaurantFeatures | null
-  subscription: { plan: string; status: string } | null
+  online: number
+  terminals: number
+  last_paid_at: string | null
+  subscription: { plan?: string; status?: string } | null
 }
 
-const FEATURE_BADGES: { key: keyof RestaurantFeatures; label: string }[] = [
-  { key: 'kiosk_enabled', label: 'kiosk' },
-  { key: 'staff_app_enabled', label: 'staff_app' },
-]
-
-function orderingChannels(restaurant: Pick<RestaurantRow, 'online_ordering_enabled' | 'features'>): string[] {
-  const channels = ['Table']
-  if (restaurant.features?.kiosk_enabled) channels.push('Kiosk')
-  if (restaurant.online_ordering_enabled) channels.push('Online')
-  if (restaurant.features?.whatsapp_enabled) channels.push('WhatsApp')
-  return channels
-}
-
-function formatDate(iso: string) {
-  const date = new Date(iso)
+function formatDate(value: string | null, includeTime = false) {
+  if (!value) return '—'
+  const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleDateString('en-NA', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
+  return includeTime
+    ? date.toLocaleString('en-NA', { dateStyle: 'medium', timeStyle: 'short' })
+    : date.toLocaleDateString('en-NA', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-function enabledFeatureBadges(features: RestaurantFeatures | null): string[] {
-  if (!features) return []
-  return FEATURE_BADGES.filter(({ key }) => features[key]).map(({ label }) => label)
-}
-
-async function loadRestaurants(): Promise<{ restaurants: RestaurantRow[]; failed: boolean }> {
+async function loadFleet(): Promise<{ rows: RestaurantFleetRow[]; error: string | null }> {
   try {
     const supabase = createServerSupabaseClient()
-
     const { data: restaurants, error } = await supabase
       .from('restaurants')
-      .select('id, name, slug, created_at, is_active, online_ordering_enabled')
-      .order('created_at', { ascending: false })
+      .select('id, name, created_at, is_active')
+      .is('deleted_at', null)
+      .order('name')
 
     if (error) throw error
-    if (!restaurants) return { restaurants: [], failed: false }
+    const ids = (restaurants || []).map((restaurant) => restaurant.id)
+    if (ids.length === 0) return { rows: [], error: null }
 
-    const restaurantIds = restaurants.map((r) => r.id)
-    const ownerEmails = new Map<string, string>()
+    const [terminalsRes, ordersRes, subscriptionsRes] = await Promise.all([
+      supabase
+        .from('restaurant_terminals')
+        .select('id, restaurant_id, active, status, last_seen_at')
+        .in('restaurant_id', ids),
+      supabase
+        .from('orders')
+        .select('restaurant_id, paid_at')
+        .in('restaurant_id', ids)
+        .eq('payment_status', 'paid')
+        .not('paid_at', 'is', null)
+        .order('paid_at', { ascending: false })
+        .limit(5000),
+      supabase.from('subscriptions').select('restaurant_id, plan, status').in('restaurant_id', ids),
+    ])
 
-    if (restaurantIds.length > 0) {
-      const { data: ownerRows } = await supabase
-        .from('restaurant_users')
-        .select('restaurant_id, user_id, users!restaurant_users_user_id_fkey(email)')
-        .in('restaurant_id', restaurantIds)
-        .eq('role', 'owner')
-        .is('deleted_at', null)
+    const cutoff = Date.now() - 15 * 60 * 1000
+    const terminalCounts = new Map<string, { online: number; total: number }>()
+    for (const terminal of terminalsRes.data || []) {
+      if (!terminal.active || terminal.status !== 'active') continue
+      const count = terminalCounts.get(terminal.restaurant_id) || { online: 0, total: 0 }
+      count.total += 1
+      if (terminal.last_seen_at && new Date(terminal.last_seen_at).getTime() >= cutoff) {
+        count.online += 1
+      }
+      terminalCounts.set(terminal.restaurant_id, count)
+    }
 
-      for (const row of ownerRows ?? []) {
-        const usersRelation = row.users as { email: string } | { email: string }[] | null
-        const email = Array.isArray(usersRelation) ? usersRelation[0]?.email : usersRelation?.email
-        if (email && !ownerEmails.has(row.restaurant_id)) {
-          ownerEmails.set(row.restaurant_id, email)
-        }
+    const lastPaid = new Map<string, string>()
+    for (const order of ordersRes.data || []) {
+      if (order.paid_at && !lastPaid.has(order.restaurant_id)) {
+        lastPaid.set(order.restaurant_id, order.paid_at)
       }
     }
 
-    const results = await Promise.all(
-      restaurants.map(async (r) => {
-        const [featuresRes, subRes] = await Promise.all([
-          supabase
-            .from('restaurant_features')
-            .select('kiosk_enabled, staff_app_enabled, whatsapp_enabled')
-            .eq('restaurant_id', r.id)
-            .maybeSingle(),
-          supabase
-            .from('subscriptions')
-            .select('plan, status')
-            .eq('restaurant_id', r.id)
-            .maybeSingle(),
-        ])
-        return {
-          id: r.id,
-          name: r.name,
-          slug: r.slug ?? null,
-          owner_email: ownerEmails.get(r.id) ?? null,
-          created_at: r.created_at,
-          is_active: Boolean(r.is_active),
-          online_ordering_enabled: Boolean(r.online_ordering_enabled),
-          features: featuresRes.data,
-          subscription: subRes.data,
-        }
-      })
+    const subscriptions = new Map(
+      (subscriptionsRes.data || []).map((subscription) => [
+        subscription.restaurant_id,
+        { plan: subscription.plan, status: subscription.status },
+      ]),
     )
 
-    return { restaurants: results, failed: false }
-  } catch {
-    return { restaurants: [], failed: true }
+    return {
+      rows: (restaurants || []).map((restaurant) => {
+        const counts = terminalCounts.get(restaurant.id) || { online: 0, total: 0 }
+        return {
+          id: restaurant.id,
+          name: restaurant.name,
+          created_at: restaurant.created_at,
+          is_active: Boolean(restaurant.is_active),
+          online: counts.online,
+          terminals: counts.total,
+          last_paid_at: lastPaid.get(restaurant.id) || null,
+          subscription: subscriptions.get(restaurant.id) || null,
+        }
+      }),
+      error: null,
+    }
+  } catch (cause) {
+    console.error('[admin/restaurants] Failed to load fleet', cause)
+    return { rows: [], error: 'The restaurant fleet could not be loaded.' }
   }
 }
 
-export default async function AdminRestaurantsPage() {
-  const { restaurants, failed } = await loadRestaurants()
-  const showEmpty = failed || restaurants.length === 0
+export default async function RestaurantsPage() {
+  const { rows, error } = await loadFleet()
 
   return (
-    <div className="min-h-screen bg-[#F7F6F3]">
-      <div className="border-b border-[#E9E9E7] bg-white px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl items-start justify-between">
-          <div>
-            <h1 className="font-serif text-3xl font-semibold text-[#37352F]">
-              Platform {'\u2014'} Restaurants
-            </h1>
-            <p className="mt-1 text-sm text-[#6B675F]">
-              {failed
-                ? 'Unable to load restaurants.'
-                : `${restaurants.length} restaurant${restaurants.length === 1 ? '' : 's'} on the platform`}
-            </p>
-          </div>
-          <Link
-            href="/admin/platform-admins"
-            className="text-sm font-medium text-[#2E75B6] hover:underline"
-          >
-            Platform Admins {'\u2192'}
-          </Link>
+    <div className="space-y-6">
+      <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-[#1A1A1A]">Restaurants</h1>
+          <p className="mt-1 text-sm text-[#8A867C]">
+            {error || `${rows.length} restaurants · terminal health updates after 15 minutes`}
+          </p>
         </div>
+        <Link
+          href="/admin/settings/admins"
+          className="text-sm font-medium text-[#C0392B] hover:underline"
+        >
+          Platform admins →
+        </Link>
       </div>
 
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {showEmpty ? (
-          <div className="rounded-2xl border border-[#E9E9E7] bg-white px-6 py-16 text-center">
-            <p className="text-lg font-medium text-[#37352F]">No restaurants to show</p>
-            <p className="mt-2 text-sm text-[#6B675F]">
-              {failed
-                ? 'The restaurant list could not be loaded. Try refreshing the page.'
-                : 'No restaurants have been created yet.'}
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-2xl border border-[#E9E9E7] bg-white">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
-                <thead className="border-b border-[#E9E9E7] bg-[#FAFAF8] text-xs uppercase tracking-wide text-[#6B675F]">
-                  <tr>
-                    <th className="px-4 py-3 font-medium">Restaurant Name</th>
-                    <th className="px-4 py-3 font-medium">Slug</th>
-                    <th className="px-4 py-3 font-medium">Owner Email</th>
-                    <th className="px-4 py-3 font-medium">Created Date</th>
-                    <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-4 py-3 font-medium">Ordering Channels</th>
-                    <th className="px-4 py-3 font-medium">Features</th>
-                    <th className="px-4 py-3 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {restaurants.map((restaurant) => {
-                    const badges = enabledFeatureBadges(restaurant.features)
-                    const channels = orderingChannels(restaurant)
-                    return (
-                      <tr
-                        key={restaurant.id}
-                        className="border-b border-[#F1F0EC] last:border-0"
-                      >
-                        <td className="px-4 py-3 font-medium text-[#37352F]">
+      {rows.length === 0 ? (
+        <EmptyState
+          title={error ? 'Fleet unavailable' : 'No restaurants'}
+          body={error || 'Restaurants will appear here after onboarding.'}
+        />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-left text-sm">
+              <thead className="border-b border-[#E8E6E1] bg-[#FAFAF8] text-[11px] uppercase tracking-wide text-[#8A867C]">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Name</th>
+                  <th className="px-4 py-3 font-semibold">Health</th>
+                  <th className="px-4 py-3 font-semibold">Terminals online / total</th>
+                  <th className="px-4 py-3 font-semibold">Last activity</th>
+                  <th className="px-4 py-3 font-semibold">Subscription</th>
+                  <th className="px-4 py-3 font-semibold">Created</th>
+                  <th className="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#EFEDE8]">
+                {rows.map((restaurant) => {
+                  const health = !restaurant.is_active
+                    ? 'unknown'
+                    : restaurant.online < restaurant.terminals
+                      ? 'critical'
+                      : 'ok'
+                  return (
+                    <tr key={restaurant.id} className="hover:bg-[#FAFAF8]">
+                      <td className="px-4 py-3 font-medium text-[#1A1A1A]">
+                        <Link href={`/admin/restaurants/${restaurant.id}`} className="hover:underline">
                           {restaurant.name}
-                        </td>
-                        <td className="px-4 py-3 text-[#6B675F]">
-                          {restaurant.slug ?? '—'}
-                        </td>
-                        <td className="px-4 py-3 text-[#6B675F]">
-                          {restaurant.owner_email ?? '—'}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-[#37352F]">
-                          {formatDate(restaurant.created_at)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                              restaurant.is_active
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-gray-100 text-gray-600'
-                            }`}
-                          >
-                            {restaurant.is_active ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-[#6B675F]">
-                          {channels.join(', ')}
-                        </td>
-                        <td className="px-4 py-3">
-                          {badges.length === 0 ? (
-                            <span className="text-[#6B675F]">—</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-1.5">
-                              {badges.map((label) => (
-                                <span
-                                  key={label}
-                                  className="inline-flex items-center rounded-full bg-[#EBF3FB] px-2.5 py-0.5 text-xs font-medium text-[#2E75B6]"
-                                >
-                                  {label}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Link
-                            href={`/admin/restaurants/${restaurant.id}`}
-                            className="text-sm font-medium text-[#2E75B6] hover:underline"
-                          >
-                            Manage
-                          </Link>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3">
+                        <HealthBadge status={health} />
+                      </td>
+                      <td className="px-4 py-3 text-[#5C574E]">
+                        <span className="font-medium text-[#1A1A1A]">{restaurant.online}</span>
+                        {' / '}
+                        {restaurant.terminals}
+                      </td>
+                      <td className="px-4 py-3 text-[#5C574E]">
+                        {formatDate(restaurant.last_paid_at, true)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {restaurant.subscription ? (
+                          <div className="flex items-center gap-2">
+                            <span className="capitalize text-[#1A1A1A]">
+                              {restaurant.subscription.plan || 'Plan'}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="border-[#E8E6E1] text-[#8A867C]"
+                            >
+                              {restaurant.subscription.status || 'unknown'}
+                            </Badge>
+                          </div>
+                        ) : (
+                          <span className="text-[#8A867C]">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-[#8A867C]">
+                        {formatDate(restaurant.created_at)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          href={`/admin/restaurants/${restaurant.id}`}
+                          className="font-medium text-[#C0392B] hover:underline"
+                        >
+                          View →
+                        </Link>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
