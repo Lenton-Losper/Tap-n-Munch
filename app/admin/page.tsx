@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation'
 
 export const dynamic = 'force-dynamic'
 
-/** Platform console entry — real home is the restaurants list. */
+/** Platform console entry — ops dashboard homepage. */
 export default function AdminIndexPage() {
-  redirect('/admin/restaurants')
+  redirect('/admin/dashboard')
 }

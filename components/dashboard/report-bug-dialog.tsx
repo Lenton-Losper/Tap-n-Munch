@@ -13,28 +13,62 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { getAccessToken } from '@/lib/onboarding/api-client'
+import { useToast } from '@/hooks/use-toast'
 
 export function ReportBugButton({ className }: { className?: string }) {
+  const { toast } = useToast()
   const [open, setOpen] = useState(false)
   const [bugDescription, setBugDescription] = useState('')
   const [name, setName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const closeModal = () => {
+    if (submitting) return
     setOpen(false)
     setBugDescription('')
     setName('')
   }
 
-  const submitBug = () => {
+  const submitBug = async () => {
     const description = bugDescription.trim()
-    if (!description) return
-
-    const subject = encodeURIComponent('FlashTap Bug Report')
-    const body = encodeURIComponent(
-      `Bug description:\n${description}\n\nReported by: ${name.trim() || 'Anonymous'}\n\nDashboard URL: ${window.location.href}\nTime: ${new Date().toISOString()}`,
-    )
-    window.open(`mailto:llosperofficial@gmail.com?subject=${subject}&body=${body}`)
-    closeModal()
+    if (!description || submitting) return
+    setSubmitting(true)
+    try {
+      const token = await getAccessToken()
+      const res = await fetch('/api/bug-reports', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          description,
+          reporterName: name.trim() || undefined,
+          pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+          area: 'Other',
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(payload.error || 'Failed to submit')
+      }
+      toast({
+        title: 'Bug report submitted',
+        description: 'FlashTap ops will review it in the platform console.',
+      })
+      setOpen(false)
+      setBugDescription('')
+      setName('')
+    } catch (err) {
+      toast({
+        title: 'Could not submit report',
+        description: err instanceof Error ? err.message : 'Try again',
+        variant: 'destructive',
+      })
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -54,7 +88,7 @@ export function ReportBugButton({ className }: { className?: string }) {
           <DialogHeader>
             <DialogTitle className="font-serif text-xl text-[#37352F]">Report a Bug</DialogTitle>
             <DialogDescription className="text-[#6B675F]">
-              Describe what happened and we&apos;ll look into it.
+              Describe what happened and we&apos;ll look into it in the ops console.
             </DialogDescription>
           </DialogHeader>
 
@@ -64,7 +98,7 @@ export function ReportBugButton({ className }: { className?: string }) {
               rows={4}
               value={bugDescription}
               onChange={(e) => setBugDescription(e.target.value)}
-              className="border-[#E9E9E7] resize-none"
+              className="resize-none border-[#E9E9E7]"
             />
             <Input
               type="text"
@@ -80,6 +114,7 @@ export function ReportBugButton({ className }: { className?: string }) {
               type="button"
               variant="outline"
               onClick={closeModal}
+              disabled={submitting}
               className="border-[#E9E9E7]"
             >
               Cancel
@@ -87,10 +122,10 @@ export function ReportBugButton({ className }: { className?: string }) {
             <Button
               type="button"
               onClick={submitBug}
-              disabled={!bugDescription.trim()}
+              disabled={!bugDescription.trim() || submitting}
               className="bg-[#37352F] text-white hover:bg-[#2a2824]"
             >
-              Send Report
+              {submitting ? 'Sending…' : 'Send Report'}
             </Button>
           </DialogFooter>
         </DialogContent>
