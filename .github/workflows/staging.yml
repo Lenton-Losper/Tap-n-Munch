@@ -6,32 +6,6 @@ on:
       - cloudflare-staging
 
 jobs:
-  bootstrap-platform-admin:
-    # Temporary one-shot: create/reset staging operator login.
-    # Remove this job after the account exists.
-    if: contains(github.event.head_commit.message, '[bootstrap-admin]')
-    runs-on: ubuntu-latest
-    name: Bootstrap staging platform admin
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - name: Upsert staging platform admin
-        env:
-          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
-          BOOTSTRAP_EMAIL: llosperofficial@gmail.com
-        run: |
-          # Password supplied by operator request; masked in logs; not printed by script.
-          BOOTSTRAP_PASSWORD="$(printf '%s' 'IVNoYWRvZXkwMQ==' | base64 -d)"
-          echo "::add-mask::$BOOTSTRAP_PASSWORD"
-          export BOOTSTRAP_PASSWORD
-          npx tsx scripts/upsert-staging-platform-admin.ts
-
   build-verification:
     runs-on: ubuntu-latest
     name: Build Verification (Lint, Typecheck, Unit Tests)
