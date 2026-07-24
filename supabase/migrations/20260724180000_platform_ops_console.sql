@@ -50,6 +50,23 @@ ALTER TABLE public.bug_reports
 CREATE INDEX IF NOT EXISTS bug_reports_status_created_idx
   ON public.bug_reports (status, created_at DESC);
 
+-- Baseline bug_reports had restaurant_id without a FK, so PostgREST embeds
+-- like restaurants(name) fail until this constraint exists.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'bug_reports_restaurant_id_fkey'
+  ) THEN
+    ALTER TABLE public.bug_reports
+      ADD CONSTRAINT bug_reports_restaurant_id_fkey
+      FOREIGN KEY (restaurant_id)
+      REFERENCES public.restaurants(id)
+      ON DELETE CASCADE;
+  END IF;
+END $$;
+
 -- Optional correlation id on platform audit for OWASP-style tracing
 ALTER TABLE public.platform_audit_logs
   ADD COLUMN IF NOT EXISTS correlation_id text;

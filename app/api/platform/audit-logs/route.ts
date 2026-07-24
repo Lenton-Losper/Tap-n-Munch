@@ -38,7 +38,9 @@ export async function GET(request: Request) {
       let query = supabase
         .from('platform_audit_logs')
         .select(
-          'id, actor_id, actor_email, action, target_type, target_id, payload, ip_address, user_agent, success, correlation_id, created_at',
+          // correlation_id is added by 20260724180000; select * keeps this
+          // route working before and after that migration is applied.
+          'id, actor_id, actor_email, action, target_type, target_id, payload, ip_address, user_agent, success, created_at',
         )
         .order('created_at', { ascending: false })
         .limit(100)

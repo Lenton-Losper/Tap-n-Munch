@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { resolvePlatformAdmin } from '@/lib/permissions/assert-platform-admin'
+import { attachRestaurantNames } from '@/lib/platform/attach-restaurant-names'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
@@ -107,11 +108,10 @@ export async function GET(request: Request) {
         Promise.all(restaurantQueries),
         Promise.all(terminalQueries),
         Promise.all(orderQueries),
+        // Avoid status + restaurants(name) until ops migration/FK are applied.
         supabase
           .from('bug_reports')
-          .select(
-            'id, restaurant_id, description, area, status, created_at, restaurants(name)',
-          )
+          .select('id, restaurant_id, description, area, created_at')
           .ilike('description', pattern)
           .order('created_at', { ascending: false })
           .limit(10),
@@ -131,6 +131,11 @@ export async function GET(request: Request) {
         (result) => (result.data ?? []) as unknown as Array<Record<string, unknown>>,
       )
 
+    const bugs = await attachRestaurantNames(
+      supabase,
+      uniqueById((bugResult.data ?? []) as unknown as Array<Record<string, unknown>>),
+    )
+
     return NextResponse.json({
       restaurants: uniqueById(rows(restaurantResults)),
       terminals: uniqueById(
@@ -145,9 +150,7 @@ export async function GET(request: Request) {
             (result.data ?? []) as unknown as Array<Record<string, unknown>>,
         ),
       ),
-      bugs: uniqueById(
-        (bugResult.data ?? []) as unknown as Array<Record<string, unknown>>,
-      ),
+      bugs,
     })
   } catch (error) {
     console.error('[platform/search] GET', error)

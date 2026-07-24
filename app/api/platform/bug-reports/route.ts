@@ -4,6 +4,7 @@ import {
   resolvePlatformAdmin,
   writePlatformAudit,
 } from '@/lib/permissions/assert-platform-admin'
+import { attachRestaurantNames } from '@/lib/platform/attach-restaurant-names'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
@@ -13,6 +14,15 @@ type BugStatus = (typeof BUG_STATUSES)[number]
 
 function isBugStatus(value: string): value is BugStatus {
   return (BUG_STATUSES as readonly string[]).includes(value)
+}
+
+function hasStatusColumn(error: { message?: string; code?: string } | null | undefined) {
+  const message = String(error?.message || '')
+  return !(
+    error?.code === '42703' ||
+    /column .*status.* does not exist/i.test(message) ||
+    /Could not find the .*column.*status/i.test(message)
+  )
 }
 
 export async function GET(request: Request) {
@@ -26,17 +36,31 @@ export async function GET(request: Request) {
     }
 
     const supabase = createServerSupabaseClient()
-    let query = supabase
-      .from('bug_reports')
-      .select('*, restaurants(name)')
-      .order('created_at', { ascending: false })
+    // Avoid restaurants(name) embed: staging historically lacked the FK.
+    let query = supabase.from('bug_reports').select('*').order('created_at', { ascending: false })
 
     if (status) query = query.eq('status', status)
 
     const { data, error } = await query
-    if (error) throw error
+    if (error) {
+      if (status && !hasStatusColumn(error)) {
+        return NextResponse.json(
+          {
+            error:
+              'Bug report status columns are not applied yet. Run migration 20260724180000_platform_ops_console.',
+          },
+          { status: 503 },
+        )
+      }
+      throw error
+    }
 
-    return NextResponse.json({ bugReports: data ?? [] })
+    const bugReports = await attachRestaurantNames(
+      supabase,
+      (data ?? []) as Array<Record<string, unknown>>,
+    )
+
+    return NextResponse.json({ bugReports })
   } catch (error) {
     console.error('[platform/bug-reports] GET', error)
     return NextResponse.json({ error: 'Failed to load bug reports.' }, { status: 500 })
@@ -96,13 +120,28 @@ export async function PATCH(request: Request) {
       .from('bug_reports')
       .update(updates)
       .eq('id', id)
-      .select('*, restaurants(name)')
+      .select('*')
       .maybeSingle()
 
-    if (error) throw error
+    if (error) {
+      if (!hasStatusColumn(error)) {
+        return NextResponse.json(
+          {
+            error:
+              'Bug report triage columns are not applied yet. Run migration 20260724180000_platform_ops_console.',
+          },
+          { status: 503 },
+        )
+      }
+      throw error
+    }
     if (!data) {
       return NextResponse.json({ error: 'Bug report not found.' }, { status: 404 })
     }
+
+    const [bugReport] = await attachRestaurantNames(supabase, [
+      data as Record<string, unknown>,
+    ])
 
     await writePlatformAudit({
       actorId: admin.userId,
@@ -117,7 +156,7 @@ export async function PATCH(request: Request) {
       request,
     })
 
-    return NextResponse.json({ bugReport: data })
+    return NextResponse.json({ bugReport })
   } catch (error) {
     console.error('[platform/bug-reports] PATCH', error)
     return NextResponse.json({ error: 'Failed to update bug report.' }, { status: 500 })
