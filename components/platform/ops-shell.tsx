@@ -151,13 +151,27 @@ export function OpsShell({
 export function HealthBadge({
   status,
 }: {
-  status: 'ok' | 'degraded' | 'critical' | 'unknown' | 'offline' | 'online'
+  status:
+    | 'ok'
+    | 'operational'
+    | 'degraded'
+    | 'critical'
+    | 'outage'
+    | 'unknown'
+    | 'offline'
+    | 'online'
+    | 'healthy'
+    | 'watch'
 }) {
   const map = {
     ok: { label: 'Healthy', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+    healthy: { label: 'Healthy', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+    operational: { label: 'Operational', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
     online: { label: 'Online', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+    watch: { label: 'Watch', className: 'bg-sky-50 text-sky-900 border-sky-200' },
     degraded: { label: 'Degraded', className: 'bg-amber-50 text-amber-900 border-amber-200' },
     critical: { label: 'Critical', className: 'bg-red-50 text-red-800 border-red-200' },
+    outage: { label: 'Outage', className: 'bg-red-50 text-red-800 border-red-200' },
     offline: { label: 'Offline', className: 'bg-red-50 text-red-800 border-red-200' },
     unknown: { label: 'Unknown', className: 'bg-stone-100 text-stone-600 border-stone-200' },
   } as const
@@ -166,6 +180,25 @@ export function HealthBadge({
     <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold', m.className)}>
       {m.label}
     </span>
+  )
+}
+
+export function ScoreMeter({ score, band }: { score: number; band: string }) {
+  const tone =
+    band === 'healthy'
+      ? 'bg-emerald-600'
+      : band === 'watch'
+        ? 'bg-sky-600'
+        : band === 'degraded'
+          ? 'bg-amber-500'
+          : 'bg-red-600'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[#EFEDE8]">
+        <div className={cn('h-full rounded-full', tone)} style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
+      </div>
+      <span className="tabular-nums text-sm font-semibold text-[#1A1A1A]">{score}</span>
+    </div>
   )
 }
 
