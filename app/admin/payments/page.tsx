@@ -181,8 +181,10 @@ function PaymentsPageInner() {
   }, [load])
 
   useEffect(() => {
-    if (eventId) void loadDetail(eventId)
-    else setDetail(null)
+    void Promise.resolve().then(() => {
+      if (eventId) void loadDetail(eventId)
+      else setDetail(null)
+    })
   }, [eventId, loadDetail])
 
   const setQuery = (patch: Record<string, string | null>) => {
