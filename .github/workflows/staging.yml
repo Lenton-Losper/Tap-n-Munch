@@ -6,6 +6,7 @@ on:
       - cloudflare-staging
 
 jobs:
+
   build-verification:
     runs-on: ubuntu-latest
     name: Build Verification (Lint, Typecheck, Unit Tests)
