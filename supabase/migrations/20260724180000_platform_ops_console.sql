@@ -59,11 +59,22 @@ BEGIN
     FROM pg_constraint
     WHERE conname = 'bug_reports_restaurant_id_fkey'
   ) THEN
-    ALTER TABLE public.bug_reports
-      ADD CONSTRAINT bug_reports_restaurant_id_fkey
-      FOREIGN KEY (restaurant_id)
-      REFERENCES public.restaurants(id)
-      ON DELETE CASCADE;
+    IF EXISTS (
+      SELECT 1
+      FROM public.bug_reports br
+      WHERE br.restaurant_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.restaurants r WHERE r.id = br.restaurant_id
+        )
+    ) THEN
+      RAISE NOTICE 'Skipping bug_reports_restaurant_id_fkey — orphan restaurant_id rows exist';
+    ELSE
+      ALTER TABLE public.bug_reports
+        ADD CONSTRAINT bug_reports_restaurant_id_fkey
+        FOREIGN KEY (restaurant_id)
+        REFERENCES public.restaurants(id)
+        ON DELETE CASCADE;
+    END IF;
   END IF;
 END $$;
 
