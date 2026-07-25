@@ -129,7 +129,7 @@ export default function PrinterPickerScreen({onClose, onPaired}: Props) {
         ]}
         disabled={connectingId !== null}
         onPress={handleSelectBuiltIn}>
-        <MaterialCommunityIcons name="printer-check-outline" size={24} color={Colors.primary} />
+        <MaterialCommunityIcons name="printer" size={24} color={Colors.primary} />
         <View style={styles.rowText}>
           <Text style={styles.printerName}>{BUILT_IN_PRINTER_NAME}</Text>
           <Text style={styles.printerAddress}>No pairing needed</Text>

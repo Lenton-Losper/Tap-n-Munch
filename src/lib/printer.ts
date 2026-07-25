@@ -1,4 +1,5 @@
 import {NativeModules, PermissionsAndroid, Platform} from 'react-native';
+import {withPrintLock} from './printQueue';
 
 export interface PrinterInfo {
   id: string;
@@ -56,7 +57,11 @@ const PLAIN_LANGUAGE_ERRORS: Record<string, string> = {
     'The print failed partway through. Make sure the printer is powered on and in range.',
   INVALID_PAYLOAD: 'Something went wrong preparing that print job.',
   NO_PRINTER_CONFIGURED: 'No receipt printer is set up on this device yet.',
-  RECEIPT_NOT_READY: "The receipt isn't ready yet. Wait a moment and try again.",
+  RECEIPT_NOT_READY:
+    'Receipt was not issued after payment. Try again or contact support.',
+  RECEIPT_FETCH_FAILED: "Couldn't load the receipt. Check the connection and try again.",
+  RECEIPT_FORMAT_UNAVAILABLE:
+    'This receipt cannot be printed on the configured printer. Contact support.',
 };
 
 /** Maps a native/API error code to a plain-language message a non-technical user can act on. */
@@ -152,8 +157,7 @@ export async function connectToPrinter(
   }
 }
 
-/** Sends already-rendered ESC/POS bytes (base64) to the currently connected printer. */
-export async function printEscPosBytes(
+async function printEscPosBytesUnlocked(
   escposBase64: string,
 ): Promise<PrinterActionResult> {
   if (Platform.OS !== 'android' || !PrinterModule?.printEscPos) {
@@ -169,6 +173,40 @@ export async function printEscPosBytes(
       errorCode: errorCodeOf(error),
     };
   }
+}
+
+/**
+ * Sends already-rendered ESC/POS bytes (base64) to the currently connected printer.
+ * Serialized via the shared print lock with built-in jobs.
+ */
+export async function printEscPosBytes(
+  escposBase64: string,
+): Promise<PrinterActionResult> {
+  return withPrintLock(() => printEscPosBytesUnlocked(escposBase64));
+}
+
+/**
+ * Connect (if needed) + print under one print lock so another job cannot reconnect
+ * mid-flight. ESC/POS protocol unchanged.
+ */
+export async function runBluetoothPrintJob(params: {
+  printerAddress: string;
+  escposBase64: string;
+}): Promise<PrinterActionResult> {
+  return withPrintLock(async () => {
+    const status = await getPrinterStatus();
+    if (!status.connected || status.id !== params.printerAddress) {
+      const connectResult = await connectToPrinter(params.printerAddress);
+      if (!connectResult.success) {
+        return {
+          success: false,
+          errorCode: connectResult.errorCode,
+          error: connectResult.error ?? 'Failed to connect to printer',
+        };
+      }
+    }
+    return printEscPosBytesUnlocked(params.escposBase64);
+  });
 }
 
 export async function getPrinterStatus(): Promise<PrinterStatus> {

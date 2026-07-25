@@ -917,30 +917,60 @@ export async function createPOSOrder(
 
 export interface TerminalReceipt {
   id: string;
+  /** RCT document number — also embedded in escposBase64 / sdk6Lines by the backend renderer. */
   documentNumber: string;
   status: string;
   escposBase64: string;
   /**
-   * Structured counterpart to escposBase64 for the P5 built-in printer path (WisePosSdk's
-   * Printer has no raw-byte-write method) -- derived from the same receipt snapshot. Optional
-   * because older/cached responses or a receipt fetched with an outdated route may omit it;
-   * printReceiptForOrder() fails closed with RECEIPT_FORMAT_UNAVAILABLE if so, rather than
-   * guessing at receipt content client-side.
+   * Structured counterpart to escposBase64 for the P5 built-in printer (WisePosSdk has no
+   * raw-byte write). On the current backend, mark-paid awaits issuance, so a successful
+   * payment's GET should include sdk6Lines. Treated as required by printViaBuiltIn; absence
+   * is RECEIPT_FORMAT_UNAVAILABLE (contract/backend defect), not a client race.
    */
   sdk6Lines?: Sdk6ReceiptLine[];
+  /** Present on current backend responses; unused by the terminal transport layer. */
+  issuedAt?: string;
+  /** Present on current backend responses; unused by the terminal transport layer. */
+  rendererVersion?: string;
 }
 
 /**
- * Fetches the already-rendered ESC/POS bytes for an order's issued receipt. Returns null
- * (not a throw) when the receipt isn't issued yet — issuance is awaited on mark-paid paths,
- * so a brief "not found" right after payment is an expected, retryable state, not an error.
- * 404 responses include diagnostics (payment_status, issuance failure audit) logged for support.
+ * Thrown when GET /receipts/:orderId returns 404. After a successful mark-paid on the current
+ * backend, issuance is awaited — this is an anomalous issuance/backend failure, not a normal
+ * "wait a moment" race. Diagnostics (paymentStatus, paidAt, issuance audit) are attached when
+ * the API returns them.
+ */
+export class ReceiptNotReadyError extends Error {
+  readonly code: string;
+  readonly orderId: string;
+  readonly diagnostics: Record<string, unknown> | null;
+
+  constructor(
+    orderId: string,
+    code: string = 'RECEIPT_NOT_READY',
+    diagnostics: Record<string, unknown> | null = null,
+  ) {
+    super(
+      diagnostics
+        ? `Receipt not issued for order ${orderId} (${code}): ${JSON.stringify(diagnostics)}`
+        : `Receipt not issued for order ${orderId} (${code})`,
+    );
+    this.name = 'ReceiptNotReadyError';
+    this.code = code;
+    this.orderId = orderId;
+    this.diagnostics = diagnostics;
+  }
+}
+
+/**
+ * Fetches the final issued receipt for an order (read-only; does not issue).
+ * On 404 throws ReceiptNotReadyError with backend diagnostics when present.
  */
 export async function getReceiptForOrder(
   orderId: string,
   token: string,
   characterWidth?: number,
-): Promise<TerminalReceipt | null> {
+): Promise<TerminalReceipt> {
   const query = characterWidth ? `?characterWidth=${characterWidth}` : '';
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/receipts/${orderId}${query}`,
@@ -953,27 +983,35 @@ export async function getReceiptForOrder(
   }
 
   if (response.status === 404) {
+    let code = 'RECEIPT_NOT_READY';
+    let diagnostics: Record<string, unknown> | null = null;
     try {
       const body = (await response.json()) as {
         code?: string;
         diagnostics?: Record<string, unknown>;
       };
-      console.warn('[getReceiptForOrder] RECEIPT_NOT_READY', {
-        orderId,
-        code: body.code ?? 'RECEIPT_NOT_READY',
-        diagnostics: body.diagnostics ?? null,
-      });
+      code = body.code ?? 'RECEIPT_NOT_READY';
+      diagnostics = body.diagnostics ?? null;
     } catch {
-      console.warn('[getReceiptForOrder] RECEIPT_NOT_READY', {orderId});
+      // Body may be empty; still surface a typed not-ready error.
     }
-    return null;
+    console.warn('[getReceiptForOrder] RECEIPT_NOT_READY', {
+      orderId,
+      code,
+      diagnostics,
+    });
+    throw new ReceiptNotReadyError(orderId, code, diagnostics);
   }
 
   if (!response.ok) {
     throw new Error(await parseApiError(response));
   }
 
-  return (await response.json()) as TerminalReceipt;
+  const receipt = (await response.json()) as TerminalReceipt;
+  if (!receipt?.id || typeof receipt.escposBase64 !== 'string') {
+    throw new Error('Receipt response is missing id or escposBase64');
+  }
+  return receipt;
 }
 
 /**
@@ -1100,12 +1138,9 @@ export async function getPrinterConfig(
 }
 
 /**
- * printerAddress is sent as an explicit `null` for BUILTIN, not omitted -- there's nothing to
- * pair, it's the device itself. Deliberately not `undefined`: JSON.stringify drops keys whose
- * value is undefined, so the request body would carry no printer_address key at all rather than
- * a null one. A "required" check on the backend (key-presence) fails identically either way, but
- * an explicit null is the correct value for a nullable string | null column either way and is
- * the only form that can satisfy a nullable-but-required-key schema server-side.
+ * printerAddress for BUILTIN: the deployed API validates `printer_address` as a required
+ * non-empty string even for built-in printers (error: "printer_address is required").
+ * Send the sentinel "BUILTIN" — print routing uses connection_type, not this address.
  */
 export async function savePrinterConfig(
   params: {
@@ -1117,6 +1152,11 @@ export async function savePrinterConfig(
   },
   token: string,
 ): Promise<TerminalPrinterConfig> {
+  const printerAddress =
+    params.connectionType === 'BUILTIN'
+      ? params.printerAddress?.trim() || 'BUILTIN'
+      : params.printerAddress;
+
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/printer-config`,
     {
@@ -1125,7 +1165,7 @@ export async function savePrinterConfig(
       body: JSON.stringify({
         connection_type: params.connectionType,
         printer_name: params.printerName,
-        printer_address: params.connectionType === 'BUILTIN' ? null : params.printerAddress,
+        printer_address: printerAddress,
         paper_width_mm: params.paperWidthMm ?? 80,
         character_width: params.characterWidth,
       }),

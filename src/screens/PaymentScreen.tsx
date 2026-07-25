@@ -16,22 +16,20 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api';
-import {formatCurrency, getItemUnitPrice} from '../lib/currency';
+import {formatCurrency, getItemLineTotal} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {processPaymentIntent} from '../lib/payment';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
+import {
+  describeReceiptPrintError,
+  getReceiptPrintingEnabled,
+} from '../lib/receiptPrintSettings';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import StatusBadge from '../components/StatusBadge';
 import {Order} from '../types';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
-
-// Printing is paused -- built-in printer bug under investigation, Bluetooth changes on hold.
-// Completed transactions default to email only until this flips back on. Flip PRINT_ENABLED to
-// restore the Print button and auto-print-on-success; the underlying print code stays intact,
-// just not wired into the UI or the payment-success flow while this is false.
-const PRINT_ENABLED = false;
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString([], {
@@ -51,8 +49,14 @@ export default function PaymentScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
   const {orderId, tableId, tableNumber, total, orderNumber, placedAt} =
     route.params;
-  const {machineState, startPayment, paymentSuccess, paymentFailed, reset} =
-    usePaymentStateMachine();
+  const {
+    machineState,
+    isHydrated,
+    startPayment,
+    paymentSuccess,
+    paymentFailed,
+    reset,
+  } = usePaymentStateMachine(orderId);
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
@@ -70,6 +74,11 @@ export default function PaymentScreen({route, navigation}: Props) {
   const [emailInput, setEmailInput] = useState('');
   const [emailPromptError, setEmailPromptError] = useState<string | null>(null);
   const [receiptSkipped, setReceiptSkipped] = useState(false);
+  /** Runtime developer toggle (Diagnostics). Default false until enabled. */
+  const [receiptPrintingEnabled, setReceiptPrintingEnabled] = useState(false);
+  /** Kiosk: defer leave until print settles (when printing is on). */
+  const [kioskAutoReturnPending, setKioskAutoReturnPending] = useState(false);
+  const [kioskAutoReturnDelayMs, setKioskAutoReturnDelayMs] = useState(3000);
 
   const resolvedTableId = order?.table_id ?? tableId;
 
@@ -93,41 +102,123 @@ export default function PaymentScreen({route, navigation}: Props) {
     loadOrder();
   }, [loadOrder]);
 
+  useEffect(() => {
+    getReceiptPrintingEnabled().then(setReceiptPrintingEnabled);
+  }, []);
+
+  // Android back / replace away must not leave a SUCCESS that the next Charge hydrates.
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', () => {
+      reset();
+    });
+    return unsub;
+  }, [navigation, reset]);
+
   const attemptPrintReceipt = useCallback(async () => {
+    const enabled = await getReceiptPrintingEnabled();
+    if (!enabled) {
+      return;
+    }
+    setReceiptPrintingEnabled(true);
     setPrintState('printing');
     setPrintError(null);
     try {
       const token = await getTerminalToken();
       if (!token) {
         setPrintState('failed');
-        setPrintError('Session expired');
+        setPrintError('Printing failed');
         return;
       }
-      const result = await printReceiptForOrder(orderId, token);
+      const result = await printReceiptForOrder(orderId, token, 'receipt');
       if (result.success) {
         setPrintState('success');
       } else {
         setPrintState('failed');
-        setPrintError(result.error ?? 'Receipt printing failed');
+        setPrintError(describeReceiptPrintError(result.errorCode));
       }
-    } catch (err) {
+    } catch {
       setPrintState('failed');
-      setPrintError(err instanceof Error ? err.message : 'Receipt printing failed');
+      setPrintError('Printing failed');
     }
   }, [orderId]);
 
-  // Auto-print as soon as the payment succeeds — payment success and receipt printing are
-  // independent outcomes, so a print failure here must never look like or affect the payment
-  // result above it. Print/Email/Skip stay available as peer actions the whole time, not just
-  // after a failure -- staff can print again, email a copy, or do both.
-  // Gated on PRINT_ENABLED: printing is paused, so completed transactions default to email
-  // only -- this must not silently fire against the paused/broken print path in the background.
+  // Auto-print when payment succeeds and developer receipt-printing toggle is on.
+  // Print failure never affects payment outcome.
   useEffect(() => {
-    if (PRINT_ENABLED && machineState.state === 'PAYMENT_SUCCESS') {
+    if (receiptPrintingEnabled && machineState.state === 'PAYMENT_SUCCESS') {
       attemptPrintReceipt();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machineState.state]);
+  }, [machineState.state, receiptPrintingEnabled]);
+
+  // Kiosk: never leave mid-print. Wait for success/failure, then hold briefly so
+  // staff can read a failure message before the screen disappears.
+  useEffect(() => {
+    if (!kioskAutoReturnPending || machineState.state !== 'PAYMENT_SUCCESS') {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const leave = (delayMs: number) => {
+      timer = setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        setKioskAutoReturnPending(false);
+        reset();
+        navigation.goBack();
+      }, delayMs);
+    };
+
+    if (!receiptPrintingEnabled) {
+      leave(kioskAutoReturnDelayMs);
+      return () => {
+        cancelled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+      };
+    }
+
+    // Printing on: wait until attempt finishes (printing → success|failed).
+    // Stay on idle briefly until auto-print flips to printing.
+    if (printState === 'idle' || printState === 'printing') {
+      // Safety: if print never starts/settles, still leave after a hard cap.
+      timer = setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        setKioskAutoReturnPending(false);
+        reset();
+        navigation.goBack();
+      }, 20000);
+      return () => {
+        cancelled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+      };
+    }
+
+    const holdMs = printState === 'failed' ? 2500 : 800;
+    leave(holdMs);
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [
+    kioskAutoReturnPending,
+    kioskAutoReturnDelayMs,
+    machineState.state,
+    receiptPrintingEnabled,
+    printState,
+    reset,
+    navigation,
+  ]);
 
   const openEmailPrompt = () => {
     setEmailPromptError(null);
@@ -237,12 +328,11 @@ export default function PaymentScreen({route, navigation}: Props) {
         const action = getPostPaymentAction(orderForAction, paymentResult.canClose);
 
         if (action.type === 'auto_return') {
+          setKioskAutoReturnDelayMs(action.delayMs);
+          setKioskAutoReturnPending(true);
           paymentSuccess(result.reference);
-          setTimeout(() => {
-            reset();
-            navigation.goBack();
-          }, action.delayMs);
         } else {
+          setKioskAutoReturnPending(false);
           setCanCloseTable(action.canClose);
           paymentSuccess(result.reference);
         }
@@ -298,6 +388,15 @@ export default function PaymentScreen({route, navigation}: Props) {
   const displayPlacedAt = order?.placed_at ?? placedAt ?? new Date().toISOString();
   const items = order?.items ?? [];
 
+  // Wait for AsyncStorage hydrate so a legacy persisted SUCCESS cannot flash briefly.
+  if (!isHydrated) {
+    return (
+      <View style={[styles.wrapper, styles.loadingWrap]}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
+
   if (state === 'PAYMENT_SUCCESS') {
     return (
       <View style={styles.wrapper}>
@@ -314,7 +413,7 @@ export default function PaymentScreen({route, navigation}: Props) {
             {!receiptSkipped && (
               <View style={styles.receiptCard}>
                 <View style={styles.receiptActions}>
-                  {PRINT_ENABLED ? (
+                  {receiptPrintingEnabled ? (
                     <Pressable
                       style={[
                         styles.receiptActionButton,
@@ -335,16 +434,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                         </>
                       )}
                     </Pressable>
-                  ) : (
-                    <View style={styles.receiptActionComingSoon}>
-                      <MaterialCommunityIcons
-                        name="printer-off-outline"
-                        size={20}
-                        color={Colors.textMuted}
-                      />
-                      <Text style={styles.receiptActionComingSoonText}>Coming soon</Text>
-                    </View>
-                  )}
+                  ) : null}
                   <Pressable
                     style={[
                       styles.receiptActionButton,
@@ -372,7 +462,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                   </Pressable>
                 </View>
 
-                {PRINT_ENABLED && printState === 'success' && (
+                {receiptPrintingEnabled && printState === 'success' && (
                   <View style={styles.receiptStatusRow}>
                     <MaterialCommunityIcons
                       name="check-circle-outline"
@@ -382,7 +472,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                     <Text style={styles.receiptStatusTextSuccess}>Receipt printed</Text>
                   </View>
                 )}
-                {PRINT_ENABLED && printState === 'failed' && (
+                {receiptPrintingEnabled && printState === 'failed' && (
                   <View style={styles.receiptStatusRow}>
                     <MaterialCommunityIcons
                       name="alert-circle-outline"
@@ -390,7 +480,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                       color={Colors.red}
                     />
                     <Text style={styles.receiptStatusTextError}>
-                      {printError ?? 'Receipt printing failed'}
+                      {printError ?? 'Printing failed'}
                     </Text>
                   </View>
                 )}
@@ -556,7 +646,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                   {item.quantity}x {item.name}
                 </Text>
                 <Text style={styles.itemPrice}>
-                  {formatCurrency(getItemUnitPrice(item) * item.quantity)}
+                  {formatCurrency(getItemLineTotal(item))}
                 </Text>
               </View>
             ))
@@ -632,6 +722,10 @@ const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  loadingWrap: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   successScreen: {
     flex: 1,

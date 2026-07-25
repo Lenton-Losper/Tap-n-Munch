@@ -12,33 +12,29 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
-import com.wisedevice.sdk.IInitDeviceSdkListener
-import com.wisedevice.sdk.WiseDeviceSdk
-import com.wisepos.smartpos.InitPosSdkListener
 import com.wisepos.smartpos.WisePosException
-import com.wisepos.smartpos.WisePosSdk
 import com.wisepos.smartpos.errorcode.WisePosErrorCode
 import com.wisepos.smartpos.printer.Align
 import com.wisepos.smartpos.printer.Printer
 import com.wisepos.smartpos.printer.PrinterListener
 import com.wisepos.smartpos.printer.TextInfo
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Transport-only bridge to the terminal's built-in Wiseasy printer (SDK6 / WisePosSdk).
- * Deliberately knows nothing about receipt content, VAT, or line formatting -- printJob() just
- * executes a pre-fetched sdk6Lines list verbatim, the same way PrinterModule.printEscPos()
- * executes pre-fetched ESC/POS bytes. Both come from the same call, GET
- * /api/terminal/receipts/[orderId] (receiptPrinting.ts, same terminal-token auth for both
- * fields) -- sdk6Lines and escposBase64 are sibling fields derived from the same receipt
- * snapshot. WisePosSdk's Printer has no raw-byte-write method -- only structured
- * addSingleText/addMultiText calls -- so the "already-rendered bytes" PrinterModule.kt takes
- * become a small structured line list here instead. addLine() maps each Sdk6ReceiptLine
- * variant ('text'/'row'/'feed'/'divider' -- see Sdk6ReceiptLine in wiseSdk6Printer.ts) verbatim;
- * no qrCode/barCode variant exists because the backend doesn't emit them.
+ * Built-in Wiseasy printer bridge.
  *
- * Some Wiseasy models have no built-in printer at all (T2, P5L per the SDK6 demo's own
- * visibility check) -- isAvailable() lets JS rule this out before offering it as a Settings
- * option, instead of surfacing a confusing SDK error.
+ * Hardened against every failure mode we identified vs SDKDemo:
+ *  1. SDK bound at MainActivity.onCreate (WisePosSdkBootstrap) — not only on first print
+ *  2. Activity context for any re-init (never Application-only when Activity exists)
+ *  3. Print/status on UI thread (PrinterActivity pattern)
+ *  4. Fresh getPrinter() per job (no stale cached handle after service death)
+ *  5. initPrinter → setGrayLevel → status → setPrintFont → setLineSpacing → add* → startPrinting
+ *  6. Independent timeouts so hung SDK calls still reject the JS promise
+ *  7. One reconnect on SDK_NOT_CONNECTED
+ *  8. Paper: docs 0=has paper, 1=none; null status does not block print
  */
 class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -47,263 +43,429 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
 
   companion object {
     private const val TAG = "WiseSdk6PrinterModule"
-    private const val SDK_INIT_TIMEOUT_MS = 8000L
-    // feedPaper()'s parameter is dots on the Y axis (per WiseSdkDoc_P), not mm -- 30 matches
-    // the SDK6 demo's own trailing feedPaper(30) call after a successful print.
+    private const val ENSURE_TIMEOUT_MS = 10_000L
+    private const val PRINT_TIMEOUT_MS = 20_000L
+    private const val STATUS_TIMEOUT_MS = 8_000L
     private const val DEFAULT_FEED_DOTS = 30
     private const val DEFAULT_FONT_SIZE = 24
     private const val LARGE_FONT_SIZE = 32
-    // Printable width in dots -- addMultiText's docs require width+columnSpacing per column to
-    // sum to no more than this.
     private const val CANVAS_WIDTH_DOTS = 384
-    // The SDK6 demo calls setGrayLevel() before every print job (never leaves it unset); 3 is
-    // WiseSdkDoc_P's documented factory default ("restored to the default value of 3" on
-    // restart), used here as an explicit value rather than relying on whatever the printer
-    // happens to still have set from a previous job.
     private const val DEFAULT_GRAY_LEVEL = 3
-    // Exact convention from the SDK6 demo's own divider lines (PrinterActivity.java).
     private const val DIVIDER_TEXT = "--------------------------------------------"
+    private const val ERR_SUCCESS = 0
     private val UNSUPPORTED_MODELS = setOf("T2", "P5L")
+    private val P5_FONT_MODELS = setOf("P5SE", "P5MAX", "P052")
   }
 
-  private var printer: Printer? = null
-  private var sdkInitInFlight = false
-  private var deviceSdkInitStarted = false
-  private val pendingCallbacks = mutableListOf<(Printer?, Int?) -> Unit>()
+  private sealed class LineSnapshot {
+    data class Text(val text: String, val align: String?, val bold: Boolean, val large: Boolean) :
+      LineSnapshot()
+
+    data class Row(val columns: List<String>) : LineSnapshot()
+
+    data class Feed(val lines: Int) : LineSnapshot()
+
+    object Divider : LineSnapshot()
+  }
+
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val timeoutScheduler = Executors.newSingleThreadScheduledExecutor()
+
+  private fun runOnMain(block: () -> Unit) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      block()
+    } else {
+      mainHandler.post(block)
+    }
+  }
+
+  private fun resolvePromise(promise: Promise, value: Any?) {
+    mainHandler.post { promise.resolve(value) }
+  }
+
+  private fun rejectPromise(
+    promise: Promise,
+    code: String,
+    message: String?,
+    throwable: Throwable? = null,
+  ) {
+    mainHandler.post {
+      if (throwable != null) {
+        promise.reject(code, message, throwable)
+      } else {
+        promise.reject(code, message)
+      }
+    }
+  }
+
+  private fun snapshotLines(lines: ReadableArray): List<LineSnapshot> {
+    val out = ArrayList<LineSnapshot>(lines.size())
+    for (i in 0 until lines.size()) {
+      val line = lines.getMap(i) ?: continue
+      when (line.getString("type")) {
+        "text" ->
+          out.add(
+            LineSnapshot.Text(
+              text = line.getString("text") ?: continue,
+              align = line.getString("align"),
+              bold = line.hasKey("bold") && line.getBoolean("bold"),
+              large = line.hasKey("large") && line.getBoolean("large"),
+            ),
+          )
+        "row" -> {
+          val columns = line.getArray("columns") ?: continue
+          val cols = ArrayList<String>(columns.size())
+          for (c in 0 until columns.size()) {
+            cols.add(columns.getString(c) ?: "")
+          }
+          if (cols.isNotEmpty()) out.add(LineSnapshot.Row(cols))
+        }
+        "feed" ->
+          out.add(LineSnapshot.Feed(if (line.hasKey("lines")) line.getInt("lines") else 1))
+        "divider" -> out.add(LineSnapshot.Divider)
+      }
+    }
+    return out
+  }
+
+  private fun isOutOfPaper(status: Map<String, Any>?): Boolean {
+    if (status == null) return false
+    val raw = status["paper"] ?: return false
+    val asByte: Byte =
+      when (raw) {
+        is Byte -> raw
+        is Number -> raw.toByte()
+        else -> {
+          Log.w(TAG, "Unexpected paper type=${raw.javaClass.name} value=$raw")
+          return false
+        }
+      }
+    Log.d(TAG, "paper raw=$raw asByte=$asByte (1=out)")
+    return asByte.toInt() == 1
+  }
 
   @ReactMethod
   fun isAvailable(promise: Promise) {
-    promise.resolve(!UNSUPPORTED_MODELS.contains(Build.MODEL))
+    resolvePromise(promise, !UNSUPPORTED_MODELS.contains(Build.MODEL))
+  }
+
+  /** Device probe: how many packages expose com.wisepos.aidl.service (SDK needs exactly 1). */
+  @ReactMethod
+  fun probeService(promise: Promise) {
+    try {
+      val probe = WisePosSdkBootstrap.probeUsdkService(reactContext)
+      val map = Arguments.createMap()
+      map.putString("action", probe.action)
+      map.putInt("matchCount", probe.matchCount)
+      map.putString("model", probe.model)
+      map.putInt("sdkInt", probe.sdkInt)
+      map.putString("summary", probe.summary())
+      val comps = Arguments.createArray()
+      probe.components.forEach { comps.pushString(it) }
+      map.putArray("components", comps)
+      resolvePromise(promise, map)
+    } catch (e: Exception) {
+      rejectPromise(promise, "PROBE_FAILED", e.message, e)
+    }
   }
 
   /**
-   * initPosSdk() binds to a system service asynchronously; callers queue behind a single
-   * in-flight init rather than each triggering their own bind. A timeout guards against the
-   * service never answering (e.g. this SDK on non-Wiseasy hardware), so a print request can't
-   * hang the Retry/Skip UI forever.
+   * Ensures SDK service is bound (onInitPosSuccess), then returns Printer.
+   * getPrinter() alone is NOT proof of readiness — it returns a stub singleton.
    */
-  private fun ensurePrinter(callback: (Printer?, errorCode: String?, errorMessage: String?) -> Unit) {
-    val existing = printer
-    if (existing != null) {
-      callback(existing, null, null)
-      return
-    }
+  private fun withPrinter(
+    forceReconnect: Boolean = false,
+    callback: (Printer?, errorCode: String?, errorMessage: String?) -> Unit,
+  ) {
+    @Suppress("DEPRECATION")
+    val activity = getCurrentActivity()
 
-    pendingCallbacks.add { printerInstance, wiseErrorCode ->
-      if (printerInstance != null) {
-        callback(printerInstance, null, null)
-      } else {
-        val suffix = wiseErrorCode?.let { " (code $it)" } ?: " (timed out)"
-        callback(null, "SDK_INIT_FAILED", "Failed to initialize the built-in printer$suffix")
-      }
-    }
-
-    if (sdkInitInFlight) return
-    sdkInitInFlight = true
-
-    // Mirrors the SDK6 demo's MainActivity.onCreate(), which binds both SDKs together.
-    // WisePosSdk owns the printer; WiseDeviceSdk isn't used by this module directly, but the
-    // demo never initializes one without the other, so this doesn't deviate from the only
-    // proven-working init sequence available. Fire-and-forget: printer readiness only waits
-    // on WisePosSdk's own callback below.
-    if (!deviceSdkInitStarted) {
-      deviceSdkInitStarted = true
-      WiseDeviceSdk.getInstance().initDeviceSdk(
-        reactContext,
-        object : IInitDeviceSdkListener {
-          override fun onInitPosSuccess() {
-            Log.d(TAG, "WiseDeviceSdk initialized")
-          }
-
-          override fun onInitPosFail(errorCode: Int) {
-            Log.w(TAG, "WiseDeviceSdk init failed, code=$errorCode")
+    val settled = AtomicBoolean(false)
+    val timeoutFuture =
+      timeoutScheduler.schedule(
+        {
+          if (settled.compareAndSet(false, true)) {
+            callback(null, "SDK_INIT_FAILED", "Printer SDK init timed out")
           }
         },
+        ENSURE_TIMEOUT_MS,
+        TimeUnit.MILLISECONDS,
       )
+
+    fun done(printer: Printer?, code: String?, message: String?) {
+      if (!settled.compareAndSet(false, true)) return
+      timeoutFuture.cancel(false)
+      callback(printer, code, message)
     }
 
-    var settled = false
-    lateinit var timeoutRunnable: Runnable
+    val resolver =
+      if (forceReconnect) {
+        WisePosSdkBootstrap::forceReconnect
+      } else {
+        WisePosSdkBootstrap::resolvePrinter
+      }
 
-    fun settleInit(success: Boolean, wiseErrorCode: Int?) {
-      if (settled) return
-      settled = true
-      mainHandler.removeCallbacks(timeoutRunnable)
-      sdkInitInFlight = false
-      printer = if (success) WisePosSdk.getInstance().getPrinter() else null
-      val callbacks = pendingCallbacks.toList()
-      pendingCallbacks.clear()
-      callbacks.forEach { it(printer, wiseErrorCode) }
+    resolver(activity) { printer, code, message ->
+      runOnMain { done(printer, code, message) }
     }
-
-    timeoutRunnable = Runnable { settleInit(false, null) }
-    mainHandler.postDelayed(timeoutRunnable, SDK_INIT_TIMEOUT_MS)
-
-    WisePosSdk.getInstance().initPosSdk(
-      reactContext,
-      object : InitPosSdkListener {
-        override fun onInitPosSuccess() {
-          settleInit(true, null)
-        }
-
-        override fun onInitPosFail(errorCode: Int) {
-          Log.w(TAG, "initPosSdk failed, code=$errorCode")
-          settleInit(false, errorCode)
-        }
-      },
-    )
   }
 
   @ReactMethod
   fun getStatus(promise: Promise) {
-    ensurePrinter { printerInstance, errorCode, errorMessage ->
+    withPrinter { printerInstance, errorCode, errorMessage ->
       if (printerInstance == null) {
-        promise.reject(errorCode ?: "SDK_INIT_FAILED", errorMessage)
-        return@ensurePrinter
+        rejectPromise(promise, errorCode ?: "SDK_INIT_FAILED", errorMessage)
+        return@withPrinter
       }
-      try {
-        val status = printerInstance.getPrinterStatus()
-        if (status == null) {
-          promise.reject("STATUS_UNAVAILABLE", "Could not read printer status")
-          return@ensurePrinter
+
+      val settled = AtomicBoolean(false)
+      val timeoutFuture =
+        timeoutScheduler.schedule(
+          {
+            if (settled.compareAndSet(false, true)) {
+              rejectPromise(promise, "STATUS_FAILED", "Printer status timed out")
+            }
+          },
+          STATUS_TIMEOUT_MS,
+          TimeUnit.MILLISECONDS,
+        )
+
+      runOnMain {
+        try {
+          val status = printerInstance.getPrinterStatus()
+          if (!settled.compareAndSet(false, true)) return@runOnMain
+          timeoutFuture.cancel(false)
+          if (status == null) {
+            rejectPromise(promise, "STATUS_UNAVAILABLE", "Could not read printer status")
+            return@runOnMain
+          }
+          val result = Arguments.createMap()
+          result.putBoolean("hasPaper", !isOutOfPaper(status))
+          result.putBoolean("connected", true)
+          val temperature = status["temperature"]
+          if (temperature is Number) {
+            result.putDouble("temperature", temperature.toDouble())
+          }
+          resolvePromise(promise, result)
+        } catch (e: Exception) {
+          if (!settled.compareAndSet(false, true)) return@runOnMain
+          timeoutFuture.cancel(false)
+          Log.e(TAG, "getStatus failed", e)
+          rejectPromise(promise, "STATUS_FAILED", e.message, e)
         }
-        val result = Arguments.createMap()
-        val paper = status["paper"] as? Byte
-        result.putBoolean("hasPaper", paper == null || paper.toInt() != 1)
-        result.putBoolean("connected", true)
-        promise.resolve(result)
-      } catch (e: Exception) {
-        promise.reject("STATUS_FAILED", e.message, e)
       }
     }
   }
 
-  /**
-   * Executes a pre-fetched sdk6Lines list. `lines` is an array of {type, ...} maps matching
-   * Sdk6ReceiptLine in wiseSdk6Printer.ts ('text' | 'row' | 'feed' | 'divider'). Rejects with
-   * OUT_OF_PAPER before touching the SDK's print queue so the caller can show Retry/Skip without
-   * a half-printed receipt.
-   */
   @ReactMethod
   fun printJob(lines: ReadableArray, options: ReadableMap?, promise: Promise) {
-    ensurePrinter { printerInstance, errorCode, errorMessage ->
-      if (printerInstance == null) {
-        promise.reject(errorCode ?: "SDK_INIT_FAILED", errorMessage)
-        return@ensurePrinter
+    val snapshot = snapshotLines(lines)
+    if (snapshot.isEmpty()) {
+      rejectPromise(promise, "INVALID_PAYLOAD", "Print job has no lines")
+      return
+    }
+    val feedAfterDots =
+      if (options?.hasKey("feedAfterDots") == true) {
+        options.getInt("feedAfterDots")
+      } else {
+        DEFAULT_FEED_DOTS
       }
-      executePrintJob(printerInstance, lines, options, promise)
+
+    withPrinter { printerInstance, errorCode, errorMessage ->
+      if (printerInstance == null) {
+        rejectPromise(promise, errorCode ?: "SDK_INIT_FAILED", errorMessage)
+        return@withPrinter
+      }
+      runOnMain {
+        executePrintJob(printerInstance, snapshot, feedAfterDots, promise, allowReconnect = true)
+      }
     }
   }
 
   private fun executePrintJob(
     printerInstance: Printer,
-    lines: ReadableArray,
-    options: ReadableMap?,
+    lines: List<LineSnapshot>,
+    feedAfterDots: Int,
     promise: Promise,
+    allowReconnect: Boolean,
   ) {
-    try {
-      printerInstance.initPrinter()
-      printerInstance.setGrayLevel(DEFAULT_GRAY_LEVEL)
+    val settled = AtomicBoolean(false)
+    var timeoutFuture: ScheduledFuture<*>? = null
 
-      val status = printerInstance.getPrinterStatus()
-      val paper = status?.get("paper") as? Byte
-      if (paper != null && paper.toInt() == 1) {
-        promise.reject("OUT_OF_PAPER", "The printer is out of paper")
+    fun settleReject(mappedCode: String, message: String?, cause: Exception? = null) {
+      if (!settled.compareAndSet(false, true)) return
+      timeoutFuture?.cancel(false)
+      Log.w(TAG, "printJob reject code=$mappedCode msg=$message")
+      if (
+        mappedCode == "SDK_NOT_CONNECTED"
+      ) {
+        // Only soft-invalidate on true disconnect — re-init after ordinary failures
+        // often breaks a still-bound service ("Couldn't reach the built-in printer").
+        WisePosSdkBootstrap.invalidate(mappedCode)
+      }
+      rejectPromise(promise, mappedCode, message, cause)
+    }
+
+    fun settleResolve() {
+      if (!settled.compareAndSet(false, true)) return
+      timeoutFuture?.cancel(false)
+      resolvePromise(promise, true)
+    }
+
+    fun failOrReconnect(mappedCode: String, message: String?, cause: Exception? = null) {
+      if (mappedCode == "SDK_NOT_CONNECTED" && allowReconnect) {
+        if (!settled.compareAndSet(false, true)) return
+        timeoutFuture?.cancel(false)
+        Log.w(TAG, "SDK_NOT_CONNECTED — forcing initPosSdk rebind then retry print")
+        WisePosSdkBootstrap.invalidate("SDK_NOT_CONNECTED during print")
+        withPrinter(forceReconnect = true) { fresh, errorCode, errorMessage ->
+          if (fresh == null) {
+            rejectPromise(
+              promise,
+              errorCode ?: "SDK_NOT_CONNECTED",
+              errorMessage ?: message,
+            )
+            return@withPrinter
+          }
+          runOnMain {
+            executePrintJob(fresh, lines, feedAfterDots, promise, allowReconnect = false)
+          }
+        }
+        return
+      }
+      settleReject(mappedCode, message, cause)
+    }
+
+    timeoutFuture =
+      timeoutScheduler.schedule(
+        {
+          Log.e(TAG, "printJob timed out after ${PRINT_TIMEOUT_MS}ms")
+          settleReject("PRINT_TIMEOUT", "Print timed out waiting for the printer")
+        },
+        PRINT_TIMEOUT_MS,
+        TimeUnit.MILLISECONDS,
+      )
+
+    try {
+      Log.i(
+        TAG,
+        "printJob start lines=${lines.size} model=${Build.MODEL} bootstrapReady=${WisePosSdkBootstrap.isPosReady()}",
+      )
+
+      // --- SDKDemo PrinterActivity.printText() sequence ---
+      // 7102 = ERR_SDK_SERVICE_NOT_CONNECTED — getPrinter() stub can exist without a live bind.
+      val initRet = printerInstance.initPrinter()
+      if (initRet != ERR_SUCCESS) {
+        failOrReconnect(
+          errorCodeOf(initRet),
+          "initPrinter failed (code $initRet / 0x${Integer.toHexString(initRet)})",
+        )
         return
       }
 
-      // Matches the SDK6 demo's own per-model font workaround, applied unconditionally
-      // before every text-bearing job -- a hardware compatibility quirk, not a content choice.
+      val grayRet = printerInstance.setGrayLevel(DEFAULT_GRAY_LEVEL)
+      if (grayRet != ERR_SUCCESS) {
+        settleReject("PRINTER_ERROR", "setGrayLevel failed (code $grayRet)")
+        return
+      }
+
+      try {
+        val status = printerInstance.getPrinterStatus()
+        if (status != null && isOutOfPaper(status)) {
+          settleReject("OUT_OF_PAPER", "The printer is out of paper")
+          return
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "getPrinterStatus before print failed — continuing", e)
+      }
+
       val fontBundle = Bundle()
       fontBundle.putString(
         "font",
-        if (Build.MODEL in setOf("P5SE", "P5MAX", "P052")) "sans-serif-light" else "DEFAULT",
+        if (Build.MODEL in P5_FONT_MODELS) "sans-serif-light" else "DEFAULT",
       )
       printerInstance.setPrintFont(fontBundle)
 
-      for (i in 0 until lines.size()) {
-        val line = lines.getMap(i) ?: continue
-        addLine(printerInstance, line)
+      try {
+        printerInstance.setLineSpacing(1)
+      } catch (e: Exception) {
+        Log.w(TAG, "setLineSpacing failed — continuing", e)
       }
 
-      val feedAfterDots =
-        if (options?.hasKey("feedAfterDots") == true) options.getInt("feedAfterDots") else DEFAULT_FEED_DOTS
+      for (line in lines) {
+        addLine(printerInstance, line)
+      }
 
       printerInstance.startPrinting(
         Bundle(),
         object : PrinterListener {
           override fun onError(errorCode: Int) {
-            promise.reject(errorCodeName(errorCode), "Print failed (code $errorCode)")
+            Log.e(TAG, "startPrinting onError code=$errorCode (0x${Integer.toHexString(errorCode)})")
+            failOrReconnect(
+              errorCodeOf(errorCode),
+              "Print failed (code $errorCode / 0x${Integer.toHexString(errorCode)})",
+            )
           }
 
           override fun onFinish() {
             try {
               printerInstance.feedPaper(feedAfterDots)
             } catch (e: WisePosException) {
-              // The receipt already printed; a failed feed isn't a print failure.
               Log.w(TAG, "feedPaper failed after successful print", e)
             }
-            promise.resolve(true)
+            settleResolve()
           }
 
           override fun onReport(status: Int) {
-            // Reserved by the SDK; no action needed.
+            Log.d(TAG, "startPrinting onReport status=$status")
           }
         },
       )
     } catch (e: WisePosException) {
-      promise.reject(errorCodeName(e.errorCode), e.message, e)
+      failOrReconnect(errorCodeOf(e.errorCode), e.message, e)
     } catch (e: Exception) {
-      promise.reject("PRINT_FAILED", e.message, e)
+      settleReject("PRINT_FAILED", e.message, e)
     }
   }
 
-  /** Maps one Sdk6ReceiptLine (wiseSdk6Printer.ts) to the matching Printer call. */
-  private fun addLine(printerInstance: Printer, line: ReadableMap) {
-    when (line.getString("type")) {
-      "text" -> {
-        val text = line.getString("text") ?: return
+  private fun addLine(printerInstance: Printer, line: LineSnapshot) {
+    when (line) {
+      is LineSnapshot.Text -> {
         val info = TextInfo()
-        info.setText(text)
-        info.setAlign(alignFrom(line.getString("align")))
-        info.setFontSize(if (line.hasKey("large") && line.getBoolean("large")) LARGE_FONT_SIZE else DEFAULT_FONT_SIZE)
-        if (line.hasKey("bold")) info.setBold(line.getBoolean("bold"))
+        info.setText(line.text)
+        info.setAlign(alignFrom(line.align))
+        info.setFontSize(if (line.large) LARGE_FONT_SIZE else DEFAULT_FONT_SIZE)
+        info.setBold(line.bold)
         printerInstance.addSingleText(info)
       }
-      "row" -> {
-        val columns = line.getArray("columns") ?: return
-        val count = columns.size()
+      is LineSnapshot.Row -> {
+        val count = line.columns.size
         if (count == 0) return
         val columnWidth = CANVAS_WIDTH_DOTS / count
         val list = ArrayList<TextInfo>()
         for (i in 0 until count) {
           val info = TextInfo()
-          info.setText(columns.getString(i) ?: "")
-          // The contract gives plain strings with no per-column formatting -- right-align the
-          // last column (the common receipt convention: label(s) left, trailing amount right),
-          // left-align the rest. Split width evenly, folding the remainder into the last column
-          // so the total still sums to exactly CANVAS_WIDTH_DOTS as addMultiText requires.
-          info.setAlign(if (i == count - 1) Align.PRINT_ALIGN_STYLE_RIGHT else Align.PRINT_ALIGN_STYLE_LEFT)
+          info.setText(line.columns[i])
+          info.setAlign(
+            if (i == count - 1) Align.PRINT_ALIGN_STYLE_RIGHT else Align.PRINT_ALIGN_STYLE_LEFT,
+          )
           info.setFontSize(DEFAULT_FONT_SIZE)
-          info.setWidth(if (i == count - 1) CANVAS_WIDTH_DOTS - columnWidth * (count - 1) else columnWidth)
+          info.setWidth(
+            if (i == count - 1) CANVAS_WIDTH_DOTS - columnWidth * (count - 1) else columnWidth,
+          )
           info.setColumnSpacing(0)
           list.add(info)
         }
         printerInstance.addMultiText(list)
       }
-      "feed" -> {
-        val lineCount = if (line.hasKey("lines")) line.getInt("lines") else 1
-        // feedPaper() takes dots, not a line count, and there's no documented dots-per-line
-        // constant -- printing blank text lines lets the SDK's own line-height/spacing
-        // determine the actual distance instead of us guessing a conversion factor.
-        repeat(lineCount.coerceAtLeast(0)) {
+      is LineSnapshot.Feed -> {
+        repeat(line.lines.coerceAtLeast(0)) {
           val blank = TextInfo()
           blank.setText("")
           printerInstance.addSingleText(blank)
         }
       }
-      "divider" -> {
+      LineSnapshot.Divider -> {
         val info = TextInfo()
         info.setText(DIVIDER_TEXT)
         info.setAlign(Align.PRINT_ALIGN_STYLE_CENTER)
@@ -320,13 +482,14 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
       else -> Align.PRINT_ALIGN_STYLE_LEFT
     }
 
-  private fun errorCodeName(code: Int): String =
+  private fun errorCodeOf(code: Int): String =
     when (code) {
       WisePosErrorCode.ERR_PRINTER_RUN_OUT_PAPER -> "OUT_OF_PAPER"
-      WisePosErrorCode.ERR_PRINTER_TEMPERATURE, WisePosErrorCode.ERR_SVR_PRINTER_TEMPERATURE -> "PRINTER_OVERHEATED"
+      WisePosErrorCode.ERR_PRINTER_TEMPERATURE, WisePosErrorCode.ERR_SVR_PRINTER_TEMPERATURE ->
+        "PRINTER_OVERHEATED"
       WisePosErrorCode.ERR_PRINTER, WisePosErrorCode.ERR_SVR_PRINTER_STATUS_ERROR -> "PRINTER_ERROR"
-      WisePosErrorCode.ERR_SDK_SERVICE_NOT_CONNECTED, WisePosErrorCode.ERR_SDK_DEVICE_UNCONNECTED -> "SDK_NOT_CONNECTED"
-      // Documented on startPrinting(): fires when device battery is <=4%.
+      WisePosErrorCode.ERR_SDK_SERVICE_NOT_CONNECTED, WisePosErrorCode.ERR_SDK_DEVICE_UNCONNECTED ->
+        "SDK_NOT_CONNECTED"
       WisePosErrorCode.ERR_SVR_LOW_BATTERY -> "LOW_BATTERY"
       else -> "PRINT_FAILED"
     }

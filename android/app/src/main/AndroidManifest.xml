@@ -1,6 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Private POS APK: needed so queryIntentServices can see the system USDK
+         printer service on Android 11+ when intent-filter visibility alone is insufficient. -->
+    <uses-permission
+      android:name="android.permission.QUERY_ALL_PACKAGES"
+      tools:ignore="QueryAllPackagesPermission" />
 
     <!-- Bluetooth receipt printer (PrinterModule.kt / DantSu ESCPOS-ThermalPrinter-Android).
          Legacy permissions for API 30 and below, new granular ones for API 31+. Paired device
@@ -16,6 +23,21 @@
         <intent>
             <action android:name="com.wiseasy.transaction.call" />
         </intent>
+        <!-- WisePos printer/device AIDL (WiseSdk_P). Required for targetSdk 30+ package visibility;
+             without this, initPosSdk fails with ERR_SDK_INVALID_PARAMETER (7101). -->
+        <intent>
+            <action android:name="com.wisepos.aidl.service" />
+        </intent>
+        <intent>
+            <action android:name="com.wisedevice.aidl.service" />
+        </intent>
+        <!-- Common Wiseasy / USDK host packages (best-effort; probe confirms what's present). -->
+        <package android:name="com.wisepos.service" />
+        <package android:name="com.wiseasy.usdk" />
+        <package android:name="com.wiseasy.service" />
+        <package android:name="com.sdksuite.usdk" />
+        <package android:name="com.wiseasy.cashier" />
+        <package android:name="com.wiseasy.pay" />
     </queries>
 
     <application

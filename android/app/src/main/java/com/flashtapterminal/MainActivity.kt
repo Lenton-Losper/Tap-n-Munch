@@ -2,8 +2,10 @@ package com.flashtapterminal
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Bundle
 import com.facebook.react.bridge.Arguments
 import com.flashtap.pos.PaymentModule
+import com.flashtap.pos.WisePosSdkBootstrap
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -16,6 +18,20 @@ class MainActivity : ReactActivity() {
 
   override fun createReactActivityDelegate(): ReactActivityDelegate =
     DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    // SDKDemo MainActivity.onCreate: bind WisePos + WiseDevice before any printer use.
+    WisePosSdkBootstrap.start(this)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // If cold-start bind raced or failed, retry when the activity is foregrounded.
+    if (!WisePosSdkBootstrap.isPosReady()) {
+      WisePosSdkBootstrap.start(this)
+    }
+  }
 
   @Deprecated("Deprecated in Java")
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

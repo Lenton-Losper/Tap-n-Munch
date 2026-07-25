@@ -101,16 +101,28 @@ export async function processPaymentIntent(
       merchantOrderNo,
     );
 
-    const voucherNo = result.voucherNo || undefined;
+    const voucherNo = String(result.voucherNo ?? '').trim() || undefined;
     // Prefer the value we sent (and persisted); fall back to gateway echo.
     const businessOrderNo =
-      merchantOrderNo || result.businessOrderNo || undefined;
+      merchantOrderNo ||
+      String(result.businessOrderNo ?? '').trim() ||
+      undefined;
+
+    // Native MainActivity only resolves on Finatic result "00" with a transaction ID.
+    // Refuse to mark success without a voucher — never invent FT-* references.
+    if (!voucherNo) {
+      return {
+        success: false,
+        businessOrderNo,
+        error: 'No transaction ID returned from payment app',
+      };
+    }
 
     return {
       success: true,
       voucherNo,
       businessOrderNo,
-      reference: voucherNo || businessOrderNo || `FT-${Date.now()}`,
+      reference: voucherNo,
     };
   } catch (error: unknown) {
     return {

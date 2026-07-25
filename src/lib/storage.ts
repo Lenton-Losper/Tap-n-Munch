@@ -150,4 +150,6 @@ export async function clearAllData(): Promise<void> {
       EncryptedStorage.removeItem(key).catch(() => {}),
     ),
   );
+  const {clearReceiptPrintSettings} = await import('./receiptPrintSettings');
+  await clearReceiptPrintSettings();
 }

@@ -4,10 +4,14 @@ import {getItemUnitPrice} from './currency';
 function mapItem(raw: Record<string, unknown>, index: number): OrderItem {
   return {
     id: String(raw.id ?? `${raw.name ?? 'item'}-${index}`),
-    name: String(raw.name ?? 'Item'),
-    quantity: Number(raw.quantity ?? 1),
+    name: String(raw.name ?? raw.item_name ?? raw.menu_item_name ?? 'Item'),
+    quantity: Number(raw.quantity ?? raw.qty ?? 1),
     price: getItemUnitPrice(raw),
-    variant: raw.variant ? String(raw.variant) : undefined,
+    variant: raw.variant
+      ? String(raw.variant)
+      : raw.variant_name
+        ? String(raw.variant_name)
+        : undefined,
   };
 }
 

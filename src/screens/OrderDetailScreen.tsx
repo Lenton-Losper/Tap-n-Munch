@@ -17,7 +17,12 @@ import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StatusBadge from '../components/StatusBadge';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {getOrder, updateOrderStatus} from '../lib/api';
-import {formatCurrency, getItemUnitPrice} from '../lib/currency';
+import {formatCurrency, getItemLineTotal} from '../lib/currency';
+import {printReceiptForOrder} from '../lib/receiptPrinting';
+import {
+  describeReceiptPrintError,
+  getReceiptPrintingEnabled,
+} from '../lib/receiptPrintSettings';
 import {getStatusColor} from '../lib/statusColors';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -34,6 +39,19 @@ function formatTime(iso: string): string {
   });
 }
 
+function orderHeading(order: Order): string {
+  if (order.channel === 'kiosk') {
+    if (order.kiosk_order_number != null) {
+      return `K-${String(order.kiosk_order_number).padStart(3, '0')}`;
+    }
+    return 'Kiosk';
+  }
+  if (order.table_number != null && Number(order.table_number) > 0) {
+    return String(order.table_number);
+  }
+  return '—';
+}
+
 export default function OrderDetailScreen({route}: Props) {
   const insets = useSafeAreaInsets();
   const navigation =
@@ -42,6 +60,10 @@ export default function OrderDetailScreen({route}: Props) {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [reprinting, setReprinting] = useState(false);
+  const [reprintMessage, setReprintMessage] = useState<string | null>(null);
+  const [reprintFailed, setReprintFailed] = useState(false);
+  const [receiptPrintingEnabled, setReceiptPrintingEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadOrder = useCallback(async () => {
@@ -66,6 +88,7 @@ export default function OrderDetailScreen({route}: Props) {
   useFocusEffect(
     useCallback(() => {
       loadOrder();
+      getReceiptPrintingEnabled().then(setReceiptPrintingEnabled);
     }, [loadOrder]),
   );
 
@@ -111,6 +134,41 @@ export default function OrderDetailScreen({route}: Props) {
     }
   };
 
+  const handleReprintReceipt = async () => {
+    if (!order || reprinting) {
+      return;
+    }
+    const enabled = await getReceiptPrintingEnabled();
+    if (!enabled) {
+      return;
+    }
+    setReprinting(true);
+    setReprintMessage(null);
+    setReprintFailed(false);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        setReprintFailed(true);
+        setReprintMessage('Printing failed');
+        return;
+      }
+      // Reuses printReceiptForOrder — GET issued receipt only; new delivery row; no re-issue.
+      const result = await printReceiptForOrder(order.id, token, 'reprint');
+      if (result.success) {
+        setReprintFailed(false);
+        setReprintMessage('Receipt sent to printer');
+      } else {
+        setReprintFailed(true);
+        setReprintMessage(describeReceiptPrintError(result.errorCode));
+      }
+    } catch {
+      setReprintFailed(true);
+      setReprintMessage('Printing failed');
+    } finally {
+      setReprinting(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -150,7 +208,7 @@ export default function OrderDetailScreen({route}: Props) {
         style={styles.container}
         contentContainerStyle={styles.content}>
         <Text style={[styles.tableNumber, {color: statusColor}]}>
-          {order.table_number}
+          {orderHeading(order)}
         </Text>
 
         <View style={styles.metaRow}>
@@ -173,11 +231,13 @@ export default function OrderDetailScreen({route}: Props) {
         {order.member_name ? (
           <Text style={styles.memberName}>{order.member_name}</Text>
         ) : null}
+        {order.channel === 'kiosk' && order.customer_name ? (
+          <Text style={styles.memberName}>{order.customer_name}</Text>
+        ) : null}
 
         <Text style={styles.sectionHeader}>Items</Text>
         <View style={styles.itemsSection}>
           {order.items.map((item, index) => {
-            const unitPrice = getItemUnitPrice(item);
             return (
               <View key={item.id ?? index} style={styles.itemRow}>
                 <Text style={styles.itemName}>
@@ -185,7 +245,7 @@ export default function OrderDetailScreen({route}: Props) {
                   {item.variant ? ` (${item.variant})` : ''}
                 </Text>
                 <Text style={styles.itemPrice}>
-                  {formatCurrency(unitPrice * item.quantity)}
+                  {formatCurrency(getItemLineTotal(item))}
                 </Text>
               </View>
             );
@@ -264,6 +324,34 @@ export default function OrderDetailScreen({route}: Props) {
 
           {order.status === 'completed' && (
             <>
+              {receiptPrintingEnabled ? (
+                <Pressable
+                  style={[
+                    styles.outlinedButton,
+                    reprinting && styles.buttonDisabled,
+                  ]}
+                  disabled={reprinting}
+                  onPress={handleReprintReceipt}>
+                  {reprinting ? (
+                    <ActivityIndicator color={Colors.primary} />
+                  ) : (
+                    <Text style={styles.outlinedButtonText}>
+                      Reprint Receipt
+                    </Text>
+                  )}
+                </Pressable>
+              ) : null}
+              {receiptPrintingEnabled && reprintMessage ? (
+                <Text
+                  style={
+                    reprintFailed
+                      ? styles.reprintErrorText
+                      : styles.reprintSuccessText
+                  }>
+                  {reprintMessage}
+                </Text>
+              ) : null}
+
               {order.payment_status_derived === 'refunded' ? (
                 <Text style={styles.fullyRefundedText}>
                   This order has been fully refunded.
@@ -451,6 +539,16 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
     paddingVertical: Spacing.md,
+  },
+  reprintSuccessText: {
+    ...Typography.small,
+    color: Colors.green,
+    textAlign: 'center',
+  },
+  reprintErrorText: {
+    ...Typography.small,
+    color: Colors.red,
+    textAlign: 'center',
   },
   errorText: {
     color: Colors.red,

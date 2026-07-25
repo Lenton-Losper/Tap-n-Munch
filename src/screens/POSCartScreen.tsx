@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import {RouteProp, useNavigation, useRoute} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
+import {clearPersistedPaymentState} from '../components/PaymentStateMachine';
 import {createPOSOrder, POSOrderItem} from '../lib/api';
 import {useCart} from '../context/CartContext';
 import {getTerminalToken} from '../lib/storage';
@@ -45,6 +46,10 @@ export default function POSCartScreen() {
         subtotal,
         total,
       });
+
+      // Prevent a prior order's persisted SUCCESS from painting "Payment successful"
+      // on this new charge before Finatic opens.
+      await clearPersistedPaymentState();
 
       clearCart();
       navigation.replace('Payment', {

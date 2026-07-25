@@ -21,4 +21,11 @@ export const RESTAURANT_NAME_STORAGE_KEY = 'flashtap_restaurant_name';
 export const MERCHANT_NO_STORAGE_KEY = 'flashtap_merchant_no';
 export const STORE_NO_STORAGE_KEY = 'flashtap_store_no';
 export const PAYMENT_STATE_STORAGE_KEY = 'flashtap_payment_state';
-export const APP_VERSION = '1.34';
+/**
+ * Developer toggle (Diagnostics): single source of truth for staff receipt printing
+ * (auto-print, Print button, Reprint). Default off until hardware-verified.
+ */
+export const RECEIPT_PRINTING_ENABLED_KEY = 'flashtap_receipt_printing_enabled';
+/** Last print attempt summary for Diagnostics (JSON). */
+export const RECEIPT_PRINT_LAST_RESULT_KEY = 'flashtap_receipt_print_last_result';
+export const APP_VERSION = '1.59';

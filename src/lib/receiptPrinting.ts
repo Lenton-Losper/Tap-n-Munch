@@ -1,32 +1,123 @@
 import {
   getPrinterConfig,
   getReceiptForOrder,
+  ReceiptNotReadyError,
   recordReceiptDelivery,
   sendReceiptEmail,
   TerminalPrinterConfig,
+  TerminalReceipt,
 } from './api';
-import {connectToPrinter, getPrinterStatus, printEscPosBytes} from './printer';
+import {runBluetoothPrintJob} from './printer';
+import {
+  describeReceiptPrintError,
+  getReceiptPrintingEnabled,
+  recordLastPrintResult,
+} from './receiptPrintSettings';
 import {getTerminalId} from './storage';
-import {printBuiltInJob} from './wiseSdk6Printer';
+import {printBuiltInJob, Sdk6ReceiptLine} from './wiseSdk6Printer';
 
 export interface PrintReceiptResult {
   success: boolean;
-  /** Distinguishes "no printer configured yet" / "receipt not issued yet" from a real print failure. */
+  /** Distinguishes config / issuance / transport failures for Retry-Skip UX. */
   errorCode?: string;
   error?: string;
+}
+
+const RECEIPT_NOT_READY_MAX_ATTEMPTS = 3;
+const RECEIPT_NOT_READY_DELAY_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function describeReceiptNotReady(err: ReceiptNotReadyError): string {
+  // Delivery-log / internal detail — staff UI uses describeReceiptPrintError instead.
+  const paymentStatus = err.diagnostics?.paymentStatus ?? err.diagnostics?.payment_status;
+  if (paymentStatus != null) {
+    return `Receipt was not issued after payment (status: ${String(paymentStatus)}). Try again or contact support.`;
+  }
+  return 'Receipt was not issued after payment. Try again or contact support.';
+}
+
+function isUsableSdk6Lines(lines: Sdk6ReceiptLine[] | undefined): lines is Sdk6ReceiptLine[] {
+  return Array.isArray(lines) && lines.length > 0;
+}
+
+async function fetchIssuedReceipt(
+  orderId: string,
+  token: string,
+  characterWidth?: number,
+): Promise<{receipt?: TerminalReceipt; notReady?: ReceiptNotReadyError; error?: string}> {
+  let lastNotReady: ReceiptNotReadyError | undefined;
+
+  for (let attempt = 1; attempt <= RECEIPT_NOT_READY_MAX_ATTEMPTS; attempt++) {
+    try {
+      const receipt = await getReceiptForOrder(orderId, token, characterWidth);
+      return {receipt};
+    } catch (err) {
+      if (err instanceof ReceiptNotReadyError) {
+        lastNotReady = err;
+        if (attempt < RECEIPT_NOT_READY_MAX_ATTEMPTS) {
+          await sleep(RECEIPT_NOT_READY_DELAY_MS);
+          continue;
+        }
+        return {notReady: err};
+      }
+      return {
+        error: err instanceof Error ? err.message : 'Failed to fetch receipt',
+      };
+    }
+  }
+
+  return lastNotReady ? {notReady: lastNotReady} : {error: 'Failed to fetch receipt'};
 }
 
 /**
  * Fetches the issued receipt for an order and prints it on the terminal's configured printer
  * (Bluetooth ESC/POS or the P5's built-in WiseSDK6 printer), logging the attempt to
- * receipt_deliveries either way. Never throws -- a failed print must never be treated as a
- * payment failure, so every failure mode resolves to { success: false, errorCode, error } for
- * the caller to show as "Retry / Skip".
+ * receipt_deliveries when a receipt_document_id is available. Never throws -- a failed print
+ * must never be treated as a payment failure. Never issues or mutates receipt documents.
+ *
+ * Backend contract (current): mark-paid awaits receipt issuance, so after a successful payment
+ * GET /receipts/:orderId should return the final receipt. A RECEIPT_NOT_READY response is an
+ * anomalous issuance failure, not an expected client-side race.
+ *
+ * @param source - Diagnostics label for last-print panel (default receipt / reprint).
  */
 export async function printReceiptForOrder(
   orderId: string,
   token: string,
+  source: 'receipt' | 'reprint' = 'receipt',
 ): Promise<PrintReceiptResult> {
+  // Single source of truth: developer "Enable Receipt Printing" toggle.
+  // Settings / Diagnostics Test Print does not call this function.
+  const enabled = await getReceiptPrintingEnabled();
+  if (!enabled) {
+    return {
+      success: false,
+      errorCode: 'PRINTING_DISABLED',
+      error: 'Printing failed',
+    };
+  }
+
+  const {result, printerLabel} = await printReceiptForOrderInner(orderId, token);
+  await recordLastPrintResult({
+    outcome: result.success ? 'success' : 'failed',
+    source,
+    errorCode: result.errorCode,
+    // Store staff-facing text for diagnostics panel (never raw SDK strings).
+    errorMessage: result.success
+      ? undefined
+      : describeReceiptPrintError(result.errorCode),
+    printerLabel,
+  });
+  return result;
+}
+
+async function printReceiptForOrderInner(
+  orderId: string,
+  token: string,
+): Promise<{result: PrintReceiptResult; printerLabel?: string}> {
   let config: TerminalPrinterConfig | null = null;
   let configFetchError: unknown;
   try {
@@ -37,17 +128,12 @@ export async function printReceiptForOrder(
 
   if (!config) {
     // No adb/on-device log access on this hardware -- route the diagnostic through
-    // receipt_deliveries.error_message instead (queryable on staging via Supabase), same as
-    // every other failure here. "No receipt printer is set up on this terminal" is the *only*
-    // place that exact string appears client-side (confirmed by grepping every printer_address
-    // check), so there is no separate client-side gate blocking BUILTIN configs -- this is
-    // either the GET route not returning the saved row, returning it without connection_type,
-    // or the request failing outright, and this is what will tell us which.
-    const receipt = await getReceiptForOrder(orderId, token).catch(() => null);
-    if (receipt) {
+    // receipt_deliveries.error_message instead when we have a receipt document id.
+    const fetched = await fetchIssuedReceipt(orderId, token);
+    if (fetched.receipt) {
       await recordReceiptDelivery(
         {
-          receiptDocumentId: receipt.id,
+          receiptDocumentId: fetched.receipt.id,
           status: 'failed',
           provider: 'config_lookup_failed',
           errorCode: 'NO_PRINTER_CONFIGURED',
@@ -59,16 +145,23 @@ export async function printReceiptForOrder(
       );
     }
     return {
-      success: false,
-      errorCode: 'NO_PRINTER_CONFIGURED',
-      error: 'No receipt printer is set up on this terminal',
+      result: {
+        success: false,
+        errorCode: 'NO_PRINTER_CONFIGURED',
+        error: 'No receipt printer is set up on this terminal',
+      },
     };
   }
 
+  const printerLabel =
+    config.connection_type === 'BUILTIN'
+      ? config.printer_name || 'Built-in printer'
+      : config.printer_name || 'Bluetooth printer';
+
   if (config.connection_type === 'BUILTIN') {
-    return printViaBuiltIn(orderId, token);
+    return {result: await printViaBuiltIn(orderId, token), printerLabel};
   }
-  return printViaBluetooth(config, orderId, token);
+  return {result: await printViaBluetooth(config, orderId, token), printerLabel};
 }
 
 async function printViaBluetooth(
@@ -84,42 +177,49 @@ async function printViaBluetooth(
     };
   }
 
-  const receipt = await getReceiptForOrder(
+  const fetched = await fetchIssuedReceipt(
     orderId,
     token,
     config.character_width ?? undefined,
-  ).catch(() => null);
-  if (!receipt) {
+  );
+  if (fetched.notReady) {
     return {
       success: false,
       errorCode: 'RECEIPT_NOT_READY',
-      error: 'Receipt has not been issued yet',
+      error: describeReceiptNotReady(fetched.notReady),
+    };
+  }
+  if (!fetched.receipt) {
+    return {
+      success: false,
+      errorCode: 'RECEIPT_FETCH_FAILED',
+      error: fetched.error ?? 'Failed to fetch receipt',
+    };
+  }
+  const receipt = fetched.receipt;
+
+  if (!receipt.escposBase64) {
+    await recordReceiptDelivery(
+      {
+        receiptDocumentId: receipt.id,
+        status: 'failed',
+        provider: 'bluetooth_escpos',
+        errorCode: 'RECEIPT_FORMAT_UNAVAILABLE',
+        errorMessage: 'Receipt response is missing escposBase64',
+      },
+      token,
+    );
+    return {
+      success: false,
+      errorCode: 'RECEIPT_FORMAT_UNAVAILABLE',
+      error: 'Receipt printing payload is incomplete for this receipt',
     };
   }
 
-  const status = await getPrinterStatus();
-  if (!status.connected || status.id !== config.printer_address) {
-    const connectResult = await connectToPrinter(config.printer_address);
-    if (!connectResult.success) {
-      await recordReceiptDelivery(
-        {
-          receiptDocumentId: receipt.id,
-          status: 'failed',
-          provider: 'bluetooth_escpos',
-          errorCode: connectResult.errorCode,
-          errorMessage: connectResult.error,
-        },
-        token,
-      );
-      return {
-        success: false,
-        errorCode: connectResult.errorCode,
-        error: connectResult.error ?? 'Failed to connect to printer',
-      };
-    }
-  }
-
-  const printResult = await printEscPosBytes(receipt.escposBase64);
+  const printResult = await runBluetoothPrintJob({
+    printerAddress: config.printer_address,
+    escposBase64: receipt.escposBase64,
+  });
 
   await recordReceiptDelivery(
     {
@@ -143,22 +243,31 @@ async function printViaBluetooth(
   return {success: true};
 }
 
+/**
+ * Built-in P5 path: GET issued receipt → require sdk6Lines → WiseSdk6PrinterModule.printJob
+ * (same native entry Settings Test Print uses via printBuiltInJob).
+ */
 async function printViaBuiltIn(orderId: string, token: string): Promise<PrintReceiptResult> {
-  const receipt = await getReceiptForOrder(orderId, token).catch(() => null);
-  if (!receipt) {
+  const fetched = await fetchIssuedReceipt(orderId, token);
+  if (fetched.notReady) {
     return {
       success: false,
       errorCode: 'RECEIPT_NOT_READY',
-      error: 'Receipt has not been issued yet',
+      error: describeReceiptNotReady(fetched.notReady),
     };
   }
+  if (!fetched.receipt) {
+    return {
+      success: false,
+      errorCode: 'RECEIPT_FETCH_FAILED',
+      error: fetched.error ?? 'Failed to fetch receipt',
+    };
+  }
+  const receipt = fetched.receipt;
 
   const deviceId = (await getTerminalId()) ?? undefined;
 
-  // sdk6Lines is optional on the type (older/cached responses may omit it) -- fail closed
-  // rather than guess at receipt content client-side, but still log the attempt so it's
-  // visible in receipt_deliveries.
-  if (!receipt.sdk6Lines) {
+  if (!isUsableSdk6Lines(receipt.sdk6Lines)) {
     await recordReceiptDelivery(
       {
         receiptDocumentId: receipt.id,
@@ -166,7 +275,8 @@ async function printViaBuiltIn(orderId: string, token: string): Promise<PrintRec
         provider: 'wiseasy_sdk6',
         deviceId,
         errorCode: 'RECEIPT_FORMAT_UNAVAILABLE',
-        errorMessage: 'Built-in printer receipt format is not available for this receipt',
+        errorMessage:
+          'Built-in printer requires non-empty sdk6Lines on the issued receipt (missing or empty)',
       },
       token,
     );
@@ -209,23 +319,21 @@ export interface SendReceiptEmailResult {
 
 /**
  * Emails the receipt for an order, fetching it first so a failure has a receiptDocumentId to
- * log against. On failure, routes the raw response (see sendReceiptEmail's full status+body
- * error) into receipt_deliveries.error_message -- no on-device log access on this hardware, so
- * this is the only way to see what the route actually returned. NOTE: the email route is
- * assumed (not confirmed) to log its own receipt_deliveries row server-side on send, so a
- * failed attempt may end up with two rows (this one and the server's) until that's confirmed
- * either way -- accepted since the diagnostic need outweighs a possible duplicate row. Does not
- * log on success (the low-risk/lower-priority half of this per the request that added it).
+ * log against. On failure, routes the raw response into receipt_deliveries.error_message.
  */
 export async function sendReceiptEmailForOrder(
   orderId: string,
   email: string,
   token: string,
 ): Promise<SendReceiptEmailResult> {
-  const receipt = await getReceiptForOrder(orderId, token).catch(() => null);
-  if (!receipt) {
-    return {success: false, error: 'Receipt has not been issued yet'};
+  const fetched = await fetchIssuedReceipt(orderId, token);
+  if (fetched.notReady) {
+    return {success: false, error: describeReceiptNotReady(fetched.notReady)};
   }
+  if (!fetched.receipt) {
+    return {success: false, error: fetched.error ?? 'Failed to fetch receipt'};
+  }
+  const receipt = fetched.receipt;
 
   try {
     await sendReceiptEmail(orderId, email, token);

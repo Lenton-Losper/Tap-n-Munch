@@ -46,7 +46,9 @@ function paymentReducer(
 }
 
 async function persistPaymentState(state: PaymentMachineState): Promise<void> {
-  if (state.state === 'IDLE') {
+  // Only crash-recover in-flight payments. Never persist SUCCESS/FAILED — otherwise
+  // Sale → Charge for a new order hydrates a prior success and skips Finatic.
+  if (state.state !== 'PAYMENT_IN_PROGRESS') {
     await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
     return;
   }
@@ -65,32 +67,60 @@ async function loadPaymentState(): Promise<PaymentMachineState> {
   }
 }
 
-export function usePaymentStateMachine() {
+/** Clear crash-recovery key — call when starting a new Sale charge so a prior SUCCESS cannot flash. */
+export async function clearPersistedPaymentState(): Promise<void> {
+  await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
+}
+
+/**
+ * @param currentOrderId When set, ignore persisted state for a different order so a
+ * prior payment's SUCCESS cannot paint over a new Charge.
+ */
+export function usePaymentStateMachine(currentOrderId?: string) {
   const [machineState, dispatch] = useReducer(paymentReducer, INITIAL_STATE);
   const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
     async function hydrate() {
       const saved = await loadPaymentState();
-      if (saved.state !== 'IDLE') {
-        if (saved.state === 'PAYMENT_IN_PROGRESS') {
-          dispatch({
-            type: 'RESTORE',
-            payload: {
-              ...saved,
-              state: 'PAYMENT_FAILED',
-              error: 'Payment was interrupted. Please retry.',
-            },
-          });
-        } else {
-          dispatch({type: 'RESTORE', payload: saved});
-        }
+      if (saved.state === 'IDLE') {
+        setIsHydrated(true);
+        return;
+      }
+
+      // Stale success/fail from another order (or legacy persisted SUCCESS) must not
+      // show "Payment successful" before Finatic launches.
+      if (
+        currentOrderId &&
+        saved.orderId &&
+        saved.orderId !== currentOrderId
+      ) {
+        await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
+        setIsHydrated(true);
+        return;
+      }
+
+      if (saved.state === 'PAYMENT_IN_PROGRESS') {
+        dispatch({
+          type: 'RESTORE',
+          payload: {
+            ...saved,
+            state: 'PAYMENT_FAILED',
+            error: 'Payment was interrupted. Please retry.',
+          },
+        });
+      } else if (saved.state === 'PAYMENT_FAILED') {
+        // Legacy key may still hold FAILED; only restore for this order.
+        dispatch({type: 'RESTORE', payload: saved});
+      } else {
+        // Drop legacy PAYMENT_SUCCESS — require a real Process Payment for this order.
+        await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
       }
       setIsHydrated(true);
     }
 
     hydrate();
-  }, []);
+  }, [currentOrderId]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -117,6 +147,7 @@ export function usePaymentStateMachine() {
 
   return {
     machineState,
+    isHydrated,
     startPayment,
     paymentSuccess,
     paymentFailed,

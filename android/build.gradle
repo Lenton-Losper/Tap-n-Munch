@@ -3,7 +3,10 @@ buildscript {
         buildToolsVersion = "36.0.0"
         minSdkVersion = 24
         compileSdkVersion = 36
-        targetSdkVersion = 36
+        // POS terminals: keep targetSdk at 29 so package visibility matches Wiseasy SDKDemo.
+        // targetSdk 30+ hides com.wisepos.aidl.service from queryIntentServices (7101 / matches=0)
+        // even when the USDK is installed and the demo (older targetSdk) can print on the same P5.
+        targetSdkVersion = 29
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
     }

@@ -1,18 +1,36 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {
   ActivityIndicator,
   NativeModules,
+  Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
+  View,
 } from 'react-native';
 import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
+import {getPrinterConfig} from '../lib/api';
+import {getPrinterStatus, runBluetoothPrintJob} from '../lib/printer';
+import {
+  describeReceiptPrintError,
+  getLastPrintResult,
+  getReceiptPrintingEnabled,
+  LastPrintResult,
+  recordLastPrintResult,
+  setReceiptPrintingEnabled,
+} from '../lib/receiptPrintSettings';
 import {
   getRestaurantId,
   getTerminalId,
   getTerminalToken,
 } from '../lib/storage';
+import {buildSdk6TestPrintLines, buildTestPrintPayload} from '../lib/testPrintPayload';
+import {
+  getBuiltInPrinterStatus,
+  printBuiltInJob,
+} from '../lib/wiseSdk6Printer';
 
 const {RuntimeConfig} = NativeModules;
 
@@ -24,12 +42,67 @@ interface RuntimeInfo {
   error?: string;
 }
 
+function formatLastPrint(result: LastPrintResult | null): {
+  lastPrint: string;
+  lastError: string;
+} {
+  if (!result || result.outcome === 'none') {
+    return {lastPrint: 'None', lastError: 'None'};
+  }
+  if (result.outcome === 'success') {
+    return {
+      lastPrint: `Successful (${result.source})`,
+      lastError: 'None',
+    };
+  }
+  return {
+    lastPrint: `Failed (${result.source})`,
+    lastError: describeReceiptPrintError(result.errorCode),
+  };
+}
+
 export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [terminalId, setTerminalId] = useState<string | null>(null);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [tokenPresent, setTokenPresent] = useState(false);
+
+  const [receiptPrintingOn, setReceiptPrintingOn] = useState(false);
+  const [printerLabel, setPrinterLabel] = useState<string>('Not configured');
+  const [lastPrint, setLastPrint] = useState('None');
+  const [lastError, setLastError] = useState('None');
+  const [testPrinting, setTestPrinting] = useState(false);
+  const [toggling, setToggling] = useState(false);
+
+  const refreshPrintDiagnostics = useCallback(async () => {
+    const [enabled, last, token] = await Promise.all([
+      getReceiptPrintingEnabled(),
+      getLastPrintResult(),
+      getTerminalToken(),
+    ]);
+    setReceiptPrintingOn(enabled);
+    const formatted = formatLastPrint(last);
+    setLastPrint(formatted.lastPrint);
+    setLastError(formatted.lastError);
+
+    if (token) {
+      try {
+        const config = await getPrinterConfig(token);
+        if (!config) {
+          setPrinterLabel('Not configured');
+        } else if (config.connection_type === 'BUILTIN') {
+          setPrinterLabel(config.printer_name || 'Built-in P5');
+        } else {
+          setPrinterLabel(config.printer_name || 'Bluetooth printer');
+        }
+      } catch {
+        setPrinterLabel('Unable to load');
+      }
+    } else {
+      setPrinterLabel('Not configured');
+    }
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -41,7 +114,8 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       setRestaurantId(rid);
       setTokenPresent(!!token);
     });
-  }, []);
+    refreshPrintDiagnostics();
+  }, [refreshPrintDiagnostics]);
 
   useEffect(() => {
     fetch(`${FLASHTAP_API_URL}/api/debug/runtime`)
@@ -51,9 +125,122 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       .finally(() => setLoading(false));
   }, []);
 
+  const handleTogglePrinting = async (value: boolean) => {
+    setToggling(true);
+    try {
+      await setReceiptPrintingEnabled(value);
+      setReceiptPrintingOn(value);
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const handleDevTestPrint = async () => {
+    setTestPrinting(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        await recordLastPrintResult({
+          outcome: 'failed',
+          source: 'test',
+          errorMessage: 'Session expired',
+        });
+        await refreshPrintDiagnostics();
+        return;
+      }
+      const config = await getPrinterConfig(token);
+      if (!config) {
+        await recordLastPrintResult({
+          outcome: 'failed',
+          source: 'test',
+          errorCode: 'NO_PRINTER_CONFIGURED',
+          errorMessage: describeReceiptPrintError('NO_PRINTER_CONFIGURED'),
+        });
+        await refreshPrintDiagnostics();
+        return;
+      }
+
+      if (config.connection_type === 'BUILTIN') {
+        const lines = buildSdk6TestPrintLines(
+          config.printer_name ?? 'Built-in Printer',
+        );
+        const printResult = await printBuiltInJob(lines);
+        void getBuiltInPrinterStatus();
+        await recordLastPrintResult({
+          outcome: printResult.success ? 'success' : 'failed',
+          source: 'test',
+          errorCode: printResult.errorCode,
+          errorMessage: printResult.success
+            ? undefined
+            : describeReceiptPrintError(printResult.errorCode),
+          printerLabel: config.printer_name || 'Built-in P5',
+        });
+      } else if (config.printer_address) {
+        const payload = buildTestPrintPayload(
+          config.printer_name ?? 'Receipt Printer',
+        );
+        const printResult = await runBluetoothPrintJob({
+          printerAddress: config.printer_address,
+          escposBase64: payload,
+        });
+        void getPrinterStatus();
+        await recordLastPrintResult({
+          outcome: printResult.success ? 'success' : 'failed',
+          source: 'test',
+          errorCode: printResult.errorCode,
+          errorMessage: printResult.success
+            ? undefined
+            : describeReceiptPrintError(printResult.errorCode),
+          printerLabel: config.printer_name || 'Bluetooth printer',
+        });
+      }
+      await refreshPrintDiagnostics();
+    } finally {
+      setTestPrinting(false);
+    }
+  };
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>FlashTap Diagnostics</Text>
+
+      <Text style={styles.sectionTitle}>Developer</Text>
+      <Text style={styles.subSectionTitle}>Receipt Printing</Text>
+
+      <View style={styles.toggleRow}>
+        <Text style={styles.toggleLabel}>Enable Receipt Printing</Text>
+        <Switch
+          value={receiptPrintingOn}
+          onValueChange={handleTogglePrinting}
+          disabled={toggling}
+        />
+      </View>
+      <Text style={styles.hint}>
+        When on: auto-print after payment, Print on success, and Reprint on
+        completed orders. When off: no staff print actions (default). Test Print
+        below always works. Hidden from normal staff — open via 5 taps on the
+        Settings version.
+      </Text>
+
+      <Text style={styles.label}>Printer</Text>
+      <Text style={styles.value}>{printerLabel}</Text>
+
+      <Text style={styles.label}>Last Print</Text>
+      <Text style={styles.value}>{lastPrint}</Text>
+
+      <Text style={styles.label}>Last Error</Text>
+      <Text style={styles.value}>{lastError}</Text>
+
+      <Pressable
+        style={[styles.testBtn, testPrinting && styles.btnDisabled]}
+        disabled={testPrinting}
+        onPress={handleDevTestPrint}>
+        {testPrinting ? (
+          <ActivityIndicator color="#333" />
+        ) : (
+          <Text style={styles.testBtnTxt}>Test Print</Text>
+        )}
+      </Pressable>
 
       <Text style={styles.sectionTitle}>Device / session</Text>
 
@@ -134,6 +321,31 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
+  subSectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  toggleLabel: {
+    fontSize: 16,
+    color: '#1a1a1a',
+    flex: 1,
+    marginRight: 12,
+  },
+  hint: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 8,
+    lineHeight: 16,
+  },
   label: {
     fontSize: 11,
     color: '#888',
@@ -146,9 +358,19 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     marginTop: 4,
   },
+  testBtn: {
+    marginTop: 16,
+    padding: 14,
+    backgroundColor: '#e8f0fe',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  testBtnTxt: {fontSize: 15, fontWeight: '600', color: '#1a73e8'},
+  btnDisabled: {opacity: 0.6},
   loader: {marginTop: 16},
   closeBtn: {
     marginTop: 32,
+    marginBottom: 40,
     padding: 16,
     backgroundColor: '#f0f0f0',
     borderRadius: 8,

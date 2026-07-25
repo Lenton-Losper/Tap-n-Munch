@@ -6,6 +6,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -20,14 +21,18 @@ import {
   getPrinterConfig,
 } from '../lib/api';
 import {
-  connectToPrinter,
   describePrinterError,
   getPrinterStatus,
-  printEscPosBytes,
+  runBluetoothPrintJob,
   PrinterStatus,
 } from '../lib/printer';
 import {clearAllData, getRestaurantName, getTerminalId, getTerminalToken} from '../lib/storage';
 import {buildTestPrintPayload, buildSdk6TestPrintLines} from '../lib/testPrintPayload';
+import {
+  getReceiptPrintingEnabled,
+  recordLastPrintResult,
+  setReceiptPrintingEnabled,
+} from '../lib/receiptPrintSettings';
 import {
   describeWiseSdk6PrinterError,
   getBuiltInPrinterStatus,
@@ -56,6 +61,7 @@ export default function SettingsScreen() {
   const [builtInStatus, setBuiltInStatus] = useState<WiseSdk6Status>({
     connected: false,
     hasPaper: true,
+    statusUnknown: true,
   });
   const [showPrinterPicker, setShowPrinterPicker] = useState(false);
   const [testPrinting, setTestPrinting] = useState(false);
@@ -63,6 +69,8 @@ export default function SettingsScreen() {
     {success: boolean; message: string} | null
   >(null);
   const [forgettingPrinter, setForgettingPrinter] = useState(false);
+  const [receiptPrintingEnabled, setReceiptPrintingEnabledState] = useState(false);
+  const [togglingPrint, setTogglingPrint] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -96,8 +104,12 @@ export default function SettingsScreen() {
       if (!token) {
         return;
       }
-      const config = await getPrinterConfig(token);
+      const [config, printingOn] = await Promise.all([
+        getPrinterConfig(token),
+        getReceiptPrintingEnabled(),
+      ]);
       setPrinterConfig(config);
+      setReceiptPrintingEnabledState(printingOn);
       if (config?.connection_type === 'BUILTIN') {
         setBuiltInStatus(await getBuiltInPrinterStatus());
       } else if (config) {
@@ -126,52 +138,102 @@ export default function SettingsScreen() {
   };
 
   const handleTestPrint = async () => {
-    if (!printerConfig) {
+    if (!printerConfig || testPrinting) {
       return;
     }
     setTestPrinting(true);
     setTestPrintResult(null);
     try {
       if (printerConfig.connection_type === 'BUILTIN') {
-        const lines = buildSdk6TestPrintLines(printerConfig.printer_name ?? 'Built-in Printer');
+        // Same native path as real receipts: printBuiltInJob → WiseSdk6PrinterModule.printJob.
+        const lines = buildSdk6TestPrintLines(
+          printerConfig.printer_name ?? 'Built-in Printer',
+        );
         const printResult = await printBuiltInJob(lines);
-        setBuiltInStatus(await getBuiltInPrinterStatus());
+        // Never block the spinner on status — getStatus can hang on a stuck SDK call.
+        void getBuiltInPrinterStatus().then(setBuiltInStatus);
+        await recordLastPrintResult({
+          outcome: printResult.success ? 'success' : 'failed',
+          source: 'test',
+          errorCode: printResult.errorCode,
+          errorMessage: printResult.success
+            ? undefined
+            : describeWiseSdk6PrinterError(
+                printResult.errorCode,
+                printResult.error,
+              ),
+          printerLabel: printerConfig.printer_name ?? 'Built-in printer',
+        });
         if (printResult.success) {
-          setTestPrintResult({success: true, message: 'Test print sent successfully.'});
+          setTestPrintResult({
+            success: true,
+            message: 'Test print sent successfully.',
+          });
         } else {
+          // Prefer the native detail for 7101 — it includes the on-device service probe.
+          const message =
+            printResult.error &&
+            (printResult.errorCode === 'SDK_INIT_FAILED' ||
+              printResult.error.includes('matches=') ||
+              printResult.error.includes('USDK') ||
+              printResult.error.includes('7101'))
+              ? printResult.error
+              : (() => {
+                  const friendly = describeWiseSdk6PrinterError(
+                    printResult.errorCode,
+                    printResult.error,
+                  );
+                  const detail =
+                    printResult.error && printResult.error !== friendly
+                      ? ` (${printResult.error})`
+                      : printResult.errorCode
+                        ? ` [${printResult.errorCode}]`
+                        : '';
+                  return `${friendly}${detail}`;
+                })();
           setTestPrintResult({
             success: false,
-            message: describeWiseSdk6PrinterError(printResult.errorCode, printResult.error),
+            message,
           });
         }
         return;
       }
 
       if (!printerConfig.printer_address) {
+        setTestPrintResult({
+          success: false,
+          message: 'No printer address configured',
+        });
         return;
       }
-      let status = await getPrinterStatus();
-      if (!status.connected || status.id !== printerConfig.printer_address) {
-        const connectResult = await connectToPrinter(printerConfig.printer_address);
-        if (!connectResult.success) {
-          setTestPrintResult({
-            success: false,
-            message: describePrinterError(connectResult.errorCode, connectResult.error),
-          });
-          return;
-        }
-        status = {connected: true, id: printerConfig.printer_address};
-        setPrinterConnectionStatus(status);
-      }
 
-      const payload = buildTestPrintPayload(printerConfig.printer_name ?? 'Receipt Printer');
-      const printResult = await printEscPosBytes(payload);
+      const payload = buildTestPrintPayload(
+        printerConfig.printer_name ?? 'Receipt Printer',
+      );
+      const printResult = await runBluetoothPrintJob({
+        printerAddress: printerConfig.printer_address,
+        escposBase64: payload,
+      });
+      void getPrinterStatus().then(setPrinterConnectionStatus);
+      await recordLastPrintResult({
+        outcome: printResult.success ? 'success' : 'failed',
+        source: 'test',
+        errorCode: printResult.errorCode,
+        errorMessage: printResult.error,
+        printerLabel: printerConfig.printer_name ?? 'Bluetooth printer',
+      });
       if (printResult.success) {
-        setTestPrintResult({success: true, message: 'Test print sent successfully.'});
+        setTestPrintResult({
+          success: true,
+          message: 'Test print sent successfully.',
+        });
       } else {
         setTestPrintResult({
           success: false,
-          message: describePrinterError(printResult.errorCode, printResult.error),
+          message: describePrinterError(
+            printResult.errorCode,
+            printResult.error,
+          ),
         });
       }
     } catch (err) {
@@ -183,6 +245,33 @@ export default function SettingsScreen() {
       setTestPrinting(false);
     }
   };
+
+  const handleToggleReceiptPrinting = async (value: boolean) => {
+    setTogglingPrint(true);
+    try {
+      await setReceiptPrintingEnabled(value);
+      setReceiptPrintingEnabledState(value);
+    } finally {
+      setTogglingPrint(false);
+    }
+  };
+
+  const builtInStatusLabel = (() => {
+    if (builtInStatus.statusUnknown || !builtInStatus.connected) {
+      return 'Status unknown — try Test Print';
+    }
+    if (!builtInStatus.hasPaper) {
+      return 'Out of paper';
+    }
+    return 'Ready';
+  })();
+
+  const builtInStatusColor = (() => {
+    if (builtInStatus.statusUnknown || !builtInStatus.connected) {
+      return Colors.textMuted;
+    }
+    return builtInStatus.hasPaper ? Colors.green : Colors.red;
+  })();
 
   const handleForgetPrinter = () => {
     Alert.alert(
@@ -202,7 +291,11 @@ export default function SettingsScreen() {
               }
               setPrinterConfig(null);
               setPrinterConnectionStatus({connected: false, id: null});
-              setBuiltInStatus({connected: false, hasPaper: true});
+              setBuiltInStatus({
+                connected: false,
+                hasPaper: true,
+                statusUnknown: true,
+              });
               setTestPrintResult(null);
             } catch (err) {
               Alert.alert(
@@ -317,7 +410,7 @@ export default function SettingsScreen() {
             <>
               <View style={styles.printerStatusRow}>
                 <MaterialCommunityIcons
-                  name={printerConfig.connection_type === 'BUILTIN' ? 'printer-check-outline' : 'printer-outline'}
+                  name="printer"
                   size={28}
                   color={Colors.primary}
                 />
@@ -331,11 +424,19 @@ export default function SettingsScreen() {
                         <View
                           style={[
                             styles.statusDot,
-                            {backgroundColor: builtInStatus.hasPaper ? Colors.green : Colors.red},
+                            {backgroundColor: builtInStatusColor},
                           ]}
                         />
-                        <Text style={styles.hintText}>
-                          {builtInStatus.hasPaper ? 'Ready' : 'Out of paper'}
+                        <Text
+                          style={[
+                            styles.hintText,
+                            !builtInStatus.hasPaper &&
+                            !builtInStatus.statusUnknown &&
+                            builtInStatus.connected
+                              ? styles.hintTextError
+                              : null,
+                          ]}>
+                          {builtInStatusLabel}
                         </Text>
                       </>
                     ) : (
@@ -359,6 +460,21 @@ export default function SettingsScreen() {
                     )}
                   </View>
                 </View>
+              </View>
+
+              <View style={styles.toggleRow}>
+                <View style={styles.toggleCopy}>
+                  <Text style={styles.toggleLabel}>Enable receipt printing</Text>
+                  <Text style={styles.toggleHint}>
+                    Turns on auto-print after payment, Print on success, and
+                    Reprint on completed orders.
+                  </Text>
+                </View>
+                <Switch
+                  value={receiptPrintingEnabled}
+                  onValueChange={handleToggleReceiptPrinting}
+                  disabled={togglingPrint}
+                />
               </View>
 
               {testPrintResult ? (
@@ -536,6 +652,31 @@ const styles = StyleSheet.create({
   },
   hintText: {
     ...Typography.small,
+    color: Colors.textMuted,
+  },
+  hintTextError: {
+    color: Colors.red,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  toggleCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  toggleLabel: {
+    ...Typography.body,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  toggleHint: {
+    ...Typography.tiny,
     color: Colors.textMuted,
   },
   deactivateRow: {
