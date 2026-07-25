@@ -435,12 +435,23 @@ async function main() {
   log('credit_note sequence number reserved', cnNum)
 
   // ---- payment_events sale gateway columns accept capture payload (route wires these) ----
+  const { data: anyOrder, error: anyOrderErr } = await admin
+    .from('orders')
+    .select('id')
+    .eq('restaurant_id', RESTAURANT_ID)
+    .limit(1)
+    .maybeSingle()
+  if (anyOrderErr) throw anyOrderErr
+  if (!anyOrder?.id) {
+    throw new Error('No staging order found to attach a sale payment_events probe row')
+  }
+
   const saleKey = `doc-engine-sale-${Date.now()}`
   const { data: saleRow, error: saleErr } = await admin
     .from('payment_events')
     .insert({
       restaurant_id: RESTAURANT_ID,
-      order_ids: [],
+      order_ids: [anyOrder.id],
       event_type: 'sale',
       business_order_no: saleKey,
       origin_business_order_no: saleKey,
