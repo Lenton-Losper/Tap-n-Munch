@@ -45,6 +45,9 @@ type SaleBody = {
   amount?: unknown
   currency?: unknown
   app_version?: unknown
+  gateway_result_code?: unknown
+  gateway_result_message?: unknown
+  raw_gateway_response?: unknown
 }
 
 function isUuid(value: string): boolean {
@@ -127,6 +130,18 @@ export async function POST(req: Request) {
       body.app_version != null && String(body.app_version).trim()
         ? String(body.app_version).trim()
         : null
+    const gatewayResultCode =
+      body.gateway_result_code != null && String(body.gateway_result_code).trim()
+        ? String(body.gateway_result_code).trim()
+        : null
+    const gatewayResultMessage =
+      body.gateway_result_message != null && String(body.gateway_result_message).trim()
+        ? String(body.gateway_result_message).trim()
+        : null
+    const rawGatewayResponse =
+      body.raw_gateway_response != null && typeof body.raw_gateway_response === 'object'
+        ? body.raw_gateway_response
+        : null
 
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
@@ -161,6 +176,9 @@ export async function POST(req: Request) {
       initiated_by: null,
       idempotency_key: businessOrderNo,
       reason_code: 'sale',
+      gateway_result_code: gatewayResultCode,
+      gateway_result_message: gatewayResultMessage,
+      raw_gateway_response: rawGatewayResponse,
     }
 
     const { data: created, error: insertError } = await supabase

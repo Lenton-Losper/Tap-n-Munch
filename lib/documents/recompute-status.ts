@@ -1,59 +1,71 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 
-/** Statuses no payment/overdue recompute is allowed to move a document out of. */
-const TERMINAL_STATUSES = new Set(['void', 'converted', 'expired', 'declined'])
+/** Statuses no payment/overdue/credit recompute is allowed to move a document out of. */
+const TERMINAL_STATUSES = new Set(['void', 'converted', 'expired', 'declined', 'cancelled'])
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
-export type RecomputedInvoiceStatus = {
+export type RecomputedDocumentStatus = {
   status: string
   balance: number
   changed: boolean
 }
 
 /**
- * Single source of truth for invoice status/balance, derived from document_payments the same
- * way lib/payments/get-payment-projection.ts derives order payment state from payment_events --
- * application-level recompute, not a DB trigger, so it can be called both right after a write
- * (payment recorded, marked sent) and lazily on read (to surface 'overdue' without needing a
- * scheduled job, since no single row write happens when a due_date simply passes).
+ * Ledger-derived status for invoices; no-op / passthrough for types that are not
+ * payment-ledger-derived (quotes, credit notes).
  *
- * Only writes back to business_documents when the computed status/balance actually differ, to
- * avoid an UPDATE on every list/read call.
+ * Invoice balance = total − sum(document_payments) − sum(issued credit_notes that
+ * credit this invoice via credited_by_id). Credit notes themselves are ledger
+ * events (issued/cancelled), not something with a payment stream — do not force
+ * them through the same derivation.
  */
-export async function recomputeInvoiceStatus(
+export async function recomputeDocumentStatus(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   documentId: string,
-): Promise<RecomputedInvoiceStatus> {
+): Promise<RecomputedDocumentStatus> {
   const { data: doc, error: docError } = await supabase
     .from('business_documents')
     .select('id, document_type, total, due_date, status, balance')
     .eq('id', documentId)
     .single()
   if (docError) throw docError
+
+  if (doc.document_type === 'quote' || doc.document_type === 'credit_note') {
+    return { status: doc.status, balance: Number(doc.balance), changed: false }
+  }
+
   if (doc.document_type !== 'invoice') {
-    throw new Error('recomputeInvoiceStatus called on a non-invoice document')
+    throw new Error(`recomputeDocumentStatus called on unsupported document_type: ${doc.document_type}`)
   }
 
   if (TERMINAL_STATUSES.has(doc.status)) {
     return { status: doc.status, balance: Number(doc.balance), changed: false }
   }
 
-  const { data: payments, error: paymentsError } = await supabase
-    .from('document_payments')
-    .select('amount')
-    .eq('document_id', documentId)
+  const [{ data: payments, error: paymentsError }, { data: credits, error: creditsError }] =
+    await Promise.all([
+      supabase.from('document_payments').select('amount').eq('document_id', documentId),
+      supabase
+        .from('business_documents')
+        .select('total')
+        .eq('document_type', 'credit_note')
+        .eq('status', 'issued')
+        .eq('credited_by_id', documentId),
+    ])
   if (paymentsError) throw paymentsError
+  if (creditsError) throw creditsError
 
   const paid = (payments ?? []).reduce((sum, row) => sum + Number(row.amount), 0)
-  const balance = round2(Number(doc.total) - paid)
+  const credited = (credits ?? []).reduce((sum, row) => sum + Number(row.total), 0)
+  const balance = round2(Number(doc.total) - paid - credited)
 
   let status: string
   if (balance <= 0) {
     status = 'paid'
-  } else if (paid > 0) {
+  } else if (paid > 0 || credited > 0) {
     status = 'partially_paid'
   } else if (doc.due_date && new Date(doc.due_date).getTime() < Date.now() && doc.status !== 'draft') {
     status = 'overdue'
@@ -71,4 +83,12 @@ export async function recomputeInvoiceStatus(
   }
 
   return { status, balance, changed }
+}
+
+/** @deprecated Use recomputeDocumentStatus — kept as a thin alias for call-site migration. */
+export async function recomputeInvoiceStatus(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  documentId: string,
+): Promise<RecomputedDocumentStatus> {
+  return recomputeDocumentStatus(supabase, documentId)
 }

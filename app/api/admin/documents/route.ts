@@ -6,7 +6,7 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 import { createBusinessDocument } from '@/lib/documents/create-document'
 
 export const dynamic = 'force-dynamic'
@@ -271,7 +271,7 @@ export async function GET(request: Request) {
 
     // Lazy overdue recompute: 'overdue' has no write event to trigger off (no row changes
     // when a due_date simply passes), so candidate invoices are recomputed here on read --
-    // same recomputeInvoiceStatus used after payments/send, cheap no-op when nothing changed.
+    // same recomputeDocumentStatus used after payments/send, cheap no-op when nothing changed.
     const rows = data ?? []
     for (const row of rows) {
       if (
@@ -279,7 +279,7 @@ export async function GET(request: Request) {
         row.due_date &&
         (row.status === 'sent' || row.status === 'partially_paid')
       ) {
-        const recomputed = await recomputeInvoiceStatus(supabase, String(row.id))
+        const recomputed = await recomputeDocumentStatus(supabase, String(row.id))
         row.status = recomputed.status
         row.balance = recomputed.balance
       }
