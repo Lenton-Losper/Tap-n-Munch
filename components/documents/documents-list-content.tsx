@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Download, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { DocumentFormModal } from '@/components/documents/document-form-modal'
+import { DocumentFormModal, type EditingDocument } from '@/components/documents/document-form-modal'
 import { RecordPaymentModal } from '@/components/documents/record-payment-modal'
 import { AgedReceivablesContent } from '@/components/documents/aged-receivables-content'
 import { Badge } from '@/components/ui/badge'
@@ -107,6 +107,8 @@ export function DocumentsListContent() {
   // Creatable types only -- credit_note is never user-creatable here, only via correct_invoice().
   const [modalType, setModalType] = useState<'quote' | 'invoice'>('quote')
   const [modalInstance, setModalInstance] = useState(0)
+  const [editingDocument, setEditingDocument] = useState<EditingDocument | null>(null)
+  const [editLoadingId, setEditLoadingId] = useState<string | null>(null)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [convertingId, setConvertingId] = useState<string | null>(null)
@@ -150,8 +152,44 @@ export function DocumentsListContent() {
 
   const openCreateModal = (type: 'quote' | 'invoice') => {
     setModalType(type)
+    setEditingDocument(null)
     setModalInstance((n) => n + 1)
     setModalOpen(true)
+  }
+
+  const handleEditClick = async (doc: DocumentListItem) => {
+    setEditLoadingId(doc.id)
+    try {
+      const token = await getSettingsAccessToken()
+      const response = await fetch(`/api/admin/documents/${encodeURIComponent(doc.id)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to load document')
+      }
+      const fullDoc = payload?.document
+      setModalType('invoice')
+      setEditingDocument({
+        id: fullDoc.id,
+        document_number: fullDoc.document_number,
+        ship_to: fullDoc.ship_to ?? null,
+        bill_to: fullDoc.bill_to ?? null,
+        line_items: fullDoc.line_items ?? null,
+        due_date: fullDoc.due_date ?? null,
+        reference_note: fullDoc.reference_note ?? null,
+      })
+      setModalInstance((n) => n + 1)
+      setModalOpen(true)
+    } catch (error: unknown) {
+      toast({
+        title: 'Could not open editor',
+        description: error instanceof Error ? error.message : 'Failed to load document',
+        variant: 'destructive',
+      })
+    } finally {
+      setEditLoadingId(null)
+    }
   }
 
   const handleDownloadPdf = async (doc: DocumentListItem) => {
@@ -364,6 +402,17 @@ export function DocumentsListContent() {
                               <Download className="mr-1.5 h-3.5 w-3.5" />
                               {downloadingId === doc.id ? 'Downloading...' : 'PDF'}
                             </Button>
+                            {canWrite && doc.type === 'invoice' && doc.status === 'draft' ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleEditClick(doc)}
+                                disabled={editLoadingId === doc.id}
+                              >
+                                {editLoadingId === doc.id ? 'Loading...' : 'Edit'}
+                              </Button>
+                            ) : null}
                             {canWrite && doc.status === 'draft' ? (
                               <Button
                                 type="button"
@@ -418,8 +467,12 @@ export function DocumentsListContent() {
       <DocumentFormModal
         key={modalInstance}
         open={modalOpen}
-        onOpenChange={setModalOpen}
+        onOpenChange={(open) => {
+          setModalOpen(open)
+          if (!open) setEditingDocument(null)
+        }}
         documentType={modalType}
+        editingDocument={editingDocument}
         onSuccess={() => void loadDocuments()}
       />
 

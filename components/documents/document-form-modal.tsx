@@ -78,6 +78,58 @@ function emptyLineItem(): LineItemRow {
   }
 }
 
+/** Editable document row shape, from GET /api/admin/documents/[id] -- only the
+ * fields the form actually edits, not the full business_documents row. */
+export type EditingDocument = {
+  id: string
+  document_number: string
+  ship_to: Record<string, unknown> | null
+  bill_to: Record<string, unknown> | null
+  line_items: Array<Record<string, unknown>> | null
+  due_date: string | null
+  reference_note: string | null
+}
+
+/** Reverse of partyToPayload -- stored ship_to/bill_to has customFields as a
+ * {label: value} object, the form works with an editable CustomFieldRow[] list. */
+function partyFromStored(raw: Record<string, unknown> | null | undefined): PartyFormState {
+  if (!raw) return emptyParty()
+  const rawCustomFields =
+    raw.customFields && typeof raw.customFields === 'object' && !Array.isArray(raw.customFields)
+      ? (raw.customFields as Record<string, unknown>)
+      : {}
+  return {
+    name: String(raw.name ?? ''),
+    email: String(raw.email ?? ''),
+    organization: String(raw.organization ?? ''),
+    phone: String(raw.phone ?? ''),
+    customFields: Object.entries(rawCustomFields).map(([label, value]) => ({
+      id: crypto.randomUUID(),
+      label,
+      value: String(value ?? ''),
+    })),
+  }
+}
+
+function lineItemsFromStored(raw: Array<Record<string, unknown>> | null | undefined): LineItemRow[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [emptyLineItem()]
+  return raw.map((item) => ({
+    id: crypto.randomUUID(),
+    description: String(item.description ?? ''),
+    quantity: String(Number(item.quantity) || 0),
+    unit_price: String(Number(item.unit_price) || 0),
+    tax_rate_id: item.tax_rate_id != null ? String(item.tax_rate_id) : '',
+  }))
+}
+
+/** business_documents.due_date is a timestamptz; <Input type="date"> needs YYYY-MM-DD. */
+function dueDateFromStored(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toISOString().slice(0, 10)
+}
+
 function partyToPayload(party: PartyFormState) {
   const customFields: Record<string, string> = {}
   for (const field of party.customFields) {
@@ -176,6 +228,11 @@ type DocumentFormModalProps = {
   onOpenChange: (open: boolean) => void
   documentType: DocumentType
   onSuccess: () => void
+  /** When set, the modal edits this existing draft invoice (PATCH) instead of
+   * creating a new document (POST). Caller is responsible for only passing this
+   * for document_type='invoice' && status='draft' rows -- the backend enforces
+   * the same rule independently either way. */
+  editingDocument?: EditingDocument | null
 }
 
 export function DocumentFormModal({
@@ -183,15 +240,22 @@ export function DocumentFormModal({
   onOpenChange,
   documentType,
   onSuccess,
+  editingDocument = null,
 }: DocumentFormModalProps) {
   const { restaurantId } = useAuth()
   const { toast } = useToast()
+  const isEditing = editingDocument != null
 
-  const [shipTo, setShipTo] = useState<PartyFormState>(emptyParty)
-  const [billTo, setBillTo] = useState<PartyFormState>(emptyParty)
-  const [lineItems, setLineItems] = useState<LineItemRow[]>([emptyLineItem()])
-  const [dueDate, setDueDate] = useState('')
-  const [referenceNote, setReferenceNote] = useState('')
+  // Initializers run once per mount -- documents-list-content.tsx remounts this
+  // component via a `key` bump on every open, so this is the only prefill needed,
+  // no separate reset-on-open effect.
+  const [shipTo, setShipTo] = useState<PartyFormState>(() => partyFromStored(editingDocument?.ship_to))
+  const [billTo, setBillTo] = useState<PartyFormState>(() => partyFromStored(editingDocument?.bill_to))
+  const [lineItems, setLineItems] = useState<LineItemRow[]>(() =>
+    lineItemsFromStored(editingDocument?.line_items),
+  )
+  const [dueDate, setDueDate] = useState(() => dueDateFromStored(editingDocument?.due_date))
+  const [referenceNote, setReferenceNote] = useState(editingDocument?.reference_note ?? '')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [taxRates, setTaxRates] = useState<TaxRateOption[]>([])
@@ -375,28 +439,36 @@ export function DocumentFormModal({
     try {
       setSaving(true)
       const token = await getSettingsAccessToken()
-      const body: Record<string, unknown> = {
-        restaurant_id: restaurantId,
-        type: documentType,
-        ship_to: partyToPayload(shipTo),
-        bill_to: partyToPayload(billTo),
-        line_items: lineItems.map((item) => ({
-          description: item.description.trim(),
-          quantity: Number(item.quantity),
-          unit_price: Number(item.unit_price),
-          tax_rate_id: item.tax_rate_id || null,
-        })),
-      }
 
-      if (documentType === 'invoice' && dueDate.trim()) {
-        body.due_date = dueDate
-      }
-      if (referenceNote.trim()) {
-        body.reference_note = referenceNote.trim()
-      }
+      const lineItemsPayload = lineItems.map((item) => ({
+        description: item.description.trim(),
+        quantity: Number(item.quantity),
+        unit_price: Number(item.unit_price),
+        tax_rate_id: item.tax_rate_id || null,
+      }))
 
-      const response = await fetch('/api/admin/documents', {
-        method: 'POST',
+      const url = isEditing ? `/api/admin/documents/${editingDocument!.id}` : '/api/admin/documents'
+      const method = isEditing ? 'PATCH' : 'POST'
+      const body: Record<string, unknown> = isEditing
+        ? {
+            ship_to: partyToPayload(shipTo),
+            bill_to: partyToPayload(billTo),
+            line_items: lineItemsPayload,
+            due_date: dueDate.trim() || null,
+            reference_note: referenceNote.trim() || null,
+          }
+        : {
+            restaurant_id: restaurantId,
+            type: documentType,
+            ship_to: partyToPayload(shipTo),
+            bill_to: partyToPayload(billTo),
+            line_items: lineItemsPayload,
+            ...(documentType === 'invoice' && dueDate.trim() ? { due_date: dueDate } : {}),
+            ...(referenceNote.trim() ? { reference_note: referenceNote.trim() } : {}),
+          }
+
+      const response = await fetch(url, {
+        method,
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -405,12 +477,15 @@ export function DocumentFormModal({
       })
       const payload = await response.json()
       if (!response.ok) {
-        throw new Error(payload?.error || 'Failed to create document')
+        throw new Error(payload?.error || (isEditing ? 'Failed to save changes' : 'Failed to create document'))
       }
 
+      const savedNumber = isEditing
+        ? editingDocument!.document_number
+        : (payload?.document?.document_number ?? '')
       toast({
-        title: documentType === 'invoice' ? 'Invoice created' : 'Quote created',
-        description: `Document #${payload?.document?.document_number ?? ''} saved.`,
+        title: isEditing ? 'Invoice updated' : documentType === 'invoice' ? 'Invoice created' : 'Quote created',
+        description: `Document #${savedNumber} saved.`,
       })
 
       if (Array.isArray(payload?.warnings) && payload.warnings.length > 0) {
@@ -427,7 +502,7 @@ export function DocumentFormModal({
     } catch (error: unknown) {
       toast({
         title: 'Save failed',
-        description: error instanceof Error ? error.message : 'Failed to create document',
+        description: error instanceof Error ? error.message : 'Failed to save document',
         variant: 'destructive',
       })
     } finally {
@@ -544,12 +619,18 @@ export function DocumentFormModal({
       <DialogContent className="max-h-[90vh] overflow-x-hidden overflow-y-auto sm:max-w-2xl md:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
-            {documentType === 'invoice' ? 'New Invoice' : 'New Quote'}
+            {isEditing
+              ? `Edit Invoice #${editingDocument!.document_number}`
+              : documentType === 'invoice'
+                ? 'New Invoice'
+                : 'New Quote'}
           </DialogTitle>
           <DialogDescription>
-            {documentType === 'invoice'
-              ? 'Create an invoice with line items and billing details.'
-              : 'Create a quote with line items and billing details.'}
+            {isEditing
+              ? 'Update line items and billing details for this draft invoice.'
+              : documentType === 'invoice'
+                ? 'Create an invoice with line items and billing details.'
+                : 'Create a quote with line items and billing details.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -750,6 +831,8 @@ export function DocumentFormModal({
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Saving...
                 </>
+              ) : isEditing ? (
+                'Save changes'
               ) : (
                 'Create document'
               )}
