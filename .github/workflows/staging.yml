@@ -7,24 +7,6 @@ on:
 
 jobs:
 
-  cleanup-kitchen-platform-admin:
-    # One-shot: remove after confirmed. Trigger with [cleanup-kitchen-platform-admin] in commit message.
-    if: contains(github.event.head_commit.message, '[cleanup-kitchen-platform-admin]')
-    runs-on: ubuntu-latest
-    name: Cleanup kitchen fixture platform_admins row
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - name: Delete unintended platform_admins + reset active context
-        env:
-          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-        run: npx tsx scripts/cleanup-staging-kitchen-platform-admin.ts
-
   build-verification:
     runs-on: ubuntu-latest
     name: Build Verification (Lint, Typecheck, Unit Tests)
