@@ -11,6 +11,7 @@ import {
   CreditCard,
   LayoutDashboard,
   LineChart,
+  LogOut,
   Search,
   Settings,
   Shield,
@@ -19,6 +20,7 @@ import {
 import { cn } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/components/auth/auth-provider'
 
 const NAV = [
   { href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -42,8 +44,10 @@ export function OpsShell({
 }) {
   const pathname = usePathname()
   const router = useRouter()
+  const { signOut } = useAuth()
   const [query, setQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -68,6 +72,16 @@ export function OpsShell({
     if (!q) return
     setSearchOpen(false)
     router.push(`/admin/search?q=${encodeURIComponent(q)}`)
+  }
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    try {
+      await signOut()
+      router.replace('/signin')
+    } catch {
+      setSigningOut(false)
+    }
   }
 
   return (
@@ -111,8 +125,18 @@ export function OpsShell({
               )
             })}
           </nav>
-          <div className="mt-4 border-t border-[#E8E6E1] px-2 pt-3 text-[11px] text-[#8A867C]">
-            Platform admin
+          <div className="mt-4 space-y-2 border-t border-[#E8E6E1] px-2 pt-3">
+            <div className="text-[11px] text-[#8A867C]">Platform admin</div>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="h-auto w-full justify-start gap-2 rounded-md px-2.5 py-2 text-[13px] font-medium text-[#5C574E] hover:bg-[#EFEDE8] hover:text-[#1A1A1A]"
+            >
+              <LogOut className="h-4 w-4 shrink-0 opacity-80" />
+              {signingOut ? 'Signing out...' : 'Sign out'}
+            </Button>
           </div>
         </aside>
 
