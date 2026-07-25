@@ -1,10 +1,15 @@
 import { supabase } from './client'
 
-export async function signInWithGoogleOAuth() {
+export async function signInWithGoogleOAuth(redirectParam?: string | null) {
+  const callbackUrl = new URL('/auth/callback', window.location.origin)
+  if (redirectParam) {
+    callbackUrl.searchParams.set('redirect', redirectParam)
+  }
+
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: `${window.location.origin}/auth/callback`,
+      redirectTo: callbackUrl.toString(),
     },
   })
   if (error) throw error
