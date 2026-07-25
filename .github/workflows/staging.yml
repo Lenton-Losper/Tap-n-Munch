@@ -6,6 +6,29 @@ on:
       - cloudflare-staging
 
 jobs:
+  reset-kitchen-test-password:
+    # One-shot: remove after password is confirmed in local .env.test.
+    if: contains(github.event.head_commit.message, '[reset-kitchen-pw]')
+    runs-on: ubuntu-latest
+    name: Reset staging.kitchen.test password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Reset kitchen test password via Admin API
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          RESET_EMAIL: staging.kitchen.test@gmail.com
+        run: |
+          RESET_PASSWORD="$(printf '%s' 'RnRLaXRjaGVuNGhacGZrSVNFU0h4SVpIYQ==' | base64 -d)"
+          echo "::add-mask::$RESET_PASSWORD"
+          export RESET_PASSWORD
+          npx tsx scripts/reset-staging-kitchen-test-password.ts
+
   build-verification:
     runs-on: ubuntu-latest
     name: Build Verification (Lint, Typecheck, Unit Tests)
