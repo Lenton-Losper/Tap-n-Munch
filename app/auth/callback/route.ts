@@ -4,7 +4,7 @@ import { cookies } from 'next/headers'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ensurePublicUserForOAuth } from '@/lib/auth/ensure-public-user'
 import { syncUserEmailAcrossTables } from '@/lib/auth/sync-user-email'
-import { destinationForContext, resolveActiveContext } from '@/lib/auth/resolve-active-context'
+import { resolveLoginDestination } from '@/lib/auth/resolve-active-context'
 
 export const dynamic = 'force-dynamic'
 
@@ -98,22 +98,26 @@ export async function GET(request: Request) {
 
       let resolved
       try {
-        resolved = await resolveActiveContext({ userId: user.id, redirectParam })
+        resolved = await resolveLoginDestination({ userId: user.id, redirectParam })
       } catch (resolveError) {
-        console.error('[auth/callback] resolveActiveContext failed', {
+        console.error('[auth/callback] resolveLoginDestination failed', {
           authUserId: user.id,
           error: resolveError,
         })
         return NextResponse.redirect(`${origin}/signin?error=oauth`)
       }
 
-      if (!resolved.context) {
+      if (resolved.kind === 'none') {
         return NextResponse.redirect(
           `${origin}/signup?google=true&name=${encodeURIComponent(fullName)}`
         )
       }
 
-      return NextResponse.redirect(`${origin}${destinationForContext(resolved.context)}`)
+      if (resolved.kind === 'picker') {
+        return NextResponse.redirect(`${origin}/choose-context`)
+      }
+
+      return NextResponse.redirect(`${origin}${resolved.destination}`)
     }
 
     if (error) {

@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { resolveUserContexts } from '@/lib/auth/resolve-user-contexts'
 import { OpsLayoutClient } from '@/components/platform/ops-layout-client'
 
 export const dynamic = 'force-dynamic'
@@ -33,13 +33,14 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect('/signin')
   }
 
-  const adminSupabase = createServerSupabaseClient()
-  const { data: isPlatformAdmin, error: isPlatformAdminError } = await adminSupabase.rpc(
-    'is_platform_admin',
-    { p_user_id: user.id },
-  )
+  let contexts
+  try {
+    contexts = await resolveUserContexts(user.id)
+  } catch {
+    redirect('/signin')
+  }
 
-  if (isPlatformAdminError || !isPlatformAdmin) {
+  if (!contexts.some((c) => c.type === 'platform')) {
     redirect('/signin')
   }
 

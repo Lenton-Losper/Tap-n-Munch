@@ -84,8 +84,10 @@ export function SignInClient() {
       if (!accessToken || cancelled) return
 
       try {
-        // Destination is decided server-side by the same resolveActiveContext
+        // Destination is decided server-side by the same resolveLoginDestination
         // precedence used by the Google OAuth callback -- see lib/auth/resolve-active-context.ts.
+        // May be '/choose-context' if the account has multiple contexts and no
+        // valid stored preference -- handled generically below, same as any other destination.
         const response = await fetch('/api/auth/resolve-active-context', {
           method: 'POST',
           headers: {
@@ -125,7 +127,7 @@ export function SignInClient() {
       const submitEmail = String(formData.get('email') || email).trim()
       const submitPassword = String(formData.get('password') || password)
       await signIn(submitEmail, submitPassword)
-      // Redirect handled by the effect above, which calls resolveActiveContext via
+      // Redirect handled by the effect above, which calls resolveLoginDestination via
       // /api/auth/resolve-active-context once AuthProvider settles.
     } catch (submitError: any) {
       const message =
