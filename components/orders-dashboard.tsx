@@ -967,14 +967,19 @@ export function OrdersDashboard() {
     if (!dashboardRestaurantId || terminalPollingOrderIds.length === 0) return
     const timer = setInterval(async () => {
       const doneIds: string[] = []
-      for (const orderId of terminalPollingOrderIds) {
-        try {
-          const { data } = await supabase
-            .from('orders')
-            .select('id,payment_status,order_number,terminal_status')
-            .eq('id', orderId)
-            .single()
-          const orderRow = (data || null) as any
+      try {
+        // Single batched request for all pending-terminal-payment orders instead of one
+        // round trip per order -- was previously N sequential .eq('id', orderId).single()
+        // calls in a for loop every 5s.
+        const { data } = await supabase
+          .from('orders')
+          .select('id,payment_status,order_number,terminal_status')
+          .in('id', terminalPollingOrderIds)
+        const rows = (data || []) as any[]
+        const rowsById = new Map(rows.map((row) => [String(row.id), row]))
+
+        for (const orderId of terminalPollingOrderIds) {
+          const orderRow = rowsById.get(orderId) || null
           const status = String(orderRow?.payment_status || '').toLowerCase()
           const terminalStatus = String(orderRow?.terminal_status || '').toLowerCase()
           if (status === 'paid') {
@@ -991,9 +996,9 @@ export function OrdersDashboard() {
           } else if (status !== 'terminal_pending') {
             doneIds.push(orderId)
           }
-        } catch (e) {
-          // keep polling on transient failures
         }
+      } catch (e) {
+        // keep polling on transient failures
       }
       if (doneIds.length > 0) {
         setTerminalDismissedPollingIds((prev) => Array.from(new Set([...prev, ...doneIds])))
