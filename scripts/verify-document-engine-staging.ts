@@ -53,6 +53,28 @@ async function ensureOwnerUserId(): Promise<string> {
   return user.id
 }
 
+/** Advance get_next_document_number until the number is unused (sequences can lag real rows). */
+async function reserveDocumentNumber(documentType: 'quote' | 'invoice' | 'credit_note'): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const { data: nextNumber, error } = await admin.rpc('get_next_document_number', {
+      p_restaurant_id: RESTAURANT_ID,
+      p_document_type: documentType,
+    })
+    if (error) throw error
+    const documentNumber = String(nextNumber)
+    const { data: existing, error: existingErr } = await admin
+      .from('business_documents')
+      .select('id')
+      .eq('restaurant_id', RESTAURANT_ID)
+      .eq('document_type', documentType)
+      .eq('document_number', documentNumber)
+      .maybeSingle()
+    if (existingErr) throw existingErr
+    if (!existing) return documentNumber
+  }
+  throw new Error(`Could not reserve unused ${documentType} document number`)
+}
+
 async function tryLinkedSchemaProbe() {
   try {
     if (process.env.SUPABASE_ACCESS_TOKEN || process.env.STAGING_SUPABASE_DB_PASSWORD || process.env.SUPABASE_DB_PASSWORD) {
@@ -123,18 +145,14 @@ async function main() {
   const ownerId = await ensureOwnerUserId()
 
   // ---- Create quote + convert ----
-  const { data: quoteNum, error: qnErr } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'quote',
-  })
-  if (qnErr) throw qnErr
+  const quoteNum = await reserveDocumentNumber('quote')
 
   const { data: quote, error: quoteErr } = await admin
     .from('business_documents')
     .insert({
       restaurant_id: RESTAURANT_ID,
       document_type: 'quote',
-      document_number: String(quoteNum),
+      document_number: quoteNum,
       ship_to: { name: 'Doc Engine Ship' },
       bill_to: { name: 'Doc Engine Bill' },
       line_items: [
@@ -162,18 +180,14 @@ async function main() {
   if (quoteErr) throw quoteErr
   log('created quote', { id: quote.id, number: quote.document_number })
 
-  const { data: invNum, error: inErr } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'invoice',
-  })
-  if (inErr) throw inErr
+  const invNum = await reserveDocumentNumber('invoice')
 
   const { data: fromQuote, error: fromQuoteErr } = await admin
     .from('business_documents')
     .insert({
       restaurant_id: RESTAURANT_ID,
       document_type: 'invoice',
-      document_number: String(invNum),
+      document_number: invNum,
       quote_id: quote.id,
       ship_to: quote.ship_to,
       bill_to: quote.bill_to,
@@ -193,16 +207,13 @@ async function main() {
   log('quote→invoice convert (schema path)', { invoice_id: fromQuote.id, quote_status: 'converted' })
 
   // ---- Draft invoice edit (PATCH equivalent via same update rules) ----
-  const { data: draftInvNum } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'invoice',
-  })
+  const draftInvNum = await reserveDocumentNumber('invoice')
   const { data: draft, error: draftErr } = await admin
     .from('business_documents')
     .insert({
       restaurant_id: RESTAURANT_ID,
       document_type: 'invoice',
-      document_number: String(draftInvNum),
+      document_number: draftInvNum,
       ship_to: { name: 'Draft Ship' },
       bill_to: { name: 'Draft Bill' },
       line_items: [
@@ -296,16 +307,13 @@ async function main() {
   log('lineage after correction', lineageRows)
 
   // ---- correct_invoice rejects when payment exists ----
-  const { data: paidInvNum } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'invoice',
-  })
+  const paidInvNum = await reserveDocumentNumber('invoice')
   const { data: paidInv, error: paidInvErr } = await admin
     .from('business_documents')
     .insert({
       restaurant_id: RESTAURANT_ID,
       document_type: 'invoice',
-      document_number: String(paidInvNum),
+      document_number: paidInvNum,
       ship_to: {},
       bill_to: {},
       line_items: [
@@ -353,16 +361,13 @@ async function main() {
   })
 
   // ---- Mid-transaction rollback: bad line items ----
-  const { data: rollbackInvNum } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'invoice',
-  })
+  const rollbackInvNum = await reserveDocumentNumber('invoice')
   const { data: rollbackInv } = await admin
     .from('business_documents')
     .insert({
       restaurant_id: RESTAURANT_ID,
       document_type: 'invoice',
-      document_number: String(rollbackInvNum),
+      document_number: rollbackInvNum,
       ship_to: {},
       bill_to: {},
       line_items: [
@@ -426,11 +431,7 @@ async function main() {
   })
 
   // ---- credit_note sequence works ----
-  const { data: cnNum, error: cnErr } = await admin.rpc('get_next_document_number', {
-    p_restaurant_id: RESTAURANT_ID,
-    p_document_type: 'credit_note',
-  })
-  if (cnErr) throw cnErr
+  const cnNum = await reserveDocumentNumber('credit_note')
   log('credit_note sequence number reserved', cnNum)
 
   // ---- payment_events sale gateway columns accept capture payload (route wires these) ----
