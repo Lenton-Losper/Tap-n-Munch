@@ -15,6 +15,48 @@ function unauthorizedResponse(error: unknown) {
 }
 
 /**
+ * Full document row, for the edit form to prefill from (the list endpoint only
+ * returns list-display fields -- no ship_to/bill_to/line_items/reference_note).
+ * Not restricted to draft invoices -- reading is safe for any document type/status,
+ * same as the PDF route; only the PATCH below enforces the draft-invoice-only rule.
+ */
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  let user
+  try {
+    user = await getUserFromRequest(request)
+  } catch (error: unknown) {
+    return unauthorizedResponse(error)
+  }
+
+  try {
+    const { id } = await params
+    const documentId = String(id ?? '').trim()
+    if (!documentId) {
+      return NextResponse.json({ error: 'Document id is required' }, { status: 400 })
+    }
+
+    const supabase = createServerSupabaseClient()
+    const { data, error } = await supabase
+      .from('business_documents')
+      .select('*')
+      .eq('id', documentId)
+      .maybeSingle()
+    if (error) throw error
+    if (!data) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+    }
+
+    const denied = await requirePermission(user.id, String(data.restaurant_id), PERMISSIONS.DOCUMENTS_READ)
+    if (denied) return denied
+
+    return NextResponse.json({ document: data })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to load document'
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
+/**
  * Draft-only invoice edit (issue #61). Once status leaves draft, correction
  * (POST .../correct) is the supported path for sent/overdue unpaid invoices.
  *
