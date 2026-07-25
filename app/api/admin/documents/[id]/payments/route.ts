@@ -3,7 +3,7 @@ import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 
 export const dynamic = 'force-dynamic'
 
@@ -65,7 +65,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
 /**
  * Records a payment against an invoice. business_documents itself is not touched here except
- * via recomputeInvoiceStatus's narrow status/balance write -- the payment row is the actual
+ * via recomputeDocumentStatus's narrow status/balance write -- the payment row is the actual
  * record, append-only (no PATCH/DELETE route exists for document_payments, and its RLS policies
  * grant only SELECT + INSERT, so even a documents:write caller cannot alter or remove one once
  * inserted).
@@ -139,7 +139,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .single()
     if (insertError) throw insertError
 
-    const recomputed = await recomputeInvoiceStatus(supabase, documentId)
+    const recomputed = await recomputeDocumentStatus(supabase, documentId)
 
     return NextResponse.json(
       { payment, document: { status: recomputed.status, balance: recomputed.balance } },

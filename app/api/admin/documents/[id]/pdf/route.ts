@@ -50,9 +50,12 @@ function parseLineItems(value: unknown): DocumentLineItem[] {
     })
 }
 
-function toBusinessDocumentRow(row: Record<string, unknown>): BusinessDocumentRow {
+function toBusinessDocumentRow(
+  row: Record<string, unknown>,
+  lineage?: { originalInvoiceNumber?: string | null; replacementInvoiceNumber?: string | null },
+): BusinessDocumentRow {
   const documentType = String(row.document_type ?? '')
-  if (documentType !== 'quote' && documentType !== 'invoice') {
+  if (documentType !== 'quote' && documentType !== 'invoice' && documentType !== 'credit_note') {
     throw new Error('Invalid document type')
   }
 
@@ -88,6 +91,8 @@ function toBusinessDocumentRow(row: Record<string, unknown>): BusinessDocumentRo
     currency: String(row.currency ?? 'NAD'),
     created_by: String(row.created_by),
     created_at: String(row.created_at),
+    original_invoice_number: lineage?.originalInvoiceNumber ?? null,
+    replacement_invoice_number: lineage?.replacementInvoiceNumber ?? null,
   }
 }
 
@@ -125,7 +130,34 @@ export async function GET(
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.DOCUMENTS_READ)
     if (denied) return denied
 
-    const document = toBusinessDocumentRow(data as Record<string, unknown>)
+    let lineage: { originalInvoiceNumber?: string | null; replacementInvoiceNumber?: string | null } | undefined
+    if (data.document_type === 'credit_note' && data.credited_by_id) {
+      // credit_note.credited_by_id -> original invoice; original invoice's own
+      // corrected_by_id -> the replacement invoice issued alongside this credit note
+      // (correct_invoice() sets both in the same transaction -- see 20260725200000).
+      const { data: original } = await supabase
+        .from('business_documents')
+        .select('document_number, corrected_by_id')
+        .eq('id', String(data.credited_by_id))
+        .maybeSingle()
+
+      let replacementNumber: string | null = null
+      if (original?.corrected_by_id) {
+        const { data: replacement } = await supabase
+          .from('business_documents')
+          .select('document_number')
+          .eq('id', String(original.corrected_by_id))
+          .maybeSingle()
+        replacementNumber = replacement?.document_number ? String(replacement.document_number) : null
+      }
+
+      lineage = {
+        originalInvoiceNumber: original?.document_number ? String(original.document_number) : null,
+        replacementInvoiceNumber: replacementNumber,
+      }
+    }
+
+    const document = toBusinessDocumentRow(data as Record<string, unknown>, lineage)
     const pdfBytes = await generateDocumentPdfBytes(document)
     const filename = `${document.document_type}-${document.document_number}.pdf`
 

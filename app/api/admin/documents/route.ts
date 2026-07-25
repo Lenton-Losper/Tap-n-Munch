@@ -6,13 +6,19 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 import { createBusinessDocument } from '@/lib/documents/create-document'
 
 export const dynamic = 'force-dynamic'
 
 const DOCUMENT_TYPES = ['quote', 'invoice'] as const
 type DocumentType = (typeof DOCUMENT_TYPES)[number]
+
+// Listing/filtering allows credit_note too (it's a real business_documents row,
+// just never creatable through this endpoint -- correct_invoice() is the only
+// place a credit_note gets inserted, so it stays out of DOCUMENT_TYPES above).
+const LISTABLE_DOCUMENT_TYPES = ['quote', 'invoice', 'credit_note'] as const
+type ListableDocumentType = (typeof LISTABLE_DOCUMENT_TYPES)[number]
 
 type Party = Record<string, unknown>
 
@@ -240,8 +246,8 @@ export async function GET(request: Request) {
     }
 
     const typeFilter = String(url.searchParams.get('type') ?? '').trim()
-    if (typeFilter && !DOCUMENT_TYPES.includes(typeFilter as DocumentType)) {
-      return NextResponse.json({ error: "type must be 'quote' or 'invoice'" }, { status: 400 })
+    if (typeFilter && !LISTABLE_DOCUMENT_TYPES.includes(typeFilter as ListableDocumentType)) {
+      return NextResponse.json({ error: "type must be 'quote', 'invoice', or 'credit_note'" }, { status: 400 })
     }
 
     const supabase = createServerSupabaseClient()
@@ -271,7 +277,7 @@ export async function GET(request: Request) {
 
     // Lazy overdue recompute: 'overdue' has no write event to trigger off (no row changes
     // when a due_date simply passes), so candidate invoices are recomputed here on read --
-    // same recomputeInvoiceStatus used after payments/send, cheap no-op when nothing changed.
+    // same recomputeDocumentStatus used after payments/send, cheap no-op when nothing changed.
     const rows = data ?? []
     for (const row of rows) {
       if (
@@ -279,7 +285,7 @@ export async function GET(request: Request) {
         row.due_date &&
         (row.status === 'sent' || row.status === 'partially_paid')
       ) {
-        const recomputed = await recomputeInvoiceStatus(supabase, String(row.id))
+        const recomputed = await recomputeDocumentStatus(supabase, String(row.id))
         row.status = recomputed.status
         row.balance = recomputed.balance
       }

@@ -3,7 +3,7 @@ import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 
 export const dynamic = 'force-dynamic'
 
@@ -63,7 +63,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     let finalDocument = updated
     if (doc.document_type === 'invoice') {
-      const recomputed = await recomputeInvoiceStatus(supabase, documentId)
+      const recomputed = await recomputeDocumentStatus(supabase, documentId)
       finalDocument = { ...updated, status: recomputed.status, balance: recomputed.balance }
     }
 

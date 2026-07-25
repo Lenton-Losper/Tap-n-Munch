@@ -6,7 +6,7 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeInvoiceStatus } from '@/lib/documents/recompute-status'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,7 +62,7 @@ export async function GET(request: Request) {
 
     const rows = data ?? []
     for (const row of rows) {
-      const recomputed = await recomputeInvoiceStatus(supabase, String(row.id))
+      const recomputed = await recomputeDocumentStatus(supabase, String(row.id))
       row.balance = recomputed.balance
       row.status = recomputed.status
     }
