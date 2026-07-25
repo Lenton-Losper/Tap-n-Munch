@@ -993,6 +993,11 @@ export function OrdersDashboard() {
           } else if (terminalStatus === 'failed') {
             doneIds.push(orderId)
             setTerminalStatusByOrderId((prev) => ({ ...prev, [orderId]: 'failed' }))
+            toast({
+              title: 'Terminal payment failed',
+              description: `Order #${orderRow?.order_number || orderId.slice(-6)} failed on the terminal. You can retry.`,
+              variant: 'destructive',
+            })
           } else if (status !== 'terminal_pending') {
             doneIds.push(orderId)
           }
@@ -1720,15 +1725,38 @@ export function OrdersDashboard() {
                     </div>
                   )}
 
+                {/* After a successful push, payment_status is terminal_pending (canonical
+                    value since push-to-terminal was introduced). Failure feedback must live
+                    here — gating only on payment_status === 'pending' misses this state. */}
                 {normalizedOrder.payment_status === 'terminal_pending' && (
                   <div className="pt-2 space-y-2">
-                    <Button
-                      className="w-full bg-amber-600 hover:bg-amber-700"
-                      disabled
-                    >
-                      <Clock className="h-4 w-4 mr-2" />
-                      Waiting for payment...
-                    </Button>
+                    {getTerminalStatus(normalizedOrder) === 'failed' ? (
+                      <>
+                        <div className="bg-red-100 text-red-700 px-3 py-1 rounded text-sm font-medium">
+                          Payment Failed - Retry
+                        </div>
+                        <Button
+                          className="w-full bg-[#FF6B35] hover:bg-[#e55a28]"
+                          onClick={() => handleSendToTerminal(normalizedOrder, true)}
+                          disabled={sendingToTerminalOrderId === normalizedOrder.id}
+                        >
+                          <ActionButtonContent
+                            loading={sendingToTerminalOrderId === normalizedOrder.id}
+                            icon={CreditCard}
+                            label="Send to Terminal"
+                            loadingLabel="Sending to terminal..."
+                          />
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        className="w-full bg-amber-600 hover:bg-amber-700"
+                        disabled
+                      >
+                        <Clock className="h-4 w-4 mr-2" />
+                        Waiting for payment...
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       className="w-full border-red-300 text-red-600 hover:bg-red-50"
