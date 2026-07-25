@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ensurePublicUserForOAuth } from '@/lib/auth/ensure-public-user'
 import { syncUserEmailAcrossTables } from '@/lib/auth/sync-user-email'
+import { destinationForContext, resolveActiveContext } from '@/lib/auth/resolve-active-context'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +12,7 @@ export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
   const type = searchParams.get('type')
+  const redirectParam = searchParams.get('redirect')
 
   // Secure Email Change requires confirming from BOTH the new and current
   // inbox. The first of the two links GoTrue sends produces no `code` --
@@ -94,28 +96,24 @@ export async function GET(request: Request) {
         return NextResponse.redirect(`${origin}/signin?error=oauth_profile`)
       }
 
-      const { data: membership, error: membershipError } = await adminSupabase
-        .from('restaurant_users')
-        .select('restaurant_id')
-        .eq('user_id', user.id)
-        .is('deleted_at', null)
-        .maybeSingle()
-
-      if (membershipError) {
-        console.error('[auth/callback] restaurant_users lookup failed', {
+      let resolved
+      try {
+        resolved = await resolveActiveContext({ userId: user.id, redirectParam })
+      } catch (resolveError) {
+        console.error('[auth/callback] resolveActiveContext failed', {
           authUserId: user.id,
-          error: membershipError,
+          error: resolveError,
         })
         return NextResponse.redirect(`${origin}/signin?error=oauth`)
       }
 
-      if (membership?.restaurant_id) {
-        return NextResponse.redirect(`${origin}/dashboard`)
+      if (!resolved.context) {
+        return NextResponse.redirect(
+          `${origin}/signup?google=true&name=${encodeURIComponent(fullName)}`
+        )
       }
 
-      return NextResponse.redirect(
-        `${origin}/signup?google=true&name=${encodeURIComponent(fullName)}`
-      )
+      return NextResponse.redirect(`${origin}${destinationForContext(resolved.context)}`)
     }
 
     if (error) {

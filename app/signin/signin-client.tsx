@@ -10,6 +10,7 @@ import { SupabaseConfigError } from '@/components/auth/supabase-config-error'
 import { AuthDivider, GoogleSignInButton } from '@/components/auth/google-sign-in-button'
 import { useAuth } from '@/components/auth/auth-provider'
 import { signInWithGoogleOAuth } from '@/lib/supabase/google-auth'
+import { supabase } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -49,7 +50,7 @@ async function shouldShowGoogleHint(email: string): Promise<boolean> {
 export function SignInClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user, loading: authLoading, isSupabaseConfigured, signIn, restaurantId, roleResolved, isPlatformAdmin } = useAuth()
+  const { user, loading: authLoading, isSupabaseConfigured, signIn, roleResolved } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -75,11 +76,37 @@ export function SignInClient() {
     // (independent of whether a restaurant was found), so this doesn't redirect on
     // stale/default values.
     if (authLoading || !user || !roleResolved) return
-    // A platform-admin-only account (no restaurant_users row by design) has nothing to
-    // land on at /dashboard, which is restaurant-scoped -- send it straight to /admin.
-    const destination = restaurantId ? '/dashboard' : isPlatformAdmin ? '/admin' : '/dashboard'
-    router.replace(destination)
-  }, [authLoading, user, restaurantId, roleResolved, isPlatformAdmin, router])
+
+    let cancelled = false
+    ;(async () => {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken || cancelled) return
+
+      try {
+        // Destination is decided server-side by the same resolveActiveContext
+        // precedence used by the Google OAuth callback -- see lib/auth/resolve-active-context.ts.
+        const response = await fetch('/api/auth/resolve-active-context', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ redirect: searchParams.get('redirect') }),
+        })
+        const payload = await response.json().catch(() => null)
+        if (!cancelled && response.ok && payload?.destination) {
+          router.replace(payload.destination)
+        }
+      } catch {
+        // Stay on /signin; user can retry the submit.
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authLoading, user, roleResolved, router, searchParams])
 
   if (!isSupabaseConfigured) {
     return <SupabaseConfigError />
@@ -98,8 +125,8 @@ export function SignInClient() {
       const submitEmail = String(formData.get('email') || email).trim()
       const submitPassword = String(formData.get('password') || password)
       await signIn(submitEmail, submitPassword)
-      // Redirect handled by the effect above once AuthProvider resolves restaurantId /
-      // isPlatformAdmin, so a platform-admin-only account goes to /admin, not /dashboard.
+      // Redirect handled by the effect above, which calls resolveActiveContext via
+      // /api/auth/resolve-active-context once AuthProvider settles.
     } catch (submitError: any) {
       const message =
         submitError?.message || 'Failed to sign in. Please check your credentials.'
@@ -117,7 +144,7 @@ export function SignInClient() {
     setError('')
     setGoogleLoading(true)
     try {
-      await signInWithGoogleOAuth()
+      await signInWithGoogleOAuth(searchParams.get('redirect'))
     } finally {
       setGoogleLoading(false)
     }
