@@ -7,8 +7,30 @@ on:
 
 jobs:
 
+  verify-document-engine:
+    # Runs after DDL is applied (SQL editor or credentials). Does not apply DDL.
+    if: contains(github.event.head_commit.message, '[verify-document-engine]')
+    runs-on: ubuntu-latest
+    name: Verify Document Engine (staging service-role)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Functional verify (assumes migration already applied)
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/verify-document-engine-staging.ts
+
   apply-document-engine:
-    # One-shot: remove after staging apply+verify succeed.
+    # One-shot DDL apply when a credential secret exists. Repo currently has none of
+    # SUPABASE_ACCESS_TOKEN / STAGING_DATABASE_URL / STAGING_SUPABASE_DB_PASSWORD —
+    # paste scripts/sql/apply-20260725200000-document-engine.sql in the staging SQL
+    # editor, then push with [verify-document-engine].
     if: contains(github.event.head_commit.message, '[apply-document-engine]')
     runs-on: ubuntu-latest
     name: Apply Document Engine migration (staging)
