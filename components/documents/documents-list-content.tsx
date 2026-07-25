@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast'
 import { PERMISSIONS } from '@/lib/permissions'
 import { getSettingsAccessToken } from '@/components/settings/settings-utils'
 
-type DocumentType = 'quote' | 'invoice'
+type DocumentType = 'quote' | 'invoice' | 'credit_note'
 
 type DocumentStatus =
   | 'draft'
@@ -25,6 +25,8 @@ type DocumentStatus =
   | 'converted'
   | 'expired'
   | 'declined'
+  | 'issued'
+  | 'cancelled'
 
 type DocumentListItem = {
   id: string
@@ -55,6 +57,9 @@ function typeBadge(type: DocumentType) {
   if (type === 'invoice') {
     return <Badge className="bg-[#2E75B6] hover:bg-[#2E75B6]">Invoice</Badge>
   }
+  if (type === 'credit_note') {
+    return <Badge className="bg-slate-600 hover:bg-slate-600">Credit Note</Badge>
+  }
   return <Badge variant="secondary">Quote</Badge>
 }
 
@@ -68,6 +73,8 @@ const STATUS_LABELS: Record<DocumentStatus, string> = {
   converted: 'Converted',
   expired: 'Expired',
   declined: 'Declined',
+  issued: 'Issued',
+  cancelled: 'Cancelled',
 }
 
 const STATUS_CLASSES: Record<DocumentStatus, string> = {
@@ -80,6 +87,8 @@ const STATUS_CLASSES: Record<DocumentStatus, string> = {
   converted: 'bg-purple-600 hover:bg-purple-600',
   expired: 'bg-[#6B675F] hover:bg-[#6B675F]',
   declined: 'bg-[#6B675F] hover:bg-[#6B675F]',
+  issued: 'bg-slate-600 hover:bg-slate-600',
+  cancelled: 'bg-[#6B675F] hover:bg-[#6B675F]',
 }
 
 function statusBadge(status: DocumentStatus) {
@@ -95,7 +104,8 @@ export function DocumentsListContent() {
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [modalType, setModalType] = useState<DocumentType>('quote')
+  // Creatable types only -- credit_note is never user-creatable here, only via correct_invoice().
+  const [modalType, setModalType] = useState<'quote' | 'invoice'>('quote')
   const [modalInstance, setModalInstance] = useState(0)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
@@ -138,7 +148,7 @@ export function DocumentsListContent() {
     void loadDocuments()
   }, [loadDocuments])
 
-  const openCreateModal = (type: DocumentType) => {
+  const openCreateModal = (type: 'quote' | 'invoice') => {
     setModalType(type)
     setModalInstance((n) => n + 1)
     setModalOpen(true)
@@ -282,7 +292,7 @@ export function DocumentsListContent() {
 
         {view === 'documents' ? (
           <div className="mb-4 flex gap-2">
-            {(['all', 'quote', 'invoice'] as const).map((option) => (
+            {(['all', 'quote', 'invoice', 'credit_note'] as const).map((option) => (
               <Button
                 key={option}
                 type="button"
@@ -290,7 +300,13 @@ export function DocumentsListContent() {
                 size="sm"
                 onClick={() => setTypeFilter(option)}
               >
-                {option === 'all' ? 'All' : option === 'quote' ? 'Quotes' : 'Invoices'}
+                {option === 'all'
+                  ? 'All'
+                  : option === 'quote'
+                    ? 'Quotes'
+                    : option === 'invoice'
+                      ? 'Invoices'
+                      : 'Credit Notes'}
               </Button>
             ))}
           </div>

@@ -49,11 +49,12 @@ export type DocumentLineItem = {
   line_total: number
 }
 
-/** Matches public.business_documents columns (see 20260705280000_business_documents.sql). */
+/** Matches public.business_documents columns (see 20260705280000_business_documents.sql
+ *  and 20260725200000_document_engine_credit_notes_lineage.sql for credit_note support). */
 export type BusinessDocumentRow = {
   id: string
   restaurant_id: string
-  document_type: 'quote' | 'invoice'
+  document_type: 'quote' | 'invoice' | 'credit_note'
   document_number: string
   quote_id: string | null
   issued_at: string
@@ -79,6 +80,13 @@ export type BusinessDocumentRow = {
   currency: string
   created_by: string
   created_at: string
+  /** credit_note only: document_number of the invoice this credit note credits
+   *  (business_documents.credited_by_id), resolved by the caller since this type
+   *  is a flat rendering shape, not a DB-query result. */
+  original_invoice_number?: string | null
+  /** credit_note only: document_number of the replacement invoice issued alongside
+   *  this credit note (the original invoice's corrected_by_id), resolved by the caller. */
+  replacement_invoice_number?: string | null
 }
 
 function formatCurrency(amount: number, currency = 'NAD'): string {
@@ -216,7 +224,12 @@ function drawHeaderBlock(
   }
   y = drawMutedLines(page, businessMeta, MARGIN, y, fonts.regular, SMALL_SIZE, 11)
 
-  const docTypeLabel = document.document_type === 'invoice' ? 'TAX INVOICE' : 'QUOTE'
+  const docTypeLabel =
+    document.document_type === 'invoice'
+      ? 'TAX INVOICE'
+      : document.document_type === 'credit_note'
+        ? 'CREDIT NOTE'
+        : 'QUOTE'
   drawRightText(page, docTypeLabel, rightX, yTop - DOC_TYPE_SIZE, fonts.bold, DOC_TYPE_SIZE, BRAND_BLUE)
 
   let metaY = yTop - DOC_TYPE_SIZE - 14
@@ -226,6 +239,17 @@ function drawHeaderBlock(
   }
   if (document.document_type === 'quote' && document.reference_note?.trim()) {
     metaLines.push(`Venue / Purpose: ${document.reference_note.trim()}`)
+  }
+  if (document.document_type === 'credit_note') {
+    if (document.original_invoice_number) {
+      metaLines.push(`Original Invoice: #${document.original_invoice_number}`)
+    }
+    if (document.replacement_invoice_number) {
+      metaLines.push(`Replacement Invoice: #${document.replacement_invoice_number}`)
+    }
+    if (document.reference_note?.trim()) {
+      metaLines.push(document.reference_note.trim())
+    }
   }
   for (const line of metaLines) {
     drawRightText(page, line, rightX, metaY, fonts.regular, DOC_META_SIZE, TEXT_DARK)
@@ -455,7 +479,7 @@ function drawTotalsBlock(
     lines.push({ label: 'VAT', value: formatCurrency(vatAmount, currency) })
   }
   lines.push({
-    label: 'Total',
+    label: document.document_type === 'credit_note' ? 'Total Credited' : 'Total',
     value: formatCurrency(document.total, currency),
     bold: true,
     grand: true,
@@ -500,7 +524,8 @@ function drawFooter(page: PDFPage, document: BusinessDocumentRow, font: PDFFont)
 
   const bankName = document.bank_name?.trim()
   const bankAccountNumber = document.bank_account_number?.trim()
-  if (bankName && bankAccountNumber) {
+  // A credit note isn't asking for payment -- never show payment instructions on one.
+  if (document.document_type !== 'credit_note' && bankName && bankAccountNumber) {
     const branch = document.bank_branch_code?.trim() || '—'
     const paymentLine = `Kindly make payment to: ${bankName}, Account ${bankAccountNumber}, Branch ${branch}, Reference: ${document.document_number}`
     const wrapped = wrapText(paymentLine, font, FOOTER_SIZE, contentWidth)

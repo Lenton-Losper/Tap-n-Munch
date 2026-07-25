@@ -14,6 +14,12 @@ export const dynamic = 'force-dynamic'
 const DOCUMENT_TYPES = ['quote', 'invoice'] as const
 type DocumentType = (typeof DOCUMENT_TYPES)[number]
 
+// Listing/filtering allows credit_note too (it's a real business_documents row,
+// just never creatable through this endpoint -- correct_invoice() is the only
+// place a credit_note gets inserted, so it stays out of DOCUMENT_TYPES above).
+const LISTABLE_DOCUMENT_TYPES = ['quote', 'invoice', 'credit_note'] as const
+type ListableDocumentType = (typeof LISTABLE_DOCUMENT_TYPES)[number]
+
 type Party = Record<string, unknown>
 
 type LineItemInput = {
@@ -240,8 +246,8 @@ export async function GET(request: Request) {
     }
 
     const typeFilter = String(url.searchParams.get('type') ?? '').trim()
-    if (typeFilter && !DOCUMENT_TYPES.includes(typeFilter as DocumentType)) {
-      return NextResponse.json({ error: "type must be 'quote' or 'invoice'" }, { status: 400 })
+    if (typeFilter && !LISTABLE_DOCUMENT_TYPES.includes(typeFilter as ListableDocumentType)) {
+      return NextResponse.json({ error: "type must be 'quote', 'invoice', or 'credit_note'" }, { status: 400 })
     }
 
     const supabase = createServerSupabaseClient()
