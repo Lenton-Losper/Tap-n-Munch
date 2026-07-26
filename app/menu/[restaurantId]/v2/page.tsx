@@ -427,7 +427,7 @@ export function MenuLandingPageV2Content({
       let tabQuery = supabase
         .from('tabs')
         .select(
-          'id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, updated_at, firebase_id',
+          'id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, firebase_id',
         )
         .eq('restaurant_id', restaurantUuid)
         .in('status', [...ACTIVE_TAB_STATUSES])

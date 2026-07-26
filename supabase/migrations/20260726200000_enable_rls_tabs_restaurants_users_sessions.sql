@@ -67,8 +67,10 @@ GRANT SELECT (
   pin_required,
   session_version,
   created_at,
-  updated_at,
-  firebase_id
+  firebase_id,
+  firebase_restaurant_id,
+  settled_at,
+  customer_name
 ) ON TABLE public.tabs TO anon;
 
 GRANT SELECT, INSERT, UPDATE ON TABLE public.tabs TO authenticated;
