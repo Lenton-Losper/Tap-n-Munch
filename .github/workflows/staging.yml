@@ -65,6 +65,31 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
         run: npx tsx scripts/probe-order-request-accept-race-staging.ts
 
+  probe-orders-status-race:
+    if: contains(github.event.head_commit.message, '[probe-orders-status-race]')
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: Probe concurrent orders status Accept vs Cancel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Concurrent Accept vs Cancel → one 200, one 409
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+        run: npx tsx scripts/probe-orders-status-accept-cancel-race-staging.ts
+
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
     runs-on: ubuntu-latest
