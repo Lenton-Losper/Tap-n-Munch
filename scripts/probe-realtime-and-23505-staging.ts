@@ -6,6 +6,7 @@
  *
  * Marker: PROBE_REALTIME_AND_23505_OK
  */
+// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { writeFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
