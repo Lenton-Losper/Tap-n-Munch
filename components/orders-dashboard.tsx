@@ -914,7 +914,6 @@ export function OrdersDashboard() {
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to send payment to terminal')
       }
-      setTerminalPollingOrderIds((prev) => (prev.includes(order.id) ? prev : [...prev, order.id]))
       toast({ title: 'Payment sent to terminal' })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Please try again.'
@@ -946,7 +945,6 @@ export function OrdersDashboard() {
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to cancel terminal payment')
       }
-      setTerminalPollingOrderIds((prev) => prev.filter((id) => id !== order.id))
       setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: null }))
       toast({
         title: 'Terminal payment cancelled',
