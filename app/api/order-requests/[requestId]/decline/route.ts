@@ -37,11 +37,12 @@ export async function POST(
   if (request.status !== 'waiting_review') {
     return NextResponse.json(
       { error: `Cannot decline a request with status "${request.status}"` },
-      { status: 400 },
+      { status: 409 },
     )
   }
 
-  const { error: updateError } = await supabase
+  // Atomic claim — concurrent Decline/Accept: only one transition from waiting_review wins.
+  const { data: claimed, error: updateError } = await supabase
     .from('order_requests')
     .update({
       status: 'declined',
@@ -50,9 +51,16 @@ export async function POST(
       decided_by: auth.userId,
     })
     .eq('id', requestId)
+    .eq('status', 'waiting_review')
+    .select('id')
+    .maybeSingle()
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 })
+  }
+
+  if (!claimed?.id) {
+    return NextResponse.json({ error: 'Order request already handled' }, { status: 409 })
   }
 
   return NextResponse.json({ success: true })

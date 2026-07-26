@@ -15,6 +15,10 @@ export const dynamic = 'force-dynamic'
  * the customer's original submission. route_to enrichment and (for hosted checkout) the
  * Finatic session are deliberately deferred to here, not request submission -- payment must
  * never trigger before Accept.
+ *
+ * Concurrency: createOrder is idempotent on a stable key, then the request row is claimed with
+ * UPDATE ... WHERE status = 'waiting_review'. Zero rows → 409 (another Accept already won);
+ * Finatic / tab / kiosk side effects run only for the winner.
  */
 export async function POST(
   req: Request,
@@ -40,13 +44,13 @@ export async function POST(
   if (isAuthError(auth)) return auth
 
   if (request.status === 'accepted') {
-    // Idempotent: a retried/double-clicked Accept returns the same result, not a new order.
+    // Idempotent: a retried Accept after success returns the same result, not a new order.
     return NextResponse.json({ success: true, orderId: request.accepted_order_id })
   }
   if (request.status !== 'waiting_review') {
     return NextResponse.json(
       { error: `Cannot accept a request with status "${request.status}"` },
-      { status: 400 },
+      { status: 409 },
     )
   }
 
@@ -55,6 +59,11 @@ export async function POST(
   const total = request.total_reviewed ?? request.total
 
   const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
+
+  // Stable across concurrent Accepts so createOrder's 23505 path collapses to one orders row
+  // even when the client-submitted idempotency_key is null.
+  const acceptIdempotencyKey =
+    String(request.idempotency_key || '').trim() || `order-request-accept:${requestId}`
 
   let result
   try {
@@ -76,8 +85,7 @@ export async function POST(
       tabSettlementForTabId: request.tab_settlement_for_tab_id,
       channel: request.channel,
       customerName: request.customer_name,
-      // Reused as a double-accept guard: createOrder returns the existing order on conflict.
-      idempotencyKey: request.idempotency_key,
+      idempotencyKey: acceptIdempotencyKey,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to create order'
@@ -86,7 +94,8 @@ export async function POST(
 
   const orderId = result.orderId
 
-  const { error: decideError } = await supabase
+  // Atomic claim — same pattern as ready-for-terminal. Only one concurrent Accept wins.
+  const { data: claimed, error: decideError } = await supabase
     .from('order_requests')
     .update({
       status: 'accepted',
@@ -95,9 +104,21 @@ export async function POST(
       decided_by: auth.userId,
     })
     .eq('id', requestId)
+    .eq('status', 'waiting_review')
+    .select('id, accepted_order_id')
+    .maybeSingle()
 
   if (decideError) {
     console.error('[ORDER_REQUESTS/accept] failed to mark request accepted:', decideError)
+    return NextResponse.json({ error: decideError.message }, { status: 500 })
+  }
+
+  if (!claimed?.id) {
+    // Another Accept (or Decline) already transitioned this row. Do not start Finatic again.
+    return NextResponse.json(
+      { error: 'Order request already handled' },
+      { status: 409 },
+    )
   }
 
   // Kiosk order numbering (daily counter), same as the old direct-creation path.
@@ -149,6 +170,7 @@ export async function POST(
   // Hosted/online checkout: the Finatic session now fires here (post-Accept), never at
   // request submission. Best-effort -- an order still exists even if this fails, same
   // tolerance the old inline try/catch in POST /api/orders had.
+  // Only the claim winner reaches this block (prevents duplicate Finatic sessions).
   let checkoutUrl: string | null = null
   let merchantOrderNo: string | null = null
   if (!request.tab_id && String(request.payment_channel || '') === 'hosted') {
