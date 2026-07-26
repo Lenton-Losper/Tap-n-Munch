@@ -16,9 +16,14 @@ export const dynamic = 'force-dynamic'
  * Finatic session are deliberately deferred to here, not request submission -- payment must
  * never trigger before Accept.
  *
- * Concurrency: createOrder is idempotent on a stable key, then the request row is claimed with
- * UPDATE ... WHERE status = 'waiting_review'. Zero rows → 409 (another Accept already won);
- * Finatic / tab / kiosk side effects run only for the winner.
+ * Concurrency: the request row is claimed into a transient 'accepting' status with
+ * UPDATE ... WHERE status = 'waiting_review' BEFORE createOrder() is ever called -- zero
+ * rows means another Accept/Decline already won, and we return 409 without creating
+ * anything. 'accepting' (not 'accepted' directly) exists because the
+ * order_requests_accepted_has_order CHECK requires accepted_order_id IS NOT NULL whenever
+ * status = 'accepted', and that column FKs to orders(id) -- neither is satisfiable until
+ * createOrder() has actually run. Only the claim winner ever calls createOrder(); if it
+ * throws, the claim is released back to 'waiting_review' so the request isn't stranded.
  */
 export async function POST(
   req: Request,
@@ -54,48 +59,76 @@ export async function POST(
     )
   }
 
-  const items = Array.isArray(request.items_reviewed) ? request.items_reviewed : request.items
-  const subtotal = request.subtotal_reviewed ?? request.subtotal
-  const total = request.total_reviewed ?? request.total
+  // Atomic claim FIRST -- before createOrder() is ever called. Zero rows means another
+  // Accept/Decline already won this request; return 409 without creating anything.
+  const { data: claimed, error: claimError } = await supabase
+    .from('order_requests')
+    .update({ status: 'accepting' })
+    .eq('id', requestId)
+    .eq('status', 'waiting_review')
+    .select('*')
+    .maybeSingle()
+
+  if (claimError) {
+    console.error('[ORDER_REQUESTS/accept] failed to claim request:', claimError)
+    return NextResponse.json({ error: claimError.message }, { status: 500 })
+  }
+  if (!claimed) {
+    // Another Accept (or Decline) already transitioned this row.
+    return NextResponse.json(
+      { error: 'Order request already handled' },
+      { status: 409 },
+    )
+  }
+
+  const items = Array.isArray(claimed.items_reviewed) ? claimed.items_reviewed : claimed.items
+  const subtotal = claimed.subtotal_reviewed ?? claimed.subtotal
+  const total = claimed.total_reviewed ?? claimed.total
 
   const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
 
-  // Stable across concurrent Accepts so createOrder's 23505 path collapses to one orders row
-  // even when the client-submitted idempotency_key is null.
+  // Stable across retries so createOrder's 23505 path collapses to one orders row even
+  // when the client-submitted idempotency_key is null.
   const acceptIdempotencyKey =
-    String(request.idempotency_key || '').trim() || `order-request-accept:${requestId}`
+    String(claimed.idempotency_key || '').trim() || `order-request-accept:${requestId}`
 
   let result
   try {
     result = await createOrder({
-      restaurantId: request.restaurant_id,
-      firebaseRestaurantId: request.firebase_restaurant_id,
-      tableNumber: request.table_number,
-      tableId: request.table_id,
-      sessionId: request.session_id,
-      memberSessionId: request.member_session_id,
+      restaurantId: claimed.restaurant_id,
+      firebaseRestaurantId: claimed.firebase_restaurant_id,
+      tableNumber: claimed.table_number,
+      tableId: claimed.table_id,
+      sessionId: claimed.session_id,
+      memberSessionId: claimed.member_session_id,
       items: enrichedItems,
       subtotal: Number(subtotal) || 0,
       total: Number(total) || 0,
-      paymentMethod: request.payment_method,
-      paymentChannel: request.payment_channel,
+      paymentMethod: claimed.payment_method,
+      paymentChannel: claimed.payment_channel,
       paymentStatus: 'pending',
-      orderInstructions: request.order_instructions,
-      tabId: request.tab_id,
-      tabSettlementForTabId: request.tab_settlement_for_tab_id,
-      channel: request.channel,
-      customerName: request.customer_name,
+      orderInstructions: claimed.order_instructions,
+      tabId: claimed.tab_id,
+      tabSettlementForTabId: claimed.tab_settlement_for_tab_id,
+      channel: claimed.channel,
+      customerName: claimed.customer_name,
       idempotencyKey: acceptIdempotencyKey,
     })
   } catch (err) {
+    // Release the claim so the request can be retried (Accept again, or Decline) instead
+    // of being stranded in 'accepting' forever.
+    await supabase
+      .from('order_requests')
+      .update({ status: 'waiting_review' })
+      .eq('id', requestId)
+      .eq('status', 'accepting')
     const message = err instanceof Error ? err.message : 'Failed to create order'
     return NextResponse.json({ error: message }, { status: 500 })
   }
 
   const orderId = result.orderId
 
-  // Atomic claim — same pattern as ready-for-terminal. Only one concurrent Accept wins.
-  const { data: claimed, error: decideError } = await supabase
+  const { error: finalizeError } = await supabase
     .from('order_requests')
     .update({
       status: 'accepted',
@@ -104,20 +137,16 @@ export async function POST(
       decided_by: auth.userId,
     })
     .eq('id', requestId)
-    .eq('status', 'waiting_review')
-    .select('id, accepted_order_id')
-    .maybeSingle()
+    .eq('status', 'accepting')
 
-  if (decideError) {
-    console.error('[ORDER_REQUESTS/accept] failed to mark request accepted:', decideError)
-    return NextResponse.json({ error: decideError.message }, { status: 500 })
-  }
-
-  if (!claimed?.id) {
-    // Another Accept (or Decline) already transitioned this row. Do not start Finatic again.
+  if (finalizeError) {
+    // The order now exists but the request row couldn't be finalized -- surface this
+    // loudly rather than silently leaving the request stuck in 'accepting'. The order
+    // itself is real and correct; staff can resolve the request row manually.
+    console.error('[ORDER_REQUESTS/accept] failed to finalize accepted request:', finalizeError)
     return NextResponse.json(
-      { error: 'Order request already handled' },
-      { status: 409 },
+      { error: `Order created (${orderId}) but request could not be finalized: ${finalizeError.message}` },
+      { status: 500 },
     )
   }
 

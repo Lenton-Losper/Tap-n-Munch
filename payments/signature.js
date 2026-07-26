@@ -199,6 +199,13 @@ export function signPayload(payload, privateKey = loadPrivateKey()) {
   return formatPaycloudRequestSignature(standardBase64)
 }
 
+/**
+ * RSA-SHA256 verify via node-forge (pure JS), not crypto.createVerify -- the Node
+ * streaming Sign/Verify classes are unimplemented on the Cloudflare Workers runtime
+ * ("[unenv] crypto.createVerify is not implemented yet!"), so every signature check
+ * threw here regardless of validity. Mirrors signUtf8WithForgePkcs1RsaSha256, which
+ * already uses forge for the outbound (signing) half of this same RSA2 scheme.
+ */
 export function verifyPayloadSignature(payload, signature, publicKey = loadGatewayPublicKey()) {
   if (!signature) return false
   if (!publicKey) {
@@ -206,11 +213,13 @@ export function verifyPayloadSignature(payload, signature, publicKey = loadGatew
   }
 
   const content = buildSignContent(payload)
-  const verifier = crypto.createVerify('RSA-SHA256')
-  verifier.update(content, 'utf8')
-  verifier.end()
   const sigB64 = normalizeSignatureForVerify(signature)
-  return verifier.verify(publicKey, sigB64, 'base64')
+  const signatureBytes = forge.util.decode64(sigB64)
+
+  const forgePublicKey = forge.pki.publicKeyFromPem(publicKey)
+  const md = forge.md.sha256.create()
+  md.update(content, 'utf8')
+  return forgePublicKey.verify(md.digest().bytes(), signatureBytes)
 }
 
 // Test-only canonicalization for checkout:
