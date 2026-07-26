@@ -7,7 +7,6 @@ interface Restaurant {
   name: string
   phone: string | null
   logo_url: string | null
-  owner_id: string
 }
 
 interface RestaurantSettings {
@@ -89,7 +88,11 @@ export function RestaurantProvider({
       const [restaurantResult, settingsRes] = await Promise.all([
         supabase
           .from('restaurants')
-          .select('id, name, phone, logo_url, owner_id')
+          // Guest/anon context: owner_id is intentionally excluded from the
+          // anon column grant (20260726200000_enable_rls_...) and never read
+          // by any consumer of this context -- selecting it 42501s the whole
+          // query for every guest-facing page this provider wraps.
+          .select('id, name, phone, logo_url')
           .eq('id', restaurantId)
           .maybeSingle(),
         fetch(`/api/admin/restaurants/${restaurantId}/settings`),
