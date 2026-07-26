@@ -143,27 +143,47 @@ async function main() {
   const tableNumber = Number(table.table_number)
   const otherRestaurantId = '00000000-0000-4000-8000-000000000099'
 
-  // Create open tab with PIN for join tests
+  // Reuse the one-open-tab-per-table row when present (unique index).
   const pin = String(Math.floor(1000 + Math.random() * 9000))
-  const { data: tab, error: tabCreateErr } = await admin
+  const { data: existingOpen } = await admin
     .from('tabs')
-    .insert({
-      restaurant_id: restaurantId,
-      table_id: table.id,
-      table_number: tableNumber,
-      status: 'open',
-      pin_required: true,
-      tab_pin: pin,
-      members: [],
-      total: 0,
-    })
-    .select('id, table_id, table_number, restaurant_id')
-    .single()
-  assert(!tabCreateErr && tab?.id, `tab create failed: ${tabCreateErr?.message}`)
+    .select('id, table_id, table_number, restaurant_id, session_version')
+    .eq('restaurant_id', restaurantId)
+    .eq('table_id', table.id)
+    .eq('status', 'open')
+    .maybeSingle()
+
+  let tab = existingOpen
+  let createdTab = false
+  if (!tab?.id) {
+    const { data: created, error: tabCreateErr } = await admin
+      .from('tabs')
+      .insert({
+        restaurant_id: restaurantId,
+        table_id: table.id,
+        table_number: tableNumber,
+        status: 'open',
+        pin_required: true,
+        tab_pin: pin,
+        members: [],
+        total: 0,
+      })
+      .select('id, table_id, table_number, restaurant_id, session_version')
+      .single()
+    assert(!tabCreateErr && created?.id, `tab create failed: ${tabCreateErr?.message}`)
+    tab = created
+    createdTab = true
+  } else {
+    const { error: pinErr } = await admin
+      .from('tabs')
+      .update({ pin_required: true, tab_pin: pin, members: [] })
+      .eq('id', tab.id)
+    assert(!pinErr, `tab pin update failed: ${pinErr?.message}`)
+  }
   const tabId = String(tab.id)
 
   // Session token for this tab
-  const sessionVersion = 1
+  const sessionVersion = Number(tab.session_version || 1) || 1
   await admin.from('tabs').update({ session_version: sessionVersion }).eq('id', tabId)
   const tokenA = randomUUID()
   const { error: tokErr } = await admin.from('customer_sessions').insert({
@@ -338,8 +358,10 @@ async function main() {
     console.log('PROBE_TENANT_ISOLATION_OK')
   } finally {
     await admin.from('orders').delete().in('id', [orderA.id, orderB.id])
-    await admin.from('customer_sessions').delete().eq('tab_id', tabId)
-    await admin.from('tabs').delete().eq('id', tabId)
+    await admin.from('customer_sessions').delete().eq('token', tokenA)
+    if (createdTab) {
+      await admin.from('tabs').delete().eq('id', tabId)
+    }
   }
 }
 
