@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server'
 import { invalidateMenuCache } from '@/lib/cache/menu-cache'
+import { requireStagingPlatformAdmin } from '@/lib/api/require-staging-platform-admin'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
+  const denied = await requireStagingPlatformAdmin(request)
+  if (denied) return denied
+
   try {
     const body = (await request.json()) as { restaurantId?: string }
     const restaurantId = body.restaurantId?.trim()

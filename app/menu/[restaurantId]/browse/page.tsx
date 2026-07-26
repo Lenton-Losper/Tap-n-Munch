@@ -833,7 +833,7 @@ export default function MenuBrowsePage() {
         tabId={effectiveTabId || undefined}
         isKiosk={isKiosk}
         customerName={isKiosk ? orderingCtx.customerName : undefined}
-        sessionId={isKiosk ? kioskSessionId ?? undefined : undefined}
+        sessionId={isKiosk ? kioskSessionId ?? undefined : getCurrentSession() ?? undefined}
       />
 
       <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">

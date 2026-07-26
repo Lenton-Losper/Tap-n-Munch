@@ -3,6 +3,11 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { queryPaymentOrder } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import {
+  isAuthError,
+  requireCallerRestaurantPermission,
+} from '@/lib/api/require-staff-permission'
+import { PERMISSIONS } from '@/lib/permissions'
 
 function toMoney(value: unknown) {
   const n = Number(value)
@@ -13,7 +18,7 @@ function toMoney(value: unknown) {
 async function loadOrders(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   restaurantUuid: string,
-  orderIds: string[]
+  orderIds: string[],
 ) {
   const { data, error } = await supabase
     .from('orders')
@@ -22,7 +27,10 @@ async function loadOrders(
     .in('id', orderIds)
 
   if (error) throw error
-  const rows = (data || []).map((row) => ({ orderId: String(row.id), data: row as Record<string, unknown> }))
+  const rows = (data || []).map((row: Record<string, unknown>) => ({
+    orderId: String(row.id),
+    data: row,
+  }))
   if (rows.length !== orderIds.length) {
     throw new Error('One or more orders were not found')
   }
@@ -30,11 +38,13 @@ async function loadOrders(
 }
 
 export async function POST(req: Request) {
-  const supabase = createServerSupabaseClient()
-
   try {
+    const auth = await requireCallerRestaurantPermission(PERMISSIONS.PAYMENTS_PROCESS, req)
+    if (isAuthError(auth)) return auth
+
+    const { supabase, restaurantId: callerRestaurantId } = auth
     const body = await req.json()
-    const restaurantId = String(body.restaurantId || '').trim()
+    const restaurantId = String(body.restaurantId || callerRestaurantId || '').trim()
     const orderIds: string[] = Array.isArray(body.orderIds)
       ? body.orderIds.map((id: unknown) => String(id).trim()).filter(Boolean)
       : []
@@ -45,6 +55,12 @@ export async function POST(req: Request) {
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantId)
+    if (restaurantUuid !== callerRestaurantId) {
+      return NextResponse.json(
+        { ok: false, error: 'restaurantId does not match authenticated restaurant' },
+        { status: 403 },
+      )
+    }
 
     console.log('[RECONCILE] start', {
       restaurantId: restaurantUuid,

@@ -265,24 +265,31 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
   const grandTotal = Number(order.total) || 0
   const currency = String(restaurant.currency || 'NAD')
 
-  let payments: ReceiptPayment[] = (saleEvents ?? []).map((event) => ({
-    // payment_events has no method column in Phase 1 -- the order's payment_method
-    // is the best available source (one order, one settlement method).
-    method: order.payment_method || 'unknown',
-    masked_reference: maskReference(String(event.transaction_id || event.business_order_no || '')),
-    amount: Number(event.amount) || 0,
-    paid_at: String(event.created_at),
-  }))
+  let payments: ReceiptPayment[] = (saleEvents ?? []).map((event) => {
+    const method = String(order.payment_method || 'unknown')
+    const isCash = method.toLowerCase().startsWith('cash')
+    const rawRef = String(event.transaction_id || event.business_order_no || '')
+    return {
+      // payment_events has no method column in Phase 1 -- the order's payment_method
+      // is the best available source (one order, one settlement method).
+      method,
+      masked_reference: isCash ? '' : maskReference(rawRef),
+      amount: Number(event.amount) || 0,
+      paid_at: String(event.created_at),
+    }
+  })
 
   // When issuance runs from mark-paid (/payment, webhook, settle) before recordSaleEvent,
   // there may be no payment_events yet. Prefer sale events when present; otherwise synthesize
   // one payment line from the paid order so the frozen snapshot is not empty forever.
   if (payments.length === 0) {
+    const method = String(order.payment_method || 'unknown')
+    const isCash = method.toLowerCase().startsWith('cash')
     const ref = String(order.payment_reference || order.paycloud_merchant_order_no || '').trim()
     payments = [
       {
-        method: order.payment_method || 'unknown',
-        masked_reference: maskReference(ref),
+        method,
+        masked_reference: isCash ? '' : maskReference(ref),
         amount: grandTotal,
         paid_at: String(order.paid_at || new Date().toISOString()),
       },

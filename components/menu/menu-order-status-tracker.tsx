@@ -33,16 +33,21 @@ function isBannerEligibleOrder(order: Record<string, any> | null) {
   if (!order) return false
   if (order.is_closed === true || order.table_closed === true) return false
   const status = String(order.status || '').toLowerCase()
-  if (status === 'completed' || status === 'cancelled') return false
-  return ['pending', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(status)
+  if (status === 'completed' || status === 'cancelled' || status === 'declined') return false
+  return ['waiting_review', 'pending', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(
+    status,
+  )
 }
 
 function buildTrackerSteps(order: Record<string, any>): TrackerStep[] {
   const status = String(order.status || '').toLowerCase()
   const paid = String(order.payment_status || '').toLowerCase() === 'paid'
-
+  const waitingReview = status === 'waiting_review'
+  const receivedOrBeyond =
+    !waitingReview &&
+    ['pending', 'accepted', 'preparing', 'ready', 'ready_for_terminal', 'completed'].includes(status)
   const acceptedOrBeyond = ['accepted', 'preparing', 'ready', 'ready_for_terminal', 'completed'].includes(
-    status
+    status,
   )
   const preparingOrBeyond =
     ['preparing', 'ready', 'ready_for_terminal', 'completed'].includes(status) ||
@@ -50,7 +55,13 @@ function buildTrackerSteps(order: Record<string, any>): TrackerStep[] {
   const readyOrBeyond = ['ready', 'ready_for_terminal', 'completed'].includes(status)
 
   return [
-    { key: 'received', label: 'Received', complete: true, Icon: Check },
+    {
+      key: 'waiting_review',
+      label: 'Waiting for Review',
+      complete: !waitingReview,
+      Icon: Check,
+    },
+    { key: 'received', label: 'Received', complete: receivedOrBeyond || paid, Icon: Check },
     { key: 'accepted', label: 'Accepted', complete: acceptedOrBeyond || paid, Icon: Check },
     { key: 'preparing', label: 'Preparing', complete: preparingOrBeyond, Icon: ChefHat },
     { key: 'ready', label: 'Ready', complete: readyOrBeyond, Icon: Star },
@@ -299,7 +310,7 @@ export function MenuOrderStatusTracker({
   const statusLower = String(currentOrder.status || '').toLowerCase()
   const payChannel = String(currentOrder.payment_channel || '').toLowerCase()
   const isPreparing =
-    statusLower === 'preparing' || (statusLower === 'accepted' && steps[2].complete && !steps[3].complete)
+    statusLower === 'preparing' || (statusLower === 'accepted' && steps[3].complete && !steps[4].complete)
 
   const showReadyToPay = statusLower === 'ready' || statusLower === 'accepted'
   const terminalAlreadyNotified =

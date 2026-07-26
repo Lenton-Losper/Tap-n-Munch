@@ -136,6 +136,13 @@ export async function fetchGuestActiveTableOrders(params: {
 }): Promise<{ orders: GuestOrderRow[]; count: number }> {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
+  const sessionId = String(params.sessionId || '').trim()
+
+  // Fail closed for open-table polling: require session scope so one guest never
+  // sees another customer's open orders/requests at the same table.
+  if (!sessionId && !params.countOnly) {
+    return { orders: [], count: 0 }
+  }
 
   let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
 
@@ -144,7 +151,6 @@ export async function fetchGuestActiveTableOrders(params: {
     .eq('table_number', params.tableNumber)
     .eq('is_closed', params.isClosed ?? false)
 
-  const sessionId = String(params.sessionId || '').trim()
   if (sessionId) {
     query = query.eq('session_id', sessionId)
   }
@@ -172,7 +178,36 @@ export async function fetchGuestActiveTableOrders(params: {
   if (error) throw error
 
   const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
-  return { orders, count: orders.length }
+
+  // Also surface waiting_review order_requests for this session (Order Request model).
+  let requestQuery = supabase
+    .from('order_requests')
+    .select('*')
+    .eq('restaurant_id', restaurantUuid)
+    .eq('table_number', params.tableNumber)
+    .eq('status', 'waiting_review')
+    .eq('session_id', sessionId)
+
+  if (params.placedAfter) {
+    requestQuery = requestQuery.gte('placed_at', params.placedAfter)
+  }
+  if (params.placedBefore) {
+    requestQuery = requestQuery.lt('placed_at', params.placedBefore)
+  }
+
+  const { data: requests, error: requestError } = await requestQuery.order('placed_at', {
+    ascending: false,
+  })
+  if (requestError) throw requestError
+
+  const requestRows = (requests ?? []).map((row) => mapOrderRequestToGuestRow(row as Record<string, unknown>))
+  const merged = [...requestRows, ...orders].sort((a, b) => {
+    const aMs = a.placed_at ? new Date(String(a.placed_at)).getTime() : 0
+    const bMs = b.placed_at ? new Date(String(b.placed_at)).getTime() : 0
+    return bMs - aMs
+  })
+
+  return { orders: merged, count: merged.length }
 }
 
 export async function fetchGuestOrdersByPaymentRef(params: {

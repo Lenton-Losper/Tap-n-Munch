@@ -37,10 +37,10 @@ export interface ActiveOrder {
 }
 
 /**
- * Cross-Device Active Order Banner Hook (Table-Based)
+ * Cross-Device Active Order Banner Hook
  *
- * Data via GET /api/guest/orders/active-table (Stage 1 guest API).
- * Realtime replaced with polling — Stage 2 RLS lockdown will block guest Realtime on orders.
+ * Always scopes by session_id when provided (table + kiosk). Without a session id,
+ * returns no active order rather than leaking another customer's table-wide order.
  */
 export function useActiveOrders(
   restaurantId?: string,
@@ -79,6 +79,15 @@ export function useActiveOrders(
       return
     }
 
+    const scopedSessionId = String(sessionId || '').trim()
+    if (!scopedSessionId) {
+      // Fail closed: never show table-wide orders without a session scope.
+      setActiveOrder(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     let cancelled = false
 
     const fetchOrders = async () => {
@@ -86,7 +95,7 @@ export function useActiveOrders(
         const { orders } = await fetchGuestActiveTableOrders({
           restaurantId,
           tableNumber: Number(tableNumber),
-          sessionId: isKiosk && sessionId ? sessionId : undefined,
+          sessionId: scopedSessionId,
         })
 
         if (cancelled) return
@@ -98,11 +107,18 @@ export function useActiveOrders(
           .filter((order) => {
             const tn = Number(order.table_number)
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
+            const orderSession = String(order.session_id || '').trim()
+            if (orderSession && orderSession !== scopedSessionId) return false
             const placedMs = orderPlacedAtMs(order)
             if (!placedMs || placedMs < placedCutoff) return false
-            return ['pending', 'accepted', 'ready', 'ready_for_terminal'].includes(
-              String(order.status || '').toLowerCase()
-            )
+            return [
+              'waiting_review',
+              'pending',
+              'accepted',
+              'preparing',
+              'ready',
+              'ready_for_terminal',
+            ].includes(String(order.status || '').toLowerCase())
           })
           .sort((a, b) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
 

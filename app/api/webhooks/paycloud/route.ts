@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
-import { enforceWebhookRateLimit } from '@/payments/webhook'
-import { verifyPayloadSignature } from '@/payments/signature'
+import { enforceWebhookRateLimit, verifyWebhook } from '@/payments/webhook'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
@@ -16,15 +15,12 @@ function getClientIp(req: Request) {
   return req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown'
 }
 
-function extractSign(payload: Record<string, unknown>, headers: Headers): string {
-  const h =
-    headers.get('x-paycloud-sign') ||
-    headers.get('paycloud-sign') ||
-    headers.get('x-signature') ||
-    ''
-  if (h) return h
-  const b = payload?.sign
-  return typeof b === 'string' ? b : ''
+function headersToObject(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value
+  })
+  return out
 }
 
 function extractWebhookMerchantOrderNo(payload: Record<string, unknown>): string {
@@ -68,7 +64,14 @@ export async function POST(req: Request) {
   try {
     payload = JSON.parse(rawBody) as Record<string, unknown>
   } catch {
-    return webhookAck()
+    return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 })
+  }
+
+  // Fail closed: missing/invalid signature must never mark orders paid or ACK success.
+  const verifyResult = verifyWebhook(rawBody, payload, headersToObject(req.headers))
+  if (!verifyResult.ok) {
+    console.warn('[PayCloud webhook] Signature rejected:', verifyResult.reason)
+    return NextResponse.json({ error: verifyResult.reason || 'Invalid signature' }, { status: 401 })
   }
 
   const merchantOrderNo = extractWebhookMerchantOrderNo(payload)
@@ -83,14 +86,20 @@ export async function POST(req: Request) {
     resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
   } catch (e) {
     console.error('[WEBHOOK] order resolve failed:', e)
-    return webhookAck()
+    // Do not ACK — provider should retry until durable resolve succeeds.
+    return NextResponse.json({ error: 'Order resolve failed' }, { status: 503 })
   }
 
   if (resolved.orderIds.length > 0) {
-    const { data: existingRows } = await supabase
+    const { data: existingRows, error: existingError } = await supabase
       .from('orders')
       .select('id, payment_status')
       .in('id', resolved.orderIds)
+
+    if (existingError) {
+      console.error('[WEBHOOK] existing payment_status check failed:', existingError)
+      return NextResponse.json({ error: 'Failed to load orders' }, { status: 503 })
+    }
 
     if (
       existingRows &&
@@ -104,18 +113,9 @@ export async function POST(req: Request) {
     }
   }
 
-  const sign = extractSign(payload, req.headers)
-  if (sign) {
-    try {
-      const copy = { ...payload }
-      verifyPayloadSignature(copy, sign)
-    } catch (e) {
-      console.warn('[PayCloud webhook] Signature verification error; continuing', e)
-    }
-  }
-
   const transStatus = payload.trans_status ?? payload.trade_status ?? payload.status
   if (!isPaidTransStatus(transStatus)) {
+    // Non-paid notify: ACK so the provider does not retry forever.
     return webhookAck()
   }
 
@@ -123,15 +123,15 @@ export async function POST(req: Request) {
 
   if (!resolved.orderIds.length) {
     console.error(
-      '[WEBHOOK] Order not found via orders or payment_events (will rely on Finatic retry):',
+      '[WEBHOOK] Order not found via orders or payment_events (returning 503 for retry):',
       merchantOrderNo,
     )
-    return webhookAck()
+    return NextResponse.json({ error: 'Order not found' }, { status: 503 })
   }
 
   const paidAt = new Date().toISOString()
 
-  await supabase
+  const { error: updateError } = await supabase
     .from('orders')
     .update({
       payment_status: 'paid',
@@ -139,13 +139,22 @@ export async function POST(req: Request) {
     })
     .in('id', resolved.orderIds)
 
+  if (updateError) {
+    console.error('[WEBHOOK] mark paid failed:', updateError)
+    return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
+  }
+
   // Backfill correlation key when we only found the order via payment_events (legacy POS).
   if (resolved.source === 'payment_events') {
-    await supabase
+    const { error: backfillError } = await supabase
       .from('orders')
       .update({ paycloud_merchant_order_no: merchantOrderNo })
       .in('id', resolved.orderIds)
       .is('paycloud_merchant_order_no', null)
+    if (backfillError) {
+      console.error('[WEBHOOK] merchant order no backfill failed:', backfillError)
+      // Paid write already succeeded — still ACK; backfill is best-effort.
+    }
   }
 
   await safeIssueReceiptsForOrders(resolved.orderIds, 'webhooks/paycloud')

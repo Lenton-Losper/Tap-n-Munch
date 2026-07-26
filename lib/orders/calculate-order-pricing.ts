@@ -9,6 +9,7 @@ type MenuItemPricingRow = {
   sizes: Array<{ name?: string; price_modifier?: number }>
   addons: Array<{ name?: string; price?: number }>
   tax_rate_id: string | null
+  status?: string | null
 }
 
 export type PricedOrderLineItem = Record<string, unknown> & {
@@ -20,7 +21,7 @@ export type PricedOrderLineItem = Record<string, unknown> & {
   taxRateId: string | null
   taxRatePercentage: number
   taxInclusive: boolean
-  priceSource: 'catalog' | 'client-trusted'
+  priceSource: 'catalog'
 }
 
 export type OrderPricingResult = {
@@ -28,8 +29,16 @@ export type OrderPricingResult = {
   subtotal: number
   tax: number
   total: number
-  /** Human-readable notices worth logging (unmatched menu items, unmatched size/addon names). */
+  /** Human-readable notices worth logging (unmatched size/addon names). */
   warnings: string[]
+}
+
+export class UnmatchedMenuItemError extends Error {
+  readonly statusCode = 400
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnmatchedMenuItemError'
+  }
 }
 
 function extractMenuItemId(item: Record<string, unknown>): string {
@@ -65,12 +74,6 @@ function extractAddonNames(item: Record<string, unknown>): string[] {
       return ''
     })
     .filter(Boolean)
-}
-
-function extractClientSubtotal(item: Record<string, unknown>): number {
-  const raw = item.subtotal ?? item.lineTotal ?? item.line_total
-  const value = Number(raw)
-  return Number.isFinite(value) ? value : 0
 }
 
 /**
@@ -126,42 +129,17 @@ function priceCatalogLine(
   }
 }
 
-/**
- * No matching menu_items row (missing id, deleted item, or a different restaurant's id) --
- * nothing authoritative to recompute from, so the client-submitted line amount is trusted as
- * the pre-tax subtotal, with only the restaurant's default tax rate applied on top/backed out.
- * This is logged distinctly by the caller from a client-total mismatch: it means "no catalog
- * item to validate against," not "the client lied about a real item's price."
- */
-function priceUntrustedLine(
-  item: Record<string, unknown>,
-  ratesById: Map<string, TaxRateOption>,
-  fallbackDefault: TaxRateOption | null,
-): PricedOrderLineItem {
-  const quantity = extractQuantity(item)
-  const clientSubtotal = extractClientSubtotal(item)
-  const rate = fallbackDefault
-  const applied = applyTaxToAmount(clientSubtotal, rate)
-
-  return {
-    ...item,
-    unitPrice: quantity > 0 ? round2(clientSubtotal / quantity) : 0,
-    quantity,
-    subtotal: applied.subtotal,
-    tax: applied.tax,
-    total: applied.total,
-    taxRateId: rate?.id ?? null,
-    taxRatePercentage: applied.taxRatePercentage,
-    taxInclusive: applied.taxInclusive,
-    priceSource: 'client-trusted',
-  }
+function isChargeableMenuStatus(status: string | null | undefined): boolean {
+  const s = String(status || 'available').toLowerCase()
+  // Schema default historically 'active'; UI uses 'available'. Reject OOS/hidden/inactive.
+  return s === 'available' || s === 'active'
 }
 
 /**
  * Authoritative order pricing: for each line item, prices from the restaurant's real
  * menu_items row (never the client) and resolves VAT (item's own tax_rate_id, else the
  * restaurant's default rate, else 0%), returning line-level and order-level subtotal/tax/total.
- * Never trust a client-supplied price/total -- this is what gets stored and charged.
+ * Unmatched or unavailable menu items are hard-rejected — never trust client amounts.
  */
 export async function calculateOrderPricing(
   supabase: SupabaseClient,
@@ -181,7 +159,7 @@ export async function calculateOrderPricing(
     menuItemIds.length > 0
       ? supabase
           .from('menu_items')
-          .select('id, base_price, sizes, addons, tax_rate_id')
+          .select('id, base_price, sizes, addons, tax_rate_id, status')
           .eq('restaurant_id', restaurantId)
           .in('id', menuItemIds)
       : Promise.resolve({ data: [] as MenuItemPricingRow[], error: null }),
@@ -200,15 +178,20 @@ export async function calculateOrderPricing(
 
   const pricedItems: PricedOrderLineItem[] = rawItems.map((item) => {
     const menuItemId = extractMenuItemId(item)
-    const menuItem = menuItemId ? menuItemsById.get(menuItemId) : undefined
+    if (!menuItemId) {
+      throw new UnmatchedMenuItemError('Each line item needs a valid menuItemId')
+    }
 
+    const menuItem = menuItemsById.get(menuItemId)
     if (!menuItem) {
-      if (menuItemId) {
-        warnings.push(`menu item ${menuItemId} not found in restaurant ${restaurantId}, falling back to client-submitted line amount`)
-      } else {
-        warnings.push('line item has no menuItemId, falling back to client-submitted line amount')
-      }
-      return priceUntrustedLine(item, ratesById, fallbackDefault)
+      throw new UnmatchedMenuItemError(
+        `Menu item ${menuItemId} was not found for this restaurant`,
+      )
+    }
+    if (!isChargeableMenuStatus(menuItem.status)) {
+      throw new UnmatchedMenuItemError(
+        `Menu item ${menuItemId} is not available for ordering`,
+      )
     }
 
     return priceCatalogLine(item, menuItem, ratesById, fallbackDefault, warnings)

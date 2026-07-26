@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getRedis } from '@/lib/redis'
+import { requireStagingPlatformAdmin } from '@/lib/api/require-staging-platform-admin'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireStagingPlatformAdmin(request)
+  if (denied) return denied
+
   try {
     await getRedis().set('test-key', 'FlashTap Redis working!')
     const value = await getRedis().get('test-key')
@@ -18,7 +22,7 @@ export async function GET() {
         success: false,
         error: String(err),
       },
-      { status: 500 }
+      { status: 500 },
     )
   }
 }

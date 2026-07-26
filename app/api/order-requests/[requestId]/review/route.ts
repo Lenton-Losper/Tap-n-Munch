@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
-import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
+import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,7 +49,15 @@ export async function PATCH(
     )
   }
 
-  const pricing = await calculateOrderPricing(supabase, request.restaurant_id, items)
+  let pricing
+  try {
+    pricing = await calculateOrderPricing(supabase, request.restaurant_id, items)
+  } catch (err) {
+    if (err instanceof UnmatchedMenuItemError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
 
   const { data: updated, error: updateError } = await supabase
     .from('order_requests')
