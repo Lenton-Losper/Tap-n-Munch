@@ -55,16 +55,20 @@ export async function PATCH(
   )
   if (isAuthError(auth)) return auth
 
-  const currentStatus = String(existingOrder.status || '')
+  // Expected current status for the conditional claim — derived from the row we just
+  // loaded (the same value isValidStaffStatusTransition validated against), not a
+  // hardcoded from-status. Covers pending/ready_for_terminal → accepted, accepted →
+  // preparing, etc., and Accept-vs-Cancel from any common non-terminal state.
+  const expectedCurrentStatus = String(existingOrder.status || '')
 
   if (status) {
     const nextStatus = String(status).trim()
     if (!STAFF_SETTABLE_STATUSES.has(nextStatus)) {
       return NextResponse.json({ error: `Invalid status: ${nextStatus}` }, { status: 400 })
     }
-    if (!isValidStaffStatusTransition(currentStatus, nextStatus)) {
+    if (!isValidStaffStatusTransition(expectedCurrentStatus, nextStatus)) {
       return NextResponse.json(
-        { error: `Invalid transition: ${currentStatus} → ${nextStatus}` },
+        { error: `Invalid transition: ${expectedCurrentStatus} → ${nextStatus}` },
         { status: 400 },
       )
     }
@@ -89,11 +93,21 @@ export async function PATCH(
     }
   }
 
-  const { data, error } = await supabase
+  // Atomic claim when changing kitchen workflow status (R-7 Accept-vs-Decline/Cancel).
+  // payment_status-only patches (e.g. Mark as Paid) do not use this status claim —
+  // that path is a separate concern (receipt issuance is already idempotent; terminal /
+  // webhook paid writes use their own guards).
+  let updateQuery = supabase
     .from('orders')
     .update(patch)
     .eq('id', orderId)
     .eq('restaurant_id', existingOrder.restaurant_id)
+
+  if (status) {
+    updateQuery = updateQuery.eq('status', expectedCurrentStatus)
+  }
+
+  const { data, error } = await updateQuery
     .select('id, payment_status, paid_at, status, is_closed, cancelled_at')
     .maybeSingle()
 
@@ -102,9 +116,16 @@ export async function PATCH(
   }
 
   if (!data) {
+    if (status) {
+      return NextResponse.json(
+        { error: 'Order status changed; refresh and try again' },
+        { status: 409 },
+      )
+    }
     return NextResponse.json({ error: 'Order not found or could not be updated' }, { status: 404 })
   }
 
+  // Side effects only after a successful claim / update.
   if (paymentStatus === 'paid') {
     await safeIssueReceiptForOrder(orderId, 'orders/status')
   }
