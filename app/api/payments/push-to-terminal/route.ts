@@ -86,6 +86,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
     }
 
+    // Atomic claim: two concurrent pushes for the same order must not both reach Finatic.
+    // Only the request whose conditional UPDATE actually matches a row (payment_status
+    // still equal to what we just read) proceeds; the loser gets a clean 409 before ever
+    // generating a merchantOrderNo or calling Finatic.
+    const previousPaymentStatus = String(order.payment_status || '')
+    const { data: claimedOrder, error: claimError } = await supabase
+      .from('orders')
+      .update({ payment_status: 'terminal_pending' })
+      .eq('id', normalizedOrderId)
+      .eq('payment_status', previousPaymentStatus)
+      .select('*')
+      .maybeSingle()
+
+    if (claimError) {
+      console.error('[PUSH-TO-TERMINAL] Claim update failed:', claimError)
+      return NextResponse.json({ error: claimError.message }, { status: 500 })
+    }
+    if (!claimedOrder) {
+      console.log('[PUSH-TO-TERMINAL] Returning 409 because:', 'Order already claimed by a concurrent push')
+      return NextResponse.json(
+        { error: 'This order is already being pushed to a terminal', code: 'ALREADY_CLAIMED' },
+        { status: 409 },
+      )
+    }
+
+    // Release the claim back to previousPaymentStatus on any failure path below, so a
+    // failed push doesn't permanently strand the order in 'terminal_pending' with no
+    // successful Finatic session and no clean way to retry.
+    const releaseClaim = async () => {
+      const { error: releaseError } = await supabase
+        .from('orders')
+        .update({ payment_status: previousPaymentStatus })
+        .eq('id', normalizedOrderId)
+        .eq('payment_status', 'terminal_pending')
+      if (releaseError) {
+        console.error('[PUSH-TO-TERMINAL] Failed to release claim:', releaseError)
+      }
+    }
+
     let merchantNo: string
     let storeNo: string
     let terminalSn: string | null
@@ -97,10 +136,12 @@ export async function POST(req: Request) {
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to load payment credentials'
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', message)
+      await releaseClaim()
       return NextResponse.json({ error: message }, { status: 400 })
     }
     if (!terminalSn) {
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'No terminal configured for this restaurant')
+      await releaseClaim()
       return NextResponse.json(
         {
           error: 'No terminal configured for this restaurant',
@@ -117,13 +158,14 @@ export async function POST(req: Request) {
     })
 
     if (!appId || !merchantNo || !storeNo) {
+      await releaseClaim()
       return NextResponse.json(
         { error: 'Missing PayCloud configuration (PAYCLOUD_APP_ID / merchant / store)' },
         { status: 500 }
       )
     }
 
-    const existingMo = String((order as { paycloud_merchant_order_no?: string | null }).paycloud_merchant_order_no || '').trim()
+    const existingMo = String(claimedOrder.paycloud_merchant_order_no || '').trim()
     const rand4 = Math.floor(Math.random() * 10000).toString().padStart(4, '0')
     const merchantOrderNo = existingMo
       ? `FT${Date.now()}${rand4}`.slice(0, 32)
@@ -135,6 +177,7 @@ export async function POST(req: Request) {
       .eq('id', normalizedOrderId)
     if (persistRes.error) {
       console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
+      await releaseClaim()
       return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
     }
 
@@ -194,8 +237,9 @@ export async function POST(req: Request) {
         console.log('[PUSH-TO-TERMINAL] Returning 400 because:', finaticReason)
         await supabase
           .from('orders')
-          .update({ terminal_status: 'failed' })
+          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
           .eq('id', normalizedOrderId)
+          .eq('payment_status', 'terminal_pending')
         return NextResponse.json(
           {
             success: false,
@@ -210,8 +254,9 @@ export async function POST(req: Request) {
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
       await supabase
         .from('orders')
-        .update({ terminal_status: 'failed' })
+        .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
         .eq('id', normalizedOrderId)
+        .eq('payment_status', 'terminal_pending')
       return NextResponse.json(
         { error: 'Finatic call failed', details: String(err) },
         { status: 500 }
