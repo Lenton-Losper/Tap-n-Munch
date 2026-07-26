@@ -77,49 +77,56 @@ async function main() {
   })
 
   // --- 1. RLS status via helper RPC (migration must be applied) ---
+  let rlsApplied = false
   const { data: rlsStatus, error: rlsErr } = await admin.rpc('list_tenant_isolation_rls_status')
   log('rls_status', { rlsErr: rlsErr?.message || null, rlsStatus })
-  assert(!rlsErr, `list_tenant_isolation_rls_status failed: ${rlsErr?.message}`)
-  const byName = Object.fromEntries((rlsStatus || []).map((r: any) => [r.table_name, r]))
-  for (const table of ['tabs', 'restaurants', 'users', 'customer_sessions']) {
-    assert(byName[table]?.rls_enabled === true, `${table} RLS not enabled`)
-    assert(byName[table]?.rls_forced === true, `${table} RLS not FORCED`)
+  if (rlsErr) {
+    console.log(
+      'RLS_SQL_PASTE_REQUIRED: paste scripts/sql/apply-20260726200000-tenant-isolation-rls.sql in staging SQL editor (DDL secrets empty in CI).',
+    )
+  } else {
+    const byName = Object.fromEntries((rlsStatus || []).map((r: any) => [r.table_name, r]))
+    for (const table of ['tabs', 'restaurants', 'users', 'customer_sessions']) {
+      assert(byName[table]?.rls_enabled === true, `${table} RLS not enabled`)
+      assert(byName[table]?.rls_forced === true, `${table} RLS not FORCED`)
+    }
+    rlsApplied = true
+    console.log('RLS ENABLE+FORCE OK')
+
+    // --- 2. Anon column / table denials (only meaningful after RLS migration) ---
+    const { data: restRow, error: restErr } = await anon
+      .from('restaurants')
+      .select('id, name, finatic_merchant_no')
+      .limit(1)
+      .maybeSingle()
+    log('anon_restaurants_finatic', { restErr: restErr?.message || null, restRow })
+    assert(restErr, 'anon must fail selecting finatic_merchant_no')
+
+    const { data: publicRest, error: publicRestErr } = await anon
+      .from('restaurants')
+      .select('id, name')
+      .limit(1)
+      .maybeSingle()
+    log('anon_restaurants_public', { publicRestErr: publicRestErr?.message || null, publicRest })
+    assert(!publicRestErr, `anon public restaurant select failed: ${publicRestErr?.message}`)
+
+    const { data: tabPinRow, error: tabPinErr } = await anon
+      .from('tabs')
+      .select('id, tab_pin')
+      .limit(1)
+      .maybeSingle()
+    log('anon_tabs_pin', { tabPinErr: tabPinErr?.message || null, tabPinRow })
+    assert(tabPinErr, 'anon must fail selecting tab_pin')
+
+    const { data: sessions, error: sessErr } = await anon
+      .from('customer_sessions')
+      .select('token')
+      .limit(1)
+    log('anon_customer_sessions', { sessErr: sessErr?.message || null, count: sessions?.length })
+    assert(sessErr || !sessions?.length, 'anon must not read customer_sessions')
+
+    console.log('Anon PostgREST denial OK')
   }
-  console.log('RLS ENABLE+FORCE OK')
-
-  // --- 2. Anon column / table denials ---
-  const { data: restRow, error: restErr } = await anon
-    .from('restaurants')
-    .select('id, name, finatic_merchant_no')
-    .limit(1)
-    .maybeSingle()
-  log('anon_restaurants_finatic', { restErr: restErr?.message || null, restRow })
-  assert(restErr, 'anon must fail selecting finatic_merchant_no')
-
-  const { data: publicRest, error: publicRestErr } = await anon
-    .from('restaurants')
-    .select('id, name')
-    .limit(1)
-    .maybeSingle()
-  log('anon_restaurants_public', { publicRestErr: publicRestErr?.message || null, publicRest })
-  assert(!publicRestErr, `anon public restaurant select failed: ${publicRestErr?.message}`)
-
-  const { data: tabPinRow, error: tabPinErr } = await anon
-    .from('tabs')
-    .select('id, tab_pin')
-    .limit(1)
-    .maybeSingle()
-  log('anon_tabs_pin', { tabPinErr: tabPinErr?.message || null, tabPinRow })
-  assert(tabPinErr, 'anon must fail selecting tab_pin')
-
-  const { data: sessions, error: sessErr } = await anon
-    .from('customer_sessions')
-    .select('token')
-    .limit(1)
-  log('anon_customer_sessions', { sessErr: sessErr?.message || null, count: sessions?.length })
-  assert(sessErr || !sessions?.length, 'anon must not read customer_sessions')
-
-  console.log('Anon PostgREST denial OK')
 
   // Fixture restaurant/table
   const { data: table } = await admin
@@ -322,6 +329,12 @@ async function main() {
     assert(readyMismatch.status === 403, 'ready-to-pay tab mismatch must 403')
 
     console.log('Session token binding OK')
+    console.log('PROBE_TENANT_ISOLATION_API_OK')
+    if (!rlsApplied) {
+      throw new Error(
+        'API hardening OK, but RLS migration not applied. Paste scripts/sql/apply-20260726200000-tenant-isolation-rls.sql then re-run [probe-tenant-isolation].',
+      )
+    }
     console.log('PROBE_TENANT_ISOLATION_OK')
   } finally {
     await admin.from('orders').delete().in('id', [orderA.id, orderB.id])

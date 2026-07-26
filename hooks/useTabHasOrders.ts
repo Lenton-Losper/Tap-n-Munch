@@ -15,15 +15,13 @@ export function useTabHasOrders(
 ): boolean {
   const rid = String(restaurantId || '').trim()
   const tid = String(tabId || '').trim()
+  const sessionId =
+    typeof window !== 'undefined' ? String(getCurrentSession() || '').trim() : ''
+  const enabled = Boolean(rid && tid && sessionId)
   const [hasOrders, setHasOrders] = useState(false)
 
   useEffect(() => {
-    const sessionId = String(getCurrentSession() || '').trim()
-    const enabled = Boolean(rid && tid && sessionId)
-    if (!enabled) {
-      setHasOrders(false)
-      return
-    }
+    if (!enabled) return
 
     let cancelled = false
 
@@ -54,7 +52,7 @@ export function useTabHasOrders(
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [rid, tid])
+  }, [enabled, rid, tid, sessionId])
 
-  return hasOrders
+  return enabled ? hasOrders : false
 }

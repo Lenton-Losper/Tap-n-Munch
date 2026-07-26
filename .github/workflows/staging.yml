@@ -96,6 +96,7 @@ jobs:
     # in the staging SQL editor, then push with [probe-tenant-isolation].
     if: contains(github.event.head_commit.message, '[apply-tenant-isolation-rls]')
     runs-on: ubuntu-latest
+    continue-on-error: true
     name: Apply tenant isolation RLS (staging)
     steps:
       - uses: actions/checkout@v4
