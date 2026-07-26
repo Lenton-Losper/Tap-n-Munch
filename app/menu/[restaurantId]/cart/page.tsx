@@ -374,7 +374,7 @@ export default function CartPage() {
             ? `K-${String(data.kioskOrderNumber).padStart(3, '0')}`
             : undefined)
         router.replace(
-          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel)
+          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel, orderId)
         )
       } else {
         router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)

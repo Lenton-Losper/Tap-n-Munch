@@ -6,6 +6,7 @@ import {
   isValidStaffStatusTransition,
   STAFF_SETTABLE_STATUSES,
 } from '@/lib/orders/status-transitions'
+import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
 
 export const dynamic = 'force-dynamic'
 
@@ -102,6 +103,10 @@ export async function PATCH(
 
   if (!data) {
     return NextResponse.json({ error: 'Order not found or could not be updated' }, { status: 404 })
+  }
+
+  if (paymentStatus === 'paid') {
+    await safeIssueReceiptForOrder(orderId, 'orders/status')
   }
 
   return NextResponse.json({ success: true, order: data })

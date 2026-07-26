@@ -1,7 +1,11 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, Download, Mail } from 'lucide-react'
+import { getCurrentSession } from '@/lib/session'
+import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function KioskSuccessPage() {
   const params = useParams()
@@ -9,10 +13,16 @@ export default function KioskSuccessPage() {
   const router = useRouter()
   const restaurantId = params.restaurantId as string
   const tableParam = searchParams.get('table') || '99'
+  const tableNumber = parseInt(tableParam, 10)
   const customerName = searchParams.get('name') || 'Guest'
   const orderNumber = searchParams.get('orderNumber') || ''
+  const orderId = searchParams.get('orderId') || ''
 
   const [countdown, setCountdown] = useState(12)
+  const [isPaid, setIsPaid] = useState(false)
+  const [emailValue, setEmailValue] = useState('')
+  const [emailStatus, setEmailStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [emailError, setEmailError] = useState('')
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -28,18 +38,128 @@ export default function KioskSuccessPage() {
     return () => clearInterval(interval)
   }, [restaurantId, tableParam, router])
 
+  useEffect(() => {
+    if (!orderId || isPaid) return
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const row = await fetchGuestOrderById(orderId, {
+          tableNumber: Number.isFinite(tableNumber) ? tableNumber : undefined,
+          sessionId: getCurrentSession() || undefined,
+        })
+        if (cancelled || !row) return
+        if (String(row.payment_status || '').toLowerCase() === 'paid') {
+          setIsPaid(true)
+        }
+      } catch {
+        // Best-effort polling; ignore transient failures and retry next tick.
+      }
+    }
+
+    void poll()
+    const interval = setInterval(() => void poll(), GUEST_ORDER_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [orderId, isPaid, tableNumber])
+
+  const receiptQuery = () => {
+    const qs = new URLSearchParams()
+    if (Number.isFinite(tableNumber)) qs.set('table_number', String(tableNumber))
+    const sessionId = getCurrentSession()
+    if (sessionId) qs.set('session_id', sessionId)
+    return qs.toString()
+  }
+
+  const handleDownload = () => {
+    if (!orderId) return
+    window.open(`/api/guest/orders/${encodeURIComponent(orderId)}/receipt?${receiptQuery()}`, '_blank')
+  }
+
+  const handleEmailReceipt = async () => {
+    if (!orderId || !EMAIL_RE.test(emailValue.trim())) {
+      setEmailStatus('error')
+      setEmailError('Enter a valid email address')
+      return
+    }
+    setEmailStatus('sending')
+    setEmailError('')
+    try {
+      const response = await fetch(
+        `/api/guest/orders/${encodeURIComponent(orderId)}/receipt/email?${receiptQuery()}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailValue.trim() }),
+        },
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to send receipt')
+      setEmailStatus('sent')
+    } catch (err) {
+      setEmailStatus('error')
+      setEmailError(err instanceof Error ? err.message : 'Failed to send receipt')
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-white px-6">
       <div className="flex flex-col items-center gap-6 text-center">
         <CheckCircle2 className="w-24 h-24 text-green-500" />
-        <h1 className="text-3xl font-bold text-gray-900">Order request sent!</h1>
+        <h1 className="text-3xl font-bold text-gray-900">
+          {isPaid ? 'Order confirmed!' : 'Order request sent!'}
+        </h1>
         {orderNumber && (
           <div className="text-6xl font-bold text-gray-900">{orderNumber}</div>
         )}
         <p className="text-xl text-gray-600">
           Thank you, <span className="font-semibold">{customerName}</span>.<br />
-          Waiting for the restaurant to confirm your order.
+          {isPaid ? 'Your payment was received.' : 'Waiting for the restaurant to confirm your order.'}
         </p>
+
+        {isPaid && orderId && (
+          <div className="w-full max-w-sm flex flex-col gap-3 items-center border-t border-gray-100 pt-6">
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="flex items-center gap-2 px-5 py-3 rounded-lg bg-gray-900 text-white font-medium hover:bg-gray-800"
+            >
+              <Download className="w-4 h-4" />
+              Download Receipt
+            </button>
+
+            <div className="flex w-full gap-2">
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={emailValue}
+                onChange={(e) => {
+                  setEmailValue(e.target.value)
+                  if (emailStatus !== 'idle') setEmailStatus('idle')
+                }}
+                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => void handleEmailReceipt()}
+                disabled={emailStatus === 'sending'}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 font-medium text-sm hover:bg-gray-50 disabled:opacity-50"
+              >
+                <Mail className="w-4 h-4" />
+                {emailStatus === 'sending' ? 'Sending...' : 'Email'}
+              </button>
+            </div>
+            {emailStatus === 'sent' && (
+              <p className="text-sm text-green-600">Receipt sent to {emailValue.trim()}</p>
+            )}
+            {emailStatus === 'error' && emailError && (
+              <p className="text-sm text-red-600">{emailError}</p>
+            )}
+          </div>
+        )}
+
         <p className="text-gray-400 text-sm">
           Returning to start in {countdown} second{countdown !== 1 ? 's' : ''}...
         </p>
