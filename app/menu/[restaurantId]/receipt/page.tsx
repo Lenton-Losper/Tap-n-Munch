@@ -254,7 +254,7 @@ export default function ReceiptPage() {
           persistTabSession(tab.id, tableNum)
         }
 
-        const rows = await fetchOrdersForTab(storedTabId, restaurantId)
+        const rows = await fetchOrdersForTab(storedTabId, restaurantId, getCurrentSession())
         if (cancelled) return
 
         const ordersList = (rows || [])

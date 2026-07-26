@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Copy, Plus } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { supabase } from '@/lib/supabase/client'
-import { getRestaurant } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -177,9 +176,14 @@ export function SettingsPaymentTab() {
     }
     try {
       setLoadingAccount(true)
-      const data = await getRestaurant(restaurantId)
-      setMerchantNo(String((data as any)?.finatic_merchant_no || ''))
-      setStoreNo(String((data as any)?.finatic_store_no || ''))
+      // Finatic columns are not granted to anon; staff JWT reads them via RLS.
+      const { data: finaticRow } = await supabase
+        .from('restaurants')
+        .select('finatic_merchant_no, finatic_store_no')
+        .eq('id', restaurantId)
+        .maybeSingle()
+      setMerchantNo(String(finaticRow?.finatic_merchant_no || ''))
+      setStoreNo(String(finaticRow?.finatic_store_no || ''))
       const token = await getSettingsAccessToken()
       const res = await fetch(`/api/admin/restaurants/${restaurantId}/settings`, {
         headers: { Authorization: `Bearer ${token}` },

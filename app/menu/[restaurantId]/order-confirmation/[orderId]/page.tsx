@@ -106,6 +106,7 @@ export default function OrderConfirmationPage() {
       try {
         setLoading(true)
         const row = await fetchGuestOrderById(orderId, {
+          restaurantId,
           tableNumber: tableNumber > 0 ? tableNumber : undefined,
           sessionId: getCurrentSession() || undefined,
         })
@@ -142,6 +143,7 @@ export default function OrderConfirmationPage() {
 
     const pollPaymentStatus = async () => {
       const row = await fetchGuestOrderById(orderId, {
+        restaurantId,
         tableNumber: tableNumber > 0 ? tableNumber : order.table_number,
         sessionId: getCurrentSession() || undefined,
       })
@@ -160,7 +162,7 @@ export default function OrderConfirmationPage() {
       window.clearInterval(interval)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderId + payment_status gate the poll lifecycle
-  }, [orderId, order?.payment_status, tableNumber])
+  }, [orderId, order?.payment_status, tableNumber, restaurantId])
 
   if (loading) {
     return (

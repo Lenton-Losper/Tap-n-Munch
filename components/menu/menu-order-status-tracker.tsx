@@ -221,6 +221,7 @@ export function MenuOrderStatusTracker({
 
     const fetchLastOrder = async () => {
       const data = await fetchGuestOrderById(orderId, {
+        restaurantId,
         tableNumber,
         sessionId: sessionId || getCurrentSession() || undefined,
       })
@@ -266,6 +267,7 @@ export function MenuOrderStatusTracker({
 
     const pollOrder = async () => {
       const updated = await fetchGuestOrderById(orderId, {
+        restaurantId,
         tableNumber,
         sessionId: sessionId || getCurrentSession() || undefined,
       })
@@ -289,7 +291,7 @@ export function MenuOrderStatusTracker({
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [baseOrder?.id, tableNumber, sessionId])
+  }, [baseOrder?.id, tableNumber, sessionId, restaurantId])
 
   if (loading && !lastOrderLoaded) return null
   if (error) return null

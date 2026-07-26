@@ -15,10 +15,20 @@ export async function GET(request: Request, { params }: RouteParams) {
     }
 
     const { searchParams } = new URL(request.url)
+    const restaurantId =
+      searchParams.get('restaurantId')?.trim() || searchParams.get('restaurant_id')?.trim() || ''
     const tableNumber = parseOptionalInt(searchParams.get('table_number'))
     const sessionId = searchParams.get('session_id')
 
-    const { order, denied } = await fetchGuestOrderById(trimmedId, { tableNumber, sessionId })
+    if (!restaurantId) {
+      return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+    }
+
+    const { order, denied } = await fetchGuestOrderById(trimmedId, {
+      restaurantId,
+      tableNumber,
+      sessionId,
+    })
 
     if (!order) {
       return NextResponse.json(

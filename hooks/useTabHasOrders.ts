@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { getCurrentSession } from '@/lib/session'
 
 /**
  * True when the given tab has at least one line-item order (excludes settlement rows).
  * Uses GET /api/guest/orders/by-session with polling (Stage 2 RLS-safe).
+ * Requires the guest session_id — tab UUID alone is never enough.
  */
 export function useTabHasOrders(
   restaurantId: string | null | undefined,
@@ -13,11 +15,15 @@ export function useTabHasOrders(
 ): boolean {
   const rid = String(restaurantId || '').trim()
   const tid = String(tabId || '').trim()
-  const enabled = Boolean(rid && tid)
   const [hasOrders, setHasOrders] = useState(false)
 
   useEffect(() => {
-    if (!enabled) return
+    const sessionId = String(getCurrentSession() || '').trim()
+    const enabled = Boolean(rid && tid && sessionId)
+    if (!enabled) {
+      setHasOrders(false)
+      return
+    }
 
     let cancelled = false
 
@@ -25,6 +31,7 @@ export function useTabHasOrders(
       try {
         const { count } = await fetchGuestOrdersBySession({
           restaurantId: rid,
+          sessionId,
           tabId: tid,
           countOnly: true,
         })
@@ -47,7 +54,7 @@ export function useTabHasOrders(
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [enabled, rid, tid])
+  }, [rid, tid])
 
-  return enabled ? hasOrders : false
+  return hasOrders
 }

@@ -23,13 +23,20 @@ export async function GET(
   const supabase = createServerSupabaseClient()
 
   const { searchParams } = new URL(req.url)
+  const restaurantId =
+    searchParams.get('restaurantId')?.trim() || searchParams.get('restaurant_id')?.trim() || ''
   const tableNumber = parseOptionalInt(searchParams.get('table_number'))
   const sessionId = searchParams.get('session_id')
+
+  if (!restaurantId) {
+    return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+  }
 
   const { data: order, error } = await supabase
     .from('orders')
     .select('id, restaurant_id, table_number, session_id, is_closed, status, payment_status')
     .eq('id', orderId)
+    .eq('restaurant_id', restaurantId)
     .maybeSingle()
 
   if (error) {
@@ -40,7 +47,7 @@ export async function GET(
   }
 
   const guestOrder = { ...order, id: String(order.id) } as GuestOrderRow
-  if (!guestCanAccessOrder(guestOrder, { tableNumber, sessionId })) {
+  if (!guestCanAccessOrder(guestOrder, { restaurantId, tableNumber, sessionId })) {
     return NextResponse.json({ error: 'Order not accessible' }, { status: 404 })
   }
 

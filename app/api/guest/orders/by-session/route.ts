@@ -15,9 +15,11 @@ export async function GET(request: Request) {
     if (!restaurantId) {
       return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
     }
-    if (!sessionId && !tabId) {
-      return NextResponse.json({ error: 'session_id or tabId is required' }, { status: 400 })
+    if (!sessionId) {
+      return NextResponse.json({ error: 'session_id is required' }, { status: 400 })
     }
+    // tabId is optional refinement only — never sufficient alone for a dump.
+    void tabId
 
     const { orders, count } = await fetchGuestOrdersBySession({
       restaurantId,

@@ -5,6 +5,14 @@ import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * Rejoin / no-PIN join by tab UUID.
+ *
+ * Hardened against join-by-UUID alone:
+ * - tableNumber is required and must match the tab
+ * - if pin_required and sessionId is not already a member → require matching PIN
+ * - already-a-member (rejoin) allowed without PIN after table match
+ */
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ tabId: string }> }
@@ -22,10 +30,16 @@ export async function POST(
     const sessionId = String(body.sessionId ?? body.session_id ?? '').trim()
     const displayName = String(body.displayName ?? body.display_name ?? '').trim()
     const tableNumberRaw = body.tableNumber ?? body.table_number
+    const pin = String(body.pin ?? '').trim()
 
     const restaurantId = String(restaurantIdRaw || '').trim()
     if (!restaurantId) {
       return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
+    }
+
+    const tableNumber = Number(tableNumberRaw)
+    if (!Number.isFinite(tableNumber) || tableNumber <= 0) {
+      return NextResponse.json({ error: 'tableNumber is required' }, { status: 400 })
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantId)
@@ -40,6 +54,10 @@ export async function POST(
 
     if (tabError || !tabData) {
       return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
+    }
+
+    if (Number(tabData.table_number) !== tableNumber) {
+      return NextResponse.json({ error: 'Table mismatch for this tab' }, { status: 403 })
     }
 
     if (String(tabData.status || '') !== 'open') {
@@ -60,39 +78,50 @@ export async function POST(
       return NextResponse.json({ error: 'Tab is missing table_id' }, { status: 400 })
     }
 
-    if (sessionId) {
-      const members = Array.isArray(tabData.members) ? [...tabData.members] : []
-      if (!members.some((m: { session_id?: string }) => String(m?.session_id) === sessionId)) {
-        const nextN = members.length + 1
-        const member = {
-          session_id: sessionId,
-          joined_at: new Date().toISOString(),
-          display_name: displayName || `Person ${nextN}`,
-        }
-        const { error: updateError } = await supabase
-          .from('tabs')
-          .update({ members: [...members, member] })
-          .eq('id', normalizedTabId)
-        if (updateError) {
-          return NextResponse.json({ error: updateError.message }, { status: 500 })
-        }
+    const members = Array.isArray(tabData.members) ? [...tabData.members] : []
+    const alreadyMember =
+      Boolean(sessionId) &&
+      members.some((m: { session_id?: string }) => String(m?.session_id) === sessionId)
+
+    const pinRequired = tabData.pin_required !== false && Boolean(tabData.tab_pin)
+    if (pinRequired && !alreadyMember) {
+      if (!pin) {
+        return NextResponse.json({ error: 'PIN required to join this tab' }, { status: 403 })
+      }
+      if (String(tabData.tab_pin ?? '') !== pin) {
+        return NextResponse.json({ error: 'Incorrect PIN' }, { status: 403 })
       }
     }
 
-    console.log('[JOIN-TOKEN-1] calling issueTokenForOpenTab', { tabId: normalizedTabId, tableId, restaurantUuid })
+    if (sessionId && !alreadyMember) {
+      const nextN = members.length + 1
+      const member = {
+        session_id: sessionId,
+        joined_at: new Date().toISOString(),
+        display_name: displayName || `Person ${nextN}`,
+      }
+      const { error: updateError } = await supabase
+        .from('tabs')
+        .update({ members: [...members, member] })
+        .eq('id', normalizedTabId)
+        .eq('restaurant_id', restaurantUuid)
+      if (updateError) {
+        return NextResponse.json({ error: updateError.message }, { status: 500 })
+      }
+    }
+
     const sessionToken = await issueTokenForOpenTab(
       supabase,
       normalizedTabId,
       tableId,
       restaurantUuid
     )
-    console.log('[JOIN-TOKEN-2] sessionToken result', sessionToken, typeof sessionToken)
 
     return NextResponse.json({
       success: true,
       tabId: normalizedTabId,
       tableId,
-      tableNumber: tabData.table_number ?? tableNumberRaw ?? null,
+      tableNumber: tabData.table_number ?? tableNumber,
       sessionToken,
     })
   } catch (err) {

@@ -426,7 +426,9 @@ export function MenuLandingPageV2Content({
       const cutoffIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
       let tabQuery = supabase
         .from('tabs')
-        .select('*')
+        .select(
+          'id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, updated_at, firebase_id',
+        )
         .eq('restaurant_id', restaurantUuid)
         .in('status', [...ACTIVE_TAB_STATUSES])
         .gte('created_at', cutoffIso)

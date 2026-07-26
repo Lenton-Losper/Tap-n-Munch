@@ -7,13 +7,24 @@ export function parseOptionalInt(value: string | null | undefined): number | nul
 }
 
 /**
- * Open orders require table_number or session_id binding.
- * Closed/paid/completed receipt links use UUID alone (shareable link pattern).
+ * Open orders require restaurant binding PLUS table_number or session_id.
+ * Closed/paid/completed receipt links still use UUID + restaurant_id (shareable
+ * link pattern scoped to the restaurant the guest is browsing).
  */
 export function guestCanAccessOrder(
   order: GuestOrderRow,
-  params: { tableNumber?: number | null; sessionId?: string | null },
+  params: {
+    tableNumber?: number | null
+    sessionId?: string | null
+    restaurantId?: string | null
+  },
 ): boolean {
+  const orderRestaurant = String(order.restaurant_id || '').trim()
+  const wantRestaurant = String(params.restaurantId || '').trim()
+  if (!wantRestaurant || !orderRestaurant || wantRestaurant !== orderRestaurant) {
+    return false
+  }
+
   if (order.is_closed === true) {
     return true
   }

@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
-import { requireSessionToken } from '@/lib/session-guard'
+import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 
@@ -81,6 +81,11 @@ export async function POST(req: Request) {
       const guard = await requireSessionToken(req)
       console.log(`[ORDERS TIMING] token validation: ${(performance.now() - tToken).toFixed(0)}ms`)
       if (guard.error) return guard.error
+      const mismatch = assertSessionMatchesResource(guard, {
+        restaurantId: restaurantUuid,
+        tabId: normalizedTabId,
+      })
+      if (mismatch) return mismatch
     }
 
     // Tab orders: card only, pending until tab is settled at the table
@@ -576,6 +581,11 @@ export async function GET(req: Request) {
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantIdRaw)
+    const mismatch = assertSessionMatchesResource(guard, {
+      restaurantId: restaurantUuid,
+      tabId,
+    })
+    if (mismatch) return mismatch
 
     const { data, error } = await supabase
       .from('orders')

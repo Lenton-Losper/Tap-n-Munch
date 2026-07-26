@@ -45,6 +45,7 @@ export default function KioskSuccessPage() {
     const poll = async () => {
       try {
         const row = await fetchGuestOrderById(orderId, {
+          restaurantId,
           tableNumber: Number.isFinite(tableNumber) ? tableNumber : undefined,
           sessionId: getCurrentSession() || undefined,
         })
@@ -63,10 +64,10 @@ export default function KioskSuccessPage() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [orderId, isPaid, tableNumber])
+  }, [orderId, isPaid, tableNumber, restaurantId])
 
   const receiptQuery = () => {
-    const qs = new URLSearchParams()
+    const qs = new URLSearchParams({ restaurantId })
     if (Number.isFinite(tableNumber)) qs.set('table_number', String(tableNumber))
     const sessionId = getCurrentSession()
     if (sessionId) qs.set('session_id', sessionId)
