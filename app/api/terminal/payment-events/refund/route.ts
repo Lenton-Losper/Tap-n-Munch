@@ -45,6 +45,35 @@ function isGatewayResult(value: string): value is GatewayResult {
   return value === 'success' || value === 'failure'
 }
 
+function parseRpcError(message: string): {
+  status: number
+  body: Record<string, unknown>
+} | null {
+  if (message.includes('SALE_NOT_FOUND')) {
+    return {
+      status: 400,
+      body: { error: 'Original SALE not found for origin_business_order_no' },
+    }
+  }
+  if (message.includes('AMOUNT_EXCEEDS_REMAINING')) {
+    const parts = message.split('AMOUNT_EXCEEDS_REMAINING:')
+    const nums = (parts[1] ?? '').split(':').map((p) => Number(p))
+    return {
+      status: 400,
+      body: {
+        error: 'amount exceeds remaining refundable balance',
+        sale_amount: Number.isFinite(nums[0]) ? nums[0] : null,
+        prior_refunded: Number.isFinite(nums[1]) ? nums[1] : null,
+        remaining: Number.isFinite(nums[2]) ? nums[2] : null,
+      },
+    }
+  }
+  if (message.includes('INVALID_AMOUNT') || message.includes('INVALID_EVENT_TYPE')) {
+    return { status: 400, body: { error: 'Invalid refund payload' } }
+  }
+  return null
+}
+
 export async function POST(req: Request) {
   try {
     const terminal = await requireTerminalAuth(req)
@@ -114,7 +143,8 @@ export async function POST(req: Request) {
     if (!isReasonCode(reasonCode)) {
       return NextResponse.json(
         {
-          error: 'reason_code must be one of: wrong_item, quality_issue, duplicate_charge, customer_request, other',
+          error:
+            'reason_code must be one of: wrong_item, quality_issue, duplicate_charge, customer_request, other',
         },
         { status: 400 },
       )
@@ -146,8 +176,6 @@ export async function POST(req: Request) {
         ? String(body.gateway_result_message).trim()
         : null
 
-    // Idempotent retry: if this refund was already recorded, return it without consuming
-    // another authorization token (or re-running balance/insert).
     const { data: existingRefund, error: existingError } = await supabase
       .from('payment_events')
       .select('*')
@@ -184,13 +212,9 @@ export async function POST(req: Request) {
       )
     }
 
-    // --- Refundable balance check ---
-    // 1) Original SALE for this origin_business_order_no
-    // 2) Prior refund_succeeded rows in THIS SALE's lineage (same origin_business_order_no)
-    // 3) Reject if prior_sum + new_amount > sale.amount
     const { data: originalSale, error: saleError } = await supabase
       .from('payment_events')
-      .select('id, amount, currency, order_ids, business_order_no')
+      .select('id, currency')
       .eq('restaurant_id', terminal.restaurantId)
       .eq('event_type', 'sale')
       .eq('business_order_no', originBusinessOrderNo)
@@ -206,50 +230,6 @@ export async function POST(req: Request) {
       )
     }
 
-    const { data: priorRefunds, error: priorError } = await supabase
-      .from('payment_events')
-      .select('id, amount, order_ids')
-      .eq('restaurant_id', terminal.restaurantId)
-      .eq('event_type', 'refund_succeeded')
-      .eq('origin_business_order_no', originBusinessOrderNo)
-
-    if (priorError) {
-      return NextResponse.json(
-        { error: 'Failed to compute prior refund total' },
-        { status: 500 },
-      )
-    }
-
-    const priorRefunded = (priorRefunds ?? []).reduce(
-      (sum, row) => sum + Number(row.amount),
-      0,
-    )
-    const saleAmount = Number(originalSale.amount)
-    const refundableRemaining = saleAmount - priorRefunded
-
-    if (priorRefunded + amount > saleAmount) {
-      return NextResponse.json(
-        {
-          error: 'amount exceeds remaining refundable balance',
-          sale_amount: saleAmount,
-          prior_refunded: priorRefunded,
-          remaining: refundableRemaining,
-        },
-        { status: 400 },
-      )
-    }
-
-    // This endpoint is called ONCE per refund attempt sequence, after a FINAL outcome is known --
-    // not once per individual WiseCashier intent call. If the card is wrong (K018) and the
-    // terminal retries locally with the same token within its TTL window, those retries must NOT
-    // call this endpoint -- only the final success or final give-up/failure should. The token is
-    // consumed here exactly once, matching that one final call.
-    // By this point, order_ids existence/ownership, the original SALE lookup, and the refundable
-    // balance check have all already passed, so token consumption only happens for requests that
-    // are actually going to succeed in recording an event (barring only a possible late DB error
-    // on the insert itself, which is an acceptable, rare edge case rather than a routine
-    // rejection path). Body-shape validation and the idempotency check above also skipped
-    // consume for malformed or already-recorded retries.
     const consume = await consumeAuthorizationToken(supabase, {
       tokenId,
       expectedUserId: userId,
@@ -264,37 +244,36 @@ export async function POST(req: Request) {
       )
     }
 
-    // Outcome-only: attempt and result are known together after the gateway responds.
-    // No separate refund_attempted row — authorization is audited via token consumption.
     const eventType =
       gatewayResult === 'success' ? ('refund_succeeded' as const) : ('refund_failed' as const)
 
-    const insertPayload = {
-      restaurant_id: terminal.restaurantId,
-      order_ids: orderIds,
-      event_type: eventType,
-      business_order_no: businessOrderNo,
-      origin_business_order_no: originBusinessOrderNo,
-      transaction_id: transactionId,
-      terminal_id: terminal.terminalId,
-      amount,
-      currency: String(originalSale.currency || 'NAD'),
-      idempotency_key: businessOrderNo,
-      initiated_by: userId,
-      reason_code: reasonCode,
-      reason_note: reasonNote,
-      gateway_result_code: gatewayResultCode,
-      gateway_result_message: gatewayResultMessage,
-    }
+    const { data: created, error: rpcError } = await supabase.rpc(
+      'record_terminal_refund_event',
+      {
+        p_restaurant_id: terminal.restaurantId,
+        p_order_ids: orderIds,
+        p_event_type: eventType,
+        p_business_order_no: businessOrderNo,
+        p_origin_business_order_no: originBusinessOrderNo,
+        p_transaction_id: transactionId,
+        p_terminal_id: terminal.terminalId,
+        p_amount: amount,
+        p_currency: String(originalSale.currency || 'NAD'),
+        p_idempotency_key: businessOrderNo,
+        p_initiated_by: userId,
+        p_reason_code: reasonCode,
+        p_reason_note: reasonNote,
+        p_gateway_result_code: gatewayResultCode,
+        p_gateway_result_message: gatewayResultMessage,
+      },
+    )
 
-    const { data: created, error: insertError } = await supabase
-      .from('payment_events')
-      .insert(insertPayload)
-      .select('*')
-      .single()
-
-    if (insertError || !created) {
-      console.error('[terminal/payment-events/refund] insert failed:', insertError)
+    if (rpcError || !created) {
+      const parsed = parseRpcError(String(rpcError?.message ?? ''))
+      if (parsed) {
+        return NextResponse.json(parsed.body, { status: parsed.status })
+      }
+      console.error('[terminal/payment-events/refund] rpc failed:', rpcError)
       return NextResponse.json({ error: 'Failed to record refund event' }, { status: 500 })
     }
 

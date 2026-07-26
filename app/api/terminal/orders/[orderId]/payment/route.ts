@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
+import {
+  amountsMatch,
+  CLAIMABLE_PAYMENT_STATUSES,
+} from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,7 +45,9 @@ export async function POST(
 
     const { data: order, error: orderError } = await supabase
       .from('orders')
-      .select('id, tab_id, restaurant_id, status, paycloud_merchant_order_no')
+      .select(
+        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no',
+      )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
       .single()
@@ -53,6 +59,19 @@ export async function POST(
     let canClose = false
 
     if (status === 'success') {
+      const expectedAmount = Number(order.total)
+      if (!amountsMatch(amount, expectedAmount)) {
+        return NextResponse.json(
+          {
+            error: 'amount does not match order total',
+            code: 'AMOUNT_MISMATCH',
+            expected: expectedAmount,
+            received: Number.isFinite(amount) ? amount : null,
+          },
+          { status: 400 },
+        )
+      }
+
       const paidAt = new Date().toISOString()
       // Voucher is distinct from Finatic merchant_order_no (paycloud_merchant_order_no).
       // payment_reference kept for backwards compatibility with older readers.
@@ -68,14 +87,34 @@ export async function POST(
         completed_at: paidAt,
       }
 
-      const { error: updateError } = await supabase
+      // Atomic claim: only one concurrent success can flip unpaid/pending → paid.
+      const { data: claimed, error: updateError } = await supabase
         .from('orders')
         .update(updatePayload)
         .eq('id', orderId)
         .eq('restaurant_id', terminal.restaurantId)
+        .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+        .select('id')
+        .maybeSingle()
 
       if (updateError) {
         return NextResponse.json({ error: 'Failed to update order' }, { status: 500 })
+      }
+
+      if (!claimed) {
+        const alreadyPaid =
+          String(order.payment_status || '')
+            .trim()
+            .toLowerCase() === 'paid'
+        return NextResponse.json(
+          {
+            error: alreadyPaid
+              ? 'Order is already paid'
+              : 'Order payment could not be claimed',
+            code: alreadyPaid ? 'ALREADY_PAID' : 'PAYMENT_CLAIM_CONFLICT',
+          },
+          { status: 409 },
+        )
       }
 
       // Safety net: if prepare-payment was skipped (stale APK), persist merchant order now.
@@ -131,7 +170,8 @@ export async function POST(
           reference,
           voucherNo: paymentVoucherNo,
           businessOrderNo: businessOrderNo || order.paycloud_merchant_order_no || null,
-          amount,
+          amount: expectedAmount,
+          clientAmount: amount,
           paymentMethod,
           terminalId: terminal.terminalId,
         },

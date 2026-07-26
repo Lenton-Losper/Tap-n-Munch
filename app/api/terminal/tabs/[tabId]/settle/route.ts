@@ -3,6 +3,10 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
+import {
+  amountsMatch,
+  CLAIMABLE_PAYMENT_STATUSES,
+} from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,7 +26,9 @@ export async function POST(
     const { tabId } = await params
     const body = await req.json().catch(() => ({}))
 
-    const orderIds: string[] = body.order_ids ?? []
+    const orderIds: string[] = Array.isArray(body.order_ids)
+      ? body.order_ids.map((id: unknown) => String(id).trim()).filter(Boolean)
+      : []
     const gatewayReference: string = body.gateway_reference ?? ''
     const voucherNo =
       body?.voucher_no != null && String(body.voucher_no).trim()
@@ -58,12 +64,53 @@ export async function POST(
       return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
     }
 
+    // Bind order_ids to this tab + restaurant; never trust cross-tab IDs.
+    const { data: tabOrders, error: tabOrdersError } = await supabase
+      .from('orders')
+      .select('id, total, payment_status')
+      .eq('tab_id', tabId)
+      .eq('restaurant_id', terminal.restaurantId)
+      .in('id', orderIds)
+
+    if (tabOrdersError) {
+      return NextResponse.json({ error: 'Failed to load orders' }, { status: 500 })
+    }
+
+    const foundIds = new Set((tabOrders ?? []).map((o) => String(o.id)))
+    const missing = orderIds.filter((id) => !foundIds.has(id))
+    if (missing.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'order_ids must belong to this tab',
+          code: 'ORDER_TAB_MISMATCH',
+          invalid_order_ids: missing,
+        },
+        { status: 400 },
+      )
+    }
+
+    const expectedAmount = (tabOrders ?? []).reduce(
+      (sum, o) => sum + Number(o.total),
+      0,
+    )
+    if (!amountsMatch(amount, expectedAmount)) {
+      return NextResponse.json(
+        {
+          error: 'amount does not match order totals',
+          code: 'AMOUNT_MISMATCH',
+          expected: expectedAmount,
+          received: Number.isFinite(amount) ? amount : null,
+        },
+        { status: 400 },
+      )
+    }
+
     const paidAt = new Date().toISOString()
     const paymentReference = generatePaymentReference()
     const paymentVoucherNo = voucherNo || gatewayReference || null
 
-    // Mark selected orders as paid
-    const { error: ordersError } = await supabase
+    // Atomic claim: only unpaid/pending rows on this tab flip to paid.
+    const { data: claimed, error: ordersError } = await supabase
       .from('orders')
       .update({
         payment_status: 'paid',
@@ -75,7 +122,10 @@ export async function POST(
         completed_at: paidAt,
       })
       .in('id', orderIds)
+      .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
+      .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+      .select('id')
 
     if (ordersError) {
       return NextResponse.json(
@@ -84,16 +134,34 @@ export async function POST(
       )
     }
 
+    const claimedIds = (claimed ?? []).map((o) => String(o.id))
+    if (claimedIds.length !== orderIds.length) {
+      return NextResponse.json(
+        {
+          error:
+            claimedIds.length === 0
+              ? 'Orders are already paid'
+              : 'Settle conflict — some orders were already paid',
+          code:
+            claimedIds.length === 0
+              ? 'ALREADY_PAID'
+              : 'SETTLE_CLAIM_CONFLICT',
+          claimed_order_ids: claimedIds,
+        },
+        { status: 409 },
+      )
+    }
+
     if (businessOrderNo) {
       await supabase
         .from('orders')
         .update({ paycloud_merchant_order_no: businessOrderNo.slice(0, 32) })
-        .in('id', orderIds)
+        .in('id', claimedIds)
         .eq('restaurant_id', terminal.restaurantId)
         .is('paycloud_merchant_order_no', null)
     }
 
-    await safeIssueReceiptsForOrders(orderIds, 'terminal/tabs/settle')
+    await safeIssueReceiptsForOrders(claimedIds, 'terminal/tabs/settle')
 
     // Recalculate tab total from remaining unpaid orders
     const { data: unpaidOrders } = await supabase
@@ -111,13 +179,13 @@ export async function POST(
       .update({ total: newTotal })
       .eq('id', tabId)
 
-    // Create payment record
+    // Create payment record (server amount, not client)
     await supabase.from('payments').insert({
       restaurant_id: terminal.restaurantId,
       table_id: tab.table_id,
       tab_id: tabId,
-      order_ids: orderIds,
-      amount,
+      order_ids: claimedIds,
+      amount: expectedAmount,
       method,
       status: 'completed',
       gateway_reference: gatewayReference,
@@ -132,8 +200,9 @@ export async function POST(
       entity_type: 'tabs',
       entity_id: tabId,
       metadata: {
-        order_ids: orderIds,
-        amount,
+        order_ids: claimedIds,
+        amount: expectedAmount,
+        client_amount: amount,
         method,
         payment_reference: paymentReference,
         terminal_id: terminal.terminalId,
