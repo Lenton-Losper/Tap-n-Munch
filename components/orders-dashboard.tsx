@@ -9,6 +9,12 @@ import {
 } from '@/lib/supabase/restaurants'
 import { subscribeRestaurantOrdersRealtime, getAllOpenRestaurantOrders } from '@/lib/supabase/orders'
 import {
+  subscribeOrderRequestsRealtime,
+  getWaitingOrderRequests,
+  applyOrderRequestRealtimeEvent,
+  type OrderRequest,
+} from '@/lib/supabase/order-requests'
+import {
   applyOrderRealtimeEvent,
   countPendingHostedOrders,
   playNewOrderSound,
@@ -16,7 +22,7 @@ import {
 } from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
@@ -62,9 +68,17 @@ type OrderStatus =
   | 'cancelled'
 
 /** Dashboard tab ids (UI) may differ from Supabase order status values. */
-type DashboardTabId = 'new' | 'pending_payment' | 'accepted' | 'preparing' | 'ready' | 'completed'
+type DashboardTabId =
+  | 'waiting_review'
+  | 'new'
+  | 'pending_payment'
+  | 'accepted'
+  | 'preparing'
+  | 'ready'
+  | 'completed'
 
 function supabaseStatusForTab(tab: DashboardTabId): string | null {
+  if (tab === 'waiting_review') return null
   if (tab === 'pending_payment') return null
   if (tab === 'new') return 'pending'
   if (tab === 'preparing') return 'preparing'
@@ -120,6 +134,7 @@ function isTabOrder(order: Order): boolean {
 }
 
 const tabs: { id: DashboardTabId; label: string }[] = [
+  { id: 'waiting_review', label: 'Waiting for Review' },
   { id: 'new', label: 'New Orders' },
   { id: 'pending_payment', label: 'Pending Payment' },
   { id: 'accepted', label: 'Accepted' },
@@ -159,6 +174,207 @@ function ActionButtonContent({
   )
 }
 
+function requestItemLabel(item: Record<string, any>): string {
+  const parts: string[] = []
+  if (item?.size) parts.push(String(item.size))
+  const addons = Array.isArray(item?.addons) ? item.addons : []
+  for (const addon of addons) {
+    if (typeof addon === 'string') parts.push(addon)
+    else if (addon?.name) parts.push(String(addon.name))
+  }
+  return parts.join(', ')
+}
+
+/**
+ * One card in the Waiting for Review tab. Item edits (remove / quantity) are staged locally
+ * and only sent to the server on "Save Review" -- the parent then persists items_reviewed via
+ * calculateOrderPricing server-side (never re-priced client-side here).
+ */
+function OrderRequestCard({
+  request,
+  currency,
+  timeAgoLabel,
+  busy,
+  onSaveReview,
+  onAccept,
+  onDecline,
+}: {
+  request: OrderRequest & Record<string, any>
+  currency: string
+  timeAgoLabel: string
+  busy: boolean
+  onSaveReview: (requestId: string, items: Record<string, any>[]) => Promise<void>
+  onAccept: (requestId: string) => void
+  onDecline: (requestId: string) => void
+}) {
+  const originalItems = Array.isArray(request.items) ? request.items : []
+  const reviewedItems = Array.isArray(request.items_reviewed) ? request.items_reviewed : null
+  const isReviewed = reviewedItems != null
+
+  const [editing, setEditing] = useState(false)
+  const [workingItems, setWorkingItems] = useState<Record<string, any>[]>(reviewedItems ?? originalItems)
+  const [saving, setSaving] = useState(false)
+
+  const displayItems = editing ? workingItems : reviewedItems ?? originalItems
+  const displaySubtotal = isReviewed ? request.subtotal_reviewed : request.subtotal
+  const displayTax = isReviewed ? request.tax_reviewed : request.tax
+  const displayTotal = isReviewed ? request.total_reviewed : request.total
+
+  const startEditing = () => {
+    setWorkingItems((reviewedItems ?? originalItems).map((item) => ({ ...item })))
+    setEditing(true)
+  }
+
+  const decrementQuantity = (index: number) => {
+    setWorkingItems((prev) => {
+      const next = [...prev]
+      const item = { ...next[index] }
+      const qty = Number(item.quantity) || 1
+      if (qty <= 1) {
+        next.splice(index, 1)
+        return next
+      }
+      item.quantity = qty - 1
+      next[index] = item
+      return next
+    })
+  }
+
+  const removeItem = (index: number) => {
+    setWorkingItems((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await onSaveReview(request.id, workingItems)
+      setEditing(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border border-border bg-card rounded-lg p-4">
+      <div className="flex justify-between items-start gap-3 mb-2">
+        <div>
+          <span className="font-bold text-foreground">
+            {request.channel === 'kiosk'
+              ? `Kiosk${request.customer_name ? ` — ${request.customer_name}` : ''}`
+              : `Table ${request.table_number ?? '—'}`}
+          </span>
+          <Badge className="ml-2 bg-purple-500 text-white border-0">Waiting for Review</Badge>
+          {isReviewed && (
+            <Badge variant="outline" className="ml-2">
+              Edited
+            </Badge>
+          )}
+          <p className="text-muted-foreground text-sm mt-1">Requested {timeAgoLabel}</p>
+        </div>
+      </div>
+
+      <div className="space-y-1 mb-3">
+        {displayItems.length === 0 && (
+          <p className="text-sm text-destructive">No items left — decline this request.</p>
+        )}
+        {displayItems.map((item, index) => (
+          <div key={index} className="flex justify-between items-center gap-2 text-sm">
+            <div className="flex-1">
+              <span className="font-medium">{item.quantity}× {item.displayName || item.name}</span>
+              {requestItemLabel(item) && (
+                <span className="text-muted-foreground"> ({requestItemLabel(item)})</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-muted-foreground">
+                {currency}
+                {(Number(item.subtotal) || 0).toFixed(2)}
+              </span>
+              {editing && (
+                <>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-6 w-6"
+                    onClick={() => decrementQuantity(index)}
+                  >
+                    <Minus className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-6 w-6"
+                    onClick={() => removeItem(index)}
+                  >
+                    <XCircle className="h-3 w-3" />
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {request.order_instructions && (
+        <p className="text-sm text-muted-foreground italic mb-2">&quot;{request.order_instructions}&quot;</p>
+      )}
+
+      <div className="flex justify-between items-baseline mb-3 pt-2 border-t border-border">
+        <span className="text-sm text-muted-foreground">
+          Subtotal {currency}{(Number(displaySubtotal) || 0).toFixed(2)} · Tax {currency}{(Number(displayTax) || 0).toFixed(2)}
+        </span>
+        <span className="font-bold text-foreground">
+          {currency}
+          {(Number(displayTotal) || 0).toFixed(2)}
+        </span>
+      </div>
+
+      {editing ? (
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => setEditing(false)}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 bg-blue-500 hover:bg-blue-600"
+            onClick={handleSave}
+            disabled={saving || workingItems.length === 0}
+          >
+            <ActionButtonContent loading={saving} label="Save Review" loadingLabel="Saving..." />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={startEditing} disabled={busy}>
+            <ActionButtonContent icon={Pencil} loading={false} label="Edit Items" />
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1 border-red-300 text-red-600 hover:bg-red-50"
+            onClick={() => onDecline(request.id)}
+            disabled={busy}
+          >
+            <ActionButtonContent icon={XCircle} loading={false} label="Decline" />
+          </Button>
+          <Button
+            className="flex-1 bg-[#FF6B35] hover:bg-[#e55a28]"
+            onClick={() => onAccept(request.id)}
+            disabled={busy}
+          >
+            <ActionButtonContent loading={busy} icon={CheckCircle2} label="Accept" loadingLabel="Accepting..." />
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function OrdersDashboard() {
   const { user, restaurantId, restaurant } = useAuth()
   const { hasPermission, permissionsLoaded } = usePermissions()
@@ -173,6 +389,11 @@ export function OrdersDashboard() {
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
   const [allOrders, setAllOrders] = useState<Order[]>([])
   const [completedOrders, setCompletedOrders] = useState<Order[]>([])
+  const [orderRequests, setOrderRequests] = useState<OrderRequest[]>([])
+  const [requestActionKey, setRequestActionKey] = useState<string | null>(null)
+  const [declineTargetRequestId, setDeclineTargetRequestId] = useState<string | null>(null)
+  const [declineReason, setDeclineReason] = useState('')
+  const [showDeclineDialog, setShowDeclineDialog] = useState(false)
   const [loading, setLoading] = useState(true)
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [markPaidTargetOrderId, setMarkPaidTargetOrderId] = useState<string | null>(null)
@@ -474,6 +695,58 @@ export function OrdersDashboard() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
+    if (!dashboardRestaurantId) return
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
+
+    const start = async () => {
+      let scope = orderScopeRef.current
+      if (!scope) {
+        try {
+          scope = await resolveOrderRestaurantScope(dashboardRestaurantId)
+        } catch (err) {
+          console.error(err)
+          return
+        }
+      }
+      if (cancelled || !scope) return
+
+      unsubscribe = subscribeOrderRequestsRealtime(
+        dashboardRestaurantId,
+        {
+          onInitial: (incoming) => {
+            if (cancelled) return
+            setOrderRequests(incoming)
+          },
+          onChange: (payload) => {
+            if (cancelled) return
+            setOrderRequests((prev) => applyOrderRequestRealtimeEvent(prev, payload))
+
+            if (payload.eventType === 'INSERT') {
+              const row = payload.new
+              playNewOrderSound()
+              toastRef.current({
+                title: 'New order request',
+                description: row?.channel === 'kiosk'
+                  ? 'A kiosk order is waiting for review.'
+                  : `A table order is waiting for review (Table ${row?.table_number ?? '?'}).`,
+              })
+            }
+          },
+        },
+        scope,
+      )
+    }
+
+    void start()
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [dashboardRestaurantId])
+
+  useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
 
     const fetchCompleted = async () => {
@@ -539,6 +812,7 @@ export function OrdersDashboard() {
       (order) => order.status === 'pending' || order.status === 'ready_for_terminal'
     )
     return {
+      waiting_review: orderRequests.length,
       pending_payment: countPendingHostedOrders(stationFilteredOrders),
       new: newCandidates.length,
       accepted: stationFilteredOrders.filter((order) => order.status === 'accepted').length,
@@ -546,7 +820,7 @@ export function OrdersDashboard() {
       ready: stationFilteredOrders.filter((order) => order.status === 'ready').length,
       completed: stationFilteredOrders.filter((order) => order.status === 'completed').length,
     } as Record<DashboardTabId, number>
-  }, [stationFilteredOrders])
+  }, [stationFilteredOrders, orderRequests])
 
   const orders = useMemo(() => {
     if (!user || !dashboardRestaurantId) return []
@@ -684,6 +958,84 @@ export function OrdersDashboard() {
 
   const isOrderStatusBusy = (orderId: string) =>
     Boolean(statusUpdateKey?.startsWith(`${orderId}:`))
+
+  const handleSaveRequestReview = async (requestId: string, items: Record<string, any>[]) => {
+    try {
+      const response = await fetch(`/api/order-requests/${encodeURIComponent(requestId)}/review`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to save review')
+      setOrderRequests((prev) =>
+        prev.map((request) => (request.id === requestId ? { ...request, ...data.request } : request)),
+      )
+      toast({ title: 'Review saved' })
+    } catch (error: any) {
+      toast({
+        title: 'Failed to save review',
+        description: error?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleAcceptRequest = async (requestId: string) => {
+    if (requestActionKey) return
+    setRequestActionKey(orderActionKey(requestId, 'accept'))
+    try {
+      const response = await fetch(`/api/order-requests/${encodeURIComponent(requestId)}/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to accept order')
+      setOrderRequests((prev) => prev.filter((request) => request.id !== requestId))
+      toast({ title: 'Order accepted', description: 'It now appears in New Orders.' })
+    } catch (error: any) {
+      toast({
+        title: 'Failed to accept order',
+        description: error?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setRequestActionKey(null)
+    }
+  }
+
+  const openDeclineDialog = (requestId: string) => {
+    setDeclineTargetRequestId(requestId)
+    setDeclineReason('')
+    setShowDeclineDialog(true)
+  }
+
+  const handleDeclineRequest = async () => {
+    const requestId = declineTargetRequestId
+    if (!requestId || requestActionKey) return
+    setRequestActionKey(orderActionKey(requestId, 'decline'))
+    try {
+      const response = await fetch(`/api/order-requests/${encodeURIComponent(requestId)}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: declineReason.trim() || null }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data?.error || 'Failed to decline order')
+      setOrderRequests((prev) => prev.filter((request) => request.id !== requestId))
+      setShowDeclineDialog(false)
+      setDeclineTargetRequestId(null)
+      toast({ title: 'Order declined' })
+    } catch (error: any) {
+      toast({
+        title: 'Failed to decline order',
+        description: error?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setRequestActionKey(null)
+    }
+  }
 
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     if (!dashboardRestaurantId) {
@@ -914,7 +1266,6 @@ export function OrdersDashboard() {
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to send payment to terminal')
       }
-      setTerminalPollingOrderIds((prev) => (prev.includes(order.id) ? prev : [...prev, order.id]))
       toast({ title: 'Payment sent to terminal' })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Please try again.'
@@ -946,7 +1297,6 @@ export function OrdersDashboard() {
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to cancel terminal payment')
       }
-      setTerminalPollingOrderIds((prev) => prev.filter((id) => id !== order.id))
       setTerminalStatusByOrderId((prev) => ({ ...prev, [order.id]: null }))
       toast({
         title: 'Terminal payment cancelled',
@@ -1345,7 +1695,34 @@ export function OrdersDashboard() {
 
       {/* Orders List */}
       <div className="container mx-auto px-6 py-6">
-        {activeTab === 'pending_payment' ? (
+        {activeTab === 'waiting_review' ? (
+          orderRequests.length === 0 ? (
+            <div className="text-center py-12 bg-card border rounded-lg">
+              <div className="max-w-md mx-auto">
+                <div className="text-6xl mb-4">🕒</div>
+                <h3 className="text-xl font-semibold mb-2">No requests waiting for review</h3>
+                <p className="text-muted-foreground">
+                  New table and kiosk order requests will appear here first.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-4 max-w-3xl">
+              {orderRequests.map((request) => (
+                <OrderRequestCard
+                  key={request.id}
+                  request={request}
+                  currency={restaurant?.currency || 'N$'}
+                  timeAgoLabel={formatTimeAgo(request.placed_at)}
+                  busy={requestActionKey?.startsWith(`${request.id}:`) ?? false}
+                  onSaveReview={handleSaveRequestReview}
+                  onAccept={handleAcceptRequest}
+                  onDecline={openDeclineDialog}
+                />
+              ))}
+            </div>
+          )
+        ) : activeTab === 'pending_payment' ? (
           orders.length === 0 ? (
             <div className="text-center py-12 bg-card border rounded-lg">
               <div className="max-w-md mx-auto">
@@ -1925,6 +2302,54 @@ export function OrdersDashboard() {
                 loading={Boolean(markingPaidOrderId)}
                 label="Mark as Paid"
                 loadingLabel="Marking as Paid..."
+              />
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Decline Order Request Dialog */}
+      <Dialog
+        open={showDeclineDialog}
+        onOpenChange={(open) => {
+          setShowDeclineDialog(open)
+          if (!open) {
+            setDeclineTargetRequestId(null)
+            setDeclineReason('')
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Decline Order Request</DialogTitle>
+            <DialogDescription>
+              This request will never become an order. The customer will see it was declined.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            placeholder="Reason (optional, shown to staff only)"
+            value={declineReason}
+            onChange={(e) => setDeclineReason(e.target.value)}
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowDeclineDialog(false)}
+              disabled={Boolean(requestActionKey)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-red-500 hover:bg-red-600 text-white"
+              onClick={() => void handleDeclineRequest()}
+              disabled={!declineTargetRequestId || Boolean(requestActionKey)}
+            >
+              <ActionButtonContent
+                loading={Boolean(requestActionKey)}
+                label="Decline Order"
+                loadingLabel="Declining..."
               />
             </Button>
           </DialogFooter>

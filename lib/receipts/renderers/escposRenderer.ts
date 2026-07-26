@@ -1,6 +1,7 @@
 import type { ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
 import { formatThermalIssuedAt } from '@/lib/receipts/renderers/formatThermalIssuedAt'
 import { formatReceiptMoney } from '@/lib/receipts/renderers/formatReceiptMoney'
+import { formatPaymentLabel } from '@/lib/receipts/formatPaymentLabel'
 
 const ESC = 0x1b
 const GS = 0x1d
@@ -163,7 +164,7 @@ export function renderReceiptEscPos(
   for (const payment of snapshot.payments) {
     builder.line(
       twoColumnLine(
-        `${payment.method.toUpperCase()} ${payment.masked_reference}`,
+        formatPaymentLabel(payment.method, payment.masked_reference),
         money(snapshot, payment.amount),
         characterWidth,
       ),

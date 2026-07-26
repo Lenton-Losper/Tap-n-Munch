@@ -1,5 +1,6 @@
 import type { ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
 import { formatReceiptMoney } from '@/lib/receipts/renderers/formatReceiptMoney'
+import { formatPaymentLabel } from '@/lib/receipts/formatPaymentLabel'
 
 /**
  * Pure HTML renderer for a receipt snapshot. Enforced boundary: this file must never
@@ -94,7 +95,7 @@ function renderScreenCard(snapshot: ReceiptSnapshot): string {
     .map(
       (payment) => `
         <tr>
-          <td style="padding: 3px 0; font-size: 14px; color: ${COLORS.body};">${escapeHtml(payment.method.toUpperCase())} ${escapeHtml(payment.masked_reference)}</td>
+          <td style="padding: 3px 0; font-size: 14px; color: ${COLORS.body};">${escapeHtml(formatPaymentLabel(payment.method, payment.masked_reference))}</td>
           <td align="right" style="padding: 3px 0; font-size: 14px; color: ${COLORS.ink};">${formatMoney(snapshot, payment.amount)}</td>
         </tr>`,
     )

@@ -1,5 +1,6 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import type { ReceiptLineItem, ReceiptPayment, ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
+import { formatPaymentLabel } from '@/lib/receipts/formatPaymentLabel'
 
 /**
  * Pure PDF renderer for a receipt snapshot. Enforced boundary: this file must never
@@ -345,7 +346,7 @@ function drawPaymentsBlock(
   y -= SMALL_SIZE + 8
 
   for (const payment of payments) {
-    const label = `${payment.method.toUpperCase()} ${payment.masked_reference}`
+    const label = formatPaymentLabel(payment.method, payment.masked_reference)
     page.drawText(label, { x: MARGIN, y: y - PAYMENT_SIZE, size: PAYMENT_SIZE, font: fonts.regular, color: TEXT_DARK })
     drawRightText(
       page,

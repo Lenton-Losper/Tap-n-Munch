@@ -279,8 +279,8 @@ export default function CartPage() {
       }
       clearCart()
       toast({
-        title: 'Added to tab!',
-        description: 'Keep ordering or settle when ready.',
+        title: 'Request sent!',
+        description: 'Waiting for the restaurant to confirm — keep ordering or settle when ready.',
       })
       router.replace(`/menu/${restaurantId}/browse${menuQuery}`)
     } catch (err: any) {
@@ -374,7 +374,7 @@ export default function CartPage() {
             ? `K-${String(data.kioskOrderNumber).padStart(3, '0')}`
             : undefined)
         router.replace(
-          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel)
+          kioskSuccessPath(restaurantId, String(tableNumber), kioskCustomerName, orderLabel, orderId)
         )
       } else {
         router.replace(`/menu/${restaurantId}/order-confirmation/${orderId}${confirmSuffix}`)

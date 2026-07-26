@@ -6,6 +6,16 @@ const STYLES: Record<
   ReceiptStatusBadge,
   { wrap: string; icon: string; label: string }
 > = {
+  'WAITING FOR CONFIRMATION': {
+    wrap: 'bg-purple-50 border-purple-100',
+    icon: 'text-purple-600',
+    label: 'text-purple-800',
+  },
+  DECLINED: {
+    wrap: 'bg-red-50 border-red-100',
+    icon: 'text-red-600',
+    label: 'text-red-800',
+  },
   'NEW ORDER': {
     wrap: 'bg-green-50 border-green-100',
     icon: 'text-green-600',

@@ -14,10 +14,12 @@ export function kioskSuccessPath(
   restaurantId: string,
   tableParam: string,
   customerName: string,
-  orderNumber?: string
+  orderNumber?: string,
+  orderId?: string
 ): string {
   const base = `/menu/${restaurantId}/kiosk-success?table=${tableParam}&name=${encodeURIComponent(customerName)}`
-  return orderNumber ? `${base}&orderNumber=${encodeURIComponent(orderNumber)}` : base
+  const withOrderNumber = orderNumber ? `${base}&orderNumber=${encodeURIComponent(orderNumber)}` : base
+  return orderId ? `${withOrderNumber}&orderId=${encodeURIComponent(orderId)}` : withOrderNumber
 }
 
 export function kioskResetPath(restaurantId: string, tableParam: string): string {

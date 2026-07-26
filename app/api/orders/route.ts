@@ -5,7 +5,7 @@ import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/pa
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { requireSessionToken } from '@/lib/session-guard'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
-import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
+import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 
 export const dynamic = 'force-dynamic'
 
@@ -155,6 +155,124 @@ export async function POST(req: Request) {
       }
     }
 
+    // Validate payment method against restaurant settings
+    const { data: settings } = await supabase
+      .from('restaurant_settings')
+      .select('payment_methods, settings_version')
+      .eq('restaurant_id', restaurantUuid)
+      .maybeSingle()
+
+    const allowedMethods = settings?.payment_methods ?? ['cash', 'card']
+    if (paymentMethod && !allowedMethods.includes(paymentMethod)) {
+      return NextResponse.json(
+        {
+          error: `This restaurant does not accept ${paymentMethod} payments.`,
+          settingsVersion: settings?.settings_version ?? 1,
+        },
+        { status: 403 }
+      )
+    }
+
+    let tableUuid: string | null = null
+    let tableIsKiosk = false
+    if (normalizedTableNumber > 0) {
+      const { data: tableRow } = await supabase
+        .from('restaurant_tables')
+        .select('id, active, is_kiosk')
+        .eq('restaurant_id', restaurantUuid)
+        .eq('table_number', normalizedTableNumber)
+        .eq('active', true)
+        .maybeSingle()
+
+      if (!tableRow?.id) {
+        return NextResponse.json(
+          { error: 'This table is not available for ordering.' },
+          { status: 403 },
+        )
+      }
+      tableUuid = tableRow.id
+      tableIsKiosk = Boolean(tableRow.is_kiosk)
+    }
+
+    if (channel === 'kiosk') {
+      if (normalizedTableNumber <= 0 || !tableIsKiosk) {
+        return NextResponse.json(
+          { error: 'This link is not configured as a kiosk.' },
+          { status: 403 },
+        )
+      }
+    }
+
+    // Order Request / Accept model (staging rollout): table + kiosk submissions become an
+    // order_request, not a real order, until staff Accept. Terminal/POS is a separate route
+    // and is unaffected. route_to enrichment and the hosted-checkout session are deliberately
+    // deferred to Accept -- see app/api/order-requests/[requestId]/accept/route.ts.
+    if (channel === 'table' || channel === 'kiosk') {
+      const pricing = await calculateOrderPricing(supabase, restaurantUuid, items)
+      for (const warning of pricing.warnings) {
+        console.warn('[ORDER_REQUESTS] pricing warning:', warning)
+      }
+
+      const { data: newRequest, error: requestError } = await supabase
+        .from('order_requests')
+        .insert({
+          restaurant_id: restaurantUuid,
+          firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
+          channel,
+          table_number: normalizedTableNumber,
+          table_id: tableUuid,
+          session_id: sessionId,
+          member_session_id: memberSessionId,
+          customer_name: customerName,
+          order_instructions: orderInstructions || null,
+          items: pricing.items,
+          subtotal: pricing.subtotal,
+          tax: pricing.tax,
+          total: pricing.total,
+          payment_method: resolvedPaymentMethod,
+          payment_channel: resolvedPaymentChannel,
+          tab_id: normalizedTabId || null,
+          tab_settlement_for_tab_id: tabSettlementForTabId || null,
+          idempotency_key: idempotencyKey,
+          placed_at: new Date().toISOString(),
+        })
+        .select('id, restaurant_id')
+        .single()
+
+      if (requestError) {
+        if (requestError.code === '23505' && idempotencyKey) {
+          const { data: existing } = await supabase
+            .from('order_requests')
+            .select('id')
+            .eq('idempotency_key', idempotencyKey)
+            .single()
+          if (existing?.id) {
+            return NextResponse.json({
+              success: true,
+              orderId: existing.id,
+              requestId: existing.id,
+              status: 'waiting_review',
+            })
+          }
+        }
+        console.error('[ORDER_REQUESTS] Supabase insert error:', requestError)
+        return NextResponse.json({ error: requestError.message }, { status: 500 })
+      }
+
+      console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
+      return NextResponse.json({
+        success: true,
+        orderId: newRequest.id,
+        requestId: newRequest.id,
+        restaurantId: newRequest.restaurant_id,
+        status: 'waiting_review',
+        paymentStatus: 'waiting_review',
+      })
+    }
+
+    // --- Legacy direct-order path (channels other than table/kiosk; terminal/POS uses its
+    // own route and never reaches here). Unchanged. ---
+
     // Get next order number
     const { count } = await supabase
       .from('orders')
@@ -179,43 +297,6 @@ export async function POST(req: Request) {
         serverTax: pricing.tax,
         serverTotal: pricing.total,
       })
-    }
-
-    // Validate payment method against restaurant settings
-    const { data: settings } = await supabase
-      .from('restaurant_settings')
-      .select('payment_methods, settings_version')
-      .eq('restaurant_id', restaurantUuid)
-      .maybeSingle()
-
-    const allowedMethods = settings?.payment_methods ?? ['cash', 'card']
-    if (paymentMethod && !allowedMethods.includes(paymentMethod)) {
-      return NextResponse.json(
-        {
-          error: `This restaurant does not accept ${paymentMethod} payments.`,
-          settingsVersion: settings?.settings_version ?? 1,
-        },
-        { status: 403 }
-      )
-    }
-
-    let tableUuid: string | null = null
-    if (normalizedTableNumber > 0) {
-      const { data: tableRow } = await supabase
-        .from('restaurant_tables')
-        .select('id, active')
-        .eq('restaurant_id', restaurantUuid)
-        .eq('table_number', normalizedTableNumber)
-        .eq('active', true)
-        .maybeSingle()
-
-      if (!tableRow?.id) {
-        return NextResponse.json(
-          { error: 'This table is not available for ordering.' },
-          { status: 403 },
-        )
-      }
-      tableUuid = tableRow.id
     }
 
     // Create order in Supabase
@@ -254,11 +335,29 @@ export async function POST(req: Request) {
       if (orderError.code === '23505' && idempotencyKey) {
         const { data: existing } = await supabase
           .from('orders')
-          .select('id')
+          .select(
+            'id, restaurant_id, order_number, payment_status, payment_checkout_url, paycloud_merchant_order_no, kiosk_order_number, channel',
+          )
           .eq('idempotency_key', idempotencyKey)
           .single()
         if (existing?.id) {
-          return NextResponse.json({ success: true, orderId: existing.id })
+          const existingKioskNumber =
+            existing.kiosk_order_number != null ? Number(existing.kiosk_order_number) : undefined
+          return NextResponse.json({
+            success: true,
+            orderId: existing.id,
+            restaurantId: existing.restaurant_id,
+            orderNumber: existing.order_number,
+            paymentStatus: existing.payment_status,
+            checkoutUrl: existing.payment_checkout_url || null,
+            merchantOrderNo: existing.paycloud_merchant_order_no || null,
+            ...(existingKioskNumber != null && Number.isFinite(existingKioskNumber)
+              ? {
+                  kioskOrderNumber: existingKioskNumber,
+                  kioskOrderLabel: `K-${String(existingKioskNumber).padStart(3, '0')}`,
+                }
+              : {}),
+          })
         }
       }
       console.error('[ORDERS] Supabase insert error:', orderError)
@@ -380,19 +479,56 @@ export async function POST(req: Request) {
         const paymentResultAny = paymentResult as { checkoutUrl?: string; pay_url?: string } | undefined
         checkoutUrl = paymentResultAny?.checkoutUrl || paymentResultAny?.pay_url || null
 
+        if (!checkoutUrl) {
+          await supabase
+            .from('orders')
+            .update({ payment_status: 'failed' })
+            .eq('id', orderId)
+          return NextResponse.json(
+            {
+              error: 'Payment link was not returned by PayCloud',
+              orderId,
+              paymentStatus: 'failed',
+            },
+            { status: 502 },
+          )
+        }
+
         const wireNo = paycloudWireMerchantOrderNo(orderId)
         merchantOrderNo = wireNo
 
-        // Update order with checkout details (wire merchant no matches Finatic `tn` on return URL)
-        await supabase
+        const { error: checkoutUpdateError } = await supabase
           .from('orders')
           .update({
             paycloud_merchant_order_no: wireNo,
             payment_checkout_url: checkoutUrl,
           })
           .eq('id', orderId)
+
+        if (checkoutUpdateError) {
+          console.error('[ORDERS] checkout URL persist failed:', checkoutUpdateError)
+          return NextResponse.json(
+            {
+              error: 'Failed to persist payment session',
+              orderId,
+            },
+            { status: 502 },
+          )
+        }
       } catch (payErr) {
         console.error('[ORDERS] Payment init failed:', payErr)
+        await supabase
+          .from('orders')
+          .update({ payment_status: 'failed' })
+          .eq('id', orderId)
+        return NextResponse.json(
+          {
+            error: payErr instanceof Error ? payErr.message : 'Payment initialization failed',
+            orderId,
+            paymentStatus: 'failed',
+          },
+          { status: 502 },
+        )
       }
     }
 
@@ -410,6 +546,9 @@ export async function POST(req: Request) {
     console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
     return NextResponse.json(successPayload)
   } catch (error) {
+    if (error instanceof UnmatchedMenuItemError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
     console.error('[ORDERS] Unexpected error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

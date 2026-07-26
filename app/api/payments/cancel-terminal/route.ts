@@ -51,7 +51,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: message }, { status: 400 })
     }
 
-    const merchantOrderNo = paycloudWireMerchantOrderNo(String(orderId))
+    // Prefer the stored Finatic merchant order no; fall back to wire-format of order id.
+    const storedMerchantNo = String(
+      (order as { paycloud_merchant_order_no?: string | null }).paycloud_merchant_order_no || '',
+    ).trim()
+    const merchantOrderNo = storedMerchantNo || paycloudWireMerchantOrderNo(String(orderId))
     const params = {
       app_id: appId,
       charset: 'UTF-8',
@@ -83,13 +87,22 @@ export async function POST(req: Request) {
       )
     }
 
-    await supabase
+    // Clear card/gateway references so cash receipts never inherit a masked card-style ref.
+    const { error: updateError } = await supabase
       .from('orders')
       .update({
         payment_method: 'cash',
         payment_status: 'cash_pending',
+        payment_reference: null,
+        paycloud_merchant_order_no: null,
+        payment_checkout_url: null,
       })
       .eq('id', String(orderId))
+
+    if (updateError) {
+      console.error('[cancel-terminal] order update failed', updateError)
+      return NextResponse.json({ error: 'Failed to switch order to cash' }, { status: 500 })
+    }
 
     return NextResponse.json({ success: true, data: (data as Record<string, unknown>)?.data || null }, { status: 200 })
   } catch (err: unknown) {

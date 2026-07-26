@@ -1,6 +1,7 @@
 import type { ReceiptSnapshot } from '@/lib/receipts/issueReceipt'
 import { formatThermalIssuedAt } from '@/lib/receipts/renderers/formatThermalIssuedAt'
 import { formatReceiptMoney } from '@/lib/receipts/renderers/formatReceiptMoney'
+import { formatPaymentLabel } from '@/lib/receipts/formatPaymentLabel'
 
 /**
  * Pure structured-line renderer for a receipt snapshot, for the P5's built-in Wiseasy
@@ -92,7 +93,7 @@ export function renderReceiptSdk6(
     lines.push({
       type: 'row',
       columns: [
-        `${payment.method.toUpperCase()} ${payment.masked_reference}`,
+        formatPaymentLabel(payment.method, payment.masked_reference),
         money(snapshot, payment.amount),
       ],
     })
