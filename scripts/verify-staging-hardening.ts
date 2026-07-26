@@ -132,16 +132,26 @@ async function main() {
   }
   assert(rejected, 'expected UnmatchedMenuItemError for fake menuItemId')
 
+  // Prefer a restaurant that actually has tables + menu for fuller probes.
+  const { data: table } = await supabase
+    .from('restaurant_tables')
+    .select('table_number, restaurant_id, is_kiosk')
+    .gt('table_number', 0)
+    .limit(1)
+    .maybeSingle()
+
+  const pricingRestaurantId = String(table?.restaurant_id || restaurant.id)
+
   // Legitimate catalog pricing still works when a real available item exists.
   const { data: menuItem } = await supabase
     .from('menu_items')
     .select('id, status, base_price')
-    .eq('restaurant_id', restaurant.id)
+    .eq('restaurant_id', pricingRestaurantId)
     .in('status', ['available', 'active'])
     .limit(1)
     .maybeSingle()
   if (menuItem?.id) {
-    const priced = await calculateOrderPricing(supabase as never, restaurant.id, [
+    const priced = await calculateOrderPricing(supabase as never, pricingRestaurantId, [
       { menuItemId: menuItem.id, quantity: 1 },
     ])
     console.log('catalog pricing total', priced.total, 'warnings', priced.warnings.length)
@@ -150,14 +160,6 @@ async function main() {
     console.log('No available menu item for positive pricing probe — skipped')
   }
 
-  const { data: table } = await supabase
-    .from('restaurant_tables')
-    .select('table_number, restaurant_id, is_kiosk')
-    .eq('restaurant_id', restaurant.id)
-    .gt('table_number', 0)
-    .limit(1)
-    .maybeSingle()
-
   if (table) {
     const { fetchGuestActiveTableOrders } = await import('../lib/guest-orders/queries')
     const sessA = `sess_verify_a_${Date.now()}`
@@ -165,7 +167,7 @@ async function main() {
     const { data: orderA, error: errA } = await supabase
       .from('orders')
       .insert({
-        restaurant_id: restaurant.id,
+        restaurant_id: table.restaurant_id,
         table_number: table.table_number,
         session_id: sessA,
         status: 'pending',
@@ -183,7 +185,7 @@ async function main() {
     const { data: orderB, error: errB } = await supabase
       .from('orders')
       .insert({
-        restaurant_id: restaurant.id,
+        restaurant_id: table.restaurant_id,
         table_number: table.table_number,
         session_id: sessB,
         status: 'pending',
@@ -200,17 +202,17 @@ async function main() {
     assert(!errB && orderB?.id, `insert order B failed: ${errB?.message}`)
 
     const a = await fetchGuestActiveTableOrders({
-      restaurantId: restaurant.id,
+      restaurantId: String(table.restaurant_id),
       tableNumber: Number(table.table_number),
       sessionId: sessA,
     })
     const b = await fetchGuestActiveTableOrders({
-      restaurantId: restaurant.id,
+      restaurantId: String(table.restaurant_id),
       tableNumber: Number(table.table_number),
       sessionId: sessB,
     })
     const none = await fetchGuestActiveTableOrders({
-      restaurantId: restaurant.id,
+      restaurantId: String(table.restaurant_id),
       tableNumber: Number(table.table_number),
       sessionId: '',
     })
@@ -236,7 +238,7 @@ async function main() {
     // Live guest API should match
     const guestA = await httpJson(
       'GET',
-      `/api/guest/orders/active-table?restaurantId=${encodeURIComponent(restaurant.id)}&table_number=${table.table_number}&session_id=${encodeURIComponent(sessA)}`,
+      `/api/guest/orders/active-table?restaurantId=${encodeURIComponent(String(table.restaurant_id))}&table_number=${table.table_number}&session_id=${encodeURIComponent(sessA)}`,
     )
     console.log('guest active-table A status', guestA.status, guestA.json)
     assert(guestA.status === 200, 'guest active-table should 200')
@@ -253,8 +255,8 @@ async function main() {
 
   // Kiosk channel without is_kiosk table should 403 via Worker
   const kioskForge = await httpJson('POST', '/api/orders', {
-    restaurantId: restaurant.id,
-    tableNumber: 1,
+    restaurantId: pricingRestaurantId,
+    tableNumber: Number(table?.table_number || 1),
     channel: 'kiosk',
     session_id: `sess_kiosk_forge_${Date.now()}`,
     items: [{ menuItemId: '00000000-0000-0000-0000-000000000099', quantity: 1, subtotal: 1 }],
