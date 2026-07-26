@@ -694,7 +694,6 @@ export function OrdersDashboard() {
   }, [user, dashboardRestaurantId])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  /* eslint-disable react-hooks/set-state-in-effect -- mirrors the orders realtime effect above */
   useEffect(() => {
     if (!dashboardRestaurantId) return
     let cancelled = false
@@ -746,7 +745,6 @@ export function OrdersDashboard() {
       unsubscribe?.()
     }
   }, [dashboardRestaurantId])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
