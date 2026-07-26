@@ -101,15 +101,25 @@ export async function POST(req: Request) {
 
     if (claimError) {
       console.error('[PUSH-TO-TERMINAL] Claim update failed:', claimError)
-      return NextResponse.json({ error: claimError.message }, { status: 500 })
+      return NextResponse.json({ error: claimError.message, _debugPrevStatus: previousPaymentStatus }, { status: 500 })
     }
     if (!claimedOrder) {
       console.log('[PUSH-TO-TERMINAL] Returning 409 because:', 'Order already claimed by a concurrent push')
       return NextResponse.json(
-        { error: 'This order is already being pushed to a terminal', code: 'ALREADY_CLAIMED' },
+        {
+          error: 'This order is already being pushed to a terminal',
+          code: 'ALREADY_CLAIMED',
+          _debugPrevStatus: previousPaymentStatus,
+          _debugAt: new Date().toISOString(),
+        },
         { status: 409 },
       )
     }
+    console.log('[PUSH-TO-TERMINAL] _debugClaimWon', {
+      previousPaymentStatus,
+      claimedOrderId: claimedOrder.id,
+      at: new Date().toISOString(),
+    })
 
     // Release the claim back to previousPaymentStatus on any failure path below, so a
     // failed push doesn't permanently strand the order in 'terminal_pending' with no
@@ -245,6 +255,9 @@ export async function POST(req: Request) {
             success: false,
             error: data?.msg || 'Failed to push to terminal',
             finatic: data,
+            _debugPrevStatus: previousPaymentStatus,
+            _debugClaimedId: claimedOrder.id,
+            _debugMerchantOrderNo: merchantOrderNo,
           },
           { status: 400 }
         )
