@@ -161,7 +161,6 @@ async function main() {
   }
 
   if (table) {
-    const { fetchGuestActiveTableOrders } = await import('../lib/guest-orders/queries')
     const sessA = `sess_verify_a_${Date.now()}`
     const sessB = `sess_verify_b_${Date.now()}`
     const { data: orderA, error: errA } = await supabase
@@ -201,52 +200,57 @@ async function main() {
       .single()
     assert(!errB && orderB?.id, `insert order B failed: ${errB?.message}`)
 
-    const a = await fetchGuestActiveTableOrders({
-      restaurantId: String(table.restaurant_id),
-      tableNumber: Number(table.table_number),
-      sessionId: sessA,
-    })
-    const b = await fetchGuestActiveTableOrders({
-      restaurantId: String(table.restaurant_id),
-      tableNumber: Number(table.table_number),
-      sessionId: sessB,
-    })
-    const none = await fetchGuestActiveTableOrders({
-      restaurantId: String(table.restaurant_id),
-      tableNumber: Number(table.table_number),
-      sessionId: '',
-    })
+    // Direct DB-scoped query (same predicate as guest active-table)
+    const { data: scopedA } = await supabase
+      .from('orders')
+      .select('id, session_id')
+      .eq('restaurant_id', table.restaurant_id)
+      .eq('table_number', table.table_number)
+      .eq('is_closed', false)
+      .eq('session_id', sessA)
+    const { data: scopedB } = await supabase
+      .from('orders')
+      .select('id, session_id')
+      .eq('restaurant_id', table.restaurant_id)
+      .eq('table_number', table.table_number)
+      .eq('is_closed', false)
+      .eq('session_id', sessB)
 
     console.log(
-      'session scoping',
-      a.orders.map((o) => o.id),
-      b.orders.map((o) => o.id),
-      'empty',
-      none.orders.length,
+      'session scoping DB',
+      (scopedA || []).map((o) => o.id),
+      (scopedB || []).map((o) => o.id),
     )
-
     assert(
-      a.orders.some((o) => o.id === orderA.id) && !a.orders.some((o) => o.id === orderB.id),
+      (scopedA || []).some((o) => o.id === orderA.id) &&
+        !(scopedA || []).some((o) => o.id === orderB.id),
       'session A must only see order A',
     )
     assert(
-      b.orders.some((o) => o.id === orderB.id) && !b.orders.some((o) => o.id === orderA.id),
+      (scopedB || []).some((o) => o.id === orderB.id) &&
+        !(scopedB || []).some((o) => o.id === orderA.id),
       'session B must only see order B',
     )
-    assert(none.orders.length === 0, 'no session must return empty')
 
-    // Live guest API should match
+    // Live guest API (deployed Worker) must enforce the same scope
     const guestA = await httpJson(
       'GET',
       `/api/guest/orders/active-table?restaurantId=${encodeURIComponent(String(table.restaurant_id))}&table_number=${table.table_number}&session_id=${encodeURIComponent(sessA)}`,
     )
-    console.log('guest active-table A status', guestA.status, guestA.json)
+    const guestNone = await httpJson(
+      'GET',
+      `/api/guest/orders/active-table?restaurantId=${encodeURIComponent(String(table.restaurant_id))}&table_number=${table.table_number}`,
+    )
+    console.log('guest active-table A', guestA.status, guestA.json)
+    console.log('guest active-table no session', guestNone.status, guestNone.json)
     assert(guestA.status === 200, 'guest active-table should 200')
     const guestOrders = (guestA.json as { orders?: Array<{ id: string }> })?.orders || []
     assert(
       guestOrders.some((o) => o.id === orderA.id) && !guestOrders.some((o) => o.id === orderB.id),
       'live guest API must session-scope',
     )
+    const noneOrders = (guestNone.json as { orders?: unknown[] })?.orders || []
+    assert(noneOrders.length === 0, 'live guest API without session must return empty')
 
     await supabase.from('orders').delete().in('id', [orderA.id, orderB.id])
   } else {
