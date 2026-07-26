@@ -155,32 +155,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // Get next order number
-    const { count } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
-
-    const orderNumber = (count || 0) + 1
-    const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
-
-    const pricing = await calculateOrderPricing(supabase, restaurantUuid, itemsWithRouting)
-    for (const warning of pricing.warnings) {
-      console.warn('[ORDERS] pricing warning:', warning)
-    }
-    const clientSubtotal = Number(subtotal)
-    const clientTotal = Number(total)
-    if (Number.isFinite(clientTotal) && Math.abs(clientTotal - pricing.total) > 0.01) {
-      console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
-        restaurantId: restaurantUuid,
-        clientSubtotal,
-        clientTotal,
-        serverSubtotal: pricing.subtotal,
-        serverTax: pricing.tax,
-        serverTotal: pricing.total,
-      })
-    }
-
     // Validate payment method against restaurant settings
     const { data: settings } = await supabase
       .from('restaurant_settings')
@@ -216,6 +190,102 @@ export async function POST(req: Request) {
         )
       }
       tableUuid = tableRow.id
+    }
+
+    // Order Request / Accept model (staging rollout): table + kiosk submissions become an
+    // order_request, not a real order, until staff Accept. Terminal/POS is a separate route
+    // and is unaffected. route_to enrichment and the hosted-checkout session are deliberately
+    // deferred to Accept -- see app/api/order-requests/[requestId]/accept/route.ts.
+    if (channel === 'table' || channel === 'kiosk') {
+      const pricing = await calculateOrderPricing(supabase, restaurantUuid, items)
+      for (const warning of pricing.warnings) {
+        console.warn('[ORDER_REQUESTS] pricing warning:', warning)
+      }
+
+      const { data: newRequest, error: requestError } = await supabase
+        .from('order_requests')
+        .insert({
+          restaurant_id: restaurantUuid,
+          firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
+          channel,
+          table_number: normalizedTableNumber,
+          table_id: tableUuid,
+          session_id: sessionId,
+          member_session_id: memberSessionId,
+          customer_name: customerName,
+          order_instructions: orderInstructions || null,
+          items: pricing.items,
+          subtotal: pricing.subtotal,
+          tax: pricing.tax,
+          total: pricing.total,
+          payment_method: resolvedPaymentMethod,
+          payment_channel: resolvedPaymentChannel,
+          tab_id: normalizedTabId || null,
+          tab_settlement_for_tab_id: tabSettlementForTabId || null,
+          idempotency_key: idempotencyKey,
+          placed_at: new Date().toISOString(),
+        })
+        .select('id, restaurant_id')
+        .single()
+
+      if (requestError) {
+        if (requestError.code === '23505' && idempotencyKey) {
+          const { data: existing } = await supabase
+            .from('order_requests')
+            .select('id')
+            .eq('idempotency_key', idempotencyKey)
+            .single()
+          if (existing?.id) {
+            return NextResponse.json({
+              success: true,
+              orderId: existing.id,
+              requestId: existing.id,
+              status: 'waiting_review',
+            })
+          }
+        }
+        console.error('[ORDER_REQUESTS] Supabase insert error:', requestError)
+        return NextResponse.json({ error: requestError.message }, { status: 500 })
+      }
+
+      console.log(`[ORDERS TIMING] total: ${(performance.now() - t0).toFixed(0)}ms`)
+      return NextResponse.json({
+        success: true,
+        orderId: newRequest.id,
+        requestId: newRequest.id,
+        restaurantId: newRequest.restaurant_id,
+        status: 'waiting_review',
+        paymentStatus: 'waiting_review',
+      })
+    }
+
+    // --- Legacy direct-order path (channels other than table/kiosk; terminal/POS uses its
+    // own route and never reaches here). Unchanged. ---
+
+    // Get next order number
+    const { count } = await supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
+
+    const orderNumber = (count || 0) + 1
+    const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
+
+    const pricing = await calculateOrderPricing(supabase, restaurantUuid, itemsWithRouting)
+    for (const warning of pricing.warnings) {
+      console.warn('[ORDERS] pricing warning:', warning)
+    }
+    const clientSubtotal = Number(subtotal)
+    const clientTotal = Number(total)
+    if (Number.isFinite(clientTotal) && Math.abs(clientTotal - pricing.total) > 0.01) {
+      console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
+        restaurantId: restaurantUuid,
+        clientSubtotal,
+        clientTotal,
+        serverSubtotal: pricing.subtotal,
+        serverTax: pricing.tax,
+        serverTotal: pricing.total,
+      })
     }
 
     // Create order in Supabase

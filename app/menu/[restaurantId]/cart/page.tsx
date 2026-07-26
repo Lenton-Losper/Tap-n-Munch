@@ -279,8 +279,8 @@ export default function CartPage() {
       }
       clearCart()
       toast({
-        title: 'Added to tab!',
-        description: 'Keep ordering or settle when ready.',
+        title: 'Request sent!',
+        description: 'Waiting for the restaurant to confirm — keep ordering or settle when ready.',
       })
       router.replace(`/menu/${restaurantId}/browse${menuQuery}`)
     } catch (err: any) {

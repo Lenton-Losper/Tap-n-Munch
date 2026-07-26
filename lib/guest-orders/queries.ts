@@ -7,6 +7,43 @@ export async function resolveGuestRestaurantId(restaurantIdInput: string): Promi
   return resolveRestaurantUuid(restaurantIdInput)
 }
 
+/**
+ * order_requests rows are not real orders (see Order Request / Accept model), so this maps
+ * one into the same GuestOrderRow shape the confirmation screen already knows how to render,
+ * with status set to a value the UI treats as pre-order ('waiting_review' or 'declined').
+ * If the request has already been accepted, the caller re-fetches the real order instead --
+ * a customer's confirmation link should transparently "graduate" from request to order
+ * without changing URL.
+ */
+function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow {
+  const status = String(row.status || 'waiting_review')
+  const items = Array.isArray(row.items_reviewed) ? row.items_reviewed : row.items
+  const subtotal = row.subtotal_reviewed ?? row.subtotal
+  const tax = row.tax_reviewed ?? row.tax
+  const total = row.total_reviewed ?? row.total
+
+  return {
+    id: String(row.id),
+    restaurant_id: row.restaurant_id as string | null,
+    table_number: row.table_number as number | null,
+    session_id: row.session_id as string | null,
+    is_closed: false,
+    status,
+    payment_status: status,
+    payment_method: row.payment_method,
+    payment_channel: row.payment_channel as string | null,
+    tab_id: row.tab_id as string | null,
+    tab_settlement_for_tab_id: row.tab_settlement_for_tab_id as string | null,
+    order_number: 0,
+    placed_at: row.placed_at,
+    items,
+    subtotal,
+    tax,
+    total,
+    customer_ready_to_pay: false,
+  } as GuestOrderRow
+}
+
 export async function fetchGuestOrderById(
   orderId: string,
   params: { tableNumber?: number | null; sessionId?: string | null },
@@ -15,14 +52,34 @@ export async function fetchGuestOrderById(
   const { data, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle()
 
   if (error) throw error
-  if (!data) return { order: null, denied: false }
 
-  const order = { id: String(data.id), ...data } as GuestOrderRow
-  if (!guestCanAccessOrder(order, params)) {
+  if (data) {
+    const order = { id: String(data.id), ...data } as GuestOrderRow
+    if (!guestCanAccessOrder(order, params)) {
+      return { order: null, denied: true }
+    }
+    return { order, denied: false }
+  }
+
+  const { data: request, error: requestError } = await supabase
+    .from('order_requests')
+    .select('*')
+    .eq('id', orderId)
+    .maybeSingle()
+
+  if (requestError) throw requestError
+  if (!request) return { order: null, denied: false }
+
+  const requestRow = { id: String(request.id), ...request } as GuestOrderRow
+  if (!guestCanAccessOrder(requestRow, params)) {
     return { order: null, denied: true }
   }
 
-  return { order, denied: false }
+  if (request.status === 'accepted' && request.accepted_order_id) {
+    return fetchGuestOrderById(String(request.accepted_order_id), params)
+  }
+
+  return { order: mapOrderRequestToGuestRow(request), denied: false }
 }
 
 export async function fetchGuestOrdersBySession(params: {

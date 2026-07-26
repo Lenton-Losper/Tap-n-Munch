@@ -1,4 +1,6 @@
 export type OrderStatusKey =
+  | 'waiting_review'
+  | 'declined'
   | 'pending'
   | 'accepted'
   | 'ready'
@@ -6,7 +8,15 @@ export type OrderStatusKey =
   | 'completed'
   | 'cancelled'
 
-export type ReceiptStatusBadge = 'NEW ORDER' | 'ACCEPTED' | 'PREPARING' | 'READY' | 'COMPLETED' | 'CANCELLED'
+export type ReceiptStatusBadge =
+  | 'WAITING FOR CONFIRMATION'
+  | 'DECLINED'
+  | 'NEW ORDER'
+  | 'ACCEPTED'
+  | 'PREPARING'
+  | 'READY'
+  | 'COMPLETED'
+  | 'CANCELLED'
 
 export type PaymentStatusKey = 'paid' | 'pending' | 'failed' | 'cancelled' | string
 
@@ -38,6 +48,16 @@ export function mapOrderStatusToBadge(status: OrderStatusKey): {
   description: string
 } {
   switch (status) {
+    case 'waiting_review':
+      return {
+        label: 'WAITING FOR CONFIRMATION',
+        description: 'Your order request has been sent. Waiting for the restaurant to confirm.',
+      }
+    case 'declined':
+      return {
+        label: 'DECLINED',
+        description: 'Sorry, the restaurant was unable to accept this order.',
+      }
     case 'pending':
       return {
         label: 'NEW ORDER',
