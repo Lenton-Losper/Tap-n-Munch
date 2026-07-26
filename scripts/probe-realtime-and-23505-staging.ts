@@ -12,7 +12,6 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   STAGING_PROJECT_REF,
-  runSafeSupabaseLinked,
   runShellCommand,
 } from './lib/safe-supabase-linked'
 
@@ -94,7 +93,7 @@ async function queryPublicationViaLinked(): Promise<string[] | null> {
 }
 
 async function queryPublicationViaExecSql(
-  supabase: ReturnType<typeof createClient>,
+  supabase: { rpc: (...args: never[]) => Promise<{ data: unknown; error: { message: string } | null }> },
 ): Promise<string[] | null> {
   for (const arg of [
     {
@@ -104,7 +103,7 @@ async function queryPublicationViaExecSql(
       query: `SELECT tablename FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename IN ('orders','order_requests') ORDER BY tablename`,
     },
   ]) {
-    const { data, error } = await supabase.rpc('exec_sql', arg as never)
+    const { data, error } = await (supabase as any).rpc('exec_sql', arg)
     if (!error) {
       log('exec_sql publication result', data)
       const rows = Array.isArray(data) ? data : []

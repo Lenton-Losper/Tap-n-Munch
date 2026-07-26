@@ -31,6 +31,14 @@ jobs:
           SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: npx tsx scripts/probe-realtime-and-23505-staging.ts
+      - name: Empirical realtime subscription probe (orders + order_requests)
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/probe-realtime-empirical-staging.ts
 
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
