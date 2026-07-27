@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
-import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
-import {
-  amountsMatch,
-  CLAIMABLE_PAYMENT_STATUSES,
-} from '@/lib/payments/payment-integrity'
+import { amountsMatch } from '@/lib/payments/payment-integrity'
+import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 export const dynamic = 'force-dynamic'
 
@@ -72,51 +69,6 @@ export async function POST(
         )
       }
 
-      const paidAt = new Date().toISOString()
-      // Voucher is distinct from Finatic merchant_order_no (paycloud_merchant_order_no).
-      // payment_reference kept for backwards compatibility with older readers.
-      const paymentVoucherNo = voucherNo || reference || null
-
-      const updatePayload: Record<string, unknown> = {
-        status: 'completed',
-        payment_status: 'paid',
-        payment_method: paymentMethod || 'card',
-        payment_reference: reference,
-        payment_voucher_no: paymentVoucherNo,
-        paid_at: paidAt,
-        completed_at: paidAt,
-      }
-
-      // Atomic claim: only one concurrent success can flip unpaid/pending → paid.
-      const { data: claimed, error: updateError } = await supabase
-        .from('orders')
-        .update(updatePayload)
-        .eq('id', orderId)
-        .eq('restaurant_id', terminal.restaurantId)
-        .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
-        .select('id')
-        .maybeSingle()
-
-      if (updateError) {
-        return NextResponse.json({ error: 'Failed to update order' }, { status: 500 })
-      }
-
-      if (!claimed) {
-        const alreadyPaid =
-          String(order.payment_status || '')
-            .trim()
-            .toLowerCase() === 'paid'
-        return NextResponse.json(
-          {
-            error: alreadyPaid
-              ? 'Order is already paid'
-              : 'Order payment could not be claimed',
-            code: alreadyPaid ? 'ALREADY_PAID' : 'PAYMENT_CLAIM_CONFLICT',
-          },
-          { status: 409 },
-        )
-      }
-
       // Safety net: if prepare-payment was skipped (stale APK), persist merchant order now.
       if (businessOrderNo && !order.paycloud_merchant_order_no) {
         await supabase
@@ -127,26 +79,35 @@ export async function POST(
           .is('paycloud_merchant_order_no', null)
       }
 
-      await safeIssueReceiptForOrder(orderId, 'terminal/payment')
+      const result = await markOrderPaidConfirmed(supabase, {
+        orderId,
+        restaurantId: terminal.restaurantId,
+        reference,
+        voucherNo,
+        paymentMethod: paymentMethod || 'card',
+        amount: expectedAmount,
+        terminalId: terminal.terminalId,
+        source: 'terminal_callback',
+        extraAuditMetadata: {
+          businessOrderNo: businessOrderNo || order.paycloud_merchant_order_no || null,
+        },
+      })
 
-      if (order.tab_id) {
-        const { data: unpaidOrders } = await supabase
-          .from('orders')
-          .select('total')
-          .eq('tab_id', order.tab_id)
-          .neq('payment_status', 'paid')
-
-        const newTotal = (unpaidOrders ?? []).reduce(
-          (sum: number, o: any) => sum + Number(o.total),
-          0,
+      if (!result.claimed) {
+        return NextResponse.json(
+          {
+            error: result.reason === 'already_paid' ? 'Order is already paid' : 'Order payment could not be claimed',
+            code: result.reason === 'already_paid' ? 'ALREADY_PAID' : 'PAYMENT_CLAIM_CONFLICT',
+          },
+          { status: 409 },
         )
+      }
 
-        await supabase.from('tabs').update({ total: newTotal }).eq('id', order.tab_id)
-
+      if (result.tabId) {
         const { data: remainingOrders } = await supabase
           .from('orders')
           .select('id')
-          .eq('tab_id', order.tab_id)
+          .eq('tab_id', result.tabId)
           .neq('payment_status', 'paid')
 
         canClose = (remainingOrders ?? []).length === 0
@@ -158,27 +119,7 @@ export async function POST(
             payment_preference: null,
             ready_to_pay_at: null,
           })
-          .eq('id', order.tab_id)
-      }
-
-      const { error: auditError } = await supabase.from('audit_logs').insert({
-        restaurant_id: terminal.restaurantId,
-        action: 'payment.completed',
-        entity_type: 'order',
-        entity_id: orderId,
-        metadata: {
-          reference,
-          voucherNo: paymentVoucherNo,
-          businessOrderNo: businessOrderNo || order.paycloud_merchant_order_no || null,
-          amount: expectedAmount,
-          clientAmount: amount,
-          paymentMethod,
-          terminalId: terminal.terminalId,
-        },
-      })
-
-      if (auditError) {
-        console.error('[terminal/payment] audit log failed:', auditError)
+          .eq('id', result.tabId)
       }
     } else {
       const { error: auditError } = await supabase.from('audit_logs').insert({

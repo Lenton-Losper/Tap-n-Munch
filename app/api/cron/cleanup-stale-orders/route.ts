@@ -19,8 +19,12 @@ async function runCleanup(req: Request) {
 
   const supabase = createServerSupabaseClient()
 
-  const pos = await autoCancelStalePosOrders(supabase)
+  const pos = await autoCancelStalePosOrders(supabase, { verifyWithFinatic: true })
   console.log('[CLEANUP-STALE-ORDERS] POS auto_timeout cancelled:', pos.cancelledCount)
+  console.log('[CLEANUP-STALE-ORDERS] POS corrected to paid (Finatic-verified):', pos.correctedToPaidCount, pos.correctedToPaidIds)
+  if (pos.skippedUncertainCount > 0) {
+    console.warn('[CLEANUP-STALE-ORDERS] POS skipped (Finatic check inconclusive, retrying next run):', pos.skippedUncertainCount, pos.skippedUncertainIds)
+  }
 
   let hosted: { expiredCount: number; closedTabCount: number }
   try {
@@ -55,6 +59,10 @@ async function runCleanup(req: Request) {
     success: true,
     posCancelled: pos.cancelledCount,
     posCancelledIds: pos.cancelledIds,
+    posCorrectedToPaid: pos.correctedToPaidCount,
+    posCorrectedToPaidIds: pos.correctedToPaidIds,
+    posSkippedUncertain: pos.skippedUncertainCount,
+    posSkippedUncertainIds: pos.skippedUncertainIds,
     hostedExpired: hosted.expiredCount,
     hostedClosedTabs: hosted.closedTabCount,
     reconcile,

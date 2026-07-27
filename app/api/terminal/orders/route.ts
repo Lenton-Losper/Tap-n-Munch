@@ -25,7 +25,11 @@ export async function GET(req: Request) {
     // Lazy cleanup, same pattern as recomputeInvoiceStatus's lazy overdue check: no scheduled
     // job needed for the terminal's own polling to self-heal abandoned Sale-tab orders, since
     // this route is what the terminal calls to list its own orders in the first place.
-    await autoCancelStalePosOrders(supabase, terminal.restaurantId)
+    // verifyWithFinatic is deliberately false here: this route is polled frequently and must
+    // stay fast/independent of Finatic's uptime. Only orders that never got a
+    // paycloud_merchant_order_no (no payment attempt reached Finatic) are cancelled inline;
+    // anything mid-flight is resolved by the Finatic-verified cron instead (up to ~2min extra).
+    await autoCancelStalePosOrders(supabase, { restaurantId: terminal.restaurantId, verifyWithFinatic: false })
 
     const { data, error } = await supabase
       .from('orders')
