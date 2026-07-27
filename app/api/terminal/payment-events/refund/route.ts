@@ -62,6 +62,7 @@ function parseRpcError(message: string): {
       status: 400,
       body: {
         error: 'amount exceeds remaining refundable balance',
+        code: 'AMOUNT_EXCEEDS_REMAINING',
         sale_amount: Number.isFinite(nums[0]) ? nums[0] : null,
         prior_refunded: Number.isFinite(nums[1]) ? nums[1] : null,
         remaining: Number.isFinite(nums[2]) ? nums[2] : null,
