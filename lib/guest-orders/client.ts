@@ -1,6 +1,7 @@
 import type { GuestOrderRow, GuestOrdersApiResponse } from './types'
 
 type FetchGuestOrderParams = {
+  restaurantId: string
   tableNumber?: number
   sessionId?: string
 }
@@ -15,17 +16,16 @@ async function parseGuestOrdersResponse(res: Response): Promise<GuestOrdersApiRe
 
 export async function fetchGuestOrderById(
   orderId: string,
-  params: FetchGuestOrderParams = {},
+  params: FetchGuestOrderParams,
 ): Promise<GuestOrderRow | null> {
-  const qs = new URLSearchParams()
+  const qs = new URLSearchParams({ restaurantId: params.restaurantId })
   if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
     qs.set('table_number', String(params.tableNumber))
   }
   if (params.sessionId?.trim()) {
     qs.set('session_id', params.sessionId.trim())
   }
-  const suffix = qs.toString() ? `?${qs.toString()}` : ''
-  const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}${suffix}`)
+  const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}?${qs.toString()}`)
   if (res.status === 404) return null
   const body = await parseGuestOrdersResponse(res)
   return body.orders[0] ?? null
@@ -79,11 +79,9 @@ export async function fetchGuestOrdersByPaymentRef(params: {
 }): Promise<GuestOrderRow[]> {
   const qs = new URLSearchParams({ ref: params.paymentRef.trim() })
   if (params.restaurantId?.trim()) qs.set('restaurantId', params.restaurantId.trim())
-
   const res = await fetch(`/api/guest/orders/by-payment-ref?${qs.toString()}`)
   const body = await parseGuestOrdersResponse(res)
   return body.orders
 }
 
-/** Stage 2 prep: replace Supabase Realtime guest subscriptions with polling. */
 export const GUEST_ORDER_POLL_MS = 5000

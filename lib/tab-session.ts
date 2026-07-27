@@ -109,9 +109,18 @@ export async function fetchActiveTabForTable(
   return (data as TabRow) || null
 }
 
-export async function fetchOrdersForTab(tabId: string, restaurantId: string) {
+export async function fetchOrdersForTab(
+  tabId: string,
+  restaurantId: string,
+  sessionId?: string | null,
+) {
+  const sid = String(sessionId || '').trim()
+  // Guest by-session API requires session_id (tab UUID alone is insufficient).
+  if (!sid) return []
+
   const { orders } = await fetchGuestOrdersBySession({
     restaurantId,
+    sessionId: sid,
     tabId,
     excludeSettlement: true,
   })

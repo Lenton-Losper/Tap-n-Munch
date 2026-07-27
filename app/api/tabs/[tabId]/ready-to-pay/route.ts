@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { requireSessionToken } from '@/lib/session-guard'
+import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,6 +36,12 @@ export async function POST(
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantId)
+    const mismatch = assertSessionMatchesResource(guard, {
+      restaurantId: restaurantUuid,
+      tabId: normalizedTabId,
+    })
+    if (mismatch) return mismatch
+
     const supabase = createServerSupabaseClient()
 
     const { data: tab, error: loadError } = await supabase

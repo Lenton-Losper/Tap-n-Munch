@@ -28,8 +28,17 @@ export async function POST(
   }
 
   const { searchParams } = new URL(req.url)
+  const restaurantId =
+    searchParams.get('restaurantId')?.trim() ||
+    searchParams.get('restaurant_id')?.trim() ||
+    (typeof body?.restaurantId === 'string' ? body.restaurantId.trim() : '') ||
+    (typeof body?.restaurant_id === 'string' ? body.restaurant_id.trim() : '')
   const tableNumber = parseOptionalInt(searchParams.get('table_number')) ?? parseOptionalInt(body?.table_number)
   const sessionId = searchParams.get('session_id') || (typeof body?.session_id === 'string' ? body.session_id : null)
+
+  if (!restaurantId) {
+    return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+  }
 
   const supabase = createServerSupabaseClient()
 
@@ -37,6 +46,7 @@ export async function POST(
     .from('orders')
     .select('id, restaurant_id, table_number, session_id, is_closed, status, payment_status')
     .eq('id', orderId)
+    .eq('restaurant_id', restaurantId)
     .maybeSingle()
 
   if (error) {
@@ -47,7 +57,7 @@ export async function POST(
   }
 
   const guestOrder = { ...order, id: String(order.id) } as GuestOrderRow
-  if (!guestCanAccessOrder(guestOrder, { tableNumber, sessionId })) {
+  if (!guestCanAccessOrder(guestOrder, { restaurantId, tableNumber, sessionId })) {
     return NextResponse.json({ error: 'Order not accessible' }, { status: 404 })
   }
 

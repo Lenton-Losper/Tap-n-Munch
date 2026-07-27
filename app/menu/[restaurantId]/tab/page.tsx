@@ -13,6 +13,7 @@ import {
   type TabRow,
 } from '@/lib/tab-session'
 import { persistTabSession } from '@/lib/tab-storage'
+import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -105,7 +106,7 @@ export default function TabSummaryPage() {
         setTabRecord(tab)
         persistTabSession(storedTabId, tableNumVal)
 
-        const rows = await fetchOrdersForTab(storedTabId, restaurantId)
+        const rows = await fetchOrdersForTab(storedTabId, restaurantId, getCurrentSession())
         if (cancelled) return
         setOrders(
           (rows || []).map((d: any) => ({ id: String(d.id), ...(d as Omit<TabOrder, 'id'>) }))

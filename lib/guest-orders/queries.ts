@@ -46,37 +46,46 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
 
 export async function fetchGuestOrderById(
   orderId: string,
-  params: { tableNumber?: number | null; sessionId?: string | null },
+  params: {
+    tableNumber?: number | null
+    sessionId?: string | null
+    restaurantId?: string | null
+  },
 ): Promise<{ order: GuestOrderRow | null; denied: boolean }> {
   const supabase = createServerSupabaseClient()
-  const { data, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle()
+  const restaurantUuid = params.restaurantId
+    ? await resolveGuestRestaurantId(String(params.restaurantId))
+    : null
+  const accessParams = { ...params, restaurantId: restaurantUuid }
+
+  let orderQuery = supabase.from('orders').select('*').eq('id', orderId)
+  if (restaurantUuid) orderQuery = orderQuery.eq('restaurant_id', restaurantUuid)
+  const { data, error } = await orderQuery.maybeSingle()
 
   if (error) throw error
 
   if (data) {
     const order = { id: String(data.id), ...data } as GuestOrderRow
-    if (!guestCanAccessOrder(order, params)) {
+    if (!guestCanAccessOrder(order, accessParams)) {
       return { order: null, denied: true }
     }
     return { order, denied: false }
   }
 
-  const { data: request, error: requestError } = await supabase
-    .from('order_requests')
-    .select('*')
-    .eq('id', orderId)
-    .maybeSingle()
+  let requestQuery = supabase.from('order_requests').select('*').eq('id', orderId)
+  if (restaurantUuid) requestQuery = requestQuery.eq('restaurant_id', restaurantUuid)
+  const { data: request, error: requestError } = await requestQuery.maybeSingle()
 
   if (requestError) throw requestError
   if (!request) return { order: null, denied: false }
 
   const requestRow = { id: String(request.id), ...request } as GuestOrderRow
-  if (!guestCanAccessOrder(requestRow, params)) {
+  if (!guestCanAccessOrder(requestRow, accessParams)) {
     return { order: null, denied: true }
   }
 
   if (request.status === 'accepted' && request.accepted_order_id) {
-    return fetchGuestOrderById(String(request.accepted_order_id), params)
+    return fetchGuestOrderById(String(request.accepted_order_id), accessParams)
   }
 
   return { order: mapOrderRequestToGuestRow(request), denied: false }
@@ -92,16 +101,19 @@ export async function fetchGuestOrdersBySession(params: {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
 
-  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-
-  query = query.eq('restaurant_id', restaurantUuid)
-
   const sessionId = String(params.sessionId || '').trim()
   const tabId = String(params.tabId || '').trim()
 
-  if (sessionId) {
-    query = query.eq('session_id', sessionId)
+  // Fail closed: never dump a full tab by UUID alone. Require session scope
+  // (same pattern as active-table). Tab id may still refine the filter.
+  if (!sessionId) {
+    return { orders: [], count: 0 }
   }
+
+  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+
+  query = query.eq('restaurant_id', restaurantUuid).eq('session_id', sessionId)
+
   if (tabId) {
     query = query.eq('tab_id', tabId)
   }

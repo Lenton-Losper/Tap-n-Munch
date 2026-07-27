@@ -72,6 +72,7 @@ export function ActiveOrderBanner() {
 
     const fetchLastOrder = async () => {
       const data = await fetchGuestOrderById(orderId, {
+        restaurantId,
         tableNumber,
         sessionId: getCurrentSession() || undefined,
       })

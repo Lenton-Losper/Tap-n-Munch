@@ -105,9 +105,14 @@ export async function getRestaurant(restaurantIdInput: string) {
   if (!id) return null
 
   if (isUuid(id)) {
+    // Public-safe columns only: restaurants RLS grants anon SELECT on a
+    // restricted column set (no Finatic/checkout secrets). SELECT * or
+    // owner_id/subscription_* would fail under column-level privileges.
     const { data, error } = await supabase
       .from('restaurants')
-      .select('*')
+      .select(
+        'id, name, slug, phone, logo_url, primary_color, currency, online_ordering_enabled, address, subdomain, timezone, is_active, created_at, updated_at, firebase_id, tab_pin_required',
+      )
       .eq('id', id)
       .maybeSingle()
     if (error) throw error
@@ -116,7 +121,8 @@ export async function getRestaurant(restaurantIdInput: string) {
 
   const resolvedId = await resolveRestaurantUuid(id).catch(() => null)
   if (!resolvedId) return null
-  return getRestaurantById(resolvedId)
+  // Recurse on UUID so we keep the public-safe column set (not getRestaurantById).
+  return getRestaurant(resolvedId)
 }
 
 export async function updateRestaurantSettings(

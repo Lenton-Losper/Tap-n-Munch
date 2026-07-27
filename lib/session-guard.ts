@@ -38,3 +38,33 @@ export async function requireSessionToken(req: Request): Promise<{
     restaurantId: validation.restaurantId,
   }
 }
+
+/**
+ * Bind a validated session token to the restaurant/tab the request claims to act on.
+ * Prevents reusing Restaurant A's token against Restaurant B's IDs.
+ */
+export function assertSessionMatchesResource(
+  guard: { restaurantId?: string; tabId?: string },
+  expected: { restaurantId?: string | null; tabId?: string | null },
+): NextResponse | null {
+  const tokenRestaurant = String(guard.restaurantId || '').trim()
+  const tokenTab = String(guard.tabId || '').trim()
+  const wantRestaurant = String(expected.restaurantId || '').trim()
+  const wantTab = String(expected.tabId || '').trim()
+
+  if (wantRestaurant && tokenRestaurant && wantRestaurant !== tokenRestaurant) {
+    return NextResponse.json(
+      { error: 'Session token does not match this restaurant' },
+      { status: 403 },
+    )
+  }
+
+  if (wantTab && tokenTab && wantTab !== tokenTab) {
+    return NextResponse.json(
+      { error: 'Session token does not match this tab' },
+      { status: 403 },
+    )
+  }
+
+  return null
+}

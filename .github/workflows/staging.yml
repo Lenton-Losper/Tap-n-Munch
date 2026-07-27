@@ -90,6 +90,103 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
         run: npx tsx scripts/probe-orders-status-accept-cancel-race-staging.ts
 
+  apply-tenant-isolation-rls:
+    # Apply ENABLE+FORCE RLS for tabs/restaurants/users/customer_sessions.
+    # If DDL secrets are empty, paste scripts/sql/apply-20260726200000-tenant-isolation-rls.sql
+    # in the staging SQL editor, then push with [probe-tenant-isolation].
+    if: contains(github.event.head_commit.message, '[apply-tenant-isolation-rls]')
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    name: Apply tenant isolation RLS (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Probe apply credentials (no values printed)
+        run: |
+          has_token=0; has_db_url=0; has_db_password=0
+          [ -n "$SUPABASE_ACCESS_TOKEN" ] && has_token=1
+          [ -n "$STAGING_DATABASE_URL$DATABASE_URL$SUPABASE_DB_URL" ] && has_db_url=1
+          [ -n "$STAGING_SUPABASE_DB_PASSWORD$SUPABASE_DB_PASSWORD" ] && has_db_password=1
+          echo "Credential probe: token=$has_token db_url=$has_db_url db_password=$has_db_password"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      - name: Apply tenant isolation RLS migration on staging
+        run: |
+          set -euo pipefail
+          MIG=supabase/migrations/20260726200000_enable_rls_tabs_restaurants_users_sessions.sql
+          VER=20260726200000
+          if [ -n "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "Using SUPABASE_ACCESS_TOKEN + linked Management API"
+            npx tsx scripts/apply-tenant-isolation-rls-staging.ts
+            exit 0
+          fi
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            npx supabase db query --db-url "$DB_URL" -f "$MIG"
+            npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            echo "APPLY_TENANT_ISOLATION_RLS_STAGING_OK (db-url)"
+            exit 0
+          fi
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            echo "APPLY_TENANT_ISOLATION_RLS_STAGING_OK (password)"
+            exit 0
+          fi
+          echo "ERROR: No way to apply DDL. Add one of:"
+          echo "  - SUPABASE_ACCESS_TOKEN (preferred)"
+          echo "  - STAGING_DATABASE_URL / DATABASE_URL"
+          echo "  - STAGING_SUPABASE_DB_PASSWORD"
+          echo "Or paste scripts/sql/apply-20260726200000-tenant-isolation-rls.sql into the staging SQL editor."
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+  probe-tenant-isolation:
+    if: contains(github.event.head_commit.message, '[probe-tenant-isolation]')
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: Probe multi-tenant isolation (RLS + IDOR + session bind)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cross-tenant isolation checks against staging
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+        run: npx tsx scripts/probe-tenant-isolation-staging.ts
+
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
     runs-on: ubuntu-latest

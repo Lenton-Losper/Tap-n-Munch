@@ -4,7 +4,7 @@ import { createPaymentRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { requireSessionToken } from '@/lib/session-guard'
+import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 
 export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
@@ -49,6 +49,27 @@ export async function POST(req: Request) {
     if (requiresSessionToken) {
       const guard = await requireSessionToken(req)
       if (guard.error) return guard.error
+      const orderTabIds = sortedOrderIds
+        .map((orderId) => {
+          const row = byId.get(orderId) as { tab_id?: string | null } | undefined
+          return String(row?.tab_id || '').trim()
+        })
+        .filter(Boolean)
+      const boundTabId = String(tabId || orderTabIds[0] || '').trim()
+      const mismatch = assertSessionMatchesResource(guard, {
+        restaurantId: restaurantUuid,
+        tabId: boundTabId || null,
+      })
+      if (mismatch) return mismatch
+      if (
+        orderTabIds.length > 0 &&
+        orderTabIds.some((id) => id !== String(guard.tabId || '').trim())
+      ) {
+        return NextResponse.json(
+          { ok: false, error: 'Session token does not match these orders' },
+          { status: 403 },
+        )
+      }
     }
 
     let sum = 0
