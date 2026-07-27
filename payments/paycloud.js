@@ -941,11 +941,17 @@ export async function queryPaymentOrder(input, options = {}) {
     })
   }
 
+  // Response RSA verify is best-effort only (Finatic key mismatch must not block a
+  // reconciliation query that otherwise succeeded) -- mirrors the checkout path above.
   const signature = body.sign
   if (signature && treatAsSuccess) {
-    const signatureOk = verifyPayloadSignature(body, signature)
-    if (!signatureOk) {
-      console.warn('[PayCloud][QUERY] Response signature did not verify (ignored; code ok)')
+    try {
+      const signatureOk = verifyPayloadSignature(body, signature)
+      if (!signatureOk) {
+        console.warn('[PayCloud][QUERY] Response signature did not verify (ignored; code ok)')
+      }
+    } catch (err) {
+      console.warn('[PayCloud][QUERY] Response signature verification threw (ignored):', err?.message || err)
     }
   }
 
