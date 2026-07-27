@@ -32,12 +32,32 @@ export default {
     }
 
     const url = `${appBaseUrl(env)}/api/cron/cleanup-stale-orders`
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'x-cron-secret': secret },
+    })
+
     ctx.waitUntil(
-      fetch(url, {
-        method: 'POST',
-        headers: { 'x-cron-secret': secret },
-      })
-        .then(async (res) => {
+      // In-process call into the compiled Next.js handler -- NOT the global fetch().
+      // handler.fetch is the exact same function reference this Worker's own `fetch`
+      // export uses; calling it directly here is a plain JS function call within the
+      // same isolate, so there is no HTTP round-trip, no DNS/TLS/edge routing back
+      // into this zone, and nothing that can time out with a 522. It still runs
+      // through the real compiled /api/cron/cleanup-stale-orders route (same
+      // requireCronSecret check, same autoCancelStalePosOrders/expireHostedPendingOrders/
+      // reconcileOrphanPayments logic), because handler.fetch internally wraps every
+      // call in runWithCloudflareRequestContext(request, env, ctx, ...), which is what
+      // populates process.env from the Workers env bindings -- so this call gets that
+      // same setup even though it's not a real inbound request.
+      //
+      // Previously this used the global fetch(url, ...) to hit this same URL, which
+      // Cloudflare routes back out through its edge into the Worker's own zone --
+      // that self-referential request was timing out with a 522 on every single cron
+      // tick (confirmed via Cloudflare Observability logs), so cleanup-stale-orders
+      // never ran at all.
+      handler
+        .fetch(request, env, ctx)
+        .then(async (res: Response) => {
           const body = await res.text()
           if (!res.ok) {
             console.error('[CRON] cleanup-stale-orders failed', res.status, body)
@@ -45,7 +65,7 @@ export default {
           }
           console.log('[CRON] cleanup-stale-orders ok', body)
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           console.error('[CRON] cleanup-stale-orders fetch error', err)
         }),
     )
