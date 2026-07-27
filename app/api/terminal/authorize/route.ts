@@ -4,6 +4,10 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { authorize } from '@/lib/permissions/authorize'
 import { resolveTerminalAuthorizationPermission } from '@/lib/terminal-auth/purpose-permissions'
 import { validateTerminalPin, verifyTerminalPin } from '@/lib/terminal-auth/pin-credentials'
+import {
+  getPinLockoutStatus,
+  PIN_MAX_FAILED_ATTEMPTS,
+} from '@/lib/terminal-auth/pin-lockout'
 
 export const dynamic = 'force-dynamic'
 
@@ -90,6 +94,34 @@ export async function POST(req: Request) {
       detail: { purpose, permission },
     }
 
+    const lockout = await getPinLockoutStatus(supabase, {
+      restaurantId: terminal.restaurantId,
+      userId,
+    })
+    if (lockout.locked) {
+      await recordAuthorizationEvent(supabase, {
+        ...auditBase,
+        event_type: 'denied',
+        detail: {
+          ...auditBase.detail,
+          reason: 'pin_locked',
+          failed_attempts: lockout.failedAttempts,
+        },
+      })
+      return NextResponse.json(
+        {
+          error: 'PIN temporarily locked after too many failed attempts',
+          code: 'PIN_LOCKED',
+          retry_after_seconds: lockout.retryAfterSeconds,
+          max_attempts: PIN_MAX_FAILED_ATTEMPTS,
+        },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(lockout.retryAfterSeconds) },
+        },
+      )
+    }
+
     const { data: membership, error: membershipError } = await supabase
       .from('restaurant_users')
       .select('user_id')
@@ -149,7 +181,29 @@ export async function POST(req: Request) {
         event_type: 'denied',
         detail: { ...auditBase.detail, reason: 'pin_mismatch' },
       })
-      return NextResponse.json({ error: 'Invalid PIN' }, { status: 401 })
+      const afterFail = await getPinLockoutStatus(supabase, {
+        restaurantId: terminal.restaurantId,
+        userId,
+      })
+      return NextResponse.json(
+        {
+          error: 'Invalid PIN',
+          code: afterFail.locked ? 'PIN_LOCKED' : 'PIN_MISMATCH',
+          attempts_remaining: Math.max(
+            0,
+            PIN_MAX_FAILED_ATTEMPTS - afterFail.failedAttempts,
+          ),
+          ...(afterFail.locked
+            ? { retry_after_seconds: afterFail.retryAfterSeconds }
+            : {}),
+        },
+        {
+          status: afterFail.locked ? 429 : 401,
+          ...(afterFail.locked
+            ? { headers: { 'Retry-After': String(afterFail.retryAfterSeconds) } }
+            : {}),
+        },
+      )
     }
 
     const nonce = crypto.randomUUID()
