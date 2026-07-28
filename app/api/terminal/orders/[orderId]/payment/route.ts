@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
-import { amountsMatch, CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
+import { amountsMatch } from '@/lib/payments/payment-integrity'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 
 export const dynamic = 'force-dynamic'
 
@@ -122,30 +123,31 @@ export async function POST(
           .eq('id', result.tabId)
       }
     } else {
-      // Mirror autoCancelStalePosOrders / markOrderPaidConfirmed: status + payment_status
-      // + cancellation_reason + cancelled_at must land in one UPDATE. Only claim from
-      // unpaid/pending so a concurrent success callback wins the race.
-      const cancelledAt = new Date().toISOString()
-      const { data: cancelled, error: cancelError } = await supabase
-        .from('orders')
-        .update({
-          status: 'cancelled',
-          payment_status: 'cancelled',
-          cancellation_reason: 'payment_declined',
-          cancelled_at: cancelledAt,
-        })
-        .eq('id', orderId)
-        .eq('restaurant_id', terminal.restaurantId)
-        .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
-        .select('id, status, payment_status, cancellation_reason, cancelled_at')
-        .maybeSingle()
-
-      if (cancelError) {
-        console.error('[terminal/payment] cancel-on-failed update error:', cancelError)
-        return NextResponse.json({ error: cancelError.message }, { status: 500 })
+      // Never trust a terminal failure report alone when Finatic may already have
+      // charged (order #635). Same verify-before-cancel pattern as autoCancelStalePosOrders.
+      let failedResult
+      try {
+        failedResult = await handleTerminalPaymentFailed(
+          supabase,
+          {
+            orderId,
+            restaurantId: terminal.restaurantId,
+            orderTotal: Number(order.total),
+            paycloudMerchantOrderNo: order.paycloud_merchant_order_no,
+            terminalId: terminal.terminalId,
+            reference,
+            amount: Number.isFinite(amount) ? amount : undefined,
+            paymentMethod: paymentMethod || 'card',
+          },
+          { stagingFinaticStub: body?.__stagingFinaticStub },
+        )
+      } catch (cancelErr: unknown) {
+        const message = cancelErr instanceof Error ? cancelErr.message : 'Cancel failed'
+        console.error('[terminal/payment] handleTerminalPaymentFailed error:', cancelErr)
+        return NextResponse.json({ error: message }, { status: 500 })
       }
 
-      if (!cancelled) {
+      if (failedResult.outcome === 'cancel_conflict') {
         return NextResponse.json(
           {
             error: 'Order payment could not be cancelled',
@@ -155,22 +157,48 @@ export async function POST(
         )
       }
 
-      const { error: auditError } = await supabase.from('audit_logs').insert({
-        restaurant_id: terminal.restaurantId,
-        action: 'payment.failed',
-        entity_type: 'order',
-        entity_id: orderId,
-        metadata: {
-          reference,
-          amount,
-          terminalId: terminal.terminalId,
-          cancellation_reason: 'payment_declined',
-        },
-      })
+      if (failedResult.outcome === 'corrected_to_paid') {
+        if (failedResult.tabId) {
+          const { data: remainingOrders } = await supabase
+            .from('orders')
+            .select('id')
+            .eq('tab_id', failedResult.tabId)
+            .neq('payment_status', 'paid')
 
-      if (auditError) {
-        console.error('[terminal/payment] audit log failed:', auditError)
+          canClose = (remainingOrders ?? []).length === 0
+
+          await supabase
+            .from('tabs')
+            .update({
+              status: 'open',
+              payment_preference: null,
+              ready_to_pay_at: null,
+            })
+            .eq('id', failedResult.tabId)
+        }
+
+        return NextResponse.json({
+          success: true,
+          canClose,
+          outcome: 'corrected_to_paid',
+        })
       }
+
+      if (failedResult.outcome === 'left_pending_finatic_uncertain') {
+        // Do not cancel; cron with verifyWithFinatic will resolve later.
+        return NextResponse.json({
+          success: true,
+          canClose: false,
+          outcome: 'left_pending_finatic_uncertain',
+          reason: failedResult.reason,
+        })
+      }
+
+      return NextResponse.json({
+        success: true,
+        canClose: false,
+        outcome: 'cancelled',
+      })
     }
 
     return NextResponse.json({ success: true, canClose })
