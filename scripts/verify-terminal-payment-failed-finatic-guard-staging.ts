@@ -171,7 +171,9 @@ async function main() {
     assert(freshA!.status === 'cancelled' && freshA!.payment_status === 'cancelled', 'A must be cancelled')
     assert(freshA!.cancellation_reason === 'payment_declined', 'A reason payment_declined')
     assert(!finaticCallLog.includes(''), 'A should not call Finatic with empty key')
-    assert(finaticCallLog.length === 0, `A: Finatic must not be called yet — got ${finaticCallLog.length}`)
+    if (finaticCallLog.length !== 0) {
+      throw new Error(`ASSERTION FAILED: A: Finatic must not be called yet — got ${finaticCallLog.length}`)
+    }
     console.log('SCENARIO_A_NO_MERCHANT_ORDER_CANCELLED_OK')
 
     // ---- B: Finatic paid (false-failure) ----
