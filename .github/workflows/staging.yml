@@ -293,6 +293,26 @@ jobs:
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
         run: npx tsx scripts/investigate-uat-1199-payment-staging.ts
 
+  investigate-uat-1199-followup:
+    if: contains(github.event.head_commit.message, '[investigate-uat-1199-followup]')
+    runs-on: ubuntu-latest
+    name: Follow-up Finatic-UAT 11.99 decline dump (read-only)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Expand nearby orders + decline audits
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/investigate-uat-1199-followup-staging.ts
+
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
     runs-on: ubuntu-latest
