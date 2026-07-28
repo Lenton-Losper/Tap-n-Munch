@@ -13,6 +13,7 @@
  *
  * Marker: VERIFY_TERMINAL_PAYMENT_FAILED_FINATIC_GUARD_STAGING_OK
  */
+// @ts-nocheck
 import { config } from 'dotenv'
 import { resolve } from 'path'
 import { createClient } from '@supabase/supabase-js'
@@ -220,9 +221,10 @@ async function main() {
     console.log('SCENARIO_D_FINATIC_UNREACHABLE_LEFT_PENDING_OK')
 
     log('Finatic call log', finaticCallLog)
+    const finaticCallCount = finaticCallLog.slice().length
     assert(
-      finaticCallLog.length === 3,
-      `Finatic should be called for B/C/D only (3) — got ${finaticCallLog.length}`,
+      finaticCallCount === 3,
+      `Finatic should be called for B/C/D only (3) — got ${finaticCallCount}`,
     )
 
     console.log('\nVERIFY_TERMINAL_PAYMENT_FAILED_FINATIC_GUARD_STAGING_OK')
