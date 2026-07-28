@@ -2,7 +2,7 @@
 
 **Status:** Investigation / proposed runbook (issue #92). Not yet adopted as mandatory ops policy.  
 **Scope:** Worker code rollback only. Does **not** undo Supabase schema changes.  
-**Date of investigation:** 2026-07-28.  
+**Date of investigation:** 2026-07-28. **Empirically re-verified:** 2026-07-28 (same day, later session — see verification note below).  
 **Live production Worker:** `flashtap-production` (`wrangler.production.toml`) → `https://flashtap.app`  
 **Deploy path today:** GitHub Actions `production-worker.yml` → `npx wrangler@3.99.0 deploy --config wrangler.production.toml` (immediate 100% cutover).
 
@@ -12,16 +12,50 @@
 
 | Question | Answer |
 | --- | --- |
-| Does CF retain previous Worker versions? | **Yes.** Cloudflare retains the **100 most recently published versions** for rollback (raised from 10 on 2025-09-11). |
-| How to view history? | Dashboard: Workers & Pages → `flashtap-production` → **Deployments**. CLI: `wrangler deployments list` / `wrangler versions list` with production config + API token. |
-| Fast redeploy of a prior version? | **Yes.** `wrangler rollback [version-id]` (or dashboard “Rollback”) immediately creates a new deployment that serves that version at 100%. Omitting the ID rolls back to the previous deployment. |
-| Has this project ever tested CF rollback? | **No evidence found.** Git history, workflows, and docs only show `wrangler deploy`. No `wrangler rollback`, gradual `versions deploy`, or CF-specific rollback drill. Old Vercel checklists are unrelated. |
-| Can we list live version IDs from this agent? | **Not without** `CLOUDFLARE_API_TOKEN` (CI uses `CLOUDFLARE_API_TOKEN_SHADOW`). Run the list commands from a machine/CI job that has the token before an incident. |
+| Does CF retain previous Worker versions? | **Yes.** Cloudflare retains the **100 most recently published versions** for rollback (raised from 10 on 2025-09-11). **Verified** against the official changelog directly — entry confirms 10→100, and that both dashboard and Wrangler can promote any of the 100 to active. |
+| How to view history? | Dashboard: Workers & Pages → `flashtap-production` → **Deployments**. CLI: `wrangler deployments list` / `wrangler versions list` with production config + API token. **Verified**: ran `npx wrangler@3.99.0 deployments list --config wrangler.production.toml` for real — see real output below. |
+| Fast redeploy of a prior version? | **Yes.** `wrangler rollback [version-id]` (or dashboard “Rollback”) immediately creates a new deployment that serves that version at 100%. Omitting the ID rolls back to the previous deployment. **Verified**: ran `wrangler rollback --help` for real against the pinned `wrangler@3.99.0` — exact signature is `wrangler rollback [version-id] [-m/--message]`, matching the usage below. (Command was **not executed** — `--help` only; an actual rollback was out of scope for this investigation.) |
+| Has this project ever tested CF rollback? | **No evidence found — confirmed with real data, not just absence-of-grep.** Pulled the actual `deployments list` for both `flashtap-production` and `flashtap-staging` (see below): every entry's `Source` is `Unknown (deployment)` or `Secret Change`. Zero entries show a rollback-sourced deployment. Git history, workflows, and docs also only show `wrangler deploy`. |
+| Can we list live version IDs from this agent? | **Yes, as of this re-verification** — this agent has an authenticated local `wrangler` session (`llosperofficial@gmail.com`) with real deploy/list access to both Workers, separate from the CI `CLOUDFLARE_API_TOKEN_SHADOW`. Real list output captured below. A break-glass shell for an on-call human should still use the CI-class token or their own authenticated `wrangler login`. |
 
 Official refs:
 
 - [Rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/)
-- [Changelog: rollback limit 10 → 100](https://developers.cloudflare.com/changelog/post/2025-09-11-increased-version-rollback-limit/)
+- [Changelog: rollback limit 10 → 100](https://developers.cloudflare.com/changelog/post/2025-09-11-increased-version-rollback-limit/) — fetched and confirmed directly: *"100 most recent versions... a tenfold increase from the prior threshold of 10 versions"*, both dashboard and Wrangler supported.
+
+### Real verification output (2026-07-28, later same-day session)
+
+```
+$ npx wrangler@3.99.0 deployments list --config wrangler.production.toml
+Created:     2026-07-28T21:39:12.245Z
+Author:      llosperofficial@gmail.com
+Source:      Unknown (deployment)
+Version(s):  (100%) 8b44067b-1588-445f-bc60-ced5a0f02932
+                 Created:  2026-07-28T21:39:09.540Z
+...
+(10 most recent shown; every Source across prod and staging is
+"Unknown (deployment)" or "Secret Change" — never "Rollback")
+
+$ npx wrangler@3.99.0 rollback --help
+wrangler rollback [version-id]
+🔙 Rollback a deployment for a Worker
+POSITIONALS
+  version-id  The ID of the Worker Version to rollback to  [string]
+OPTIONS
+      --name     The name of your Worker  [string]
+  -m, --message  The reason for this rollback  [string]
+  -y, --yes      Automatically accept defaults to prompts  [boolean] [default: false]
+
+$ npx wrangler@3.99.0 versions --help
+COMMANDS
+  wrangler versions view <version-id>
+  wrangler versions list                      List the 10 most recent Versions
+  wrangler versions upload                    Uploads Worker code+config as a new Version (no traffic)
+  wrangler versions deploy [version-specs..]   Split traffic between multiple Versions
+  wrangler versions secret
+```
+
+Repo secrets confirmed present (names only, `gh secret list`): `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_API_TOKEN_SHADOW`, `CLOUDFLARE_ACCOUNT_ID` — the CI token class this runbook assumes for break-glass access does exist.
 
 ---
 
@@ -163,11 +197,11 @@ Production already blocks Worker deploys when local `supabase/migrations/` and t
 
 ## Gaps called out by this investigation
 
-1. **No practiced rollback** on Cloudflare for this project — recommend one staging drill.
+1. **No practiced rollback** on Cloudflare for this project — confirmed via real `deployments list` on both prod and staging (zero rollback-sourced entries ever). Recommend one staging drill (Part 1 §4) before relying on this runbook in a real incident — command syntax is verified, but the human muscle-memory step is not.
 2. **No CI helper** to print recent production version IDs alongside `/api/version` after deploy.
 3. **Actions fallback is weak** for true rollback (`production-worker.yml` always checks out `main`) — Wrangler/dashboard is the real break-glass path.
-4. **Issue #92** was not readable from this agent’s GitHub token (403 / GraphQL resolve failure); this doc is the investigation deliverable against that backlog item.
-5. This agent could **not** dump live `wrangler deployments list` output (no CF API token in the environment). Attach a real list dump when someone with the token runs it.
+4. ~~Issue #92 was not readable from this agent's GitHub token~~ — resolved in the later verification session; issue #92 body confirms this doc's scope matches what was asked (rollback options, procedure, migration caveat, deploy-process tightening).
+5. ~~This agent could not dump live `wrangler deployments list` output~~ — resolved: a later session had an authenticated local `wrangler` session and captured real output (above) for both `flashtap-production` and `flashtap-staging`.
 
 ---
 

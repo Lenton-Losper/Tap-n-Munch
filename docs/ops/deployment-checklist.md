@@ -2,7 +2,7 @@
 
 **Status:** Proposed ops documentation (issue #92). Investigation only — no workflow changes in this PR.  
 **Companion:** [cloudflare-workers-rollback.md](./cloudflare-workers-rollback.md)  
-**Date:** 2026-07-28
+**Date:** 2026-07-28. Snapshot refreshed 2026-07-28 (later same-day session, real curl output — see below).
 
 ---
 
@@ -24,10 +24,17 @@
 | Prod pre-deploy gates | OpenNext build; assert custom domains in toml; **migration drift check** (hard fail) |
 | Retired path | `production.yml` (Vercel) is manual/legacy; production traffic is CF-only |
 
-Snapshot at investigation time:
+Snapshot at investigation time (2026-07-28, morning):
 
 - Production `/api/version` → `9e7c043…` (matches latest successful prod Actions deploy)
 - Staging `/api/version` → `6e1e767…` (staging branch tip; often ahead of / different from prod)
+
+**Refreshed snapshot** (2026-07-28, later same-day, real `curl` output):
+
+- Production `/api/version` → `{"commit":"19bb97ae67a9a4ca8320b569be71e4cf36822cdf"}`
+- Staging `/api/version` → `{"commit":"097f69f5656acc0184fea946a32e5bfc3f2c818c"}`
+
+This gap (9e7c043 → 19bb97a on prod) is itself a real example of the checklist below working end-to-end: PR #99 (webhook signature-fallback fix) went staging-green with real HTTP A/B/C verification, got explicit human sign-off twice (once for the fix, once for the production cutover), deployed via `production-worker.yml`, and was confirmed live via `/api/version` — the exact sequence proposed in §B–F below, run for real, same day this doc was drafted.
 
 ### Is “no gradual rollout” accurate?
 
