@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 
 export const dynamic = 'force-dynamic'
 
@@ -98,19 +99,121 @@ export async function PATCH(
       )
     }
 
-    const updates: Record<string, unknown> = { status: newStatus }
-
-    // When the terminal cancels, keep the same four-field integrity contract as
-    // autoCancelStalePosOrders (auto_timeout) and the payment-failed callback
-    // (payment_declined). Distinguish this path as terminal_cancelled.
+    // Cancel with a Finatic attempt already initiated: same verify-before-cancel as
+    // the payment status=failed callback (order #635). Pre-payment cancels (no
+    // paycloud_merchant_order_no) skip Finatic and cancel immediately below.
     if (newStatus === 'cancelled') {
       const callerReason = String(
         body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason ?? '',
       ).trim()
-      updates.payment_status = 'cancelled'
-      updates.cancellation_reason = callerReason || 'terminal_cancelled'
-      updates.cancelled_at = new Date().toISOString()
+      const cancellationReason = callerReason || 'terminal_cancelled'
+      const merchantOrderNo = String(order.paycloud_merchant_order_no || '').trim()
+
+      if (merchantOrderNo) {
+        let failedResult
+        try {
+          failedResult = await handleTerminalPaymentFailed(
+            supabase,
+            {
+              orderId,
+              restaurantId: terminal.restaurantId,
+              orderTotal: Number(order.total),
+              paycloudMerchantOrderNo: merchantOrderNo,
+              terminalId: terminal.terminalId,
+              paymentMethod: order.payment_method ? String(order.payment_method) : 'card',
+              cancellationReason,
+              auditAction: 'order.cancelled',
+              correctionSource: 'terminal_status_cancel_false_failure_finatic_verified',
+              correctionReason:
+                'Terminal PATCH status=cancelled after a Finatic payment attempt, but Finatic order.query confirmed paid — corrected instead of cancelling (false-failure guard).',
+            },
+            { stagingFinaticStub: body?.__stagingFinaticStub },
+          )
+        } catch (cancelErr: unknown) {
+          const message = cancelErr instanceof Error ? cancelErr.message : 'Cancel failed'
+          console.error('[terminal/status] handleTerminalPaymentFailed error:', cancelErr)
+          return NextResponse.json({ error: message }, { status: 500 })
+        }
+
+        if (failedResult.outcome === 'cancel_conflict') {
+          return NextResponse.json(
+            {
+              error: 'Order could not be cancelled',
+              code: 'PAYMENT_CANCEL_CONFLICT',
+            },
+            { status: 409 },
+          )
+        }
+
+        if (failedResult.outcome === 'corrected_to_paid') {
+          const { data: paidOrder } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('id', orderId)
+            .maybeSingle()
+          return NextResponse.json({
+            success: true,
+            outcome: 'corrected_to_paid',
+            order: paidOrder,
+          })
+        }
+
+        if (failedResult.outcome === 'left_pending_finatic_uncertain') {
+          return NextResponse.json({
+            success: true,
+            outcome: 'left_pending_finatic_uncertain',
+            reason: failedResult.reason,
+            order,
+          })
+        }
+
+        const { data: cancelledOrder } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('id', orderId)
+          .maybeSingle()
+        return NextResponse.json({
+          success: true,
+          outcome: 'cancelled',
+          order: cancelledOrder,
+        })
+      }
+
+      // No merchant_order_no — pre-payment abandon; cancel immediately (safe).
+      const updates: Record<string, unknown> = {
+        status: 'cancelled',
+        payment_status: 'cancelled',
+        cancellation_reason: cancellationReason,
+        cancelled_at: new Date().toISOString(),
+      }
+
+      const { data, error: updateError } = await supabase
+        .from('orders')
+        .update(updates)
+        .eq('id', orderId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .select()
+
+      console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify(updateError))
+      console.log('[STATUS UPDATE DATA]', JSON.stringify(data))
+
+      if (updateError) {
+        return NextResponse.json(
+          { error: updateError.message, details: updateError },
+          { status: 500 },
+        )
+      }
+
+      const updatedOrder = data?.[0]
+      if (!updatedOrder) {
+        console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify({ message: 'Update returned no rows', orderId, newStatus }))
+        return NextResponse.json({ error: 'Failed to update order — no rows returned' }, { status: 500 })
+      }
+
+      return NextResponse.json({ success: true, outcome: 'cancelled', order: updatedOrder })
     }
+
+    const updates: Record<string, unknown> = { status: newStatus }
 
     const { data, error: updateError } = await supabase
       .from('orders')
