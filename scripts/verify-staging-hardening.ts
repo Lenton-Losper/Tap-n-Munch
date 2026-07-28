@@ -85,13 +85,18 @@ async function main() {
   console.log('cache invalidate', cache.status, cache.json)
   assert([401, 403, 404].includes(cache.status), 'cache invalidate must be locked down')
 
+  // Missing/invalid signature with an unknown merchant_order_no: RSA fails, then Finatic
+  // fallback cannot resolve a local order/credentials → 503 (retry later), not a false ACK.
   const whMissing = await httpJson('POST', '/api/webhooks/paycloud', {
     merchant_order_no: 'VERIFY-NO-SIGN',
     trans_status: 2,
     amount: 1,
   })
   console.log('webhook missing signature', whMissing.status, whMissing.json)
-  assert(whMissing.status === 401, 'missing webhook signature must be 401')
+  assert(
+    whMissing.status === 503,
+    `missing webhook signature without resolvable order must be 503 (fallback uncertain), got ${whMissing.status}`,
+  )
 
   const whBad = await httpJson(
     'POST',
@@ -105,7 +110,18 @@ async function main() {
     { 'x-paycloud-sign': 'deadbeef' },
   )
   console.log('webhook bad signature', whBad.status, whBad.json)
-  assert(whBad.status === 401, 'invalid webhook signature must be 401')
+  assert(
+    whBad.status === 503,
+    `invalid webhook signature without resolvable order must be 503 (fallback uncertain), got ${whBad.status}`,
+  )
+
+  // Missing signature AND missing merchant_order_no → cannot fallback → still 401.
+  const whMissingNoMo = await httpJson('POST', '/api/webhooks/paycloud', {
+    trans_status: 2,
+    amount: 1,
+  })
+  console.log('webhook missing signature and MO', whMissingNoMo.status, whMissingNoMo.json)
+  assert(whMissingNoMo.status === 401, 'missing signature without merchant_order_no must be 401')
 
   if (!url || !key) {
     console.log('No service-role credentials — skipping DB probes')
