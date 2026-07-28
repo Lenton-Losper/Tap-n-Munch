@@ -1,9 +1,9 @@
-import { getSupabase, getServiceSupabase } from './helpers';
+import { getSupabase, getSupabaseAdmin } from './helpers';
 import { RIVIERA_ID, VALID_SETTLED_TYPES } from './constants';
 
 describe('Payment & checkout', () => {
   const sb = getSupabase();
-  const admin = getServiceSupabase();
+  const admin = getSupabaseAdmin();
 
   test('Checkout credentials present or fallback documented', async () => {
     const { data, error } = await admin
