@@ -72,7 +72,7 @@ export type HandleTerminalPaymentFailedOptions = {
  *  - Finatic confirms paid → correct to paid via markOrderPaidConfirmed (false-failure).
  *  - Finatic confirms not paid → cancel with the caller-supplied reason.
  *  - Finatic unreachable/errors/missing credentials → leave payment_status pending
- *    (same as the cron's uncertain handling); cron polling resolves it later.
+ *    and write payment.verification_uncertain audit (cron may still resolve later).
  */
 export async function handleTerminalPaymentFailed(
   supabase: Supabase,
@@ -155,6 +155,31 @@ export async function handleTerminalPaymentFailed(
         `[handleTerminalPaymentFailed] Finatic check failed for order ${params.orderId} — leaving pending:`,
         reason,
       )
+
+      // Visibility only — order stays pending (same as before). Without this audit the
+      // uncertain path looks identical to "terminal never reported failure."
+      const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: params.restaurantId,
+        action: 'payment.verification_uncertain',
+        entity_type: 'order',
+        entity_id: params.orderId,
+        metadata: {
+          reason,
+          businessOrderNo: merchantOrderNo,
+          reference: params.reference || null,
+          amount: params.amount ?? null,
+          terminalId,
+          requestedCancellationReason: cancellationReason,
+          outcome: 'left_pending_finatic_uncertain',
+        },
+      })
+      if (uncertainAuditError) {
+        console.error(
+          '[handleTerminalPaymentFailed] payment.verification_uncertain audit failed:',
+          uncertainAuditError,
+        )
+      }
+
       return { outcome: 'left_pending_finatic_uncertain', reason }
     }
   }

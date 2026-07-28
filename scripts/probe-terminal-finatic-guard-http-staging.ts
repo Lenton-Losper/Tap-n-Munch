@@ -240,7 +240,16 @@ async function main() {
     assert((payDRes.json as any)?.outcome === 'left_pending_finatic_uncertain', `pay D=${JSON.stringify(payDRes.json)}`)
     assert(payDRow.status === 'pending' && payDRow.payment_status === 'pending')
     assert(!payDRow.cancelled_at)
+    const { data: payDAudit } = await admin
+      .from('audit_logs')
+      .select('*')
+      .eq('entity_id', payD)
+      .eq('action', 'payment.verification_uncertain')
+    log('PAYMENT_D_UNCERTAIN_AUDIT', payDAudit)
+    assert((payDAudit?.length ?? 0) === 1, 'pay D: expected payment.verification_uncertain audit')
+    assert((payDAudit?.[0]?.metadata as any)?.outcome === 'left_pending_finatic_uncertain')
     console.log('PAYMENT_D_UNREACHABLE_LEFT_PENDING_OK')
+    console.log('PAYMENT_D_VERIFICATION_UNCERTAIN_AUDIT_OK')
 
     // ========== STATUS PATCH cancelled ==========
 
@@ -306,7 +315,15 @@ async function main() {
     assert(stDRes.status === 200, `status D ${stDRes.status}`)
     assert((stDRes.json as any)?.outcome === 'left_pending_finatic_uncertain', `status D=${JSON.stringify(stDRes.json)}`)
     assert(stDRow.status === 'pending' && stDRow.payment_status === 'pending')
+    const { data: stDAudit } = await admin
+      .from('audit_logs')
+      .select('*')
+      .eq('entity_id', stD)
+      .eq('action', 'payment.verification_uncertain')
+    log('STATUS_D_UNCERTAIN_AUDIT', stDAudit)
+    assert((stDAudit?.length ?? 0) === 1, 'status D: expected payment.verification_uncertain audit')
     console.log('STATUS_D_UNREACHABLE_LEFT_PENDING_OK')
+    console.log('STATUS_D_VERIFICATION_UNCERTAIN_AUDIT_OK')
 
     console.log('PROBE_TERMINAL_FINATIC_GUARD_HTTP_OK')
   } finally {

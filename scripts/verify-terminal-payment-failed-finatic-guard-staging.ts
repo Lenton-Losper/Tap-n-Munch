@@ -218,7 +218,28 @@ async function main() {
     assert(freshD!.status === 'pending' && freshD!.payment_status === 'pending', 'D must stay pending')
     assert(freshD!.cancelled_at == null, 'D must not be cancelled')
     assert(finaticCallLog.includes(MERCHANT_UNREACHABLE), 'D: Finatic must be attempted')
+
+    const { data: auditD } = await admin
+      .from('audit_logs')
+      .select('*')
+      .eq('entity_id', orderD.id)
+      .eq('action', 'payment.verification_uncertain')
+    log('order D uncertain audit_logs', auditD)
+    assert((auditD?.length ?? 0) === 1, 'D: exactly one payment.verification_uncertain audit')
+    assert(
+      (auditD?.[0]?.metadata as any)?.outcome === 'left_pending_finatic_uncertain',
+      'D: audit metadata.outcome must be left_pending_finatic_uncertain',
+    )
+    assert(
+      String((auditD?.[0]?.metadata as any)?.reason || '').includes('SIMULATED'),
+      'D: audit metadata.reason must capture Finatic error',
+    )
+    assert(
+      (auditD?.[0]?.metadata as any)?.businessOrderNo === MERCHANT_UNREACHABLE,
+      'D: audit must record businessOrderNo',
+    )
     console.log('SCENARIO_D_FINATIC_UNREACHABLE_LEFT_PENDING_OK')
+    console.log('SCENARIO_D_VERIFICATION_UNCERTAIN_AUDIT_OK')
 
     log('Finatic call log', finaticCallLog)
     const finaticCallCount = finaticCallLog.slice().length
