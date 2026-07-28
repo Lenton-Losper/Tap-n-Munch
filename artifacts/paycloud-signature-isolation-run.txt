@@ -1,0 +1,208 @@
+
+========== 1 Encoding/format mismatch ==========
+PASS: verify accepts full SPKI PEM, bare base64 body, env-style \\n, whitespace, and CRLF after normalizePublicKeyMaterialToPem
+{
+  "okPem": true,
+  "okBare": true,
+  "okOneLine": true,
+  "okSpaced": true,
+  "okCrlf": true,
+  "expectedFormat": "SPKI / -----BEGIN PUBLIC KEY----- (after normalize)"
+}
+PASS: Normalizer assumes SPKI (BEGIN PUBLIC KEY) with no PKCS#1 detect/convert; forge still accepts PKCS#1 bodies — PKCS#1-vs-SPKI format is NOT a verify failure mode
+{
+  "codeBehavior": "payments/config.js normalizePublicKeyMaterialToPem: extractPemBase64Body + toPemBlock(..., \"PUBLIC KEY\"). No ASN.1 try/catch conversion.",
+  "pkcs1BodyWronglyWrappedAsPublicKey": {
+    "ok": true
+  },
+  "pkcs1PemThroughNormalizer": {
+    "ok": true
+  },
+  "beginRsaPublicKeyDirectToVerify": {
+    "ok": true
+  },
+  "spkiThroughNormalizer": {
+    "ok": true
+  },
+  "nodeCreatePublicKeyRejectsPkcs1BodyWithPublicKeyLabel": true,
+  "implication": "A Finatic key delivered as PKCS#1 RSA PUBLIC KEY would still verify under forge. Encoding family mismatch alone does not explain Encryption block is invalid."
+}
+PASS: Wrong key → "Encryption block is invalid."; truncation/garbage produce distinguishable errors; pure whitespace does NOT (stripped)
+{
+  "wrongKey": {
+    "err": "Encryption block is invalid."
+  },
+  "corrupted": {
+    "err": "Encryption block is invalid."
+  },
+  "trunc": {
+    "err": "Too few bytes to read ASN.1 value."
+  },
+  "garbageSig": {
+    "err": "Encrypted message length is invalid."
+  },
+  "wrongSigSameKey": {
+    "ok": false
+  },
+  "whitespaceTolerated": true,
+  "note": "Whitespace/line-ending alone cannot reproduce a distinct failure — extractPemBase64Body strips all whitespace. Truncation/char corruption/garbage sign DO differ from wrong-key."
+}
+
+========== 2 Signing algorithm + PAYCLOUD_SIGNATURE_BASE64URL on verify path ==========
+PASS: verifyPayloadSignature implements RSA2 (SHA-256 PKCS#1 v1.5); SHA-1 signatures do not verify
+{
+  "sha256Ok": true,
+  "sha1UnderSha256": {
+    "ok": false
+  },
+  "code": "forge.md.sha256.create() in signUtf8WithForgePkcs1RsaSha256 and verifyPayloadSignature"
+}
+PASS: PAYCLOUD_SIGNATURE_BASE64URL affects outbound formatPaycloudRequestSignature only; verify always accepts base64url via normalizeSignatureForVerify
+{
+  "okFromStd": true,
+  "okFromUrl": true,
+  "onWireIsUrlWhenEnvTrue": true,
+  "callSites": [
+    "payments/webhook.js → verifyWebhook → verifyPayloadSignature(parsedBody, headerSignature)",
+    "payments/paycloud.js checkout response verify (best-effort)",
+    "payments/paycloud.js order.query response verify (best-effort)",
+    "payments/signature.js runLocalSignVerifySelfTest"
+  ],
+  "implication": "Setting PAYCLOUD_SIGNATURE_BASE64URL=false cannot cause inbound verify failure for base64url Finatic signs — verify path ignores that flag."
+}
+
+========== 3 Sandbox vs live key/endpoint scope ==========
+PASS: Same gateway fingerprint ad7ccabe… verified Finatic responses on BOTH sandbox (wiseasy-open) and live (open.finatic.africa); app_id/merchant/store differed
+{
+  "sandboxOk": [
+    {
+      "file": ".tmp-paycloud-test-live-output.txt",
+      "endpoint": "https://wiseasy-open.sg.wisepaycloud.com/api/entry",
+      "app_id_redacted": "wz7***156",
+      "derived_fp": "f099f80cab1acf93320a8fe294ce2b41eaa87de2b77606ec9aaa7366cef4f1e8",
+      "configured_fp": "ad7ccabe6acf3461569c893c9e215ee74c6308b0d57e5412af3d267151b4d47e",
+      "configured_equals_derived": false,
+      "step4_ok": true,
+      "is_sandbox": true,
+      "is_live": false
+    },
+    {
+      "file": ".tmp-test-payment-live-after-receipt.txt",
+      "endpoint": "https://wiseasy-open.sg.wisepaycloud.com/api/entry",
+      "app_id_redacted": "wz7***156",
+      "derived_fp": "f099f80cab1acf93320a8fe294ce2b41eaa87de2b77606ec9aaa7366cef4f1e8",
+      "configured_fp": "ad7ccabe6acf3461569c893c9e215ee74c6308b0d57e5412af3d267151b4d47e",
+      "configured_equals_derived": false,
+      "step4_ok": true,
+      "is_sandbox": true,
+      "is_live": false
+    }
+  ],
+  "liveOk": [
+    {
+      "file": ".tmp-test-payment-live-output.txt",
+      "endpoint": "https://open.finatic.africa/api/entry",
+      "app_id_redacted": "wz6***fb5",
+      "derived_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_fp": "ad7ccabe6acf3461569c893c9e215ee74c6308b0d57e5412af3d267151b4d47e",
+      "configured_equals_derived": false,
+      "step4_ok": true,
+      "is_sandbox": false,
+      "is_live": true
+    }
+  ],
+  "liveWrongWhenConfiguredEqualsDerived": [
+    {
+      "file": ".tmp-live-full-output.txt",
+      "endpoint": "https://open.finatic.africa/api/entry",
+      "app_id_redacted": "wz6***fb5",
+      "derived_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_equals_derived": true,
+      "step4_ok": false,
+      "is_sandbox": false,
+      "is_live": true
+    },
+    {
+      "file": ".tmp-live-full-output-2.txt",
+      "endpoint": "https://open.finatic.africa/api/entry",
+      "app_id_redacted": "wz6***fb5",
+      "derived_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_equals_derived": true,
+      "step4_ok": false,
+      "is_sandbox": false,
+      "is_live": true
+    },
+    {
+      "file": ".tmp-sign-enforce-test.txt",
+      "endpoint": "https://open.finatic.africa/api/entry",
+      "app_id_redacted": "wz6***fb5",
+      "derived_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_fp": "fe8000ae605c76f43508f6d78ad7d803e00af219707532fbbc660ac46a5a4aa6",
+      "configured_equals_derived": true,
+      "step4_ok": false,
+      "is_sandbox": false,
+      "is_live": true
+    }
+  ],
+  "interpretation": "No evidence Finatic issues a different gateway public key per sandbox vs live endpoint for this merchant period. Evidence AGAINST endpoint-scoped gateway keys. Merchant/app credentials DID differ (wz7 sandbox vs wz6 live).",
+  "vercelCfEnvMatrix": "NOT COMPLETED in this environment — no VERCEL_TOKEN / CLOUDFLARE_API_TOKEN available to the agent (wrangler whoami unauthenticated; gh secrets list 403). Prior KEYDIAG: prod configured===derived 1e5dcffc… (wrong).",
+  "april2_rsa_email": "No March 27 \"RSA Key Pair\" email body or April 2 sandbox result artifacts present in this workspace/git beyond the .tmp live-test logs above."
+}
+
+========== 4 Verification code bug independent of Finatic key ==========
+PASS: Synthetic RSA keypair: sign with private half, verifyPayloadSignature with public half → true (isolates bad-key from bad-code)
+{
+  "selfOk": true,
+  "publicFingerprint": "17938e7ee9334fec7a47fb31002b7ab4c706509749377567f3d1e2452a65bbb3"
+}
+PASS: Code verifies the object passed in (HTTP JSON root). Nested dashboard notify_data wrapper is NOT what verifyWebhook signs against
+{
+  "verifyInner": true,
+  "verifyOuter": {
+    "ok": false
+  },
+  "webhookFlat": {
+    "ok": true,
+    "mode": "rsa"
+  },
+  "webhookNested": {
+    "ok": false,
+    "reason": "Invalid RSA signature"
+  },
+  "route": "app/api/webhooks/paycloud/route.ts parses rawBody → verifyWebhook(rawBody, payload) with payload = JSON root",
+  "ft178515_raw_body": "NOT available in this environment (incident PR #84). Cannot byte-replay FT178515. Historical Finatic checkout responses verified as flat JSON roots with `sign` field (STEP4 ok under ad7ccabe).",
+  "implication": "If Finatic POSTs a flat signed notify (like API responses), our code shape is correct. If they only show nested notify_data in the dashboard UI, that UI nesting is not the signed HTTP body."
+}
+
+========== 5 Clock/timestamp validation bundled with signature check ==========
+PASS: No timestamp/replay-window check in verifyWebhook / verifyPayloadSignature / webhook route — clock cannot produce Encryption-block-like failures
+{
+  "mutatedTimestampBreaksCanonicalOnly": {
+    "ok": false
+  },
+  "ancientTimestampStillVerifiesWhenSigned": true,
+  "PAYCLOUD_CLOCK_OFFSET_MS": "Used only when building outbound request timestamps in payments/paycloud.js — not on verify path",
+  "webhookChecks": [
+    "missing signature",
+    "optional HMAC shared secret",
+    "RSA verifyPayloadSignature"
+  ],
+  "hasSkewInVerify": false,
+  "verifyFnBodyMentionsClock": false,
+  "routeMentionsClock": false
+}
+
+========== SUMMARY ==========
+PASS	1a	verify accepts full SPKI PEM, bare base64 body, env-style \\n, whitespace, and CRLF after normalizePublicKeyMaterialToPem
+PASS	1b	Normalizer assumes SPKI (BEGIN PUBLIC KEY) with no PKCS#1 detect/convert; forge still accepts PKCS#1 bodies — PKCS#1-vs-SPKI format is NOT a verify failure mode
+PASS	1c	Wrong key → "Encryption block is invalid."; truncation/garbage produce distinguishable errors; pure whitespace does NOT (stripped)
+PASS	2a	verifyPayloadSignature implements RSA2 (SHA-256 PKCS#1 v1.5); SHA-1 signatures do not verify
+PASS	2b	PAYCLOUD_SIGNATURE_BASE64URL affects outbound formatPaycloudRequestSignature only; verify always accepts base64url via normalizeSignatureForVerify
+PASS	3a	Same gateway fingerprint ad7ccabe… verified Finatic responses on BOTH sandbox (wiseasy-open) and live (open.finatic.africa); app_id/merchant/store differed
+PASS	4a	Synthetic RSA keypair: sign with private half, verifyPayloadSignature with public half → true (isolates bad-key from bad-code)
+PASS	4b	Code verifies the object passed in (HTTP JSON root). Nested dashboard notify_data wrapper is NOT what verifyWebhook signs against
+PASS	5a	No timestamp/replay-window check in verifyWebhook / verifyPayloadSignature / webhook route — clock cannot produce Encryption-block-like failures
+
+TOTAL: 9 checks, 0 FAIL, 0 INCONCLUSIVE
