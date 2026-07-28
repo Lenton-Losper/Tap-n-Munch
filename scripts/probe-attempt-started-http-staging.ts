@@ -32,7 +32,6 @@ const url =
   ''
 const serviceKey =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.STAGING_SUPABASE_SERVICE_ROLE_KEY || ''
-const cronSecret = process.env.CRON_SECRET || process.env.STAGING_CRON_SECRET || ''
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg)
@@ -69,7 +68,6 @@ async function httpJson(
 
 async function main() {
   assert(url.includes(STAGING_REF) && serviceKey, 'Need staging URL + service role')
-  assert(cronSecret, 'Need STAGING_CRON_SECRET / CRON_SECRET for real HTTP cron probe')
   log('worker', WORKER)
   log('supabase', url)
 
@@ -210,14 +208,9 @@ async function main() {
     )
     const cronARes = await httpJson(
       'POST',
-      '/api/cron/cleanup-stale-orders',
-      {
-        __stagingRestaurantId: restaurantId,
-        __stagingFinaticStub: 'e04111',
-        __stagingSkipHosted: true,
-        __stagingSkipReconcile: true,
-      },
-      { 'x-cron-secret': cronSecret },
+      '/api/terminal/orders/reconcile-stale',
+      { __stagingFinaticStub: 'e04111' },
+      auth,
     )
     log('CRON_ALLOCATED_ONLY_HTTP', cronARes)
     assert(cronARes.status === 200, `cron allocated-only status ${cronARes.status}`)
@@ -248,14 +241,9 @@ async function main() {
 
     const cronBRes = await httpJson(
       'POST',
-      '/api/cron/cleanup-stale-orders',
-      {
-        __stagingRestaurantId: restaurantId,
-        __stagingFinaticStub: 'e04111',
-        __stagingSkipHosted: true,
-        __stagingSkipReconcile: true,
-      },
-      { 'x-cron-secret': cronSecret },
+      '/api/terminal/orders/reconcile-stale',
+      { __stagingFinaticStub: 'e04111' },
+      auth,
     )
     log('CRON_ATTEMPT_STARTED_HTTP', cronBRes)
     assert(cronBRes.status === 200, `cron attempt-started status ${cronBRes.status}`)

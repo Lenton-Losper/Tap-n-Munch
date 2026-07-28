@@ -271,7 +271,6 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-          STAGING_CRON_SECRET: ${{ secrets.STAGING_CRON_SECRET }}
         run: npx tsx scripts/probe-attempt-started-http-staging.ts
 
   verify-staging-hardening:
