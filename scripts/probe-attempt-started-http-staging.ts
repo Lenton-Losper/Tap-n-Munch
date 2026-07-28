@@ -254,7 +254,7 @@ async function main() {
       `attempt-started row wrong: ${JSON.stringify(cronBRow)}`,
     )
     assert(
-      ((cronBRes.json as any)?.posSkippedUncertainIds ?? []).includes(cronStarted),
+      ((cronBRes.json as any)?.skippedUncertainIds ?? []).includes(cronStarted),
       `cron response missing skipped id ${cronStarted}: ${JSON.stringify(cronBRes.json)}`,
     )
     console.log('CRON_E04111_ATTEMPT_STARTED_LEFT_PENDING_OK')
