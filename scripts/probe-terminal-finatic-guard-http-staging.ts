@@ -76,13 +76,20 @@ async function main() {
   const activationCode = generateTerminalActivationCode()
   const deviceSerial = `probe-${tag}`
 
-  const { data: restaurant } = await admin
+  // Prefer a restaurant that already has Finatic creds so real-path credential
+  // lookup also works; fall back to any restaurant (stub skips hard-fail).
+  const { data: restaurantWithCreds } = await admin
     .from('restaurants')
     .select('id')
+    .not('finatic_merchant_no', 'is', null)
+    .not('finatic_store_no', 'is', null)
     .limit(1)
     .maybeSingle()
-  assert(restaurant?.id, 'need a restaurant on staging')
-  const restaurantId = String(restaurant.id)
+  const { data: restaurantAny } = restaurantWithCreds?.id
+    ? { data: restaurantWithCreds }
+    : await admin.from('restaurants').select('id').limit(1).maybeSingle()
+  assert(restaurantAny?.id, 'need a restaurant on staging')
+  const restaurantId = String(restaurantAny.id)
 
   const { data: terminal, error: termErr } = await admin
     .from('restaurant_terminals')

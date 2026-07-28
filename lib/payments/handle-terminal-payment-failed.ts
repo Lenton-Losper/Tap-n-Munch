@@ -95,7 +95,25 @@ export async function handleTerminalPaymentFailed(
 
   if (merchantOrderNo) {
     try {
-      const { merchantNo, storeNo } = await getRestaurantFinaticCredentials(params.restaurantId)
+      const usingInjectedQuery = Boolean(options?.queryFinaticOrderPaidFn || stubFn)
+      let merchantNo = 'STAGING_STUB'
+      let storeNo = 'STAGING_STUB'
+      if (!usingInjectedQuery) {
+        const creds = await getRestaurantFinaticCredentials(params.restaurantId)
+        merchantNo = creds.merchantNo
+        storeNo = creds.storeNo
+      } else {
+        // Best-effort real creds for stubs/seams; placeholders if the probe restaurant
+        // has none (common on throwaway staging fixtures).
+        try {
+          const creds = await getRestaurantFinaticCredentials(params.restaurantId)
+          merchantNo = creds.merchantNo
+          storeNo = creds.storeNo
+        } catch {
+          // keep placeholders
+        }
+      }
+
       const finatic: FinaticOrderPaidResult = await queryFn({
         merchantOrderNo,
         merchantNo,
