@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
+import { isClaimablePaymentStatus } from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
 
@@ -73,8 +74,10 @@ export async function GET(req: Request) {
           refunded_amount: projection?.refundedAmount ?? 0,
         }
       })
-      const unpaidOrders = orders.filter(
-        (o: any) => o.payment_status !== 'paid'
+      // Only unpaid/pending orders still need settlement — cancelled (and any other
+      // terminal, non-claimable) orders must not count toward unpaid/can_close.
+      const unpaidOrders = orders.filter((o: any) =>
+        isClaimablePaymentStatus(o.payment_status)
       )
       const unpaidTotal = unpaidOrders.reduce(
         (sum: number, o: any) => sum + Number(o.total), 0
