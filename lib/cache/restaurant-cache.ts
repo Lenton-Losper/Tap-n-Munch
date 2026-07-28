@@ -71,10 +71,17 @@ async function fetchRestaurantCredentials(restaurantId: string) {
 }
 
 export async function getCachedRestaurantCredentials(restaurantId: string) {
-  try {
-    const cacheKey = CacheKeys.restaurant(restaurantId)
-    const cached = await getRedis().get(cacheKey)
+  const cacheKey = CacheKeys.restaurant(restaurantId)
 
+  // Redis is a best-effort cache in front of Supabase, not the source of truth --
+  // a Redis outage/misconfiguration must degrade to a cache miss (query Supabase
+  // directly), not take down every caller of this function. Mirrors the fallback
+  // pattern in lib/cache/menu-cache.ts. Read and write are guarded separately so a
+  // failed cache write never discards credentials Supabase already returned
+  // successfully (the same class of bug fixed in payments/paycloud.js's response
+  // signature check).
+  try {
+    const cached = await getRedis().get(cacheKey)
     if (cached) {
       console.log('[RESTAURANT CACHE] Hit for:', restaurantId)
       const parsed =
@@ -83,21 +90,24 @@ export async function getCachedRestaurantCredentials(restaurantId: string) {
           : (cached as Record<string, unknown>)
       return mapRestaurantCredentials(parsed)
     }
-
     console.log('[RESTAURANT CACHE] Miss for:', restaurantId)
-    const restaurant = await fetchRestaurantCredentials(restaurantId)
-
-    if (!restaurant) {
-      throw new Error(`Restaurant ${restaurantId} not found`)
-    }
-
-    const credentials = mapRestaurantCredentials(restaurant as Record<string, unknown>)
-    await getRedis().setex(cacheKey, TTL.RESTAURANT, JSON.stringify(credentials))
-    return credentials
   } catch (err) {
-    console.error('[RESTAURANT CACHE] Error:', err)
-    throw err
+    console.error('[RESTAURANT CACHE] Redis read error, falling back to DB:', err)
   }
+
+  const restaurant = await fetchRestaurantCredentials(restaurantId)
+  if (!restaurant) {
+    throw new Error(`Restaurant ${restaurantId} not found`)
+  }
+  const credentials = mapRestaurantCredentials(restaurant as Record<string, unknown>)
+
+  try {
+    await getRedis().setex(cacheKey, TTL.RESTAURANT, JSON.stringify(credentials))
+  } catch (err) {
+    console.error('[RESTAURANT CACHE] Failed to cache credentials:', err)
+  }
+
+  return credentials
 }
 
 export async function invalidateRestaurantCache(restaurantId: string) {
