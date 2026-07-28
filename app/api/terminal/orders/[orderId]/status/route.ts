@@ -98,10 +98,25 @@ export async function PATCH(
       )
     }
 
+    const updates: Record<string, unknown> = { status: newStatus }
+
+    // When the terminal cancels, keep the same four-field integrity contract as
+    // autoCancelStalePosOrders (auto_timeout) and the payment-failed callback
+    // (payment_declined). Distinguish this path as terminal_cancelled.
+    if (newStatus === 'cancelled') {
+      const callerReason = String(
+        body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason ?? '',
+      ).trim()
+      updates.payment_status = 'cancelled'
+      updates.cancellation_reason = callerReason || 'terminal_cancelled'
+      updates.cancelled_at = new Date().toISOString()
+    }
+
     const { data, error: updateError } = await supabase
       .from('orders')
-      .update({ status: newStatus })
+      .update(updates)
       .eq('id', orderId)
+      .eq('restaurant_id', terminal.restaurantId)
       .select()
 
     console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify(updateError))

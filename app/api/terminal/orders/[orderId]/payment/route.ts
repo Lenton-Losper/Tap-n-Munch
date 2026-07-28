@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
-import { amountsMatch } from '@/lib/payments/payment-integrity'
+import { amountsMatch, CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 export const dynamic = 'force-dynamic'
@@ -122,6 +122,39 @@ export async function POST(
           .eq('id', result.tabId)
       }
     } else {
+      // Mirror autoCancelStalePosOrders / markOrderPaidConfirmed: status + payment_status
+      // + cancellation_reason + cancelled_at must land in one UPDATE. Only claim from
+      // unpaid/pending so a concurrent success callback wins the race.
+      const cancelledAt = new Date().toISOString()
+      const { data: cancelled, error: cancelError } = await supabase
+        .from('orders')
+        .update({
+          status: 'cancelled',
+          payment_status: 'cancelled',
+          cancellation_reason: 'payment_declined',
+          cancelled_at: cancelledAt,
+        })
+        .eq('id', orderId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+        .select('id, status, payment_status, cancellation_reason, cancelled_at')
+        .maybeSingle()
+
+      if (cancelError) {
+        console.error('[terminal/payment] cancel-on-failed update error:', cancelError)
+        return NextResponse.json({ error: cancelError.message }, { status: 500 })
+      }
+
+      if (!cancelled) {
+        return NextResponse.json(
+          {
+            error: 'Order payment could not be cancelled',
+            code: 'PAYMENT_CANCEL_CONFLICT',
+          },
+          { status: 409 },
+        )
+      }
+
       const { error: auditError } = await supabase.from('audit_logs').insert({
         restaurant_id: terminal.restaurantId,
         action: 'payment.failed',
@@ -131,6 +164,7 @@ export async function POST(
           reference,
           amount,
           terminalId: terminal.terminalId,
+          cancellation_reason: 'payment_declined',
         },
       })
 
