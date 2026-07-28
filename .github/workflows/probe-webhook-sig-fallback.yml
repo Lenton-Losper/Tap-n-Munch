@@ -1,0 +1,52 @@
+# Minimal single-job workflow so staging probe can run even when the large
+# Deploy to Cloudflare Staging workflow fails to allocate runners.
+name: Probe webhook sig-fail Finatic fallback
+
+on:
+  push:
+    branches:
+      - cloudflare-staging
+  workflow_dispatch:
+
+jobs:
+  deploy-and-probe:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[probe-webhook-sig-fallback]')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    name: Deploy staging + probe sig-fallback A/B/C
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Unit test fallback paths (no HTTP)
+        run: npx jest --ci --forceExit --testPathPattern="webhook-sig-fallback"
+      - name: Build with OpenNext
+        run: npx @opennextjs/cloudflare@1.20.1 build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: https://flashtap-staging.llosperofficial.workers.dev
+          NEXT_PUBLIC_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
+          NEXT_PUBLIC_COMMIT_SHA: ${{ github.sha }}
+          GIT_COMMIT_SHA: ${{ github.sha }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+      - name: Deploy to Cloudflare Workers
+        run: npx wrangler@3.99.0 deploy --var GIT_COMMIT_SHA:${{ github.sha }} --var NEXT_PUBLIC_COMMIT_SHA:${{ github.sha }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Invalid-signature webhook → Finatic fallback (paid/not_paid/unreachable)
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/probe-webhook-sig-fallback-staging.ts

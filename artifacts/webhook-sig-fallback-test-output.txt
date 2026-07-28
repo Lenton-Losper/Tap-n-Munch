@@ -1,0 +1,188 @@
+PASS __tests__/webhook-sig-fallback-route.test.ts
+  ● Console
+
+    console.log
+      ◇ injecting env (4) from .env.test // tip: ⌘ override existing { override: true }
+
+      at _log (node_modules/dotenv/lib/main.js:131:11)
+
+    console.log
+      [PayCloud webhook] path= fallback_verified_paid {
+        merchantOrderNo: 'MO-A',
+        orderIds: [ 'ord-1' ],
+        finaticStatus: '2',
+        finaticTransactionId: 'TXN-A',
+        finaticAmount: 11.5,
+        sigFailReason: 'Encrypted message length is invalid.'
+      }
+
+      at logWebhookPath (app/api/webhooks/paycloud/route.ts:66:11)
+
+    console.log
+      SCENARIO_A_HTTP_PAID_FALLBACK {
+        "status": 200,
+        "text": "success"
+      }
+
+      at __tests__/webhook-sig-fallback-route.test.ts:119:13
+
+    console.log
+      SCENARIO_A_FALLBACK_VERIFIED_PAID_OK
+
+      at __tests__/webhook-sig-fallback-route.test.ts:128:13
+
+    console.log
+      [PayCloud webhook] path= fallback_verified_not_paid {
+        merchantOrderNo: 'MO-B',
+        orderIds: [ 'ord-1' ],
+        finaticStatus: 'failed',
+        sigFailReason: 'Encrypted message length is invalid.'
+      }
+
+      at logWebhookPath (app/api/webhooks/paycloud/route.ts:66:11)
+
+    console.log
+      SCENARIO_B_HTTP_NOT_PAID_FALLBACK {
+        "status": 200,
+        "text": "success"
+      }
+
+      at __tests__/webhook-sig-fallback-route.test.ts:157:13
+
+    console.log
+      SCENARIO_B_FALLBACK_VERIFIED_NOT_PAID_OK
+
+      at __tests__/webhook-sig-fallback-route.test.ts:165:13
+
+    console.log
+      [PayCloud webhook] path= fallback_query_failed {
+        merchantOrderNo: 'MO-C',
+        orderIds: [ 'ord-1' ],
+        reason: 'PayCloud service unavailable (network failure)',
+        sigFailReason: 'Encrypted message length is invalid.'
+      }
+
+      at logWebhookPath (app/api/webhooks/paycloud/route.ts:66:11)
+
+    console.log
+      SCENARIO_C_HTTP_UNREACHABLE_FALLBACK {
+        "status": 503,
+        "json": {
+          "error": "Finatic fallback query unavailable; retry later",
+          "reason": "PayCloud service unavailable (network failure)",
+          "signatureFailureReason": "Encrypted message length is invalid."
+        }
+      }
+
+      at __tests__/webhook-sig-fallback-route.test.ts:186:13
+
+    console.log
+      SCENARIO_C_FALLBACK_QUERY_FAILED_OK
+
+      at __tests__/webhook-sig-fallback-route.test.ts:193:13
+
+PASS __tests__/webhook-sig-fallback.test.ts
+  ● Console
+
+    console.log
+      ◇ injecting env (4) from .env.test // tip: ⌘ suppress logs { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:131:11)
+
+    console.log
+      SCENARIO_A_FALLBACK_RESULT {
+        "path": "fallback_verified_paid",
+        "finatic": {
+          "paid": true,
+          "merchantOrderNo": "FTWHPAID1",
+          "status": "2",
+          "transactionId": "TXN-A",
+          "amount": 11.5,
+          "raw": {
+            "code": "0"
+          }
+        },
+        "orderIds": [
+          "order-a"
+        ],
+        "restaurantId": "rest-1",
+        "orderTotal": 11.5
+      }
+
+      at __tests__/webhook-sig-fallback.test.ts:71:13
+
+    console.log
+      SCENARIO_A_FALLBACK_VERIFIED_PAID_OK
+
+      at __tests__/webhook-sig-fallback.test.ts:83:13
+
+    console.log
+      SCENARIO_B_FALLBACK_RESULT {
+        "path": "fallback_verified_not_paid",
+        "finatic": {
+          "paid": false,
+          "merchantOrderNo": "FTWHNP1",
+          "status": "failed",
+          "transactionId": null,
+          "amount": null,
+          "raw": {
+            "code": "0"
+          }
+        },
+        "orderIds": [
+          "order-b"
+        ]
+      }
+
+      at __tests__/webhook-sig-fallback.test.ts:109:13
+
+    console.log
+      SCENARIO_B_FALLBACK_VERIFIED_NOT_PAID_OK
+
+      at __tests__/webhook-sig-fallback.test.ts:114:13
+
+    console.log
+      SCENARIO_C_FALLBACK_RESULT {
+        "path": "fallback_query_failed",
+        "reason": "PayCloud service unavailable (network failure)",
+        "orderIds": [
+          "order-c"
+        ]
+      }
+
+      at __tests__/webhook-sig-fallback.test.ts:133:13
+
+    console.log
+      SCENARIO_C_FALLBACK_QUERY_FAILED_OK
+
+      at __tests__/webhook-sig-fallback.test.ts:138:13
+
+    console.log
+      STAGING_STUB_PAID_RESULT {
+        "path": "fallback_verified_paid",
+        "finatic": {
+          "paid": true,
+          "merchantOrderNo": "STUB",
+          "status": "2",
+          "transactionId": "STUB-TXN",
+          "amount": null,
+          "raw": {
+            "stub": "paid"
+          }
+        },
+        "orderIds": [
+          "order-stub"
+        ],
+        "restaurantId": "rest-1",
+        "orderTotal": 9
+      }
+
+      at __tests__/webhook-sig-fallback.test.ts:178:13
+
+
+Test Suites: 2 passed, 2 total
+Tests:       8 passed, 8 total
+Snapshots:   0 total
+Time:        0.188 s, estimated 1 s
+Ran all test suites matching /webhook-sig-fallback/i.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?

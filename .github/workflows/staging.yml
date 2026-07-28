@@ -263,7 +263,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - name: Invalid-signature webhook → Finatic fallback (paid/not_paid/unreachable)
+      - name: Invalid-signature webhook to Finatic fallback (paid/not_paid/unreachable)
         env:
           STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
