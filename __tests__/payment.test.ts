@@ -1,11 +1,12 @@
-import { getSupabase } from './helpers';
+import { getSupabase, getServiceSupabase } from './helpers';
 import { RIVIERA_ID, VALID_SETTLED_TYPES } from './constants';
 
 describe('Payment & checkout', () => {
   const sb = getSupabase();
+  const admin = getServiceSupabase();
 
   test('Checkout credentials present or fallback documented', async () => {
-    const { data, error } = await sb
+    const { data, error } = await admin
       .from('restaurants')
       .select('checkout_merchant_no, checkout_store_no')
       .eq('id', RIVIERA_ID)

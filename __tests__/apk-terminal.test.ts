@@ -1,11 +1,12 @@
-import { getSupabase } from './helpers';
+import { getSupabase, getSupabaseAdmin } from './helpers';
 import { RIVIERA_ID, P5_TERMINAL_SN, DEV_PHONE_SN } from './constants';
 
 describe('APK & terminal logic', () => {
   const sb = getSupabase();
+  const admin = getSupabaseAdmin();
 
   test('Riviera has finatic_terminal_sn set', async () => {
-    const { data, error } = await sb
+    const { data, error } = await admin
       .from('restaurants')
       .select('finatic_terminal_sn')
       .eq('id', RIVIERA_ID)
@@ -15,7 +16,7 @@ describe('APK & terminal logic', () => {
   });
 
   test('Riviera terminal SN matches P5 or dev phone', async () => {
-    const { data } = await sb
+    const { data } = await admin
       .from('restaurants')
       .select('finatic_terminal_sn')
       .eq('id', RIVIERA_ID)
