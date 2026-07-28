@@ -1,8 +1,9 @@
-import { getSupabase } from './helpers';
+import { getSupabase, getSupabaseAdmin } from './helpers';
 import { RIVIERA_ID, MINT_LEAF_ID } from './constants';
 
 describe('Supabase — schema & data', () => {
   const sb = getSupabase();
+  const admin = getSupabaseAdmin();
 
   test('Riviera row exists in restaurants', async () => {
     const { data, error } = await sb.from('restaurants').select('id,name').eq('id', RIVIERA_ID);
@@ -40,7 +41,8 @@ describe('Supabase — schema & data', () => {
   });
 
   test('Riviera credentials are populated', async () => {
-    const { data, error } = await sb
+    // Finatic columns are revoked from anon (tenant-isolation RLS); use service role.
+    const { data, error } = await admin
       .from('restaurants')
       .select('finatic_merchant_no, finatic_store_no')
       .eq('id', RIVIERA_ID)
