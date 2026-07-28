@@ -251,6 +251,28 @@ jobs:
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
         run: npx tsx scripts/probe-terminal-finatic-guard-http-staging.ts
 
+  probe-webhook-sig-fallback:
+    if: contains(github.event.head_commit.message, '[probe-webhook-sig-fallback]')
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: Probe webhook sig-fail Finatic fallback
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Invalid-signature webhook → Finatic fallback (paid/not_paid/unreachable)
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/probe-webhook-sig-fallback-staging.ts
+
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
     runs-on: ubuntu-latest
