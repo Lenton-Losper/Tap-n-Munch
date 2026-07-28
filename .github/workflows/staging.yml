@@ -251,6 +251,29 @@ jobs:
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
         run: npx tsx scripts/probe-terminal-finatic-guard-http-staging.ts
 
+  probe-attempt-started-http:
+    if: contains(github.event.head_commit.message, '[probe-attempt-started-http]')
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: Probe terminal attempt-started over HTTP (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Attempt-started marker + E04111 cron discriminator via staging Worker HTTP
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_CRON_SECRET: ${{ secrets.STAGING_CRON_SECRET }}
+        run: npx tsx scripts/probe-attempt-started-http-staging.ts
+
   verify-staging-hardening:
     if: contains(github.event.head_commit.message, '[verify-staging-hardening]')
     runs-on: ubuntu-latest

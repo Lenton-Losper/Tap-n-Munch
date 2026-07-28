@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { formatPaycloudRequestSignature, loadPrivateKey, signUtf8WithForgePkcs1RsaSha256 } from '@/payments/signature'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import { ensureTerminalMerchantOrderNo } from '@/lib/payments/terminal-merchant-order'
+import { markPaymentAttemptStarted } from '@/lib/payments/mark-payment-attempt-started'
 import {
   isAuthError,
   requireCallerRestaurantPermission,
@@ -165,20 +167,20 @@ export async function POST(req: Request) {
       )
     }
 
-    const existingMo = String(claimedOrder.paycloud_merchant_order_no || '').trim()
-    const rand4 = Math.floor(Math.random() * 10000).toString().padStart(4, '0')
-    const merchantOrderNo = existingMo
-      ? `FT${Date.now()}${rand4}`.slice(0, 32)
-      : existingMo || `FT${Date.now()}`.slice(0, 32)
-
-    const persistRes = await supabase
-      .from('orders')
-      .update({ paycloud_merchant_order_no: merchantOrderNo })
-      .eq('id', normalizedOrderId)
-    if (persistRes.error) {
-      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
+    let merchantOrderNo: string
+    try {
+      const ensured = await ensureTerminalMerchantOrderNo(supabase as any, {
+        orderId: normalizedOrderId,
+        restaurantId: callerRestaurantId,
+      })
+      merchantOrderNo = ensured.merchantOrderNo
+    } catch (persistErr) {
+      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistErr)
       await releaseClaim()
-      return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
+      return NextResponse.json(
+        { error: persistErr instanceof Error ? persistErr.message : 'Failed to persist merchant order no' },
+        { status: 500 },
+      )
     }
 
     const paramsForSigning: Record<string, unknown> = {
@@ -272,6 +274,19 @@ export async function POST(req: Request) {
         terminal_sn: terminalSn,
       })
       .eq('id', normalizedOrderId)
+
+    await markPaymentAttemptStarted(supabase as any, {
+      orderId: normalizedOrderId,
+      restaurantId: callerRestaurantId,
+      businessOrderNo: merchantOrderNo,
+      source: 'staff_push',
+      terminalSn,
+      extraAuditMetadata: {
+        flow: 'push_to_terminal',
+        finaticResponseCode: String(data?.code ?? ''),
+        finaticResponseMsg: String(data?.msg ?? ''),
+      },
+    })
 
     return NextResponse.json(
       {

@@ -9,6 +9,17 @@ export type FinaticOrderPaidResult = {
   raw: Record<string, unknown>
 }
 
+export function isFinaticMerchantOrderInvalidError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as {
+    message?: unknown
+    responseBody?: { code?: unknown; msg?: unknown } | null
+  }
+  const code = String(candidate.responseBody?.code ?? '').toUpperCase()
+  const message = String(candidate.message ?? '').toUpperCase()
+  return code === 'E04111' || message.includes('E04111')
+}
+
 function toMoney(value: unknown): number | null {
   const n = Number(value)
   if (!Number.isFinite(n)) return null

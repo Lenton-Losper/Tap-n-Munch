@@ -6,7 +6,7 @@ import {
 /**
  * Staging-only Finatic stub for HTTP probes against the deployed Worker.
  * Honored only when ENVIRONMENT=staging (wrangler.toml [vars]) and the request
- * includes `__stagingFinaticStub`: 'paid' | 'not_paid' | 'unreachable'.
+ * includes `__stagingFinaticStub`: 'paid' | 'not_paid' | 'unreachable' | 'e04111'.
  * Production never sets ENVIRONMENT=staging, so this is a no-op there.
  */
 export function stagingFinaticQueryStub(
@@ -47,6 +47,18 @@ export function stagingFinaticQueryStub(
     }
     if (mode === 'unreachable' || mode === 'error') {
       throw new Error('STAGING_STUB: PayCloud service unavailable (network failure)')
+    }
+    if (mode === 'e04111') {
+      const err = new Error(
+        'PayCloud query failed: E04111 [E04111]Merchant order number is invalid',
+      ) as Error & { responseBody?: Record<string, unknown>; phase?: string }
+      err.responseBody = {
+        code: 'E04111',
+        msg: '[E04111]Merchant order number is invalid',
+        merchant_order_no: params.merchantOrderNo,
+      }
+      err.phase = 'business'
+      throw err
     }
     throw new Error(`STAGING_STUB: unknown __stagingFinaticStub mode: ${mode}`)
   }

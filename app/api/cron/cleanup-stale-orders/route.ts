@@ -4,6 +4,7 @@ import { requireCronSecret } from '@/lib/api/require-cron-secret'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 import { expireHostedPendingOrders } from '@/lib/orders/expire-hosted-pending-orders'
 import { reconcileOrphanPayments } from '@/lib/payments/reconcile-orphan-payments'
+import { stagingFinaticQueryStub } from '@/lib/payments/staging-finatic-stub'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,23 +19,49 @@ async function runCleanup(req: Request) {
   if (cronDenied) return cronDenied
 
   const supabase = createServerSupabaseClient()
+  const isStagingEnv = String(process.env.ENVIRONMENT || '').trim().toLowerCase() === 'staging'
+  const body = req.method === 'POST' ? await req.json().catch(() => null) : null
+  const stagingStubMode =
+    isStagingEnv && body && typeof body === 'object'
+      ? (body as { __stagingFinaticStub?: unknown }).__stagingFinaticStub
+      : undefined
+  const stagingRestaurantIdRaw =
+    isStagingEnv && body && typeof body === 'object'
+      ? (body as { __stagingRestaurantId?: unknown }).__stagingRestaurantId
+      : undefined
+  const stagingSkipHosted =
+    isStagingEnv && body && typeof body === 'object'
+      ? Boolean((body as { __stagingSkipHosted?: unknown }).__stagingSkipHosted)
+      : false
+  const stagingSkipReconcile =
+    isStagingEnv && body && typeof body === 'object'
+      ? Boolean((body as { __stagingSkipReconcile?: unknown }).__stagingSkipReconcile)
+      : false
+  const stagingRestaurantId = String(stagingRestaurantIdRaw ?? '').trim() || undefined
 
-  const pos = await autoCancelStalePosOrders(supabase, { verifyWithFinatic: true })
+  const pos = await autoCancelStalePosOrders(supabase, {
+    verifyWithFinatic: true,
+    restaurantId: stagingRestaurantId,
+    queryFinaticOrderPaidFn: stagingFinaticQueryStub(stagingStubMode),
+  })
   console.log('[CLEANUP-STALE-ORDERS] POS auto_timeout cancelled:', pos.cancelledCount)
   console.log('[CLEANUP-STALE-ORDERS] POS corrected to paid (Finatic-verified):', pos.correctedToPaidCount, pos.correctedToPaidIds)
   if (pos.skippedUncertainCount > 0) {
     console.warn('[CLEANUP-STALE-ORDERS] POS skipped (Finatic check inconclusive, retrying next run):', pos.skippedUncertainCount, pos.skippedUncertainIds)
   }
 
-  let hosted: { expiredCount: number; closedTabCount: number }
+  const hostedFallback = { expiredCount: 0, closedTabCount: 0 }
+  let hosted: { expiredCount: number; closedTabCount: number } = hostedFallback
   try {
-    hosted = await expireHostedPendingOrders(supabase)
-    console.log(
-      '[CLEANUP-STALE-ORDERS] Hosted timeout cancelled:',
-      hosted.expiredCount,
-      'tabs closed:',
-      hosted.closedTabCount,
-    )
+    if (!stagingSkipHosted) {
+      hosted = await expireHostedPendingOrders(supabase)
+      console.log(
+        '[CLEANUP-STALE-ORDERS] Hosted timeout cancelled:',
+        hosted.expiredCount,
+        'tabs closed:',
+        hosted.closedTabCount,
+      )
+    }
   } catch (error) {
     console.error('[CLEANUP-STALE-ORDERS] Hosted expire failed:', error)
     return NextResponse.json(
@@ -49,8 +76,10 @@ async function runCleanup(req: Request) {
 
   let reconcile: Awaited<ReturnType<typeof reconcileOrphanPayments>> | null = null
   try {
-    reconcile = await reconcileOrphanPayments(supabase)
-    console.log('[CLEANUP-STALE-ORDERS] Reconcile orphan payments:', reconcile)
+    if (!stagingSkipReconcile) {
+      reconcile = await reconcileOrphanPayments(supabase)
+      console.log('[CLEANUP-STALE-ORDERS] Reconcile orphan payments:', reconcile)
+    }
   } catch (error) {
     console.error('[CLEANUP-STALE-ORDERS] Reconcile failed:', error)
   }

@@ -1,6 +1,9 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
-import { queryFinaticOrderPaid } from '@/lib/payments/query-finatic-order-paid'
+import {
+  isFinaticMerchantOrderInvalidError,
+  queryFinaticOrderPaid,
+} from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
@@ -26,7 +29,11 @@ export type AutoCancelStalePosOrdersResult = {
   skippedUncertainIds: string[]
 }
 
-async function cancelByIds(supabase: Supabase, ids: string[]): Promise<string[]> {
+async function cancelByIds(
+  supabase: Supabase,
+  ids: string[],
+  cancellationReason: string = 'auto_timeout',
+): Promise<string[]> {
   if (!ids.length) return []
   const { data, error } = await supabase
     .from('orders')
@@ -34,7 +41,7 @@ async function cancelByIds(supabase: Supabase, ids: string[]): Promise<string[]>
       status: 'cancelled',
       payment_status: 'cancelled',
       cancelled_at: new Date().toISOString(),
-      cancellation_reason: 'auto_timeout',
+      cancellation_reason: cancellationReason,
     })
     .in('id', ids)
     .eq('payment_status', 'pending') // re-assert: a concurrent terminal callback wins the race
@@ -49,11 +56,15 @@ async function cancelByIds(supabase: Supabase, ids: string[]): Promise<string[]>
  * legitimately sit pending for a long time (pay-at-till), so a blanket filter would
  * wrongly cancel those too.
  *
- * Split by whether a Finatic payment attempt was ever actually initiated
- * (paycloud_merchant_order_no set by prepare-payment):
- *  - Never initiated: cancel immediately, no network call possible or needed --
- *    this is the "genuinely abandoned" case.
- *  - Initiated: cancelling on payment_status alone is exactly the bug behind the
+ * Split by whether a Finatic payment attempt was ever actually initiated:
+ *  - No paycloud_merchant_order_no at all: cancel immediately, no network call
+ *    possible or needed -- this is the "genuinely abandoned" case.
+ *  - paycloud_merchant_order_no present but no payment.attempt_started marker:
+ *    an order number was allocated, but we still do not know whether the device
+ *    actually launched WiseCashier yet. This bucket is only confidently cancellable
+ *    when Finatic explicitly answers E04111 (merchant order invalid).
+ *  - payment.attempt_started marker present: cancelling on payment_status alone is
+ *    exactly the bug behind the
  *    2026-07-27 FNB ChowNow incident (terminal device silence/false-failure caused
  *    real successful Finatic charges to get auto-cancelled). When verifyWithFinatic
  *    is true, each such order is checked against Finatic directly before any action:
@@ -109,6 +120,18 @@ export async function autoCancelStalePosOrders(
   if (!candidates || candidates.length === 0) return result
 
   const rows = candidates as StaleOrderCandidate[]
+  const candidateIds = rows.map((o) => String(o.id))
+  const { data: attemptStartAudits, error: attemptStartAuditsError } = await supabase
+    .from('audit_logs')
+    .select('entity_id')
+    .eq('entity_type', 'order')
+    .eq('action', 'payment.attempt_started')
+    .in('entity_id', candidateIds)
+  if (attemptStartAuditsError) throw attemptStartAuditsError
+
+  const attemptStartedIds = new Set(
+    (attemptStartAudits ?? []).map((row) => String(row.entity_id || '')).filter(Boolean),
+  )
   const noAttempt = rows.filter((o) => !String(o.paycloud_merchant_order_no || '').trim())
   const withAttempt = rows.filter((o) => String(o.paycloud_merchant_order_no || '').trim())
 
@@ -159,6 +182,37 @@ export async function autoCancelStalePosOrders(
         result.cancelledIds.push(...cancelled)
       }
     } catch (err) {
+      if (
+        isFinaticMerchantOrderInvalidError(err) &&
+        !attemptStartedIds.has(orderId)
+      ) {
+        const cancelled = await cancelByIds(supabase, [orderId], 'no_payment_attempt_made')
+        result.cancelledIds.push(...cancelled)
+
+        if (cancelled.length > 0) {
+          const { error: auditError } = await supabase.from('audit_logs').insert({
+            restaurant_id: orderRestaurantId,
+            action: 'order.cancelled',
+            entity_type: 'order',
+            entity_id: orderId,
+            metadata: {
+              source: 'auto_cancel_cron_no_payment_attempt',
+              cancellation_reason: 'no_payment_attempt_made',
+              businessOrderNo: merchantOrderNo,
+              correctionReason:
+                'Cron queried Finatic for a stale POS order with an allocated merchant_order_no but no recorded payment-attempt-started marker. Finatic returned E04111 merchant order invalid, so the order was confidently treated as never having started a real payment attempt and cancelled.',
+            },
+          })
+          if (auditError) {
+            console.error(
+              `[autoCancelStalePosOrders] audit log failed for no_payment_attempt_made cancel on order ${orderId}:`,
+              auditError,
+            )
+          }
+        }
+        continue
+      }
+
       // Finatic unreachable, errored, or credentials missing -- no confident answer.
       // Never default to cancelling here; leave payment_status='pending' and retry next run.
       console.error(
