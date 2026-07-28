@@ -31,6 +31,7 @@ async function main() {
   const windowEnd = '2026-07-28T14:50:00.000Z'
   const targetTotal = 11.99
 
+  // orders has placed_at / updated_at; no created_at column on staging.
   const { data: byPlaced, error: byPlacedErr } = await admin
     .from('orders')
     .select('*')
@@ -39,16 +40,8 @@ async function main() {
     .order('placed_at', { ascending: true })
   if (byPlacedErr) throw byPlacedErr
 
-  const { data: byCreated, error: byCreatedErr } = await admin
-    .from('orders')
-    .select('*')
-    .gte('created_at', windowStart)
-    .lte('created_at', windowEnd)
-    .order('created_at', { ascending: true })
-  if (byCreatedErr) throw byCreatedErr
-
   const byId = new Map<string, Record<string, unknown>>()
-  for (const row of [...(byPlaced ?? []), ...(byCreated ?? [])]) {
+  for (const row of byPlaced ?? []) {
     byId.set(String(row.id), row as Record<string, unknown>)
   }
 
@@ -173,7 +166,6 @@ async function main() {
       payment_attempt_source: order.payment_attempt_source ?? null,
       channel: order.channel,
       placed_at: order.placed_at,
-      created_at: order.created_at,
       updated_at: order.updated_at,
       restaurant_id: order.restaurant_id,
       attempt_started_audit_count: attemptStarted.length,
