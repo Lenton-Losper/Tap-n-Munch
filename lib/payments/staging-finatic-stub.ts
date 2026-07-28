@@ -4,15 +4,28 @@ import {
 } from '@/lib/payments/query-finatic-order-paid'
 
 /**
+<<<<<<< HEAD
  * Staging-only Finatic stub for HTTP probes against the deployed Worker.
  * Honored only when ENVIRONMENT=staging (wrangler.toml [vars]) and the request
  * includes `__stagingFinaticStub`: 'paid' | 'not_paid' | 'unreachable' | 'e04111'.
  * Production never sets ENVIRONMENT=staging, so this is a no-op there.
+=======
+ * Staging/preview-only Finatic stub for HTTP probes.
+ * Honored when:
+ *   - ENVIRONMENT=staging (Cloudflare staging Worker wrangler.toml [vars]), or
+ *   - VERCEL_ENV=preview (PR previews; production uses Cloudflare, not Vercel)
+ * and the request includes `__stagingFinaticStub`:
+ * 'paid' | 'not_paid' | 'unreachable' | 'e04111'.
+ * Production Workers set ENVIRONMENT=production, so this is a no-op there.
+>>>>>>> cursor/webhook-sig-fallback-query-d306
  */
 export function stagingFinaticQueryStub(
   stub: unknown,
 ): typeof queryFinaticOrderPaid | undefined {
-  if (String(process.env.ENVIRONMENT || '').trim().toLowerCase() !== 'staging') {
+  const env = String(process.env.ENVIRONMENT || '').trim().toLowerCase()
+  const vercelEnv = String(process.env.VERCEL_ENV || '').trim().toLowerCase()
+  const stubAllowed = env === 'staging' || vercelEnv === 'preview'
+  if (!stubAllowed) {
     return undefined
   }
   const mode = String(stub ?? '')

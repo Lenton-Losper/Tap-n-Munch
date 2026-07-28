@@ -1,0 +1,32 @@
+== LIVE_VERCEL_PREVIEW_UNCERTAIN_NO_LOCAL_ORDER ==
+worker=https://mvp-git-cursor-webhook-sig-fallback-query-d306-lentons-projects.vercel.app
+HTTP/2 503 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Tue, 28 Jul 2026 19:55:50 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/webhooks/paycloud
+x-robots-tag: noindex
+x-vercel-cache: MISS
+x-vercel-id: cle1::iad1::r6lhr-1785268549962-6190a89a7de0
+
+
+body:
+{"error":"Finatic fallback query unavailable; retry later","reason":"No local order for merchant_order_no; cannot resolve restaurant Finatic credentials","signatureFailureReason":"Encrypted message length is invalid."}
+== LIVE_CF_STAGING_STILL_OLD_401_UNTIL_DEPLOY ==
+HTTP/2 401 
+date: Tue, 28 Jul 2026 19:55:50 GMT
+content-type: application/json
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-opennext: 1
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=alDqjAurY0QFOUcNgfiOdH1GRlxnwALmOXHgn%2FDKEQxMScWcs4cgKEe3mlw7ryc89QEpY3AB%2BRaIpc%2BO9E4d0lOqwCXnUy3JYO9aqW0KZPlMGky2AYHHf4CzcTSpP2LJyCCMGp2jCtAlxTH0PoKml9vXdl4ldXviIUpYflAtAg%3D%3D"}]}
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+server: cloudflare
+cf-ray: a226719b8b79f8bb-CMH
+alt-svc: h3=":443"; ma=86400
+
+
+body:
+{"error":"Encrypted message length is invalid."}
