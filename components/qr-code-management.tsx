@@ -42,7 +42,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { QRCodeSVG } from 'qrcode.react'
-import { ArrowLeft, Copy, Download, MoreHorizontal, Plus } from 'lucide-react'
+import { ArrowLeft, Copy, Download, Loader2, MoreHorizontal, Plus } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
@@ -750,7 +750,14 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddTable()}>
-              Create table
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create table'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -802,7 +809,14 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddKiosk()}>
-              Create kiosk
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create kiosk'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -855,7 +869,14 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddViewOnly()}>
-              Create view-only menu QR
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create view-only menu QR'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -899,7 +920,14 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleSaveEdit()}>
-              Save
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                'Save'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -227,7 +227,12 @@ export function OnboardingWizard() {
                 disabled={saving}
                 className="rounded-lg bg-[#37352F] text-white hover:bg-[#2f2d27]"
               >
-                {currentStep === 7 && testOrderDone ? (
+                {saving ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {currentStep === TOTAL_STEPS ? 'Completing...' : 'Saving...'}
+                  </>
+                ) : currentStep === 7 && testOrderDone ? (
                   'Go to Dashboard'
                 ) : (
                   <>
