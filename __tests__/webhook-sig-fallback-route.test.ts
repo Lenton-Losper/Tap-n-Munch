@@ -5,7 +5,7 @@
 import { POST } from '@/app/api/webhooks/paycloud/route'
 
 const verifyWebhook = jest.fn()
-const enforceWebhookRateLimit = jest.fn(() => ({ allowed: true }))
+const enforceWebhookRateLimit = jest.fn((..._args: unknown[]) => ({ allowed: true }))
 jest.mock('@/payments/webhook', () => ({
   verifyWebhook: (...args: unknown[]) => verifyWebhook(...args),
   enforceWebhookRateLimit: (...args: unknown[]) => enforceWebhookRateLimit(...args),
@@ -23,13 +23,13 @@ jest.mock('@/lib/payments/webhook-sig-fallback', () => ({
     confirmWebhookOrderViaFinaticFallback(...args),
 }))
 
-const safeIssueReceiptsForOrders = jest.fn(async () => undefined)
+const safeIssueReceiptsForOrders = jest.fn(async (..._args: unknown[]) => undefined)
 jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
   safeIssueReceiptsForOrders: (...args: unknown[]) => safeIssueReceiptsForOrders(...args),
 }))
 
 const orderUpdate = jest.fn()
-const auditInsert = jest.fn(async () => ({ error: null }))
+const auditInsert = jest.fn(async (..._args: unknown[]) => ({ error: null }))
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
     from: (table: string) => {
