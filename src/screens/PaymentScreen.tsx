@@ -13,6 +13,7 @@ import {
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api';
@@ -694,31 +695,29 @@ export default function PaymentScreen({route, navigation}: Props) {
       </ScrollView>
 
       <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.md}]}>
-        <Pressable
+        <LoadingButton
           style={[
             styles.processButton,
             state === 'PAYMENT_IN_PROGRESS' && styles.buttonDisabled,
           ]}
           disabled={state === 'PAYMENT_IN_PROGRESS'}
-          onPress={handleProcessPayment}>
-          {state === 'PAYMENT_IN_PROGRESS' ? (
-            <ActivityIndicator color={Colors.white} />
-          ) : (
-            <>
-              <MaterialCommunityIcons
-                name="credit-card-outline"
-                size={22}
-                color={Colors.white}
-              />
-              <View style={styles.processButtonTextWrap}>
-                <Text style={styles.processButtonTitle}>Process Payment</Text>
-                <Text style={styles.processButtonSubtitle}>
-                  Tap card or insert to pay
-                </Text>
-              </View>
-            </>
-          )}
-        </Pressable>
+          loading={state === 'PAYMENT_IN_PROGRESS'}
+          onPress={handleProcessPayment}
+          spinnerColor={Colors.white}
+          icon={
+            <MaterialCommunityIcons
+              name="credit-card-outline"
+              size={22}
+              color={Colors.white}
+            />
+          }>
+          <View style={styles.processButtonTextWrap}>
+            <Text style={styles.processButtonTitle}>Process Payment</Text>
+            <Text style={styles.processButtonSubtitle}>
+              Tap card or insert to pay
+            </Text>
+          </View>
+        </LoadingButton>
       </View>
     </View>
   );

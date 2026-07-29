@@ -13,6 +13,7 @@ import {useFocusEffect} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
+import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import {closeTable, getTables, recordSaleEvent, settleTab} from '../lib/api';
 import {processPaymentIntent} from '../lib/payment';
@@ -364,19 +365,17 @@ export default function TableDetailScreen({route, navigation}: Props) {
               <Text style={styles.settleButtonText}>Settle Selected</Text>
             )}
           </Pressable>
-          <Pressable
+          <LoadingButton
             style={[
               styles.settleEntireOutlineButton,
               (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
             ]}
             disabled={settling || unpaidOrders.length === 0}
-            onPress={handleSettleEntireTab}>
-            {settling ? (
-              <ActivityIndicator color={Colors.textPrimary} />
-            ) : (
-              <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
-            )}
-          </Pressable>
+            loading={settling}
+            onPress={handleSettleEntireTab}
+            spinnerColor={Colors.textPrimary}>
+            <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
+          </LoadingButton>
         </View>
       ) : (
         <View
@@ -384,19 +383,17 @@ export default function TableDetailScreen({route, navigation}: Props) {
             styles.bottomBar,
             {paddingBottom: insets.bottom + Spacing.md},
           ]}>
-          <Pressable
+          <LoadingButton
             style={[
               styles.settleEntireButton,
               (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
             ]}
             disabled={settling || unpaidOrders.length === 0}
-            onPress={handleSettleEntireTab}>
-            {settling ? (
-              <ActivityIndicator color={Colors.white} />
-            ) : (
-              <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
-            )}
-          </Pressable>
+            loading={settling}
+            onPress={handleSettleEntireTab}
+            spinnerColor={Colors.white}>
+            <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
+          </LoadingButton>
         </View>
       )}
     </View>
