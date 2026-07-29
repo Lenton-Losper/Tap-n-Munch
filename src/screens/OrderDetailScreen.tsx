@@ -59,7 +59,8 @@ export default function OrderDetailScreen({route}: Props) {
   const {orderId} = route.params;
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState<OrderStatus | null>(null);
+  const updating = updatingStatus !== null;
   const [reprinting, setReprinting] = useState(false);
   const [reprintMessage, setReprintMessage] = useState<string | null>(null);
   const [reprintFailed, setReprintFailed] = useState(false);
@@ -105,7 +106,7 @@ export default function OrderDetailScreen({route}: Props) {
 
     const previous = order;
     setOrder({...order, status: newStatus});
-    setUpdating(true);
+    setUpdatingStatus(newStatus);
     setError(null);
 
     if (newStatus === 'confirmed') {
@@ -130,7 +131,7 @@ export default function OrderDetailScreen({route}: Props) {
       setOrder(previous);
       setError(message);
     } finally {
-      setUpdating(false);
+      setUpdatingStatus(null);
     }
   };
 
@@ -268,13 +269,21 @@ export default function OrderDetailScreen({route}: Props) {
                 style={[styles.primaryButton, updating && styles.buttonDisabled]}
                 disabled={updating}
                 onPress={() => handleStatusUpdate('confirmed')}>
-                <Text style={styles.primaryButtonText}>✓ Accept Order</Text>
+                {updatingStatus === 'confirmed' ? (
+                  <ActivityIndicator color={Colors.white} />
+                ) : (
+                  <Text style={styles.primaryButtonText}>✓ Accept Order</Text>
+                )}
               </Pressable>
               <Pressable
                 style={[styles.outlinedButton, updating && styles.buttonDisabled]}
                 disabled={updating}
                 onPress={() => handleStatusUpdate('cancelled')}>
-                <Text style={styles.outlinedButtonText}>✗ Decline Order</Text>
+                {updatingStatus === 'cancelled' ? (
+                  <ActivityIndicator color={Colors.primary} />
+                ) : (
+                  <Text style={styles.outlinedButtonText}>✗ Decline Order</Text>
+                )}
               </Pressable>
             </>
           )}
@@ -284,7 +293,11 @@ export default function OrderDetailScreen({route}: Props) {
               style={[styles.primaryButton, updating && styles.buttonDisabled]}
               disabled={updating}
               onPress={() => handleStatusUpdate('preparing')}>
-              <Text style={styles.primaryButtonText}>Start Preparing</Text>
+              {updatingStatus === 'preparing' ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Start Preparing</Text>
+              )}
             </Pressable>
           )}
 
@@ -293,7 +306,11 @@ export default function OrderDetailScreen({route}: Props) {
               style={[styles.primaryButton, updating && styles.buttonDisabled]}
               disabled={updating}
               onPress={() => handleStatusUpdate('ready')}>
-              <Text style={styles.primaryButtonText}>Mark Ready</Text>
+              {updatingStatus === 'ready' ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Mark Ready</Text>
+              )}
             </Pressable>
           )}
 
@@ -317,7 +334,11 @@ export default function OrderDetailScreen({route}: Props) {
                 style={[styles.outlinedButton, updating && styles.buttonDisabled]}
                 disabled={updating}
                 onPress={() => handleStatusUpdate('completed')}>
-                <Text style={styles.outlinedButtonText}>Mark Completed</Text>
+                {updatingStatus === 'completed' ? (
+                  <ActivityIndicator color={Colors.primary} />
+                ) : (
+                  <Text style={styles.outlinedButtonText}>Mark Completed</Text>
+                )}
               </Pressable>
             </>
           )}

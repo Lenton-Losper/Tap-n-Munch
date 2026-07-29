@@ -371,7 +371,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
             ]}
             disabled={settling || unpaidOrders.length === 0}
             onPress={handleSettleEntireTab}>
-            <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
+            {settling ? (
+              <ActivityIndicator color={Colors.textPrimary} />
+            ) : (
+              <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
+            )}
           </Pressable>
         </View>
       ) : (

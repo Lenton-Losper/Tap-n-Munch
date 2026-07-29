@@ -701,17 +701,23 @@ export default function PaymentScreen({route, navigation}: Props) {
           ]}
           disabled={state === 'PAYMENT_IN_PROGRESS'}
           onPress={handleProcessPayment}>
-          <MaterialCommunityIcons
-            name="credit-card-outline"
-            size={22}
-            color={Colors.white}
-          />
-          <View style={styles.processButtonTextWrap}>
-            <Text style={styles.processButtonTitle}>Process Payment</Text>
-            <Text style={styles.processButtonSubtitle}>
-              Tap card or insert to pay
-            </Text>
-          </View>
+          {state === 'PAYMENT_IN_PROGRESS' ? (
+            <ActivityIndicator color={Colors.white} />
+          ) : (
+            <>
+              <MaterialCommunityIcons
+                name="credit-card-outline"
+                size={22}
+                color={Colors.white}
+              />
+              <View style={styles.processButtonTextWrap}>
+                <Text style={styles.processButtonTitle}>Process Payment</Text>
+                <Text style={styles.processButtonSubtitle}>
+                  Tap card or insert to pay
+                </Text>
+              </View>
+            </>
+          )}
         </Pressable>
       </View>
     </View>
