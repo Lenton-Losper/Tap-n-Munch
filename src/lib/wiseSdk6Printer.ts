@@ -39,11 +39,18 @@ interface WiseSdk6PrinterModuleType {
   probeService?: () => Promise<{
     action: string;
     matchCount: number;
+    matchAllCount?: number;
     model: string;
     sdkInt: number;
+    targetSdk?: number;
+    queryAllPackagesGranted?: boolean;
+    packageVisibilityApplies?: boolean;
     summary: string;
     components: string[];
+    services?: Array<{packageName: string; serviceName: string}>;
   }>;
+  enumeratePrinterRelatedServices?: () => Promise<PrinterServiceEnumResult>;
+  testRealInitPosSdk?: () => Promise<RealInitPosSdkResult>;
 }
 
 const {WiseSdk6PrinterModule} = NativeModules as {
@@ -147,4 +154,121 @@ export async function printBuiltInJob(
       errorCode: errorCodeOf(error) ?? 'PRINT_FAILED',
     };
   }
+}
+
+export type UsdkAidlProbeResult = {
+  action: string;
+  matchCount: number;
+  matchAllCount: number;
+  model: string;
+  sdkInt: number;
+  targetSdk: number;
+  queryAllPackagesGranted: boolean;
+  packageVisibilityApplies: boolean;
+  summary: string;
+  services: Array<{packageName: string; serviceName: string}>;
+};
+
+export type EnumeratedServiceInfo = {
+  packageName: string;
+  serviceName: string;
+  exported: boolean;
+  enabled: boolean;
+  permission: string;
+  protectionLevel?: number;
+  protectionLabel?: string;
+  signatureGated?: boolean;
+};
+
+export type PrinterServiceEnumResult = {
+  queryAllPackagesGranted: boolean;
+  targetSdk: number;
+  sdkInt: number;
+  model: string;
+  packagesScanned: number;
+  servicesScanned: number;
+  matchingServiceCount: number;
+  matchingServices: EnumeratedServiceInfo[];
+  relatedPackageNames: string[];
+  allServiceCount?: number;
+  allServices?: EnumeratedServiceInfo[];
+  focusServiceCount?: number;
+  focusPackageServices?: EnumeratedServiceInfo[];
+  focusPackageStatus?: Array<{
+    packageName: string;
+    installed: boolean;
+    serviceCount: number;
+  }>;
+  signatureGatedServiceCount?: number;
+  signatureGatedServices?: EnumeratedServiceInfo[];
+};
+
+/**
+ * Staging diagnostic: PackageManager.queryIntentServices(com.wisepos.aidl.service, 0)
+ * — same flags the WisePos SDK uses when binding. Does not print or init the SDK.
+ */
+export async function probeUsdkAidlService(): Promise<UsdkAidlProbeResult> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.probeService) {
+    throw new Error('AIDL probe is only available on the Android terminal build');
+  }
+  const raw = await WiseSdk6PrinterModule.probeService();
+  const services =
+    raw.services?.map(s => ({
+      packageName: s.packageName,
+      serviceName: s.serviceName,
+    })) ??
+    (raw.components ?? []).map(c => {
+      const slash = c.indexOf('/');
+      return slash >= 0
+        ? {packageName: c.slice(0, slash), serviceName: c.slice(slash + 1)}
+        : {packageName: c, serviceName: '?'};
+    });
+  return {
+    action: raw.action,
+    matchCount: raw.matchCount,
+    matchAllCount: raw.matchAllCount ?? 0,
+    model: raw.model,
+    sdkInt: raw.sdkInt,
+    targetSdk: raw.targetSdk ?? 0,
+    queryAllPackagesGranted: raw.queryAllPackagesGranted ?? false,
+    packageVisibilityApplies: raw.packageVisibilityApplies ?? false,
+    summary: raw.summary,
+    services,
+  };
+}
+
+/** Staging forensic: enumerate printer/WisePos-related installed services. */
+export async function enumeratePrinterRelatedServices(): Promise<PrinterServiceEnumResult> {
+  if (
+    Platform.OS !== 'android' ||
+    !WiseSdk6PrinterModule?.enumeratePrinterRelatedServices
+  ) {
+    throw new Error('Service enumeration is only available on the Android terminal build');
+  }
+  return WiseSdk6PrinterModule.enumeratePrinterRelatedServices();
+}
+
+export type RealInitPosSdkResult = {
+  outcome: 'SUCCESS' | 'FAIL' | 'TIMEOUT' | 'THREW' | string;
+  errorCode?: number;
+  errorName?: string;
+  failBranch?: string;
+  preInitMatchCount?: number;
+  summary: string;
+  contextClass?: string;
+  printerStatusOk?: boolean;
+  printerStatusError?: string;
+  printerStatusRaw?: string;
+  printerStatus?: Record<string, unknown>;
+};
+
+/**
+ * Staging forensic: call the real WisePosSdk.initPosSdk() (SDKDemo MainActivity path).
+ * On success also runs getPrinter().getPrinterStatus().
+ */
+export async function testRealInitPosSdk(): Promise<RealInitPosSdkResult> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.testRealInitPosSdk) {
+    throw new Error('Real initPosSdk test is only available on the Android terminal build');
+  }
+  return WiseSdk6PrinterModule.testRealInitPosSdk();
 }

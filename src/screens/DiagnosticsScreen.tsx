@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
+import {APP_VERSION, ENV_NAME, FLASHTAP_API_URL} from '../constants';
 import {getPrinterConfig} from '../lib/api';
 import {getPrinterStatus, runBluetoothPrintJob} from '../lib/printer';
 import {
@@ -30,7 +30,19 @@ import {buildSdk6TestPrintLines, buildTestPrintPayload} from '../lib/testPrintPa
 import {
   getBuiltInPrinterStatus,
   printBuiltInJob,
+  probeUsdkAidlService,
+  enumeratePrinterRelatedServices,
+  testRealInitPosSdk,
+  UsdkAidlProbeResult,
+  PrinterServiceEnumResult,
+  RealInitPosSdkResult,
 } from '../lib/wiseSdk6Printer';
+import {
+  listSystemPrintServices,
+  printSystemTestReceipt,
+  PrintServicesProbeResult,
+  SystemPrintTestResult,
+} from '../lib/printFramework';
 
 const {RuntimeConfig} = NativeModules;
 
@@ -74,6 +86,27 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   const [lastError, setLastError] = useState('None');
   const [testPrinting, setTestPrinting] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [aidlProbing, setAidlProbing] = useState(false);
+  const [aidlProbe, setAidlProbe] = useState<UsdkAidlProbeResult | null>(null);
+  const [aidlProbeError, setAidlProbeError] = useState<string | null>(null);
+  const [enumRunning, setEnumRunning] = useState(false);
+  const [enumResult, setEnumResult] = useState<PrinterServiceEnumResult | null>(
+    null,
+  );
+  const [enumError, setEnumError] = useState<string | null>(null);
+  const [realInitRunning, setRealInitRunning] = useState(false);
+  const [realInitResult, setRealInitResult] =
+    useState<RealInitPosSdkResult | null>(null);
+  const [realInitError, setRealInitError] = useState<string | null>(null);
+  const [printFwRunning, setPrintFwRunning] = useState(false);
+  const [printFwResult, setPrintFwResult] =
+    useState<PrintServicesProbeResult | null>(null);
+  const [printFwError, setPrintFwError] = useState<string | null>(null);
+  const [systemPrintRunning, setSystemPrintRunning] = useState(false);
+  const [systemPrintResult, setSystemPrintResult] =
+    useState<SystemPrintTestResult | null>(null);
+  const [systemPrintError, setSystemPrintError] = useState<string | null>(null);
+  const isStaging = ENV_NAME === 'staging';
 
   const refreshPrintDiagnostics = useCallback(async () => {
     const [enabled, last, token] = await Promise.all([
@@ -200,6 +233,86 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
     }
   };
 
+  const handleAidlProbe = async () => {
+    setAidlProbing(true);
+    setAidlProbeError(null);
+    try {
+      const result = await probeUsdkAidlService();
+      setAidlProbe(result);
+    } catch (err) {
+      setAidlProbe(null);
+      setAidlProbeError(
+        err instanceof Error ? err.message : 'AIDL probe failed',
+      );
+    } finally {
+      setAidlProbing(false);
+    }
+  };
+
+  const handleEnumerateServices = async () => {
+    setEnumRunning(true);
+    setEnumError(null);
+    try {
+      const result = await enumeratePrinterRelatedServices();
+      setEnumResult(result);
+    } catch (err) {
+      setEnumResult(null);
+      setEnumError(
+        err instanceof Error ? err.message : 'Service enumeration failed',
+      );
+    } finally {
+      setEnumRunning(false);
+    }
+  };
+
+  const handleRealInitPosSdk = async () => {
+    setRealInitRunning(true);
+    setRealInitError(null);
+    try {
+      const result = await testRealInitPosSdk();
+      setRealInitResult(result);
+    } catch (err) {
+      setRealInitResult(null);
+      setRealInitError(
+        err instanceof Error ? err.message : 'Real initPosSdk test failed',
+      );
+    } finally {
+      setRealInitRunning(false);
+    }
+  };
+
+  const handleListPrintServices = async () => {
+    setPrintFwRunning(true);
+    setPrintFwError(null);
+    try {
+      const result = await listSystemPrintServices();
+      setPrintFwResult(result);
+    } catch (err) {
+      setPrintFwResult(null);
+      setPrintFwError(
+        err instanceof Error ? err.message : 'listPrintServices failed',
+      );
+    } finally {
+      setPrintFwRunning(false);
+    }
+  };
+
+  const handleSystemPrintTest = async () => {
+    setSystemPrintRunning(true);
+    setSystemPrintError(null);
+    try {
+      const result = await printSystemTestReceipt();
+      setSystemPrintResult(result);
+    } catch (err) {
+      setSystemPrintResult(null);
+      setSystemPrintError(
+        err instanceof Error ? err.message : 'System print test failed',
+      );
+    } finally {
+      setSystemPrintRunning(false);
+    }
+  };
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>FlashTap Diagnostics</Text>
@@ -241,6 +354,402 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
           <Text style={styles.testBtnTxt}>Test Print</Text>
         )}
       </Pressable>
+
+      {isStaging ? (
+        <>
+          <Text style={styles.sectionTitle}>
+            Staging — Android PrintManager (BIPS)
+          </Text>
+          <Text style={styles.hint}>
+            Uses android.print.PrintManager — NOT WiseSdk AIDL. Lists print
+            services Android itself reports (including BIPS /
+            com.android.bips if enabled), then can open the system print UI
+            with a test receipt PDF. Silent print is not available through
+            this framework.
+          </Text>
+          <Pressable
+            style={[styles.testBtn, printFwRunning && styles.btnDisabled]}
+            disabled={printFwRunning}
+            onPress={handleListPrintServices}>
+            {printFwRunning ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <Text style={styles.testBtnTxt}>
+                List PrintManager print services
+              </Text>
+            )}
+          </Pressable>
+          {printFwError ? (
+            <Text style={styles.probeError}>{printFwError}</Text>
+          ) : null}
+          {printFwResult ? (
+            <View style={styles.probeBox}>
+              <Text style={styles.label}>Summary</Text>
+              <Text style={styles.value}>{printFwResult.summary}</Text>
+              <Text style={styles.label}>BIPS enabled?</Text>
+              <Text style={styles.probeCount}>
+                {printFwResult.bipsEnabled ? 'YES' : 'NO'}
+              </Text>
+              <Text style={styles.label}>BIPS in all services?</Text>
+              <Text style={styles.value}>
+                {printFwResult.bipsPresentInAll ? 'yes' : 'no'}
+              </Text>
+              <Text style={styles.label}>Silent print via framework?</Text>
+              <Text style={styles.value}>
+                {printFwResult.silentPrintSupportedByFramework}
+              </Text>
+              <Text style={styles.label}>
+                Enabled services ({printFwResult.enabledCount})
+              </Text>
+              {printFwResult.enabledServices.length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                printFwResult.enabledServices.map((svc, i) => (
+                  <Text
+                    key={`en-${svc.packageName}-${svc.className}-${i}`}
+                    style={styles.value}>
+                    [{i + 1}] {svc.isBips ? 'BIPS ' : ''}
+                    {svc.name || '(unnamed)'} — {svc.packageName}/
+                    {svc.className} enabled={String(svc.isEnabled)}
+                  </Text>
+                ))
+              )}
+              <Text style={styles.label}>
+                All services ({printFwResult.allCount})
+              </Text>
+              {printFwResult.allServices.length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                printFwResult.allServices.map((svc, i) => (
+                  <Text
+                    key={`all-${svc.packageName}-${svc.className}-${i}`}
+                    style={styles.value}>
+                    [{i + 1}] {svc.isBips ? 'BIPS ' : ''}
+                    {svc.name || '(unnamed)'} — {svc.packageName}/
+                    {svc.className} enabled={String(svc.isEnabled)}
+                  </Text>
+                ))
+              )}
+            </View>
+          ) : null}
+
+          <Pressable
+            style={[styles.testBtn, systemPrintRunning && styles.btnDisabled]}
+            disabled={systemPrintRunning}
+            onPress={handleSystemPrintTest}>
+            {systemPrintRunning ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <Text style={styles.testBtnTxt}>
+                PrintManager test receipt (system UI)
+              </Text>
+            )}
+          </Pressable>
+          {systemPrintError ? (
+            <Text style={styles.probeError}>{systemPrintError}</Text>
+          ) : null}
+          {systemPrintResult ? (
+            <View style={styles.probeBox}>
+              <Text style={styles.label}>Outcome</Text>
+              <Text style={styles.probeCount}>{systemPrintResult.outcome}</Text>
+              <Text style={styles.label}>Job</Text>
+              <Text style={styles.value}>
+                {systemPrintResult.jobName} ({systemPrintResult.jobId}) state=
+                {systemPrintResult.jobState}
+              </Text>
+              <Text style={styles.label}>System print UI required</Text>
+              <Text style={styles.value}>
+                {systemPrintResult.systemPrintUiRequired ? 'yes' : 'no'}
+              </Text>
+              <Text style={styles.label}>Note</Text>
+              <Text style={styles.value}>{systemPrintResult.note}</Text>
+              <Text style={styles.label}>Started</Text>
+              <Text style={styles.value}>{systemPrintResult.timestamp}</Text>
+              <Text style={styles.hint}>
+                Confirm physical output with a photo of the paper (same as
+                SDKDemo). If nothing prints from the P5 head, this path does
+                not reach the thermal printer.
+              </Text>
+            </View>
+          ) : null}
+
+          <Text style={styles.sectionTitle}>Staging — WisePos SDK</Text>
+          <Text style={styles.subSectionTitle}>Real SDK initPosSdk() test</Text>
+          <Text style={styles.hint}>
+            Calls the actual WisePosSdk.getInstance().initPosSdk(Activity,
+            listener) — same entry point as SDKDemo MainActivity. On success
+            also runs getPrinter().getPrinterStatus(). Not our hand-written
+            PackageManager probe.
+          </Text>
+          <Pressable
+            style={[styles.testBtn, realInitRunning && styles.btnDisabled]}
+            disabled={realInitRunning}
+            onPress={handleRealInitPosSdk}>
+            {realInitRunning ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <Text style={styles.testBtnTxt}>Real SDK initPosSdk() test</Text>
+            )}
+          </Pressable>
+          {realInitError ? (
+            <Text style={styles.probeError}>{realInitError}</Text>
+          ) : null}
+          {realInitResult ? (
+            <View style={styles.probeBox}>
+              <Text style={styles.label}>Outcome</Text>
+              <Text style={styles.probeCount}>{realInitResult.outcome}</Text>
+              <Text style={styles.label}>errorCode (exact int)</Text>
+              <Text style={styles.value}>
+                {realInitResult.errorCode != null
+                  ? String(realInitResult.errorCode)
+                  : '(n/a)'}
+              </Text>
+              <Text style={styles.label}>WisePosErrorCode name</Text>
+              <Text style={styles.value}>
+                {realInitResult.errorName || '(unknown)'}
+              </Text>
+              <Text style={styles.label}>Fail branch (bytecode)</Text>
+              <Text style={styles.value}>
+                {realInitResult.failBranch || '(n/a)'}
+              </Text>
+              <Text style={styles.label}>
+                preInit matchCount (flags=0, same as SDK)
+              </Text>
+              <Text style={styles.value}>
+                {realInitResult.preInitMatchCount != null
+                  ? String(realInitResult.preInitMatchCount)
+                  : '(n/a)'}
+              </Text>
+              <Text style={styles.label}>Summary</Text>
+              <Text style={styles.value}>{realInitResult.summary}</Text>
+              <Text style={styles.label}>Context</Text>
+              <Text style={styles.value}>
+                {realInitResult.contextClass || '?'}
+              </Text>
+              <Text style={styles.label}>getPrinterStatus()</Text>
+              <Text style={styles.value}>
+                {realInitResult.printerStatusOk
+                  ? `OK: ${
+                      realInitResult.printerStatusRaw ||
+                      JSON.stringify(realInitResult.printerStatus)
+                    }`
+                  : realInitResult.printerStatusError || '(n/a)'}
+              </Text>
+            </View>
+          ) : null}
+
+          <Text style={styles.sectionTitle}>Staging — WisePos AIDL probe</Text>
+          <Text style={styles.hint}>
+            Runs PackageManager.queryIntentServices(Intent
+            (&quot;com.wisepos.aidl.service&quot;), 0) — the same flags the SDK uses
+            to bind. Zero matches = no system component on this firmware.
+            Staging builds only.
+          </Text>
+          <Pressable
+            style={[styles.testBtn, aidlProbing && styles.btnDisabled]}
+            disabled={aidlProbing}
+            onPress={handleAidlProbe}>
+            {aidlProbing ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <Text style={styles.testBtnTxt}>Probe com.wisepos.aidl.service</Text>
+            )}
+          </Pressable>
+          {aidlProbeError ? (
+            <Text style={styles.probeError}>{aidlProbeError}</Text>
+          ) : null}
+          {aidlProbe ? (
+            <View style={styles.probeBox}>
+              <Text style={styles.label}>Action</Text>
+              <Text style={styles.value}>{aidlProbe.action}</Text>
+              <Text style={styles.label}>matchCount (flags=0)</Text>
+              <Text style={styles.probeCount}>{aidlProbe.matchCount}</Text>
+              <Text style={styles.label}>Verdict</Text>
+              <Text style={styles.value}>
+                {aidlProbe.matchCount === 0
+                  ? 'ABSENT — nothing registered for this action'
+                  : aidlProbe.matchCount === 1
+                    ? 'PRESENT — exactly one component (SDK can bind)'
+                    : `AMBIGUOUS — ${aidlProbe.matchCount} components (SDK wants exactly 1)`}
+              </Text>
+              <Text style={styles.label}>Model / SDK / targetSdk</Text>
+              <Text style={styles.value}>
+                {aidlProbe.model} / sdkInt={aidlProbe.sdkInt} / targetSdk=
+                {aidlProbe.targetSdk}
+              </Text>
+              <Text style={styles.label}>QUERY_ALL_PACKAGES granted</Text>
+              <Text style={styles.value}>
+                {aidlProbe.queryAllPackagesGranted ? 'yes' : 'no'}
+              </Text>
+              <Text style={styles.label}>Package visibility applies (targetSdk≥30)</Text>
+              <Text style={styles.value}>
+                {aidlProbe.packageVisibilityApplies
+                  ? 'yes — filters can hide services'
+                  : 'no — targetSdk < 30, visibility filter not the cause of 0 matches'}
+              </Text>
+              <Text style={styles.label}>MATCH_ALL count (secondary)</Text>
+              <Text style={styles.value}>{aidlProbe.matchAllCount}</Text>
+              <Text style={styles.label}>Components</Text>
+              {aidlProbe.services.length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                aidlProbe.services.map((svc, i) => (
+                  <View key={`${svc.packageName}/${svc.serviceName}/${i}`}>
+                    <Text style={styles.value}>
+                      [{i + 1}] packageName: {svc.packageName}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}serviceName: {svc.serviceName}
+                    </Text>
+                  </View>
+                ))
+              )}
+              <Text style={styles.label}>Raw summary</Text>
+              <Text style={styles.value}>{aidlProbe.summary}</Text>
+            </View>
+          ) : null}
+
+          <Text style={styles.subSectionTitle}>Enumerate related services</Text>
+          <Text style={styles.hint}>
+            Scans all installed packages for exported services whose name
+            contains print / wisepos / wiseasy / usdk / pos. Uses
+            QUERY_ALL_PACKAGES (already in the staging manifest). Staging only.
+          </Text>
+          <Pressable
+            style={[styles.testBtn, enumRunning && styles.btnDisabled]}
+            disabled={enumRunning}
+            onPress={handleEnumerateServices}>
+            {enumRunning ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <Text style={styles.testBtnTxt}>
+                Enumerate ALL services (+ focus pkgs / perms)
+              </Text>
+            )}
+          </Pressable>
+          {enumError ? <Text style={styles.probeError}>{enumError}</Text> : null}
+          {enumResult ? (
+            <View style={styles.probeBox}>
+              <Text style={styles.label}>Scanned</Text>
+              <Text style={styles.value}>
+                {enumResult.packagesScanned} packages /{' '}
+                {enumResult.servicesScanned} services (all=
+                {enumResult.allServiceCount ?? enumResult.servicesScanned})
+              </Text>
+              <Text style={styles.label}>QUERY_ALL_PACKAGES</Text>
+              <Text style={styles.value}>
+                {enumResult.queryAllPackagesGranted ? 'granted' : 'NOT granted'}
+              </Text>
+              <Text style={styles.label}>
+                Signature-gated services (
+                {enumResult.signatureGatedServiceCount ?? 0})
+              </Text>
+              {(enumResult.signatureGatedServices ?? []).length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                (enumResult.signatureGatedServices ?? []).map((svc, i) => (
+                  <Text
+                    key={`sig-${svc.packageName}/${svc.serviceName}/${i}`}
+                    style={styles.value}>
+                    [{i + 1}] {svc.packageName}/{svc.serviceName} perm=
+                    {svc.permission || '(none)'} prot=
+                    {svc.protectionLabel || '?'}
+                  </Text>
+                ))
+              )}
+              <Text style={styles.label}>Focus packages (Wiseasy system)</Text>
+              {(enumResult.focusPackageStatus ?? []).map(st => (
+                <Text key={`focus-st-${st.packageName}`} style={styles.value}>
+                  {st.packageName}:{' '}
+                  {st.installed
+                    ? `installed, ${st.serviceCount} services`
+                    : 'NOT installed'}
+                </Text>
+              ))}
+              <Text style={styles.label}>
+                Focus package services ({enumResult.focusServiceCount ?? 0})
+              </Text>
+              {(enumResult.focusPackageServices ?? []).length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                (enumResult.focusPackageServices ?? []).map((svc, i) => (
+                  <View
+                    key={`focus-${svc.packageName}/${svc.serviceName}/${i}`}>
+                    <Text style={styles.value}>
+                      [{i + 1}] {svc.packageName}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}
+                      {svc.serviceName}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}exported={String(svc.exported)} enabled=
+                      {String(svc.enabled)}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}perm={svc.permission || '(none)'} prot=
+                      {svc.protectionLabel || '(n/a)'} sig=
+                      {String(!!svc.signatureGated)}
+                    </Text>
+                  </View>
+                ))
+              )}
+              <Text style={styles.label}>Related package names</Text>
+              {enumResult.relatedPackageNames.length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                enumResult.relatedPackageNames.map(name => (
+                  <Text key={name} style={styles.value}>
+                    {name}
+                  </Text>
+                ))
+              )}
+              <Text style={styles.label}>
+                Keyword-matching services ({enumResult.matchingServiceCount})
+              </Text>
+              {enumResult.matchingServices.length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                enumResult.matchingServices.map((svc, i) => (
+                  <View key={`${svc.packageName}/${svc.serviceName}/${i}`}>
+                    <Text style={styles.value}>
+                      [{i + 1}] {svc.packageName}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}
+                      {svc.serviceName}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}exported={String(svc.exported)} enabled=
+                      {String(svc.enabled)}
+                    </Text>
+                    <Text style={styles.value}>
+                      {'     '}perm={svc.permission || '(none)'} prot=
+                      {svc.protectionLabel || '(n/a)'}
+                    </Text>
+                  </View>
+                ))
+              )}
+              <Text style={styles.label}>
+                ALL services ({enumResult.allServiceCount ?? 0})
+              </Text>
+              {(enumResult.allServices ?? []).length === 0 ? (
+                <Text style={styles.value}>(none)</Text>
+              ) : (
+                (enumResult.allServices ?? []).map((svc, i) => (
+                  <Text
+                    key={`all-${svc.packageName}/${svc.serviceName}/${i}`}
+                    style={styles.value}>
+                    [{i + 1}] {svc.packageName}/{svc.serviceName} exp=
+                    {String(svc.exported)} perm={svc.permission || '-'} prot=
+                    {svc.protectionLabel || '-'}
+                  </Text>
+                ))
+              )}
+            </View>
+          ) : null}
+        </>
+      ) : null}
 
       <Text style={styles.sectionTitle}>Device / session</Text>
 
@@ -367,6 +876,25 @@ const styles = StyleSheet.create({
   },
   testBtnTxt: {fontSize: 15, fontWeight: '600', color: '#1a73e8'},
   btnDisabled: {opacity: 0.6},
+  probeBox: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 8,
+  },
+  probeCount: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#1a1a1a',
+    fontFamily: 'monospace',
+    marginTop: 4,
+  },
+  probeError: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#c62828',
+    fontFamily: 'monospace',
+  },
   loader: {marginTop: 16},
   closeBtn: {
     marginTop: 32,

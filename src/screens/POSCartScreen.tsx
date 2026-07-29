@@ -70,7 +70,16 @@ export default function POSCartScreen() {
   if (cart.length === 0) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Order Summary</Text>
+        <View style={styles.headerRow}>
+          <TouchableOpacity
+            style={styles.headerBack}
+            onPress={() => navigation.goBack()}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            <Text style={styles.headerBackText}>← Sale</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Order Summary</Text>
+          <View style={styles.headerSpacer} />
+        </View>
         <View style={styles.emptyState}>
           <Text style={styles.emptyText}>Your cart is empty.</Text>
           <TouchableOpacity
@@ -85,7 +94,16 @@ export default function POSCartScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Order Summary</Text>
+      <View style={styles.headerRow}>
+        <TouchableOpacity
+          style={styles.headerBack}
+          onPress={() => navigation.goBack()}
+          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+          <Text style={styles.headerBackText}>← Sale</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>Order Summary</Text>
+        <View style={styles.headerSpacer} />
+      </View>
 
       <FlatList
         data={cart}
@@ -138,7 +156,30 @@ export default function POSCartScreen() {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#F5F5F5', padding: 16},
-  title: {fontSize: 22, fontWeight: '700', color: '#1a1a1a', marginBottom: 16},
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    minHeight: 44,
+  },
+  headerBack: {
+    paddingVertical: 8,
+    paddingRight: 12,
+    minWidth: 72,
+  },
+  headerBackText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  headerSpacer: {minWidth: 72},
+  title: {
+    flex: 1,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    textAlign: 'center',
+  },
   list: {flex: 1},
   row: {
     flexDirection: 'row',

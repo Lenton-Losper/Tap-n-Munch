@@ -34,24 +34,39 @@ object WisePosSdkBootstrap {
 
   data class ServiceProbe(
     val action: String,
+    /** Count from queryIntentServices(intent, 0) — same flags the SDK uses to bind. */
     val matchCount: Int,
-    val components: List<String>,
+    val services: List<ServiceComponent>,
     val model: String,
     val sdkInt: Int,
+    val targetSdk: Int,
+    /** Secondary: MATCH_ALL count (visibility diagnostic only; SDK does not use this). */
+    val matchAllCount: Int,
   ) {
+    val components: List<String>
+      get() = services.map { "${it.packageName}/${it.serviceName}" }
+
     fun summary(): String {
       val comps =
         if (components.isEmpty()) "none"
         else components.joinToString("; ")
-      return "model=$model sdk=$sdkInt action=$action matches=$matchCount [$comps]"
+      return "model=$model sdk=$sdkInt targetSdk=$targetSdk action=$action " +
+        "flags0=$matchCount matchAll=$matchAllCount [$comps]"
     }
   }
 
-  /** Mirrors WisePosSdk.getExplicitIntent visibility — what the OS can see for the USDK action. */
+  data class ServiceComponent(
+    val packageName: String,
+    val serviceName: String,
+  )
+
+  /**
+   * Mirrors WisePosSdk.getExplicitIntent visibility — what the OS can see for the USDK action
+   * with flags=0 (the SDK's own binding check). Zero matches here = nothing to bind to.
+   */
   fun probeUsdkService(context: Context): ServiceProbe {
     val pm = context.packageManager
     val intent = Intent(USDK_ACTION)
-    // flags=0 is what WisePosSdk uses; also try MATCH_ALL for diagnostics on newer Android.
     val withDefault =
       try {
         @Suppress("DEPRECATION")
@@ -68,11 +83,13 @@ object WisePosSdkBootstrap {
         Log.e(TAG, "queryIntentServices(MATCH_ALL) failed", e)
         emptyList()
       }
-    val resolved = if (withDefault.isNotEmpty()) withDefault else withMatchAll
-    val components =
-      resolved.mapNotNull { info ->
+    val services =
+      withDefault.mapNotNull { info ->
         val si = info.serviceInfo ?: return@mapNotNull null
-        "${si.packageName}/${si.name}"
+        ServiceComponent(
+          packageName = si.packageName ?: "?",
+          serviceName = si.name ?: "?",
+        )
       }
     val queryAll =
       pm.checkPermission(
@@ -81,16 +98,18 @@ object WisePosSdkBootstrap {
       ) == PackageManager.PERMISSION_GRANTED
     Log.i(
       TAG,
-      "USDK probe: default=${withDefault.size} matchAll=${withMatchAll.size} " +
+      "USDK probe: flags0=${withDefault.size} matchAll=${withMatchAll.size} " +
         "queryAll=$queryAll targetSdk=${context.applicationInfo.targetSdkVersion} " +
-        "components=$components",
+        "services=$services",
     )
     return ServiceProbe(
       action = USDK_ACTION,
-      matchCount = components.size,
-      components = components,
+      matchCount = services.size,
+      services = services,
       model = Build.MODEL ?: "?",
       sdkInt = Build.VERSION.SDK_INT,
+      targetSdk = context.applicationInfo.targetSdkVersion,
+      matchAllCount = withMatchAll.size,
     )
   }
 

@@ -26,7 +26,7 @@ type NavProp = NativeStackNavigationProp<MainStackParamList>;
 
 export default function POSSaleScreen() {
   const navigation = useNavigation<NavProp>();
-  const {cart, addItem} = useCart();
+  const {cart, addItem, updateQuantity} = useCart();
   const [token, setToken] = useState<string | null>(null);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
@@ -108,29 +108,32 @@ export default function POSSaleScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.categoryBar}
-        contentContainerStyle={styles.categoryBarContent}>
-        {categories.map(cat => (
-          <Pressable
-            key={cat.id}
-            onPress={() => setSelectedCategory(cat.id)}
-            style={[
-              styles.categoryTab,
-              selectedCategory === cat.id && styles.categoryTabActive,
-            ]}>
-            <Text
+      <View style={styles.categoryBar}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryBarContent}
+          keyboardShouldPersistTaps="handled">
+          {categories.map(cat => (
+            <Pressable
+              key={cat.id}
+              onPress={() => setSelectedCategory(cat.id)}
               style={[
-                styles.categoryTabText,
-                selectedCategory === cat.id && styles.categoryTabTextActive,
+                styles.categoryTab,
+                selectedCategory === cat.id && styles.categoryTabActive,
               ]}>
-              {cat.name}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+              <Text
+                style={[
+                  styles.categoryTabText,
+                  selectedCategory === cat.id && styles.categoryTabTextActive,
+                ]}
+                numberOfLines={1}>
+                {cat.name}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
 
       {loadingItems ? (
         <View style={styles.center}>
@@ -138,27 +141,49 @@ export default function POSSaleScreen() {
         </View>
       ) : (
         <FlatList
+          style={styles.itemList}
           data={items.filter(i => i.is_available)}
           keyExtractor={i => i.id}
           numColumns={2}
           contentContainerStyle={styles.itemGrid}
           renderItem={({item}) => {
             const inCart = cart.find(c => c.menuItemId === item.id);
+            const qty = inCart?.quantity ?? 0;
             return (
-              <TouchableOpacity
-                style={styles.itemCard}
-                onPress={() => addItem(item)}
-                activeOpacity={0.7}>
-                <Text style={styles.itemName}>{item.name}</Text>
-                <Text style={styles.itemPrice}>
-                  N${item.base_price.toFixed(2)}
-                </Text>
-                {inCart ? (
-                  <View style={styles.itemBadge}>
-                    <Text style={styles.itemBadgeText}>{inCart.quantity}</Text>
+              <View style={styles.itemCard}>
+                <Pressable
+                  onPress={() => addItem(item)}
+                  style={styles.itemCardMain}
+                  android_ripple={{color: '#E5E7EB'}}>
+                  <Text style={styles.itemName}>{item.name}</Text>
+                  <Text style={styles.itemPrice}>
+                    N${item.base_price.toFixed(2)}
+                  </Text>
+                </Pressable>
+                {qty > 0 ? (
+                  <View style={styles.qtyRow}>
+                    <Pressable
+                      style={styles.qtyButton}
+                      onPress={() => updateQuantity(item.id, -1)}
+                      hitSlop={6}>
+                      <Text style={styles.qtyButtonText}>−</Text>
+                    </Pressable>
+                    <Text style={styles.qtyValue}>{qty}</Text>
+                    <Pressable
+                      style={styles.qtyButton}
+                      onPress={() => addItem(item)}
+                      hitSlop={6}>
+                      <Text style={styles.qtyButtonText}>+</Text>
+                    </Pressable>
                   </View>
-                ) : null}
-              </TouchableOpacity>
+                ) : (
+                  <Pressable
+                    style={styles.addHint}
+                    onPress={() => addItem(item)}>
+                    <Text style={styles.addHintText}>Tap to add</Text>
+                  </Pressable>
+                )}
+              </View>
             );
           }}
         />
@@ -179,34 +204,49 @@ const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#F5F5F5'},
   center: {flex: 1, justifyContent: 'center', alignItems: 'center'},
   errorText: {color: 'red', fontSize: 14, textAlign: 'center', padding: 16},
+  // Fixed height + flexShrink:0 so the bar never collapses when the cart
+  // button appears or the product list scrolls (common RN flex squeeze).
   categoryBar: {
-    maxHeight: 52,
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 56,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
+    justifyContent: 'center',
   },
-  categoryBarContent: {paddingHorizontal: 12, alignItems: 'center'},
+  categoryBarContent: {
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    minHeight: 56,
+  },
   categoryTab: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
     marginRight: 8,
-    borderRadius: 20,
+    borderRadius: 22,
     backgroundColor: '#F0F0F0',
+    minHeight: 44,
+    justifyContent: 'center',
   },
   categoryTabActive: {backgroundColor: Colors.primary},
-  categoryTabText: {fontSize: 14, color: '#555'},
-  categoryTabTextActive: {color: '#fff', fontWeight: '600'},
+  categoryTabText: {fontSize: 16, fontWeight: '600', color: '#555'},
+  categoryTabTextActive: {color: '#fff', fontWeight: '700'},
+  itemList: {flex: 1},
   itemGrid: {padding: 12, gap: 12},
   itemCard: {
     flex: 1,
     margin: 6,
-    padding: 16,
+    padding: 12,
     backgroundColor: '#fff',
     borderRadius: 12,
     elevation: 2,
-    minHeight: 100,
+    minHeight: 110,
     justifyContent: 'space-between',
-    position: 'relative',
+  },
+  itemCardMain: {
+    flexGrow: 1,
+    paddingBottom: 8,
   },
   itemName: {
     fontSize: 15,
@@ -215,19 +255,50 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   itemPrice: {fontSize: 16, fontWeight: '700', color: Colors.primary},
-  itemBadge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
+  qtyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  qtyButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
     backgroundColor: Colors.primary,
-    borderRadius: 12,
-    minWidth: 24,
-    height: 24,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  itemBadgeText: {color: '#fff', fontSize: 12, fontWeight: '700'},
+  qtyButtonText: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  qtyValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    minWidth: 28,
+    textAlign: 'center',
+  },
+  addHint: {
+    marginTop: 4,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  addHintText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#9CA3AF',
+  },
   cartButton: {
+    flexGrow: 0,
+    flexShrink: 0,
     margin: 16,
     padding: 18,
     backgroundColor: Colors.primary,

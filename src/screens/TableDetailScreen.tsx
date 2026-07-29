@@ -14,8 +14,19 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
-import {closeTable, getTables, recordSaleEvent, settleTab} from '../lib/api';
-import {processPaymentIntent} from '../lib/payment';
+import {
+  closeTable,
+  completePaymentReliably,
+  getTables,
+  recordSaleEvent,
+  settleTab,
+} from '../lib/api';
+import {
+  declinedFailureReference,
+  processPaymentIntent,
+  resolveAmbiguousPaymentWithFinatic,
+  unconfirmedFailureReference,
+} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TabOrder, TableWithTab} from '../types';
@@ -147,13 +158,47 @@ export default function TableDetailScreen({route, navigation}: Props) {
         throw new Error('Session expired');
       }
 
-      const paymentResult = await processPaymentIntent(
+      let paymentResult = await processPaymentIntent(
         amount,
         orderIds.join(','),
       );
 
+      // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure
+      // (mirrors PaymentScreen's handleProcessPayment).
+      if (
+        !paymentResult.success &&
+        (paymentResult.outcomeKind === 'ambiguous' ||
+          paymentResult.outcomeKind === 'orphaned_ambiguous' ||
+          paymentResult.orphaned)
+      ) {
+        paymentResult = await resolveAmbiguousPaymentWithFinatic(
+          orderIds[0],
+          paymentResult,
+        );
+      }
+
       if (!paymentResult.success || !paymentResult.reference) {
-        throw new Error(paymentResult.error ?? 'Payment was declined');
+        const baseError = paymentResult.error ?? 'Payment was declined';
+        const failureReference =
+          paymentResult.reference?.trim() ||
+          (paymentResult.outcomeKind === 'confirmed_failure' &&
+          paymentResult.gatewayResult
+            ? declinedFailureReference(paymentResult.gatewayResult)
+            : unconfirmedFailureReference());
+        // Never leave a silent gap after a card attempt — tell the backend even though
+        // this tab-settle attempt is about to fail.
+        const completed = await completePaymentReliably(orderIds[0], token, {
+          status: 'failed',
+          reference: failureReference,
+          amount,
+          paymentMethod: 'card',
+          businessOrderNo: paymentResult.businessOrderNo,
+        });
+        throw new Error(
+          completed
+            ? baseError
+            : `${baseError} — could not notify the system. Contact support before retrying.`,
+        );
       }
 
       const settleResult = await settleTab(

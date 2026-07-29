@@ -12,6 +12,7 @@ class PaymentPackage : ReactPackage {
       RuntimeConfigModule(reactContext),
       PrinterModule(reactContext),
       WiseSdk6PrinterModule(reactContext),
+      PrintFrameworkModule(reactContext),
     )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =

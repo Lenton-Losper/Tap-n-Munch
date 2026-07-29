@@ -14,9 +14,11 @@ import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   getSaleRecordForOrder,
   getTables,
+  isRefundAmountExceedsRemaining,
   recordRefundEvent,
   SaleLookupResult,
   SaleRecordNotFoundError,
+  staffMessageForRefundRecordFailure,
 } from '../lib/api';
 import {processRefundIntent, RefundResult} from '../lib/payment';
 import {getTerminalToken} from '../lib/storage';
@@ -76,6 +78,7 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
   );
   const [failureDetail, setFailureDetail] = useState<string | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [recordErrorOverLimit, setRecordErrorOverLimit] = useState(false);
   const [refundAmount, setRefundAmount] = useState(0);
 
   const loadSaleRecord = useCallback(async () => {
@@ -170,11 +173,8 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
         await persistRefundEvent('success', result, amount);
         setPhase('success');
       } catch (err) {
-        setRecordError(
-          err instanceof Error
-            ? err.message
-            : 'Failed to record refund — authorization may have expired. Start again from the table.',
-        );
+        setRecordError(staffMessageForRefundRecordFailure(err));
+        setRecordErrorOverLimit(isRefundAmountExceedsRemaining(err));
         setPhase('record_error');
       }
       return;
@@ -193,11 +193,8 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
       setFailureDetail(result.gateway.message || 'Refund was not completed.');
       setPhase('failure');
     } catch (err) {
-      setRecordError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to record refund outcome — authorization may have expired.',
-      );
+      setRecordError(staffMessageForRefundRecordFailure(err));
+      setRecordErrorOverLimit(isRefundAmountExceedsRemaining(err));
       setPhase('record_error');
     }
   };
@@ -351,10 +348,12 @@ export default function RefundConfirmScreen({route, navigation}: Props) {
           />
           <Text style={styles.failureTitle}>Could Not Save Refund</Text>
           <Text style={styles.failureSubtitle}>{recordError}</Text>
-          <Text style={styles.failureHint}>
-            If the card was charged, contact support with the transaction details.
-            Otherwise, start a new refund.
-          </Text>
+          {recordErrorOverLimit ? null : (
+            <Text style={styles.failureHint}>
+              If the card was charged, contact support with the transaction
+              details. Otherwise, start a new refund.
+            </Text>
+          )}
           <Pressable style={styles.outlinedButton} onPress={goBackToOrigin}>
             <Text style={styles.outlinedButtonText}>{originLabel}</Text>
           </Pressable>

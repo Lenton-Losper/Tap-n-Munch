@@ -10,15 +10,29 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import {useFocusEffect} from '@react-navigation/native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {closeTable, completePayment, getOrder, recordSaleEvent} from '../lib/api';
+import {
+  closeTable,
+  completePayment,
+  completePaymentReliably,
+  getOrder,
+  getTerminalInfo,
+  recordSaleEvent,
+  resolvePaymentMethodsAvailability,
+} from '../lib/api';
 import {formatCurrency, getItemLineTotal} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
-import {processPaymentIntent} from '../lib/payment';
+import {
+  declinedFailureReference,
+  processPaymentIntent,
+  resolveAmbiguousPaymentWithFinatic,
+  unconfirmedFailureReference,
+} from '../lib/payment';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {
   describeReceiptPrintError,
@@ -79,8 +93,59 @@ export default function PaymentScreen({route, navigation}: Props) {
   /** Kiosk: defer leave until print settles (when printing is on). */
   const [kioskAutoReturnPending, setKioskAutoReturnPending] = useState(false);
   const [kioskAutoReturnDelayMs, setKioskAutoReturnDelayMs] = useState(3000);
+  /** Chosen before launching Finatic or cash tender UI. */
+  const [paymentMethod, setPaymentMethod] = useState<'card' | 'cash' | null>(
+    null,
+  );
+  /** Raw tendered input (digits + optional decimal). */
+  const [tenderedText, setTenderedText] = useState('');
+  /** From GET /api/terminal/me — refreshed each time Charge is focused. */
+  const [cardPaymentEnabled, setCardPaymentEnabled] = useState(true);
+  const [cashPaymentEnabled, setCashPaymentEnabled] = useState(true);
+  const [paymentConfigLoading, setPaymentConfigLoading] = useState(true);
+  const [paymentConfigError, setPaymentConfigError] = useState<string | null>(
+    null,
+  );
 
   const resolvedTableId = order?.table_id ?? tableId;
+  const bothMethodsEnabled = cardPaymentEnabled && cashPaymentEnabled;
+  const noMethodsEnabled = !cardPaymentEnabled && !cashPaymentEnabled;
+  const showMethodPicker = bothMethodsEnabled;
+
+  const tenderedAmount = (() => {
+    const cleaned = tenderedText.replace(/[^0-9.]/g, '');
+    if (!cleaned) {
+      return 0;
+    }
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : 0;
+  })();
+  const changeDue = Math.max(0, tenderedAmount - total);
+  const canConfirmCash = tenderedAmount >= total && total >= 0;
+
+  const applyPaymentMethodAvailability = useCallback(
+    (cardEnabled: boolean, cashEnabled: boolean) => {
+      setCardPaymentEnabled(cardEnabled);
+      setCashPaymentEnabled(cashEnabled);
+      if (cardEnabled && cashEnabled) {
+        // Dual choice: keep selection null until staff picks (or leave prior pick).
+        return;
+      }
+      if (cardEnabled && !cashEnabled) {
+        setPaymentMethod('card');
+        setTenderedText('');
+        return;
+      }
+      if (cashEnabled && !cardEnabled) {
+        setPaymentMethod('cash');
+        return;
+      }
+      // Both off — clear selection so we don't offer a dead path.
+      setPaymentMethod(null);
+      setTenderedText('');
+    },
+    [],
+  );
 
   const loadOrder = useCallback(async () => {
     setLoadingOrder(true);
@@ -98,9 +163,45 @@ export default function PaymentScreen({route, navigation}: Props) {
     }
   }, [orderId]);
 
+  const loadPaymentConfig = useCallback(async () => {
+    setPaymentConfigLoading(true);
+    setPaymentConfigError(null);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        setPaymentConfigError('Terminal session not found. Please re-activate.');
+        // No session: block payment rather than inventing methods.
+        applyPaymentMethodAvailability(false, false);
+        return;
+      }
+      const info = await getTerminalInfo(token);
+      const {cardEnabled, cashEnabled} = resolvePaymentMethodsAvailability(info);
+      applyPaymentMethodAvailability(cardEnabled, cashEnabled);
+    } catch (err) {
+      // Network/auth blip: keep taking payments with both methods (today's default)
+      // rather than locking the floor. Explicit both-off from API still blocks below.
+      setPaymentConfigError(
+        err instanceof Error
+          ? err.message
+          : 'Could not refresh payment settings',
+      );
+      applyPaymentMethodAvailability(true, true);
+    } finally {
+      setPaymentConfigLoading(false);
+    }
+  }, [applyPaymentMethodAvailability]);
+
   useEffect(() => {
     loadOrder();
   }, [loadOrder]);
+
+  // Re-fetch restaurant payment flags whenever Charge is shown so web toggles
+  // apply without an app restart (AuthContext only validates /me and discards body).
+  useFocusEffect(
+    useCallback(() => {
+      loadPaymentConfig();
+    }, [loadPaymentConfig]),
+  );
 
   useEffect(() => {
     getReceiptPrintingEnabled().then(setReceiptPrintingEnabled);
@@ -263,91 +364,220 @@ export default function PaymentScreen({route, navigation}: Props) {
     navigation.navigate('MainTabs', {screen: 'Orders'});
   };
 
+  const finishSuccessfulPayment = useCallback(
+    async (
+      token: string,
+      opts: {
+        reference: string;
+        paymentMethod: 'card' | 'cash';
+        voucherNo?: string;
+        businessOrderNo?: string;
+        /** Card-only: record sale event for refunds when Finatic ids exist. */
+        recordFinaticSale?: boolean;
+      },
+    ) => {
+      const paymentResult = await completePayment(orderId, token, {
+        status: 'success',
+        reference: opts.reference,
+        voucherNo: opts.voucherNo,
+        businessOrderNo: opts.businessOrderNo,
+        amount: total,
+        paymentMethod: opts.paymentMethod,
+      });
+
+      if (
+        opts.recordFinaticSale &&
+        opts.businessOrderNo &&
+        opts.voucherNo
+      ) {
+        recordSaleEvent(
+          {
+            orderIds: [orderId],
+            businessOrderNo: opts.businessOrderNo,
+            transactionId: opts.voucherNo,
+            amount: total,
+          },
+          token,
+        ).then(saleRecord => {
+          if (!saleRecord.ok) {
+            console.warn(
+              '[PaymentScreen] recordSaleEvent failed:',
+              saleRecord.error,
+            );
+          }
+        });
+      }
+
+      const orderForAction: Order =
+        order ?? {
+          id: orderId,
+          restaurant_id: '',
+          table_number: tableNumber,
+          order_number: orderNumber ?? 0,
+          status: 'ready',
+          items: [],
+          total,
+          placed_at: placedAt ?? new Date().toISOString(),
+          channel: 'table',
+        };
+
+      const action = getPostPaymentAction(orderForAction, paymentResult.canClose);
+
+      if (action.type === 'auto_return') {
+        setKioskAutoReturnDelayMs(action.delayMs);
+        setKioskAutoReturnPending(true);
+        paymentSuccess(opts.reference);
+      } else {
+        setKioskAutoReturnPending(false);
+        setCanCloseTable(action.canClose);
+        paymentSuccess(opts.reference);
+      }
+    },
+    [
+      order,
+      orderId,
+      orderNumber,
+      placedAt,
+      tableNumber,
+      total,
+      paymentSuccess,
+    ],
+  );
+
   const handleProcessPayment = async () => {
+    startPayment(orderId, total);
+    let token: string | null = null;
+    try {
+      token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+
+      let result = await processPaymentIntent(total, orderId);
+
+      // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure.
+      if (
+        !result.success &&
+        (result.outcomeKind === 'ambiguous' ||
+          result.outcomeKind === 'orphaned_ambiguous' ||
+          result.orphaned)
+      ) {
+        result = await resolveAmbiguousPaymentWithFinatic(orderId, result);
+      }
+
+      if (result.success && result.reference) {
+        await finishSuccessfulPayment(token, {
+          reference: result.reference,
+          paymentMethod: 'card',
+          voucherNo: result.voucherNo,
+          businessOrderNo: result.businessOrderNo,
+          recordFinaticSale: true,
+        });
+      } else {
+        const failureReference =
+          result.reference?.trim() ||
+          (result.outcomeKind === 'confirmed_failure' && result.gatewayResult
+            ? declinedFailureReference(result.gatewayResult)
+            : unconfirmedFailureReference());
+        const baseError =
+          result.error ?? 'Payment outcome could not be confirmed on this device';
+        const completed = await completePaymentReliably(orderId, token, {
+          status: 'failed',
+          reference: failureReference,
+          amount: total,
+          paymentMethod: 'card',
+          businessOrderNo: result.businessOrderNo,
+        });
+        paymentFailed(
+          completed
+            ? baseError
+            : `${baseError} — could not notify the system. Contact support before retrying.`,
+        );
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Payment failed';
+      let finalMessage = message;
+      const NOT_REPORTED_SUFFIX =
+        ' — could not notify the system. Contact support before retrying.';
+      // Always tell the backend — never leave a silent gap after a card attempt.
+      try {
+        const reportToken = token ?? (await getTerminalToken());
+        if (reportToken) {
+          // Last chance: Finatic may have charged even if JS threw mid-flight.
+          const recovered = await resolveAmbiguousPaymentWithFinatic(orderId, {
+            success: false,
+            outcomeKind: 'ambiguous',
+            error: message,
+          });
+          if (recovered.success && recovered.reference) {
+            await finishSuccessfulPayment(reportToken, {
+              reference: recovered.reference,
+              paymentMethod: 'card',
+              voucherNo: recovered.voucherNo,
+              businessOrderNo: recovered.businessOrderNo,
+              recordFinaticSale: true,
+            });
+            return;
+          }
+          const completed = await completePaymentReliably(orderId, reportToken, {
+            status: 'failed',
+            reference: unconfirmedFailureReference(),
+            amount: total,
+            paymentMethod: 'card',
+            businessOrderNo: recovered.businessOrderNo,
+          });
+          if (!completed) {
+            finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+          }
+        } else {
+          finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+        }
+      } catch (reportErr) {
+        console.warn(
+          '[PaymentScreen] failed to report outer-catch payment outcome:',
+          reportErr,
+        );
+        finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+      }
+      paymentFailed(finalMessage);
+    }
+  };
+
+  const handleConfirmCash = async () => {
+    if (!canConfirmCash) {
+      return;
+    }
     startPayment(orderId, total);
     try {
       const token = await getTerminalToken();
       if (!token) {
         throw new Error('Session expired');
       }
-
-      const result = await processPaymentIntent(total, orderId);
-
-      if (result.success && result.reference) {
-        const paymentResult = await completePayment(orderId, token, {
-          status: 'success',
-          reference: result.reference,
-          voucherNo: result.voucherNo,
-          businessOrderNo: result.businessOrderNo,
-          amount: total,
-          paymentMethod: 'card',
-        });
-
-        const businessOrderNo = result.businessOrderNo;
-        const transactionId = result.voucherNo;
-        if (businessOrderNo && transactionId) {
-          recordSaleEvent(
-            {
-              orderIds: [orderId],
-              businessOrderNo,
-              transactionId,
-              amount: total,
-            },
-            token,
-          ).then(saleRecord => {
-            if (!saleRecord.ok) {
-              console.warn(
-                '[PaymentScreen] recordSaleEvent failed:',
-                saleRecord.error,
-              );
-            }
-          });
-        } else {
-          console.warn(
-            '[PaymentScreen] Skipping recordSaleEvent — missing businessOrderNo or voucherNo',
-            {
-              businessOrderNo,
-              voucherNo: transactionId,
-            },
-          );
-        }
-
-        const orderForAction: Order =
-          order ?? {
-            id: orderId,
-            restaurant_id: '',
-            table_number: tableNumber,
-            order_number: orderNumber ?? 0,
-            status: 'ready',
-            items: [],
-            total,
-            placed_at: placedAt ?? new Date().toISOString(),
-            channel: 'table',
-          };
-
-        const action = getPostPaymentAction(orderForAction, paymentResult.canClose);
-
-        if (action.type === 'auto_return') {
-          setKioskAutoReturnDelayMs(action.delayMs);
-          setKioskAutoReturnPending(true);
-          paymentSuccess(result.reference);
-        } else {
-          setKioskAutoReturnPending(false);
-          setCanCloseTable(action.canClose);
-          paymentSuccess(result.reference);
-        }
-      } else {
-        await completePayment(orderId, token, {
-          status: 'failed',
-          reference: result.reference ?? `FT-FAIL-${Date.now()}`,
-          amount: total,
-          paymentMethod: 'card',
-        }).catch(() => {});
-        paymentFailed(result.error ?? 'Payment was declined');
-      }
+      // Local cash reference only — no Finatic voucher / businessOrderNo.
+      const reference = `CASH-${Date.now()}`;
+      await finishSuccessfulPayment(token, {
+        reference,
+        paymentMethod: 'cash',
+        recordFinaticSale: false,
+      });
     } catch (err) {
-      paymentFailed(err instanceof Error ? err.message : 'Payment failed');
+      paymentFailed(err instanceof Error ? err.message : 'Cash payment failed');
     }
+  };
+
+  const onTenderedChange = (text: string) => {
+    // Allow digits and a single decimal point (max 2 fractional digits).
+    let cleaned = text.replace(/[^0-9.]/g, '');
+    const firstDot = cleaned.indexOf('.');
+    if (firstDot !== -1) {
+      cleaned =
+        cleaned.slice(0, firstDot + 1) +
+        cleaned.slice(firstDot + 1).replace(/\./g, '');
+      const [whole, frac = ''] = cleaned.split('.');
+      cleaned = `${whole}.${frac.slice(0, 2)}`;
+    }
+    setTenderedText(cleaned);
   };
 
   const handleCloseTable = async () => {
@@ -409,6 +639,27 @@ export default function PaymentScreen({route, navigation}: Props) {
             />
             <Text style={styles.successTitle}>Payment successful</Text>
             <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
+
+            {paymentMethod === 'cash' && tenderedAmount > 0 ? (
+              <View style={styles.cashSuccessSummary}>
+                <View style={styles.cashSuccessRow}>
+                  <Text style={styles.cashSuccessLabel}>Amount paid</Text>
+                  <Text style={styles.cashSuccessValue}>
+                    {formatAmountPaid(tenderedAmount)}
+                  </Text>
+                </View>
+                <View style={styles.cashSuccessRow}>
+                  <Text style={styles.cashSuccessLabel}>Change due</Text>
+                  <Text
+                    style={[
+                      styles.cashSuccessValue,
+                      styles.cashSuccessChange,
+                    ]}>
+                    {formatAmountPaid(changeDue)}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
 
             {!receiptSkipped && (
               <View style={styles.receiptCard}>
@@ -660,6 +911,146 @@ export default function PaymentScreen({route, navigation}: Props) {
           </View>
         </View>
 
+        {state === 'IDLE' ? (
+          <>
+            {paymentConfigLoading ? (
+              <View style={styles.configLoadingRow}>
+                <ActivityIndicator color={Colors.primary} />
+                <Text style={styles.configLoadingText}>
+                  Loading payment options…
+                </Text>
+              </View>
+            ) : null}
+
+            {!paymentConfigLoading && paymentConfigError ? (
+              <Pressable
+                style={styles.configWarning}
+                onPress={loadPaymentConfig}>
+                <MaterialCommunityIcons
+                  name="wifi-alert"
+                  size={20}
+                  color={Colors.textMuted}
+                />
+                <Text style={styles.configWarningText}>
+                  {paymentConfigError} · Tap to retry
+                </Text>
+              </Pressable>
+            ) : null}
+
+            {!paymentConfigLoading && noMethodsEnabled ? (
+              <View style={styles.blockedCard}>
+                <MaterialCommunityIcons
+                  name="cancel"
+                  size={40}
+                  color={Colors.red}
+                />
+                <Text style={styles.blockedTitle}>Payments unavailable</Text>
+                <Text style={styles.blockedBody}>
+                  Card and Cash are both turned off for this restaurant. Ask a
+                  manager to enable at least one payment method in Settings,
+                  then return to this screen.
+                </Text>
+                <Pressable
+                  style={styles.outlinedRedButton}
+                  onPress={() => navigation.goBack()}>
+                  <Text style={styles.outlinedRedText}>Go back</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {!paymentConfigLoading && !noMethodsEnabled && showMethodPicker ? (
+              <>
+                <Text style={styles.sectionHeader}>Payment method</Text>
+                <View style={styles.methodRow}>
+                  <Pressable
+                    style={[
+                      styles.methodChip,
+                      paymentMethod === 'card' && styles.methodChipSelected,
+                    ]}
+                    onPress={() => setPaymentMethod('card')}>
+                    <MaterialCommunityIcons
+                      name="credit-card-outline"
+                      size={22}
+                      color={
+                        paymentMethod === 'card'
+                          ? Colors.white
+                          : Colors.textPrimary
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.methodChipText,
+                        paymentMethod === 'card' &&
+                          styles.methodChipTextSelected,
+                      ]}>
+                      Card
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.methodChip,
+                      paymentMethod === 'cash' && styles.methodChipSelected,
+                    ]}
+                    onPress={() => setPaymentMethod('cash')}>
+                    <MaterialCommunityIcons
+                      name="cash"
+                      size={22}
+                      color={
+                        paymentMethod === 'cash'
+                          ? Colors.white
+                          : Colors.textPrimary
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.methodChipText,
+                        paymentMethod === 'cash' &&
+                          styles.methodChipTextSelected,
+                      ]}>
+                      Cash
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+
+            {!paymentConfigLoading &&
+            !noMethodsEnabled &&
+            paymentMethod === 'cash' ? (
+              <View style={styles.cashPanel}>
+                {!showMethodPicker ? (
+                  <Text style={styles.sectionHeader}>Cash payment</Text>
+                ) : null}
+                <View style={styles.cashRow}>
+                  <Text style={styles.cashLabel}>Order total</Text>
+                  <Text style={styles.cashValue}>{formatCurrency(total)}</Text>
+                </View>
+                <Text style={styles.cashLabel}>Amount tendered</Text>
+                <TextInput
+                  style={styles.tenderedInput}
+                  value={tenderedText}
+                  onChangeText={onTenderedChange}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                  placeholderTextColor={Colors.textMuted}
+                />
+                <View style={styles.cashRow}>
+                  <Text style={styles.cashLabel}>Change</Text>
+                  <Text
+                    style={[
+                      styles.cashValue,
+                      canConfirmCash
+                        ? styles.cashChangeReady
+                        : styles.cashChangePending,
+                    ]}>
+                    {formatCurrency(changeDue)}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+          </>
+        ) : null}
+
         {state !== 'IDLE' ? (
           <>
             <Text style={styles.sectionHeader}>Payment Status</Text>
@@ -684,8 +1075,18 @@ export default function PaymentScreen({route, navigation}: Props) {
                 {error ? <Text style={styles.failedError}>{error}</Text> : null}
                 <Pressable
                   style={styles.outlinedRedButton}
-                  onPress={handleProcessPayment}>
-                  <Text style={styles.outlinedRedText}>Retry</Text>
+                  onPress={() => {
+                    reset();
+                    setTenderedText('');
+                    applyPaymentMethodAvailability(
+                      cardPaymentEnabled,
+                      cashPaymentEnabled,
+                    );
+                    if (cardPaymentEnabled && cashPaymentEnabled) {
+                      setPaymentMethod(null);
+                    }
+                  }}>
+                  <Text style={styles.outlinedRedText}>Try again</Text>
                 </Pressable>
               </View>
             )}
@@ -694,25 +1095,78 @@ export default function PaymentScreen({route, navigation}: Props) {
       </ScrollView>
 
       <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.md}]}>
-        <Pressable
-          style={[
-            styles.processButton,
-            state === 'PAYMENT_IN_PROGRESS' && styles.buttonDisabled,
-          ]}
-          disabled={state === 'PAYMENT_IN_PROGRESS'}
-          onPress={handleProcessPayment}>
-          <MaterialCommunityIcons
-            name="credit-card-outline"
-            size={22}
-            color={Colors.white}
-          />
-          <View style={styles.processButtonTextWrap}>
-            <Text style={styles.processButtonTitle}>Process Payment</Text>
-            <Text style={styles.processButtonSubtitle}>
-              Tap card or insert to pay
-            </Text>
-          </View>
-        </Pressable>
+        {noMethodsEnabled || paymentConfigLoading ? (
+          <Pressable
+            style={[styles.processButton, styles.buttonDisabled]}
+            disabled>
+            <MaterialCommunityIcons
+              name="credit-card-off-outline"
+              size={22}
+              color={Colors.white}
+            />
+            <View style={styles.processButtonTextWrap}>
+              <Text style={styles.processButtonTitle}>
+                {paymentConfigLoading
+                  ? 'Loading…'
+                  : 'Payments unavailable'}
+              </Text>
+              <Text style={styles.processButtonSubtitle}>
+                {paymentConfigLoading
+                  ? 'Checking restaurant settings'
+                  : 'Enable Card or Cash in Settings'}
+              </Text>
+            </View>
+          </Pressable>
+        ) : paymentMethod === 'cash' ? (
+          <Pressable
+            style={[
+              styles.processButton,
+              (!canConfirmCash || state === 'PAYMENT_IN_PROGRESS') &&
+                styles.buttonDisabled,
+            ]}
+            disabled={!canConfirmCash || state === 'PAYMENT_IN_PROGRESS'}
+            onPress={handleConfirmCash}>
+            <MaterialCommunityIcons
+              name="cash-check"
+              size={22}
+              color={Colors.white}
+            />
+            <View style={styles.processButtonTextWrap}>
+              <Text style={styles.processButtonTitle}>Confirm cash</Text>
+              <Text style={styles.processButtonSubtitle}>
+                {canConfirmCash
+                  ? `Change ${formatCurrency(changeDue)}`
+                  : 'Enter amount tendered'}
+              </Text>
+            </View>
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[
+              styles.processButton,
+              (paymentMethod !== 'card' ||
+                state === 'PAYMENT_IN_PROGRESS') &&
+                styles.buttonDisabled,
+            ]}
+            disabled={
+              paymentMethod !== 'card' || state === 'PAYMENT_IN_PROGRESS'
+            }
+            onPress={handleProcessPayment}>
+            <MaterialCommunityIcons
+              name="credit-card-outline"
+              size={22}
+              color={Colors.white}
+            />
+            <View style={styles.processButtonTextWrap}>
+              <Text style={styles.processButtonTitle}>Process Payment</Text>
+              <Text style={styles.processButtonSubtitle}>
+                {paymentMethod === 'card'
+                  ? 'Tap card or insert to pay'
+                  : 'Select Card or Cash above'}
+              </Text>
+            </View>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -726,6 +1180,116 @@ const styles = StyleSheet.create({
   loadingWrap: {
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  configLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  configLoadingText: {
+    ...Typography.body,
+    color: Colors.textMuted,
+  },
+  configWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+    padding: Spacing.sm,
+    borderRadius: 8,
+    backgroundColor: Colors.surface,
+  },
+  configWarningText: {
+    ...Typography.small,
+    color: Colors.textMuted,
+    flex: 1,
+  },
+  blockedCard: {
+    alignItems: 'center',
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+    borderRadius: 12,
+    backgroundColor: Colors.surface,
+    gap: Spacing.sm,
+  },
+  blockedTitle: {
+    ...Typography.subheading,
+    color: Colors.red,
+    textAlign: 'center',
+  },
+  blockedBody: {
+    ...Typography.body,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginBottom: Spacing.sm,
+  },
+  methodRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  methodChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: 12,
+    backgroundColor: Colors.white,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  methodChipSelected: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  methodChipText: {
+    ...Typography.body,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  methodChipTextSelected: {
+    color: Colors.white,
+  },
+  cashPanel: {
+    backgroundColor: Colors.white,
+    borderRadius: 12,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+    gap: Spacing.sm,
+  },
+  cashRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  cashLabel: {
+    ...Typography.body,
+    color: Colors.textMuted,
+  },
+  cashValue: {
+    ...Typography.body,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  cashChangeReady: {
+    color: Colors.green,
+  },
+  cashChangePending: {
+    color: Colors.textMuted,
+  },
+  tenderedInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    fontSize: 22,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    backgroundColor: Colors.background,
   },
   successScreen: {
     flex: 1,
@@ -748,6 +1312,35 @@ const styles = StyleSheet.create({
   successAmount: {
     fontSize: 32,
     fontWeight: '800',
+    color: Colors.green,
+  },
+  cashSuccessSummary: {
+    width: '100%',
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: 12,
+    backgroundColor: Colors.greenLight,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing.sm,
+  },
+  cashSuccessRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  cashSuccessLabel: {
+    fontSize: 16,
+    color: Colors.textMuted,
+    fontWeight: '500',
+  },
+  cashSuccessValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  cashSuccessChange: {
     color: Colors.green,
   },
   successActions: {

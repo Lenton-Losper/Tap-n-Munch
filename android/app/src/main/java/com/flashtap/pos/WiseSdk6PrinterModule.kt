@@ -1,5 +1,6 @@
 package com.flashtap.pos
 
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -12,12 +13,15 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
+import com.wisepos.smartpos.InitPosSdkListener
 import com.wisepos.smartpos.WisePosException
+import com.wisepos.smartpos.WisePosSdk
 import com.wisepos.smartpos.errorcode.WisePosErrorCode
 import com.wisepos.smartpos.printer.Align
 import com.wisepos.smartpos.printer.Printer
 import com.wisepos.smartpos.printer.PrinterListener
 import com.wisepos.smartpos.printer.TextInfo
+import java.lang.reflect.Modifier
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -46,6 +50,7 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
     private const val ENSURE_TIMEOUT_MS = 10_000L
     private const val PRINT_TIMEOUT_MS = 20_000L
     private const val STATUS_TIMEOUT_MS = 8_000L
+    private const val REAL_INIT_TIMEOUT_MS = 15_000L
     private const val DEFAULT_FEED_DOTS = 30
     private const val DEFAULT_FONT_SIZE = 24
     private const val LARGE_FONT_SIZE = 32
@@ -149,17 +154,234 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
     resolvePromise(promise, !UNSUPPORTED_MODELS.contains(Build.MODEL))
   }
 
-  /** Device probe: how many packages expose com.wisepos.aidl.service (SDK needs exactly 1). */
+  /**
+   * Staging forensic: call the **real** WisePosSdk.initPosSdk() exactly as SDKDemo
+   * MainActivity does — not our PackageManager probe. Reports onInitPosSuccess /
+   * onInitPosFail(errorCode) with WisePosErrorCode name lookup; on success also
+   * calls getPrinter().getPrinterStatus().
+   */
+  @ReactMethod
+  fun testRealInitPosSdk(promise: Promise) {
+    @Suppress("DEPRECATION")
+    val activity = getCurrentActivity()
+    if (activity == null) {
+      rejectPromise(
+        promise,
+        "NO_ACTIVITY",
+        "No Activity — initPosSdk needs an Activity Context like SDKDemo MainActivity",
+        null,
+      )
+      return
+    }
+
+    // Exact SDKDemo MainActivity pattern: getInstance() then initPosSdk(this, listener).
+    // Pass the Activity itself (not applicationContext) — same as SDKDemo's `this`.
+    val settled = AtomicBoolean(false)
+    val timeoutFuture =
+      timeoutScheduler.schedule(
+        {
+          if (settled.compareAndSet(false, true)) {
+            val map = Arguments.createMap()
+            map.putString("outcome", "TIMEOUT")
+            map.putString(
+              "summary",
+              "Neither onInitPosSuccess nor onInitPosFail within ${REAL_INIT_TIMEOUT_MS}ms",
+            )
+            map.putString("contextClass", activity.javaClass.name)
+            resolvePromise(promise, map)
+          }
+        },
+        REAL_INIT_TIMEOUT_MS,
+        TimeUnit.MILLISECONDS,
+      )
+
+    fun finish(builder: () -> com.facebook.react.bridge.WritableMap) {
+      if (!settled.compareAndSet(false, true)) return
+      timeoutFuture.cancel(false)
+      try {
+        resolvePromise(promise, builder())
+      } catch (e: Exception) {
+        rejectPromise(promise, "REAL_INIT_RESOLVE_FAILED", e.message, e)
+      }
+    }
+
+    Handler(Looper.getMainLooper()).post {
+      // Capture discovery state with the SAME flags the SDK uses, immediately
+      // before the real initPosSdk call — so a 7101 can be attributed to the
+      // correct bytecode branch (null Context vs getExplicitIntent==null).
+      val preProbe = WisePosSdkBootstrap.probeUsdkService(activity)
+      try {
+        Log.i(
+          TAG,
+          "testRealInitPosSdk: SDKDemo-identical call " +
+            "WisePosSdk.getInstance().initPosSdk(Activity=${activity.javaClass.name}) " +
+            "preProbe=${preProbe.summary()}",
+        )
+        val wisePosSdk = WisePosSdk.getInstance()
+        wisePosSdk.initPosSdk(
+          activity,
+          object : InitPosSdkListener {
+            override fun onInitPosSuccess() {
+              Log.i(TAG, "testRealInitPosSdk: onInitPosSuccess")
+              finish {
+                val map = Arguments.createMap()
+                map.putString("outcome", "SUCCESS")
+                map.putInt("errorCode", WisePosErrorCode.ERR_SUCCESS)
+                map.putString("errorName", "ERR_SUCCESS")
+                map.putString("failBranch", "none")
+                map.putString("contextClass", activity.javaClass.name)
+                map.putInt("preInitMatchCount", preProbe.matchCount)
+                map.putString(
+                  "summary",
+                  "WisePosSdk.initPosSdk → onInitPosSuccess()",
+                )
+                try {
+                  val printer = WisePosSdk.getInstance().getPrinter()
+                  val status = printer.getPrinterStatus()
+                  map.putBoolean("printerStatusOk", true)
+                  map.putString("printerStatusError", "")
+                  val statusMap = Arguments.createMap()
+                  if (status != null) {
+                    for ((k, v) in status) {
+                      when (v) {
+                        null -> statusMap.putNull(k)
+                        is Boolean -> statusMap.putBoolean(k, v)
+                        is Int -> statusMap.putInt(k, v)
+                        is Long -> statusMap.putDouble(k, v.toDouble())
+                        is Float -> statusMap.putDouble(k, v.toDouble())
+                        is Double -> statusMap.putDouble(k, v)
+                        is Number -> statusMap.putDouble(k, v.toDouble())
+                        else -> statusMap.putString(k, v.toString())
+                      }
+                    }
+                  }
+                  map.putMap("printerStatus", statusMap)
+                  map.putString(
+                    "printerStatusRaw",
+                    status?.toString() ?: "null",
+                  )
+                } catch (e: WisePosException) {
+                  map.putBoolean("printerStatusOk", false)
+                  map.putString(
+                    "printerStatusError",
+                    "WisePosException errorCode=${e.errorCode} (${wisePosErrorName(e.errorCode)}) ${e.message}",
+                  )
+                  map.putString("printerStatusRaw", "")
+                } catch (e: Exception) {
+                  map.putBoolean("printerStatusOk", false)
+                  map.putString(
+                    "printerStatusError",
+                    "${e.javaClass.simpleName}: ${e.message}",
+                  )
+                  map.putString("printerStatusRaw", "")
+                }
+                map
+              }
+            }
+
+            override fun onInitPosFail(errorCode: Int) {
+              Log.w(TAG, "testRealInitPosSdk: onInitPosFail code=$errorCode")
+              finish {
+                val name = wisePosErrorName(errorCode)
+                // Bytecode of initPosSdk: 7101 from (1) context==null OR
+                // (2) getExplicitIntent==null (queryIntentServices size != 1).
+                // We passed a live Activity, so (1) is impossible here → (2).
+                val failBranch =
+                  when {
+                    errorCode != WisePosErrorCode.ERR_SDK_INVALID_PARAMETER ->
+                      "other"
+                    preProbe.matchCount != 1 ->
+                      "GET_EXPLICIT_INTENT_NULL (queryIntentServices flags=0 " +
+                        "matchCount=${preProbe.matchCount}, need exactly 1)"
+                    else ->
+                      "GET_EXPLICIT_INTENT_NULL (unexpected: matchCount was 1 " +
+                        "at pre-probe — race or PackageManager inconsistency)"
+                  }
+                val map = Arguments.createMap()
+                map.putString("outcome", "FAIL")
+                map.putInt("errorCode", errorCode)
+                map.putString("errorName", name)
+                map.putString("failBranch", failBranch)
+                map.putString("contextClass", activity.javaClass.name)
+                map.putInt("preInitMatchCount", preProbe.matchCount)
+                map.putString(
+                  "summary",
+                  "WisePosSdk.initPosSdk → onInitPosFail($errorCode) $name | $failBranch",
+                )
+                map.putBoolean("printerStatusOk", false)
+                map.putString("printerStatusError", "skipped — init failed")
+                map.putString("printerStatusRaw", "")
+                map
+              }
+            }
+          },
+        )
+      } catch (e: Exception) {
+        Log.e(TAG, "testRealInitPosSdk: initPosSdk threw", e)
+        finish {
+          val map = Arguments.createMap()
+          map.putString("outcome", "THREW")
+          map.putInt("errorCode", -1)
+          map.putString("errorName", e.javaClass.simpleName)
+          map.putString("failBranch", "threw")
+          map.putString("contextClass", activity.javaClass.name)
+          map.putInt("preInitMatchCount", preProbe.matchCount)
+          map.putString(
+            "summary",
+            "WisePosSdk.initPosSdk threw: ${e.javaClass.name}: ${e.message}",
+          )
+          map.putBoolean("printerStatusOk", false)
+          map.putString("printerStatusError", e.message ?: "")
+          map.putString("printerStatusRaw", "")
+          map
+        }
+      }
+    }
+  }
+
+  /** Map int → WisePosErrorCode field name (e.g. 7101 → ERR_SDK_INVALID_PARAMETER). */
+  private fun wisePosErrorName(code: Int): String {
+    try {
+      for (field in WisePosErrorCode::class.java.declaredFields) {
+        if (!Modifier.isStatic(field.modifiers)) continue
+        if (field.type != Int::class.javaPrimitiveType) continue
+        if (field.getInt(null) == code) return field.name
+      }
+    } catch (_: Exception) {
+      // fall through
+    }
+    return "UNKNOWN"
+  }
+
+  /** Device probe: queryIntentServices(com.wisepos.aidl.service, 0) — same as SDK bind check. */
   @ReactMethod
   fun probeService(promise: Promise) {
     try {
       val probe = WisePosSdkBootstrap.probeUsdkService(reactContext)
+      val pm = reactContext.packageManager
+      val queryAll =
+        pm.checkPermission(
+          "android.permission.QUERY_ALL_PACKAGES",
+          reactContext.packageName,
+        ) == PackageManager.PERMISSION_GRANTED
       val map = Arguments.createMap()
       map.putString("action", probe.action)
       map.putInt("matchCount", probe.matchCount)
+      map.putInt("matchAllCount", probe.matchAllCount)
       map.putString("model", probe.model)
       map.putInt("sdkInt", probe.sdkInt)
+      map.putInt("targetSdk", probe.targetSdk)
+      map.putBoolean("queryAllPackagesGranted", queryAll)
+      map.putBoolean("packageVisibilityApplies", probe.targetSdk >= 30)
       map.putString("summary", probe.summary())
+      val services = Arguments.createArray()
+      probe.services.forEach { svc ->
+        val row = Arguments.createMap()
+        row.putString("packageName", svc.packageName)
+        row.putString("serviceName", svc.serviceName)
+        services.pushMap(row)
+      }
+      map.putArray("services", services)
       val comps = Arguments.createArray()
       probe.components.forEach { comps.pushString(it) }
       map.putArray("components", comps)
@@ -167,6 +389,203 @@ class WiseSdk6PrinterModule(private val reactContext: ReactApplicationContext) :
     } catch (e: Exception) {
       rejectPromise(promise, "PROBE_FAILED", e.message, e)
     }
+  }
+
+  /**
+   * Staging forensic: dump ALL installed services (plus keyword matches and a
+   * focus set of Wiseasy system packages), including ServiceInfo.permission and
+   * that permission's protectionLevel. Does not bind or print.
+   */
+  @ReactMethod
+  fun enumeratePrinterRelatedServices(promise: Promise) {
+    try {
+      val pm = reactContext.packageManager
+      val queryAll =
+        pm.checkPermission(
+          "android.permission.QUERY_ALL_PACKAGES",
+          reactContext.packageName,
+        ) == PackageManager.PERMISSION_GRANTED
+
+      @Suppress("DEPRECATION")
+      val packages =
+        pm.getInstalledPackages(PackageManager.GET_SERVICES) ?: emptyList()
+
+      val keywords =
+        listOf(
+          "print",
+          "printer",
+          "wisepos",
+          "wisedevice",
+          "wiseasy",
+          "usdk",
+          "smartpos",
+          "cashier",
+        )
+      val focusPackages =
+        setOf(
+          "com.wiseasy.finatic.cashier",
+          "cn.wiseasy.leopardclaw",
+          "com.wiseasy.wmmi",
+          "wiseasy.com.market",
+        )
+
+      val allServices = Arguments.createArray()
+      val hits = Arguments.createArray()
+      val focusHits = Arguments.createArray()
+      val signatureGated = Arguments.createArray()
+      var packagesScanned = 0
+      var servicesScanned = 0
+      var focusServiceCount = 0
+      var signatureGatedCount = 0
+
+      for (pkg in packages) {
+        packagesScanned++
+        val pkgName = pkg.packageName ?: continue
+        val isFocus = focusPackages.contains(pkgName)
+        val services = pkg.services ?: continue
+        for (si in services) {
+          servicesScanned++
+          val svcName = si.name ?: continue
+          val row = serviceEnumRow(pm, pkgName, si)
+          allServices.pushMap(cloneServiceRow(row))
+
+          if (row.getBoolean("signatureGated")) {
+            signatureGatedCount++
+            signatureGated.pushMap(cloneServiceRow(row))
+          }
+
+          if (isFocus) {
+            focusServiceCount++
+            focusHits.pushMap(cloneServiceRow(row))
+          }
+
+          val hay = "${pkgName}/${svcName}".lowercase()
+          val matched =
+            keywords.any { hay.contains(it) } ||
+              hay.contains(".pos.") ||
+              hay.endsWith(".pos") ||
+              Regex("""(^|[.\-_])pos([.\-_]|$)""").containsMatchIn(pkgName.lowercase())
+          if (matched) {
+            hits.pushMap(cloneServiceRow(row))
+          }
+        }
+      }
+
+      // Focus packages present but with zero services (or package not installed).
+      val focusPackageStatus = Arguments.createArray()
+      for (name in focusPackages.sorted()) {
+        val status = Arguments.createMap()
+        status.putString("packageName", name)
+        val installed = packages.any { it.packageName == name }
+        status.putBoolean("installed", installed)
+        val svcCount =
+          packages
+            .firstOrNull { it.packageName == name }
+            ?.services
+            ?.size
+            ?: 0
+        status.putInt("serviceCount", svcCount)
+        focusPackageStatus.pushMap(status)
+      }
+
+      // Also list packages whose *name* alone matches (even with no services returned).
+      val relatedPackages = Arguments.createArray()
+      for (pkg in packages) {
+        val pkgName = pkg.packageName ?: continue
+        val lower = pkgName.lowercase()
+        if (
+          keywords.any { lower.contains(it) } ||
+            lower.contains(".pos.") ||
+            Regex("""(^|[.\-_])pos([.\-_]|$)""").containsMatchIn(lower)
+        ) {
+          relatedPackages.pushString(pkgName)
+        }
+      }
+
+      val map = Arguments.createMap()
+      map.putBoolean("queryAllPackagesGranted", queryAll)
+      map.putInt("targetSdk", reactContext.applicationInfo.targetSdkVersion)
+      map.putInt("sdkInt", Build.VERSION.SDK_INT)
+      map.putString("model", Build.MODEL ?: "?")
+      map.putInt("packagesScanned", packagesScanned)
+      map.putInt("servicesScanned", servicesScanned)
+      map.putInt("matchingServiceCount", hits.size())
+      map.putArray("matchingServices", hits)
+      map.putArray("relatedPackageNames", relatedPackages)
+      map.putInt("allServiceCount", allServices.size())
+      map.putArray("allServices", allServices)
+      map.putInt("focusServiceCount", focusServiceCount)
+      map.putArray("focusPackageServices", focusHits)
+      map.putArray("focusPackageStatus", focusPackageStatus)
+      map.putInt("signatureGatedServiceCount", signatureGatedCount)
+      map.putArray("signatureGatedServices", signatureGated)
+      resolvePromise(promise, map)
+    } catch (e: Exception) {
+      rejectPromise(promise, "ENUMERATE_FAILED", e.message, e)
+    }
+  }
+
+  private fun serviceEnumRow(
+    pm: PackageManager,
+    pkgName: String,
+    si: android.content.pm.ServiceInfo,
+  ): com.facebook.react.bridge.WritableMap {
+    val row = Arguments.createMap()
+    row.putString("packageName", pkgName)
+    row.putString("serviceName", si.name ?: "")
+    row.putBoolean("exported", si.exported)
+    row.putBoolean("enabled", si.enabled)
+    val perm = si.permission
+    row.putString("permission", perm ?: "")
+    var protLevel = -1
+    var protLabel = ""
+    var signatureGated = false
+    if (!perm.isNullOrEmpty()) {
+      try {
+        @Suppress("DEPRECATION")
+        val pi = pm.getPermissionInfo(perm, 0)
+        protLevel = pi.protectionLevel
+        val base = protLevel and android.content.pm.PermissionInfo.PROTECTION_MASK_BASE
+        signatureGated =
+          base == android.content.pm.PermissionInfo.PROTECTION_SIGNATURE ||
+            base == android.content.pm.PermissionInfo.PROTECTION_SIGNATURE_OR_SYSTEM
+        protLabel =
+          when (base) {
+            android.content.pm.PermissionInfo.PROTECTION_NORMAL -> "normal"
+            android.content.pm.PermissionInfo.PROTECTION_DANGEROUS -> "dangerous"
+            android.content.pm.PermissionInfo.PROTECTION_SIGNATURE -> "signature"
+            android.content.pm.PermissionInfo.PROTECTION_SIGNATURE_OR_SYSTEM ->
+              "signature|system"
+            else -> "other($base)"
+          }
+        if (
+          (protLevel and android.content.pm.PermissionInfo.PROTECTION_FLAG_PRIVILEGED) != 0
+        ) {
+          protLabel += "|privileged"
+        }
+      } catch (_: PackageManager.NameNotFoundException) {
+        protLabel = "unknown"
+      }
+    }
+    row.putInt("protectionLevel", protLevel)
+    row.putString("protectionLabel", protLabel)
+    row.putBoolean("signatureGated", signatureGated)
+    return row
+  }
+
+  private fun cloneServiceRow(
+    src: com.facebook.react.bridge.ReadableMap,
+  ): com.facebook.react.bridge.WritableMap {
+    val row = Arguments.createMap()
+    row.putString("packageName", src.getString("packageName") ?: "")
+    row.putString("serviceName", src.getString("serviceName") ?: "")
+    row.putBoolean("exported", src.getBoolean("exported"))
+    row.putBoolean("enabled", src.getBoolean("enabled"))
+    row.putString("permission", src.getString("permission") ?: "")
+    row.putInt("protectionLevel", src.getInt("protectionLevel"))
+    row.putString("protectionLabel", src.getString("protectionLabel") ?: "")
+    row.putBoolean("signatureGated", src.getBoolean("signatureGated"))
+    return row
   }
 
   /**

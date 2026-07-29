@@ -48,8 +48,8 @@ export default function SettingsScreen() {
   const [restaurantName, setRestaurantName] = useState('—');
   const [terminalId, setTerminalId] = useState('—');
   const [deactivating, setDeactivating] = useState(false);
-  const [, setTapCount] = useState(0);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const tapCountRef = useRef(0);
   const tapResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [printerConfig, setPrinterConfig] = useState<TerminalPrinterConfig | null>(null);
@@ -317,20 +317,18 @@ export default function SettingsScreen() {
       tapResetRef.current = null;
     }
 
-    setTapCount(prev => {
-      const next = prev + 1;
-      if (next >= 5) {
-        setShowDiagnostics(true);
-        return 0;
-      }
+    tapCountRef.current += 1;
+    if (tapCountRef.current >= 5) {
+      tapCountRef.current = 0;
+      setShowDiagnostics(true);
+      return;
+    }
 
-      tapResetRef.current = setTimeout(() => {
-        setTapCount(0);
-        tapResetRef.current = null;
-      }, 2000);
-
-      return next;
-    });
+    // Slow finger taps on P5 — give a bit more than 2s between presses.
+    tapResetRef.current = setTimeout(() => {
+      tapCountRef.current = 0;
+      tapResetRef.current = null;
+    }, 4000);
   };
 
   const handleDeactivate = () => {
@@ -382,12 +380,15 @@ export default function SettingsScreen() {
             <Text style={styles.rowLabel}>Terminal ID</Text>
             <Text style={styles.rowValue}>{terminalId}</Text>
           </View>
-          <View style={styles.row}>
+          <Pressable
+            onPress={handleVersionPress}
+            hitSlop={12}
+            style={styles.row}
+            accessibilityRole="button"
+            accessibilityLabel="App version. Tap five times for diagnostics.">
             <Text style={styles.rowLabel}>App version</Text>
-            <Pressable onPress={handleVersionPress}>
-              <Text style={styles.rowValue}>{APP_VERSION}</Text>
-            </Pressable>
-          </View>
+            <Text style={styles.rowValue}>{APP_VERSION}</Text>
+          </Pressable>
         </View>
 
         <View style={styles.section}>

@@ -14,6 +14,16 @@ import org.json.JSONObject
 
 class MainActivity : ReactActivity() {
 
+  companion object {
+    // Gateway result codes confirmed (via the 2026-07-28 Finatic-UAT NAD 11.99 staging
+    // decline investigation) to mean a clean card decline with no charge. Only add a code
+    // here once it's been confirmed against real gateway behavior — everything else stays
+    // PAYMENT_AMBIGUOUS and goes through Finatic verify, per the existing safe-default
+    // policy (see the REFUND path below, which deliberately declines to guess DECLINE vs
+    // FAILED for codes it hasn't confirmed).
+    private val KNOWN_DECLINE_CODES = setOf("N003")
+  }
+
   override fun getMainComponentName(): String = "FlashTapTerminal"
 
   override fun createReactActivityDelegate(): ReactActivityDelegate =
@@ -38,46 +48,96 @@ class MainActivity : ReactActivity() {
     super.onActivityResult(requestCode, resultCode, data)
 
     if (requestCode == PaymentModule.PAYMENT_REQUEST_CODE) {
-      val promise = PaymentModule.pendingPromise ?: return
+      val resultExtra = data?.getStringExtra("result")
+      val transDataJson = data?.getStringExtra("transData")
+      var voucherNo = ""
+      var businessOrderNo = ""
+      if (!transDataJson.isNullOrEmpty()) {
+        try {
+          val transData = JSONObject(transDataJson)
+          voucherNo = transData.optString("transactionID", "")
+          businessOrderNo = transData.optString("businessOrderNo", "")
+        } catch (_: Exception) {
+          // Malformed transData — treat as missing voucher below.
+        }
+      }
+
+      val promise = PaymentModule.pendingPromise
+      if (promise == null) {
+        val outcome =
+          when {
+            resultCode == Activity.RESULT_OK && resultExtra == "00" && voucherNo.isNotBlank() ->
+              "success"
+            resultCode == Activity.RESULT_OK && resultExtra == "00" -> "ambiguous"
+            else -> "ambiguous"
+          }
+        val errorMessage =
+          when (outcome) {
+            "success" -> "Orphaned success callback (pendingPromise was null)"
+            else ->
+              "Orphaned non-success or incomplete callback (pendingPromise was null)"
+          }
+        PaymentModule.handleNullPromiseSaleResult(
+          context = this,
+          resultCode = resultCode,
+          data = data,
+          voucherNo = voucherNo,
+          businessOrderNo = businessOrderNo,
+          gatewayResult = resultExtra,
+          outcome = outcome,
+          errorMessage = errorMessage,
+        )
+        return
+      }
 
       if (resultCode == Activity.RESULT_OK && data != null) {
-        val result = data.getStringExtra("result")
-        if (result == "00") {
-          val transDataJson = data.getStringExtra("transData")
-          var voucherNo = ""
-          var businessOrderNo = ""
-
-          if (!transDataJson.isNullOrEmpty()) {
-            try {
-              val transData = JSONObject(transDataJson)
-              voucherNo = transData.optString("transactionID", "")
-              businessOrderNo = transData.optString("businessOrderNo", "")
-            } catch (_: Exception) {
-              // Fall back to empty strings if transData is malformed
-            }
-          }
-
+        if (resultExtra == "00") {
           if (voucherNo.isBlank()) {
-            promise.reject("PAYMENT_FAILED", "No transaction ID returned from WiseCashier")
+            // Ambiguous: gateway said success code but no transaction id for FlashTap to trust.
+            promise.reject(
+              "PAYMENT_AMBIGUOUS",
+              "No transaction ID returned from WiseCashier",
+            )
           } else {
             val resultMap = Arguments.createMap()
             resultMap.putString("voucherNo", voucherNo)
             resultMap.putString("businessOrderNo", businessOrderNo)
             promise.resolve(resultMap)
           }
+        } else if (KNOWN_DECLINE_CODES.contains(resultExtra)) {
+          // Confirmed no-charge decline (see KNOWN_DECLINE_CODES) — safe to report as a
+          // confirmed failure without a Finatic verify round-trip.
+          promise.reject(
+            "PAYMENT_DECLINED",
+            "Card declined by gateway (gateway result=$resultExtra)",
+          )
         } else {
-          promise.reject("PAYMENT_FAILED", "Payment was cancelled or failed")
+          promise.reject(
+            "PAYMENT_AMBIGUOUS",
+            "Payment result was not a confirmed success (gateway result=$resultExtra)",
+          )
         }
       } else {
-        promise.reject("PAYMENT_FAILED", "Payment was cancelled or failed")
+        promise.reject(
+          "PAYMENT_AMBIGUOUS",
+          "Payment was cancelled or returned without a usable result",
+        )
       }
 
-      PaymentModule.pendingPromise = null
+      PaymentModule.clearAfterHandled(this)
       return
     }
 
     if (requestCode == PaymentModule.REFUND_REQUEST_CODE) {
-      val promise = PaymentModule.pendingPromise ?: return
+      val promise = PaymentModule.pendingPromise
+      if (promise == null) {
+        android.util.Log.e(
+          "MainActivity",
+          "CRITICAL: REFUND onActivityResult with null pendingPromise — " +
+            "androidResultCode=$resultCode (refund outcome not delivered to JS)",
+        )
+        return
+      }
 
       try {
         // CANCELLED: activity returned without usable gateway extras

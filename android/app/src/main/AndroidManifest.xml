@@ -31,8 +31,10 @@
         <intent>
             <action android:name="com.wisedevice.aidl.service" />
         </intent>
-        <!-- Common Wiseasy / USDK host packages (best-effort; probe confirms what's present). -->
-        <package android:name="com.wisepos.service" />
+        <intent>
+            <action android:name="android.printservice.PrintService" />
+        </intent>
+        <package android:name="com.android.bips" />
         <package android:name="com.wiseasy.usdk" />
         <package android:name="com.wiseasy.service" />
         <package android:name="com.sdksuite.usdk" />

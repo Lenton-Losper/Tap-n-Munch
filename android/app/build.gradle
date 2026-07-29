@@ -82,8 +82,8 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 60
-        versionName "1.59"
+        versionCode 73
+        versionName "1.72"
     }
     buildFeatures {
         buildConfig = true

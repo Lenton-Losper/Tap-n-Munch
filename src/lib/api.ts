@@ -22,9 +22,23 @@ import {
 } from '../types';
 import {mapRowToOrder} from './orderMapper';
 import {Sdk6ReceiptLine} from './wiseSdk6Printer';
-
+import {
+  isPinLockedError as pinLockedFromFields,
+  isRefundAmountExceedsRemaining as refundExceedsFromFields,
+  staffMessageForMarkPaidFailure as markPaidMessageFromFields,
+  staffMessageForPinLock as pinLockMessageFromFields,
+  staffMessageForRefundRecordFailure as refundMessageFromFields,
+  staffMessageForSettleFailure as settleMessageFromFields,
+} from './staffApiErrors';
 interface ApiErrorBody {
   error?: string;
+  code?: string;
+  expected?: number | null;
+  received?: number | null;
+  remaining?: number | null;
+  sale_amount?: number | null;
+  prior_refunded?: number | null;
+  retry_after_seconds?: number | null;
 }
 
 interface RefreshTokenResponse {
@@ -39,13 +53,125 @@ export class TerminalAuthError extends Error {
   }
 }
 
-async function parseApiError(response: Response): Promise<string> {
-  try {
-    const data = (await response.json()) as ApiErrorBody;
-    return data.error || `Request failed (${response.status})`;
-  } catch {
-    return `Request failed (${response.status})`;
+/**
+ * Structured API failure. `message` stays the backend `error` string so existing
+ * `err.message` call sites keep working; `code` / amounts unlock staff copy mapping.
+ */
+export class ApiRequestError extends Error {
+  status: number;
+  code?: string;
+  expected?: number | null;
+  received?: number | null;
+  remaining?: number | null;
+  saleAmount?: number | null;
+  priorRefunded?: number | null;
+  retryAfterSeconds?: number | null;
+
+  constructor(
+    message: string,
+    status: number,
+    extras?: {
+      code?: string;
+      expected?: number | null;
+      received?: number | null;
+      remaining?: number | null;
+      saleAmount?: number | null;
+      priorRefunded?: number | null;
+      retryAfterSeconds?: number | null;
+    },
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = extras?.code;
+    this.expected = extras?.expected;
+    this.received = extras?.received;
+    this.remaining = extras?.remaining;
+    this.saleAmount = extras?.saleAmount;
+    this.priorRefunded = extras?.priorRefunded;
+    this.retryAfterSeconds = extras?.retryAfterSeconds;
   }
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (value == null || value === '') {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+async function parseApiError(response: Response): Promise<ApiRequestError> {
+  const fallback = `Request failed (${response.status})`;
+  let data: ApiErrorBody = {};
+  try {
+    data = (await response.json()) as ApiErrorBody;
+  } catch {
+    // Non-JSON body — keep status-only fallback.
+  }
+
+  const retryHeader = response.headers.get('Retry-After');
+  const retryFromHeader =
+    retryHeader != null && /^\d+$/.test(retryHeader.trim())
+      ? Number(retryHeader.trim())
+      : null;
+
+  const retryAfterSeconds =
+    finiteOrNull(data.retry_after_seconds) ?? retryFromHeader;
+
+  return new ApiRequestError(data.error || fallback, response.status, {
+    code: data.code ? String(data.code) : undefined,
+    expected: finiteOrNull(data.expected),
+    received: finiteOrNull(data.received),
+    remaining: finiteOrNull(data.remaining),
+    saleAmount: finiteOrNull(data.sale_amount),
+    priorRefunded: finiteOrNull(data.prior_refunded),
+    retryAfterSeconds,
+  });
+}
+
+function toStaffFields(err: ApiRequestError) {
+  return {
+    status: err.status,
+    message: err.message,
+    code: err.code,
+    expected: err.expected,
+    remaining: err.remaining,
+    retryAfterSeconds: err.retryAfterSeconds,
+  };
+}
+
+export function isPinLockedError(err: unknown): boolean {
+  return err instanceof ApiRequestError && pinLockedFromFields(toStaffFields(err));
+}
+
+export function staffMessageForPinLock(err: ApiRequestError): string {
+  return pinLockMessageFromFields(toStaffFields(err));
+}
+
+export function staffMessageForMarkPaidFailure(err: ApiRequestError): string {
+  return markPaidMessageFromFields(toStaffFields(err));
+}
+
+export function staffMessageForSettleFailure(err: ApiRequestError): string {
+  return settleMessageFromFields(toStaffFields(err));
+}
+
+export function isRefundAmountExceedsRemaining(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    refundExceedsFromFields(toStaffFields(err))
+  );
+}
+
+export function staffMessageForRefundRecordFailure(err: unknown): string {
+  if (err instanceof ApiRequestError) {
+    return refundMessageFromFields(toStaffFields(err));
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return 'Failed to record refund — authorization may have expired. Start again from the table.';
 }
 
 function throwIfUnauthorized(response: Response): void {
@@ -157,7 +283,7 @@ export async function getOrders(token: string): Promise<Order[]> {
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {orders?: Record<string, unknown>[]};
@@ -194,7 +320,7 @@ export async function updateOrderStatus(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 }
 
@@ -215,11 +341,58 @@ export async function sendHeartbeat(
   throwIfUnauthorized(response);
 }
 
+/**
+ * GET /api/terminal/me — terminal + restaurant config the app already loads at
+ * auth time (and on Charge for payment-method flags).
+ *
+ * Response historically mixed camelCase (API) and snake_case (older clients).
+ * Prefer snake_case field names for the payment flags (`card_payment_enabled` /
+ * `cash_payment_enabled`); accept camelCase if the web payload uses that.
+ */
 export interface TerminalInfo {
-  terminal_id: string;
-  restaurant_id: string;
+  terminal_id?: string;
+  restaurant_id?: string;
   restaurant_name?: string;
   label?: string;
+  terminalId?: string;
+  restaurantId?: string;
+  restaurantName?: string;
+  status?: string;
+  permissions?: unknown;
+  /** When omitted, treat as enabled (web default: card on). */
+  card_payment_enabled?: boolean;
+  /** When omitted, treat as enabled so dual Card/Cash UI keeps working until flags ship. */
+  cash_payment_enabled?: boolean;
+  cardPaymentEnabled?: boolean;
+  cashPaymentEnabled?: boolean;
+}
+
+export type PaymentMethodsAvailability = {
+  cardEnabled: boolean;
+  cashEnabled: boolean;
+};
+
+/**
+ * Resolve Card/Cash availability from /terminal/me.
+ * Missing flags default to enabled (card always has historically been available;
+ * cash defaults on so Charge keeps today's dual choice until the web team ships
+ * explicit false).
+ */
+export function resolvePaymentMethodsAvailability(
+  info: Pick<
+    TerminalInfo,
+    | 'card_payment_enabled'
+    | 'cash_payment_enabled'
+    | 'cardPaymentEnabled'
+    | 'cashPaymentEnabled'
+  > | null | undefined,
+): PaymentMethodsAvailability {
+  const cardRaw = info?.card_payment_enabled ?? info?.cardPaymentEnabled;
+  const cashRaw = info?.cash_payment_enabled ?? info?.cashPaymentEnabled;
+  return {
+    cardEnabled: cardRaw !== false,
+    cashEnabled: cashRaw !== false,
+  };
 }
 
 export async function getTerminalInfo(token: string): Promise<TerminalInfo> {
@@ -232,7 +405,7 @@ export async function getTerminalInfo(token: string): Promise<TerminalInfo> {
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   return response.json() as Promise<TerminalInfo>;
@@ -377,7 +550,7 @@ export async function getTables(token: string): Promise<TableWithTab[]> {
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {tables?: TableWithTab[]};
@@ -416,7 +589,20 @@ export async function settleTab(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    const err = await parseApiError(response);
+    throw new ApiRequestError(
+      staffMessageForSettleFailure(err),
+      err.status,
+      {
+        code: err.code,
+        expected: err.expected,
+        received: err.received,
+        remaining: err.remaining,
+        saleAmount: err.saleAmount,
+        priorRefunded: err.priorRefunded,
+        retryAfterSeconds: err.retryAfterSeconds,
+      },
+    );
   }
 
   return response.json() as Promise<{
@@ -439,7 +625,7 @@ export async function closeTable(tableId: string, token: string): Promise<void> 
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 }
 
@@ -450,7 +636,11 @@ export async function completePayment(
     status: 'success' | 'failed';
     reference: string;
     amount: number;
-    paymentMethod: 'card';
+    /**
+     * Stored as orders.payment_method. Backend accepts any string and defaults to
+     * 'card' when omitted. Use 'cash' for terminal cash tender (no Finatic fields).
+     */
+    paymentMethod: 'card' | 'cash';
     /** Wiseasy/Finatic voucher — stored as orders.payment_voucher_no (not merchant order). */
     voucherNo?: string;
     /** Finatic businessOrderNo — backfills paycloud_merchant_order_no if prepare was skipped. */
@@ -470,11 +660,55 @@ export async function completePayment(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error('Payment update failed');
+    const err = await parseApiError(response);
+    throw new ApiRequestError(
+      staffMessageForMarkPaidFailure(err),
+      err.status,
+      {
+        code: err.code,
+        expected: err.expected,
+        received: err.received,
+        remaining: err.remaining,
+        saleAmount: err.saleAmount,
+        priorRefunded: err.priorRefunded,
+        retryAfterSeconds: err.retryAfterSeconds,
+      },
+    );
   }
 
   const data = (await response.json()) as {canClose?: boolean};
   return {canClose: Boolean(data.canClose)};
+}
+
+/**
+ * completePayment with one retry. A swallowed failure here means the backend never learns
+ * a card attempt happened — the terminal shows FAILED but the order can be left stuck as
+ * "merchant order allocated, no completion" forever. Returns null (never throws) only after
+ * both attempts fail, so callers can surface a distinct "contact support" state instead of
+ * silently treating the report as handled.
+ */
+export async function completePaymentReliably(
+  orderId: string,
+  token: string,
+  payload: Parameters<typeof completePayment>[2],
+): Promise<{canClose: boolean} | null> {
+  try {
+    return await completePayment(orderId, token, payload);
+  } catch (firstErr) {
+    console.warn(
+      '[api] completePayment failed, retrying once:',
+      firstErr instanceof Error ? firstErr.message : firstErr,
+    );
+    try {
+      return await completePayment(orderId, token, payload);
+    } catch (secondErr) {
+      console.warn(
+        '[api] completePayment retry also failed — backend was not notified:',
+        secondErr instanceof Error ? secondErr.message : secondErr,
+      );
+      return null;
+    }
+  }
 }
 
 /**
@@ -498,7 +732,7 @@ export async function prepareTerminalPayment(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {
@@ -516,6 +750,114 @@ export async function prepareTerminalPayment(
     merchantOrderNo,
     created: Boolean(data.created),
   };
+}
+
+export type MarkPaymentAttemptStartedResult = {
+  success: boolean;
+  recorded: boolean;
+  startedAt?: string;
+  businessOrderNo?: string;
+};
+
+/**
+ * Marks that WiseCashier was actually launched for this order (distinct from
+ * prepare-payment, which only allocates merchant_order_no). Idempotent — a
+ * duplicate may return recorded: false with the original startedAt.
+ *
+ * See restaurant-menu-screen docs/terminal-attempt-started-handoff.md (PR #89).
+ */
+export async function markTerminalPaymentAttemptStarted(
+  orderId: string,
+  token: string,
+  opts: {
+    businessOrderNo: string;
+    appVersion?: string;
+    launchedAt?: string;
+  },
+): Promise<MarkPaymentAttemptStartedResult> {
+  const businessOrderNo = String(opts.businessOrderNo ?? '').trim();
+  if (!businessOrderNo) {
+    throw new Error('businessOrderNo is required for attempt-started');
+  }
+
+  const body: Record<string, string> = {businessOrderNo};
+  if (opts.appVersion) {
+    body.appVersion = opts.appVersion;
+  }
+  if (opts.launchedAt) {
+    body.launchedAt = opts.launchedAt;
+  }
+
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/attempt-started`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as {
+    success?: boolean;
+    recorded?: boolean;
+    startedAt?: string;
+    businessOrderNo?: string;
+  };
+
+  return {
+    success: data.success !== false,
+    recorded: Boolean(data.recorded),
+    startedAt: data.startedAt ? String(data.startedAt) : undefined,
+    businessOrderNo: data.businessOrderNo
+      ? String(data.businessOrderNo)
+      : businessOrderNo,
+  };
+}
+
+export type VerifyTerminalPaymentResult = {
+  ok: boolean;
+  paid: boolean;
+  source?: string;
+  merchantOrderNo?: string | null;
+  transactionId?: string | null;
+  status?: string;
+  amount?: number | null;
+  expectedAmount?: number;
+  error?: string;
+};
+
+/**
+ * Ask the backend to query Finatic for this order's merchant_order_no.
+ * Used after ambiguous / missing device callbacks so we do not invent FT-FAIL refs.
+ */
+export async function verifyTerminalPayment(
+  orderId: string,
+  token: string,
+): Promise<VerifyTerminalPaymentResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/verify-payment`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  return response.json() as Promise<VerifyTerminalPaymentResult>;
 }
 
 // ─── Authorization / Payment events ───────────────────────────────────────
@@ -572,11 +914,12 @@ export async function getSaleRecordForOrder(
   throwIfUnauthorized(response);
 
   if (response.status === 404) {
-    throw new SaleRecordNotFoundError(await parseApiError(response));
+    const err = await parseApiError(response);
+    throw new SaleRecordNotFoundError(err.message);
   }
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   return response.json() as Promise<SaleLookupResult>;
@@ -613,7 +956,7 @@ export async function getAuthorizedUsers(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {users?: AuthorizedUser[]};
@@ -647,15 +990,17 @@ export async function authorizeAction(
     }),
   });
 
-  if (response.status === 401 || response.status === 403) {
-    throw new AuthorizationDeniedError(
-      await parseApiError(response),
-      response.status,
-    );
-  }
-
+  // Parse once — body can only be read once. 429 PIN_LOCKED must not be
+  // treated as a generic system/network failure by RefundPinScreen.
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    const err = await parseApiError(response);
+    if (isPinLockedError(err)) {
+      throw err;
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new AuthorizationDeniedError(err.message, response.status);
+    }
+    throw err;
   }
 
   return response.json() as Promise<{token_id: string; expires_at: string}>;
@@ -696,7 +1041,7 @@ export async function recordSaleEvent(
     }
 
     if (!response.ok) {
-      throw new Error(await parseApiError(response));
+      throw await parseApiError(response);
     }
 
     return {ok: true};
@@ -757,7 +1102,7 @@ export async function recordRefundEvent(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   return response.json() as Promise<PaymentEventRow>;
@@ -833,7 +1178,7 @@ export async function getMenuCategories(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as
@@ -858,7 +1203,7 @@ export async function getMenuItems(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as
@@ -903,7 +1248,7 @@ export async function createPOSOrder(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {
@@ -1004,7 +1349,7 @@ export async function getReceiptForOrder(
   }
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const receipt = (await response.json()) as TerminalReceipt;
@@ -1053,7 +1398,7 @@ export async function recordReceiptDelivery(
       throw new TerminalAuthError();
     }
     if (!response.ok) {
-      throw new Error(await parseApiError(response));
+      throw await parseApiError(response);
     }
     return {ok: true};
   } catch (error) {
@@ -1126,7 +1471,7 @@ export async function getPrinterConfig(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {
@@ -1176,7 +1521,7 @@ export async function savePrinterConfig(
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 
   const data = (await response.json()) as {config: TerminalPrinterConfig};
@@ -1194,6 +1539,6 @@ export async function deletePrinterConfig(token: string): Promise<void> {
   throwIfUnauthorized(response);
 
   if (!response.ok) {
-    throw new Error(await parseApiError(response));
+    throw await parseApiError(response);
   }
 }

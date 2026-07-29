@@ -13,7 +13,7 @@ import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {AuthorizationDeniedError, authorizeAction} from '../lib/api';
+import {AuthorizationDeniedError, ApiRequestError, authorizeAction, isPinLockedError, staffMessageForPinLock} from '../lib/api';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -66,7 +66,11 @@ export default function RefundPinScreen({route, navigation}: Props) {
         total,
       });
     } catch (err) {
-      if (err instanceof AuthorizationDeniedError) {
+      if (err instanceof ApiRequestError && isPinLockedError(err)) {
+        setPin('');
+        setPinError(staffMessageForPinLock(err));
+        inputRef.current?.focus();
+      } else if (err instanceof AuthorizationDeniedError) {
         setPin('');
         setPinError('Incorrect PIN. Please try again.');
         inputRef.current?.focus();
