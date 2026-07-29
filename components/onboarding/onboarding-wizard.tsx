@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
+import { ActionButtonContent } from '@/components/ui/action-button-content'
 import { Progress } from '@/components/ui/progress'
 import {
   getFirstIncompleteWizardStep,
@@ -71,6 +72,9 @@ export function OnboardingWizard() {
   const stepMeta = WIZARD_STEPS[currentStep - 1]
   const progressValue = (currentStep / TOTAL_STEPS) * 100
   const skippable = currentStep === 5 || currentStep === 6
+  const goingToDashboard = currentStep === 7 && testOrderDone
+  const nextLabel = goingToDashboard ? 'Go to Dashboard' : currentStep === TOTAL_STEPS ? 'Complete' : 'Next'
+  const nextLoadingLabel = currentStep === TOTAL_STEPS ? 'Completing...' : 'Saving...'
 
   const handleBack = () => {
     setError('')
@@ -227,19 +231,12 @@ export function OnboardingWizard() {
                 disabled={saving}
                 className="rounded-lg bg-[#37352F] text-white hover:bg-[#2f2d27]"
               >
-                {saving ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {currentStep === TOTAL_STEPS ? 'Completing...' : 'Saving...'}
-                  </>
-                ) : currentStep === 7 && testOrderDone ? (
-                  'Go to Dashboard'
-                ) : (
-                  <>
-                    {currentStep === TOTAL_STEPS ? 'Complete' : 'Next'}
-                    {currentStep < TOTAL_STEPS ? <ChevronRight className="ml-1 h-4 w-4" /> : null}
-                  </>
-                )}
+                <ActionButtonContent
+                  loading={saving}
+                  label={nextLabel}
+                  loadingLabel={nextLoadingLabel}
+                  trailingIcon={!goingToDashboard && currentStep < TOTAL_STEPS ? ChevronRight : undefined}
+                />
               </Button>
             </div>
           </div>
