@@ -23,42 +23,26 @@ jest.mock('@/lib/payments/webhook-sig-fallback', () => ({
     confirmWebhookOrderViaFinaticFallback(...args),
 }))
 
-const safeIssueReceiptsForOrders = jest.fn(async (..._args: unknown[]) => undefined)
-jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
-  safeIssueReceiptsForOrders: (...args: unknown[]) => safeIssueReceiptsForOrders(...args),
+const markOrderPaidConfirmed = jest.fn(async (..._args: unknown[]) => ({
+  claimed: true,
+  orderId: 'ord-1',
+  tabId: null,
+}))
+jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
+  markOrderPaidConfirmed: (...args: unknown[]) => markOrderPaidConfirmed(...args),
 }))
 
-const orderUpdate = jest.fn()
-const auditInsert = jest.fn(async (..._args: unknown[]) => ({ error: null }))
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
     from: (table: string) => {
       if (table === 'orders') {
         return {
-          update: () => ({
-            in: (..._a: unknown[]) => {
-              orderUpdate()
-              const result = Promise.resolve({ error: null }) as Promise<{ error: null }> & {
-                is: () => Promise<{ error: null }>
-              }
-              result.is = async () => ({ error: null })
-              return result
-            },
-          }),
           select: () => ({
             in: async () => ({
-              data: [{ id: 'ord-1', payment_status: 'pending' }],
+              data: [{ id: 'ord-1', restaurant_id: 'rest-1', total: 11.5, payment_method: 'card' }],
               error: null,
             }),
           }),
-        }
-      }
-      if (table === 'audit_logs') {
-        return {
-          insert: async (row: unknown) => {
-            auditInsert(row)
-            return { error: null }
-          },
         }
       }
       throw new Error(`unexpected table ${table}`)
@@ -122,9 +106,21 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(200)
     expect(text.trim()).toBe('success')
-    expect(orderUpdate).toHaveBeenCalled()
-    expect(auditInsert).toHaveBeenCalled()
-    expect(safeIssueReceiptsForOrders).toHaveBeenCalledWith(['ord-1'], 'webhooks/paycloud')
+    expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(1)
+    expect(markOrderPaidConfirmed).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'ord-1',
+        restaurantId: 'rest-1',
+        reference: 'MO-A',
+        amount: 11.5,
+        source: 'paycloud_webhook_fallback_finatic_verified',
+        extraAuditMetadata: expect.objectContaining({
+          path: 'fallback_verified_paid',
+          finaticTransactionId: 'TXN-A',
+        }),
+      }),
+    )
     console.log('SCENARIO_A_FALLBACK_VERIFIED_PAID_OK')
   })
 
@@ -160,8 +156,7 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(200)
     expect(text.trim()).toBe('success')
-    expect(orderUpdate).not.toHaveBeenCalled()
-    expect(auditInsert).not.toHaveBeenCalled()
+    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
     console.log('SCENARIO_B_FALLBACK_VERIFIED_NOT_PAID_OK')
   })
 
@@ -189,7 +184,7 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(503)
     expect(String(json.error || '')).toMatch(/Finatic fallback query unavailable/)
-    expect(orderUpdate).not.toHaveBeenCalled()
+    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
     console.log('SCENARIO_C_FALLBACK_QUERY_FAILED_OK')
   })
 })
