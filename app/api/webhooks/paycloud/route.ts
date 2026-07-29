@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { enforceWebhookRateLimit, verifyWebhook } from '@/payments/webhook'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
 import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-sig-fallback'
+import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 function webhookAck() {
   return new Response('success', {
@@ -66,19 +66,50 @@ function logWebhookPath(path: WebhookPath, detail: Record<string, unknown> = {})
   console.log('[PayCloud webhook] path=', path, detail)
 }
 
-async function markOrdersPaidByIds(
+/**
+ * Routes webhook-confirmed payments through the same markOrderPaidConfirmed() every
+ * other "this order is now confirmed paid" caller uses (terminal callback, verify-payment,
+ * auto-cancel cron), instead of a shallow payment_status-only update. That shallow update
+ * used to leave status stuck at 'pending' forever: once payment_status left the
+ * CLAIMABLE_PAYMENT_STATUSES set, no other caller could ever complete the order (see
+ * mark-order-paid-confirmed.ts). A claimed:false result here just means another caller
+ * (e.g. a live terminal callback) already completed it concurrently -- not an error.
+ */
+async function markOrdersPaidConfirmedByIds(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   orderIds: string[],
-) {
-  const paidAt = new Date().toISOString()
-  const { error: updateError } = await supabase
+  params: {
+    reference: string
+    source: string
+    extraAuditMetadata?: Record<string, unknown>
+  },
+): Promise<{ updateError: Error | null }> {
+  if (!orderIds.length) return { updateError: null }
+
+  const { data: rows, error: loadError } = await supabase
     .from('orders')
-    .update({
-      payment_status: 'paid',
-      paid_at: paidAt,
-    })
+    .select('id, restaurant_id, total, payment_method')
     .in('id', orderIds)
-  return { paidAt, updateError }
+
+  if (loadError) return { updateError: new Error(loadError.message) }
+
+  for (const row of rows ?? []) {
+    try {
+      await markOrderPaidConfirmed(supabase, {
+        orderId: String(row.id),
+        restaurantId: String(row.restaurant_id),
+        reference: params.reference,
+        amount: Number(row.total) || 0,
+        paymentMethod: (row.payment_method as string) || 'card',
+        source: params.source,
+        extraAuditMetadata: params.extraAuditMetadata,
+      })
+    } catch (err) {
+      return { updateError: err instanceof Error ? err : new Error(String(err)) }
+    }
+  }
+
+  return { updateError: null }
 }
 
 export async function POST(req: Request) {
@@ -160,7 +191,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const { updateError } = await markOrdersPaidByIds(supabase, resolved.orderIds)
+    const { updateError } = await markOrdersPaidConfirmedByIds(supabase, resolved.orderIds, {
+      reference: merchantOrderNo,
+      source: 'paycloud_webhook_valid_signature',
+      extraAuditMetadata: { businessOrderNo: merchantOrderNo, path },
+    })
     if (updateError) {
       console.error('[WEBHOOK] mark paid failed:', updateError)
       return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
@@ -177,7 +212,6 @@ export async function POST(req: Request) {
       }
     }
 
-    await safeIssueReceiptsForOrders(resolved.orderIds, 'webhooks/paycloud')
     return webhookAck()
   }
 
@@ -242,22 +276,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const { updateError } = await markOrdersPaidByIds(supabase, orderIds)
-    if (updateError) {
-      console.error('[WEBHOOK] fallback mark paid failed:', updateError)
-      return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
-    }
-
-    const { error: auditError } = await supabase.from('audit_logs').insert({
-      restaurant_id: fallback.restaurantId,
-      action: 'payment.completed',
-      entity_type: 'order',
-      entity_id: orderIds[0],
-      metadata: {
+    const { updateError } = await markOrdersPaidConfirmedByIds(supabase, orderIds, {
+      reference: merchantOrderNo,
+      source: 'paycloud_webhook_fallback_finatic_verified',
+      extraAuditMetadata: {
         businessOrderNo: merchantOrderNo,
-        reference: merchantOrderNo,
-        amount: fallback.orderTotal,
-        source: 'paycloud_webhook_fallback_finatic_verified',
         path: 'fallback_verified_paid',
         signatureFailureReason: sigFailReason,
         finaticStatus: fallback.finatic.status,
@@ -266,8 +289,9 @@ export async function POST(req: Request) {
         orderIds,
       },
     })
-    if (auditError) {
-      console.error('[WEBHOOK] fallback payment.completed audit failed:', auditError)
+    if (updateError) {
+      console.error('[WEBHOOK] fallback mark paid failed:', updateError)
+      return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
     }
 
     if (resolved.source === 'payment_events') {
@@ -281,7 +305,6 @@ export async function POST(req: Request) {
       }
     }
 
-    await safeIssueReceiptsForOrders(orderIds, 'webhooks/paycloud')
     return webhookAck()
   }
 
