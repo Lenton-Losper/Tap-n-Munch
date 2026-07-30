@@ -118,13 +118,21 @@ export async function POST(req: Request) {
     if (insertError) {
       if (insertError.code === '23505') {
         // Race condition — another tab was just created for this table
-        // Fetch the existing open tab and return it
+        // Fetch the existing open tab and return it.
+        //
+        // `.is('settled_at', null)` is defence in depth. A tab that has been closed out must
+        // never be handed to a walk-up scan: doing so gives the new party the previous
+        // customer's name, itemised order and receipt. The settle route no longer resurrects
+        // a settled tab, so this should be unreachable today — but this branch is the point
+        // where such a tab would leak, and it is one line to make that impossible regardless
+        // of which writer produced the state.
         const { data: existingTab, error: fetchError } = await supabase
           .from('tabs')
           .select('id, restaurant_id, table_id, table_number, status, members, total')
           .eq('restaurant_id', restaurantUuid)
           .eq('table_number', tableNumber)
           .eq('status', 'open')
+          .is('settled_at', null)
           .maybeSingle()
 
         if (fetchError || !existingTab) {

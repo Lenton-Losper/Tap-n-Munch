@@ -52,10 +52,12 @@ export async function POST(
       )
     }
 
-    // Verify tab belongs to this restaurant
+    // Verify tab belongs to this restaurant.
+    // status/settled_at are selected so the reopen at the end of this route can tell an
+    // active tab from one that has already been closed out.
     const { data: tab, error: tabError } = await supabase
       .from('tabs')
-      .select('id, table_id, total')
+      .select('id, table_id, total, status, settled_at')
       .eq('id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
       .single()
@@ -218,7 +220,24 @@ export async function POST(
 
     const canClose = (remaining ?? []).length === 0
 
-    await supabase
+    // Reopen the tab for continued ordering -- but NEVER resurrect a tab that has already
+    // been closed out.
+    //
+    // This write used to be unconditional. A tab closed via close_table_session carries
+    // status='settled' with settled_at/settled_type set; flipping it back to 'open' left a
+    // contradictory row (open, yet settled minutes earlier) and, far worse, re-armed the
+    // partial unique index idx_tabs_one_open_per_table UNIQUE (restaurant_id, table_number)
+    // WHERE status='open' (supabase/schema.sql:1797). With an 'open' row present, a fresh
+    // insert for that table is impossible, so POST /api/tabs hits 23505 and silently
+    // degrades into a JOIN -- handing the NEXT customer the previous party's tab, complete
+    // with their name, itemised order and receipt, and bypassing the tab PIN because that
+    // path believes it is creating rather than joining.
+    //
+    // The guard is `.is('settled_at', null)` in the statement itself rather than a JS check,
+    // so a close landing concurrently cannot slip through the window. A normal open or
+    // ready_to_pay tab has settled_at null and still reopens, which is the intended
+    // "settle, then keep ordering" behaviour.
+    const { data: reopened, error: reopenError } = await supabase
       .from('tabs')
       .update({
         status: 'open',
@@ -226,6 +245,21 @@ export async function POST(
         ready_to_pay_at: null,
       })
       .eq('id', tabId)
+      .is('settled_at', null)
+      .select('id')
+      .maybeSingle()
+
+    if (reopenError) {
+      console.error('[TAB-SETTLE] failed to reopen tab', { tabId, error: reopenError })
+    } else if (!reopened) {
+      // Not an error: the payment above is fully recorded. The tab was closed out, so it
+      // stays closed and the table remains free for the next party.
+      console.log('[TAB-SETTLE] tab already closed out — not reopening', {
+        tabId,
+        status: tab.status,
+        settledAt: tab.settled_at,
+      })
+    }
 
     return NextResponse.json({
       success: true,
