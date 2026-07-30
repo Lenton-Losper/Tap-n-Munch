@@ -172,11 +172,15 @@ describe('push-to-terminal -- merchant order number must not rotate', () => {
     expect(orderRow.paycloud_merchant_order_no).toBe(sentMerchantOrderNo)
   })
 
-  it('LOST RACE: adopts the concurrent writer\'s value instead of forcing its own', async () => {
-    // A concurrent push won the race and already persisted its value, so our guarded
-    // write matches no row and the re-read must return the winner's value.
-    raceWinnerValue = 'FT19999999999999'
-    orderRow.paycloud_merchant_order_no = raceWinnerValue
+  // NOTE: the lost-race branch is NOT covered here. An earlier version of this file had a
+  // "LOST RACE" test that set an already-SAFE value, so the route took the reuse path and
+  // never entered the minting block at all -- it was a duplicate of the reuse test above
+  // wearing a different name, and it stayed green when the re-read logic was deliberately
+  // broken. Genuine coverage of that branch, using a mock that models PostgREST filter
+  // semantics so the compare-and-swap is actually evaluated, lives in
+  // __tests__/push-to-terminal-race-and-trim.test.ts.
+  it('adopts an already-present value rather than overwriting it (reuse, not race)', async () => {
+    orderRow.paycloud_merchant_order_no = 'FT19999999999999'
 
     await push()
 

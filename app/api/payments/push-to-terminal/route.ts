@@ -179,24 +179,40 @@ export async function POST(req: Request) {
     // lib/payments/terminal-merchant-order.ts:39-42 documents as forbidden:
     // "Does not rotate on every call (that would orphan webhooks for the previous
     // businessOrderNo)."
-    const existingMo = String(claimedOrder.paycloud_merchant_order_no || '').trim()
+    // Safety is judged against the UNTRIMMED stored value, deliberately.
+    //
+    // A padded value such as '  FT1700000000001  ' trims to something
+    // isPaycloudSafeMerchantOrderNo() accepts. Reusing it would send the TRIMMED form to
+    // Finatic while the column kept the PADDED form, and
+    // resolveOrderIdsByMerchantOrderNo (resolve-order-by-merchant-order.ts:14-20) matches
+    // byte-exact -- so the notify could never correlate. That is precisely the
+    // orphaned-webhook failure this fix exists to prevent, reintroduced by a different
+    // route. So a value that differs from its own trimmed form is NOT reusable and is
+    // replaced with a clean one.
+    const rawMo = String(claimedOrder.paycloud_merchant_order_no ?? '')
+    const existingMo = rawMo.trim()
+    const reusable =
+      existingMo !== '' && existingMo === rawMo && isPaycloudSafeMerchantOrderNo(existingMo)
     let merchantOrderNo = existingMo
 
-    if (!merchantOrderNo || !isPaycloudSafeMerchantOrderNo(merchantOrderNo)) {
-      // Only mint when there is nothing usable to reuse. An unsafe value can never have
-      // been accepted on the wire, so replacing it cannot orphan a real in-flight charge.
+    if (!reusable) {
+      // Only mint when there is nothing usable to reuse. A value that is unsafe or not
+      // byte-identical to what we would transmit can never have been accepted on the wire
+      // as-stored, so replacing it cannot orphan a real in-flight charge.
       const minted = generateTerminalMerchantOrderNo()
 
       // Compare-and-swap so a concurrent push cannot have its value clobbered:
-      //  - column null  -> only claim it if it is STILL null
-      //  - column unsafe -> only replace that exact unsafe value
-      // Guarding solely on null would make an unsafe value unreplaceable and 500 forever.
+      //  - column null   -> only claim it if it is STILL null
+      //  - column unusable -> only replace that exact stored value
+      // Guarding solely on null would make an unusable value unreplaceable and 500 forever.
+      // The guard MUST use rawMo, not existingMo: .eq() is byte-exact, so guarding on the
+      // trimmed form would never match a padded row and the replacement would never apply.
       const persistQuery = supabase
         .from('orders')
         .update({ paycloud_merchant_order_no: minted })
         .eq('id', normalizedOrderId)
-      const guarded = existingMo
-        ? persistQuery.eq('paycloud_merchant_order_no', existingMo)
+      const guarded = rawMo !== ''
+        ? persistQuery.eq('paycloud_merchant_order_no', rawMo)
         : persistQuery.is('paycloud_merchant_order_no', null)
 
       const persistRes = await guarded.select('paycloud_merchant_order_no').maybeSingle()
