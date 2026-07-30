@@ -51,7 +51,19 @@ export async function POST(
     // Closing a table is a HOUSEKEEPING action, not a payment action, so it must never
     // invent a payment. Orders that were genuinely paid are completed; everything else is
     // detached from the table with its real payment_status preserved, so money still owed
-    // stays visible and auditable instead of being silently written off as revenue.
+    // stays RECORDED rather than being silently written off as revenue.
+    //
+    // Deliberately not claiming "visible": setting is_closed=true removes the row from the
+    // dashboard and guest views, which read through is_closed=false
+    // (lib/supabase/orders.ts:75,:94,:193; app/api/orders/route.ts:595;
+    // lib/dashboard/order-realtime.ts:25) and from the "Public can read open orders" RLS
+    // policy (supabase/schema.sql:193). That is unchanged from the previous behaviour --
+    // it also set is_closed=true -- but the debt is discoverable only by query, plus the
+    // console.warn below. Surfacing an owed-money count to staff is follow-up work.
+    //
+    // lib/supabase/orders.ts:148-161 (closeSupabaseTableOrders) is the pre-existing correct
+    // sibling this route had diverged from: it writes only is_closed/table_closed and
+    // fabricates no payment.
     const { data: openOrders, error: readErr } = await supabase
       .from('orders')
       .select('id, payment_status')
