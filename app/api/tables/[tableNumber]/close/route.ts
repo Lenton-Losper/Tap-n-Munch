@@ -87,6 +87,11 @@ export async function POST(
     }
 
     // Genuinely paid -> close and complete.
+    //
+    // completed_at is set in a SEPARATE, guarded write rather than here. An order settled
+    // earlier on the terminal already carries its real completion time; including
+    // completed_at in this blanket update re-stamped it to the moment the table was closed,
+    // destroying the true value and skewing any time-to-complete reporting.
     if (paidIds.length > 0) {
       const { error: paidErr } = await supabase
         .from('orders')
@@ -94,12 +99,24 @@ export async function POST(
           is_closed: true,
           table_closed: true,
           status: 'completed',
-          completed_at: nowIso,
         })
         .in('id', paidIds)
 
       if (paidErr) {
         console.error('[TABLE-CLOSE] failed to complete paid orders', paidErr)
+        return NextResponse.json({ error: 'Failed to close table' }, { status: 500 })
+      }
+
+      // Only stamp orders that have no completion time yet. `.is(null)` makes this a
+      // per-row guard in the database, so an existing timestamp is never overwritten.
+      const { error: completedAtErr } = await supabase
+        .from('orders')
+        .update({ completed_at: nowIso })
+        .in('id', paidIds)
+        .is('completed_at', null)
+
+      if (completedAtErr) {
+        console.error('[TABLE-CLOSE] failed to stamp completed_at', completedAtErr)
         return NextResponse.json({ error: 'Failed to close table' }, { status: 500 })
       }
     }
