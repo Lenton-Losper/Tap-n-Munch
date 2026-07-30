@@ -52,26 +52,22 @@ export async function POST(req: Request) {
     }
 
     if (sessionId) {
-      const members = Array.isArray(tab.members) ? [...tab.members] : []
-      if (!members.some((m: { session_id?: string }) => String(m?.session_id) === sessionId)) {
-        const nextN = members.length + 1
-        const { error: memberError } = await supabase
-          .from('tabs')
-          .update({
-            members: [
-              ...members,
-              {
-                session_id: sessionId,
-                joined_at: new Date().toISOString(),
-                display_name: displayName || `Person ${nextN}`,
-              },
-            ],
-          })
-          .eq('id', tab.id)
+      // Append via the DB so simultaneous joiners cannot clobber each other. Reading
+      // members here and writing the whole array back lost every concurrent joiner but one
+      // -- and returned HTTP 200 to all of them, so nobody found out. add_tab_member does
+      // the append, the already-a-member check, and the "Person N" fallback inside one
+      // UPDATE. See supabase/migrations/20260730210000_atomic_tab_member_append.sql.
+      const { error: memberError } = await supabase.rpc('add_tab_member', {
+        p_tab_id: tab.id,
+        p_member: {
+          session_id: sessionId,
+          joined_at: new Date().toISOString(),
+          display_name: displayName || '',
+        },
+      })
 
-        if (memberError) {
-          return NextResponse.json({ error: memberError.message }, { status: 500 })
-        }
+      if (memberError) {
+        return NextResponse.json({ error: memberError.message }, { status: 500 })
       }
     }
 
