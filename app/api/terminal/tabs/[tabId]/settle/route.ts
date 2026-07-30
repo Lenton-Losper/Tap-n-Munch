@@ -175,7 +175,23 @@ export async function POST(
     const paymentReference = generatePaymentReference()
     const paymentVoucherNo = voucherNo || gatewayReference || null
 
-    // Atomic claim: only unpaid/pending rows on this tab flip to paid.
+    // Claim on the EXACT statuses observed in the partition above, not on the canonical
+    // CLAIMABLE_PAYMENT_STATUSES list.
+    //
+    // isClaimablePaymentStatus() trims and lowercases; PostgREST `.in()` is byte-exact.
+    // Filtering on the canonical list made the two predicates disagree: a row stored as
+    // 'Pending' was counted claimable by JS (so its total reached expectedAmount and the card
+    // was charged for it) but matched nothing in the claim. The result was a 200 success that
+    // recorded less than it charged, with the difference misattributed to a concurrent writer
+    // in the audit metadata. Same silent-money-loss class this fix exists to remove.
+    //
+    // Deriving the predicate from the rows we actually read makes the two agree by
+    // construction, and still protects the race: a concurrent flip to 'paid' is not in this
+    // set, so that row will not match.
+    const observedClaimableStatuses = [
+      ...new Set(claimableOrders.map((o) => String(o.payment_status))),
+    ]
+
     const { data: claimed, error: ordersError } = await supabase
       .from('orders')
       .update({
@@ -190,7 +206,7 @@ export async function POST(
       .in('id', orderIds)
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
-      .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+      .in('payment_status', observedClaimableStatuses)
       .select('id')
 
     if (ordersError) {
@@ -332,11 +348,26 @@ export async function POST(
       })
       .eq('id', tabId)
 
+    // Report what was actually settled, not just that something was.
+    //
+    // On a short claim the device is the only party that knows what it charged and the
+    // server is the only party that knows what it settled; until now nobody joined those two
+    // facts in real time, so a cashier saw plain success while an order remained unsettled.
+    // These are ADDITIVE fields on the existing 200 body: an older terminal build ignores
+    // unknown JSON keys and behaves exactly as before, while a future build can surface the
+    // shortfall. The status code is deliberately unchanged -- switching to 207/409 would move
+    // an out-of-repo client onto a branch we cannot inspect, turning a recorded-but-partial
+    // settle into a client-side error, which is worse than the silence it replaces.
     return NextResponse.json({
       success: true,
       payment_reference: paymentReference,
       new_tab_total: newTotal,
       can_close: canClose,
+      settled_amount: settledAmount,
+      charged_amount: amount,
+      settled_order_ids: claimedIds,
+      unsettled_order_ids: lostToConcurrentClaim,
+      partial: lostToConcurrentClaim.length > 0,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
