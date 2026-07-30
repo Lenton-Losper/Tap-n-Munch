@@ -7,7 +7,17 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
     const restaurantId = searchParams.get('restaurantId')?.trim() || ''
-    const sessionId = searchParams.get('session_id')?.trim() || searchParams.get('sessionId')?.trim() || ''
+    // The customer app holds two session ids in different namespaces (see
+    // fetchGuestOrdersBySession); accept every one the client can supply, as repeated
+    // params or comma-separated, so a lookup is not silently scoped to the wrong one.
+    const sessionIds = [
+      ...searchParams.getAll('session_id'),
+      ...searchParams.getAll('sessionId'),
+    ]
+      .flatMap((value) => value.split(','))
+      .map((value) => value.trim())
+      .filter(Boolean)
+    const sessionId = sessionIds[0] || ''
     const tabId = searchParams.get('tabId')?.trim() || ''
     const countOnly = searchParams.get('countOnly') === '1'
     const excludeSettlement = searchParams.get('excludeSettlement') !== '0'
@@ -24,6 +34,7 @@ export async function GET(request: Request) {
     const { orders, count } = await fetchGuestOrdersBySession({
       restaurantId,
       sessionId: sessionId || null,
+      sessionIds,
       tabId: tabId || null,
       excludeSettlement,
       countOnly,

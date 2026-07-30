@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
+import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 
@@ -32,6 +33,9 @@ export default function MyOrdersPage() {
       const { orders } = await fetchGuestOrdersBySession({
         restaurantId,
         sessionId,
+        // Orders placed from the tab flow carry the tab-context session id, not this one;
+        // querying with only getCurrentSession() shows the customer an empty list.
+        sessionIds: [sessionId, readTabSessionId()],
       })
       const ordersList = (orders || []).filter((order: any) => order.is_closed !== true)
       setOrders(ordersList)
