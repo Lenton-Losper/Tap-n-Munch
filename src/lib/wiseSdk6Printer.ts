@@ -106,6 +106,65 @@ export async function isBuiltInPrinterAvailable(): Promise<boolean> {
   }
 }
 
+export interface UsdkServiceProbe {
+  action: string;
+  matchCount: number;
+  model: string;
+  sdkInt: number;
+  summary: string;
+  components: string[];
+  error?: string;
+}
+
+/**
+ * How many services on this device answer the WisePos USDK action.
+ *
+ * This is the number that decides the printer investigation. WisePosSdk.initPosSdk resolves
+ * the action via queryIntentServices and requires EXACTLY ONE match; on 0 or 2+ it builds a
+ * null Intent and bindService fails with 7101 ERR_SDK_INVALID_PARAMETER — which is NOT
+ * "service not found" (that is 7102). So:
+ *
+ *   matchCount === 1  -> resolution is fine, the fault is elsewhere
+ *   matchCount === 0  -> nothing on this device answers the action for us
+ *   matchCount >= 2   -> ambiguous, and fixable in code by binding the component explicitly
+ *
+ * These terminals are TMS-deployed with no adb, so this has to be readable on screen.
+ */
+export async function probeUsdkService(): Promise<UsdkServiceProbe> {
+  const unavailable: UsdkServiceProbe = {
+    action: 'com.wisepos.aidl.service',
+    matchCount: -1,
+    model: '?',
+    sdkInt: 0,
+    summary: 'probe unavailable on this build/platform',
+    components: [],
+    error: 'WiseSdk6PrinterModule.probeService not present',
+  };
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.probeService) return unavailable;
+  try {
+    const probe = await Promise.race([
+      WiseSdk6PrinterModule.probeService(),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('probe timeout')), 8000);
+      }),
+    ]);
+    return {
+      action: probe.action,
+      matchCount: probe.matchCount,
+      model: probe.model,
+      sdkInt: probe.sdkInt,
+      summary: probe.summary,
+      components: Array.isArray(probe.components) ? probe.components : [],
+    };
+  } catch (error) {
+    return {
+      ...unavailable,
+      summary: 'probe failed',
+      error: errorMessageOf(error, 'probe failed'),
+    };
+  }
+}
+
 export async function getBuiltInPrinterStatus(): Promise<WiseSdk6Status> {
   if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.getStatus) {
     return {connected: false, hasPaper: true, statusUnknown: true};

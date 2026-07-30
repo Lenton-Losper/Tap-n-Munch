@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {
   ActivityIndicator,
   NativeModules,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +31,8 @@ import {buildSdk6TestPrintLines, buildTestPrintPayload} from '../lib/testPrintPa
 import {
   getBuiltInPrinterStatus,
   printBuiltInJob,
+  probeUsdkService,
+  UsdkServiceProbe,
 } from '../lib/wiseSdk6Printer';
 
 const {RuntimeConfig} = NativeModules;
@@ -74,6 +77,21 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   const [lastError, setLastError] = useState('None');
   const [testPrinting, setTestPrinting] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [usdkProbe, setUsdkProbe] = useState<UsdkServiceProbe | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const runUsdkProbe = useCallback(async () => {
+    setProbing(true);
+    try {
+      setUsdkProbe(await probeUsdkService());
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    runUsdkProbe();
+  }, [runUsdkProbe]);
 
   const refreshPrintDiagnostics = useCallback(async () => {
     const [enabled, last, token] = await Promise.all([
@@ -242,6 +260,72 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
         )}
       </Pressable>
 
+      <Text style={styles.sectionTitle}>Printer service resolution</Text>
+      <Text style={styles.hint}>
+        WisePosSdk.initPosSdk needs EXACTLY ONE service to answer the USDK action.
+        On 0 or 2+ it binds a null Intent and fails with 7101. This is that count.
+      </Text>
+
+      <View style={styles.probeBox}>
+        <Text style={styles.probeLabel}>MATCHES</Text>
+        <Text
+          selectable
+          style={[
+            styles.probeCount,
+            usdkProbe?.matchCount === 1 && styles.probeOk,
+            usdkProbe != null && usdkProbe.matchCount !== 1 && styles.probeBad,
+          ]}>
+          {probing ? '…' : usdkProbe == null ? '—' : String(usdkProbe.matchCount)}
+        </Text>
+        <Text style={styles.probeVerdict}>
+          {probing
+            ? 'probing…'
+            : usdkProbe == null
+            ? ''
+            : usdkProbe.matchCount === 1
+            ? 'OK — resolution is fine, fault is elsewhere'
+            : usdkProbe.matchCount === 0
+            ? 'ZERO — nothing answers the action for this app'
+            : usdkProbe.matchCount < 0
+            ? 'probe unavailable on this build'
+            : 'AMBIGUOUS — 2+ services, fixable in code'}
+        </Text>
+      </View>
+
+      <Text style={styles.label}>Summary (read this out / screenshot it)</Text>
+      <Text selectable style={styles.probeMono}>
+        {usdkProbe?.summary ?? '—'}
+      </Text>
+
+      <Text style={styles.label}>Resolved components</Text>
+      <Text selectable style={styles.probeMono}>
+        {usdkProbe == null
+          ? '—'
+          : usdkProbe.components.length === 0
+          ? 'none'
+          : usdkProbe.components.join('\n')}
+      </Text>
+
+      {usdkProbe?.error ? (
+        <>
+          <Text style={styles.label}>Probe error</Text>
+          <Text selectable style={styles.probeMono}>
+            {usdkProbe.error}
+          </Text>
+        </>
+      ) : null}
+
+      <Pressable
+        style={[styles.testBtn, probing && styles.btnDisabled]}
+        disabled={probing}
+        onPress={runUsdkProbe}>
+        {probing ? (
+          <ActivityIndicator color="#333" />
+        ) : (
+          <Text style={styles.testBtnTxt}>Re-run probe</Text>
+        )}
+      </Pressable>
+
       <Text style={styles.sectionTitle}>Device / session</Text>
 
       <Text style={styles.label}>App version</Text>
@@ -377,4 +461,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   closeTxt: {fontSize: 16, color: '#333'},
+  probeBox: {
+    marginTop: 12,
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    backgroundColor: '#fafafa',
+    alignItems: 'center',
+  },
+  probeLabel: {fontSize: 12, letterSpacing: 1, color: '#666'},
+  probeCount: {fontSize: 56, fontWeight: '700', color: '#333', lineHeight: 64},
+  probeOk: {color: '#1e8e3e'},
+  probeBad: {color: '#d93025'},
+  probeVerdict: {
+    fontSize: 13,
+    color: '#444',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  probeMono: {
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+    fontSize: 12,
+    color: '#333',
+    marginTop: 2,
+  },
 });

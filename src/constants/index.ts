@@ -28,4 +28,4 @@ export const PAYMENT_STATE_STORAGE_KEY = 'flashtap_payment_state';
 export const RECEIPT_PRINTING_ENABLED_KEY = 'flashtap_receipt_printing_enabled';
 /** Last print attempt summary for Diagnostics (JSON). */
 export const RECEIPT_PRINT_LAST_RESULT_KEY = 'flashtap_receipt_print_last_result';
-export const APP_VERSION = '1.59';
+export const APP_VERSION = '1.60';
