@@ -117,6 +117,7 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     }
   }
 
+  revalidatePath('/stock')
   revalidatePath('/stock/recipes')
   revalidatePath(`/stock/recipes/${menuItemId}`)
   revalidatePath('/menu-management')

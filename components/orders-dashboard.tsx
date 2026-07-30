@@ -1,7 +1,7 @@
 // @ts-nocheck
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
 import {
   resolveOrderRestaurantScope,
@@ -22,8 +22,9 @@ import {
 } from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ActionButtonContent, ButtonSpinner } from '@/components/ui/action-button-content'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/lib/supabase/client'
@@ -145,33 +146,6 @@ const tabs: { id: DashboardTabId; label: string }[] = [
 
 function orderActionKey(orderId: string, action: string) {
   return `${orderId}:${action}`
-}
-
-function ButtonSpinner({ className }: { className?: string }) {
-  return <Loader2 className={cn('h-4 w-4 animate-spin', className)} aria-hidden />
-}
-
-function ActionButtonContent({
-  loading,
-  icon: Icon,
-  label,
-  loadingLabel,
-}: {
-  loading: boolean
-  icon?: ComponentType<{ className?: string }>
-  label: string
-  loadingLabel?: string
-}) {
-  return (
-    <>
-      {loading ? (
-        <ButtonSpinner className="mr-2" />
-      ) : Icon ? (
-        <Icon className="h-4 w-4 mr-2" />
-      ) : null}
-      {loading ? loadingLabel ?? label : label}
-    </>
-  )
 }
 
 function requestItemLabel(item: Record<string, any>): string {

@@ -23,6 +23,7 @@ import {
   type OrderRestaurantScope,
 } from '@/lib/supabase/restaurants'
 import { Button } from '@/components/ui/button'
+import { ActionButtonContent } from '@/components/ui/action-button-content'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -750,7 +751,7 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddTable()}>
-              Create table
+              <ActionButtonContent loading={saving} label="Create table" loadingLabel="Creating..." />
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -802,7 +803,7 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddKiosk()}>
-              Create kiosk
+              <ActionButtonContent loading={saving} label="Create kiosk" loadingLabel="Creating..." />
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -855,7 +856,11 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleAddViewOnly()}>
-              Create view-only menu QR
+              <ActionButtonContent
+                loading={saving}
+                label="Create view-only menu QR"
+                loadingLabel="Creating..."
+              />
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -899,7 +904,7 @@ export function QRCodeManagement() {
               Cancel
             </Button>
             <Button disabled={saving} onClick={() => void handleSaveEdit()}>
-              Save
+              <ActionButtonContent loading={saving} label="Save" loadingLabel="Saving..." />
             </Button>
           </DialogFooter>
         </DialogContent>
