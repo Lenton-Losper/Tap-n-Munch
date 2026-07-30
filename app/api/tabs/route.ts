@@ -118,16 +118,61 @@ export async function POST(req: Request) {
     if (insertError) {
       if (insertError.code === '23505') {
         // Race condition — another tab was just created for this table
-        // Fetch the existing open tab and return it
+        // Fetch the existing open tab and return it.
+        //
+        // `.is('settled_at', null)` is defence in depth. A tab that has been closed out must
+        // never be handed to a walk-up scan: doing so gives the new party the previous
+        // customer's name, itemised order and receipt. The settle route no longer resurrects
+        // a settled tab, so this should be unreachable today — but this branch is the point
+        // where such a tab would leak, and it is one line to make that impossible regardless
+        // of which writer produced the state.
         const { data: existingTab, error: fetchError } = await supabase
           .from('tabs')
           .select('id, restaurant_id, table_id, table_number, status, members, total')
           .eq('restaurant_id', restaurantUuid)
           .eq('table_number', tableNumber)
           .eq('status', 'open')
+          .is('settled_at', null)
           .maybeSingle()
 
         if (fetchError || !existingTab) {
+          // Distinguish "nothing joinable" from "a closed-out row is blocking this table".
+          //
+          // The second case is a dead end for the customer: the insert keeps hitting 23505
+          // because status='open' re-arms the unique index, the guarded fetch above
+          // correctly refuses the row, and every subsequent scan gets this same 409 while
+          // restaurant_tables.status stays 'available' so staff see nothing wrong. Migration
+          // 20260730120000 clears existing rows of that shape and the settle guard prevents
+          // new ones, but if one ever appears again this must be loud rather than silent.
+          const { data: blockingTab } = await supabase
+            .from('tabs')
+            .select('id, settled_at, settled_type')
+            .eq('restaurant_id', restaurantUuid)
+            .eq('table_number', tableNumber)
+            .eq('status', 'open')
+            .not('settled_at', 'is', null)
+            .maybeSingle()
+
+          if (blockingTab) {
+            console.error(
+              '[TABS] table blocked by a closed-out tab still marked open — customers cannot start a tab here',
+              {
+                restaurantId: restaurantUuid,
+                tableNumber,
+                tabId: blockingTab.id,
+                settledAt: blockingTab.settled_at,
+                settledType: blockingTab.settled_type,
+              },
+            )
+            return NextResponse.json(
+              {
+                error: 'This table needs attention from staff before a new tab can be started',
+                code: 'TABLE_BLOCKED_BY_CLOSED_TAB',
+              },
+              { status: 409 },
+            )
+          }
+
           return NextResponse.json({ error: 'Table already has an open tab' }, { status: 409 })
         }
 
