@@ -6,6 +6,7 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import { ensureTerminalMerchantOrderNo } from '@/lib/payments/terminal-merchant-order'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -165,20 +166,36 @@ export async function POST(req: Request) {
       )
     }
 
-    const existingMo = String(claimedOrder.paycloud_merchant_order_no || '').trim()
-    const rand4 = Math.floor(Math.random() * 10000).toString().padStart(4, '0')
-    const merchantOrderNo = existingMo
-      ? `FT${Date.now()}${rand4}`.slice(0, 32)
-      : existingMo || `FT${Date.now()}`.slice(0, 32)
-
-    const persistRes = await supabase
-      .from('orders')
-      .update({ paycloud_merchant_order_no: merchantOrderNo })
-      .eq('id', normalizedOrderId)
-    if (persistRes.error) {
-      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
+    // Delegate to the shared helper rather than reimplementing the rule here.
+    //
+    // terminal-merchant-order.ts is the single source of truth for this value and documents
+    // why it must not rotate: "Does not rotate on every call (that would orphan webhooks for
+    // the previous businessOrderNo)." It reuses a usable existing value, mints only when
+    // there is nothing to reuse, compare-and-swaps against what is actually stored, retries
+    // on unique collision, and re-reads to adopt the winner on a lost race.
+    //
+    // This route previously minted a fresh value on BOTH branches of a ternary, so every push
+    // overwrote the column: a card already charged under the previous businessOrderNo could
+    // no longer be correlated by Finatic's notify, and the payment was never recorded.
+    let merchantOrderNo: string
+    try {
+      const ensured = await ensureTerminalMerchantOrderNo(supabase, {
+        orderId: normalizedOrderId,
+        restaurantId: callerRestaurantId,
+      })
+      merchantOrderNo = ensured.merchantOrderNo
+    } catch (persistErr) {
+      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistErr)
       await releaseClaim()
-      return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
+      return NextResponse.json(
+        {
+          error:
+            persistErr instanceof Error
+              ? persistErr.message
+              : 'Failed to persist merchant order no',
+        },
+        { status: 500 },
+      )
     }
 
     const paramsForSigning: Record<string, unknown> = {

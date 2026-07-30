@@ -77,20 +77,39 @@ export async function ensureTerminalMerchantOrderNo(
     throw cancelled
   }
 
-  const existing = String(order.paycloud_merchant_order_no || '').trim()
-  if (existing && isPaycloudSafeMerchantOrderNo(existing)) {
+  // Reusability is judged against the UNTRIMMED stored value, deliberately.
+  //
+  // Trimming first meant a padded value such as '  FT1700000000001  ' was judged safe and
+  // reused: callers transmitted the TRIMMED form to Finatic while the column kept the PADDED
+  // form, and resolveOrderIdsByMerchantOrderNo (resolve-order-by-merchant-order.ts:14-20)
+  // matches byte-exact — so the notify could never correlate. Money taken, order left unpaid,
+  // which is the same orphaned-webhook failure this helper's no-rotation rule exists to
+  // prevent. A value that differs from its own trimmed form is therefore NOT reusable.
+  const rawExisting = String(order.paycloud_merchant_order_no ?? '')
+  const existing = rawExisting.trim()
+  if (existing !== '' && existing === rawExisting && isPaycloudSafeMerchantOrderNo(existing)) {
     return { merchantOrderNo: existing, created: false }
   }
 
   // Unique partial index on paycloud_merchant_order_no — retry on rare collision.
   for (let attempt = 0; attempt < 5; attempt++) {
     const merchantOrderNo = generateTerminalMerchantOrderNo()
-    const { data: updated, error: updateError } = await supabase
+
+    // Compare-and-swap against whatever is actually stored. Guarding only on NULL would make
+    // an unusable non-null value (padded, or otherwise unsafe) unreplaceable: `.eq()` is
+    // byte-exact, so the trimmed form would never match a padded row and every attempt would
+    // fall through to the retry loop and ultimately throw.
+    const persistQuery = supabase
       .from('orders')
       .update({ paycloud_merchant_order_no: merchantOrderNo })
       .eq('id', orderId)
       .eq('restaurant_id', restaurantId)
-      .is('paycloud_merchant_order_no', null)
+    const guarded =
+      rawExisting !== ''
+        ? persistQuery.eq('paycloud_merchant_order_no', rawExisting)
+        : persistQuery.is('paycloud_merchant_order_no', null)
+
+    const { data: updated, error: updateError } = await guarded
       .select('paycloud_merchant_order_no')
       .maybeSingle()
 
