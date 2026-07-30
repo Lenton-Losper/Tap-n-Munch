@@ -237,7 +237,9 @@ export async function POST(
     // so a close landing concurrently cannot slip through the window. A normal open or
     // ready_to_pay tab has settled_at null and still reopens, which is the intended
     // "settle, then keep ordering" behaviour.
-    const { data: reopened, error: reopenError } = await supabase
+    const tabWasClosedOut = tab.settled_at != null
+
+    const { error: reopenError } = await supabase
       .from('tabs')
       .update({
         status: 'open',
@@ -246,12 +248,10 @@ export async function POST(
       })
       .eq('id', tabId)
       .is('settled_at', null)
-      .select('id')
-      .maybeSingle()
 
     if (reopenError) {
       console.error('[TAB-SETTLE] failed to reopen tab', { tabId, error: reopenError })
-    } else if (!reopened) {
+    } else if (tabWasClosedOut) {
       // Not an error: the payment above is fully recorded. The tab was closed out, so it
       // stays closed and the table remains free for the next party.
       console.log('[TAB-SETTLE] tab already closed out — not reopening', {
