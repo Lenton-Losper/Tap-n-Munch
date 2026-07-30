@@ -44,6 +44,15 @@ export async function PATCH(
   // Only rename a member that actually exists on this tab. Previously an unknown sessionId
   // mapped over every row unchanged and still returned success, so a caller could not tell a
   // no-op from a rename, and neither could anyone reading the logs.
+  //
+  // NOTE: this does NOT stop one member of a tab renaming ANOTHER member of the same tab.
+  // The token carries no member identity -- requireSessionToken returns only
+  // { tabId, tableId, restaurantId } and customer_sessions has no column linking a token to
+  // the client-generated sessionId in tabs.members. That link is absent because it was never
+  // persisted, not because it is hard: sessionId is already in scope at both token-issue
+  // sites (app/api/tabs/route.ts and the join route) and is simply not passed to
+  // issueTokenForOpenTab. Closing it is additive -- a nullable member_session_id column,
+  // passed through and compared here.
   const members = (tab.members || []) as Array<Record<string, unknown>>
   const isMember = members.some((m) => m.session_id === sessionId)
 
