@@ -6,7 +6,6 @@ import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import {
   amountsMatch,
   CLAIMABLE_PAYMENT_STATUSES,
-  isClaimablePaymentStatus,
 } from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
@@ -85,27 +84,6 @@ export async function POST(
           error: 'order_ids must belong to this tab',
           code: 'ORDER_TAB_MISMATCH',
           invalid_order_ids: missing,
-        },
-        { status: 400 },
-      )
-    }
-
-    // Reject before computing expectedAmount or touching the DB: a cancelled/already-paid
-    // order's total must never be allowed into the charged amount in the first place.
-    // (The real-world card charge already happened on the terminal device by the time this
-    // endpoint is called -- this can't undo that, but it stops the server from ever agreeing
-    // that such an order's total belongs in a settle, and fails fast with zero DB mutation
-    // instead of partially marking other orders paid before discovering the mismatch.)
-    const nonClaimable = (tabOrders ?? []).filter(
-      (o) => !isClaimablePaymentStatus(o.payment_status),
-    )
-    if (nonClaimable.length > 0) {
-      return NextResponse.json(
-        {
-          error:
-            'One or more selected orders are not payable (already paid, cancelled, or refunded) and cannot be included in a settle.',
-          code: 'NON_CLAIMABLE_ORDERS_IN_REQUEST',
-          non_claimable_order_ids: nonClaimable.map((o) => String(o.id)),
         },
         { status: 400 },
       )
