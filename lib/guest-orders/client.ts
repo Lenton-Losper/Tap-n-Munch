@@ -34,12 +34,21 @@ export async function fetchGuestOrderById(
 export async function fetchGuestOrdersBySession(params: {
   restaurantId: string
   sessionId?: string
+  /** Every session id the client holds; see the server-side counterpart for why there are two. */
+  sessionIds?: Array<string | null | undefined>
   tabId?: string
   excludeSettlement?: boolean
   countOnly?: boolean
 }): Promise<GuestOrdersApiResponse> {
   const qs = new URLSearchParams({ restaurantId: params.restaurantId })
-  if (params.sessionId?.trim()) qs.set('session_id', params.sessionId.trim())
+  const sessionIds = [...new Set(
+    [params.sessionId, ...(params.sessionIds ?? [])]
+      .map((s) => String(s || '').trim())
+      .filter(Boolean),
+  )]
+  // Repeated params rather than one comma-joined value, so a session id containing a comma
+  // could never be split into two bogus ids server-side.
+  for (const sid of sessionIds) qs.append('session_id', sid)
   if (params.tabId?.trim()) qs.set('tabId', params.tabId.trim())
   if (params.excludeSettlement === false) qs.set('excludeSettlement', '0')
   if (params.countOnly) qs.set('countOnly', '1')

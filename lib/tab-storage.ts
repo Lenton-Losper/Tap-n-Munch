@@ -7,6 +7,25 @@ export const SESSION_TOKEN_STORAGE_KEY = 'flashtap_session_token'
 export const TAB_SESSION_ENDED_MESSAGE =
   'Your session has ended. Scan the QR code to start a new order.'
 
+/** Keys owned by contexts/tab-context.tsx; mirrored here so non-context callers can read them. */
+export const TAB_SESSION_ID_KEY = 'tab_session_id'
+export const LEGACY_TAB_SESSION_ID_KEY = 'flashtap_tab_session_id'
+
+/**
+ * The session id orders are actually submitted with, read without minting one.
+ *
+ * Distinct from lib/session.ts's flashtap_session_v1: different storage, different format,
+ * and nothing syncs the two. Anything looking up a customer's own orders needs both, or it
+ * silently finds nothing.
+ */
+export function readTabSessionId(): string | null {
+  if (typeof window === 'undefined') return null
+  const current = sessionStorage.getItem(TAB_SESSION_ID_KEY)?.trim()
+  if (current) return current
+  const legacy = sessionStorage.getItem(LEGACY_TAB_SESSION_ID_KEY)?.trim()
+  return legacy || null
+}
+
 export function readStoredTabId(): string | null {
   if (typeof window === 'undefined') return null
   return localStorage.getItem(TAB_ID_STORAGE_KEY)?.trim() || null
