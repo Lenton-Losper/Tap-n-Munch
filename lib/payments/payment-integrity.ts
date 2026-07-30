@@ -28,3 +28,19 @@ export function isClaimablePaymentStatus(status: unknown): boolean {
     .toLowerCase()
   return (CLAIMABLE_PAYMENT_STATUSES as readonly string[]).includes(s)
 }
+
+/**
+ * True only when an order has genuinely been paid.
+ *
+ * This is the counterpart to isClaimablePaymentStatus, which answers "may this still
+ * be claimed" -- the wrong question when deciding whether money has actually been
+ * collected. Normalised identically (trim + lowercase) so that a stray 'Paid' or
+ * ' paid' can never be misclassified: a byte-exact SQL comparison such as
+ * .eq('payment_status','paid') would get this wrong, so callers should read rows and
+ * partition with this helper rather than filtering in the database.
+ */
+export function isPaidPaymentStatus(status: unknown): boolean {
+  return String(status ?? '')
+    .trim()
+    .toLowerCase() === 'paid'
+}
