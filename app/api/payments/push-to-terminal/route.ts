@@ -6,6 +6,10 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import {
+  generateTerminalMerchantOrderNo,
+  isPaycloudSafeMerchantOrderNo,
+} from '@/lib/payments/terminal-merchant-order'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -165,20 +169,74 @@ export async function POST(req: Request) {
       )
     }
 
+    // Reuse an existing merchant order no rather than rotating it.
+    //
+    // The previous logic minted a fresh value on BOTH branches of its ternary, so every
+    // push overwrote the column. If a card was already charged under the previous
+    // businessOrderNo, Finatic's notify for that attempt could no longer be correlated
+    // (resolveOrderIdsByMerchantOrderNo finds nothing) and the payment was never
+    // recorded -- money taken, order left unpaid. This is exactly what
+    // lib/payments/terminal-merchant-order.ts:39-42 documents as forbidden:
+    // "Does not rotate on every call (that would orphan webhooks for the previous
+    // businessOrderNo)."
     const existingMo = String(claimedOrder.paycloud_merchant_order_no || '').trim()
-    const rand4 = Math.floor(Math.random() * 10000).toString().padStart(4, '0')
-    const merchantOrderNo = existingMo
-      ? `FT${Date.now()}${rand4}`.slice(0, 32)
-      : existingMo || `FT${Date.now()}`.slice(0, 32)
+    let merchantOrderNo = existingMo
 
-    const persistRes = await supabase
-      .from('orders')
-      .update({ paycloud_merchant_order_no: merchantOrderNo })
-      .eq('id', normalizedOrderId)
-    if (persistRes.error) {
-      console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
-      await releaseClaim()
-      return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
+    if (!merchantOrderNo || !isPaycloudSafeMerchantOrderNo(merchantOrderNo)) {
+      // Only mint when there is nothing usable to reuse. An unsafe value can never have
+      // been accepted on the wire, so replacing it cannot orphan a real in-flight charge.
+      const minted = generateTerminalMerchantOrderNo()
+
+      // Compare-and-swap so a concurrent push cannot have its value clobbered:
+      //  - column null  -> only claim it if it is STILL null
+      //  - column unsafe -> only replace that exact unsafe value
+      // Guarding solely on null would make an unsafe value unreplaceable and 500 forever.
+      const persistQuery = supabase
+        .from('orders')
+        .update({ paycloud_merchant_order_no: minted })
+        .eq('id', normalizedOrderId)
+      const guarded = existingMo
+        ? persistQuery.eq('paycloud_merchant_order_no', existingMo)
+        : persistQuery.is('paycloud_merchant_order_no', null)
+
+      const persistRes = await guarded.select('paycloud_merchant_order_no').maybeSingle()
+
+      if (persistRes.error) {
+        console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistRes.error)
+        await releaseClaim()
+        return NextResponse.json({ error: persistRes.error.message }, { status: 500 })
+      }
+
+      if (persistRes.data?.paycloud_merchant_order_no) {
+        merchantOrderNo = String(persistRes.data.paycloud_merchant_order_no)
+      } else {
+        // Lost the race to a concurrent push, or the column was non-null and unsafe.
+        // Re-read and adopt whatever is authoritative rather than forcing our value.
+        const { data: again, error: againError } = await supabase
+          .from('orders')
+          .select('paycloud_merchant_order_no')
+          .eq('id', normalizedOrderId)
+          .maybeSingle()
+
+        if (againError) {
+          console.error('[PUSH-TO-TERMINAL] Failed to re-read merchant order no:', againError)
+          await releaseClaim()
+          return NextResponse.json({ error: againError.message }, { status: 500 })
+        }
+
+        const after = String(again?.paycloud_merchant_order_no || '').trim()
+        if (!after || !isPaycloudSafeMerchantOrderNo(after)) {
+          console.error('[PUSH-TO-TERMINAL] No usable merchant order no after retry', {
+            orderId: normalizedOrderId,
+          })
+          await releaseClaim()
+          return NextResponse.json(
+            { error: 'Failed to allocate merchant order number' },
+            { status: 500 }
+          )
+        }
+        merchantOrderNo = after
+      }
     }
 
     const paramsForSigning: Record<string, unknown> = {
