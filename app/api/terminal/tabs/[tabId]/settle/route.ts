@@ -6,6 +6,7 @@ import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import {
   amountsMatch,
   CLAIMABLE_PAYMENT_STATUSES,
+  isClaimablePaymentStatus,
 } from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
@@ -89,7 +90,72 @@ export async function POST(
       )
     }
 
-    const expectedAmount = (tabOrders ?? []).reduce(
+    // Partition the requested orders BEFORE computing any amount or touching the DB.
+    //
+    // Previously expectedAmount summed every requested order, including cancelled and
+    // already-paid ones. A tab holding a pending order plus a previously-declined one
+    // demanded the sum of BOTH, so a cashier sending the honest figure got AMOUNT_MISMATCH
+    // and the only way to proceed was to charge the card for money that was not owed.
+    const claimableOrders = (tabOrders ?? []).filter((o) =>
+      isClaimablePaymentStatus(o.payment_status),
+    )
+    const nonClaimableOrders = (tabOrders ?? []).filter(
+      (o) => !isClaimablePaymentStatus(o.payment_status),
+    )
+
+    // A genuine double-settle retry -- every requested order really is paid -- must keep
+    // returning 409 ALREADY_PAID. The terminal maps that code to staff-facing copy; a
+    // different code surfaces a raw string. This is checked BEFORE the amount comparison,
+    // because a retry has no claimable orders and would otherwise expect 0 and be reported
+    // as an amount mismatch.
+    // Names the ACTUAL states rather than listing every possibility. Telling a cashier an
+    // order was "already paid" when it was declined sends them looking for a payment that
+    // never happened -- the old SETTLE_CLAIM_CONFLICT copy did exactly that.
+    const describeNonClaimable = (rows: typeof nonClaimableOrders) => {
+      const states = [
+        ...new Set(
+          rows.map((o) => String(o.payment_status ?? 'unknown').trim().toLowerCase()),
+        ),
+      ].sort()
+      return `Some selected orders cannot be settled — their payment state is: ${states.join(', ')}`
+    }
+
+    if (claimableOrders.length === 0) {
+      const allPaid = nonClaimableOrders.every(
+        (o) => String(o.payment_status ?? '').trim().toLowerCase() === 'paid',
+      )
+      return NextResponse.json(
+        {
+          error: allPaid
+            ? 'Orders are already paid'
+            : describeNonClaimable(nonClaimableOrders),
+          code: allPaid ? 'ALREADY_PAID' : 'NON_CLAIMABLE_ORDERS_IN_REQUEST',
+          claimed_order_ids: [],
+          non_claimable_order_ids: nonClaimableOrders.map((o) => String(o.id)),
+        },
+        { status: allPaid ? 409 : 400 },
+      )
+    }
+
+    // Reject a mixed request before any write rather than silently settling a subset: the
+    // device computed its charge from the set it sent, so quietly settling less would leave
+    // the difference charged and unrecorded. The error names the offending orders instead of
+    // claiming they were "already paid" -- a declined order never was.
+    if (nonClaimableOrders.length > 0) {
+      return NextResponse.json(
+        {
+          error: describeNonClaimable(nonClaimableOrders),
+          code: 'NON_CLAIMABLE_ORDERS_IN_REQUEST',
+          non_claimable_order_ids: nonClaimableOrders.map((o) => String(o.id)),
+          claimable_order_ids: claimableOrders.map((o) => String(o.id)),
+        },
+        { status: 400 },
+      )
+    }
+
+    // Derived from the claimable set by construction, so a non-claimable total can never
+    // reach the card, the payments row, or the audit metadata.
+    const expectedAmount = claimableOrders.reduce(
       (sum, o) => sum + Number(o.total),
       0,
     )
@@ -109,7 +175,23 @@ export async function POST(
     const paymentReference = generatePaymentReference()
     const paymentVoucherNo = voucherNo || gatewayReference || null
 
-    // Atomic claim: only unpaid/pending rows on this tab flip to paid.
+    // Claim on the EXACT statuses observed in the partition above, not on the canonical
+    // CLAIMABLE_PAYMENT_STATUSES list.
+    //
+    // isClaimablePaymentStatus() trims and lowercases; PostgREST `.in()` is byte-exact.
+    // Filtering on the canonical list made the two predicates disagree: a row stored as
+    // 'Pending' was counted claimable by JS (so its total reached expectedAmount and the card
+    // was charged for it) but matched nothing in the claim. The result was a 200 success that
+    // recorded less than it charged, with the difference misattributed to a concurrent writer
+    // in the audit metadata. Same silent-money-loss class this fix exists to remove.
+    //
+    // Deriving the predicate from the rows we actually read makes the two agree by
+    // construction, and still protects the race: a concurrent flip to 'paid' is not in this
+    // set, so that row will not match.
+    const observedClaimableStatuses = [
+      ...new Set(claimableOrders.map((o) => String(o.payment_status))),
+    ]
+
     const { data: claimed, error: ordersError } = await supabase
       .from('orders')
       .update({
@@ -124,7 +206,7 @@ export async function POST(
       .in('id', orderIds)
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
-      .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+      .in('payment_status', observedClaimableStatuses)
       .select('id')
 
     if (ordersError) {
@@ -135,21 +217,55 @@ export async function POST(
     }
 
     const claimedIds = (claimed ?? []).map((o) => String(o.id))
-    if (claimedIds.length !== orderIds.length) {
+
+    // Nothing was claimed, so nothing was mutated -- safe to bail with no compensation.
+    // A concurrent settle took every order between our read and our claim.
+    if (claimedIds.length === 0) {
       return NextResponse.json(
         {
-          error:
-            claimedIds.length === 0
-              ? 'Orders are already paid'
-              : 'Settle conflict — some orders were already paid',
-          code:
-            claimedIds.length === 0
-              ? 'ALREADY_PAID'
-              : 'SETTLE_CLAIM_CONFLICT',
-          claimed_order_ids: claimedIds,
+          error: 'Orders are already paid',
+          code: 'ALREADY_PAID',
+          claimed_order_ids: [],
         },
         { status: 409 },
       )
+    }
+
+    // A SHORT CLAIM IS NOT AN ERROR, AND MUST NOT ABANDON THE WRITE.
+    //
+    // Previously any shortfall returned 409 here, after the claim had already flipped rows
+    // to paid and stamped them with paymentReference -- and before the payments insert, the
+    // audit log, receipts and the tab recalc, all of which live below. The card was charged
+    // on the device before this endpoint was even called, so that left money taken with no
+    // payments row, no receipt, no audit trail and no way to retry: every retry answered
+    // "already paid". A cancelled order made it unconditional, because a cancelled row can
+    // never satisfy the claim's CLAIMABLE_PAYMENT_STATUSES filter.
+    //
+    // Non-claimable orders are now rejected above, so a shortfall here means only one thing:
+    // a genuine concurrent writer took some rows in the window between our read and our
+    // claim. We own exactly the rows we claimed, so we settle exactly those and record them
+    // completely. Rolling back instead would reproduce the original harm -- the device's
+    // charge would stand with nothing recorded against it.
+    const claimedSet = new Set(claimedIds)
+    const settledAmount = claimableOrders
+      .filter((o) => claimedSet.has(String(o.id)))
+      .reduce((sum, o) => sum + Number(o.total), 0)
+
+    const lostToConcurrentClaim = claimableOrders
+      .filter((o) => !claimedSet.has(String(o.id)))
+      .map((o) => String(o.id))
+
+    if (lostToConcurrentClaim.length > 0) {
+      // Surfaced rather than silently succeeded: the device charged `amount`, we could only
+      // record `settledAmount`, and the difference needs a human.
+      console.error('[TAB-SETTLE] partial claim — charged amount exceeds settled amount', {
+        tabId,
+        paymentReference,
+        chargedAmount: amount,
+        settledAmount,
+        claimedIds,
+        lostToConcurrentClaim,
+      })
     }
 
     if (businessOrderNo) {
@@ -185,7 +301,9 @@ export async function POST(
       table_id: tab.table_id,
       tab_id: tabId,
       order_ids: claimedIds,
-      amount: expectedAmount,
+      // settledAmount, not expectedAmount: the recorded amount must describe the rows this
+      // request actually claimed, so the ledger can never overstate what was settled.
+      amount: settledAmount,
       method,
       status: 'completed',
       gateway_reference: gatewayReference,
@@ -201,11 +319,14 @@ export async function POST(
       entity_id: tabId,
       metadata: {
         order_ids: claimedIds,
-        amount: expectedAmount,
+        amount: settledAmount,
         client_amount: amount,
         method,
         payment_reference: paymentReference,
         terminal_id: terminal.terminalId,
+        // Non-empty only on a concurrent short claim: the device charged client_amount but
+        // only settledAmount could be recorded. Present so the discrepancy is auditable.
+        lost_to_concurrent_claim: lostToConcurrentClaim,
       },
     })
 
@@ -227,11 +348,26 @@ export async function POST(
       })
       .eq('id', tabId)
 
+    // Report what was actually settled, not just that something was.
+    //
+    // On a short claim the device is the only party that knows what it charged and the
+    // server is the only party that knows what it settled; until now nobody joined those two
+    // facts in real time, so a cashier saw plain success while an order remained unsettled.
+    // These are ADDITIVE fields on the existing 200 body: an older terminal build ignores
+    // unknown JSON keys and behaves exactly as before, while a future build can surface the
+    // shortfall. The status code is deliberately unchanged -- switching to 207/409 would move
+    // an out-of-repo client onto a branch we cannot inspect, turning a recorded-but-partial
+    // settle into a client-side error, which is worse than the silence it replaces.
     return NextResponse.json({
       success: true,
       payment_reference: paymentReference,
       new_tab_total: newTotal,
       can_close: canClose,
+      settled_amount: settledAmount,
+      charged_amount: amount,
+      settled_order_ids: claimedIds,
+      unsettled_order_ids: lostToConcurrentClaim,
+      partial: lostToConcurrentClaim.length > 0,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
