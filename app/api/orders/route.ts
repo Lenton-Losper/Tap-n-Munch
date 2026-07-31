@@ -189,7 +189,12 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             error: sufficiency.reason,
-            outOfStock: { item: sufficiency.itemName, ingredient: sufficiency.stockItemName },
+            // Every unavailable item, so a client can highlight them all at once instead of
+            // making the customer discover them one refusal at a time.
+            outOfStock: sufficiency.unavailable.map((u) => ({
+              item: u.itemName,
+              ingredient: u.stockItemName,
+            })),
           },
           { status: 409 },
         )

@@ -181,6 +181,32 @@ async function main() {
     }
   }
 
+  // S9 -- TWO depleted lines: the whole order is rejected and BOTH are named, so the
+  // customer is not made to discover them one refusal at a time.
+  await setBalance(siA.id, 0)
+  await setBalance(siB.id, 0)
+  {
+    const r = await placeOrder([{ mi: tracked, qty: 1 }, { mi: trackedB, qty: 1 }])
+    const msg = String(r.body?.error ?? '')
+    const listed = Array.isArray(r.body?.outOfStock) ? r.body.outOfStock.length : 0
+    results['S9 two depleted lines -> order rejected, BOTH named'] = {
+      http: r.status, rows: r.rowsCreated, message: msg, out_of_stock_entries: listed,
+      names_first: msg.includes('tracked'), names_second: msg.includes('trackedB'),
+      verdict: r.status === 409 && r.rowsCreated === 0 && listed === 2
+        && msg.includes('trackedB') ? 'PASS' : 'FAIL',
+    }
+  }
+
+  // S10 -- nothing is silently dropped: a rejected order leaves no partial row behind.
+  {
+    const { data: leftovers } = await admin
+      .from('order_requests').select('id').ilike('order_instructions', '%oos check%')
+    results['S10 a rejected order leaves no partial row'] = {
+      leftover_rows: (leftovers ?? []).length,
+      verdict: (leftovers ?? []).length === 0 ? 'PASS' : 'FAIL',
+    }
+  }
+
   log('RESULTS', results)
   const failures = Object.entries(results).filter(([, v]) => (v as { verdict: string }).verdict === 'FAIL')
   log('VERDICT', failures.length === 0

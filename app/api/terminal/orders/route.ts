@@ -102,7 +102,10 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             error: sufficiency.reason,
-            outOfStock: { item: sufficiency.itemName, ingredient: sufficiency.stockItemName },
+            outOfStock: sufficiency.unavailable.map((u) => ({
+              item: u.itemName,
+              ingredient: u.stockItemName,
+            })),
           },
           { status: 409 },
         )

@@ -21,9 +21,27 @@ import type { SupabaseClient } from '@supabase/supabase-js'
  * to balance-minus-required is a separate policy decision.
  */
 
+export type UnavailableLine = { itemName: string; stockItemName: string; balance: number }
+
 export type StockSufficiencyResult =
   | { ok: true }
-  | { ok: false; reason: string; itemName: string; stockItemName: string; balance: number }
+  | {
+      ok: false
+      reason: string
+      /** Every unavailable item, so the message can name them all rather than just the first. */
+      unavailable: UnavailableLine[]
+      /** First offender, kept for callers that only need one. */
+      itemName: string
+      stockItemName: string
+      balance: number
+    }
+
+/** "X", "X and Y", "X, Y and Z" -- read out to a customer, so no trailing comma or "1 more". */
+function listNames(names: string[]): string {
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
 
 type LineItem = Record<string, unknown>
 
@@ -110,6 +128,13 @@ export async function checkStockSufficiency(
     itemsByRecipe.set(key, list)
   }
 
+  // Every unavailable line is collected, not just the first. The whole order is rejected
+  // either way -- an order must never silently become something other than what the customer
+  // selected -- but they should be told everything that is unavailable in one go, rather
+  // than removing one item, retrying, and hitting the next refusal.
+  const unavailable: UnavailableLine[] = []
+  const seen = new Set<string>()
+
   for (const line of items) {
     const menuItemId = lineMenuItemId(line)
     if (!menuItemId || !trackedIds.has(menuItemId)) continue
@@ -119,19 +144,36 @@ export async function checkStockSufficiency(
 
     for (const stockItemId of itemsByRecipe.get(recipeId) ?? []) {
       const balance = balances.get(stockItemId) ?? 0
-      if (balance <= 0) {
-        const itemName = lineName(line)
-        const stockItemName = stockNameById.get(stockItemId) ?? 'an ingredient'
-        return {
-          ok: false,
-          itemName,
-          stockItemName,
-          balance,
-          reason: `${itemName} is out of stock and cannot be ordered right now.`,
-        }
-      }
+      if (balance > 0) continue
+
+      const itemName = lineName(line)
+      // One entry per menu item, even if several of its ingredients are depleted, and even
+      // if the same item appears on more than one line.
+      if (seen.has(menuItemId)) continue
+      seen.add(menuItemId)
+      unavailable.push({
+        itemName,
+        stockItemName: stockNameById.get(stockItemId) ?? 'an ingredient',
+        balance,
+      })
+      break
     }
   }
 
-  return { ok: true }
+  if (unavailable.length === 0) return { ok: true }
+
+  const names = listNames(unavailable.map((u) => u.itemName))
+  const reason =
+    unavailable.length === 1
+      ? `${names} is out of stock and cannot be ordered right now.`
+      : `${names} are out of stock and cannot be ordered right now. Please remove them and try again.`
+
+  return {
+    ok: false,
+    reason,
+    unavailable,
+    itemName: unavailable[0].itemName,
+    stockItemName: unavailable[0].stockItemName,
+    balance: unavailable[0].balance,
+  }
 }
