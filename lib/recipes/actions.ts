@@ -115,6 +115,29 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     if (insertItemsError) {
       return { error: insertItemsError.message }
     }
+
+    // Mark the menu item as tracked in the same operation that links it.
+    //
+    // Every "is this tracked?" surface reads menu_items.track_inventory --
+    // getInventorySetupOverview lists only items where it is true, and
+    // loadMenuItemInventoryAction derives hasInventory/trackInventory from it. Writing the
+    // recipe without it meant a link made from the Stock -> Recipes editor persisted
+    // perfectly, reported "Recipe saved.", and left the item reading as untracked with no
+    // way for the merchant to tell the link had worked.
+    //
+    // Safe to force true here: the menu item form only calls this action when its own
+    // tracking toggle is already on, so this cannot override a merchant turning tracking
+    // off. Deliberately NOT set back to false when ingredients are empty -- "tracked but not
+    // yet configured" is a state the overview models explicitly via missingItems.
+    const { error: trackError } = await supabase
+      .from('menu_items')
+      .update({ track_inventory: true })
+      .eq('restaurant_id', restaurantId)
+      .eq('id', menuItemId)
+
+    if (trackError) {
+      return { error: trackError.message }
+    }
   }
 
   revalidatePath('/stock/recipes')
