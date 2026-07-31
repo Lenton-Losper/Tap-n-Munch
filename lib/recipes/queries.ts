@@ -13,6 +13,15 @@ export type InventorySetupData = {
   missingItems: InventorySetupItemRef[]
   /** Menu items with track_inventory=true and ≥1 ingredient configured. */
   readyMenuItemIds: string[]
+  /**
+   * Menu items with an ACTIVE recipe and ≥1 ingredient whose track_inventory is false.
+   *
+   * Neither of the lists above can contain these -- both are filtered to track_inventory=true
+   * -- so before this the state was invisible to every surface: no badge, not counted as
+   * configured, not counted as missing. Meanwhile deduct_recipe_stock keys solely on
+   * recipes.is_active, so these items still deduct stock on every sale.
+   */
+  linkedButUntrackedIds: string[]
 }
 
 /** @deprecated Use InventorySetupData */
@@ -111,6 +120,18 @@ export async function getInventorySetupOverview(
     }
   }
 
+  // Items whose tracking is switched off but whose recipe is still live. Deduction keys on
+  // recipes.is_active alone, so these keep draining stock while reading as untracked
+  // everywhere. Surfaced so the badge can say so instead of rendering nothing.
+  const trackedIds = new Set((trackedItems ?? []).map((item) => item.id as string))
+  const linkedButUntrackedIds: string[] = []
+  for (const [menuItemId, recipeId] of recipeByMenuItemId) {
+    if (trackedIds.has(menuItemId)) continue
+    if ((ingredientCountByRecipeId.get(recipeId) ?? 0) >= 1) {
+      linkedButUntrackedIds.push(menuItemId)
+    }
+  }
+
   const total = (trackedItems ?? []).length
   const configured = readyMenuItemIds.length
 
@@ -120,6 +141,7 @@ export async function getInventorySetupOverview(
     missing: missingItems.length,
     missingItems,
     readyMenuItemIds,
+    linkedButUntrackedIds,
   }
 }
 

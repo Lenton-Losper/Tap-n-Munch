@@ -28,9 +28,17 @@ function StockStatusBadge({ row }: { row: StockOverviewRow }) {
     case 'healthy':
       return <Badge className="border-green-200 bg-green-50 text-green-800">Healthy</Badge>
     case 'not_tracked':
+      // computeStockStatus returns 'not_tracked' purely because par_level IS NULL -- it says
+      // nothing about whether any menu item is linked to this stock item. Labelling it
+      // "Not tracked" collided with Menu Management's tracking badge and had a merchant
+      // believing a correct, actively-deducting link had failed. Name the actual condition.
       return (
-        <Badge variant="outline" className="border-[#E9E9E7] text-[#6B675F]">
-          Not tracked
+        <Badge
+          variant="outline"
+          title="No par level set for this item, so it cannot be reported as low or healthy. This does not affect whether menu items deduct it."
+          className="border-[#E9E9E7] text-[#6B675F]"
+        >
+          No par level
         </Badge>
       )
     default:
