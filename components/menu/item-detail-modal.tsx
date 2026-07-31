@@ -11,6 +11,11 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { X, Plus, Minus, ShoppingCart } from 'lucide-react'
 import { CartItem } from '@/contexts/cart-context'
 import { FoodItemImage } from '@/components/menu/food-item-image'
+import {
+  clampLineQuantity,
+  MAX_LINE_QUANTITY,
+  MIN_LINE_QUANTITY,
+} from '@/lib/orders/quantity-limits'
 
 type MenuItemSize = { name: string; price_modifier: number }
 type MenuItemAddon = { name: string; price: number }
@@ -188,7 +193,8 @@ export function ItemDetailModal({
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                onClick={() => setQuantity(clampLineQuantity(quantity - 1))}
+                disabled={quantity <= MIN_LINE_QUANTITY}
                 className="h-11 w-11 border-border"
               >
                 <Minus className="w-4 h-4 stroke-[1.5]" />
@@ -197,12 +203,26 @@ export function ItemDetailModal({
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => setQuantity(quantity + 1)}
+                // The server rejects anything above MAX_LINE_QUANTITY, so stop the customer
+                // reaching a value it will refuse rather than letting them build a cart and
+                // fail at submit.
+                onClick={() => setQuantity(clampLineQuantity(quantity + 1))}
+                disabled={quantity >= MAX_LINE_QUANTITY}
+                aria-label={
+                  quantity >= MAX_LINE_QUANTITY
+                    ? `Maximum ${MAX_LINE_QUANTITY} per item`
+                    : 'Increase quantity'
+                }
                 className="h-11 w-11 border-border"
               >
                 <Plus className="w-4 h-4 stroke-[1.5]" />
               </Button>
             </div>
+            {quantity >= MAX_LINE_QUANTITY && (
+              <p className="mt-2 text-xs text-[#6B675F]">
+                Up to {MAX_LINE_QUANTITY} per item. For a larger order, please ask a member of staff.
+              </p>
+            )}
           </div>
         </div>
 
