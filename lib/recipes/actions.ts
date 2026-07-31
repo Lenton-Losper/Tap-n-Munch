@@ -157,6 +157,84 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
   return { data: { recipeId, ingredientCount: ingredients.length } }
 }
 
+/**
+ * Remove a menu item's stock link entirely — distinct from switching tracking off.
+ *
+ * Unticking "Track inventory" was previously the only lever a merchant had, so it had to
+ * mean both "pause this" and "undo this". That is why items ended up linked-but-untracked:
+ * there was no way to say "I don't want this linked at all". This says it.
+ *
+ * Deactivates the recipe AND clears its ingredients, then turns tracking off. Both halves
+ * matter: deduction keys on recipes.is_active, and leaving orphaned recipe_items behind
+ * would make the item look configured to getInventorySetupOverview if the recipe were ever
+ * reactivated.
+ *
+ * Historic stock_movements are deliberately left alone — they are a ledger of what actually
+ * happened, and unlinking is not a reason to rewrite history.
+ */
+export async function removeRecipeLinkAction(menuItemId: string) {
+  const id = menuItemId.trim()
+  if (!id) {
+    return { error: 'Menu item is required.' }
+  }
+
+  const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
+
+  const { data: recipe, error: loadError } = await supabase
+    .from('recipes')
+    .select('id')
+    .eq('restaurant_id', restaurantId)
+    .eq('menu_item_id', id)
+    .maybeSingle()
+
+  if (loadError) {
+    return { error: loadError.message }
+  }
+
+  if (recipe?.id) {
+    const { error: itemsError } = await supabase
+      .from('recipe_items')
+      .delete()
+      .eq('recipe_id', recipe.id)
+    if (itemsError) {
+      return { error: itemsError.message }
+    }
+
+    const { error: deactivateError } = await supabase
+      .from('recipes')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', recipe.id)
+    if (deactivateError) {
+      return { error: deactivateError.message }
+    }
+  }
+
+  // Service-role client, as in saveRecipeAction: migration 20260705200000 revokes UPDATE on
+  // menu_items from `authenticated`, so the request-scoped client cannot make this write.
+  // Authorisation is unchanged -- RECIPE_EDIT was established above and this is scoped to
+  // that restaurant and menu item.
+  const { createServerSupabaseClient } = await import('@/lib/supabase/server')
+  const { error: trackError } = await createServerSupabaseClient()
+    .from('menu_items')
+    .update({ track_inventory: false })
+    .eq('restaurant_id', restaurantId)
+    .eq('id', id)
+
+  if (trackError) {
+    return { error: trackError.message }
+  }
+
+  revalidatePath('/stock/recipes')
+  revalidatePath(`/stock/recipes/${id}`)
+  revalidatePath('/menu-management')
+
+  return { data: { removed: Boolean(recipe?.id), menuItemId: id } }
+}
+
 export async function canEditMenuInventoryAction() {
   const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
   return { canEdit: !('error' in context) }

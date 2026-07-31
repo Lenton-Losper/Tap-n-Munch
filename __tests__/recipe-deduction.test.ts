@@ -157,6 +157,10 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
     stockItemId2 = stock2!.id
     created.stockItemIds.push(stockItemId2)
 
+    // track_inventory must be set explicitly: the column defaults to false, and deduction
+    // now requires BOTH an active recipe and the item flagged as tracked. Before that change
+    // deduction keyed on recipes.is_active alone, so these fixtures deducted despite never
+    // being tracked -- this suite was inadvertently asserting the bug.
     const { data: menuWith, error: menuWithErr } = await admin
       .from('menu_items')
       .insert({
@@ -164,6 +168,7 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
         name: `${runTag} menu-with-recipe`,
         base_price: 10,
         status: 'active',
+        track_inventory: true,
       })
       .select('id')
       .single()
@@ -308,6 +313,50 @@ describe('deduct_recipe_stock idempotency (staging)', () => {
 
     const movements = await movementsForOrder(noRecipeOrderId)
     expect(movements).toHaveLength(0)
+  })
+
+  test('does not deduct when the item has a live recipe but tracking is switched off', async () => {
+    // The case this suite previously could not express: a recipe on its own used to be
+    // enough, so switching "Track inventory" off did not stop stock draining while every
+    // screen reported the item as untracked.
+    await admin
+      .from('menu_items')
+      .update({ track_inventory: false })
+      .eq('id', menuItemWithRecipeId)
+
+    const orderNumber = 982_000 + (Date.now() % 10_000)
+    const { data: order, error: insertErr } = await admin
+      .from('orders')
+      .insert({
+        restaurant_id: RESTAURANT_ID,
+        order_number: orderNumber,
+        table_number: 99,
+        status: 'accepted',
+        payment_status: 'unpaid',
+        total: 10,
+        items: [
+          {
+            menu_item_id: menuItemWithRecipeId,
+            name: `${runTag} menu-with-recipe`,
+            quantity: 1,
+            price: 10,
+          },
+        ],
+        is_closed: false,
+      })
+      .select('id')
+      .single()
+    expect(insertErr).toBeNull()
+    created.orderIds.push(order!.id)
+
+    await completeOrder(order!.id)
+    expect(await movementsForOrder(order!.id)).toHaveLength(0)
+
+    // Restore, so ordering between tests cannot leak this state.
+    await admin
+      .from('menu_items')
+      .update({ track_inventory: true })
+      .eq('id', menuItemWithRecipeId)
   })
 
   test('handles multiple ingredients correctly', async () => {
