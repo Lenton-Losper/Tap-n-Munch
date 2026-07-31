@@ -158,19 +158,24 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
 }
 
 /**
- * Remove a menu item's stock link entirely — distinct from switching tracking off.
+ * Delete a menu item's recipe and its stock link outright — distinct from switching tracking
+ * off, and irreversible.
  *
  * Unticking "Track inventory" was previously the only lever a merchant had, so it had to
  * mean both "pause this" and "undo this". That is why items ended up linked-but-untracked:
- * there was no way to say "I don't want this linked at all". This says it.
+ * there was no way to say "I don't want this linked at all".
  *
- * Deactivates the recipe AND clears its ingredients, then turns tracking off. Both halves
- * matter: deduction keys on recipes.is_active, and leaving orphaned recipe_items behind
- * would make the item look configured to getInventorySetupOverview if the recipe were ever
- * reactivated.
+ * A true DELETE rather than a soft deactivate, deliberately: a deactivated recipe is exactly
+ * the kind of half-state that caused tonight's confusion — a row that exists, is invisible,
+ * and behaves differently depending on which surface is asked. Every status should mean one
+ * thing. Gone means gone.
  *
- * Historic stock_movements are deliberately left alone — they are a ledger of what actually
- * happened, and unlinking is not a reason to rewrite history.
+ * recipe_items are removed by ON DELETE CASCADE on recipe_items_recipe_id_fkey. Nothing else
+ * in the schema or the code holds a recipes.id: stock_movements reference the ORDER, not the
+ * recipe, so deleting a recipe cannot orphan or rewrite any ledger entry.
+ *
+ * Historic stock_movements are deliberately untouched — they record what actually happened,
+ * and unlinking is not a reason to rewrite history.
  */
 export async function removeRecipeLinkAction(menuItemId: string) {
   const id = menuItemId.trim()
@@ -196,6 +201,8 @@ export async function removeRecipeLinkAction(menuItemId: string) {
   }
 
   if (recipe?.id) {
+    // Delete the ingredients explicitly as well as relying on CASCADE. If the constraint is
+    // ever altered, this still leaves nothing behind rather than silently orphaning rows.
     const { error: itemsError } = await supabase
       .from('recipe_items')
       .delete()
@@ -204,12 +211,13 @@ export async function removeRecipeLinkAction(menuItemId: string) {
       return { error: itemsError.message }
     }
 
-    const { error: deactivateError } = await supabase
+    const { error: deleteError } = await supabase
       .from('recipes')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .delete()
       .eq('id', recipe.id)
-    if (deactivateError) {
-      return { error: deactivateError.message }
+      .eq('restaurant_id', restaurantId)
+    if (deleteError) {
+      return { error: deleteError.message }
     }
   }
 

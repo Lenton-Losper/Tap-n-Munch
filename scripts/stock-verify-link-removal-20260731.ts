@@ -67,7 +67,7 @@ async function removeLink(menuItemId: string) {
     .select('id').eq('restaurant_id', RID).eq('menu_item_id', menuItemId).maybeSingle()
   if (recipe?.id) {
     await admin.from('recipe_items').delete().eq('recipe_id', recipe.id)
-    await admin.from('recipes').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', recipe.id)
+    await admin.from('recipes').delete().eq('id', recipe.id).eq('restaurant_id', RID)
   }
   await admin.from('menu_items').update({ track_inventory: false }).eq('restaurant_id', RID).eq('id', menuItemId)
   return Boolean(recipe?.id)
@@ -110,7 +110,7 @@ async function main() {
 
     results['L1 removal clears ingredients, deactivates recipe, turns tracking off'] = {
       removed, ...state,
-      verdict: removed && state.recipe_active === false && state.ingredient_count === 0
+      verdict: removed && state.recipe_exists === false && state.ingredient_count === 0
         && state.track_inventory === false ? 'PASS' : 'FAIL',
     }
     results['L2 after removal a sale deducts nothing'] = {
@@ -137,8 +137,8 @@ async function main() {
       after_untick: afterUntick,
       after_remove: afterRemove,
       verdict:
-        afterUntick.recipe_active === true && afterUntick.ingredient_count === 1 &&
-        afterRemove.recipe_active === false && afterRemove.ingredient_count === 0
+        afterUntick.recipe_exists === true && afterUntick.ingredient_count === 1 &&
+        afterRemove.recipe_exists === false && afterRemove.ingredient_count === 0
           ? 'PASS' : 'FAIL',
     }
   }
@@ -173,6 +173,42 @@ async function main() {
         && !after.readyMenuItemIds.includes(mi.id)
         && !after.missingItems.some((m) => String(m.menuItemId) === mi.id)
         && !after.linkedButUntrackedIds.includes(mi.id) ? 'PASS' : 'FAIL',
+    }
+  }
+
+  // L7 -- deleting the recipe alone must take its ingredients with it (ON DELETE CASCADE).
+  // The action deletes recipe_items explicitly too, so this checks the constraint itself
+  // rather than the belt-and-braces, and would catch the constraint being altered.
+  {
+    const { mi } = await makeLinked('cascade', si.id, 4)
+    const { data: recipe } = await admin.from('recipes')
+      .select('id').eq('restaurant_id', RID).eq('menu_item_id', mi.id).maybeSingle()
+    const { data: before } = await admin.from('recipe_items').select('id').eq('recipe_id', recipe.id)
+    await admin.from('recipes').delete().eq('id', recipe.id)
+    const { data: after } = await admin.from('recipe_items').select('id').eq('recipe_id', recipe.id)
+    results['L7 deleting the recipe cascades to its ingredients'] = {
+      ingredients_before: (before ?? []).length,
+      ingredients_after: (after ?? []).length,
+      verdict: (before ?? []).length === 1 && (after ?? []).length === 0 ? 'PASS' : 'FAIL',
+    }
+  }
+
+  // L8 -- nothing else references a deleted recipe. stock_movements point at the ORDER, so a
+  // past sale survives its recipe being deleted and the ledger stays readable.
+  {
+    const { mi } = await makeLinked('ledger', si.id, 3)
+    const orderId = await sell(mi)
+    const { data: mvBefore } = await admin.from('stock_movements').select('id').eq('reference_id', orderId)
+    await removeLink(mi.id)
+    const { data: mvAfter } = await admin.from('stock_movements')
+      .select('id, quantity_delta, reason').eq('reference_id', orderId)
+    const { data: orderStill } = await admin.from('orders').select('id').eq('id', orderId).maybeSingle()
+    results['L8 a past sale survives its recipe being deleted'] = {
+      movements_before: (mvBefore ?? []).length,
+      movements_after: (mvAfter ?? []).length,
+      order_still_readable: Boolean(orderStill),
+      verdict: (mvBefore ?? []).length === (mvAfter ?? []).length
+        && (mvAfter ?? []).length === 1 && Boolean(orderStill) ? 'PASS' : 'FAIL',
     }
   }
 

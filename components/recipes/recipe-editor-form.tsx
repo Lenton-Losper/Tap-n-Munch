@@ -64,9 +64,11 @@ export function RecipeEditorForm({
     setConfirmingRemove(true)
   }
 
-  // Removal destroys the link outright: ingredients cleared, recipe deactivated, tracking
-  // switched off. Historic stock movements are deliberately left alone -- they record what
-  // actually happened, and unlinking is not a reason to rewrite the ledger.
+  // Irreversible: the recipe row and its ingredients are DELETED, and tracking is switched
+  // off. A soft deactivate would leave exactly the kind of half-state that caused tonight's
+  // confusion -- a row that exists, is invisible, and behaves differently depending on which
+  // surface is asked. Historic stock movements are untouched; they record what actually
+  // happened, and unlinking is not a reason to rewrite the ledger.
   const confirmRemoveLink = () => {
     setRemoving(true)
     setError(null)
@@ -81,7 +83,7 @@ export function RecipeEditorForm({
       setConfirmingRemove(false)
       setRows(toIngredientRows([]))
       setSuccessMessage(
-        'Stock link removed. This item no longer deducts stock. Past movements are unchanged.',
+        'Recipe and stock link permanently deleted. This item no longer deducts stock. Past movements are unchanged.',
       )
       router.refresh()
     })
@@ -263,7 +265,7 @@ export function RecipeEditorForm({
             onClick={handleRemoveLink}
             className="ml-auto border-red-200 text-red-800 hover:bg-red-50"
           >
-            {removing ? 'Removing…' : 'Remove stock link'}
+            {removing ? 'Deleting…' : 'Remove stock link'}
           </Button>
         ) : null}
       </div>
@@ -271,12 +273,12 @@ export function RecipeEditorForm({
       {confirmingRemove ? (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-5">
           <p className="text-sm font-medium text-red-900">
-            Remove the stock link for {data.menuItemName}?
+            This will permanently remove this recipe and its stock link. This cannot be undone.
           </p>
           <p className="mt-1 text-sm text-red-800">
-            Its ingredients will be cleared and sales will stop deducting stock. Past stock
-            movements are kept — this does not change your history. You can link it again at
-            any time.
+            {data.menuItemName} will stop deducting stock, and its ingredient list will be
+            deleted. Past stock movements are kept — your history is not changed. To track it
+            again later you would need to set the recipe up from scratch.
           </p>
           <div className="mt-4 flex flex-wrap gap-3">
             <Button
@@ -285,7 +287,7 @@ export function RecipeEditorForm({
               onClick={confirmRemoveLink}
               className="bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
             >
-              {removing ? 'Removing…' : 'Yes, remove the link'}
+              {removing ? 'Deleting…' : 'Yes, delete permanently'}
             </Button>
             <Button
               type="button"
