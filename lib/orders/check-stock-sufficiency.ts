@@ -65,6 +65,58 @@ export async function checkStockSufficiency(
   const menuItemIds = [...new Set(items.map(lineMenuItemId).filter(Boolean))]
   if (menuItemIds.length === 0) return { ok: true }
 
+  // Prefer the DB-side check: it runs in one transaction and takes row locks on the relevant
+  // stock_items before reading balances, so concurrent callers cannot interleave and read a
+  // torn view of the ledger across what would otherwise be four separate round trips.
+  //
+  // Falls through to the query-by-query path below if the function is not present (e.g. the
+  // migration has not been applied yet), so deploying the code before the migration degrades
+  // to the previous behaviour rather than failing every order.
+  const rpc = await supabase.rpc('check_stock_sufficiency_locked', {
+    p_restaurant_id: restaurantId,
+    p_menu_item_ids: menuItemIds,
+  })
+
+  if (!rpc.error) {
+    const rows = (rpc.data ?? []) as Array<{
+      menu_item_id: string
+      menu_item_name: string
+      stock_item_name: string
+      balance: number | string
+    }>
+    if (rows.length === 0) return { ok: true }
+
+    const unavailable: UnavailableLine[] = []
+    const seenIds = new Set<string>()
+    for (const row of rows) {
+      if (seenIds.has(row.menu_item_id)) continue
+      seenIds.add(row.menu_item_id)
+      unavailable.push({
+        itemName: String(row.menu_item_name || 'this item'),
+        stockItemName: String(row.stock_item_name || 'an ingredient'),
+        balance: Number(row.balance) || 0,
+      })
+    }
+
+    const rpcNames = listNames(unavailable.map((u) => u.itemName))
+    return {
+      ok: false,
+      reason:
+        unavailable.length === 1
+          ? `${rpcNames} is out of stock and cannot be ordered right now.`
+          : `${rpcNames} are out of stock and cannot be ordered right now. Please remove them and try again.`,
+      unavailable,
+      itemName: unavailable[0].itemName,
+      stockItemName: unavailable[0].stockItemName,
+      balance: unavailable[0].balance,
+    }
+  }
+
+  console.warn(
+    '[STOCK] check_stock_sufficiency_locked unavailable, falling back to unlocked check:',
+    rpc.error.message,
+  )
+
   // Only tracked items participate. An untracked item is skipped before any other lookup, so
   // this check cannot change its behaviour in any way.
   const { data: menuRows, error: menuError } = await supabase

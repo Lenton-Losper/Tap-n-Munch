@@ -27,7 +27,13 @@ function fakeSupabase(tables: Record<string, Row[]>) {
     }
     return chain
   }
-  return { from: (table: string) => query(tables[table] ?? []) } as never
+  return {
+    from: (table: string) => query(tables[table] ?? []),
+    // Report the locked RPC as unavailable so these tests exercise the query-by-query
+    // fallback. The fallback is what runs if the migration has not been applied, so its
+    // message construction needs cover in its own right.
+    rpc: async () => ({ data: null, error: { message: 'rpc not available in this test' } }),
+  } as never
 }
 
 /** Builds a scenario: menu items, their recipes, ingredients and ledger balances. */

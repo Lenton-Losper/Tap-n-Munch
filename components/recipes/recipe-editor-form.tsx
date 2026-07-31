@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
-import { saveRecipeAction } from '@/lib/recipes/actions'
+import { removeRecipeLinkAction, saveRecipeAction } from '@/lib/recipes/actions'
 import type { RecipeEditorData } from '@/lib/recipes/queries'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
@@ -55,6 +55,37 @@ export function RecipeEditorForm({
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+  const [removing, setRemoving] = useState(false)
+
+  const handleRemoveLink = () => {
+    setError(null)
+    setSuccessMessage(null)
+    setConfirmingRemove(true)
+  }
+
+  // Removal destroys the link outright: ingredients cleared, recipe deactivated, tracking
+  // switched off. Historic stock movements are deliberately left alone -- they record what
+  // actually happened, and unlinking is not a reason to rewrite the ledger.
+  const confirmRemoveLink = () => {
+    setRemoving(true)
+    setError(null)
+    startTransition(async () => {
+      const result = await removeRecipeLinkAction(data.menuItemId)
+      setRemoving(false)
+      if (result.error) {
+        setConfirmingRemove(false)
+        setError(result.error)
+        return
+      }
+      setConfirmingRemove(false)
+      setRows(toIngredientRows([]))
+      setSuccessMessage(
+        'Stock link removed. This item no longer deducts stock. Past movements are unchanged.',
+      )
+      router.refresh()
+    })
+  }
 
   const stockItemById = useMemo(
     () => new Map(stockItems.map((item) => [item.id, item])),
@@ -220,7 +251,54 @@ export function RecipeEditorForm({
         <Button type="button" variant="outline" className="border-[#E9E9E7]" asChild>
           <Link href="/stock/recipes">Back to recipes</Link>
         </Button>
+
+        {/* Unlinking is deliberately distinct from turning tracking off. Unticking "Track
+            inventory" used to be the only lever, so it had to mean both "pause this" and
+            "undo this" — which is how items ended up linked but untracked. */}
+        {canEdit && data.ingredients.length > 0 ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isPending || removing}
+            onClick={handleRemoveLink}
+            className="ml-auto border-red-200 text-red-800 hover:bg-red-50"
+          >
+            {removing ? 'Removing…' : 'Remove stock link'}
+          </Button>
+        ) : null}
       </div>
+
+      {confirmingRemove ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5">
+          <p className="text-sm font-medium text-red-900">
+            Remove the stock link for {data.menuItemName}?
+          </p>
+          <p className="mt-1 text-sm text-red-800">
+            Its ingredients will be cleared and sales will stop deducting stock. Past stock
+            movements are kept — this does not change your history. You can link it again at
+            any time.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Button
+              type="button"
+              disabled={removing}
+              onClick={confirmRemoveLink}
+              className="bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {removing ? 'Removing…' : 'Yes, remove the link'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={removing}
+              onClick={() => setConfirmingRemove(false)}
+              className="border-[#E9E9E7]"
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </form>
   )
 }
