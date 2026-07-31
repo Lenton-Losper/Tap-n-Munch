@@ -83,9 +83,12 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     }
     recipeId = createdRecipe.id
   } else {
+    // Revive if it was tombstoned. recipes has UNIQUE (restaurant_id, menu_item_id), so a
+    // deleted row still occupies the slot -- re-linking has to clear deleted_at rather than
+    // insert a second row.
     const { error: updateRecipeError } = await supabase
       .from('recipes')
-      .update({ is_active: true, updated_at: new Date().toISOString() })
+      .update({ is_active: true, deleted_at: null, updated_at: new Date().toISOString() })
       .eq('id', recipeId)
 
     if (updateRecipeError) {
@@ -201,23 +204,20 @@ export async function removeRecipeLinkAction(menuItemId: string) {
   }
 
   if (recipe?.id) {
-    // Delete the ingredients explicitly as well as relying on CASCADE. If the constraint is
-    // ever altered, this still leaves nothing behind rather than silently orphaning rows.
-    const { error: itemsError } = await supabase
-      .from('recipe_items')
-      .delete()
-      .eq('recipe_id', recipe.id)
-    if (itemsError) {
-      return { error: itemsError.message }
-    }
-
-    const { error: deleteError } = await supabase
+    // Tombstone, not erase. The row and its recipe_items are kept as the record of what the
+    // recipe was; deleted_at is what every read path checks. is_active is set false too so
+    // any path that has not yet learned about deleted_at still stops deducting.
+    const { error: tombstoneError } = await supabase
       .from('recipes')
-      .delete()
+      .update({
+        deleted_at: new Date().toISOString(),
+        is_active: false,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', recipe.id)
       .eq('restaurant_id', restaurantId)
-    if (deleteError) {
-      return { error: deleteError.message }
+    if (tombstoneError) {
+      return { error: tombstoneError.message }
     }
   }
 

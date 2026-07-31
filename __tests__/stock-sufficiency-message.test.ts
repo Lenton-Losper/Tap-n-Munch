@@ -22,6 +22,7 @@ function fakeSupabase(tables: Record<string, Row[]>) {
       select: () => chain,
       eq: () => chain,
       in: () => chain,
+      is: () => chain,
       then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve({ data: rows, error: null }).then(resolve, reject),
     }

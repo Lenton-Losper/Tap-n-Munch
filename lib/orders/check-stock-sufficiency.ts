@@ -136,6 +136,7 @@ export async function checkStockSufficiency(
     .select('id, menu_item_id')
     .eq('restaurant_id', restaurantId)
     .eq('is_active', true)
+    .is('deleted_at', null)
     .in('menu_item_id', [...trackedIds])
   if (recipeError) throw recipeError
   if (!recipes?.length) return { ok: true }
