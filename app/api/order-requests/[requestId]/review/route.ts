@@ -7,6 +7,26 @@ import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calc
 export const dynamic = 'force-dynamic'
 
 /**
+ * Why an edit was refused, in words a staff member can act on.
+ *
+ * 'accepting' is the transient state Accept claims before it creates the order and the
+ * Finatic checkout session, so an edit arriving then would be repricing a payment that is
+ * already being set up. Refuse it outright rather than folding the change in.
+ */
+function statusRejectionMessage(status: string): string {
+  switch (status) {
+    case 'accepting':
+      return 'Payment is in progress for this order — it can\'t be modified right now. Wait for it to finish, then amend the order if you still need to.'
+    case 'accepted':
+      return 'This order has already been accepted and can no longer be edited here.'
+    case 'declined':
+      return 'This order was declined and can no longer be edited.'
+    default:
+      return `This order can no longer be edited (status: ${status}).`
+  }
+}
+
+/**
  * Saves staff edits to a waiting-review request as items_reviewed/*_reviewed, recalculated
  * via the same calculateOrderPricing used everywhere else -- never hand-entered totals.
  * The original items/subtotal/total columns are never touched (audit trail of what the
@@ -44,8 +64,8 @@ export async function PATCH(
 
   if (request.status !== 'waiting_review') {
     return NextResponse.json(
-      { error: `Cannot edit a request with status "${request.status}"` },
-      { status: 400 },
+      { error: statusRejectionMessage(String(request.status)) },
+      { status: request.status === 'accepting' ? 409 : 400 },
     )
   }
 
@@ -59,6 +79,12 @@ export async function PATCH(
     throw err
   }
 
+  // Re-assert waiting_review in the UPDATE itself. The check above is a read; Accept claims
+  // the row into 'accepting' and then builds the Finatic checkout session from the reviewed
+  // total, so between that read and this write an edit could change the amount while the
+  // payment for it was already being set up. Conditioning the write on the status closes the
+  // window: a losing edit changes nothing at all, rather than silently repricing a
+  // transaction in flight.
   const { data: updated, error: updateError } = await supabase
     .from('order_requests')
     .update({
@@ -68,11 +94,27 @@ export async function PATCH(
       total_reviewed: pricing.total,
     })
     .eq('id', requestId)
+    .eq('status', 'waiting_review')
     .select('id, items_reviewed, subtotal_reviewed, tax_reviewed, total_reviewed')
-    .single()
+    .maybeSingle()
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 })
+  }
+
+  if (!updated) {
+    // The row moved out of waiting_review after our check -- almost always a concurrent
+    // Accept. Re-read so the staff member is told what actually happened.
+    const { data: current } = await supabase
+      .from('order_requests')
+      .select('status')
+      .eq('id', requestId)
+      .maybeSingle()
+    const status = String(current?.status ?? 'unknown')
+    return NextResponse.json(
+      { error: statusRejectionMessage(status), status },
+      { status: status === 'accepting' ? 409 : 400 },
+    )
   }
 
   return NextResponse.json({ success: true, request: updated })
