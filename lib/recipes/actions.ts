@@ -115,6 +115,39 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     if (insertItemsError) {
       return { error: insertItemsError.message }
     }
+
+    // Mark the menu item as tracked in the same operation that links it.
+    //
+    // Every "is this tracked?" surface reads menu_items.track_inventory --
+    // getInventorySetupOverview lists only items where it is true, and
+    // loadMenuItemInventoryAction derives hasInventory/trackInventory from it. Writing the
+    // recipe without it meant a link made from the Stock -> Recipes editor persisted
+    // perfectly, reported "Recipe saved.", and left the item reading as untracked with no
+    // way for the merchant to tell the link had worked.
+    //
+    // This one write MUST use the service-role client, not `supabase` above. That client is
+    // user-scoped (role `authenticated`), and migration 20260705200000 deliberately revokes
+    // INSERT/UPDATE/DELETE on menu_items from `authenticated` -- "staff mutations go through
+    // service_role API routes only". Using the request client here returns 42501 permission
+    // denied AFTER the recipe rows are already written, turning a wrong-status bug into a
+    // partial save. Authorisation is not weakened: requireRecipePermissionOrError has already
+    // established RECIPE_EDIT for this restaurant, and the update is scoped to that
+    // restaurant and menu item.
+    //
+    // Safe to force true here: the menu item form only calls this action when its own
+    // tracking toggle is already on, so this cannot override a merchant turning tracking
+    // off. Deliberately NOT set back to false when ingredients are empty -- "tracked but not
+    // yet configured" is a state the overview models explicitly via missingItems.
+    const { createServerSupabaseClient } = await import('@/lib/supabase/server')
+    const { error: trackError } = await createServerSupabaseClient()
+      .from('menu_items')
+      .update({ track_inventory: true })
+      .eq('restaurant_id', restaurantId)
+      .eq('id', menuItemId)
+
+    if (trackError) {
+      return { error: trackError.message }
+    }
   }
 
   revalidatePath('/stock/recipes')

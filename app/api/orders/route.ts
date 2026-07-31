@@ -6,6 +6,7 @@ import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaura
 import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
+import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,6 +43,21 @@ export async function POST(req: Request) {
 
     if (!restaurantId) {
       return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
+    }
+
+    // Bound the per-line quantity on customer-placed orders. calculateOrderPricing's
+    // extractQuantity silently coerces anything unusable to 1 and accepts any positive finite
+    // number, so without this a typo or a malformed client produces a priced order for 9999
+    // or 2.5 of something -- or quietly turns a rejected value into a quantity-1 order the
+    // customer never asked for. Rejecting is the point; coercion is what hid the problem.
+    //
+    // Staff POS (app/api/terminal/orders) is deliberately not capped: 30 coffees for a large
+    // table is legitimate, and a staff miskey is caught by the person in front of them.
+    if (channel === 'table' || channel === 'kiosk') {
+      const quantityCheck = validateOrderQuantities(Array.isArray(items) ? items : [])
+      if (!quantityCheck.ok) {
+        return NextResponse.json({ error: quantityCheck.reason }, { status: 400 })
+      }
     }
 
     const restaurantUuid = await resolveRestaurantUuid(restaurantId)

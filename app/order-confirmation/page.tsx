@@ -143,10 +143,16 @@ function getFinaticReturnOrderRef(searchParams: URLSearchParams): string {
 
 function combinePaymentStatusFromRows(
   rows: { payment_status?: string | null }[]
-): 'paid' | 'cancelled' | 'pending' {
+): 'paid' | 'cancelled' | 'pending' | 'confirming' {
   const s = rows.map((r) => String(r.payment_status || '').toLowerCase())
   if (s.some((x) => x === 'paid')) return 'paid'
   if (s.some((x) => x === 'cancelled' || x === 'failed')) return 'cancelled'
+  // A QR submission sits in waiting_review until staff Accept, and nothing is charged before
+  // then. Collapsing it into 'pending' told the customer their payment was outstanding and
+  // offered them a "Confirm Payment" button for a payment that is not theirs to confirm.
+  // Keep it distinct so the screen can say it is still being confirmed without claiming an
+  // outcome either way.
+  if (s.some((x) => x === 'waiting_review')) return 'confirming'
   return 'pending'
 }
 
@@ -226,10 +232,10 @@ function aggregateOrders(rows: OrderDoc[]): ReceiptView {
 
 function applyReceiptPaymentState(
   rows: OrderDoc[],
-  combined: 'paid' | 'cancelled' | 'pending',
+  combined: 'paid' | 'cancelled' | 'pending' | 'confirming',
   urlCancel: boolean
 ): ReceiptView {
-  let effective: 'paid' | 'cancelled' | 'pending' = combined
+  let effective: 'paid' | 'cancelled' | 'pending' | 'confirming' = combined
   if (urlCancel && combined !== 'paid') effective = 'cancelled'
   const agg = aggregateOrders(rows)
   return {
@@ -450,8 +456,14 @@ function OrderConfirmationContent() {
     const ps = String(receipt.payment_status || '').toLowerCase()
     if (ps === 'paid' || isPaymentConfirmed) return 'success' as const
     if (ps === 'cancelled' || ps === 'failed') return 'cancelled' as const
+    // 'confirming' shares the pending screen but never the Confirm Payment button below --
+    // shouldShowConfirmPayment matches 'pending' exactly, so it stays hidden here.
     return 'pending' as const
   }, [receipt, isPaymentConfirmed])
+
+  /** True while the order's real payment outcome is genuinely not known yet. */
+  const isAwaitingConfirmation =
+    String(receipt?.payment_status || '').toLowerCase() === 'confirming' && !isPaymentConfirmed
 
   const ridForLinks =
     searchParams.get('rid')?.trim() ||
@@ -624,9 +636,15 @@ function OrderConfirmationContent() {
           <div className="w-16 h-16 rounded-full border-2 border-yellow-500 flex items-center justify-center mx-auto mb-4 animate-spin text-2xl">
             ⏳
           </div>
-          <h1 className="text-2xl font-bold mb-2 text-foreground">Payment Processing</h1>
+          <h1 className="text-2xl font-bold mb-2 text-foreground">
+            {isAwaitingConfirmation ? 'Confirming your order' : 'Payment Processing'}
+          </h1>
           <p className="text-muted-foreground mb-6 font-sans text-sm">
-            Your payment is being confirmed. Please wait…
+            {isAwaitingConfirmation
+              ? // waiting_review: the order has reached the restaurant but nothing has been
+                // charged yet. Say that plainly instead of implying a payment is in flight.
+                'Your order has been sent to the restaurant and is being confirmed. You have not been charged yet.'
+              : 'Your payment is being confirmed. Please wait…'}
           </p>
           {ridForLinks && tableForLinks ? (
             <p className="text-xs text-muted-foreground font-sans">
