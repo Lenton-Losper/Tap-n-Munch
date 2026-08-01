@@ -94,7 +94,8 @@ export async function POST(req: Request) {
     const previousPaymentStatus = String(order.payment_status || '')
     const { data: claimedOrder, error: claimError } = await supabase
       .from('orders')
-      .update({ payment_status: 'terminal_pending' })
+      // terminal_pushed_at starts the in-flight window that cash settlement respects.
+      .update({ payment_status: 'terminal_pending', terminal_pushed_at: new Date().toISOString() })
       .eq('id', normalizedOrderId)
       .eq('payment_status', previousPaymentStatus)
       .select('*')
@@ -118,7 +119,7 @@ export async function POST(req: Request) {
     const releaseClaim = async () => {
       const { error: releaseError } = await supabase
         .from('orders')
-        .update({ payment_status: previousPaymentStatus })
+        .update({ payment_status: previousPaymentStatus, terminal_pushed_at: null })
         .eq('id', normalizedOrderId)
         .eq('payment_status', 'terminal_pending')
       if (releaseError) {
@@ -254,7 +255,7 @@ export async function POST(req: Request) {
         console.log('[PUSH-TO-TERMINAL] Returning 400 because:', finaticReason)
         await supabase
           .from('orders')
-          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
+          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
           .eq('id', normalizedOrderId)
           .eq('payment_status', 'terminal_pending')
         return NextResponse.json(
@@ -271,7 +272,7 @@ export async function POST(req: Request) {
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
       await supabase
         .from('orders')
-        .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
+        .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
         .eq('id', normalizedOrderId)
         .eq('payment_status', 'terminal_pending')
       return NextResponse.json(
@@ -287,6 +288,9 @@ export async function POST(req: Request) {
         status: 'completed',
         terminal_status: 'pending',
         terminal_sn: terminalSn,
+        // Restamped: the window should run from when Finatic accepted the push, not from the
+        // earlier optimistic claim, so a slow gateway call does not eat into the timeout.
+        terminal_pushed_at: new Date().toISOString(),
       })
       .eq('id', normalizedOrderId)
 

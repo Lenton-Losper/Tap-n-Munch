@@ -17,16 +17,163 @@ export function amountsMatch(
   return Math.abs(clientAmount - expectedAmount) <= tolerance
 }
 
-/** Payment statuses that may still be claimed as paid. */
+/** Payment statuses that may still be claimed as paid by a CARD settlement. */
 export const CLAIMABLE_PAYMENT_STATUSES = ['unpaid', 'pending'] as const
 
 export type ClaimablePaymentStatus = (typeof CLAIMABLE_PAYMENT_STATUSES)[number]
 
 export function isClaimablePaymentStatus(status: unknown): boolean {
+  return matchesStatusSet(status, CLAIMABLE_PAYMENT_STATUSES)
+}
+
+/**
+ * The card payment is in flight: pushed to the terminal, awaiting the gateway's answer.
+ * Cash must not be taken against such an order or the two payment paths race and the
+ * order can be collected on twice. Staff resolve it first -- POST /api/payments/cancel-terminal
+ * closes the card attempt and moves the order to 'cash_pending', which IS cash-settleable.
+ */
+export const MID_FLIGHT_CARD_PAYMENT_STATUSES = ['terminal_pending'] as const
+
+export function isMidFlightCardPayment(status: unknown): boolean {
+  return matchesStatusSet(status, MID_FLIGHT_CARD_PAYMENT_STATUSES)
+}
+
+/**
+ * How long a pushed card attempt is treated as still live.
+ *
+ * Above a real transaction, below the point where staff are stuck. A card round trip is
+ * seconds; even a slow one -- customer finding the card, PIN entry, a retry on the reader --
+ * is well under a minute, so 90s does not race a genuine payment. Past it the attempt is
+ * assumed dead: the terminal crashed, the reader was walked away from, the push never
+ * surfaced. Cash then becomes available again for that order without staff intervention.
+ *
+ * NOT measured from production data: card round-trip durations are not recoverable from the
+ * database (completed_at and paid_at are written in the same statement, so their difference is
+ * identically zero, and nothing recorded the push time -- which is what terminal_pushed_at now
+ * fixes). Settlements that happen after this window record card_in_flight_seconds in the audit
+ * metadata, so the first weeks of real use give the evidence to retune this.
+ */
+export const CARD_IN_FLIGHT_TIMEOUT_SECONDS = 90
+
+/**
+ * True while a card payment should still be considered live, and therefore while cash must be
+ * refused for that order.
+ *
+ * A null/absent/unparseable push time counts as EXPIRED, not in-flight. Such a row was pushed
+ * before this column existed, so it is by definition older than the timeout; treating it as
+ * live would block cash on it permanently -- the exact failure this timeout exists to prevent.
+ */
+export function isCardPaymentStillInFlight(
+  status: unknown,
+  terminalPushedAt: unknown,
+  now: Date = new Date(),
+  timeoutSeconds: number = CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+): boolean {
+  if (!isMidFlightCardPayment(status)) return false
+
+  const elapsed = secondsSincePush(terminalPushedAt, now)
+  if (elapsed === null) return false
+
+  return elapsed < timeoutSeconds
+}
+
+/** Seconds since the card attempt was pushed, or null when there is no usable push time. */
+export function secondsSincePush(
+  terminalPushedAt: unknown,
+  now: Date = new Date(),
+): number | null {
+  if (terminalPushedAt === null || terminalPushedAt === undefined || terminalPushedAt === '') {
+    return null
+  }
+  const pushedAt = new Date(terminalPushedAt as string)
+  const pushedMs = pushedAt.getTime()
+  if (!Number.isFinite(pushedMs)) return null
+
+  // A push time in the future (clock skew between the app server and the database) is clamped
+  // to zero rather than allowed to extend the window arbitrarily.
+  return Math.max(0, (now.getTime() - pushedMs) / 1000)
+}
+
+/**
+ * Statuses where the restaurant is still owed money.
+ *
+ * Deliberately wider than CLAIMABLE_PAYMENT_STATUSES: a 'cash_pending', 'failed' or
+ * 'terminal_pending' order has NOT been collected on. Treating those as settled is how an
+ * unpaid order drops out of a tab's unpaid total and lets can_close report true, so this is
+ * the set every "how much is still owed / may we close" question must use.
+ *
+ * 'unpaid' is retained only because it is the historical member of the claimable set; nothing
+ * in the codebase writes it. Terminal states ('paid', 'cancelled') are absent by design.
+ */
+export const OWES_MONEY_PAYMENT_STATUSES = [
+  'unpaid',
+  'pending',
+  'cash_pending',
+  'failed',
+  'terminal_pending',
+] as const
+
+export function owesMoney(status: unknown): boolean {
+  return matchesStatusSet(status, OWES_MONEY_PAYMENT_STATUSES)
+}
+
+/**
+ * Statuses a CASH settlement may claim: everything that still owes money except a card
+ * payment that is currently in flight. Cash is deliberately permissive -- an order that has
+ * been pushed to the terminal before, or whose card attempt failed, can still be paid in
+ * cash; only the live attempt blocks it.
+ */
+export const CASH_SETTLEABLE_PAYMENT_STATUSES = OWES_MONEY_PAYMENT_STATUSES.filter(
+  (status) => !isMidFlightCardPayment(status),
+)
+
+export function isCashSettleablePaymentStatus(status: unknown): boolean {
+  return matchesStatusSet(status, CASH_SETTLEABLE_PAYMENT_STATUSES)
+}
+
+/** Payment methods a terminal settlement may record. */
+export const SETTLEMENT_PAYMENT_METHODS = ['card', 'cash'] as const
+
+export type SettlementPaymentMethod = (typeof SETTLEMENT_PAYMENT_METHODS)[number]
+
+/**
+ * Normalise a client-supplied payment method to its canonical lowercase form.
+ *
+ * Returns null for anything not in the allowlist -- callers must reject rather than fall back
+ * to a default, or an unrecognised method silently books as a card sale. The normalisation is
+ * load-bearing beyond tidiness: formatPaymentLabel() compares case-insensitively while the
+ * staff dashboard and the guest confirmation screen compare byte-exact against 'cash', so a
+ * stored 'Cash' would print CASH on the receipt yet read as card on both screens.
+ */
+export function normalizeSettlementPaymentMethod(
+  method: unknown,
+): SettlementPaymentMethod | null {
+  const normalized = String(method ?? '')
+    .trim()
+    .toLowerCase()
+  return (SETTLEMENT_PAYMENT_METHODS as readonly string[]).includes(normalized)
+    ? (normalized as SettlementPaymentMethod)
+    : null
+}
+
+/**
+ * Statuses a settlement of the given method may claim. Card behaviour is unchanged; only
+ * cash uses the wider set.
+ */
+export function settleableStatusesForMethod(
+  method: SettlementPaymentMethod,
+): readonly string[] {
+  return method === 'cash'
+    ? CASH_SETTLEABLE_PAYMENT_STATUSES
+    : CLAIMABLE_PAYMENT_STATUSES
+}
+
+/** Trim + lowercase before comparing, so a stray 'Paid' or ' paid' cannot slip through. */
+function matchesStatusSet(status: unknown, set: readonly string[]): boolean {
   const s = String(status ?? '')
     .trim()
     .toLowerCase()
-  return (CLAIMABLE_PAYMENT_STATUSES as readonly string[]).includes(s)
+  return set.includes(s)
 }
 
 /**
