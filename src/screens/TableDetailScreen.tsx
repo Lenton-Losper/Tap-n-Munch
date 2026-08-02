@@ -1,11 +1,13 @@
-import React, {useCallback, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
@@ -16,9 +18,11 @@ import {Colors, Spacing, Typography} from '../constants/theme';
 import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import {
+  ApiRequestError,
+  authorizeTerminalAction,
   closeTable,
   completePaymentReliably,
-  getTables,
+  getTablesWithMeta,
   recordSaleEvent,
   settleTab,
 } from '../lib/api';
@@ -65,6 +69,21 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [closingTable, setClosingTable] = useState(false);
   const [settling, setSettling] = useState(false);
+  const [cashSettling, setCashSettling] = useState(false);
+  /**
+   * Server's in-flight window, from /api/terminal/tables. Never hardcoded — the countdown
+   * must match the server that will actually accept or reject the settle.
+   */
+  const [cardTimeoutSeconds, setCardTimeoutSeconds] = useState<number | null>(
+    null,
+  );
+  /** Seconds remaining on a CARD_PAYMENT_IN_FLIGHT refusal; null when not blocked. */
+  const [cashBlockedFor, setCashBlockedFor] = useState<number | null>(null);
+  const [pinPromptVisible, setPinPromptVisible] = useState(false);
+  const [pinStaffId, setPinStaffId] = useState('');
+  const [pinValue, setPinValue] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
 
   const tab = table.tab;
   const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
@@ -86,6 +105,41 @@ export default function TableDetailScreen({route, navigation}: Props) {
     [selectedOrders],
   );
 
+  // Cash settleability comes from the SERVER (can_settle_cash), never re-derived here.
+  // The server owns the settleable-status sets; a second definition on the client is
+  // exactly how the two drift apart. Undefined (older server) is treated as "no".
+  const cashSettleableOrders = useMemo(
+    () => orders.filter(order => order.can_settle_cash === true),
+    [orders],
+  );
+
+  const selectedCashOrders = useMemo(
+    () => selectedOrders.filter(order => order.can_settle_cash === true),
+    [selectedOrders],
+  );
+
+  // A card payment live on the reader for anything currently selected.
+  const selectedHasCardInFlight = useMemo(
+    () => selectedOrders.some(order => order.card_payment_in_flight === true),
+    [selectedOrders],
+  );
+
+  // Tick the CARD_PAYMENT_IN_FLIGHT countdown down to zero, then clear it so the
+  // cash button becomes available again without the staff member doing anything.
+  useEffect(() => {
+    if (cashBlockedFor == null) {
+      return;
+    }
+    if (cashBlockedFor <= 0) {
+      setCashBlockedFor(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setCashBlockedFor(current => (current == null ? null : current - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [cashBlockedFor]);
+
   const refreshTable = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -93,7 +147,8 @@ export default function TableDetailScreen({route, navigation}: Props) {
       if (!token) {
         throw new Error('Session expired');
       }
-      const tables = await getTables(token);
+      const {tables, cardInFlightTimeoutSeconds} = await getTablesWithMeta(token);
+      setCardTimeoutSeconds(cardInFlightTimeoutSeconds);
       const updated = tables.find(t => t.id === table.id);
       if (updated) {
         setTable(updated);
@@ -277,7 +332,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
         tab: prev.tab
           ? {
               ...prev.tab,
-              unpaid_total: settleResult.new_tab_total,
+              // null when the server flagged its own recalculation as untrustworthy —
+              // keep the previous figure rather than showing a wrong one.
+              unpaid_total: settleResult.new_tab_total ?? prev.tab.unpaid_total,
               orders: prev.tab.orders.map(order =>
                 orderIds.includes(order.id)
                   ? {...order, payment_status: 'paid'}
@@ -296,6 +353,213 @@ export default function TableDetailScreen({route, navigation}: Props) {
     } finally {
       setSettling(false);
     }
+  };
+
+  /**
+   * Take cash for the given orders. No card reader involved and no Finatic call — the
+   * server records the settlement, issues the receipt and writes the audit entry.
+   *
+   * `attribution` is optional by design: the server does not gate on it, so cash can
+   * still be taken when nobody enters a PIN, and that settle is recorded as
+   * terminal_only rather than being silently attributed to no one.
+   */
+  const runCashSettle = async (
+    requestedOrderIds: string[],
+    attribution?: {staffUserId: string; authorizationTokenId: string},
+  ) => {
+    // Server-driven: only orders the server says are cash-settleable, and the amount is
+    // derived from that same set so the two can never disagree.
+    const eligible = orders.filter(
+      order =>
+        requestedOrderIds.includes(order.id) && order.can_settle_cash === true,
+    );
+    const orderIds = eligible.map(order => order.id);
+    const amount = eligible.reduce((sum, order) => sum + order.total, 0);
+
+    if (orderIds.length === 0 || amount <= 0) {
+      Alert.alert(
+        'Cannot take cash',
+        'None of the selected orders can be settled in cash right now. Pull to refresh and try again.',
+      );
+      return;
+    }
+
+    if (!tab?.id) {
+      Alert.alert('Error', 'No active tab found for this table.');
+      return;
+    }
+
+    setCashSettling(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+
+      const result = await settleTab(
+        tab.id,
+        orderIds,
+        amount,
+        '',
+        token,
+        {
+          staffUserId: attribution?.staffUserId,
+          authorizationTokenId: attribution?.authorizationTokenId,
+        },
+        'cash',
+      );
+
+      setSelectedIds(new Set());
+      setCashBlockedFor(null);
+      setTable(prev => ({
+        ...prev,
+        can_close: result.can_close,
+        tab: prev.tab
+          ? {
+              ...prev.tab,
+              // null means the server could not trust its own recalculation; keep the
+              // previous figure rather than displaying a wrong one.
+              unpaid_total: result.new_tab_total ?? prev.tab.unpaid_total,
+              orders: prev.tab.orders.map(order =>
+                orderIds.includes(order.id)
+                  ? {
+                      ...order,
+                      payment_status: 'paid',
+                      can_settle_cash: false,
+                      can_settle_card: false,
+                    }
+                  : order,
+              ),
+            }
+          : null,
+      }));
+
+      Alert.alert(
+        'Cash recorded',
+        `${formatNad(amount)} taken in cash.${
+          result.staff_user_id ? '' : ' No staff PIN was entered.'
+        }`,
+      );
+
+      await refreshTable();
+    } catch (err) {
+      // The refusal that has a next step: start a live countdown so staff can see when
+      // cash becomes available rather than being told "no" with no explanation.
+      if (
+        err instanceof ApiRequestError &&
+        err.code === 'CARD_PAYMENT_IN_FLIGHT'
+      ) {
+        setCashBlockedFor(
+          err.retryAfterSeconds != null && err.retryAfterSeconds > 0
+            ? Math.ceil(err.retryAfterSeconds)
+            : cardTimeoutSeconds,
+        );
+      }
+      Alert.alert(
+        'Cannot take cash',
+        err instanceof Error ? err.message : 'Failed to record cash payment',
+      );
+      await refreshTable();
+    } finally {
+      setCashSettling(false);
+    }
+  };
+
+  /** Verify the staff PIN, then take the cash with that person attributed to it. */
+  const submitPinAndTakeCash = async () => {
+    setPinBusy(true);
+    setPinError(null);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+      const {token_id} = await authorizeTerminalAction(
+        pinStaffId.trim(),
+        pinValue.trim(),
+        'cash_settlement',
+        token,
+      );
+      const ids = Array.from(selectedIds);
+      setPinPromptVisible(false);
+      setPinValue('');
+      await runCashSettle(ids, {
+        staffUserId: pinStaffId.trim(),
+        authorizationTokenId: token_id,
+      });
+    } catch (err) {
+      setPinError(
+        err instanceof Error ? err.message : 'Could not verify that PIN.',
+      );
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
+  const handleTakeCash = () => {
+    const ids =
+      selectedIds.size > 0
+        ? Array.from(selectedIds)
+        : cashSettleableOrders.map(o => o.id);
+    if (ids.length === 0) {
+      return;
+    }
+    setSelectedIds(new Set(ids));
+    // Attribution is offered, never forced — Skip still records the settlement.
+    Alert.alert(
+      'Staff PIN',
+      'Enter a staff PIN to record who took this cash, or skip.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {text: 'Skip', onPress: () => runCashSettle(ids)},
+        {
+          text: 'Enter PIN',
+          onPress: () => {
+            setPinError(null);
+            setPinValue('');
+            setPinPromptVisible(true);
+          },
+        },
+      ],
+    );
+  };
+
+  /**
+   * Cash action. Enabled purely on the server's can_settle_cash for the orders in scope;
+   * while a card payment is live the server refuses, so the button shows the remaining
+   * wait instead of a bare "no".
+   */
+  const renderCashButton = (eligibleCount: number) => {
+    const blocked = cashBlockedFor != null && cashBlockedFor > 0;
+    const disabled =
+      cashSettling || settling || eligibleCount === 0 || blocked;
+
+    let label = 'Take Cash';
+    if (blocked) {
+      label = `Card in progress — ${cashBlockedFor}s`;
+    } else if (selectedHasCardInFlight) {
+      label = 'Card payment in progress';
+    } else if (eligibleCount === 0) {
+      label = 'Cash unavailable';
+    }
+
+    return (
+      <LoadingButton
+        style={[styles.cashButton, disabled && styles.buttonDisabled]}
+        disabled={disabled}
+        loading={cashSettling}
+        onPress={handleTakeCash}
+        spinnerColor={Colors.white}
+        icon={
+          <MaterialCommunityIcons
+            name="cash-multiple"
+            size={20}
+            color={Colors.white}
+          />
+        }>
+        <Text style={styles.cashButtonText}>{label}</Text>
+      </LoadingButton>
+    );
   };
 
   const handleSettleSelected = () => {
@@ -462,6 +726,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
             spinnerColor={Colors.textPrimary}>
             <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
           </LoadingButton>
+          {renderCashButton(selectedCashOrders.length)}
         </View>
       ) : (
         <View
@@ -480,13 +745,127 @@ export default function TableDetailScreen({route, navigation}: Props) {
             spinnerColor={Colors.white}>
             <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
           </LoadingButton>
+          {renderCashButton(cashSettleableOrders.length)}
         </View>
       )}
+
+      <Modal
+        visible={pinPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPinPromptVisible(false)}>
+        <View style={styles.pinBackdrop}>
+          <View style={styles.pinCard}>
+            <Text style={styles.pinTitle}>Staff PIN</Text>
+            <Text style={styles.pinHint}>
+              Records who took this cash. The payment is recorded either way.
+            </Text>
+            <TextInput
+              style={styles.pinInput}
+              placeholder="Staff user ID"
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={pinStaffId}
+              onChangeText={setPinStaffId}
+            />
+            <TextInput
+              style={styles.pinInput}
+              placeholder="4-digit PIN"
+              keyboardType="number-pad"
+              secureTextEntry
+              maxLength={4}
+              value={pinValue}
+              onChangeText={setPinValue}
+            />
+            {pinError ? (
+              <Text style={styles.pinError}>{pinError}</Text>
+            ) : null}
+            <LoadingButton
+              style={[
+                styles.cashButton,
+                (pinBusy || pinValue.length !== 4 || !pinStaffId.trim()) &&
+                  styles.buttonDisabled,
+              ]}
+              disabled={pinBusy || pinValue.length !== 4 || !pinStaffId.trim()}
+              loading={pinBusy}
+              onPress={submitPinAndTakeCash}
+              spinnerColor={Colors.white}>
+              <Text style={styles.cashButtonText}>Confirm and take cash</Text>
+            </LoadingButton>
+            <Pressable
+              style={styles.pinCancel}
+              onPress={() => setPinPromptVisible(false)}>
+              <Text style={styles.pinCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  cashButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: 10,
+    backgroundColor: Colors.green,
+  },
+  cashButtonText: {
+    ...Typography.subheading,
+    color: Colors.white,
+  },
+  pinBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.lg,
+  },
+  pinCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: Colors.white,
+    borderRadius: 12,
+    padding: Spacing.lg,
+  },
+  pinTitle: {
+    ...Typography.heading,
+    color: Colors.textPrimary,
+    marginBottom: Spacing.xs,
+  },
+  pinHint: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.md,
+  },
+  pinInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.sm,
+    color: Colors.textPrimary,
+  },
+  pinError: {
+    ...Typography.small,
+    color: Colors.red,
+    marginBottom: Spacing.sm,
+  },
+  pinCancel: {
+    marginTop: Spacing.sm,
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+  },
+  pinCancelText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+  },
   container: {
     flex: 1,
     backgroundColor: Colors.surface,

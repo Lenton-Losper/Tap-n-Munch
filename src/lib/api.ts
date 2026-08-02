@@ -540,7 +540,19 @@ export function connectToOrderStream(
   };
 }
 
-export async function getTables(token: string): Promise<TableWithTab[]> {
+export type TablesPayload = {
+  tables: TableWithTab[];
+  /**
+   * How long the server treats a pushed card payment as still live. Read from the
+   * payload rather than hardcoded, so the countdown always matches the server that
+   * will actually reject the settle.
+   */
+  cardInFlightTimeoutSeconds: number | null;
+};
+
+export async function getTablesWithMeta(
+  token: string,
+): Promise<TablesPayload> {
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tables`,
     {headers: {'Content-Type': 'application/json'}},
@@ -553,9 +565,46 @@ export async function getTables(token: string): Promise<TableWithTab[]> {
     throw await parseApiError(response);
   }
 
-  const data = (await response.json()) as {tables?: TableWithTab[]};
-  return data.tables ?? [];
+  const data = (await response.json()) as {
+    tables?: TableWithTab[];
+    card_in_flight_timeout_seconds?: unknown;
+  };
+
+  return {
+    tables: data.tables ?? [],
+    cardInFlightTimeoutSeconds: finiteOrNull(data.card_in_flight_timeout_seconds),
+  };
 }
+
+export async function getTables(token: string): Promise<TableWithTab[]> {
+  return (await getTablesWithMeta(token)).tables;
+}
+
+export type SettlementMethod = 'card' | 'cash';
+
+export type SettleTabExtras = {
+  voucherNo?: string;
+  businessOrderNo?: string;
+  /**
+   * Who is taking the money. Optional: the server does not gate on attribution, so a
+   * settle still succeeds without it and is recorded as terminal_only. Supplied whenever
+   * a staff member has authorized via PIN, because an unattributed cash payment at a live
+   * venue is a real audit gap.
+   */
+  staffUserId?: string;
+  authorizationTokenId?: string;
+};
+
+export type SettleTabResult = {
+  success?: boolean;
+  payment_reference: string;
+  method?: SettlementMethod;
+  new_tab_total: number | null;
+  /** true when the server could not trust its own recalculation of the tab total. */
+  tab_total_stale?: boolean;
+  can_close: boolean;
+  staff_user_id?: string | null;
+};
 
 export async function settleTab(
   tabId: string,
@@ -563,12 +612,12 @@ export async function settleTab(
   amount: number,
   gatewayReference: string,
   token: string,
-  extras?: { voucherNo?: string; businessOrderNo?: string },
-): Promise<{
-  payment_reference: string;
-  new_tab_total: number;
-  can_close: boolean;
-}> {
+  extras?: SettleTabExtras,
+  // Explicit and required at the call site rather than defaulted here: defaulting is how
+  // this shipped as a hardcoded 'card' literal and cash became unreachable.
+  method: SettlementMethod = 'card',
+): Promise<SettleTabResult> {
+  const isCash = method === 'cash';
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/settle`,
     {
@@ -577,10 +626,14 @@ export async function settleTab(
       body: JSON.stringify({
         order_ids: orderIds,
         amount,
-        gateway_reference: gatewayReference,
-        method: 'card',
-        voucher_no: extras?.voucherNo,
-        business_order_no: extras?.businessOrderNo,
+        method,
+        // Cash has no gateway artifacts. Sending empty/stale card references alongside a
+        // cash settle is how a cash receipt ends up printing a card-style reference.
+        gateway_reference: isCash ? undefined : gatewayReference,
+        voucher_no: isCash ? undefined : extras?.voucherNo,
+        business_order_no: isCash ? undefined : extras?.businessOrderNo,
+        staff_user_id: extras?.staffUserId,
+        authorization_token_id: extras?.authorizationTokenId,
       }),
     },
     token,
@@ -605,11 +658,45 @@ export async function settleTab(
     );
   }
 
-  return response.json() as Promise<{
-    payment_reference: string;
-    new_tab_total: number;
-    can_close: boolean;
-  }>;
+  return response.json() as Promise<SettleTabResult>;
+}
+
+/**
+ * Exchange a staff user id + PIN for a single-use authorization token.
+ *
+ * 90s TTL, single use, purpose-scoped server-side. Used to attribute a cash settlement
+ * to the staff member who took the money.
+ */
+export async function authorizeTerminalAction(
+  userId: string,
+  pin: string,
+  purpose: 'cash_settlement' | 'refund',
+  token: string,
+): Promise<{token_id: string; expires_at: string}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/authorize`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: userId, pin, purpose}),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    const err = await parseApiError(response);
+    // PIN lockout has its own copy and its own retry-after; everything else falls through
+    // to the generic authorization message.
+    throw new ApiRequestError(
+      isPinLockedError(err) ? staffMessageForPinLock(err) : err.message,
+      err.status,
+      {code: err.code, retryAfterSeconds: err.retryAfterSeconds},
+    );
+  }
+
+  return response.json() as Promise<{token_id: string; expires_at: string}>;
 }
 
 export async function closeTable(tableId: string, token: string): Promise<void> {

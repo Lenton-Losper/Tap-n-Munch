@@ -55,6 +55,19 @@ export interface TabOrder {
   member_name?: string;
   items: OrderItem[];
   placed_at: string;
+  /**
+   * Settlement affordances computed BY THE SERVER (/api/terminal/tables).
+   *
+   * Never re-derive these from payment_status on the client. The server owns the
+   * settleable-status sets, and a second definition here is exactly how the two drift
+   * apart. Optional only so an older server response degrades rather than crashes.
+   */
+  can_settle_card?: boolean;
+  can_settle_cash?: boolean;
+  /** A card payment is live on the reader for this order; cash must be refused. */
+  card_payment_in_flight?: boolean;
+  /** How long that card attempt has been running, per the server's clock. */
+  card_in_flight_seconds?: number | null;
 }
 
 export interface TableTab {
