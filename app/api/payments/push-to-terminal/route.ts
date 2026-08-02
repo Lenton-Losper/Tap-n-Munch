@@ -95,7 +95,8 @@ export async function POST(req: Request) {
     const previousPaymentStatus = String(order.payment_status || '')
     const { data: claimedOrder, error: claimError } = await supabase
       .from('orders')
-      .update({ payment_status: 'terminal_pending' })
+      // terminal_pushed_at starts the in-flight window that cash settlement respects.
+      .update({ payment_status: 'terminal_pending', terminal_pushed_at: new Date().toISOString() })
       .eq('id', normalizedOrderId)
       .eq('payment_status', previousPaymentStatus)
       .select('*')
@@ -119,7 +120,7 @@ export async function POST(req: Request) {
     const releaseClaim = async () => {
       const { error: releaseError } = await supabase
         .from('orders')
-        .update({ payment_status: previousPaymentStatus })
+        .update({ payment_status: previousPaymentStatus, terminal_pushed_at: null })
         .eq('id', normalizedOrderId)
         .eq('payment_status', 'terminal_pending')
       if (releaseError) {
@@ -167,9 +168,20 @@ export async function POST(req: Request) {
       )
     }
 
+    // Delegate to the shared helper rather than reimplementing the rule here.
+    //
+    // terminal-merchant-order.ts is the single source of truth for this value and documents
+    // why it must not rotate: "Does not rotate on every call (that would orphan webhooks for
+    // the previous businessOrderNo)." It reuses a usable existing value, mints only when
+    // there is nothing to reuse, compare-and-swaps against what is actually stored, retries
+    // on unique collision, and re-reads to adopt the winner on a lost race.
+    //
+    // This route previously minted a fresh value on BOTH branches of a ternary, so every push
+    // overwrote the column: a card already charged under the previous businessOrderNo could
+    // no longer be correlated by Finatic's notify, and the payment was never recorded.
     let merchantOrderNo: string
     try {
-      const ensured = await ensureTerminalMerchantOrderNo(supabase as any, {
+      const ensured = await ensureTerminalMerchantOrderNo(supabase, {
         orderId: normalizedOrderId,
         restaurantId: callerRestaurantId,
       })
@@ -178,7 +190,12 @@ export async function POST(req: Request) {
       console.error('[PUSH-TO-TERMINAL] Failed to persist merchant order no:', persistErr)
       await releaseClaim()
       return NextResponse.json(
-        { error: persistErr instanceof Error ? persistErr.message : 'Failed to persist merchant order no' },
+        {
+          error:
+            persistErr instanceof Error
+              ? persistErr.message
+              : 'Failed to persist merchant order no',
+        },
         { status: 500 },
       )
     }
@@ -239,7 +256,7 @@ export async function POST(req: Request) {
         console.log('[PUSH-TO-TERMINAL] Returning 400 because:', finaticReason)
         await supabase
           .from('orders')
-          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
+          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
           .eq('id', normalizedOrderId)
           .eq('payment_status', 'terminal_pending')
         return NextResponse.json(
@@ -256,7 +273,7 @@ export async function POST(req: Request) {
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
       await supabase
         .from('orders')
-        .update({ payment_status: previousPaymentStatus, terminal_status: 'failed' })
+        .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
         .eq('id', normalizedOrderId)
         .eq('payment_status', 'terminal_pending')
       return NextResponse.json(
@@ -272,6 +289,9 @@ export async function POST(req: Request) {
         status: 'completed',
         terminal_status: 'pending',
         terminal_sn: terminalSn,
+        // Restamped: the window should run from when Finatic accepted the push, not from the
+        // earlier optimistic claim, so a slow gateway call does not eat into the timeout.
+        terminal_pushed_at: new Date().toISOString(),
       })
       .eq('id', normalizedOrderId)
 

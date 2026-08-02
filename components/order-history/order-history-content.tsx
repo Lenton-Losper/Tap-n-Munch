@@ -14,6 +14,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { getAccessToken } from '@/lib/onboarding/api-client'
+import {
+  calendarDateInTimeZone,
+  DATE_RANGE_PRESETS,
+  describeDateRangeProblem,
+  matchesPreset,
+  resolveDateRangePreset,
+  type DateRangePresetId,
+} from '@/lib/reports/date-range-presets'
+import { DEFAULT_REPORT_TIMEZONE } from '@/lib/reports/format-report-datetime'
 
 type OrderItem = {
   name?: string
@@ -46,8 +55,11 @@ type HistoryResponse = {
   error?: string
 }
 
+// The rest of this screen already reports in restaurant-local time (see formatPlacedAt),
+// and the history API reads the date fields as local calendar days. Deriving "today" from
+// toISOString() would be UTC-relative and read as yesterday until 02:00 local.
 function todayIso() {
-  return new Date().toISOString().split('T')[0]
+  return calendarDateInTimeZone(new Date(), DEFAULT_REPORT_TIMEZONE)
 }
 
 function currency(value: number, symbol: string) {
@@ -131,6 +143,23 @@ export function OrderHistoryContent() {
   const [status, setStatus] = useState('all')
   const [orderNumber, setOrderNumber] = useState('')
   const [page, setPage] = useState(1)
+  const [refreshNonce, setRefreshNonce] = useState(0)
+
+  // An end date before the start date makes the API's .gte(start)/.lt(end) window empty, so
+  // the screen would report a confident "0 orders" that is indistinguishable from real data.
+  // Catch it here and never send the request.
+  const rangeProblem = describeDateRangeProblem(startDate, endDate)
+
+  const applyPreset = (preset: DateRangePresetId) => {
+    const { startDate: nextStart, endDate: nextEnd } = resolveDateRangePreset(preset, {
+      timeZone: DEFAULT_REPORT_TIMEZONE,
+    })
+    setStartDate(nextStart)
+    setEndDate(nextEnd)
+    // Bump the nonce so re-picking the preset already in effect still refreshes rather
+    // than doing nothing. These updates batch, so a preset click is one fetch, not two.
+    setRefreshNonce((n) => n + 1)
+  }
 
   const filterKey = `${startDate}|${endDate}|${tableNumber}|${status}|${orderNumber}`
   const [pageFilterKey, setPageFilterKey] = useState(filterKey)
@@ -154,6 +183,14 @@ export function OrderHistoryContent() {
   const loadHistory = useCallback(async () => {
     if (!restaurantId) {
       setData(null)
+      setLoading(false)
+      return
+    }
+
+    // Refuse to query an impossible range rather than rendering an empty result as fact.
+    if (describeDateRangeProblem(startDate, endDate)) {
+      setData(null)
+      setError(null)
       setLoading(false)
       return
     }
@@ -185,9 +222,15 @@ export function OrderHistoryContent() {
     } finally {
       setLoading(false)
     }
-  }, [restaurantId, startDate, endDate, tableNumber, status, orderNumber, page])
+    // refreshNonce is deliberately unused in the body: it is the re-fetch trigger for
+    // re-picking the preset that is already in effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurantId, startDate, endDate, tableNumber, status, orderNumber, page, refreshNonce])
 
   const handleDownload = async (format: 'pdf' | 'csv') => {
+    // The export route applies the same date window, so an invalid range would produce a
+    // silently empty PDF/CSV -- worse than the on-screen version, since it leaves the app.
+    if (describeDateRangeProblem(startDate, endDate)) return
     setDownloading(format)
     try {
       const token = await getAccessToken()
@@ -227,6 +270,11 @@ export function OrderHistoryContent() {
 
   const sendReportEmail = async (format: 'pdf' | 'csv') => {
     if (!restaurantId || !emailAddress) return
+    const problem = describeDateRangeProblem(startDate, endDate)
+    if (problem) {
+      setEmailError(problem)
+      return
+    }
     setSendingEmail(true)
     setEmailSent(false)
     setEmailError(null)
@@ -304,6 +352,7 @@ export function OrderHistoryContent() {
                 setEmailAddress(user?.email ?? '')
                 openEmailModal()
               }}
+              disabled={rangeProblem !== null}
               className="border-[#E9E9E7]"
             >
               Send by Email
@@ -313,7 +362,7 @@ export function OrderHistoryContent() {
                 type="button"
                 variant="outline"
                 onClick={() => setShowDownloadMenu((prev) => !prev)}
-                disabled={downloading !== null}
+                disabled={downloading !== null || rangeProblem !== null}
                 className="border-[#E9E9E7]"
               >
                 {downloading ? 'Downloading...' : 'Download'}
@@ -359,14 +408,40 @@ export function OrderHistoryContent() {
 
       <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <div className="rounded-2xl border border-[#E9E9E7] bg-white p-4 sm:p-5">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-xs font-medium text-[#6B675F]">Quick select</span>
+            {DATE_RANGE_PRESETS.map((preset) => {
+              const active = matchesPreset({ startDate, endDate }, preset.id, {
+                timeZone: DEFAULT_REPORT_TIMEZONE,
+              })
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => applyPreset(preset.id)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-[#2E75B6] bg-[#EBF3FB] text-[#2E75B6]'
+                      : 'border-[#E9E9E7] text-[#6B675F] hover:bg-gray-50'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              )
+            })}
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-[#6B675F]">Start date</label>
               <Input
                 type="date"
                 value={startDate}
+                max={endDate || undefined}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="border-[#E9E9E7]"
+                aria-invalid={rangeProblem ? true : undefined}
+                className={`border-[#E9E9E7] ${rangeProblem ? 'border-amber-400' : ''}`}
               />
             </div>
             <div className="space-y-1.5">
@@ -374,8 +449,10 @@ export function OrderHistoryContent() {
               <Input
                 type="date"
                 value={endDate}
+                min={startDate || undefined}
                 onChange={(e) => setEndDate(e.target.value)}
-                className="border-[#E9E9E7]"
+                aria-invalid={rangeProblem ? true : undefined}
+                className={`border-[#E9E9E7] ${rangeProblem ? 'border-amber-400' : ''}`}
               />
             </div>
             <div className="space-y-1.5">
@@ -415,9 +492,37 @@ export function OrderHistoryContent() {
               />
             </div>
           </div>
+
+          {rangeProblem && (
+            <div
+              role="alert"
+              className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            >
+              <span>{rangeProblem}</span>
+              {endDate && startDate && endDate < startDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStartDate(endDate)
+                    setEndDate(startDate)
+                  }}
+                  className="rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                >
+                  Swap dates
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
-        {loading ? (
+        {rangeProblem ? (
+          // Deliberately not the zeroed stat cards and "No orders found" table: an
+          // unanswerable filter must not be presented as a real result of zero orders.
+          <div className="rounded-2xl border border-[#E9E9E7] bg-white p-10 text-center">
+            <p className="text-sm font-medium text-[#37352F]">Nothing to show yet</p>
+            <p className="mx-auto mt-2 max-w-md text-sm text-[#6B675F]">{rangeProblem}</p>
+          </div>
+        ) : loading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {[0, 1, 2].map((i) => (
               <div key={i} className="h-28 animate-pulse rounded-2xl border border-[#E9E9E7] bg-white" />

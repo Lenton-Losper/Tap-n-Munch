@@ -2,7 +2,14 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
-import { isClaimablePaymentStatus } from '@/lib/payments/payment-integrity'
+import {
+  CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+  isCardPaymentStillInFlight,
+  isCashSettleablePaymentStatus,
+  isClaimablePaymentStatus,
+  owesMoney,
+  secondsSincePush,
+} from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +40,7 @@ export async function GET(req: Request) {
             total,
             status,
             payment_status,
+            terminal_pushed_at,
             items,
             placed_at
           )
@@ -60,6 +68,12 @@ export async function GET(req: Request) {
       allOrderIds,
     )
 
+    // One clock for the whole response, so two orders pushed at the same moment cannot be
+    // reported on opposite sides of the timeout within a single payload.
+    const now = new Date()
+    const cardInFlight = (order: any) =>
+      isCardPaymentStillInFlight(order.payment_status, order.terminal_pushed_at, now)
+
     // Compute canClose and unpaidTotal server-side
     const enriched = (tables ?? []).map((table: any) => {
       const tab = table.tabs?.[0] ?? null
@@ -72,13 +86,26 @@ export async function GET(req: Request) {
           // Distinct from orders.payment_status (paid/pending settlement flag).
           payment_status_derived: projection?.paymentStatus ?? null,
           refunded_amount: projection?.refundedAmount ?? 0,
+          // Per-order settlement affordances, so the terminal can render and disable the
+          // cash action without duplicating the status or timeout rules client-side.
+          can_settle_card: isClaimablePaymentStatus(order.payment_status),
+          // Cash is blocked only while a card attempt is genuinely live; once the attempt
+          // times out the button becomes available again with no staff intervention.
+          can_settle_cash:
+            isCashSettleablePaymentStatus(order.payment_status) ||
+            (String(order.payment_status ?? '').trim().toLowerCase() === 'terminal_pending' &&
+              !cardInFlight(order)),
+          card_payment_in_flight: cardInFlight(order),
+          card_in_flight_seconds: cardInFlight(order)
+            ? Math.round(secondsSincePush(order.terminal_pushed_at, now) ?? 0)
+            : null,
         }
       })
-      // Only unpaid/pending orders still need settlement — cancelled (and any other
-      // terminal, non-claimable) orders must not count toward unpaid/can_close.
-      const unpaidOrders = orders.filter((o: any) =>
-        isClaimablePaymentStatus(o.payment_status)
-      )
+      // Everything still OWED counts, not just what a card settlement happens to be able to
+      // claim. cash_pending, failed and terminal_pending orders are unpaid money; excluding
+      // them understated the tab and let can_close report true over genuine debt. Cancelled
+      // (and any other terminal status) still correctly falls out.
+      const unpaidOrders = orders.filter((o: any) => owesMoney(o.payment_status))
       const unpaidTotal = unpaidOrders.reduce(
         (sum: number, o: any) => sum + Number(o.total), 0
       )
@@ -100,7 +127,11 @@ export async function GET(req: Request) {
       }
     })
 
-    return NextResponse.json({ tables: enriched })
+    return NextResponse.json({
+      tables: enriched,
+      // Lets the terminal show an accurate countdown without hardcoding the server's value.
+      card_in_flight_timeout_seconds: CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+    })
   } catch (err: unknown) {
     if (err instanceof Response) return err
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

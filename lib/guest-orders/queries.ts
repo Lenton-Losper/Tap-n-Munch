@@ -94,6 +94,15 @@ export async function fetchGuestOrderById(
 export async function fetchGuestOrdersBySession(params: {
   restaurantId: string
   sessionId?: string | null
+  /**
+   * Additional session ids to match. The customer app mints two, in different storages and
+   * different formats, and nothing syncs them:
+   *   lib/session.ts        -> flashtap_session_v1 (localStorage)  `sess_<uuid>`
+   *   contexts/tab-context  -> tab_session_id      (sessionStorage) `session_<ts>_<rand>`
+   * Orders are submitted with whichever the placing screen held, so a lookup that knows only
+   * one of them silently returns nothing. Callers pass every id they have.
+   */
+  sessionIds?: Array<string | null | undefined>
   tabId?: string | null
   excludeSettlement?: boolean
   countOnly?: boolean
@@ -101,18 +110,22 @@ export async function fetchGuestOrdersBySession(params: {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
 
-  const sessionId = String(params.sessionId || '').trim()
+  const sessionIds = [...new Set(
+    [params.sessionId, ...(params.sessionIds ?? [])]
+      .map((s) => String(s || '').trim())
+      .filter(Boolean),
+  )]
   const tabId = String(params.tabId || '').trim()
 
   // Fail closed: never dump a full tab by UUID alone. Require session scope
   // (same pattern as active-table). Tab id may still refine the filter.
-  if (!sessionId) {
+  if (sessionIds.length === 0) {
     return { orders: [], count: 0 }
   }
 
   let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
 
-  query = query.eq('restaurant_id', restaurantUuid).eq('session_id', sessionId)
+  query = query.eq('restaurant_id', restaurantUuid).in('session_id', sessionIds)
 
   if (tabId) {
     query = query.eq('tab_id', tabId)
@@ -122,17 +135,49 @@ export async function fetchGuestOrdersBySession(params: {
     query = query.is('tab_settlement_for_tab_id', null)
   }
 
-  if (params.countOnly) {
-    const { count, error } = await query
-    if (error) throw error
-    return { orders: [], count: count ?? 0 }
+  // A QR submission lives in order_requests until staff Accept, so counting `orders` alone
+  // reports 0 for a customer who has just ordered. Mirrors the fallback that
+  // fetchGuestOrderById and fetchGuestActiveTableOrders already do.
+  let pendingQuery = supabase
+    .from('order_requests')
+    .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+    .eq('restaurant_id', restaurantUuid)
+    .in('session_id', sessionIds)
+    .eq('status', 'waiting_review')
+
+  if (tabId) {
+    pendingQuery = pendingQuery.eq('tab_id', tabId)
   }
 
-  const { data, error } = await query.order('placed_at', { ascending: false })
+  if (params.countOnly) {
+    const [{ count, error }, { count: pendingCount, error: pendingError }] = await Promise.all([
+      query,
+      pendingQuery,
+    ])
+    if (error) throw error
+    if (pendingError) throw pendingError
+    return { orders: [], count: (count ?? 0) + (pendingCount ?? 0) }
+  }
+
+  const [{ data, error }, { data: pending, error: pendingError }] = await Promise.all([
+    query.order('placed_at', { ascending: false }),
+    pendingQuery.order('placed_at', { ascending: false }),
+  ])
   if (error) throw error
+  if (pendingError) throw pendingError
 
   const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
-  return { orders, count: orders.length }
+  const pendingRows = (pending ?? []).map((row) =>
+    mapOrderRequestToGuestRow(row as Record<string, unknown>),
+  )
+
+  const merged = [...pendingRows, ...orders].sort((a, b) => {
+    const aMs = a.placed_at ? new Date(String(a.placed_at)).getTime() : 0
+    const bMs = b.placed_at ? new Date(String(b.placed_at)).getTime() : 0
+    return bMs - aMs
+  })
+
+  return { orders: merged, count: merged.length }
 }
 
 export async function fetchGuestActiveTableOrders(params: {

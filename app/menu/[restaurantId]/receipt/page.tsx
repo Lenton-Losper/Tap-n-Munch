@@ -17,6 +17,7 @@ import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+import { getReceiptStatusBadge } from '@/lib/orders/receipt-status'
 import {
   fetchOrdersForTab,
   fetchTabById,
@@ -99,24 +100,8 @@ function isUnpaidNonSettlementOrder(order: OrderRecord): boolean {
   return !isOrderPaid(order) && !isTabSettlementOrder(order)
 }
 
-function getReceiptStatusBadge(order: OrderRecord): { label: string; className: string } {
-  const payment = String(order.payment_status || '').toLowerCase()
-  const status = String(order.status || '').toLowerCase()
-
-  if (payment === 'paid') {
-    return { label: 'PAID', className: 'bg-green-100 text-green-800' }
-  }
-  if (payment === 'pending') {
-    return { label: 'PENDING', className: 'bg-yellow-100 text-yellow-800' }
-  }
-  if (status === 'accepted' || status === 'ready') {
-    return { label: status === 'accepted' ? 'ACCEPTED' : 'PREPARING', className: 'bg-orange-100 text-orange-800' }
-  }
-  if (status === 'pending') {
-    return { label: 'NEW', className: 'bg-muted text-foreground' }
-  }
-  return { label: (order.status || 'unknown').toUpperCase(), className: 'bg-muted text-foreground' }
-}
+// Moved to lib/orders/receipt-status.ts so the rules about what a customer is told about
+// their money are directly testable. Imported at the top of this file.
 
 /** Firestore Timestamp, plain object, ISO string, or millis — never pass invalid values to `new Date` alone. */
 function formatOrderTimestamp(value: unknown): string {

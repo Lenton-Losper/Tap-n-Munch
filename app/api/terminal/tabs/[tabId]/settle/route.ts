@@ -5,8 +5,13 @@ import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import {
   amountsMatch,
-  CLAIMABLE_PAYMENT_STATUSES,
+  CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+  isCardPaymentStillInFlight,
+  secondsSincePush,
+  normalizeSettlementPaymentMethod,
+  settleableStatusesForMethod,
 } from '@/lib/payments/payment-integrity'
+import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,7 +48,39 @@ export async function POST(
           ? String(body.businessOrderNo).trim()
           : ''
     const amount: number = Number(body.amount)
-    const method: string = body.method ?? 'card'
+
+    // Unrecognised methods are rejected, never defaulted -- a typo must not book as a card sale.
+    const method = normalizeSettlementPaymentMethod(body.method ?? 'card')
+    if (!method) {
+      return NextResponse.json(
+        {
+          error: 'Unsupported payment method',
+          code: 'UNSUPPORTED_PAYMENT_METHOD',
+          received: body.method ?? null,
+        },
+        { status: 400 },
+      )
+    }
+    const isCashSettlement = method === 'cash'
+
+    // Who is taking the cash. Optional by design -- there is no hard approval gate today, so a
+    // terminal that cannot yet prompt for a PIN is not locked out of settling. When the terminal
+    // does supply a token it is verified and single-use-consumed, and the audit records exactly
+    // which of the two happened rather than implying an attribution that was never proven.
+    const staffUserId = String(body.staff_user_id ?? body.staffUserId ?? '').trim()
+    const authorizationTokenId = String(
+      body.authorization_token_id ?? body.authorizationTokenId ?? '',
+    ).trim()
+
+    if (authorizationTokenId && !staffUserId) {
+      return NextResponse.json(
+        {
+          error: 'staff_user_id is required when authorization_token_id is supplied',
+          code: 'ATTRIBUTION_INCOMPLETE',
+        },
+        { status: 400 },
+      )
+    }
 
     if (!orderIds.length) {
       return NextResponse.json(
@@ -69,7 +106,7 @@ export async function POST(
     // Bind order_ids to this tab + restaurant; never trust cross-tab IDs.
     const { data: tabOrders, error: tabOrdersError } = await supabase
       .from('orders')
-      .select('id, total, payment_status')
+      .select('id, total, payment_status, terminal_pushed_at')
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
       .in('id', orderIds)
@@ -91,6 +128,94 @@ export async function POST(
       )
     }
 
+    const settleableStatuses = settleableStatusesForMethod(method)
+    const statusOf = (o: { payment_status: unknown }) =>
+      String(o.payment_status ?? '').trim().toLowerCase()
+
+    // A card payment in flight is the one case cash must refuse: the gateway may still answer
+    // yes, and collecting cash alongside it charges the customer twice. Reported separately
+    // from "already paid" so staff are told what to do rather than hitting a dead end.
+    //
+    // The block is time-bounded. Past CARD_IN_FLIGHT_TIMEOUT_SECONDS the attempt is treated as
+    // dead -- terminal crashed, reader abandoned, push never surfaced -- and cash is allowed
+    // again, so a stuck attempt cannot strand the table indefinitely.
+    const settleNow = new Date()
+    const inFlightCutoffIso = new Date(
+      settleNow.getTime() - CARD_IN_FLIGHT_TIMEOUT_SECONDS * 1000,
+    ).toISOString()
+    const expiredInFlightSeconds: number[] = []
+
+    if (isCashSettlement) {
+      const stillInFlight = (tabOrders ?? []).filter((o) =>
+        isCardPaymentStillInFlight(statusOf(o), o.terminal_pushed_at, settleNow),
+      )
+      if (stillInFlight.length > 0) {
+        const waits = stillInFlight.map((o) => ({
+          order_id: String(o.id),
+          seconds_since_push: Math.round(secondsSincePush(o.terminal_pushed_at, settleNow) ?? 0),
+        }))
+        return NextResponse.json(
+          {
+            error:
+              'A card payment is in progress for part of this selection. Wait for it to finish, or cancel it on the terminal, then take cash.',
+            code: 'CARD_PAYMENT_IN_FLIGHT',
+            order_ids: stillInFlight.map((o) => String(o.id)),
+            in_flight: waits,
+            // So the terminal can show a countdown rather than an unexplained refusal.
+            retry_after_seconds: Math.max(
+              1,
+              Math.ceil(
+                CARD_IN_FLIGHT_TIMEOUT_SECONDS -
+                  Math.min(...waits.map((w) => w.seconds_since_push)),
+              ),
+            ),
+          },
+          { status: 409 },
+        )
+      }
+
+      // Anything still terminal_pending here is past the timeout. Recorded so the audit trail
+      // shows how long the dead attempt had been hanging when cash was taken -- the evidence
+      // needed to retune the timeout against real behaviour.
+      for (const o of tabOrders ?? []) {
+        if (statusOf(o) === 'terminal_pending') {
+          expiredInFlightSeconds.push(
+            Math.round(secondsSincePush(o.terminal_pushed_at, settleNow) ?? -1),
+          )
+        }
+      }
+    }
+
+    // Reject non-settleable orders BEFORE any write. Previously expectedAmount summed every
+    // requested order regardless of status, so including an already-paid order inflated the
+    // expected total, the amount check passed, and the claim then silently skipped that order --
+    // taking money for an order that was already paid for. Validating up front also means the
+    // claim below should always match in full; the mismatch branch is now a genuine race guard.
+    // For cash, an EXPIRED terminal_pending order is settleable — the live ones were already
+    // rejected above, so anything of that status reaching here is past the timeout.
+    const isSettleableHere = (o: { payment_status: unknown }) =>
+      settleableStatuses.includes(statusOf(o)) ||
+      (isCashSettlement && statusOf(o) === 'terminal_pending')
+
+    const notSettleable = (tabOrders ?? []).filter((o) => !isSettleableHere(o))
+    if (notSettleable.length > 0) {
+      const allPaid = notSettleable.every((o) => statusOf(o) === 'paid')
+      return NextResponse.json(
+        {
+          error: allPaid
+            ? 'Those orders have already been paid.'
+            : 'Some orders in this selection cannot be settled.',
+          code: allPaid ? 'ALREADY_PAID' : 'NOT_SETTLEABLE',
+          order_ids: notSettleable.map((o) => String(o.id)),
+          statuses: notSettleable.map((o) => ({
+            order_id: String(o.id),
+            payment_status: statusOf(o),
+          })),
+        },
+        { status: 409 },
+      )
+    }
+
     const expectedAmount = (tabOrders ?? []).reduce(
       (sum, o) => sum + Number(o.total),
       0,
@@ -107,12 +232,50 @@ export async function POST(
       )
     }
 
+    // Verify the attribution before taking the money, so a rejected token cannot leave the
+    // orders settled with a staff member credited who never authorized it.
+    let attributedStaffUserId: string | null = null
+    if (authorizationTokenId) {
+      // Fails closed on a thrown error as well as a rejected token. Consuming the token also
+      // writes an authorization_events row, and that write can itself fail (e.g. a staff id
+      // that is not a real user); letting it escape would land in the generic catch below and
+      // answer 401 Unauthorized, which tells staff nothing about why the cash was refused.
+      let consumed: Awaited<ReturnType<typeof consumeAuthorizationToken>>
+      try {
+        consumed = await consumeAuthorizationToken(supabase, {
+          tokenId: authorizationTokenId,
+          expectedUserId: staffUserId,
+          expectedRestaurantId: terminal.restaurantId,
+          expectedTerminalId: terminal.terminalId,
+          expectedPurpose: 'cash_settlement',
+        })
+      } catch (authErr) {
+        console.error('[terminal/tabs/settle] authorization check failed', authErr)
+        consumed = { ok: false, reason: 'not_found' }
+      }
+
+      if (!consumed.ok) {
+        return NextResponse.json(
+          {
+            error: 'Authorization could not be verified',
+            code: 'AUTHORIZATION_INVALID',
+            reason: consumed.reason,
+          },
+          { status: 403 },
+        )
+      }
+      attributedStaffUserId = staffUserId
+    }
+
     const paidAt = new Date().toISOString()
     const paymentReference = generatePaymentReference()
-    const paymentVoucherNo = voucherNo || gatewayReference || null
+    // Cash never carries a gateway artifact. Letting a stale voucher/gateway reference ride
+    // along would print a card-style reference on a cash receipt.
+    const paymentVoucherNo = isCashSettlement ? null : voucherNo || gatewayReference || null
 
-    // Atomic claim: only unpaid/pending rows on this tab flip to paid.
-    const { data: claimed, error: ordersError } = await supabase
+    // Atomic claim: only rows still settleable by THIS method flip to paid. Cash may claim
+    // cash_pending/failed orders; card keeps its original narrower set.
+    let claimQuery = supabase
       .from('orders')
       .update({
         payment_status: 'paid',
@@ -122,12 +285,30 @@ export async function POST(
         status: 'completed',
         paid_at: paidAt,
         completed_at: paidAt,
+        // The card attempt, live or dead, is over once the order is settled.
+        terminal_pushed_at: null,
       })
       .in('id', orderIds)
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
-      .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
-      .select('id')
+
+    if (isCashSettlement) {
+      // The timeout has to be re-asserted IN the claim, not just checked beforehand. Between
+      // the read above and this update, a fresh push could move an expired attempt back to
+      // live -- re-stamping terminal_pushed_at to now. Matching terminal_pending only when its
+      // push time is still older than the cutoff (or absent) means such a row silently fails
+      // to claim and surfaces as a conflict, rather than cash landing on a live card payment.
+      const cashStatusList = settleableStatuses.join(',')
+      claimQuery = claimQuery.or(
+        `payment_status.in.(${cashStatusList}),` +
+          `and(payment_status.eq.terminal_pending,` +
+          `or(terminal_pushed_at.is.null,terminal_pushed_at.lt.${inFlightCutoffIso}))`,
+      )
+    } else {
+      claimQuery = claimQuery.in('payment_status', [...settleableStatuses])
+    }
+
+    const { data: claimed, error: ordersError } = await claimQuery.select('id')
 
     if (ordersError) {
       return NextResponse.json(
@@ -154,7 +335,9 @@ export async function POST(
       )
     }
 
-    if (businessOrderNo) {
+    // Gateway-issued merchant order numbers exist only for card. Guarded so a client that
+    // sends one alongside a cash settlement cannot stamp a Finatic reference onto it.
+    if (businessOrderNo && !isCashSettlement) {
       await supabase
         .from('orders')
         .update({ paycloud_merchant_order_no: businessOrderNo.slice(0, 32) })
@@ -165,21 +348,27 @@ export async function POST(
 
     await safeIssueReceiptsForOrders(claimedIds, 'terminal/tabs/settle')
 
-    // Recalculate tab total from remaining unpaid orders
-    const { data: unpaidOrders } = await supabase
+    // Recalculate tab total from what is still owed. A failed read must not be read as
+    // "nothing is owed" -- that would write tabs.total = 0 over genuine debt, so the previous
+    // total is left standing and the caller is told the figure is stale.
+    const { data: unpaidOrders, error: unpaidError } = await supabase
       .from('orders')
-      .select('total')
+      .select('total, payment_status')
       .eq('tab_id', tabId)
       .neq('payment_status', 'paid')
 
-    const newTotal = (unpaidOrders ?? []).reduce(
-      (sum, o) => sum + Number(o.total), 0
-    )
-
-    await supabase
-      .from('tabs')
-      .update({ total: newTotal })
-      .eq('id', tabId)
+    let newTotal: number | null = null
+    if (!unpaidError) {
+      newTotal = (unpaidOrders ?? []).reduce(
+        (sum, o) => sum + Number(o.total), 0
+      )
+      await supabase
+        .from('tabs')
+        .update({ total: newTotal })
+        .eq('id', tabId)
+    } else {
+      console.error('[terminal/tabs/settle] tab total recalc failed', unpaidError)
+    }
 
     // Create payment record (server amount, not client)
     await supabase.from('payments').insert({
@@ -190,15 +379,17 @@ export async function POST(
       amount: expectedAmount,
       method,
       status: 'completed',
-      gateway_reference: gatewayReference,
+      gateway_reference: isCashSettlement ? null : gatewayReference,
       payment_reference: paymentReference,
       completed_at: paidAt,
     })
 
-    // Audit log
-    await supabase.from('audit_logs').insert({
+    // Audit log. Cash carries a real risk of being taken and not recorded, so the trail names
+    // the staff member when one authorized it and says so explicitly when none did -- an
+    // absent attribution must be visible as absent rather than inferred from a missing key.
+    const { error: auditError } = await supabase.from('audit_logs').insert({
       restaurant_id: terminal.restaurantId,
-      action: 'payment.tab_settled',
+      action: isCashSettlement ? 'payment.tab_settled_cash' : 'payment.tab_settled',
       entity_type: 'tabs',
       entity_id: tabId,
       metadata: {
@@ -208,44 +399,79 @@ export async function POST(
         method,
         payment_reference: paymentReference,
         terminal_id: terminal.terminalId,
+        device_serial: terminal.deviceSerial,
+        settled_at: paidAt,
+        staff_user_id: attributedStaffUserId,
+        actor_attribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
+        authorization_token_id: authorizationTokenId || null,
+        // Present only when cash was taken over a card attempt the timeout had declared dead.
+        // How long those attempts had actually been hanging is the evidence for whether
+        // CARD_IN_FLIGHT_TIMEOUT_SECONDS is set correctly -- it was chosen on reasoning, since
+        // no historical card round-trip durations exist to measure against.
+        ...(expiredInFlightSeconds.length > 0
+          ? {
+              card_in_flight_seconds: expiredInFlightSeconds,
+              card_in_flight_timeout_seconds: CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+            }
+          : {}),
       },
     })
 
-    // canClose check
-    const { data: remaining } = await supabase
+    if (auditError) {
+      console.error('[terminal/tabs/settle] audit log insert failed', auditError)
+    }
+
+    // canClose check. Fails CLOSED: an errored read previously yielded an empty array and so
+    // reported the tab fully settled, letting staff close a table that still owed money.
+    const { data: remaining, error: remainingError } = await supabase
       .from('orders')
       .select('id')
       .eq('tab_id', tabId)
       .neq('payment_status', 'paid')
 
-    const canClose = (remaining ?? []).length === 0
+    if (remainingError) {
+      console.error('[terminal/tabs/settle] can_close check failed', remainingError)
+    }
 
-    // Reopen the tab for continued ordering -- but NEVER resurrect a tab that has already
-    // been closed out.
-    //
-    // This write used to be unconditional. A tab closed via close_table_session carries
-    // status='settled' with settled_at/settled_type set; flipping it back to 'open' left a
-    // contradictory row (open, yet settled minutes earlier) and, far worse, re-armed the
-    // partial unique index idx_tabs_one_open_per_table UNIQUE (restaurant_id, table_number)
-    // WHERE status='open' (supabase/schema.sql:1797). With an 'open' row present, a fresh
-    // insert for that table is impossible, so POST /api/tabs hits 23505 and silently
-    // degrades into a JOIN -- handing the NEXT customer the previous party's tab, complete
-    // with their name, itemised order and receipt, and bypassing the tab PIN because that
-    // path believes it is creating rather than joining.
-    //
-    // The guard is `.is('settled_at', null)` in the statement itself rather than a JS check,
-    // so a close landing concurrently cannot slip through the window. A normal open or
-    // ready_to_pay tab has settled_at null and still reopens, which is the intended
-    // "settle, then keep ordering" behaviour.
+    const canClose = !remainingError && (remaining ?? []).length === 0
+
     const tabWasClosedOut = tab.settled_at != null
+
+    // Two statements, not one, and only the second is guarded. Both properties matter and
+    // they were introduced independently:
+    //
+    // 1. SPLIT (from main). These used to be a single UPDATE, so when the status write hit
+    //    the one-open-tab-per-table unique index the whole statement failed and the
+    //    ready-to-pay flags were never cleared, parking a fully paid tab on the ready-to-pay
+    //    queue for good. Clearing the flags must therefore not depend on the status write
+    //    succeeding -- so this one is deliberately NOT guarded on settled_at.
+    //
+    // 2. RESURRECTION GUARD (from cloudflare-staging), below. Reopening used to be
+    //    unconditional. A tab closed via close_table_session carries status='settled' with
+    //    settled_at/settled_type set; flipping it back to 'open' left a contradictory row and,
+    //    far worse, re-armed the partial unique index idx_tabs_one_open_per_table UNIQUE
+    //    (restaurant_id, table_number) WHERE status='open' (supabase/schema.sql:1797). With an
+    //    'open' row present a fresh insert for that table is impossible, so POST /api/tabs hits
+    //    23505 and silently degrades into a JOIN -- handing the NEXT customer the previous
+    //    party's tab, complete with their name, itemised order and receipt, and bypassing the
+    //    tab PIN because that path believes it is creating rather than joining.
+    //
+    //    The guard is `.is('settled_at', null)` in the statement itself rather than a JS check,
+    //    so a close landing concurrently cannot slip through the window. A normal open or
+    //    ready_to_pay tab has settled_at null and still reopens, which is the intended
+    //    "settle, then keep ordering" behaviour.
+    const { error: clearFlagsError } = await supabase
+      .from('tabs')
+      .update({ payment_preference: null, ready_to_pay_at: null })
+      .eq('id', tabId)
+
+    if (clearFlagsError) {
+      console.error('[terminal/tabs/settle] clearing ready-to-pay flags failed', clearFlagsError)
+    }
 
     const { error: reopenError } = await supabase
       .from('tabs')
-      .update({
-        status: 'open',
-        payment_preference: null,
-        ready_to_pay_at: null,
-      })
+      .update({ status: 'open' })
       .eq('id', tabId)
       .is('settled_at', null)
 
@@ -261,11 +487,19 @@ export async function POST(
       })
     }
 
+    if (reopenError) {
+      console.error('[terminal/tabs/settle] tab reopen failed', reopenError)
+    }
+
     return NextResponse.json({
       success: true,
       payment_reference: paymentReference,
+      method,
+      // null when the recalculation could not be trusted -- the stored total is unchanged.
       new_tab_total: newTotal,
+      tab_total_stale: newTotal === null,
       can_close: canClose,
+      staff_user_id: attributedStaffUserId,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err

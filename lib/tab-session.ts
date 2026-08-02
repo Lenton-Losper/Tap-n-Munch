@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase/client'
 import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
-import { clearTabSession, readStoredTabId, readStoredTableNumber } from '@/lib/tab-storage'
+import { clearTabSession, readStoredTabId, readStoredTableNumber, readTabSessionId } from '@/lib/tab-storage'
 
 export const ACTIVE_TAB_STATUSES = ['open', 'ready_to_pay'] as const
 
@@ -114,13 +114,18 @@ export async function fetchOrdersForTab(
   restaurantId: string,
   sessionId?: string | null,
 ) {
-  const sid = String(sessionId || '').trim()
-  // Guest by-session API requires session_id (tab UUID alone is insufficient).
-  if (!sid) return []
+  // Callers pass the lib/session.ts id, but orders are submitted with the tab-context id
+  // (see readTabSessionId). Send both -- querying with only one silently returns nothing.
+  const sids = [...new Set(
+    [String(sessionId || '').trim(), String(readTabSessionId() || '').trim()].filter(Boolean),
+  )]
+  // Guest by-session API requires session scope (tab UUID alone is insufficient).
+  if (sids.length === 0) return []
 
   const { orders } = await fetchGuestOrdersBySession({
     restaurantId,
-    sessionId: sid,
+    sessionId: sids[0],
+    sessionIds: sids,
     tabId,
     excludeSettlement: true,
   })

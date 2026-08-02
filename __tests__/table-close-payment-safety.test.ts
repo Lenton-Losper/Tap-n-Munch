@@ -42,9 +42,13 @@ let readError: unknown = null
 let updateError: unknown = null
 
 function matches(row: OrderRow, filters: Array<[string, unknown]>): boolean {
-  return filters.every(([col, val]) =>
-    Array.isArray(val) ? val.includes(row[col]) : row[col] === val,
-  )
+  return filters.every(([col, val]) => {
+    if (Array.isArray(val)) return val.includes(row[col])
+    // PostgREST `.is(col, null)` matches SQL NULL. An absent property in a fixture is the
+    // same thing here, so treat undefined and null as equivalent for a null comparison.
+    if (val === null) return row[col] === null || row[col] === undefined
+    return row[col] === val
+  })
 }
 
 function makeSupabaseMock() {
@@ -86,6 +90,10 @@ function makeSupabaseMock() {
               },
               in(col: string, vals: unknown[]) {
                 filters.push([col, vals])
+                return b
+              },
+              is(col: string, val: unknown) {
+                filters.push([col, val])
                 return b
               },
               then(resolve: (v: unknown) => void) {
@@ -156,6 +164,36 @@ describe('POST /api/tables/[tableNumber]/close -- must not fabricate payment', (
     // still detached from the table
     expect(o.is_closed).toBe(true)
     expect(o.table_closed).toBe(true)
+  })
+
+  it('preserves an EXISTING completed_at instead of re-stamping it to the close time', async () => {
+    // An order settled earlier on the terminal already carries its real completion moment.
+    // Blanket-setting completed_at on close destroyed it and skewed time-to-complete
+    // reporting. Caught on deployed staging, where a terminal payment at 09:50:51.536 was
+    // re-stamped to 09:50:55.815 by the close.
+    const realCompletion = '2026-07-30T09:50:51.536+00:00'
+    orders = [
+      baseOrder({
+        id: 'ord-already-completed',
+        status: 'completed',
+        payment_status: 'paid',
+        completed_at: realCompletion,
+      }),
+    ]
+
+    await closeTable()
+
+    expect(orders[0].completed_at).toBe(realCompletion)
+    expect(orders[0].is_closed).toBe(true)
+  })
+
+  it('DOES stamp completed_at when the paid order has none yet', async () => {
+    orders = [baseOrder({ id: 'ord-paid-no-ts', status: 'ready', payment_status: 'paid' })]
+
+    await closeTable()
+
+    expect(orders[0].status).toBe('completed')
+    expect(orders[0].completed_at).toEqual(expect.any(String))
   })
 
   it('does NOT fabricate revenue from a never-paid order', async () => {

@@ -96,6 +96,9 @@ export async function POST(req: Request) {
         payment_reference: null,
         paycloud_merchant_order_no: null,
         payment_checkout_url: null,
+        // The card attempt is now resolved, so the in-flight window is over. This is the route
+        // the settle endpoint's CARD_PAYMENT_IN_FLIGHT message sends staff to.
+        terminal_pushed_at: null,
       })
       .eq('id', String(orderId))
 
