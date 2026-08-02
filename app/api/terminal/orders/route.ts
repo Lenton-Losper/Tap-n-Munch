@@ -6,6 +6,7 @@ import { createOrder } from '@/lib/orders/create-order'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
+import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,6 +90,29 @@ export async function POST(request: Request) {
     }
     if (!total || total <= 0) {
       return NextResponse.json({ error: 'total must be greater than 0' }, { status: 400 })
+    }
+
+    // Same out-of-stock rule as the customer channel: a TRACKED item whose ingredient stock
+    // is at zero or below cannot be sold. Untracked items are skipped and behave as before.
+    // Staff see the refusal on the terminal at the moment they ring it up, which is the only
+    // point where it can still be acted on.
+    try {
+      const sufficiency = await checkStockSufficiency(supabase, terminal.restaurantId, items)
+      if (!sufficiency.ok) {
+        return NextResponse.json(
+          {
+            error: sufficiency.reason,
+            outOfStock: sufficiency.unavailable.map((u) => ({
+              item: u.itemName,
+              ingredient: u.stockItemName,
+            })),
+          },
+          { status: 409 },
+        )
+      }
+    } catch (err) {
+      // Never let a failed balance READ stop the till from taking orders.
+      console.error('[TERMINAL ORDERS] stock sufficiency check failed, allowing order:', err)
     }
 
     const orderRestaurantScope = await resolveOrderRestaurantScope(terminal.restaurantId)

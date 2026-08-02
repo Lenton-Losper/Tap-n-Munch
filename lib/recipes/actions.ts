@@ -83,9 +83,12 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
     }
     recipeId = createdRecipe.id
   } else {
+    // Revive if it was tombstoned. recipes has UNIQUE (restaurant_id, menu_item_id), so a
+    // deleted row still occupies the slot -- re-linking has to clear deleted_at rather than
+    // insert a second row.
     const { error: updateRecipeError } = await supabase
       .from('recipes')
-      .update({ is_active: true, updated_at: new Date().toISOString() })
+      .update({ is_active: true, deleted_at: null, updated_at: new Date().toISOString() })
       .eq('id', recipeId)
 
     if (updateRecipeError) {
@@ -155,6 +158,89 @@ export async function saveRecipeAction(input: SaveRecipeInput) {
   revalidatePath('/menu-management')
 
   return { data: { recipeId, ingredientCount: ingredients.length } }
+}
+
+/**
+ * Delete a menu item's recipe and its stock link outright — distinct from switching tracking
+ * off, and irreversible.
+ *
+ * Unticking "Track inventory" was previously the only lever a merchant had, so it had to
+ * mean both "pause this" and "undo this". That is why items ended up linked-but-untracked:
+ * there was no way to say "I don't want this linked at all".
+ *
+ * A true DELETE rather than a soft deactivate, deliberately: a deactivated recipe is exactly
+ * the kind of half-state that caused tonight's confusion — a row that exists, is invisible,
+ * and behaves differently depending on which surface is asked. Every status should mean one
+ * thing. Gone means gone.
+ *
+ * recipe_items are removed by ON DELETE CASCADE on recipe_items_recipe_id_fkey. Nothing else
+ * in the schema or the code holds a recipes.id: stock_movements reference the ORDER, not the
+ * recipe, so deleting a recipe cannot orphan or rewrite any ledger entry.
+ *
+ * Historic stock_movements are deliberately untouched — they record what actually happened,
+ * and unlinking is not a reason to rewrite history.
+ */
+export async function removeRecipeLinkAction(menuItemId: string) {
+  const id = menuItemId.trim()
+  if (!id) {
+    return { error: 'Menu item is required.' }
+  }
+
+  const context = await requireRecipePermissionOrError(PERMISSIONS.RECIPE_EDIT)
+  if ('error' in context) {
+    return { error: context.error }
+  }
+  const { supabase, restaurantId } = context
+
+  const { data: recipe, error: loadError } = await supabase
+    .from('recipes')
+    .select('id')
+    .eq('restaurant_id', restaurantId)
+    .eq('menu_item_id', id)
+    .maybeSingle()
+
+  if (loadError) {
+    return { error: loadError.message }
+  }
+
+  if (recipe?.id) {
+    // Tombstone, not erase. The row and its recipe_items are kept as the record of what the
+    // recipe was; deleted_at is what every read path checks. is_active is set false too so
+    // any path that has not yet learned about deleted_at still stops deducting.
+    const { error: tombstoneError } = await supabase
+      .from('recipes')
+      .update({
+        deleted_at: new Date().toISOString(),
+        is_active: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', recipe.id)
+      .eq('restaurant_id', restaurantId)
+    if (tombstoneError) {
+      return { error: tombstoneError.message }
+    }
+  }
+
+  // Service-role client, as in saveRecipeAction: migration 20260705200000 revokes UPDATE on
+  // menu_items from `authenticated`, so the request-scoped client cannot make this write.
+  // Authorisation is unchanged -- RECIPE_EDIT was established above and this is scoped to
+  // that restaurant and menu item.
+  const { createServerSupabaseClient } = await import('@/lib/supabase/server')
+  const { error: trackError } = await createServerSupabaseClient()
+    .from('menu_items')
+    .update({ track_inventory: false })
+    .eq('restaurant_id', restaurantId)
+    .eq('id', id)
+
+  if (trackError) {
+    return { error: trackError.message }
+  }
+
+  revalidatePath('/stock/recipes')
+  revalidatePath(`/stock/recipes/${id}`)
+  revalidatePath('/menu-management')
+
+  return { data: { removed: Boolean(recipe?.id), menuItemId: id } }
 }
 
 export async function canEditMenuInventoryAction() {

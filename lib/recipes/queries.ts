@@ -80,7 +80,10 @@ export async function getInventorySetupOverview(
         .from('recipes')
         .select('id, menu_item_id')
         .eq('restaurant_id', restaurantId)
-        .eq('is_active', true),
+        .eq('is_active', true)
+        // A tombstoned recipe is gone as far as every tracking surface is concerned; its row
+        // survives only as a record of what the recipe was.
+        .is('deleted_at', null),
     ])
 
   if (menuItemsError) throw menuItemsError
@@ -216,6 +219,8 @@ export async function getRecipeEditorData(
     .eq('restaurant_id', restaurantId)
     .eq('menu_item_id', menuItemId)
     .eq('is_active', true)
+    // After removal the editor must open empty, not show the tombstoned ingredients.
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (recipeError) throw recipeError
