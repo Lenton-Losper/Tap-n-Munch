@@ -99,8 +99,7 @@ export default function POSSaleScreen() {
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>
-          Debug: token={token ? 'present' : 'NULL'}, restaurantId=
-          {restaurantId ?? 'NULL'}
+          Terminal session not found. Please re-activate this terminal.
         </Text>
       </View>
     );

@@ -14,6 +14,7 @@ import {useFocusEffect} from '@react-navigation/native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
@@ -1118,19 +1119,23 @@ export default function PaymentScreen({route, navigation}: Props) {
             </View>
           </Pressable>
         ) : paymentMethod === 'cash' ? (
-          <Pressable
+          <LoadingButton
             style={[
               styles.processButton,
               (!canConfirmCash || state === 'PAYMENT_IN_PROGRESS') &&
                 styles.buttonDisabled,
             ]}
             disabled={!canConfirmCash || state === 'PAYMENT_IN_PROGRESS'}
-            onPress={handleConfirmCash}>
-            <MaterialCommunityIcons
-              name="cash-check"
-              size={22}
-              color={Colors.white}
-            />
+            loading={state === 'PAYMENT_IN_PROGRESS'}
+            onPress={handleConfirmCash}
+            spinnerColor={Colors.white}
+            icon={
+              <MaterialCommunityIcons
+                name="cash-check"
+                size={22}
+                color={Colors.white}
+              />
+            }>
             <View style={styles.processButtonTextWrap}>
               <Text style={styles.processButtonTitle}>Confirm cash</Text>
               <Text style={styles.processButtonSubtitle}>
@@ -1139,9 +1144,9 @@ export default function PaymentScreen({route, navigation}: Props) {
                   : 'Enter amount tendered'}
               </Text>
             </View>
-          </Pressable>
+          </LoadingButton>
         ) : (
-          <Pressable
+          <LoadingButton
             style={[
               styles.processButton,
               (paymentMethod !== 'card' ||
@@ -1151,12 +1156,16 @@ export default function PaymentScreen({route, navigation}: Props) {
             disabled={
               paymentMethod !== 'card' || state === 'PAYMENT_IN_PROGRESS'
             }
-            onPress={handleProcessPayment}>
-            <MaterialCommunityIcons
-              name="credit-card-outline"
-              size={22}
-              color={Colors.white}
-            />
+            loading={state === 'PAYMENT_IN_PROGRESS'}
+            onPress={handleProcessPayment}
+            spinnerColor={Colors.white}
+            icon={
+              <MaterialCommunityIcons
+                name="credit-card-outline"
+                size={22}
+                color={Colors.white}
+              />
+            }>
             <View style={styles.processButtonTextWrap}>
               <Text style={styles.processButtonTitle}>Process Payment</Text>
               <Text style={styles.processButtonSubtitle}>
@@ -1165,7 +1174,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                   : 'Select Card or Cash above'}
               </Text>
             </View>
-          </Pressable>
+          </LoadingButton>
         )}
       </View>
     </View>

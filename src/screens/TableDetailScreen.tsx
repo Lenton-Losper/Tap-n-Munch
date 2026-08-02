@@ -13,6 +13,7 @@ import {useFocusEffect} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
+import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import {
   closeTable,
@@ -27,6 +28,10 @@ import {
   resolveAmbiguousPaymentWithFinatic,
   unconfirmedFailureReference,
 } from '../lib/payment';
+import {
+  isClaimablePaymentStatus,
+  selectClaimableOrdersForSettle,
+} from '../lib/paymentIntegrity';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TabOrder, TableWithTab} from '../types';
@@ -42,6 +47,17 @@ function isPaid(order: TabOrder): boolean {
   return order.payment_status === 'paid';
 }
 
+/**
+ * Mirrors the backend's isClaimablePaymentStatus (lib/payments/payment-integrity.ts):
+ * only 'unpaid'/'pending' orders may be selected, summed, or charged. A cancelled
+ * order's payment_status is 'cancelled', not 'unpaid' — the old `!isPaid` check
+ * couldn't tell the difference and would let a cancelled order's total reach the
+ * card reader.
+ */
+function isClaimable(order: TabOrder): boolean {
+  return isClaimablePaymentStatus(order.payment_status);
+}
+
 export default function TableDetailScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
   const [table, setTable] = useState<TableWithTab>(route.params.table);
@@ -53,8 +69,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const tab = table.tab;
   const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
 
+  // Selectable/settleable orders — claimable only. A cancelled order is not
+  // "paid" either, so `!isPaid` alone would wrongly include it here.
   const unpaidOrders = useMemo(
-    () => orders.filter(order => !isPaid(order)),
+    () => orders.filter(order => isClaimable(order)),
     [orders],
   );
 
@@ -100,7 +118,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
   );
 
   const toggleOrderSelection = (order: TabOrder) => {
-    if (isPaid(order)) {
+    if (!isClaimable(order)) {
       return;
     }
     setSelectedIds(prev => {
@@ -133,15 +151,25 @@ export default function TableDetailScreen({route, navigation}: Props) {
     }
   };
 
-  const runSettle = async (orderIds: string[]) => {
-    if (orderIds.length === 0) {
+  const runSettle = async (requestedOrderIds: string[]) => {
+    if (requestedOrderIds.length === 0) {
       return;
     }
 
-    const ordersToSettle = orders.filter(o => orderIds.includes(o.id));
-    const amount = ordersToSettle.reduce((sum, o) => sum + o.total, 0);
+    // Defense in depth: selection already excludes non-claimable orders, but
+    // never let a cancelled/already-paid/refunded order's total reach the
+    // card reader even if stale client state lets one slip through — mirrors
+    // the backend's CLAIMABLE_PAYMENT_STATUSES check
+    // (lib/payments/payment-integrity.ts). amount and orderIds are derived
+    // from the same filtered set so the WiseCashier charge and the settleTab
+    // call always agree on exactly what was paid for. See
+    // selectClaimableOrdersForSettle's tests for the exact guarantee.
+    const {orderIds, amount} = selectClaimableOrdersForSettle(
+      orders,
+      requestedOrderIds,
+    );
 
-    if (amount <= 0) {
+    if (amount <= 0 || orderIds.length === 0) {
       Alert.alert('Error', 'Selected orders have no amount to settle.');
       return;
     }
@@ -294,27 +322,40 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
   const renderOrderRow = ({item}: {item: TabOrder}) => {
     const paid = isPaid(item);
+    const claimable = isClaimable(item);
+    // Not paid and not claimable (e.g. cancelled) — must render as inert, not
+    // as a selectable unpaid row. Otherwise its total could be selected and
+    // charged even though it's excluded from unpaidOrders/runSettle now.
+    const nonInteractive = paid || !claimable;
     const fullyRefunded = item.payment_status_derived === 'refunded';
     const selected = selectedIds.has(item.id);
     const itemCount = item.items.length;
 
+    // Cancelled only — a paid order stays pressable (tap to refund) exactly
+    // as before; only the "neither paid nor claimable" case is now inert.
+    const cancelledOrOther = !paid && !claimable;
+
     return (
       <Pressable
-        style={[styles.orderRow, paid && styles.orderRowPaid]}
-        disabled={settling || fullyRefunded}
-        onPress={() =>
-          paid ? handlePaidOrderPress(item) : toggleOrderSelection(item)
-        }>
+        style={[styles.orderRow, nonInteractive && styles.orderRowPaid]}
+        disabled={settling || fullyRefunded || cancelledOrOther}
+        onPress={() => {
+          if (paid) {
+            handlePaidOrderPress(item);
+          } else if (claimable) {
+            toggleOrderSelection(item);
+          }
+        }}>
         <MaterialCommunityIcons
           name={
-            paid
+            nonInteractive
               ? 'checkbox-blank-outline'
               : selected
                 ? 'checkbox-marked'
                 : 'checkbox-blank-outline'
           }
           size={24}
-          color={paid ? Colors.textMuted : Colors.primary}
+          color={nonInteractive ? Colors.textMuted : Colors.primary}
         />
 
         <View style={styles.orderInfo}>
@@ -329,6 +370,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
           <Text style={styles.orderMeta}>
             Order #{item.order_number} · {itemCount}{' '}
             {itemCount === 1 ? 'item' : 'items'}
+            {!paid && !claimable ? ' · Cancelled' : ''}
           </Text>
         </View>
 
@@ -409,15 +451,17 @@ export default function TableDetailScreen({route, navigation}: Props) {
               <Text style={styles.settleButtonText}>Settle Selected</Text>
             )}
           </Pressable>
-          <Pressable
+          <LoadingButton
             style={[
               styles.settleEntireOutlineButton,
               (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
             ]}
             disabled={settling || unpaidOrders.length === 0}
-            onPress={handleSettleEntireTab}>
+            loading={settling}
+            onPress={handleSettleEntireTab}
+            spinnerColor={Colors.textPrimary}>
             <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
-          </Pressable>
+          </LoadingButton>
         </View>
       ) : (
         <View
@@ -425,19 +469,17 @@ export default function TableDetailScreen({route, navigation}: Props) {
             styles.bottomBar,
             {paddingBottom: insets.bottom + Spacing.md},
           ]}>
-          <Pressable
+          <LoadingButton
             style={[
               styles.settleEntireButton,
               (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
             ]}
             disabled={settling || unpaidOrders.length === 0}
-            onPress={handleSettleEntireTab}>
-            {settling ? (
-              <ActivityIndicator color={Colors.white} />
-            ) : (
-              <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
-            )}
-          </Pressable>
+            loading={settling}
+            onPress={handleSettleEntireTab}
+            spinnerColor={Colors.white}>
+            <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
+          </LoadingButton>
         </View>
       )}
     </View>

@@ -13,6 +13,7 @@ import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useFocusEffect, useNavigation} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StatusBadge from '../components/StatusBadge';
 import {Colors, Spacing, Typography} from '../constants/theme';
@@ -59,7 +60,8 @@ export default function OrderDetailScreen({route}: Props) {
   const {orderId} = route.params;
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState<OrderStatus | null>(null);
+  const updating = updatingStatus !== null;
   const [reprinting, setReprinting] = useState(false);
   const [reprintMessage, setReprintMessage] = useState<string | null>(null);
   const [reprintFailed, setReprintFailed] = useState(false);
@@ -105,7 +107,7 @@ export default function OrderDetailScreen({route}: Props) {
 
     const previous = order;
     setOrder({...order, status: newStatus});
-    setUpdating(true);
+    setUpdatingStatus(newStatus);
     setError(null);
 
     if (newStatus === 'confirmed') {
@@ -130,7 +132,7 @@ export default function OrderDetailScreen({route}: Props) {
       setOrder(previous);
       setError(message);
     } finally {
-      setUpdating(false);
+      setUpdatingStatus(null);
     }
   };
 
@@ -264,37 +266,55 @@ export default function OrderDetailScreen({route}: Props) {
         <View style={styles.actions}>
           {order.status === 'pending' && (
             <>
-              <Pressable
-                style={[styles.primaryButton, updating && styles.buttonDisabled]}
+              <LoadingButton
+                style={[
+                  styles.primaryButton,
+                  styles.iconButtonRow,
+                  updating && styles.buttonDisabled,
+                ]}
                 disabled={updating}
-                onPress={() => handleStatusUpdate('confirmed')}>
-                <Text style={styles.primaryButtonText}>✓ Accept Order</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.outlinedButton, updating && styles.buttonDisabled]}
+                loading={updatingStatus === 'confirmed'}
+                onPress={() => handleStatusUpdate('confirmed')}
+                spinnerColor={Colors.white}
+                icon={<Text style={styles.primaryButtonText}>✓</Text>}>
+                <Text style={styles.primaryButtonText}>Accept Order</Text>
+              </LoadingButton>
+              <LoadingButton
+                style={[
+                  styles.outlinedButton,
+                  styles.iconButtonRow,
+                  updating && styles.buttonDisabled,
+                ]}
                 disabled={updating}
-                onPress={() => handleStatusUpdate('cancelled')}>
-                <Text style={styles.outlinedButtonText}>✗ Decline Order</Text>
-              </Pressable>
+                loading={updatingStatus === 'cancelled'}
+                onPress={() => handleStatusUpdate('cancelled')}
+                spinnerColor={Colors.primary}
+                icon={<Text style={styles.outlinedButtonText}>✗</Text>}>
+                <Text style={styles.outlinedButtonText}>Decline Order</Text>
+              </LoadingButton>
             </>
           )}
 
           {order.status === 'confirmed' && (
-            <Pressable
+            <LoadingButton
               style={[styles.primaryButton, updating && styles.buttonDisabled]}
               disabled={updating}
-              onPress={() => handleStatusUpdate('preparing')}>
+              loading={updatingStatus === 'preparing'}
+              onPress={() => handleStatusUpdate('preparing')}
+              spinnerColor={Colors.white}>
               <Text style={styles.primaryButtonText}>Start Preparing</Text>
-            </Pressable>
+            </LoadingButton>
           )}
 
           {order.status === 'preparing' && (
-            <Pressable
+            <LoadingButton
               style={[styles.primaryButton, updating && styles.buttonDisabled]}
               disabled={updating}
-              onPress={() => handleStatusUpdate('ready')}>
+              loading={updatingStatus === 'ready'}
+              onPress={() => handleStatusUpdate('ready')}
+              spinnerColor={Colors.white}>
               <Text style={styles.primaryButtonText}>Mark Ready</Text>
-            </Pressable>
+            </LoadingButton>
           )}
 
           {order.status === 'ready' && (
@@ -313,12 +333,14 @@ export default function OrderDetailScreen({route}: Props) {
                 }>
                 <Text style={styles.primaryButtonText}>Process Payment</Text>
               </Pressable>
-              <Pressable
+              <LoadingButton
                 style={[styles.outlinedButton, updating && styles.buttonDisabled]}
                 disabled={updating}
-                onPress={() => handleStatusUpdate('completed')}>
+                loading={updatingStatus === 'completed'}
+                onPress={() => handleStatusUpdate('completed')}
+                spinnerColor={Colors.primary}>
                 <Text style={styles.outlinedButtonText}>Mark Completed</Text>
-              </Pressable>
+              </LoadingButton>
             </>
           )}
 
@@ -533,6 +555,11 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  iconButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: Spacing.xs,
   },
   fullyRefundedText: {
     ...Typography.body,
