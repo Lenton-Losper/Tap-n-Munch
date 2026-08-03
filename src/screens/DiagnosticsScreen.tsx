@@ -841,6 +841,13 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       <Text style={styles.label}>App version</Text>
       <Text style={styles.value}>{APP_VERSION}</Text>
 
+      {/* Stamped at build time (#149): an installed APK must be able to name its own
+          source commit. "-dirty" means it was built from an uncommitted tree. */}
+      <Text style={styles.label}>Build commit</Text>
+      <Text style={styles.value} selectable>
+        {(RuntimeConfig as {GIT_SHA?: string} | undefined)?.GIT_SHA || 'unknown'}
+      </Text>
+
       <Text style={styles.label}>API Base URL (RuntimeConfig)</Text>
       <Text style={styles.value}>
         {RuntimeConfig?.API_BASE_URL || 'NOT SET'}

@@ -72,6 +72,19 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+// Stamp the source commit into the binary. Issue #149: a live production APK (vc=70) could
+// not be traced to any commit, so nobody could say what was running on customer terminals.
+// An installed build must be able to name its own source.
+def gitSha = { ->
+    try {
+        def sha = "git rev-parse --short HEAD".execute(null, rootDir).text.trim()
+        def dirty = "git status --porcelain".execute(null, rootDir).text.trim()
+        return dirty.isEmpty() ? sha : sha + "-dirty"
+    } catch (ignored) {
+        return "unknown"
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -82,8 +95,9 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 75
-        versionName "1.74"
+        versionCode 76
+        versionName "1.75"
+        buildConfigField "String", "GIT_SHA", "\"${gitSha()}\""
     }
     buildFeatures {
         buildConfig = true
