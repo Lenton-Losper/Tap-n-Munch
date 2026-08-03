@@ -7,6 +7,7 @@ import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
+import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 
 export const dynamic = 'force-dynamic'
 
@@ -174,6 +175,35 @@ export async function POST(req: Request) {
           { status: 403 }
         )
       }
+    }
+
+    // Refuse the order outright if a TRACKED item's ingredient stock is at zero or below.
+    // Untracked items are skipped inside the check and behave exactly as before.
+    //
+    // This has to happen here rather than in deduct_recipe_stock: that runs from an AFTER
+    // UPDATE trigger once the order is already being completed, so there is no longer a sale
+    // to prevent. Blocking at placement is what "out of stock" means to a customer.
+    try {
+      const sufficiency = await checkStockSufficiency(supabase, restaurantUuid, Array.isArray(items) ? items : [])
+      if (!sufficiency.ok) {
+        return NextResponse.json(
+          {
+            error: sufficiency.reason,
+            // Every unavailable item, so a client can highlight them all at once instead of
+            // making the customer discover them one refusal at a time.
+            outOfStock: sufficiency.unavailable.map((u) => ({
+              item: u.itemName,
+              ingredient: u.stockItemName,
+            })),
+          },
+          { status: 409 },
+        )
+      }
+    } catch (err) {
+      // A failure to READ stock must not take ordering down. Log and continue -- refusing
+      // every order because a balance query failed would be a worse outcome than the
+      // occasional oversell this check exists to prevent.
+      console.error('[ORDERS] stock sufficiency check failed, allowing order through:', err)
     }
 
     // Validate payment method against restaurant settings

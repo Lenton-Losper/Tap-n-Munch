@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
-import { saveRecipeAction } from '@/lib/recipes/actions'
+import { removeRecipeLinkAction, saveRecipeAction } from '@/lib/recipes/actions'
 import type { RecipeEditorData } from '@/lib/recipes/queries'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
@@ -55,6 +55,38 @@ export function RecipeEditorForm({
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+  const [removing, setRemoving] = useState(false)
+
+  const handleRemoveLink = () => {
+    setError(null)
+    setSuccessMessage(null)
+    setConfirmingRemove(true)
+  }
+
+  // Soft delete: the recipe is tombstoned (deleted_at set) and tracking switched off. The row
+  // and its ingredients are kept as the record of what the recipe was -- state is marked
+  // explicitly rather than erased. Every read path filters on deleted_at, so it is gone from
+  // the merchant's point of view and stops deducting. Historic stock movements are untouched.
+  const confirmRemoveLink = () => {
+    setRemoving(true)
+    setError(null)
+    startTransition(async () => {
+      const result = await removeRecipeLinkAction(data.menuItemId)
+      setRemoving(false)
+      if (result.error) {
+        setConfirmingRemove(false)
+        setError(result.error)
+        return
+      }
+      setConfirmingRemove(false)
+      setRows(toIngredientRows([]))
+      setSuccessMessage(
+        'Stock link removed. This item no longer deducts stock. Past movements are unchanged, and you can link it again at any time.',
+      )
+      router.refresh()
+    })
+  }
 
   const stockItemById = useMemo(
     () => new Map(stockItems.map((item) => [item.id, item])),
@@ -220,7 +252,54 @@ export function RecipeEditorForm({
         <Button type="button" variant="outline" className="border-[#E9E9E7]" asChild>
           <Link href="/stock/recipes">Back to recipes</Link>
         </Button>
+
+        {/* Unlinking is deliberately distinct from turning tracking off. Unticking "Track
+            inventory" used to be the only lever, so it had to mean both "pause this" and
+            "undo this" — which is how items ended up linked but untracked. */}
+        {canEdit && data.ingredients.length > 0 ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isPending || removing}
+            onClick={handleRemoveLink}
+            className="ml-auto border-red-200 text-red-800 hover:bg-red-50"
+          >
+            {removing ? 'Removing…' : 'Remove stock link'}
+          </Button>
+        ) : null}
       </div>
+
+      {confirmingRemove ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5">
+          <p className="text-sm font-medium text-red-900">
+            Remove this recipe and its stock link?
+          </p>
+          <p className="mt-1 text-sm text-red-800">
+            {data.menuItemName} will stop deducting stock and disappear from your inventory
+            screens. Past stock movements are kept — your history is not changed — and the
+            recipe is retained as a record, so you can link it again later.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Button
+              type="button"
+              disabled={removing}
+              onClick={confirmRemoveLink}
+              className="bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {removing ? 'Removing…' : 'Yes, remove the link'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={removing}
+              onClick={() => setConfirmingRemove(false)}
+              className="border-[#E9E9E7]"
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </form>
   )
 }
