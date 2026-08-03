@@ -1,5 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import { isE04111 } from '@/lib/payments/finatic-error-codes'
 import { queryFinaticOrderPaid } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
@@ -24,6 +25,13 @@ export type AutoCancelStalePosOrdersResult = {
   correctedToPaidIds: string[]
   skippedUncertainCount: number
   skippedUncertainIds: string[]
+  /**
+   * Subset of skippedUncertainIds where Finatic specifically answered E04111 ("no record
+   * of this merchant_order_no"), as opposed to being unreachable or erroring. Always a
+   * subset -- these orders are skipped identically. Reported so a caller can tell the two
+   * apart without re-probing Finatic.
+   */
+  e04111Ids: string[]
 }
 
 async function cancelByIds(supabase: Supabase, ids: string[]): Promise<string[]> {
@@ -91,6 +99,7 @@ export async function autoCancelStalePosOrders(
     correctedToPaidIds: [],
     skippedUncertainCount: 0,
     skippedUncertainIds: [],
+    e04111Ids: [],
   }
 
   let candidateQuery = supabase
@@ -161,11 +170,17 @@ export async function autoCancelStalePosOrders(
     } catch (err) {
       // Finatic unreachable, errored, or credentials missing -- no confident answer.
       // Never default to cancelling here; leave payment_status='pending' and retry next run.
+      const e04111 = isE04111(err)
       console.error(
-        `[autoCancelStalePosOrders] Finatic check failed for order ${orderId} (restaurant ${orderRestaurantId}), skipping this run:`,
+        `[autoCancelStalePosOrders] Finatic check failed for order ${orderId} (restaurant ${orderRestaurantId}), skipping this run${e04111 ? ' [E04111 -- gateway has no record of this reference yet]' : ''}:`,
         err instanceof Error ? err.message : err,
       )
       result.skippedUncertainIds.push(orderId)
+      // Classification only -- E04111 orders are still skipped, exactly as before. A single
+      // E04111 is never terminal (#149 registered 22s later); deciding on persistence is
+      // the separate auto-cancel pass's job. Surfaced here so that pass can reuse this run's
+      // probe instead of querying Finatic a second time for the same order.
+      if (e04111) result.e04111Ids.push(orderId)
     }
   }
 
