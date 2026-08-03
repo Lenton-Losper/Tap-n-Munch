@@ -19,7 +19,9 @@ import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import {
   ApiRequestError,
+  AuthorizedUser,
   authorizeTerminalAction,
+  getAuthorizedUsers,
   closeTable,
   completePaymentReliably,
   getTablesWithMeta,
@@ -80,10 +82,15 @@ export default function TableDetailScreen({route, navigation}: Props) {
   /** Seconds remaining on a CARD_PAYMENT_IN_FLIGHT refusal; null when not blocked. */
   const [cashBlockedFor, setCashBlockedFor] = useState<number | null>(null);
   const [pinPromptVisible, setPinPromptVisible] = useState(false);
-  const [pinStaffId, setPinStaffId] = useState('');
   const [pinValue, setPinValue] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
+  // Staff picker. The user_id is never shown or typed — staff tap their name and the
+  // uuid is carried through to /authorize and then to settle.
+  const [staffList, setStaffList] = useState<AuthorizedUser[] | null>(null);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffLoadFailed, setStaffLoadFailed] = useState(false);
+  const [pinStaff, setPinStaff] = useState<AuthorizedUser | null>(null);
 
   const tab = table.tab;
   const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
@@ -465,8 +472,45 @@ export default function TableDetailScreen({route, navigation}: Props) {
     }
   };
 
+  /**
+   * Load the staff who can authorize a cash settlement here. Fetched when the modal opens
+   * rather than on screen mount: the list is small and staff change during a shift.
+   *
+   * A failure is NOT fatal. Attribution is optional server-side, so a list that will not
+   * load must never make cash untakeable — it falls back to the Skip path.
+   */
+  const openPinPrompt = async () => {
+    setPinError(null);
+    setPinValue('');
+    setPinStaff(null);
+    setStaffLoadFailed(false);
+    setStaffList(null);
+    setPinPromptVisible(true);
+    setStaffLoading(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+      const users = await getAuthorizedUsers('cash_settlement', token);
+      setStaffList(users);
+      // Single eligible person: pre-select so it is one tap to the keypad.
+      if (users.length === 1) {
+        setPinStaff(users[0]);
+      }
+    } catch {
+      setStaffLoadFailed(true);
+      setStaffList([]);
+    } finally {
+      setStaffLoading(false);
+    }
+  };
+
   /** Verify the staff PIN, then take the cash with that person attributed to it. */
   const submitPinAndTakeCash = async () => {
+    if (!pinStaff) {
+      return;
+    }
     setPinBusy(true);
     setPinError(null);
     try {
@@ -475,7 +519,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         throw new Error('Session expired');
       }
       const {token_id} = await authorizeTerminalAction(
-        pinStaffId.trim(),
+        pinStaff.user_id,
         pinValue.trim(),
         'cash_settlement',
         token,
@@ -484,7 +528,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       setPinPromptVisible(false);
       setPinValue('');
       await runCashSettle(ids, {
-        staffUserId: pinStaffId.trim(),
+        staffUserId: pinStaff.user_id,
         authorizationTokenId: token_id,
       });
     } catch (err) {
@@ -512,14 +556,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       [
         {text: 'Cancel', style: 'cancel'},
         {text: 'Skip', onPress: () => runCashSettle(ids)},
-        {
-          text: 'Enter PIN',
-          onPress: () => {
-            setPinError(null);
-            setPinValue('');
-            setPinPromptVisible(true);
-          },
-        },
+        {text: 'Enter PIN', onPress: () => openPinPrompt()},
       ],
     );
   };
@@ -760,38 +797,92 @@ export default function TableDetailScreen({route, navigation}: Props) {
             <Text style={styles.pinHint}>
               Records who took this cash. The payment is recorded either way.
             </Text>
-            <TextInput
-              style={styles.pinInput}
-              placeholder="Staff user ID"
-              autoCapitalize="none"
-              autoCorrect={false}
-              value={pinStaffId}
-              onChangeText={setPinStaffId}
-            />
-            <TextInput
-              style={styles.pinInput}
-              placeholder="4-digit PIN"
-              keyboardType="number-pad"
-              secureTextEntry
-              maxLength={4}
-              value={pinValue}
-              onChangeText={setPinValue}
-            />
-            {pinError ? (
-              <Text style={styles.pinError}>{pinError}</Text>
-            ) : null}
-            <LoadingButton
-              style={[
-                styles.cashButton,
-                (pinBusy || pinValue.length !== 4 || !pinStaffId.trim()) &&
-                  styles.buttonDisabled,
-              ]}
-              disabled={pinBusy || pinValue.length !== 4 || !pinStaffId.trim()}
-              loading={pinBusy}
-              onPress={submitPinAndTakeCash}
-              spinnerColor={Colors.white}>
-              <Text style={styles.cashButtonText}>Confirm and take cash</Text>
-            </LoadingButton>
+
+            {staffLoading ? (
+              <ActivityIndicator style={styles.pinLoader} color={Colors.primary} />
+            ) : (staffList?.length ?? 0) === 0 ? (
+              // No staff have a PIN, or the list would not load. Either way attribution is
+              // impossible right now — say so and keep Skip reachable, because cash must
+              // never become untakeable over a list.
+              <>
+                <Text style={styles.pinEmpty}>
+                  {staffLoadFailed
+                    ? 'Could not load the staff list. You can still record the cash payment without attribution.'
+                    : 'No staff PINs set up for this restaurant. You can still record the cash payment without attribution.'}
+                </Text>
+                <LoadingButton
+                  style={styles.cashButton}
+                  disabled={false}
+                  loading={false}
+                  onPress={() => {
+                    const ids = Array.from(selectedIds);
+                    setPinPromptVisible(false);
+                    runCashSettle(ids);
+                  }}
+                  spinnerColor={Colors.white}>
+                  <Text style={styles.cashButtonText}>
+                    Take cash without attribution
+                  </Text>
+                </LoadingButton>
+              </>
+            ) : (
+              <>
+                <Text style={styles.pinSectionLabel}>Who is taking the cash?</Text>
+                {(staffList ?? []).map(user => {
+                  const selected = pinStaff?.user_id === user.user_id;
+                  return (
+                    <Pressable
+                      key={user.user_id}
+                      style={[
+                        styles.staffRow,
+                        selected && styles.staffRowSelected,
+                      ]}
+                      onPress={() => {
+                        setPinStaff(user);
+                        setPinError(null);
+                      }}>
+                      <MaterialCommunityIcons
+                        name={
+                          selected
+                            ? 'radiobox-marked'
+                            : 'radiobox-blank'
+                        }
+                        size={20}
+                        color={selected ? Colors.primary : Colors.textMuted}
+                      />
+                      <Text style={styles.staffRowText}>{user.name}</Text>
+                    </Pressable>
+                  );
+                })}
+
+                <TextInput
+                  style={styles.pinInput}
+                  placeholder="4-digit PIN"
+                  keyboardType="number-pad"
+                  secureTextEntry
+                  maxLength={4}
+                  value={pinValue}
+                  onChangeText={setPinValue}
+                  editable={!!pinStaff}
+                />
+                {pinError ? (
+                  <Text style={styles.pinError}>{pinError}</Text>
+                ) : null}
+                <LoadingButton
+                  style={[
+                    styles.cashButton,
+                    (pinBusy || pinValue.length !== 4 || !pinStaff) &&
+                      styles.buttonDisabled,
+                  ]}
+                  disabled={pinBusy || pinValue.length !== 4 || !pinStaff}
+                  loading={pinBusy}
+                  onPress={submitPinAndTakeCash}
+                  spinnerColor={Colors.white}>
+                  <Text style={styles.cashButtonText}>Confirm and take cash</Text>
+                </LoadingButton>
+              </>
+            )}
+
             <Pressable
               style={styles.pinCancel}
               onPress={() => setPinPromptVisible(false)}>
@@ -852,6 +943,30 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
     color: Colors.textPrimary,
   },
+  pinLoader: {marginVertical: Spacing.lg},
+  pinEmpty: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.md,
+  },
+  pinSectionLabel: {
+    ...Typography.subheading,
+    color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
+  },
+  staffRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: Spacing.xs,
+  },
+  staffRowSelected: {borderColor: Colors.primary},
+  staffRowText: {...Typography.body, color: Colors.textPrimary},
   pinError: {
     ...Typography.small,
     color: Colors.red,
