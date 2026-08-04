@@ -1,5 +1,6 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { checkPaycloudHealth } from '@/payments/paycloud'
+import { RECOVERED_AFTER_AUTO_CANCEL_ACTION } from '@/lib/payments/e04111-recovery'
 
 export const TERMINAL_OFFLINE_MS = 15 * 60 * 1000
 export const DASHBOARD_POLL_INTERVAL_MS = 30_000
@@ -178,6 +179,38 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
       detail: `Order ${String((row.metadata as { orderId?: string } | null)?.orderId ?? row.id)}`,
       restaurantId: row.restaurant_id,
       href: row.restaurant_id ? `/admin/restaurants/${row.restaurant_id}?tab=receipts` : '/admin/alerts',
+      createdAt: row.created_at,
+      customersAffected: true,
+    })
+  }
+
+  // A payment landed for an order we had already auto-cancelled. Never routine: the
+  // auto-cancel was wrong, the customer was charged, and the goods were probably never
+  // made. Critical regardless of amount -- a human has to reconcile it.
+  const { data: recoveredAfterAutoCancel } = await supabase
+    .from('audit_logs')
+    .select('id, restaurant_id, action, entity_id, created_at, metadata')
+    .eq('action', RECOVERED_AFTER_AUTO_CANCEL_ACTION)
+    .gte('created_at', dayAgo)
+    .order('created_at', { ascending: false })
+    .limit(50)
+
+  for (const row of recoveredAfterAutoCancel ?? []) {
+    const meta = (row.metadata ?? {}) as {
+      reference?: string
+      previousCancellationReason?: string
+      amount?: number
+    }
+    alerts.push({
+      key: `payment_recovered_after_auto_cancel:${row.id}`,
+      severity: 'critical',
+      title: 'Payment recovered after auto-cancel',
+      detail:
+        `Order ${String(row.entity_id ?? row.id)} was auto-cancelled ` +
+        `(${meta.previousCancellationReason || 'unknown reason'}) but the payment is real` +
+        `${meta.reference ? ` — ref ${meta.reference}` : ''}. Needs reconciliation.`,
+      restaurantId: row.restaurant_id,
+      href: row.restaurant_id ? `/admin/restaurants/${row.restaurant_id}?tab=payments` : '/admin/alerts',
       createdAt: row.created_at,
       customersAffected: true,
     })

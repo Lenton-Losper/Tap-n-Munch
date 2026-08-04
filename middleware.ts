@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
-import { isRivieraHost, RIVIERA_MENU_PATH } from '@/lib/riviera-subdomain'
+import {
+  isRivieraHost,
+  parseTableLandingPath,
+  RIVIERA_MENU_PATH,
+  RIVIERA_TABLE_LANDING_PATH,
+} from '@/lib/riviera-subdomain'
 
 /**
  * Middleware to handle route protection
@@ -33,6 +38,22 @@ function handleRivieraSubdomain(request: NextRequest): NextResponse | null {
     const rewriteUrl = request.nextUrl.clone()
     rewriteUrl.pathname = RIVIERA_MENU_PATH
     rewriteUrl.search = ''
+    return NextResponse.rewrite(rewriteUrl)
+  }
+
+  // Printed table QRs point at riviera.flashtap.app/table/N. Rewritten into the real
+  // /menu/[restaurantId] tree rather than served by app/table/[tableNumber]/page.tsx, which
+  // renders the v2 landing OUTSIDE app/menu/[restaurantId]/layout.tsx -- so TabProvider and
+  // RestaurantProvider are never mounted and useTab() throws on mount, blanking every scan.
+  //
+  // A rewrite rather than a duplicate app/table/layout.tsx: one provider tree, so this cannot
+  // drift when a provider is added to the menu layout. Rewrite rather than redirect so the
+  // customer keeps the short URL in the address bar.
+  const tableNumber = parseTableLandingPath(pathname)
+  if (tableNumber !== null) {
+    const rewriteUrl = request.nextUrl.clone()
+    rewriteUrl.pathname = RIVIERA_TABLE_LANDING_PATH
+    rewriteUrl.searchParams.set('table', String(tableNumber))
     return NextResponse.rewrite(rewriteUrl)
   }
 
@@ -88,6 +109,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!menu|table|signin|signup|forgot-password|invite|auth|onboarding|api/public|api/media|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!menu|signin|signup|forgot-password|invite|auth|onboarding|api/public|api/media|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }

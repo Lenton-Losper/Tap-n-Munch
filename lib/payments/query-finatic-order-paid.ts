@@ -9,6 +9,18 @@ export type FinaticOrderPaidResult = {
   raw: Record<string, unknown>
 }
 
+/**
+ * Finatic answered "no record of this merchant_order_no" (gateway code E04111).
+ *
+ * `queryPaymentOrder` throws a `PaycloudRequestError` with `phase: 'business'` for any
+ * non-success `body.code`, so without this check E04111 is indistinguishable from a
+ * network timeout at every catch site.
+ *
+ * IMPORTANT: this is NOT proof that no payment exists. E04111 is time-dependent -- order
+ * #149 returned E04111 at 13:58:48 and was confirmed PAID on the same reference 22 seconds
+ * later (docs/finatic-questions-for-vernon.md). It means "not registered at the gateway
+ * *yet*". A single observation is never a terminal answer.
+ */
 export function isFinaticMerchantOrderInvalidError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const candidate = error as {
@@ -18,6 +30,18 @@ export function isFinaticMerchantOrderInvalidError(error: unknown): boolean {
   const code = String(candidate.responseBody?.code ?? '').toUpperCase()
   const message = String(candidate.message ?? '').toUpperCase()
   return code === 'E04111' || message.includes('E04111')
+}
+
+/** Structural gateway code off a thrown PaycloudRequestError, for logs and audits. */
+export function finaticErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null
+  const body = (error as { responseBody?: unknown }).responseBody
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const code = (body as { code?: unknown }).code
+    if (typeof code === 'string' && code.trim()) return code.trim().toUpperCase()
+    if (typeof code === 'number' && Number.isFinite(code)) return String(code)
+  }
+  return null
 }
 
 function toMoney(value: unknown): number | null {

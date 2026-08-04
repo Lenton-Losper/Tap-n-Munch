@@ -13,8 +13,14 @@ jest.mock('@/lib/payments/finatic-restaurant-credentials', () => ({
   })),
 }))
 
+// paycloud.js is ESM and jest cannot parse it; query-finatic-order-paid imports it.
+jest.mock('@/payments/paycloud', () => ({ queryPaymentOrder: jest.fn() }))
+
 const queryFinaticOrderPaid = jest.fn()
 jest.mock('@/lib/payments/query-finatic-order-paid', () => ({
+  // Keep the real isFinaticMerchantOrderInvalidError / finaticErrorCode classifiers;
+  // only the network call is stubbed.
+  ...jest.requireActual('@/lib/payments/query-finatic-order-paid'),
   queryFinaticOrderPaid: (...args: unknown[]) => queryFinaticOrderPaid(...args),
 }))
 

@@ -1,6 +1,8 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import {
+  finaticErrorCode,
+  isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
   type FinaticOrderPaidResult,
 } from '@/lib/payments/query-finatic-order-paid'
@@ -35,6 +37,14 @@ export type WebhookSigFallbackResult =
       path: 'fallback_query_failed'
       reason: string
       orderIds: string[]
+      /**
+       * Finatic answered "no record of this merchant_order_no" rather than failing to
+       * answer. Still not a terminal verdict -- E04111 is time-dependent (#149 resolved
+       * 22s later) -- so the caller must keep asking Finatic to retry, not ACK. Surfaced
+       * so the two cases stop looking identical in the logs.
+       */
+      isE04111: boolean
+      gatewayCode: string | null
     }
 
 /**
@@ -56,6 +66,8 @@ export async function confirmWebhookOrderViaFinaticFallback(params: {
       path: 'fallback_query_failed',
       reason: 'No local order for merchant_order_no; cannot resolve restaurant Finatic credentials',
       orderIds: [],
+      isE04111: false,
+      gatewayCode: null,
     }
   }
 
@@ -69,6 +81,8 @@ export async function confirmWebhookOrderViaFinaticFallback(params: {
       path: 'fallback_query_failed',
       reason: `Failed to load orders for fallback: ${ordersError.message}`,
       orderIds,
+      isE04111: false,
+      gatewayCode: null,
     }
   }
 
@@ -89,6 +103,8 @@ export async function confirmWebhookOrderViaFinaticFallback(params: {
       path: 'fallback_query_failed',
       reason: 'Order row missing restaurant_id for Finatic credential lookup',
       orderIds,
+      isE04111: false,
+      gatewayCode: null,
     }
   }
 
@@ -132,6 +148,12 @@ export async function confirmWebhookOrderViaFinaticFallback(params: {
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    return { path: 'fallback_query_failed', reason, orderIds }
+    return {
+      path: 'fallback_query_failed',
+      reason,
+      orderIds,
+      isE04111: isFinaticMerchantOrderInvalidError(err),
+      gatewayCode: finaticErrorCode(err),
+    }
   }
 }
