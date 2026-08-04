@@ -2,6 +2,8 @@ import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import {
+  finaticErrorCode,
+  isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
   type FinaticOrderPaidResult,
 } from '@/lib/payments/query-finatic-order-paid'
@@ -165,6 +167,10 @@ export async function handleTerminalPaymentFailed(
         entity_id: params.orderId,
         metadata: {
           reason,
+          gatewayCode: finaticErrorCode(err),
+          // E04111 = "Finatic has no record of this reference yet", which is a very
+          // different situation from an unreachable gateway even though both land here.
+          isE04111: isFinaticMerchantOrderInvalidError(err),
           businessOrderNo: merchantOrderNo,
           reference: params.reference || null,
           amount: params.amount ?? null,

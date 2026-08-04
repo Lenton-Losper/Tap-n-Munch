@@ -25,6 +25,9 @@ async function runCleanup(req: Request) {
   if (pos.skippedUncertainCount > 0) {
     console.warn('[CLEANUP-STALE-ORDERS] POS skipped (Finatic check inconclusive, retrying next run):', pos.skippedUncertainCount, pos.skippedUncertainIds)
   }
+  if (pos.e04111Ids.length > 0) {
+    console.warn('[CLEANUP-STALE-ORDERS] POS skipped with E04111 (gateway has no record yet):', pos.e04111Ids.length, pos.e04111Ids)
+  }
 
   let hosted: { expiredCount: number; closedTabCount: number }
   try {
@@ -51,6 +54,13 @@ async function runCleanup(req: Request) {
   try {
     reconcile = await reconcileOrphanPayments(supabase)
     console.log('[CLEANUP-STALE-ORDERS] Reconcile orphan payments:', reconcile)
+    if (reconcile.recoveredAfterAutoCancel > 0) {
+      console.error(
+        '[CLEANUP-STALE-ORDERS] Payments recovered for AUTO-CANCELLED orders (needs reconciliation):',
+        reconcile.recoveredAfterAutoCancel,
+        reconcile.recoveredAfterAutoCancelIds,
+      )
+    }
   } catch (error) {
     console.error('[CLEANUP-STALE-ORDERS] Reconcile failed:', error)
   }

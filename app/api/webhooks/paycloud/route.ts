@@ -4,6 +4,11 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
 import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-sig-fallback'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import {
+  claimableStatusesForRecovery,
+  isCancelledOnE04111Evidence,
+  recordRecoveredAfterAutoCancel,
+} from '@/lib/payments/e04111-recovery'
 
 function webhookAck() {
   return new Response('success', {
@@ -66,14 +71,29 @@ function logWebhookPath(path: WebhookPath, detail: Record<string, unknown> = {})
   console.log('[PayCloud webhook] path=', path, detail)
 }
 
+type MarkPaidOutcome = {
+  updateError: Error | null
+  claimedIds: string[]
+  /** Orders the claim UPDATE could not apply, with why. */
+  unclaimed: Array<{ orderId: string; reason: 'already_paid' | 'claim_conflict' }>
+}
+
 /**
  * Routes webhook-confirmed payments through the same markOrderPaidConfirmed() every
  * other "this order is now confirmed paid" caller uses (terminal callback, verify-payment,
  * auto-cancel cron), instead of a shallow payment_status-only update. That shallow update
  * used to leave status stuck at 'pending' forever: once payment_status left the
  * CLAIMABLE_PAYMENT_STATUSES set, no other caller could ever complete the order (see
- * mark-order-paid-confirmed.ts). A claimed:false result here just means another caller
- * (e.g. a live terminal callback) already completed it concurrently -- not an error.
+ * mark-order-paid-confirmed.ts).
+ *
+ * The claim result is now PROPAGATED rather than discarded. 'already_paid' is benign --
+ * another caller (e.g. a live terminal callback) won the race. 'claim_conflict' is not:
+ * it means Finatic confirmed a real payment that we then failed to apply, and the caller
+ * must not ACK 200, or Finatic stops retrying and the payment is lost silently.
+ *
+ * Cancelled orders: an order auto-cancelled by the E04111 rule sits outside
+ * CLAIMABLE_PAYMENT_STATUSES, so the claim would match zero rows and discard the payment.
+ * claimableStatusesForRecovery widens the transition for exactly those orders.
  */
 async function markOrdersPaidConfirmedByIds(
   supabase: ReturnType<typeof createServerSupabaseClient>,
@@ -83,33 +103,74 @@ async function markOrdersPaidConfirmedByIds(
     source: string
     extraAuditMetadata?: Record<string, unknown>
   },
-): Promise<{ updateError: Error | null }> {
-  if (!orderIds.length) return { updateError: null }
+): Promise<MarkPaidOutcome> {
+  const outcome: MarkPaidOutcome = { updateError: null, claimedIds: [], unclaimed: [] }
+  if (!orderIds.length) return outcome
 
   const { data: rows, error: loadError } = await supabase
     .from('orders')
-    .select('id, restaurant_id, total, payment_method')
+    .select('id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at')
     .in('id', orderIds)
 
-  if (loadError) return { updateError: new Error(loadError.message) }
+  if (loadError) {
+    outcome.updateError = new Error(loadError.message)
+    return outcome
+  }
 
   for (const row of rows ?? []) {
+    const orderId = String(row.id)
+    const restaurantId = String(row.restaurant_id)
+    const recoveringAutoCancelled = isCancelledOnE04111Evidence(row)
+
     try {
-      await markOrderPaidConfirmed(supabase, {
-        orderId: String(row.id),
-        restaurantId: String(row.restaurant_id),
+      const claim = await markOrderPaidConfirmed(supabase, {
+        orderId,
+        restaurantId,
         reference: params.reference,
         amount: Number(row.total) || 0,
         paymentMethod: (row.payment_method as string) || 'card',
         source: params.source,
-        extraAuditMetadata: params.extraAuditMetadata,
+        extraAuditMetadata: recoveringAutoCancelled
+          ? { ...params.extraAuditMetadata, recoveredAfterAutoCancel: true }
+          : params.extraAuditMetadata,
+        fromPaymentStatuses: claimableStatusesForRecovery(row),
       })
+
+      if (claim.claimed) {
+        outcome.claimedIds.push(orderId)
+        if (recoveringAutoCancelled) {
+          await recordRecoveredAfterAutoCancel(supabase, {
+            restaurantId,
+            orderId,
+            reference: params.reference,
+            source: params.source,
+            previousCancellationReason: row.cancellation_reason
+              ? String(row.cancellation_reason)
+              : null,
+            previousCancelledAt: row.cancelled_at ? String(row.cancelled_at) : null,
+            amount: Number(row.total) || 0,
+            metadata: params.extraAuditMetadata,
+          })
+        }
+      } else {
+        outcome.unclaimed.push({ orderId, reason: claim.reason })
+      }
     } catch (err) {
-      return { updateError: err instanceof Error ? err : new Error(String(err)) }
+      outcome.updateError = err instanceof Error ? err : new Error(String(err))
+      return outcome
     }
   }
 
-  return { updateError: null }
+  return outcome
+}
+
+/**
+ * A verified payment we could not apply must never be ACKed -- Finatic would stop
+ * retrying and the payment would be lost with a success log. 'already_paid' is the one
+ * benign case: the order reached the same end state via another caller.
+ */
+function unappliedClaims(outcome: MarkPaidOutcome) {
+  return outcome.unclaimed.filter((u) => u.reason !== 'already_paid')
 }
 
 export async function POST(req: Request) {
@@ -191,14 +252,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const { updateError } = await markOrdersPaidConfirmedByIds(supabase, resolved.orderIds, {
+    const markOutcome = await markOrdersPaidConfirmedByIds(supabase, resolved.orderIds, {
       reference: merchantOrderNo,
       source: 'paycloud_webhook_valid_signature',
       extraAuditMetadata: { businessOrderNo: merchantOrderNo, path },
     })
-    if (updateError) {
-      console.error('[WEBHOOK] mark paid failed:', updateError)
+    if (markOutcome.updateError) {
+      console.error('[WEBHOOK] mark paid failed:', markOutcome.updateError)
       return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
+    }
+    const blocked = unappliedClaims(markOutcome)
+    if (blocked.length) {
+      console.error(
+        '[WEBHOOK] verified payment could not be applied (returning 503 for retry):',
+        merchantOrderNo,
+        blocked,
+      )
+      return NextResponse.json(
+        { error: 'Payment confirmed but not applied; retry later', unclaimed: blocked },
+        { status: 503 },
+      )
     }
 
     if (resolved.source === 'payment_events') {
@@ -276,7 +349,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const { updateError } = await markOrdersPaidConfirmedByIds(supabase, orderIds, {
+    const markOutcome = await markOrdersPaidConfirmedByIds(supabase, orderIds, {
       reference: merchantOrderNo,
       source: 'paycloud_webhook_fallback_finatic_verified',
       extraAuditMetadata: {
@@ -289,9 +362,23 @@ export async function POST(req: Request) {
         orderIds,
       },
     })
-    if (updateError) {
-      console.error('[WEBHOOK] fallback mark paid failed:', updateError)
+    if (markOutcome.updateError) {
+      console.error('[WEBHOOK] fallback mark paid failed:', markOutcome.updateError)
       return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
+    }
+    const blocked = unappliedClaims(markOutcome)
+    if (blocked.length) {
+      // Finatic independently confirmed this payment. Failing to apply it and ACKing
+      // anyway is exactly how a real payment gets discarded with a success log.
+      console.error(
+        '[WEBHOOK] Finatic-verified payment could not be applied (returning 503 for retry):',
+        merchantOrderNo,
+        blocked,
+      )
+      return NextResponse.json(
+        { error: 'Payment confirmed but not applied; retry later', unclaimed: blocked },
+        { status: 503 },
+      )
     }
 
     if (resolved.source === 'payment_events') {
@@ -324,12 +411,17 @@ export async function POST(req: Request) {
     merchantOrderNo,
     orderIds: fallback.orderIds,
     reason: fallback.reason,
+    gatewayCode: fallback.gatewayCode,
+    // E04111 here means Finatic has no record of the reference *yet*. Retrying is the
+    // whole point -- #149 registered 22 seconds later.
+    isE04111: fallback.isE04111,
     sigFailReason,
   })
   return NextResponse.json(
     {
       error: 'Finatic fallback query unavailable; retry later',
       reason: fallback.reason,
+      gatewayCode: fallback.gatewayCode,
       signatureFailureReason: sigFailReason,
     },
     { status: 503 },
