@@ -31,11 +31,16 @@ export default {
       return
     }
 
-    const url = `${appBaseUrl(env)}/api/cron/cleanup-stale-orders`
-    const request = new Request(url, {
-      method: 'POST',
-      headers: { 'x-cron-secret': secret },
-    })
+    // Both cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
+    // immediately unless a schedule's local send_time has been reached, so per-restaurant
+    // send times cost nothing extra and a missed tick catches up on the next one.
+    const cronRoutes = ['cleanup-stale-orders', 'send-scheduled-reports'] as const
+
+    const requestFor = (route: string) =>
+      new Request(`${appBaseUrl(env)}/api/cron/${route}`, {
+        method: 'POST',
+        headers: { 'x-cron-secret': secret },
+      })
 
     ctx.waitUntil(
       // In-process call into the compiled Next.js handler -- NOT the global fetch().
@@ -55,19 +60,24 @@ export default {
       // that self-referential request was timing out with a 522 on every single cron
       // tick (confirmed via Cloudflare Observability logs), so cleanup-stale-orders
       // never ran at all.
-      handler
-        .fetch(request, env, ctx)
-        .then(async (res: Response) => {
-          const body = await res.text()
-          if (!res.ok) {
-            console.error('[CRON] cleanup-stale-orders failed', res.status, body)
-            return
-          }
-          console.log('[CRON] cleanup-stale-orders ok', body)
-        })
-        .catch((err: unknown) => {
-          console.error('[CRON] cleanup-stale-orders fetch error', err)
-        }),
+      // One route failing must not stop the other, so each settles independently.
+      Promise.allSettled(
+        cronRoutes.map((route) =>
+          handler
+            .fetch(requestFor(route), env, ctx)
+            .then(async (res: Response) => {
+              const body = await res.text()
+              if (!res.ok) {
+                console.error(`[CRON] ${route} failed`, res.status, body)
+                return
+              }
+              console.log(`[CRON] ${route} ok`, body)
+            })
+            .catch((err: unknown) => {
+              console.error(`[CRON] ${route} invoke error`, err)
+            }),
+        ),
+      ),
     )
   },
 } satisfies ExportedHandler<WorkerEnv>

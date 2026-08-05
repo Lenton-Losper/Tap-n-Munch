@@ -42,6 +42,12 @@ export interface ReportData {
     totalRevenue: number
     totalOrders: number
     averageOrderValue: number
+    /** Distinct refunds already subtracted from totalRevenue. */
+    refundedTotal: number
+    /** Paid orders grouped by payment_method, GROSS of refunds. Sums to totalRevenue + refundedTotal. */
+    paymentMethodSplit: Array<{ method: string; orders: number; gross: number }>
+    /** Non-cancelled orders that are not paid -- stranded/pending, surfaced same-day. */
+    unresolvedOrders: number
   }
   orders: ReportOrder[]
   generatedAt: string
@@ -140,6 +146,27 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
   const totalOrders = paidOrders.length
   const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0
 
+  // Payment-method split, computed here rather than by the caller because this is the only
+  // place the RAW orders.payment_status is in scope. ReportOrder exposes `paymentStatus`,
+  // which is derived from payment_events and is null whenever no SALE row exists, so a split
+  // built from it would silently under-count. Gross of refunds, so the parts sum to grossPaid,
+  // not to totalRevenue -- refunds are reported separately.
+  const splitByMethod = new Map<string, { orders: number; gross: number }>()
+  for (const o of paidOrders as Array<Record<string, unknown>>) {
+    const method = String(o.payment_method ?? '').trim().toLowerCase() || 'unknown'
+    const entry = splitByMethod.get(method) ?? { orders: 0, gross: 0 }
+    entry.orders += 1
+    entry.gross += Number(o.total ?? 0)
+    splitByMethod.set(method, entry)
+  }
+  const paymentMethodSplit = [...splitByMethod.entries()]
+    .map(([method, v]) => ({ method, orders: v.orders, gross: Math.round(v.gross * 100) / 100 }))
+    .sort((a, b) => b.gross - a.gross)
+
+  const unresolvedOrders = (rawOrders ?? []).filter(
+    (o: any) => o.status !== 'cancelled' && o.payment_status !== 'paid',
+  ).length
+
   return {
     restaurant: {
       id: restaurant.id,
@@ -157,6 +184,9 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
       totalRevenue,
       totalOrders,
       averageOrderValue,
+      refundedTotal: Math.round(refundedDistinct * 100) / 100,
+      paymentMethodSplit,
+      unresolvedOrders,
     },
     orders,
     generatedAt: new Date().toISOString(),
