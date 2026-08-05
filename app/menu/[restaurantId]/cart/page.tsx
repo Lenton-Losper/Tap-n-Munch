@@ -15,6 +15,7 @@ import { ArrowLeft, Edit, Trash2, ShoppingCart, UtensilsCrossed } from 'lucide-r
 import Image from 'next/image'
 import Link from 'next/link'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { CartItemNote } from '@/components/menu/cart-item-note'
 import { getSupabaseMenuItemById } from '@/lib/supabase/menu'
 import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
 import { useToast } from '@/hooks/use-toast'
@@ -530,12 +531,15 @@ export default function CartPage() {
                         Add-ons: {item.selected_addons.map(a => a.name).join(', ')}
                       </p>
                     )}
-                    {item.special_instructions && (
-                      <p className="mt-1 break-words font-sans text-sm italic text-muted-foreground">
-                        &ldquo;{item.special_instructions}&rdquo;
-                      </p>
-                    )}
-                    
+                    <CartItemNote
+                      index={index}
+                      itemLabel={item.display_name || item.name}
+                      value={item.special_instructions || ''}
+                      onChange={(note) =>
+                        updateItem(index, { ...item, special_instructions: note })
+                      }
+                    />
+
                     {/* Price + Actions */}
                     <div className="mt-3 border-t border-border pt-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -600,12 +604,17 @@ export default function CartPage() {
 
               {/* Order Instructions */}
               <div className="mb-6">
-                <Label htmlFor="instructions" className="mb-2 block font-sans text-base text-foreground">
-                  Order Instructions (Optional)
+                <Label htmlFor="instructions" className="mb-1 block font-sans text-base text-foreground">
+                  Instructions for the whole order (optional)
                 </Label>
+                {/* The old label read just "Order Instructions", which gave a customer wanting
+                    "no sugar" on one of two coffees no reason to think this was the wrong box. */}
+                <p className="mb-2 font-sans text-sm text-muted-foreground">
+                  For one item only, use &ldquo;Add a note&rdquo; on that item above.
+                </p>
                 <Textarea
                   id="instructions"
-                  placeholder="Any special requests for your order?"
+                  placeholder="Anything the kitchen should know about the whole order?"
                   value={orderInstructions}
                   onChange={(e) => setOrderInstructions(e.target.value)}
                   rows={3}
