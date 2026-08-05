@@ -22,7 +22,11 @@ describe('getReceiptStatusBadge', () => {
   it('keeps the existing in-progress labels', () => {
     expect(getReceiptStatusBadge({ payment_status: 'pending' }).label).toBe('PENDING')
     expect(getReceiptStatusBadge({ status: 'accepted' }).label).toBe('ACCEPTED')
-    expect(getReceiptStatusBadge({ status: 'ready' }).label).toBe('PREPARING')
+    // CORRECTED 2026-08-05 (issue #131). This previously asserted PREPARING for `ready`,
+    // which encoded the defect: the kitchen marks an order ready and the customer is still
+    // told it is being prepared. `ready` means ready. See order-status-badge-vocabulary.test.tsx.
+    expect(getReceiptStatusBadge({ status: 'ready' }).label).toBe('READY')
+    expect(getReceiptStatusBadge({ status: 'preparing' }).label).toBe('PREPARING')
     expect(getReceiptStatusBadge({ status: 'pending' }).label).toBe('NEW')
   })
 
