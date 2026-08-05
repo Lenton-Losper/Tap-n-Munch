@@ -9,6 +9,10 @@ import { ReadyToPayTerminalButton, ReadyToPayTerminalNotified } from '@/componen
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import {
+  isBannerEligibleOrder,
+  normalizeOrderStatusForDisplay,
+} from '@/lib/orders/active-order-visibility'
 
 const GREEN = '#27AE60'
 
@@ -29,18 +33,10 @@ type TrackerStep = {
   Icon: typeof Check
 }
 
-function isBannerEligibleOrder(order: Record<string, any> | null) {
-  if (!order) return false
-  if (order.is_closed === true || order.table_closed === true) return false
-  const status = String(order.status || '').toLowerCase()
-  if (status === 'completed' || status === 'cancelled' || status === 'declined') return false
-  return ['waiting_review', 'pending', 'accepted', 'preparing', 'ready', 'ready_for_terminal'].includes(
-    status,
-  )
-}
-
 function buildTrackerSteps(order: Record<string, any>): TrackerStep[] {
-  const status = String(order.status || '').toLowerCase()
+  // Normalised, not raw: the terminal writes `confirmed` where the dashboard writes `accepted`,
+  // and an unmapped status silently draws the bar as LESS far along than the order really is.
+  const status = normalizeOrderStatusForDisplay(order.status)
   const paid = String(order.payment_status || '').toLowerCase() === 'paid'
   const waitingReview = status === 'waiting_review'
   const receivedOrBeyond =
@@ -309,10 +305,20 @@ export function MenuOrderStatusTracker({
 
   const orderNumber = currentOrder.order_number || currentOrder.id.slice(-6).toUpperCase()
   const orderTotal = Number(currentOrder.total) || 0
+  /**
+   * Two readings of the same field, deliberately.
+   *
+   * `displayStatus` is normalised and drives what the customer is TOLD. `statusLower` stays raw
+   * and drives which payment controls exist, because those POST to ready-for-terminal /
+   * ready-to-pay. Normalising there would hand a terminal-`confirmed` order a Ready to Pay
+   * button it has never had -- a payment-surface change riding along inside a display fix.
+   */
+  const displayStatus = normalizeOrderStatusForDisplay(currentOrder.status)
   const statusLower = String(currentOrder.status || '').toLowerCase()
   const payChannel = String(currentOrder.payment_channel || '').toLowerCase()
   const isPreparing =
-    statusLower === 'preparing' || (statusLower === 'accepted' && steps[3].complete && !steps[4].complete)
+    displayStatus === 'preparing' ||
+    (displayStatus === 'accepted' && steps[3].complete && !steps[4].complete)
 
   const showReadyToPay = statusLower === 'ready' || statusLower === 'accepted'
   const terminalAlreadyNotified =
