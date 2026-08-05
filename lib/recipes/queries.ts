@@ -123,9 +123,17 @@ export async function getInventorySetupOverview(
     }
   }
 
-  // Items whose tracking is switched off but whose recipe is still live. Deduction keys on
-  // recipes.is_active alone, so these keep draining stock while reading as untracked
-  // everywhere. Surfaced so the badge can say so instead of rendering nothing.
+  // Items whose tracking is switched off but whose recipe is still live.
+  //
+  // STALE PREMISE, corrected 2026-08-05. This previously read "Deduction keys on
+  // recipes.is_active alone, so these keep draining stock". That stopped being true at
+  // migration 20260731230000_deduct_recipe_stock_honors_track_inventory: the current
+  // definition (20260801010000_recipes_soft_delete.sql:81) requires
+  // `m.track_inventory IS TRUE`, so these items do NOT deduct.
+  //
+  // The list is still computed because the badge consumes it, and "linked but not tracked" is
+  // still a real state a merchant can reach and cannot undo from the UI. It is no longer a
+  // stock-draining state. Retiring or rewording the badge is a product decision.
   const trackedIds = new Set((trackedItems ?? []).map((item) => item.id as string))
   const linkedButUntrackedIds: string[] = []
   for (const [menuItemId, recipeId] of recipeByMenuItemId) {

@@ -14,15 +14,23 @@ export function MenuItemInventoryBadge({
     return null
   }
 
-  // Tracking is off, but the recipe is still live and still deducting on every sale.
-  // Previously this rendered nothing at all, so the item looked identical to one that had
-  // never been linked -- while its stock quietly drained. Say what is actually happening.
+  // Tracking is off while the recipe is still live.
   //
-  // This is a state a merchant can reach deliberately, by unticking "Track inventory" and
-  // keeping the recipe, and there is no way in the UI to remove a link once made. But
-  // "paused" would be a lie: deduct_recipe_stock ignores track_inventory entirely, so sales
-  // still reduce stock. The label says linked-not-tracked; the tooltip says the part that
-  // actually costs money.
+  // STALE PREMISE, corrected 2026-08-05. This branch and its copy were written when
+  // deduct_recipe_stock ignored track_inventory, so an untracked-but-linked item really did
+  // keep draining stock. That has not been true since migration
+  // 20260731230000_deduct_recipe_stock_honors_track_inventory; the current definition
+  // (20260801010000_recipes_soft_delete.sql:81) gates on `m.track_inventory IS TRUE`, so an
+  // untracked item does NOT deduct. Confirmed against the deployed
+  // check_stock_sufficiency_locked by live control probe on 2026-08-05: "Beef Stew" at FNB
+  // ChowNow, track_inventory=false with an ingredient at balance 0, is not refused.
+  //
+  // The badge label and tooltip below still assert the old behaviour and are therefore
+  // misleading -- they are left unchanged here deliberately, because rewording merchant-facing
+  // copy (or retiring this badge, whose whole premise is now false) is a product decision, not
+  // a comment fix. See the 2026-08-05 stock discovery note.
+  //
+  // Still true and worth surfacing: there is no way in the UI to remove a link once made.
   if (!item.track_inventory) {
     if (!setup.linkedButUntrackedIds.includes(item.id)) {
       return null
