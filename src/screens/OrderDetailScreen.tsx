@@ -1,4 +1,4 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -63,6 +63,8 @@ export default function OrderDetailScreen({route}: Props) {
   const [updatingStatus, setUpdatingStatus] = useState<OrderStatus | null>(null);
   const updating = updatingStatus !== null;
   const [reprinting, setReprinting] = useState(false);
+  /** Synchronous mirror of `reprinting` — see handleReprintReceipt (#101). */
+  const reprintingRef = useRef(false);
   const [reprintMessage, setReprintMessage] = useState<string | null>(null);
   const [reprintFailed, setReprintFailed] = useState(false);
   const [receiptPrintingEnabled, setReceiptPrintingEnabled] = useState(false);
@@ -137,17 +139,23 @@ export default function OrderDetailScreen({route}: Props) {
   };
 
   const handleReprintReceipt = async () => {
-    if (!order || reprinting) {
+    // #101: `reprinting` state alone cannot guard re-entry — two taps in the same frame both
+    // read the pre-render value, so both get through. The ref flips synchronously.
+    if (!order || reprintingRef.current) {
       return;
     }
-    const enabled = await getReceiptPrintingEnabled();
-    if (!enabled) {
-      return;
-    }
+    reprintingRef.current = true;
+    // Claim the in-flight flag BEFORE the first await. It used to be set only after
+    // getReceiptPrintingEnabled() resolved, so for the whole of that storage read the button
+    // stayed enabled and still read "Reprint Receipt" — a second tap printed a second receipt.
     setReprinting(true);
     setReprintMessage(null);
     setReprintFailed(false);
     try {
+      const enabled = await getReceiptPrintingEnabled();
+      if (!enabled) {
+        return;
+      }
       const token = await getTerminalToken();
       if (!token) {
         setReprintFailed(true);
@@ -167,6 +175,7 @@ export default function OrderDetailScreen({route}: Props) {
       setReprintFailed(true);
       setReprintMessage('Printing failed');
     } finally {
+      reprintingRef.current = false;
       setReprinting(false);
     }
   };
