@@ -12,10 +12,13 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableNativeArray
 import com.facebook.react.bridge.WritableNativeMap
+import java.util.Collections
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import wangpos.sdk4.libbasebinder.Printer
@@ -27,14 +30,13 @@ import wangpos.sdk4.libbasebinder.Printer
  * `com.wisepos.aidl.service`, which is not present on our P5 units, so its
  * queryIntentServices returns zero matches and printing never starts. SDK4 binds a DIFFERENT
  * service -- action `wangpos.sdk4.base.service.BinderPoolService`, package `wangpos.sdk4.base`
- * -- which IS installed, as proven by Wiseasy's own SDK Demo printing on our hardware.
+ * -- which IS installed, confirmed on the Finatic-UAT P5 (matchCount = 1).
  *
  * Both SDKs use the same mechanism (queryIntentServices -> bindService -> AIDL). The
  * `BaseServiceManager` reflection onto `android.os.ServiceManager` that also ships in the SDK4
- * jar is dead code -- nothing in the jar references it except itself -- so this is a
- * wrong-service problem, not a wrong-paradigm one.
+ * jar is dead code -- nothing in the jar references it except itself.
  *
- * The job sequence below is taken from Wiseasy's worked example,
+ * The job sequence is taken from Wiseasy's worked example,
  * Demo/SDKDemo/.../com/wpos/sdkdemo/print/USBPrinting.java.
  */
 class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
@@ -45,7 +47,6 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   companion object {
     private const val TAG = "WiseSdk4PrinterModule"
 
-    /** Action and package the SDK4 binder pool lives behind (BaseBinder.connectBinderPoolService). */
     const val BINDER_POOL_ACTION = "wangpos.sdk4.base.service.BinderPoolService"
     const val BINDER_POOL_PACKAGE = "wangpos.sdk4.base"
 
@@ -56,17 +57,16 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
      * of its own (BaseBinder.connectBinderPoolService -> mCountDownLatch.await()), so a service
      * that is present but wedged would hang the caller forever.
      *
-     * 8s chosen deliberately: binding an already-installed local service normally completes in
-     * well under 500ms, so this is >15x the expected cost and will not trip on a slow-but-
-     * healthy device. It is also comfortably inside a staff member's patience at the till, and
-     * deliberately SHORTER than PRINT_TIMEOUT_MS so a failure here is attributable to binding
-     * rather than to printing.
+     * 8s: binding an already-installed local service normally completes well under 500ms, so
+     * this is >15x expected and will not trip on a slow-but-healthy device; it is inside a
+     * staff member's patience at the till; and it is deliberately SHORTER than
+     * PRINT_TIMEOUT_MS so a failure here is attributable to binding rather than printing.
      */
     private const val BIND_TIMEOUT_MS = 8_000L
     private const val PRINT_TIMEOUT_MS = 20_000L
     private const val STATUS_TIMEOUT_MS = 8_000L
 
-    /** Paper. setPrintPaperType: 0 = 58mm, 1 = 80mm, 2 = 104mm (USBPrinting.java:189-196). */
+    /** setPrintPaperType: 0 = 58mm, 1 = 80mm, 2 = 104mm (USBPrinting.java:189-196). */
     const val PAPER_TYPE_58MM = 0
     const val PAPER_TYPE_80MM = 1
     const val PAPER_TYPE_104MM = 2
@@ -78,13 +78,12 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     private const val LARGE_FONT_SIZE = 32
     private const val DIVIDER_TEXT = "--------------------------------------------"
 
-    /** Printer.PAPER_WIDTH in the SDK. Kept for status reporting only. */
     private const val CANVAS_WIDTH_DOTS = 384
-
-    /** setPrintType(0) is the internal/USB printer, per the demo's TYPE extra. */
     private const val PRINT_TYPE_INTERNAL = 0
-
     private const val ERR_SUCCESS = 0
+
+    /** How many step rows to retain for the Diagnostics screen. */
+    private const val MAX_RETAINED_STEPS = 64
 
     /** setPrintPaperWide / setPrintPaperType return codes (USBPrinting.java:135-153). */
     private fun paperResultMessage(code: Int): String =
@@ -99,8 +98,6 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   }
 
   // ---------------------------------------------------------------- line model (ported as-is)
-  //
-  // Ported unchanged from WiseSdk6PrinterModule so the JS payload contract is identical.
 
   private sealed class LineSnapshot {
     data class Text(val text: String, val align: String?, val bold: Boolean, val large: Boolean) :
@@ -116,13 +113,105 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   private val mainHandler = Handler(Looper.getMainLooper())
 
   /**
-   * Single worker for every SDK call. The SDK4 Printer constructor blocks, and the print calls
-   * are synchronous AIDL, so none of this may touch the main thread. One thread also serialises
-   * jobs, which the buffered printInit/printFinish model requires anyway.
+   * Serialises print jobs. The SDK's print calls are synchronous AIDL and the
+   * printInit/printFinish model is stateful, so two overlapping jobs would interleave into one
+   * buffer -- printMultiseriateString is static and writes through BaseBinder's shared
+   * `protected static mService`.
+   *
+   * NEVER submit to this executor from a task already running on it, and never block a task on
+   * another task submitted to it. It has ONE thread: the inner task queues behind the outer one
+   * and can never start, so the outer wait can only end in a timeout. That exact deadlock
+   * shipped in vc77 -- ensurePrinter() re-entered this executor to construct the Printer, so
+   * every print blocked the full 8s and failed as PRINTER_BIND_TIMEOUT while the service was
+   * healthy the whole time. Construction now runs on its own dedicated thread; keep it there.
    */
   private val printerExecutor = Executors.newSingleThreadExecutor()
 
   @Volatile private var cachedPrinter: Printer? = null
+
+  // ---------------------------------------------------------------- step recording
+
+  private data class StepResult(
+    val step: String,
+    val code: Int?,
+    val ok: Boolean,
+    val detail: String?,
+  )
+
+  /** Steps from the most recent job, for the Diagnostics screen. ADB is not reachable here. */
+  private val lastSteps: MutableList<StepResult> =
+    Collections.synchronizedList(ArrayList<StepResult>())
+
+  @Volatile private var lastJobStartedAt: Long = 0L
+  @Volatile private var lastJobOutcome: String = "none"
+
+  private fun beginJob(label: String) {
+    synchronized(lastSteps) { lastSteps.clear() }
+    lastJobStartedAt = System.currentTimeMillis()
+    lastJobOutcome = "running"
+    Log.i(TAG, "=== job start: $label ===")
+  }
+
+  private fun record(step: String, code: Int?, ok: Boolean, detail: String? = null) {
+    synchronized(lastSteps) {
+      if (lastSteps.size < MAX_RETAINED_STEPS) {
+        lastSteps.add(StepResult(step, code, ok, detail))
+      } else if (lastSteps.size == MAX_RETAINED_STEPS) {
+        lastSteps.add(StepResult("…truncated", null, true, "step log capped at $MAX_RETAINED_STEPS"))
+      }
+    }
+    val codeText = code?.toString() ?: "-"
+    if (ok) {
+      Log.i(TAG, "step=$step code=$codeText ok${if (detail != null) " ($detail)" else ""}")
+    } else {
+      Log.e(TAG, "step=$step code=$codeText FAILED${if (detail != null) " ($detail)" else ""}")
+    }
+  }
+
+  /**
+   * Runs one SDK call, records its integer return, and fails with the STEP NAME attached.
+   * A bare code costs another test cycle; "failed at printInit (code 2)" does not.
+   */
+  private fun step(name: String, detail: String? = null, call: () -> Int): Int {
+    val code =
+      try {
+        call()
+      } catch (e: Exception) {
+        record(name, null, false, e.message ?: e.javaClass.simpleName)
+        throw PrintStepException(name, null, e.message ?: "threw ${e.javaClass.simpleName}", e)
+      }
+    val ok = code == ERR_SUCCESS
+    record(name, code, ok, detail)
+    if (!ok) throw PrintStepException(name, code, detail)
+    return code
+  }
+
+  /** Non-fatal variant: records the result but never throws (config the SDK treats as advisory). */
+  private fun softStep(name: String, detail: String? = null, call: () -> Int): Int {
+    return try {
+      val code = call()
+      record(name, code, code == ERR_SUCCESS, detail)
+      code
+    } catch (e: Exception) {
+      record(name, null, false, e.message ?: e.javaClass.simpleName)
+      -1
+    }
+  }
+
+  private class PrintStepException(
+    val step: String,
+    val code: Int?,
+    val detail: String?,
+    cause: Throwable? = null,
+  ) : Exception(
+      "failed at $step" + (code?.let { " (code $it)" } ?: "") + (detail?.let { " — $it" } ?: ""),
+      cause,
+    )
+
+  private class PrinterSetupException(val code: String, override val message: String) :
+    Exception(message)
+
+  // ---------------------------------------------------------------- snapshot (ported as-is)
 
   private fun snapshotLines(lines: ReadableArray): List<LineSnapshot> {
     val out = ArrayList<LineSnapshot>(lines.size())
@@ -170,11 +259,6 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   }
 
   // ---------------------------------------------------------------- GUARD 1: service resolution
-  //
-  // BaseBinder.getExplicitIntent returns NULL unless queryIntentServices matches EXACTLY one
-  // service, and the SDK then calls bindService(null, ...), which throws. Zero matches and two
-  // matches are completely different faults with completely different remedies, and the SDK
-  // collapses both into the same NPE. We resolve first so they can never surface identically.
 
   private sealed class ServiceResolution {
     data class Ok(val packageName: String, val className: String) : ServiceResolution()
@@ -186,8 +270,7 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
 
   private fun resolveBinderPoolService(context: Context): ServiceResolution {
     val pm: PackageManager = context.packageManager
-    val intent = Intent(BINDER_POOL_ACTION)
-    val matches = pm.queryIntentServices(intent, 0)
+    val matches = pm.queryIntentServices(Intent(BINDER_POOL_ACTION), 0)
     return when {
       matches.isNullOrEmpty() -> ServiceResolution.Absent
       matches.size == 1 -> {
@@ -201,7 +284,11 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  /** Staff-readable, and deliberately different per case. */
+  /**
+   * BaseBinder.getExplicitIntent returns null unless queryIntentServices matches EXACTLY one
+   * service, then bindService(null, ...) throws -- so "absent" and "ambiguous" surface
+   * identically as an NPE. Resolve first so they cannot.
+   */
   private fun resolutionError(resolution: ServiceResolution): Pair<String, String>? =
     when (resolution) {
       is ServiceResolution.Ok -> null
@@ -220,8 +307,11 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   // ---------------------------------------------------------------- GUARD 2: bounded construction
 
   /**
-   * Builds (or returns) the Printer. Runs on [printerExecutor] and is bounded by
-   * [BIND_TIMEOUT_MS] because the SDK constructor's own wait is unbounded.
+   * Builds (or returns) the Printer.
+   *
+   * Construction runs on its OWN dedicated thread, never on [printerExecutor]. See the comment
+   * on that field: a single-thread executor cannot have a task that waits on another task
+   * submitted to the same executor, and vc77 shipped exactly that deadlock.
    */
   private fun ensurePrinter(): Result<Printer> {
     cachedPrinter?.let { return Result.success(it) }
@@ -229,20 +319,28 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     val context = reactContext.applicationContext
     val resolution = resolveBinderPoolService(context)
     resolutionError(resolution)?.let { (code, message) ->
-      Log.w(TAG, "service resolution failed: $code — $message")
+      record("resolveService", null, false, code)
       return Result.failure(PrinterSetupException(code, message))
     }
     val ok = resolution as ServiceResolution.Ok
-    Log.i(TAG, "binder pool resolved to ${ok.packageName}/${ok.className}")
+    record("resolveService", null, true, "${ok.packageName}/${ok.className}")
 
-    val future = printerExecutor.submit(Callable { Printer(context) })
+    // Dedicated thread + FutureTask: no executor involvement at all.
+    val construct = FutureTask(Callable { Printer(context) })
+    val thread = Thread(construct, "WiseSdk4-PrinterConstruct")
+    thread.isDaemon = true
+    thread.start()
+
     return try {
-      val printer = future.get(BIND_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-      printer.setPrintType(PRINT_TYPE_INTERNAL)
+      val printer = construct.get(BIND_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      record("newPrinter", null, true, "bound in <${BIND_TIMEOUT_MS}ms")
+      softStep("setPrintType", "internal($PRINT_TYPE_INTERNAL)") { printer.setPrintType(PRINT_TYPE_INTERNAL) }
       cachedPrinter = printer
       Result.success(printer)
     } catch (e: TimeoutException) {
-      future.cancel(true)
+      construct.cancel(true)
+      thread.interrupt()
+      record("newPrinter", null, false, "timeout after ${BIND_TIMEOUT_MS}ms")
       Log.e(TAG, "Printer construction exceeded ${BIND_TIMEOUT_MS}ms", e)
       Result.failure(
         PrinterSetupException(
@@ -252,6 +350,7 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
         ),
       )
     } catch (e: ExecutionException) {
+      record("newPrinter", null, false, e.cause?.message ?: e.message)
       Log.e(TAG, "Printer construction threw", e)
       Result.failure(
         PrinterSetupException(
@@ -260,6 +359,7 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
         ),
       )
     } catch (e: Exception) {
+      record("newPrinter", null, false, e.message)
       Log.e(TAG, "Printer construction failed", e)
       Result.failure(
         PrinterSetupException("PRINTER_BIND_FAILED", e.message ?: "Could not connect to the printer"),
@@ -267,10 +367,7 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  private class PrinterSetupException(val code: String, override val message: String) :
-    Exception(message)
-
-  /** Runs [block] on the printer thread with a ceiling, rejecting the promise on any failure. */
+  /** Runs [block] on the printer thread with a ceiling; never blocks the RN bridge. */
   private fun withPrinter(
     promise: Promise,
     timeoutMs: Long,
@@ -279,23 +376,38 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     val task =
       printerExecutor.submit(
         Callable {
+          // ensurePrinter() constructs on its own thread — it does NOT re-enter this executor.
           val printer = ensurePrinter().getOrElse { throw it }
           block(printer)
         },
       )
-    // Bound the whole operation on a throwaway thread so the RN bridge is never blocked.
     Thread {
       try {
-        resolvePromise(promise, task.get(timeoutMs, TimeUnit.MILLISECONDS))
+        val value = task.get(timeoutMs, TimeUnit.MILLISECONDS)
+        lastJobOutcome = "success"
+        resolvePromise(promise, value)
       } catch (e: TimeoutException) {
         task.cancel(true)
+        lastJobOutcome = "timeout after ${timeoutMs}ms"
+        record("jobTimeout", null, false, "exceeded ${timeoutMs}ms")
         rejectPromise(promise, "PRINTER_TIMEOUT", "The printer did not respond in time.", e)
       } catch (e: ExecutionException) {
         when (val cause = e.cause) {
-          is PrinterSetupException -> rejectPromise(promise, cause.code, cause.message, cause)
-          else -> rejectPromise(promise, "PRINT_FAILED", cause?.message ?: e.message, e)
+          is PrinterSetupException -> {
+            lastJobOutcome = cause.code
+            rejectPromise(promise, cause.code, cause.message, cause)
+          }
+          is PrintStepException -> {
+            lastJobOutcome = "failed at ${cause.step}"
+            rejectPromise(promise, "PRINT_FAILED", cause.message, cause)
+          }
+          else -> {
+            lastJobOutcome = "failed: ${cause?.message ?: e.message}"
+            rejectPromise(promise, "PRINT_FAILED", cause?.message ?: e.message, e)
+          }
         }
       } catch (e: Exception) {
+        lastJobOutcome = "failed: ${e.message}"
         rejectPromise(promise, "PRINT_FAILED", e.message, e)
       }
     }
@@ -305,49 +417,50 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   // ---------------------------------------------------------------- layout
 
   /**
-   * Renders one line.
-   *
-   * The SDK6 version had to compute absolute column widths in dots because addMultiText takes
-   * pixel widths. SDK4's printMultiseriateString takes a PROPORTION array and does the division
-   * itself, so that arithmetic is gone: a row of N columns is simply weighted 1 each, with the
-   * first column widened because the description is always the long one on a receipt.
+   * SDK6's addMultiText needed absolute dot widths, so it computed column arithmetic by hand.
+   * SDK4's printMultiseriateString takes a PROPORTION array and divides itself.
    */
-  private fun addLine(printer: Printer, line: LineSnapshot) {
+  private fun addLine(printer: Printer, index: Int, line: LineSnapshot) {
     when (line) {
       is LineSnapshot.Text ->
-        printer.printString(
-          line.text,
-          if (line.large) LARGE_FONT_SIZE else DEFAULT_FONT_SIZE,
-          alignFrom(line.align),
-          line.bold,
-          false,
-        )
+        step("line[$index].text", line.text.take(24)) {
+          printer.printString(
+            line.text,
+            if (line.large) LARGE_FONT_SIZE else DEFAULT_FONT_SIZE,
+            alignFrom(line.align),
+            line.bold,
+            false,
+          )
+        }
       is LineSnapshot.Row -> {
         val count = line.columns.size
         if (count == 0) return
-        // Description gets 3 parts, every trailing figure 1 — matching the demo's
-        // {3,1,1,1} worked example for an item/qty/price/tax row.
         val proportions = IntArray(count) { if (it == 0 && count > 1) 3 else 1 }
-        // NOTE: printMultiseriateString is declared STATIC on Printer, unlike every other
-        // print call on this class. It still operates on BaseBinder's shared `protected static
+        // NOTE: printMultiseriateString is declared STATIC on Printer, unlike every other print
+        // call on this class. It still operates on BaseBinder's shared `protected static
         // mService`, so it is only valid once an instance has been constructed and the binder
-        // pool has connected -- which `printer` here guarantees. Do not hoist this call above
-        // ensurePrinter().
-        Printer.printMultiseriateString(
-          proportions,
-          line.columns.toTypedArray(),
-          DEFAULT_FONT_SIZE,
-          Printer.Align.LEFT,
-          false,
-          false,
-        )
+        // pool has connected -- which `printer` here guarantees. Do not hoist above ensurePrinter().
+        step("line[$index].row", "${count} cols") {
+          Printer.printMultiseriateString(
+            proportions,
+            line.columns.toTypedArray(),
+            DEFAULT_FONT_SIZE,
+            Printer.Align.LEFT,
+            false,
+            false,
+          )
+        }
       }
       is LineSnapshot.Feed ->
-        repeat(line.lines.coerceAtLeast(0)) {
-          printer.printString(" ", DEFAULT_FONT_SIZE, Printer.Align.LEFT, false, false)
+        repeat(line.lines.coerceAtLeast(0)) { n ->
+          step("line[$index].feed[$n]") {
+            printer.printString(" ", DEFAULT_FONT_SIZE, Printer.Align.LEFT, false, false)
+          }
         }
       LineSnapshot.Divider ->
-        printer.printString(DIVIDER_TEXT, DEFAULT_FONT_SIZE, Printer.Align.CENTER, false, false)
+        step("line[$index].divider") {
+          printer.printString(DIVIDER_TEXT, DEFAULT_FONT_SIZE, Printer.Align.CENTER, false, false)
+        }
     }
   }
 
@@ -364,23 +477,7 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   fun isAvailable(promise: Promise) {
     Thread {
       val resolution = resolveBinderPoolService(reactContext.applicationContext)
-      val map = WritableNativeMap()
-      when (resolution) {
-        is ServiceResolution.Ok -> {
-          map.putBoolean("available", true)
-          map.putString("service", "${resolution.packageName}/${resolution.className}")
-        }
-        is ServiceResolution.Absent -> {
-          map.putBoolean("available", false)
-          map.putString("reason", "PRINTER_SERVICE_ABSENT")
-        }
-        is ServiceResolution.Ambiguous -> {
-          map.putBoolean("available", false)
-          map.putString("reason", "PRINTER_SERVICE_AMBIGUOUS")
-          map.putInt("matchCount", resolution.matches.size)
-        }
-      }
-      resolvePromise(promise, map)
+      resolvePromise(promise, resolution is ServiceResolution.Ok)
     }
       .start()
   }
@@ -389,13 +486,14 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   fun getStatus(promise: Promise) {
     withPrinter(promise, STATUS_TIMEOUT_MS) { printer ->
       val status = IntArray(1)
-      val ret = printer.getPrinterStatus(status)
+      val ret = softStep("getPrinterStatus") { printer.getPrinterStatus(status) }
       WritableNativeMap().apply {
         putInt("result", ret)
         putInt("status", status[0])
         // USBPrinting.java ICommonCallback: 0 = normal, 2 = out of paper.
-        putBoolean("ready", ret == ERR_SUCCESS && status[0] == 0)
-        putBoolean("outOfPaper", status[0] == 2)
+        putBoolean("connected", ret == ERR_SUCCESS)
+        putBoolean("hasPaper", status[0] != 2)
+        putBoolean("statusUnknown", ret != ERR_SUCCESS)
         putInt("canvasWidthDots", CANVAS_WIDTH_DOTS)
       }
     }
@@ -423,51 +521,79 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
       if (options?.hasKey("paperType") == true) options.getInt("paperType") else DEFAULT_PAPER_TYPE
     val paperWidth = if (options?.hasKey("paperWidthMm") == true) options.getInt("paperWidthMm") else null
 
+    beginJob("printJob(${snapshot.size} lines)")
+
     withPrinter(promise, PRINT_TIMEOUT_MS) { printer ->
-      // setPrintType is applied at construction; gray level is persistent config and the SDK
-      // notes it needs a printer restart to take effect, so a non-zero result is logged, not fatal.
-      val grayResult = printer.setGrayLevel(grayLevel)
-      if (grayResult != ERR_SUCCESS) Log.w(TAG, "setGrayLevel($grayLevel) returned $grayResult")
+      // Gray level is persistent config; the SDK notes it needs a printer restart to take
+      // effect, so a non-zero result is recorded but not fatal.
+      softStep("setGrayLevel", "level=$grayLevel") { printer.setGrayLevel(grayLevel) }
 
       if (paperWidth != null) {
-        val widthResult = printer.setPrintPaperWide(paperWidth)
-        if (widthResult != ERR_SUCCESS) {
-          throw IllegalStateException(
-            "setPrintPaperWide($paperWidth) failed: ${paperResultMessage(widthResult)}",
-          )
-        }
+        step("setPrintPaperWide", "width=${paperWidth}mm") { printer.setPrintPaperWide(paperWidth) }
       } else {
-        val typeResult = printer.setPrintPaperType(paperType)
-        if (typeResult != ERR_SUCCESS) {
-          throw IllegalStateException(
-            "setPrintPaperType($paperType) failed: ${paperResultMessage(typeResult)}",
-          )
+        val typeCode =
+          try {
+            printer.setPrintPaperType(paperType)
+          } catch (e: Exception) {
+            record("setPrintPaperType", null, false, e.message)
+            throw PrintStepException("setPrintPaperType", null, e.message, e)
+          }
+        record("setPrintPaperType", typeCode, typeCode == ERR_SUCCESS, "type=$paperType")
+        if (typeCode != ERR_SUCCESS) {
+          throw PrintStepException("setPrintPaperType", typeCode, paperResultMessage(typeCode))
         }
       }
 
-      val initResult = printer.printInit()
-      if (initResult != ERR_SUCCESS) {
-        throw IllegalStateException("printInit failed with code $initResult")
-      }
-      printer.clearPrintDataCache()
+      step("printInit") { printer.printInit() }
+      step("clearPrintDataCache") { printer.clearPrintDataCache() }
 
-      for (line in snapshot) addLine(printer, line)
+      snapshot.forEachIndexed { i, line -> addLine(printer, i, line) }
 
-      printer.printPaper(feedAfterDots)
-      val finishResult = printer.printFinish()
-      if (finishResult != ERR_SUCCESS) {
-        throw IllegalStateException("printFinish failed with code $finishResult")
-      }
+      step("printPaper", "feed=$feedAfterDots") { printer.printPaper(feedAfterDots) }
+      step("printFinish") { printer.printFinish() }
+      Log.i(TAG, "=== job complete ===")
       true
     }
+  }
+
+  /**
+   * Step-by-step results of the most recent job, for the Diagnostics screen.
+   *
+   * ADB is not reachable on these terminals and TMS is the only deploy path, so logcat is not
+   * a diagnostic channel in practice. This is.
+   */
+  @ReactMethod
+  fun getLastPrintSteps(promise: Promise) {
+    val arr = WritableNativeArray()
+    synchronized(lastSteps) {
+      for (s in lastSteps) {
+        arr.pushMap(
+          WritableNativeMap().apply {
+            putString("step", s.step)
+            if (s.code != null) putInt("code", s.code) else putNull("code")
+            putBoolean("ok", s.ok)
+            putString("detail", s.detail ?: "")
+          },
+        )
+      }
+    }
+    resolvePromise(
+      promise,
+      WritableNativeMap().apply {
+        putArray("steps", arr)
+        putString("outcome", lastJobOutcome)
+        putDouble("startedAt", lastJobStartedAt.toDouble())
+        putInt("count", arr.size())
+      },
+    )
   }
 
   /** New capability — no SDK6 equivalent. */
   @ReactMethod
   fun cutPaper(promise: Promise) {
+    beginJob("cutPaper")
     withPrinter(promise, STATUS_TIMEOUT_MS) { printer ->
-      val ret = printer.cutPaper()
-      if (ret != ERR_SUCCESS) throw IllegalStateException("cutPaper failed with code $ret")
+      step("cutPaper") { printer.cutPaper() }
       true
     }
   }
@@ -475,11 +601,9 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
   /** New capability — no SDK6 equivalent. */
   @ReactMethod
   fun setPrintLineSpacing(lineSpacing: Int, promise: Promise) {
+    beginJob("setPrintLineSpacing($lineSpacing)")
     withPrinter(promise, STATUS_TIMEOUT_MS) { printer ->
-      val ret = printer.setPrintLineSpacing(lineSpacing)
-      if (ret != ERR_SUCCESS) {
-        throw IllegalStateException("setPrintLineSpacing($lineSpacing) failed with code $ret")
-      }
+      step("setPrintLineSpacing", "spacing=$lineSpacing") { printer.setPrintLineSpacing(lineSpacing) }
       true
     }
   }
@@ -490,23 +614,25 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     Thread {
       val pm = reactContext.applicationContext.packageManager
       val matches = pm.queryIntentServices(Intent(BINDER_POOL_ACTION), 0) ?: emptyList()
-      val map = WritableNativeMap()
-      map.putString("action", BINDER_POOL_ACTION)
-      map.putString("expectedPackage", BINDER_POOL_PACKAGE)
-      map.putInt("matchCount", matches.size)
-      map.putString(
-        "matches",
-        matches.joinToString(", ") { "${it.serviceInfo.packageName}/${it.serviceInfo.name}" },
-      )
-      map.putString(
-        "verdict",
-        when (matches.size) {
-          0 -> "PRINTER_SERVICE_ABSENT"
-          1 -> "OK"
-          else -> "PRINTER_SERVICE_AMBIGUOUS"
+      val components = WritableNativeArray()
+      for (m in matches) components.pushString("${m.serviceInfo.packageName}/${m.serviceInfo.name}")
+      resolvePromise(
+        promise,
+        WritableNativeMap().apply {
+          putString("action", BINDER_POOL_ACTION)
+          putString("expectedPackage", BINDER_POOL_PACKAGE)
+          putInt("matchCount", matches.size)
+          putArray("components", components)
+          putString(
+            "summary",
+            when (matches.size) {
+              0 -> "PRINTER_SERVICE_ABSENT — no app provides $BINDER_POOL_ACTION"
+              1 -> "OK — exactly one component, SDK can bind"
+              else -> "PRINTER_SERVICE_AMBIGUOUS — ${matches.size} providers"
+            },
+          )
         },
       )
-      resolvePromise(promise, map)
     }
       .start()
   }

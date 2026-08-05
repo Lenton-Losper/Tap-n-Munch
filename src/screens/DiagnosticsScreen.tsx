@@ -39,6 +39,9 @@ import {
   RealInitPosSdkResult,
   probeUsdkService,
   UsdkServiceProbe,
+  ACTIVE_PRINTER_TRANSPORT,
+  getLastPrintSteps,
+  PrintStepReport,
 } from '../lib/wiseSdk6Printer';
 import {
   listSystemPrintServices,
@@ -85,6 +88,7 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
 
   const [receiptPrintingOn, setReceiptPrintingOn] = useState(false);
   const [printerLabel, setPrinterLabel] = useState<string>('Not configured');
+  const [printSteps, setPrintSteps] = useState<PrintStepReport | null>(null);
   const [lastPrint, setLastPrint] = useState('None');
   const [lastError, setLastError] = useState('None');
   const [testPrinting, setTestPrinting] = useState(false);
@@ -134,6 +138,9 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       getTerminalToken(),
     ]);
     setReceiptPrintingOn(enabled);
+    // Per-step results of the last job. ADB is not reachable on these terminals, so this is
+    // the only place a failing step is visible at the venue.
+    setPrintSteps(await getLastPrintSteps());
     const formatted = formatLastPrint(last);
     setLastPrint(formatted.lastPrint);
     setLastError(formatted.lastError);
@@ -362,6 +369,27 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
 
       <Text style={styles.label}>Last Error</Text>
       <Text style={styles.value}>{lastError}</Text>
+
+      {/* Per-step results of the last print job (SDK4 transport only). ADB is not reachable
+          on these terminals and TMS is the only deploy path, so logcat is not a diagnostic
+          channel in practice — this is. Read it out or screenshot it. */}
+      {printSteps && printSteps.count > 0 ? (
+        <>
+          <Text style={styles.label}>
+            Last print steps ({printSteps.count}) — outcome: {printSteps.outcome}
+          </Text>
+          {printSteps.steps.map((s, i) => (
+            <Text
+              key={`${s.step}-${i}`}
+              style={[styles.value, !s.ok && styles.stepFailed]}
+              selectable>
+              {s.ok ? '✓' : '✗'} {s.step}
+              {s.code !== null ? ` (code ${s.code})` : ''}
+              {s.detail ? ` — ${s.detail}` : ''}
+            </Text>
+          ))}
+        </>
+      ) : null}
 
       <Pressable
         style={[styles.testBtn, testPrinting && styles.btnDisabled]}
@@ -848,6 +876,11 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
         {(RuntimeConfig as {GIT_SHA?: string} | undefined)?.GIT_SHA || 'unknown'}
       </Text>
 
+      <Text style={styles.label}>Printer transport</Text>
+      <Text style={styles.value} selectable>
+        {ACTIVE_PRINTER_TRANSPORT}
+      </Text>
+
       <Text style={styles.label}>API Base URL (RuntimeConfig)</Text>
       <Text style={styles.value}>
         {RuntimeConfig?.API_BASE_URL || 'NOT SET'}
@@ -946,6 +979,10 @@ const styles = StyleSheet.create({
     color: '#888',
     marginTop: 8,
     lineHeight: 16,
+  },
+  stepFailed: {
+    color: '#B00020',
+    fontWeight: '600',
   },
   label: {
     fontSize: 11,

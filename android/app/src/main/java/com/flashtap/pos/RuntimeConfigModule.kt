@@ -16,5 +16,9 @@ class RuntimeConfigModule(reactContext: ReactApplicationContext) :
         "ENV_NAME" to BuildConfig.ENV_NAME,
         "NOTIFY_URL" to BuildConfig.NOTIFY_URL,
         "PAYCLOUD_APP_ID" to BuildConfig.PAYCLOUD_APP_ID,
+        // Issue #162: build.gradle stamped GIT_SHA into BuildConfig but nothing bridged it, so
+        // DiagnosticsScreen's "Build commit" row always rendered "unknown" and the #149
+        // capability -- a device naming its own source commit -- never actually worked.
+        "GIT_SHA" to BuildConfig.GIT_SHA,
     )
 }

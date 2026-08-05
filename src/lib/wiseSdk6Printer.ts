@@ -51,6 +51,38 @@ interface WiseSdk6PrinterModuleType {
   }>;
   enumeratePrinterRelatedServices?: () => Promise<PrinterServiceEnumResult>;
   testRealInitPosSdk?: () => Promise<RealInitPosSdkResult>;
+  /** SDK4 only. Step-by-step results of the most recent job — ADB is not reachable on these units. */
+  getLastPrintSteps?: () => Promise<PrintStepReport>;
+}
+
+export interface PrintStep {
+  step: string;
+  code: number | null;
+  ok: boolean;
+  detail: string;
+}
+
+export interface PrintStepReport {
+  steps: PrintStep[];
+  /** 'none' | 'running' | 'success' | 'failed at <step>' | a setup error code. */
+  outcome: string;
+  startedAt: number;
+  count: number;
+}
+
+/**
+ * Per-step results of the last print job, for the Diagnostics screen.
+ *
+ * Returns null on the SDK6 transport, which has no equivalent — the caller should render
+ * nothing rather than an empty table.
+ */
+export async function getLastPrintSteps(): Promise<PrintStepReport | null> {
+  if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.getLastPrintSteps) return null;
+  try {
+    return await WiseSdk6PrinterModule.getLastPrintSteps();
+  } catch {
+    return null;
+  }
 }
 
 /**
