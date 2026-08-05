@@ -142,6 +142,19 @@ export async function POST(req: Request) {
       await releaseClaim()
       return NextResponse.json({ error: message }, { status: 400 })
     }
+    // Issue #151: a NULL `restaurants.finatic_terminal_sn` is NOT a misconfiguration, and
+    // populating the column to "fix" this 400 is wrong. Mingle Brew & Pour and FNB ChowNow both
+    // have real Finatic credentials and a NULL SN, and both take card payments successfully.
+    //
+    // Two distinct flows exist. This route is the REMOTE PUSH one: the dashboard tells a named
+    // reader to charge, and the SN is how it addresses that specific device — so it genuinely
+    // requires one. Those venues instead use the TERMINAL-INITIATED flow, where the terminal is
+    // the reader: PaymentScreen -> processPaymentIntent -> Wiseasy SDK charges on the device,
+    // then the app reports the result to settle. Nothing addresses a remote reader, so no SN is
+    // needed and none is read.
+    //
+    // Setting an SN would not change the flow actually in use, and a WRONG one would break this
+    // route if remote push were ever enabled for those venues.
     if (!terminalSn) {
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'No terminal configured for this restaurant')
       await releaseClaim()
