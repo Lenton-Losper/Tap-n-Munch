@@ -53,9 +53,31 @@ interface WiseSdk6PrinterModuleType {
   testRealInitPosSdk?: () => Promise<RealInitPosSdkResult>;
 }
 
-const {WiseSdk6PrinterModule} = NativeModules as {
+/**
+ * Transport selection. SDK4 is preferred because it binds
+ * `wangpos.sdk4.base.service.BinderPoolService`, which is present on our P5 units, whereas
+ * SDK6 binds `com.wisepos.aidl.service`, which is not — its queryIntentServices returns zero
+ * matches and printing never starts.
+ *
+ * Both modules expose the same method surface (isAvailable / getStatus / printJob / probeService),
+ * so every call site below is unchanged. SDK6 remains as a fallback only through the
+ * verification window; once SDK4 has printed on a real device the native module and this
+ * fallback both go, leaving one transport.
+ */
+const {WiseSdk4PrinterModule, WiseSdk6PrinterModule: LegacySdk6Module} = NativeModules as {
+  WiseSdk4PrinterModule?: WiseSdk6PrinterModuleType;
   WiseSdk6PrinterModule?: WiseSdk6PrinterModuleType;
 };
+
+const WiseSdk6PrinterModule: WiseSdk6PrinterModuleType | undefined =
+  WiseSdk4PrinterModule ?? LegacySdk6Module;
+
+/** Which native transport the app resolved to, for diagnostics and the Settings screen. */
+export const ACTIVE_PRINTER_TRANSPORT: 'sdk4' | 'sdk6' | 'none' = WiseSdk4PrinterModule
+  ? 'sdk4'
+  : LegacySdk6Module
+    ? 'sdk6'
+    : 'none';
 
 function errorCodeOf(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error

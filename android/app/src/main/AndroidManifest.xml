@@ -3,6 +3,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Wiseasy SDK4 printer. Declared by their own SDK Demo, which prints on our P5
+         units. System-level sharing is NOT required: the demo's
+         sharedUserId="android.uid.system" is commented out and we set none either. -->
+    <uses-permission android:name="com.pos.permission.PRINTER" />
+
     <!-- Private POS APK: needed so queryIntentServices can see the system USDK
          printer service on Android 11+ when intent-filter visibility alone is insufficient. -->
     <uses-permission
@@ -28,6 +33,12 @@
         <intent>
             <action android:name="com.wisepos.aidl.service" />
         </intent>
+        <!-- SDK4 binder pool: the transport WiseSdk4PrinterModule binds. Its
+             BaseBinder resolves this action via queryIntentServices and requires
+             EXACTLY one match, so visibility of it must be explicit. -->
+        <intent>
+            <action android:name="wangpos.sdk4.base.service.BinderPoolService" />
+        </intent>
         <intent>
             <action android:name="com.wisedevice.aidl.service" />
         </intent>
@@ -37,6 +48,7 @@
         <package android:name="com.android.bips" />
         <package android:name="com.wiseasy.usdk" />
         <package android:name="com.wiseasy.service" />
+        <package android:name="wangpos.sdk4.base" />
         <package android:name="com.sdksuite.usdk" />
         <package android:name="com.wiseasy.cashier" />
         <package android:name="com.wiseasy.pay" />

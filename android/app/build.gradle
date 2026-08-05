@@ -95,8 +95,8 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 76
-        versionName "1.75"
+        versionCode 77
+        versionName "1.76"
         buildConfigField "String", "GIT_SHA", "\"${gitSha()}\""
     }
     buildFeatures {
@@ -184,4 +184,10 @@ dependencies {
     // matching the SDK6 demo app's own MainActivity.onCreate() sequence.
     implementation(name: 'WiseSdk_P_1.29_00a_24041501', ext: 'aar')
     implementation(name: 'WiseSdk_D_1.09_00a_24032501', ext: 'aar')
+
+    // Wiseasy SDK4 base binder — the printer transport that actually resolves on our P5 units
+    // (WiseSdk4PrinterModule.kt). Printing ONLY: the Emv, KeyManager and emvprocess jars from
+    // the same package are deliberately NOT included, since using SDK4 for payments would make
+    // FlashTap the payment application instead of calling WiseCashier.
+    implementation files('libs/SDK4BaseBinderV2.2.29.jar')
 }

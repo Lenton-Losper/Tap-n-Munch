@@ -11,6 +11,10 @@ class PaymentPackage : ReactPackage {
       PaymentModule(reactContext),
       RuntimeConfigModule(reactContext),
       PrinterModule(reactContext),
+      // SDK4 is the transport that actually resolves on our P5 units. SDK6 stays registered
+      // only through the verification window; delete it once SDK4 has printed on a real
+      // device, so a future printer bug never starts with "which path did this take".
+      WiseSdk4PrinterModule(reactContext),
       WiseSdk6PrinterModule(reactContext),
       PrintFrameworkModule(reactContext),
     )
