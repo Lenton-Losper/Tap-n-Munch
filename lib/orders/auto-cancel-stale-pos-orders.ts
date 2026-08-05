@@ -63,14 +63,12 @@ async function cancelByIds(
  * legitimately sit pending for a long time (pay-at-till), so a blanket filter would
  * wrongly cancel those too.
  *
- * Split by whether a Finatic payment attempt was ever actually initiated:
+ * Split by whether a Finatic payment attempt could have been initiated at all:
  *  - No paycloud_merchant_order_no at all: cancel immediately, no network call
- *    possible or needed -- this is the "genuinely abandoned" case.
- *  - paycloud_merchant_order_no present but no payment.attempt_started marker:
- *    an order number was allocated, but we still do not know whether the device
- *    actually launched WiseCashier yet. This bucket is only confidently cancellable
- *    when Finatic explicitly answers E04111 (merchant order invalid).
- *  - payment.attempt_started marker present: cancelling on payment_status alone is
+ *    possible or needed -- this is the "genuinely abandoned" case. Safe at any timeout,
+ *    because without a merchant order number prepare-payment never ran and no charge
+ *    is possible.
+ *  - paycloud_merchant_order_no present: cancelling on payment_status alone is
  *    exactly the bug behind the
  *    2026-07-27 FNB ChowNow incident (terminal device silence/false-failure caused
  *    real successful Finatic charges to get auto-cancelled). When verifyWithFinatic
@@ -128,18 +126,10 @@ export async function autoCancelStalePosOrders(
   if (!candidates || candidates.length === 0) return result
 
   const rows = candidates as StaleOrderCandidate[]
-  const candidateIds = rows.map((o) => String(o.id))
-  const { data: attemptStartAudits, error: attemptStartAuditsError } = await supabase
-    .from('audit_logs')
-    .select('entity_id')
-    .eq('entity_type', 'order')
-    .eq('action', 'payment.attempt_started')
-    .in('entity_id', candidateIds)
-  if (attemptStartAuditsError) throw attemptStartAuditsError
-
-  const attemptStartedIds = new Set(
-    (attemptStartAudits ?? []).map((row) => String(row.entity_id || '')).filter(Boolean),
-  )
+  // The `payment.attempt_started` lookup that used to live here fed the removed E04111 cancel
+  // gate (see the catch block below) and has no other consumer, so it goes with it rather than
+  // sitting dead. PR2 should reintroduce it in the opposite direction: marker PRESENT means a
+  // launch definitely happened, so SPARE that order from cancellation. Never the reverse.
   const noAttempt = rows.filter((o) => !String(o.paycloud_merchant_order_no || '').trim())
   const withAttempt = rows.filter((o) => String(o.paycloud_merchant_order_no || '').trim())
 
@@ -190,36 +180,22 @@ export async function autoCancelStalePosOrders(
         result.cancelledIds.push(...cancelled)
       }
     } catch (err) {
-      if (
-        isFinaticMerchantOrderInvalidError(err) &&
-        !attemptStartedIds.has(orderId)
-      ) {
-        const cancelled = await cancelByIds(supabase, [orderId], 'no_payment_attempt_made')
-        result.cancelledIds.push(...cancelled)
-
-        if (cancelled.length > 0) {
-          const { error: auditError } = await supabase.from('audit_logs').insert({
-            restaurant_id: orderRestaurantId,
-            action: 'order.cancelled',
-            entity_type: 'order',
-            entity_id: orderId,
-            metadata: {
-              source: 'auto_cancel_cron_no_payment_attempt',
-              cancellation_reason: 'no_payment_attempt_made',
-              businessOrderNo: merchantOrderNo,
-              correctionReason:
-                'Cron queried Finatic for a stale POS order with an allocated merchant_order_no but no recorded payment-attempt-started marker. Finatic returned E04111 merchant order invalid, so the order was confidently treated as never having started a real payment attempt and cancelled.',
-            },
-          })
-          if (auditError) {
-            console.error(
-              `[autoCancelStalePosOrders] audit log failed for no_payment_attempt_made cancel on order ${orderId}:`,
-              auditError,
-            )
-          }
-        }
-        continue
-      }
+      // REMOVED 2026-08-05: a branch here cancelled with reason 'no_payment_attempt_made' when
+      // Finatic answered E04111 AND no `payment.attempt_started` marker existed.
+      //
+      // The gate is empty in production: `payment.attempt_started` has been written ZERO times,
+      // all time. So `!attemptStartedIds.has(orderId)` was true for 100% of orders and the rule
+      // reduced to "E04111 -> cancel" on a SINGLE observation. E04111 is time-dependent --
+      // order #149 returned it at 13:58:48 and was confirmed PAID on the same reference at
+      // 13:59:10 -- so that is a mass-cancel of real payments. Measured blast radius at removal
+      // time: 6 stale POS orders worth N$335 would have been cancelled on the first tick.
+      //
+      // Marker ABSENCE carries no information and must never authorise a cancel. Marker
+      // PRESENCE is sound as a one-way guard and may be used to SPARE an order -- that
+      // asymmetry is what PR2 should build on. The endpoint,
+      // lib/payments/mark-payment-attempt-started.ts and migration
+      // 20260728113000_orders_payment_attempt_started are deliberately kept for exactly that.
+      // See docs/issue-attempt-started-marker-is-not-evidence.md.
 
       // Finatic unreachable, errored, or credentials missing -- no confident answer.
       // Never default to cancelling here; leave payment_status='pending' and retry next run.
