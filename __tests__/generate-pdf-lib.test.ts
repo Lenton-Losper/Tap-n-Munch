@@ -33,6 +33,11 @@ function sampleReport(orderCount: number): ReportData {
       totalOrders: orders.length,
       averageOrderValue:
         orders.length > 0 ? orders.reduce((sum, o) => sum + o.total, 0) / orders.length : 0,
+      refundedTotal: 0,
+      paymentMethodSplit: [
+        { method: 'card', orders: orders.length, gross: orders.reduce((sum, o) => sum + o.total, 0) },
+      ],
+      unresolvedOrders: 0,
     },
     orders,
     generatedAt: '2026-07-04T09:00:00.000Z',
