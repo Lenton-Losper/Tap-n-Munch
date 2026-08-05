@@ -2,12 +2,87 @@ name: Deploy flashtap-production Worker
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_verification:
+        description: 'EMERGENCY ONLY: deploy without Lint/Typecheck/unit tests. The choice is recorded in the run log.'
+        type: boolean
+        default: false
+        required: false
 
 jobs:
+  # Issue #141: production had no Lint/Typecheck/unit-test gate while staging.yml did, so
+  # production was the LESS verified path. ~80 TS2339 errors deployed to production from `main`
+  # and were only caught on the way to staging.
+  build-verification:
+    # The override exists because this workflow is the only route to production. If `main` goes
+    # red for an unrelated reason, an urgent hotfix must still be shippable. Defaults to false,
+    # and the choice is visible in the run log via the step below.
+    if: ${{ inputs.skip_verification != true }}
+    runs-on: ubuntu-latest
+    name: Build Verification (Lint, Typecheck, Unit Tests)
+    steps:
+      # Mirrors the guard on the deploy job below so a wrong-ref dispatch fails before it
+      # installs anything. The deploy job keeps its own copy: when this job is skipped via
+      # the override, that copy is the only thing enforcing main-only. Keep both in step.
+      - name: Require main branch ref
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "ERROR: Production deploy must be triggered from main only."
+            echo "Got ref: ${{ github.ref }}"
+            exit 1
+          fi
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      # Runs before `npm ci` so node_modules cannot pollute the scan.
+      # #142: conflict markers sat in a JSDoc block for days because neither the build nor
+      # typecheck could see them. Catches a class of error typecheck structurally cannot.
+      - name: Reject committed conflict markers
+        run: |
+          set -euo pipefail
+          if grep -rnE '^(<<<<<<<|>>>>>>>)' app lib components workers; then
+            echo "ERROR: merge conflict markers are committed (listed above)."
+            exit 1
+          fi
+          echo "No conflict markers found."
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npx eslint . --max-warnings=0
+      - name: Typecheck
+        run: npx tsc --noEmit
+      # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the
+      # UNPREFIXED SUPABASE_* secrets, which in this repo are the PRODUCTION ones (see the
+      # migration-drift step below, which uses the same names against the production DB), and
+      # the suites behind it are live-data assertions rather than unit tests. Copying it here
+      # would point a test suite at the production database on every deploy, and would make a
+      # customer-facing deploy fail on data drift. Only hermetic suites run here; they need no
+      # network and no credentials.
+      - name: Unit tests (hermetic, no database)
+        run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate"
+
   deploy:
+    needs: build-verification
+    # A skipped `needs:` dependency skips the dependent job by default, so without this the
+    # emergency override would deploy nothing instead of deploying unverified. `!cancelled()`
+    # rather than `always()` so a cancelled run does not still deploy.
+    if: ${{ !cancelled() && (needs.build-verification.result == 'success' || needs.build-verification.result == 'skipped') }}
     runs-on: ubuntu-latest
     name: Build and Deploy flashtap-production
     steps:
+      - name: Record verification status
+        run: |
+          echo "skip_verification input: ${{ inputs.skip_verification }}"
+          echo "build-verification result: ${{ needs.build-verification.result }}"
+          if [ "${{ needs.build-verification.result }}" = "skipped" ]; then
+            echo "::warning::UNVERIFIED PRODUCTION DEPLOY - Lint/Typecheck/unit tests were skipped via the skip_verification input."
+          fi
       - name: Require main branch ref
         run: |
           if [ "${{ github.ref }}" != "refs/heads/main" ]; then

@@ -508,6 +508,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      # Runs before `npm ci` so node_modules cannot pollute the scan.
+      # #142: conflict markers sat in a JSDoc block for days because neither the build nor
+      # typecheck could see them. Catches a class of error typecheck structurally cannot.
+      - name: Reject committed conflict markers
+        run: |
+          set -euo pipefail
+          if grep -rnE '^(<<<<<<<|>>>>>>>)' app lib components workers; then
+            echo "ERROR: merge conflict markers are committed (listed above)."
+            exit 1
+          fi
+          echo "No conflict markers found."
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
