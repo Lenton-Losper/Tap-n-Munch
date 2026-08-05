@@ -8,7 +8,12 @@ import { clearActiveOrderBannerState } from '@/lib/tab-storage'
 import { ReadyToPayTerminalButton, ReadyToPayTerminalNotified } from '@/components/ready-to-pay-terminal'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
-import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import {
+  fetchGuestOrderById,
+  fetchGuestOrdersBySession,
+  GUEST_ORDER_POLL_MS,
+} from '@/lib/guest-orders/client'
+import { readTabSessionId } from '@/lib/tab-storage'
 import {
   isBannerEligibleOrder,
   normalizeOrderStatusForDisplay,
@@ -139,37 +144,28 @@ function ReadyToPayCardButton({
   )
 }
 
-function applyEligibleOrder(
-  data: Record<string, any> | null,
-  tableNumber: number,
-  setLastOrder: (v: Record<string, any> | null) => void,
-  setLiveOrder: (v: Record<string, any> | null) => void,
-  setLastOrderLoaded: (v: boolean) => void,
-) {
-  if (!data) {
-    clearActiveOrderBannerState()
-    setLastOrder(null)
-    setLiveOrder(null)
-    setLastOrderLoaded(true)
-    return
-  }
-  if (tableNumber && Number(data.table_number) !== Number(tableNumber)) {
-    setLastOrder(null)
-    setLiveOrder(null)
-    setLastOrderLoaded(true)
-    return
-  }
-  if (!isBannerEligibleOrder(data)) {
-    clearActiveOrderBannerState()
-    setLastOrder(null)
-    setLiveOrder(null)
-    setLastOrderLoaded(true)
-    return
-  }
-  const next = { id: String(data.id), ...data }
-  setLastOrder(next)
-  setLiveOrder(next)
-  setLastOrderLoaded(true)
+/** Every session id this customer's orders could have been submitted with. See readTabSessionId. */
+function collectSessionIds(sessionId?: string): string[] {
+  return [...new Set(
+    [
+      String(sessionId || '').trim(),
+      String(getCurrentSession() || '').trim(),
+      String(readTabSessionId() || '').trim(),
+    ].filter(Boolean),
+  )]
+}
+
+function belongsToTable(order: Record<string, any>, tableNumber: number): boolean {
+  if (!tableNumber) return true
+  return Number(order.table_number) === Number(tableNumber)
+}
+
+function sortNewestFirst(orders: Record<string, any>[]): Record<string, any>[] {
+  return [...orders].sort((a, b) => {
+    const aMs = a.placed_at ? new Date(String(a.placed_at)).getTime() : 0
+    const bMs = b.placed_at ? new Date(String(b.placed_at)).getTime() : 0
+    return bMs - aMs
+  })
 }
 
 export function MenuOrderStatusTracker({
@@ -188,9 +184,8 @@ export function MenuOrderStatusTracker({
     customerName,
     sessionId
   )
-  const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
-  const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
-  const [liveOrder, setLiveOrder] = useState<Record<string, any> | null>(null)
+  const [orders, setOrders] = useState<Record<string, any>[]>([])
+  const [ordersLoaded, setOrdersLoaded] = useState(false)
 
   const persistedOrderId =
     typeof window !== 'undefined'
@@ -202,44 +197,68 @@ export function MenuOrderStatusTracker({
   /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurantId) {
-      setLastOrder(null)
-      setLastOrderLoaded(true)
-      return
-    }
-    const orderId = persistedOrderId
-    if (!orderId) {
-      setLastOrder(null)
-      setLastOrderLoaded(true)
+      setOrders([])
+      setOrdersLoaded(true)
       return
     }
 
     let cancelled = false
 
-    const fetchLastOrder = async () => {
-      const data = await fetchGuestOrderById(orderId, {
-        restaurantId,
-        tableNumber,
-        sessionId: sessionId || getCurrentSession() || undefined,
-      })
+    /**
+     * Resolve EVERY round the customer still has in progress.
+     *
+     * This used to read one `last_order_id` from sessionStorage, which the cart overwrites on
+     * every submit -- so on a tab with three rounds only the third was ever visible (#134).
+     * The session is what identifies the customer, so ask by session and show them all.
+     * The stored id remains a fallback for a customer whose session ids are missing.
+     */
+    const fetchActiveRounds = async () => {
+      const sessionIds = collectSessionIds(sessionId)
+
+      let resolved: Record<string, any>[] = []
+      if (sessionIds.length > 0) {
+        const { orders: rows } = await fetchGuestOrdersBySession({
+          restaurantId,
+          sessionId: sessionIds[0],
+          sessionIds,
+          excludeSettlement: true,
+        })
+        resolved = (rows || []) as Record<string, any>[]
+      } else if (persistedOrderId) {
+        const single = await fetchGuestOrderById(persistedOrderId, {
+          restaurantId,
+          tableNumber,
+          sessionId: sessionId || getCurrentSession() || undefined,
+        })
+        resolved = single ? [single as Record<string, any>] : []
+      }
+
       if (cancelled) return
-      applyEligibleOrder(
-        data as Record<string, any> | null,
-        tableNumber,
-        setLastOrder,
-        setLiveOrder,
-        setLastOrderLoaded,
+
+      const active = sortNewestFirst(
+        resolved
+          .map((o) => ({ ...o, id: String(o.id) }))
+          .filter((o) => belongsToTable(o, tableNumber))
+          .filter((o) => isBannerEligibleOrder(o)),
       )
+
+      // Only wipe the stored order id when nothing at all is live -- clearing it while another
+      // round is still cooking would hide that round from the landing-page banner too.
+      if (active.length === 0) clearActiveOrderBannerState()
+
+      setOrders(active)
+      setOrdersLoaded(true)
     }
 
-    void fetchLastOrder().catch(() => {
+    void fetchActiveRounds().catch(() => {
       if (!cancelled) {
-        setLastOrder(null)
-        setLastOrderLoaded(true)
+        setOrders([])
+        setOrdersLoaded(true)
       }
     })
 
     const interval = window.setInterval(() => {
-      void fetchLastOrder()
+      void fetchActiveRounds()
     }, GUEST_ORDER_POLL_MS)
 
     return () => {
@@ -249,56 +268,64 @@ export function MenuOrderStatusTracker({
   }, [restaurantId, tableNumber, persistedOrderId, sessionId])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const baseOrder = useMemo(() => {
-    if (lastOrder && isBannerEligibleOrder(lastOrder)) return lastOrder
-    if (activeOrder && isBannerEligibleOrder(activeOrder)) return activeOrder
-    return null
-  }, [lastOrder, activeOrder])
-
-  useEffect(() => {
-    if (!baseOrder?.id) return
-
-    const orderId = String(baseOrder.id)
-    let cancelled = false
-
-    const pollOrder = async () => {
-      const updated = await fetchGuestOrderById(orderId, {
-        restaurantId,
-        tableNumber,
-        sessionId: sessionId || getCurrentSession() || undefined,
-      })
-      if (cancelled || !updated) return
-      if (tableNumber && Number(updated.table_number) !== Number(tableNumber)) return
-      if (!isBannerEligibleOrder(updated as Record<string, any>)) {
-        clearActiveOrderBannerState()
-        setLiveOrder(null)
-        setLastOrder((prev) => (prev?.id === orderId ? null : prev))
-        return
+  const visibleOrders = useMemo(() => {
+    const byId = new Map<string, Record<string, any>>()
+    for (const o of orders) byId.set(String(o.id), o)
+    // useActiveOrders polls the table endpoint on its own cadence; fold its result in so a
+    // just-placed round appears without waiting for the next by-session poll.
+    if (activeOrder && isBannerEligibleOrder(activeOrder as Record<string, any>)) {
+      const a = activeOrder as unknown as Record<string, any>
+      if (belongsToTable(a, tableNumber)) {
+        const id = String(a.id)
+        byId.set(id, { ...(byId.get(id) || {}), ...a, id })
       }
-      setLiveOrder({ id: orderId, ...(updated as Record<string, any>) })
     }
+    return sortNewestFirst([...byId.values()])
+  }, [orders, activeOrder, tableNumber])
 
-    void pollOrder()
-    const interval = window.setInterval(() => {
-      void pollOrder()
-    }, GUEST_ORDER_POLL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-    }
-  }, [baseOrder?.id, tableNumber, sessionId, restaurantId])
-
-  if (loading && !lastOrderLoaded) return null
+  if (loading && !ordersLoaded) return null
   if (error) return null
+  if (visibleOrders.length === 0) return null
 
-  const currentOrder =
-    liveOrder && baseOrder && String(liveOrder.id) === String(baseOrder.id)
-      ? { ...baseOrder, ...liveOrder }
-      : baseOrder
+  return (
+    <section className="border-b border-gray-200 bg-white px-4 py-4">
+      <div className="mx-auto max-w-4xl space-y-4">
+        {visibleOrders.map((order, index) => (
+          <OrderStatusRow
+            key={String(order.id)}
+            order={order}
+            restaurantId={restaurantId}
+            tableNumber={tableNumber}
+            currency={currency}
+            tabId={tabId}
+            /**
+             * Deliberate: the Ready to Pay control stays on the newest round only, exactly as
+             * before. Rendering one per round would multiply a payment-notification action
+             * across orders, which is a payment-flow change rather than a display fix.
+             */
+            showPayControl={index === 0}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
 
-  if (!currentOrder) return null
-
+function OrderStatusRow({
+  order: currentOrder,
+  restaurantId,
+  tableNumber,
+  currency,
+  tabId,
+  showPayControl,
+}: {
+  order: Record<string, any>
+  restaurantId: string
+  tableNumber: number
+  currency: string
+  tabId?: string
+  showPayControl: boolean
+}) {
   const steps = buildTrackerSteps(currentOrder)
   const currentIndex = steps.findIndex((step) => !step.complete)
   const activeIndex = currentIndex === -1 ? steps.length - 1 : currentIndex
@@ -320,17 +347,19 @@ export function MenuOrderStatusTracker({
     displayStatus === 'preparing' ||
     (displayStatus === 'accepted' && steps[3].complete && !steps[4].complete)
 
-  const showReadyToPay = statusLower === 'ready' || statusLower === 'accepted'
+  const showReadyToPay =
+    showPayControl && (statusLower === 'ready' || statusLower === 'accepted')
   const terminalAlreadyNotified =
     statusLower === 'ready_for_terminal' || currentOrder.customer_ready_to_pay === true
   const showTerminalFlow =
+    showPayControl &&
     payChannel === 'terminal' &&
     String(currentOrder.payment_status || '').toLowerCase() === 'pending' &&
     statusLower !== 'completed'
 
   return (
-    <section className="border-b border-gray-200 bg-white px-4 py-4">
-      <div className="mx-auto max-w-4xl">
+    <div>
+      <div>
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-black">
@@ -418,6 +447,6 @@ export function MenuOrderStatusTracker({
           </p>
         ) : null}
       </div>
-    </section>
+    </div>
   )
 }
