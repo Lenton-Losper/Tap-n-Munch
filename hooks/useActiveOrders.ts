@@ -5,6 +5,7 @@ import {
   fetchGuestActiveTableOrders,
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
+import { isActiveOrderStatus } from '@/lib/orders/active-order-visibility'
 
 /** Ignore banner orders older than this (stale visits / previous days). */
 const BANNER_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -111,14 +112,7 @@ export function useActiveOrders(
             if (orderSession && orderSession !== scopedSessionId) return false
             const placedMs = orderPlacedAtMs(order)
             if (!placedMs || placedMs < placedCutoff) return false
-            return [
-              'waiting_review',
-              'pending',
-              'accepted',
-              'preparing',
-              'ready',
-              'ready_for_terminal',
-            ].includes(String(order.status || '').toLowerCase())
+            return isActiveOrderStatus(order.status)
           })
           .sort((a, b) => orderPlacedAtMs(b) - orderPlacedAtMs(a))
 

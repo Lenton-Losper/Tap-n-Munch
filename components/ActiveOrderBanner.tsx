@@ -12,6 +12,10 @@ import {
 } from '@/components/ready-to-pay-terminal'
 import { clearActiveOrderBannerState } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import {
+  isBannerEligibleOrder,
+  normalizeOrderStatusForDisplay,
+} from '@/lib/orders/active-order-visibility'
 
 /**
  * PART 3: Active Order Banner
@@ -36,7 +40,18 @@ export function ActiveOrderBanner() {
         ? parseInt(tableNumberParam, 10)
         : undefined
 
-  const { activeOrder, loading, error } = useActiveOrders(restaurantId, tableNumber)
+  // useActiveOrders fails closed without a session id (it will not show table-wide orders to an
+  // unscoped caller), so omitting this made the banner permanently inert -- it never even
+  // issued a request. The customer's own session is the correct scope.
+  const sessionId = sessionInfo?.sessionId || (typeof window !== 'undefined' ? getCurrentSession() : null)
+
+  const { activeOrder, loading, error } = useActiveOrders(
+    restaurantId,
+    tableNumber,
+    undefined,
+    undefined,
+    sessionId || undefined,
+  )
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
   const persistedOrderId =
@@ -45,14 +60,6 @@ export function ActiveOrderBanner() {
           sessionStorage.getItem('last_order_id') || sessionStorage.getItem('flashtap_return_order_id') || ''
         ).trim()
       : ''
-
-  const isBannerEligibleOrder = (order: Record<string, any> | null) => {
-    if (!order) return false
-    if (order.is_closed === true || order.table_closed === true) return false
-    const status = String(order.status || '').toLowerCase()
-    if (status === 'completed' || status === 'cancelled') return false
-    return ['pending', 'accepted', 'ready', 'ready_for_terminal'].includes(status)
-  }
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
@@ -138,7 +145,8 @@ export function ActiveOrderBanner() {
   const payChannel = String(currentOrder.payment_channel || '').toLowerCase()
 
   const getStatusInfo = (status: string, paymentStatus: string, channel: string) => {
-    const s = String(status || '').toLowerCase()
+    // Normalised: `confirmed` is the terminal's `accepted`, `accepting` is still pre-acceptance.
+    const s = normalizeOrderStatusForDisplay(status)
     const p = String(paymentStatus || '').toLowerCase()
     const ch = String(channel || '').toLowerCase()
     if (p === 'pending' && s === 'pending' && ch === 'terminal') {
@@ -161,6 +169,20 @@ export function ActiveOrderBanner() {
     }
     if (p === 'paid' && s === 'completed') {
       return { text: 'Payment confirmed - Thank you!', pulse: false, tone: 'completed' as const }
+    }
+    // Statuses this banner only began showing once the eligibility list was widened. Without
+    // these they reach the fallback below and read "Order in progress", which says nothing.
+    // Scoped to exactly those statuses -- the unpaid `accepted`/`ready` paths were already
+    // reachable before and are left as they were.
+    if (s === 'waiting_review') {
+      return {
+        text: 'Order sent - waiting for the restaurant to confirm',
+        pulse: true,
+        tone: 'neutral' as const,
+      }
+    }
+    if (s === 'preparing') {
+      return { text: 'Order accepted - Being prepared', pulse: true, tone: 'preparing' as const }
     }
     return { text: 'Order in progress', pulse: false, tone: 'neutral' as const }
   }
