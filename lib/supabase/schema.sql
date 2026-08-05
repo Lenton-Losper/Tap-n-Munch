@@ -27,6 +27,11 @@ create table restaurants (
   subscription_tier text default 'starter',
   finatic_merchant_no text,
   finatic_store_no text,
+  -- Issue #151: NULL here is CORRECT for venues on the terminal-initiated payment flow, and
+  -- must not be "fixed" by populating it. Required ONLY by the remote-push route
+  -- (app/api/payments/push-to-terminal), which addresses a named reader by serial. Venues whose
+  -- terminal charges the card itself need no SN. Mingle Brew & Pour and FNB ChowNow are both
+  -- correctly NULL. See the comment in push-to-terminal/route.ts before changing this.
   finatic_terminal_sn text,
   terminals jsonb default '[]',
   online_ordering_enabled boolean default true,
