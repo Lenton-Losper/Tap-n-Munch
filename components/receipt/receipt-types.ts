@@ -1,8 +1,26 @@
+/**
+ * Every status the system actually writes and can show a customer. Established from the write
+ * sites, not from what this type used to list -- `preparing` and `confirmed` are both written
+ * in production paths but were missing here, so they fell through to the "NEW ORDER" default.
+ *
+ *   pending            app/api/orders/route.ts
+ *   waiting_review     order_requests, surfaced by lib/guest-orders/queries.ts
+ *   declined           order_requests, same mapping
+ *   accepted           dashboard PATCH, app/api/payments/reconcile
+ *   confirmed          terminal PATCH only -- the terminal's word for `accepted`
+ *   preparing          dashboard PATCH and terminal PATCH
+ *   ready              dashboard PATCH and terminal PATCH
+ *   ready_for_terminal app/api/orders/[orderId]/ready-for-terminal
+ *   completed          dashboard/terminal PATCH, table close, tab settle
+ *   cancelled          dashboard/terminal PATCH
+ */
 export type OrderStatusKey =
   | 'waiting_review'
   | 'declined'
   | 'pending'
   | 'accepted'
+  | 'confirmed'
+  | 'preparing'
   | 'ready'
   | 'ready_for_terminal'
   | 'completed'
@@ -64,14 +82,20 @@ export function mapOrderStatusToBadge(status: OrderStatusKey): {
         description: 'Your order has been received and sent to the restaurant.',
       }
     case 'accepted':
+    case 'confirmed':
       return {
         label: 'ACCEPTED',
         description: 'The kitchen has accepted your order.',
       }
-    case 'ready':
+    case 'preparing':
       return {
         label: 'PREPARING',
         description: 'Your order is being prepared.',
+      }
+    case 'ready':
+      return {
+        label: 'READY',
+        description: 'Your order is ready.',
       }
     case 'ready_for_terminal':
       return {
