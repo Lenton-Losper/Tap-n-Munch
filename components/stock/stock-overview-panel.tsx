@@ -14,6 +14,7 @@ import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { InventorySetupData } from '@/lib/recipes/queries'
 import type { StockOverviewData, StockOverviewRow } from '@/lib/stock/queries'
 import { InventorySetupStockCard } from '@/components/menu/inventory-setup-ui'
+import { BulkTrackingDialog } from '@/components/stock/bulk-tracking-dialog'
 
 function StockStatusBadge({ row }: { row: StockOverviewRow }) {
   if (!row.is_active) {
@@ -63,6 +64,7 @@ export function StockOverviewPanel({
   showInactive = false,
   measurementUnits = [],
   inventorySetup = null,
+  canEditTracking = false,
 }: {
   data: StockOverviewData
   successMessage?: string | null
@@ -71,6 +73,8 @@ export function StockOverviewPanel({
   showInactive?: boolean
   measurementUnits?: MeasurementUnitOption[]
   inventorySetup?: InventorySetupData | null
+  /** PERMISSIONS.RECIPE_EDIT — same gate as the per-item Track Inventory toggle. */
+  canEditTracking?: boolean
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -154,6 +158,19 @@ export function StockOverviewPanel({
         <SummaryCard label="Last delivery" value={formatLastDelivery(data.lastDeliveryAt)} />
         {inventorySetup ? <InventorySetupStockCard setup={inventorySetup} /> : null}
       </div>
+
+      {canEditTracking ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-[#E9E9E7] bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-serif text-lg font-semibold text-[#37352F]">Inventory tracking</h2>
+            <p className="mt-1 text-sm text-[#6B675F]">
+              Turn stock deduction on or off for several menu items at once. Recipes are not
+              changed.
+            </p>
+          </div>
+          <BulkTrackingDialog canEdit={canEditTracking} />
+        </div>
+      ) : null}
 
       <div className="rounded-2xl border border-[#E9E9E7] bg-white">
         <div className="flex flex-col gap-3 border-b border-[#E9E9E7] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">

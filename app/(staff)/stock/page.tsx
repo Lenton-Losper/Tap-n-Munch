@@ -19,7 +19,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
   const params = await searchParams
   const showInactive = params.showInactive === '1'
   const canViewInventorySetup = await authorize(userId, restaurantId, PERMISSIONS.RECIPE_VIEW)
-  const [data, canAdjust, canReceive, measurementUnits, inventorySetup, showTransfersTab] = await Promise.all([
+  const [data, canAdjust, canReceive, measurementUnits, inventorySetup, showTransfersTab, canEditTracking] = await Promise.all([
     getStockOverview(supabase, restaurantId, { includeInactive: showInactive }),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_ADJUST),
     authorize(userId, restaurantId, PERMISSIONS.STOCK_RECEIVE),
@@ -28,6 +28,8 @@ export default async function StockPage({ searchParams }: StockPageProps) {
       ? getInventorySetupOverview(supabase, restaurantId)
       : Promise.resolve(null),
     canAccessStockTransfers(userId, restaurantId),
+    // Same gate as the per-item Track Inventory toggle (canEditMenuInventoryAction).
+    authorize(userId, restaurantId, PERMISSIONS.RECIPE_EDIT),
   ])
   const receivedCount = params.received ? Number(params.received) : 0
   const successMessage =
@@ -58,6 +60,7 @@ export default async function StockPage({ searchParams }: StockPageProps) {
           showInactive={showInactive}
           measurementUnits={measurementUnits}
           inventorySetup={inventorySetup}
+          canEditTracking={canEditTracking}
         />
       </div>
     </div>
