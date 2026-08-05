@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { MessageSquarePlus } from 'lucide-react'
+import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 
 interface CartItemNoteProps {
   /** Cart row position — only used to keep label/textarea ids unique on the page. */
@@ -58,6 +59,7 @@ export function CartItemNote({ index, itemLabel, value, onChange }: CartItemNote
         placeholder="e.g. no sugar"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        maxLength={MAX_INSTRUCTIONS_LENGTH}
         rows={2}
         className="w-full max-w-full font-sans border-border text-sm"
       />

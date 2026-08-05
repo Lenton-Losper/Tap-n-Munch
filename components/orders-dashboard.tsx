@@ -318,7 +318,7 @@ function OrderRequestCard({
       </div>
 
       {request.order_instructions && (
-        <p className="text-sm text-muted-foreground italic mb-2">&quot;{request.order_instructions}&quot;</p>
+        <p className="text-sm text-muted-foreground italic mb-2 break-words">&quot;{request.order_instructions}&quot;</p>
       )}
 
       <div className="flex justify-between items-baseline mb-3 pt-2 border-t border-border">
@@ -1952,7 +1952,7 @@ export function OrdersDashboard() {
                           </span>
                         )}
                         {item?.special_instructions && (
-                          <div className="text-xs text-muted-foreground italic mt-1">
+                          <div className="text-xs text-muted-foreground italic mt-1 break-words">
                             &ldquo;{item.special_instructions}&rdquo;
                           </div>
                         )}
@@ -1969,7 +1969,9 @@ export function OrdersDashboard() {
                 {normalizedOrder.order_instructions && (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
                     <p className="text-sm text-yellow-900 font-medium">Order Instructions:</p>
-                    <p className="text-sm text-yellow-800">{normalizedOrder.order_instructions}</p>
+                    {/* Rows written before the client cap can be any length, and an unbroken
+                        run of characters would otherwise push the card sideways. */}
+                    <p className="text-sm text-yellow-800 break-words">{normalizedOrder.order_instructions}</p>
                   </div>
                 )}
 

@@ -16,6 +16,7 @@ import {
   MAX_LINE_QUANTITY,
   MIN_LINE_QUANTITY,
 } from '@/lib/orders/quantity-limits'
+import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 
 type MenuItemSize = { name: string; price_modifier: number }
 type MenuItemAddon = { name: string; price: number }
@@ -180,6 +181,7 @@ export function ItemDetailModal({
                 placeholder="Any special requests? (e.g., no onions, extra sauce)"
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
+                maxLength={MAX_INSTRUCTIONS_LENGTH}
                 rows={3}
                 className="font-sans border-border"
               />

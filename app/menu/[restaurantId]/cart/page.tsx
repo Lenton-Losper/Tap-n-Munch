@@ -20,6 +20,7 @@ import { useToast } from '@/hooks/use-toast'
 import { getOrCreateSession, getCurrentSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
+import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 import { clearTabSession, readStoredTabId } from '@/lib/tab-storage'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -582,6 +583,7 @@ export default function CartPage() {
                   placeholder="Anything the kitchen should know about the whole order?"
                   value={orderInstructions}
                   onChange={(e) => setOrderInstructions(e.target.value)}
+                  maxLength={MAX_INSTRUCTIONS_LENGTH}
                   rows={3}
                   className="w-full max-w-full font-sans border-border text-sm sm:text-base"
                 />
