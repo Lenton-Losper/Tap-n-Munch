@@ -74,29 +74,52 @@ async function runScheduledReports(req: Request) {
 
     const sentPeriods = new Set((logRows ?? []).map((r) => String(r.report_period)))
 
-    // Report a skipped day once, before deciding today's send.
+    // Report a skipped day ONCE, before deciding today's send.
+    //
+    // detectMissedDay is a pure predicate over "is there a success row for yesterday", which
+    // stays true forever once a day is genuinely missed. On a 2-minute trigger that means one
+    // audit row every tick -- ~720/day for a single schedule. Observed in production
+    // immediately after the 2026-08-05 deploy: 5 identical Riviera rows for period 2026-08-04
+    // in 10 minutes. Alert noise on that scale buries the signal it exists to raise, so the
+    // insert is guarded by an existence check on (schedule, period).
     const missed = detectMissedDay({ schedule, now, sentPeriods })
     if (missed.missed) {
-      missedDetected++
-      const { error: auditError } = await supabase.from('audit_logs').insert({
-        restaurant_id: schedule.restaurant_id,
-        action: REPORT_DAY_MISSED_ACTION,
-        entity_type: 'report_schedule',
-        entity_id: schedule.id,
-        metadata: {
-          severity: 'error',
-          report_period: missed.period,
-          email: schedule.email,
-          send_time: schedule.send_time,
-          timezone: schedule.timezone,
-          note:
-            'No successful send is recorded for this trading day and its send window has passed. ' +
-            'A skipped day leaves no row at all, so absence is the only evidence -- this makes it visible.',
-          requiresAttention: true,
-        },
-      })
-      if (auditError) console.error('[REPORTS] missed-day audit insert failed:', auditError.message)
-      results.push({ scheduleId: schedule.id, status: 'missed_day', period: missed.period })
+      const { data: alreadyReported, error: dupError } = await supabase
+        .from('audit_logs')
+        .select('id')
+        .eq('action', REPORT_DAY_MISSED_ACTION)
+        .eq('entity_id', schedule.id)
+        .contains('metadata', { report_period: missed.period })
+        .limit(1)
+
+      if (dupError) {
+        // Cannot tell whether it was already reported. Skip rather than risk the spam this
+        // guard exists to prevent -- a missed day stays detectable on the next tick.
+        console.error(`[REPORTS] missed-day dedup check failed for ${schedule.id}:`, dupError.message)
+      } else if ((alreadyReported ?? []).length === 0) {
+        missedDetected++
+        const { error: auditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: schedule.restaurant_id,
+          action: REPORT_DAY_MISSED_ACTION,
+          entity_type: 'report_schedule',
+          entity_id: schedule.id,
+          metadata: {
+            severity: 'error',
+            report_period: missed.period,
+            email: schedule.email,
+            send_time: schedule.send_time,
+            timezone: schedule.timezone,
+            note:
+              'No successful send is recorded for this trading day and its send window has passed. ' +
+              'A skipped day leaves no row at all, so absence is the only evidence -- this makes it visible.',
+            requiresAttention: true,
+          },
+        })
+        if (auditError) console.error('[REPORTS] missed-day audit insert failed:', auditError.message)
+        results.push({ scheduleId: schedule.id, status: 'missed_day', period: missed.period })
+      } else {
+        results.push({ scheduleId: schedule.id, status: 'missed_day_already_reported', period: missed.period })
+      }
     }
 
     const decision = decideDue({ schedule, now, sentPeriods })
