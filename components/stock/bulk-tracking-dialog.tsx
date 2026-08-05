@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -93,9 +93,21 @@ export function BulkTrackingDialog({ canEdit }: { canEdit: boolean }) {
     )
   }, [])
 
-  useEffect(() => {
-    if (open) void load(mode)
-  }, [open, mode, load])
+  // Loading is driven by the two user actions that need it -- opening the dialog and switching
+  // direction -- rather than by an effect on [open, mode]. An effect would set state
+  // synchronously on mount and re-run on every mode change, which is the cascading-render
+  // pattern the lint rule flags, and it would also refetch on unrelated re-renders.
+  const openWith = (nextMode: Mode) => {
+    setMode(nextMode)
+    setOpen(true)
+    void load(nextMode)
+  }
+
+  const switchMode = (nextMode: Mode) => {
+    if (nextMode === mode) return
+    setMode(nextMode)
+    void load(nextMode)
+  }
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -133,7 +145,7 @@ export function BulkTrackingDialog({ canEdit }: { canEdit: boolean }) {
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => { setMode('off'); setOpen(true) }}>
+      <Button variant="outline" size="sm" onClick={() => openWith('off')}>
         Bulk tracking
       </Button>
 
@@ -178,14 +190,14 @@ export function BulkTrackingDialog({ canEdit }: { canEdit: boolean }) {
                 <Button
                   size="sm"
                   variant={mode === 'off' ? 'default' : 'outline'}
-                  onClick={() => setMode('off')}
+                  onClick={() => switchMode('off')}
                 >
                   Turn tracking off
                 </Button>
                 <Button
                   size="sm"
                   variant={mode === 'on' ? 'default' : 'outline'}
-                  onClick={() => setMode('on')}
+                  onClick={() => switchMode('on')}
                 >
                   Turn tracking on
                 </Button>
