@@ -28,6 +28,7 @@ import {
   getTerminalToken,
 } from '../lib/storage';
 import {buildSdk6TestPrintLines, buildTestPrintPayload} from '../lib/testPrintPayload';
+import {resolutionHint, resolutionVerdict} from '../lib/printerResolutionCopy';
 import {
   getBuiltInPrinterStatus,
   printBuiltInJob,
@@ -799,10 +800,10 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       ) : null}
 
       <Text style={styles.sectionTitle}>Printer service resolution</Text>
-      <Text style={styles.hint}>
-        WisePosSdk.initPosSdk needs EXACTLY ONE service to answer the USDK action.
-        On 0 or 2+ it binds a null Intent and fails with 7101. This is that count.
-      </Text>
+      {/* #164: this section was SDK6-era and named initPosSdk / the USDK action on every
+          build. The copy now follows ACTIVE_PRINTER_TRANSPORT, so it names the entry point
+          and action actually in use on the device in the technician's hand. */}
+      <Text style={styles.hint}>{resolutionHint(ACTIVE_PRINTER_TRANSPORT)}</Text>
 
       <View style={styles.usdkProbeBox}>
         <Text style={styles.probeLabel}>MATCHES</Text>
@@ -816,17 +817,7 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
           {probing ? '…' : usdkProbe == null ? '—' : String(usdkProbe.matchCount)}
         </Text>
         <Text style={styles.probeVerdict}>
-          {probing
-            ? 'probing…'
-            : usdkProbe == null
-            ? ''
-            : usdkProbe.matchCount === 1
-            ? 'OK — resolution is fine, fault is elsewhere'
-            : usdkProbe.matchCount === 0
-            ? 'ZERO — nothing answers the action for this app'
-            : usdkProbe.matchCount < 0
-            ? 'probe unavailable on this build'
-            : 'AMBIGUOUS — 2+ services, fixable in code'}
+          {resolutionVerdict(ACTIVE_PRINTER_TRANSPORT, usdkProbe, probing)}
         </Text>
       </View>
 

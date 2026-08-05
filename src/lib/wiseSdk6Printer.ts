@@ -1,5 +1,6 @@
 import {NativeModules, Platform} from 'react-native';
 import {withPrintLock} from './printQueue';
+import {probedActionFor} from './printerResolutionCopy';
 
 export type Sdk6TextAlign = 'LEFT' | 'CENTER' | 'RIGHT';
 
@@ -178,28 +179,33 @@ export interface UsdkServiceProbe {
 }
 
 /**
- * How many services on this device answer the WisePos USDK action.
+ * How many services on this device answer the action the ACTIVE transport binds.
  *
- * This is the number that decides the printer investigation. WisePosSdk.initPosSdk resolves
- * the action via queryIntentServices and requires EXACTLY ONE match; on 0 or 2+ it builds a
- * null Intent and bindService fails with 7101 ERR_SDK_INVALID_PARAMETER — which is NOT
- * "service not found" (that is 7102). So:
+ * This is the number that decides the printer investigation. Both transports resolve their
+ * action via queryIntentServices and require EXACTLY ONE match — they differ in which action
+ * and in how the failure surfaces (SDK4: getExplicitIntent returns null and bindService throws;
+ * SDK6: initPosSdk binds a null Intent and fails 7101 ERR_SDK_INVALID_PARAMETER, which is NOT
+ * "service not found" — that is 7102). So:
  *
- *   matchCount === 1  -> resolution is fine, the fault is elsewhere
+ *   matchCount === 1  -> the SDK can bind; resolution is not the problem
  *   matchCount === 0  -> nothing on this device answers the action for us
  *   matchCount >= 2   -> ambiguous, and fixable in code by binding the component explicitly
+ *
+ * `action` is whatever native actually queried. The fallback below follows
+ * ACTIVE_PRINTER_TRANSPORT rather than naming the SDK6 action unconditionally (#164) — on an
+ * SDK4 build with no probe method, the old constant reported an action the app never touches.
  *
  * These terminals are TMS-deployed with no adb, so this has to be readable on screen.
  */
 export async function probeUsdkService(): Promise<UsdkServiceProbe> {
   const unavailable: UsdkServiceProbe = {
-    action: 'com.wisepos.aidl.service',
+    action: probedActionFor(ACTIVE_PRINTER_TRANSPORT) ?? '(no printer transport in this build)',
     matchCount: -1,
     model: '?',
     sdkInt: 0,
     summary: 'probe unavailable on this build/platform',
     components: [],
-    error: 'WiseSdk6PrinterModule.probeService not present',
+    error: 'printer probeService method not present',
   };
   if (Platform.OS !== 'android' || !WiseSdk6PrinterModule?.probeService) return unavailable;
   try {
