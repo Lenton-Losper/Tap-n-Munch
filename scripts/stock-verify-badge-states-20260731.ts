@@ -5,8 +5,11 @@
  *   1. An item in Redbull's ACTUAL production state (track_inventory=true, active recipe,
  *      1 ingredient, stock item with par_level NULL) still resolves to "Inventory Ready".
  *      The reported badge was correct and must not regress.
- *   2. An item with tracking OFF and a live recipe now appears in linkedButUntrackedIds,
- *      so the badge can warn instead of rendering nothing.
+ *   2. An item with tracking OFF and a live recipe renders NO badge at all.
+ *      UPDATED 2026-08-05: this previously asserted the red "Linked - not tracked" warning
+ *      via linkedButUntrackedIds. That badge claimed such items keep deducting stock, which
+ *      has been false since migration 20260731230000; the branch and the field were removed,
+ *      so the correct expectation is now no badge.
  *
  *   npx tsx scripts/stock-verify-badge-states-20260731.ts
  */
@@ -31,8 +34,9 @@ function log(label: string, value: unknown) {
 /** Mirrors MenuItemInventoryBadge's branching, so this asserts what a merchant would see. */
 function badgeFor(item: { id: string; track_inventory: boolean }, setup: any): string {
   if (!setup) return '(none)'
+  // Untracked items render nothing at all since the red branch was retired 2026-08-05.
   if (!item.track_inventory) {
-    return setup.linkedButUntrackedIds.includes(item.id) ? 'Linked · not tracked' : '(none)'
+    return '(none)'
   }
   return setup.readyMenuItemIds.includes(item.id) ? 'Inventory Ready' : 'Inventory Missing'
 }
@@ -105,14 +109,14 @@ async function main() {
       stock_page_label: computeStockStatus(balance, stockItem.par_level) === 'not_tracked' ? 'No par level' : '(other)',
       verdict: badgeFor(redbullLike, setup) === 'Inventory Ready' ? 'PASS' : 'FAIL',
     },
-    'case 2 -- tracking off, recipe still live': {
+    'case 2 -- tracking off, recipe still live (badge retired 2026-08-05)': {
       menu_item: untracked.name,
       track_inventory: untracked.track_inventory,
-      in_linkedButUntrackedIds: setup.linkedButUntrackedIds.includes(untracked.id),
       in_readyMenuItemIds: setup.readyMenuItemIds.includes(untracked.id),
       badge: badgeFor(untracked, setup),
-      expected_badge: 'Linked · not tracked',
-      verdict: badgeFor(untracked, setup) === 'Linked · not tracked' ? 'PASS' : 'FAIL',
+      expected_badge: '(none)',
+      note: 'must NOT claim the item is still deducting -- it is not, since migration 20260731230000',
+      verdict: badgeFor(untracked, setup) === '(none)' ? 'PASS' : 'FAIL',
     },
   }
 
@@ -122,6 +126,8 @@ async function main() {
       'Menu Management "Inventory Ready" + Stock "Not tracked" -- read as a contradiction',
     both_screens_after:
       'Menu Management "Inventory Ready" + Stock "No par level" -- two different facts, both true',
+    untracked_after_2026_08_05:
+      'Menu Management renders no badge for an untracked item; tracking state is shown in aggregate on the /stock Inventory tracking card',
   })
 
   const failures = Object.entries(results).filter(([, v]) => (v as any).verdict === 'FAIL')

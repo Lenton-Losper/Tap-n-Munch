@@ -21,7 +21,6 @@ function setup(over: Partial<InventorySetupData> = {}): InventorySetupData {
     missing: 0,
     missingItems: [],
     readyMenuItemIds: [],
-    linkedButUntrackedIds: [],
     ...over,
   }
 }
@@ -48,26 +47,22 @@ describe('MenuItemInventoryBadge', () => {
     expect(html).toContain('Inventory Missing')
   })
 
-  it('warns when tracking is OFF but the item is still linked and still deducting', () => {
-    const html = render(
-      <MenuItemInventoryBadge
-        item={item('c', false)}
-        setup={setup({ linkedButUntrackedIds: ['c'] })}
-      />,
-    )
-    expect(html).toContain('Linked')
-    expect(html).toContain('not tracked')
-    // The part that actually costs money must be stated somewhere the merchant can find it.
-    expect(html).toMatch(/continue to deduct|still.*deduct/i)
+  // RETIRED 2026-08-05. The red "Linked - not tracked" badge claimed sales still deduct for an
+  // untracked item. False since migration 20260731230000; the branch is gone, so an untracked
+  // item now renders nothing at all whether or not it has a live recipe.
+  it('renders nothing for an untracked item that still has a live recipe', () => {
+    const html = render(<MenuItemInventoryBadge item={item('c', false)} setup={setup()} />)
+    expect(html).toBe('')
+  })
+
+  it('never tells a merchant that an untracked item is still deducting stock', () => {
+    const html = render(<MenuItemInventoryBadge item={item('c', false)} setup={setup()} />)
+    expect(html).not.toMatch(/continue to deduct|still.*deduct/i)
+    expect(html).not.toContain('not tracked')
   })
 
   it('never claims readiness for an untracked item', () => {
-    const html = render(
-      <MenuItemInventoryBadge
-        item={item('c', false)}
-        setup={setup({ linkedButUntrackedIds: ['c'] })}
-      />,
-    )
+    const html = render(<MenuItemInventoryBadge item={item('c', false)} setup={setup()} />)
     expect(html).not.toContain('Inventory Ready')
   })
 
@@ -81,15 +76,16 @@ describe('MenuItemInventoryBadge', () => {
     expect(render(<MenuItemInventoryBadge item={item('a', true)} setup={null} />)).toBe('')
   })
 
-  it('keeps the four states mutually exclusive', () => {
+  it('keeps the three remaining states mutually exclusive', () => {
     const ready = render(
       <MenuItemInventoryBadge item={item('a', true)} setup={setup({ readyMenuItemIds: ['a'] })} />,
     )
-    const untracked = render(
-      <MenuItemInventoryBadge item={item('a', false)} setup={setup({ linkedButUntrackedIds: ['a'] })} />,
-    )
-    expect(ready).not.toContain('not tracked')
-    expect(untracked).not.toContain('Inventory Ready')
-    expect(untracked).not.toContain('Inventory Missing')
+    const missing = render(<MenuItemInventoryBadge item={item('b', true)} setup={setup()} />)
+    const untracked = render(<MenuItemInventoryBadge item={item('a', false)} setup={setup()} />)
+    expect(ready).toContain('Inventory Ready')
+    expect(ready).not.toContain('Inventory Missing')
+    expect(missing).toContain('Inventory Missing')
+    expect(missing).not.toContain('Inventory Ready')
+    expect(untracked).toBe('')
   })
 })

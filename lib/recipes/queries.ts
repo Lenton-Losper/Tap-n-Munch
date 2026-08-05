@@ -13,15 +13,6 @@ export type InventorySetupData = {
   missingItems: InventorySetupItemRef[]
   /** Menu items with track_inventory=true and ≥1 ingredient configured. */
   readyMenuItemIds: string[]
-  /**
-   * Menu items with an ACTIVE recipe and ≥1 ingredient whose track_inventory is false.
-   *
-   * Neither of the lists above can contain these -- both are filtered to track_inventory=true
-   * -- so before this the state was invisible to every surface: no badge, not counted as
-   * configured, not counted as missing. Meanwhile deduct_recipe_stock keys solely on
-   * recipes.is_active, so these items still deduct stock on every sale.
-   */
-  linkedButUntrackedIds: string[]
 }
 
 /** @deprecated Use InventorySetupData */
@@ -123,25 +114,12 @@ export async function getInventorySetupOverview(
     }
   }
 
-  // Items whose tracking is switched off but whose recipe is still live.
-  //
-  // STALE PREMISE, corrected 2026-08-05. This previously read "Deduction keys on
-  // recipes.is_active alone, so these keep draining stock". That stopped being true at
-  // migration 20260731230000_deduct_recipe_stock_honors_track_inventory: the current
-  // definition (20260801010000_recipes_soft_delete.sql:81) requires
-  // `m.track_inventory IS TRUE`, so these items do NOT deduct.
-  //
-  // The list is still computed because the badge consumes it, and "linked but not tracked" is
-  // still a real state a merchant can reach and cannot undo from the UI. It is no longer a
-  // stock-draining state. Retiring or rewording the badge is a product decision.
-  const trackedIds = new Set((trackedItems ?? []).map((item) => item.id as string))
-  const linkedButUntrackedIds: string[] = []
-  for (const [menuItemId, recipeId] of recipeByMenuItemId) {
-    if (trackedIds.has(menuItemId)) continue
-    if ((ingredientCountByRecipeId.get(recipeId) ?? 0) >= 1) {
-      linkedButUntrackedIds.push(menuItemId)
-    }
-  }
+  // linkedButUntrackedIds was removed 2026-08-05 along with the badge branch that was its only
+  // consumer. It existed to warn that an untracked-but-linked item "keeps draining stock",
+  // which stopped being true at migration
+  // 20260731230000_deduct_recipe_stock_honors_track_inventory -- the current
+  // deduct_recipe_stock (20260801010000_recipes_soft_delete.sql:81) requires
+  // `m.track_inventory IS TRUE`.
 
   const total = (trackedItems ?? []).length
   const configured = readyMenuItemIds.length
@@ -152,7 +130,6 @@ export async function getInventorySetupOverview(
     missing: missingItems.length,
     missingItems,
     readyMenuItemIds,
-    linkedButUntrackedIds,
   }
 }
 

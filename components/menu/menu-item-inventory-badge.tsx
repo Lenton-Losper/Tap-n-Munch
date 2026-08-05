@@ -14,35 +14,23 @@ export function MenuItemInventoryBadge({
     return null
   }
 
-  // Tracking is off while the recipe is still live.
+  // An untracked item gets no badge at all.
   //
-  // STALE PREMISE, corrected 2026-08-05. This branch and its copy were written when
-  // deduct_recipe_stock ignored track_inventory, so an untracked-but-linked item really did
-  // keep draining stock. That has not been true since migration
-  // 20260731230000_deduct_recipe_stock_honors_track_inventory; the current definition
-  // (20260801010000_recipes_soft_delete.sql:81) gates on `m.track_inventory IS TRUE`, so an
-  // untracked item does NOT deduct. Confirmed against the deployed
-  // check_stock_sufficiency_locked by live control probe on 2026-08-05: "Beef Stew" at FNB
-  // ChowNow, track_inventory=false with an ingredient at balance 0, is not refused.
+  // RETIRED 2026-08-05: this used to render a red "🔴 Linked · not tracked" warning whose
+  // tooltip said "sales continue to deduct stock". That was true when the branch was written
+  // and has been false since migration 20260731230000_deduct_recipe_stock_honors_track_inventory
+  // -- the current deduct_recipe_stock (20260801010000_recipes_soft_delete.sql:81) requires
+  // `m.track_inventory IS TRUE`, so an untracked item does not deduct. Confirmed against the
+  // deployed check_stock_sufficiency_locked by live control probe on 2026-08-05 ("Beef Stew"
+  // at FNB ChowNow: track_inventory=false, ingredient balance 0, not refused).
   //
-  // The badge label and tooltip below still assert the old behaviour and are therefore
-  // misleading -- they are left unchanged here deliberately, because rewording merchant-facing
-  // copy (or retiring this badge, whose whole premise is now false) is a product decision, not
-  // a comment fix. See the 2026-08-05 stock discovery note.
-  //
-  // Still true and worth surfacing: there is no way in the UI to remove a link once made.
+  // Removed rather than reworded to something neutral. Tracking-off is a state the merchant
+  // chooses deliberately -- after a bulk turn-off it would badge every affected item at once,
+  // which is noise precisely when it is least informative -- and it is not actionable from
+  // this screen. The state worth surfacing, "tracked but not configured", is the amber badge
+  // below. Aggregate tracking state belongs on the /stock Inventory tracking card.
   if (!item.track_inventory) {
-    if (!setup.linkedButUntrackedIds.includes(item.id)) {
-      return null
-    }
-    return (
-      <span
-        title="Tracking is off for this item, but it is still linked to a stock item and sales continue to deduct stock. Turn tracking back on, or remove the ingredients, to stop this."
-        className="inline-flex items-center rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800"
-      >
-        🔴 Linked · not tracked
-      </span>
-    )
+    return null
   }
 
   const isReady = setup.readyMenuItemIds.includes(item.id)
