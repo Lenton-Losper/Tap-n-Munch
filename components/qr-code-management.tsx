@@ -146,7 +146,8 @@ async function downloadQrPng(selector: string, filename: string) {
   })
 }
 
-function OrderingPointCard({
+/** Exported for #175's rendering test — the number must be verifiable on the rendered card. */
+export function OrderingPointCard({
   point,
   restaurantId,
   liveStatus,
@@ -182,6 +183,21 @@ function OrderingPointCard({
           <h3 className="truncate font-semibold text-lg text-gray-900">{displayName}</h3>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={liveStatus} inactive={inactive} />
+            {/*
+              #175: the table NUMBER, which the card never showed. `orderingPointDisplayName`
+              returns a custom name as-is, so for a table named e.g. "cash-settle-...-t9761" the
+              number appeared nowhere in the UI -- and "Table number 9761 is already used" was
+              then unexplainable. Numbers are what QR links and order history resolve by, so the
+              merchant needs to see them.
+
+              Dining tables only. Kiosk (9000+) and view-only (5000+) numbers are internal band
+              allocations, not something written on a table, so showing them would be noise.
+            */}
+            {!point.is_kiosk && !point.is_view_only ? (
+              <Badge variant="secondary" title={`Table number ${point.table_number}`}>
+                No. {point.table_number}
+              </Badge>
+            ) : null}
             {!point.is_kiosk && !point.is_view_only && point.capacity != null && point.capacity > 0 ? (
               <Badge variant="outline">{point.capacity} seats</Badge>
             ) : null}
