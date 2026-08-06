@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildMenuUrl } from '@/lib/base-url'
 import { nextKioskTableNumber, nextViewOnlyTableNumber } from '@/lib/tables/ordering-points'
 import {
@@ -6,6 +7,10 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import {
+  isTableNumberUniqueViolation,
+  tableNumberConflictMessage,
+} from '@/lib/tables/table-number-conflict'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,6 +22,47 @@ type CreateTableBody = {
   kiosk_name?: string
   view_only_name?: string
   table_name?: string
+}
+
+/**
+ * #174: kiosk and view-only table numbers are ASSIGNED by us from the next free slot, not
+ * chosen by the merchant. So a unique-index collision there is our problem to solve, not theirs
+ * to be told about — re-read the taken numbers and try the next one, rather than surfacing a
+ * conflict the merchant cannot act on.
+ *
+ * Bounded, because an unbounded retry against a genuinely full band would spin forever.
+ */
+async function insertWithAssignedNumber(
+  supabase: SupabaseClient,
+  restaurantId: string,
+  nextNumber: (taken: number[]) => number,
+  buildRow: (tableNumber: number) => Record<string, unknown>,
+  attempts = 3,
+) {
+  let last: { data: unknown; error: unknown } = { data: null, error: null }
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const { data: rows, error: readError } = await supabase
+      .from('restaurant_tables')
+      .select('table_number')
+      .eq('restaurant_id', restaurantId)
+    if (readError) throw readError
+
+    const taken = (rows || [])
+      .map((row: { table_number: number | string | null }) => Number(row.table_number))
+      .filter((n: number) => Number.isFinite(n))
+
+    const result = await supabase
+      .from('restaurant_tables')
+      .insert(buildRow(nextNumber(taken)))
+      .select('*')
+      .single()
+
+    last = result
+    if (!isTableNumberUniqueViolation(result.error)) return result
+  }
+
+  return last
 }
 
 export async function POST(request: Request) {
@@ -34,9 +80,13 @@ export async function POST(request: Request) {
         ? body.location.trim()
         : null
 
+    // #175: `table_name` and `active` come back too, so a collision can NAME the conflicting
+    // table and say whether it is deactivated. The old message said only "Table N already
+    // exists" — a number the merchant could not see (cards never rendered it) about a row that
+    // is hidden by default (inactive tables are filtered out).
     const { data: existingRows, error: existingError } = await supabase
       .from('restaurant_tables')
-      .select('table_number')
+      .select('table_number, table_name, active')
       .eq('restaurant_id', restaurantId)
 
     if (existingError) throw existingError
@@ -45,18 +95,20 @@ export async function POST(request: Request) {
       .map((row) => Number(row.table_number))
       .filter((n) => Number.isFinite(n))
 
+    const rowForNumber = (n: number) =>
+      (existingRows || []).find((row) => Number(row.table_number) === n) ?? null
+
     if (kind === 'kiosk') {
       const kioskName = String(body.kiosk_name || body.table_name || '').trim()
       if (!kioskName) {
         return NextResponse.json({ error: 'Kiosk name is required' }, { status: 400 })
       }
 
-      const tableNumber = nextKioskTableNumber(existingNumbers)
-      const qrCodeUrl = buildMenuUrl(restaurantId, tableNumber, true)
-
-      const { data, error } = await supabase
-        .from('restaurant_tables')
-        .insert({
+      const { data, error } = await insertWithAssignedNumber(
+        supabase,
+        restaurantId,
+        nextKioskTableNumber,
+        (tableNumber) => ({
           restaurant_id: restaurantId,
           table_number: tableNumber,
           table_name: kioskName,
@@ -64,11 +116,10 @@ export async function POST(request: Request) {
           capacity: null,
           is_kiosk: true,
           is_view_only: false,
-          qr_code_url: qrCodeUrl,
+          qr_code_url: buildMenuUrl(restaurantId, tableNumber, true),
           active: true,
-        })
-        .select('*')
-        .single()
+        }),
+      )
 
       if (error) throw error
       return NextResponse.json({ table: data })
@@ -80,14 +131,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Name is required' }, { status: 400 })
       }
 
-      const tableNumber = nextViewOnlyTableNumber(existingNumbers)
-      // Same plain /v2 link shape as a dining table -- the landing page looks up
-      // is_view_only from this table_number and renders the menu-only flow itself.
-      const qrCodeUrl = buildMenuUrl(restaurantId, tableNumber)
-
-      const { data, error } = await supabase
-        .from('restaurant_tables')
-        .insert({
+      const { data, error } = await insertWithAssignedNumber(
+        supabase,
+        restaurantId,
+        nextViewOnlyTableNumber,
+        (tableNumber) => ({
           restaurant_id: restaurantId,
           table_number: tableNumber,
           table_name: viewOnlyName,
@@ -95,11 +143,12 @@ export async function POST(request: Request) {
           capacity: null,
           is_kiosk: false,
           is_view_only: true,
-          qr_code_url: qrCodeUrl,
+          // Same plain /v2 link shape as a dining table -- the landing page looks up
+          // is_view_only from this table_number and renders the menu-only flow itself.
+          qr_code_url: buildMenuUrl(restaurantId, tableNumber),
           active: true,
-        })
-        .select('*')
-        .single()
+        }),
+      )
 
       if (error) throw error
       return NextResponse.json({ table: data })
@@ -112,7 +161,7 @@ export async function POST(request: Request) {
 
     if (existingNumbers.includes(tableNumber)) {
       return NextResponse.json(
-        { error: `Table ${tableNumber} already exists` },
+        { error: tableNumberConflictMessage(tableNumber, rowForNumber(tableNumber)) },
         { status: 409 },
       )
     }
@@ -143,6 +192,24 @@ export async function POST(request: Request) {
       })
       .select('*')
       .single()
+
+    // #174: the pre-check above is a read-then-write with no lock, so two concurrent adds of
+    // the same number both pass it. The unique index added in 20260806000000 is what actually
+    // arbitrates. Catch its violation and return the SAME 409 the pre-check would have — an
+    // uncaught constraint turns a clear conflict into an opaque 500.
+    if (isTableNumberUniqueViolation(error)) {
+      const { data: conflict } = await supabase
+        .from('restaurant_tables')
+        .select('table_number, table_name, active')
+        .eq('restaurant_id', restaurantId)
+        .eq('table_number', tableNumber)
+        .maybeSingle()
+
+      return NextResponse.json(
+        { error: tableNumberConflictMessage(tableNumber, conflict) },
+        { status: 409 },
+      )
+    }
 
     if (error) throw error
     return NextResponse.json({ table: data })
