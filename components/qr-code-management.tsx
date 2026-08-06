@@ -15,6 +15,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import {
   summariseClearImpact,
   clearTableConfirmationMessage,
+  fetchOpenOrdersForTable,
   type ClearTableImpact,
 } from '@/lib/tables/clear-table'
 import { buildMenuUrl } from '@/lib/base-url'
@@ -562,15 +563,9 @@ export function QRCodeManagement() {
 
     try {
       const scope = orderScope ?? (await resolveOrderRestaurantScope(restaurantId))
-      const { data, error } = await supabase
-        .from('orders')
-        .select('id, payment_status, total')
-        .in('restaurant_id', scope)
-        .eq('table_number', point.table_number)
-        .eq('is_closed', false)
-
-      if (error) throw error
-      setClearImpact(summariseClearImpact(data ?? []))
+      if (!orderScope) setOrderScope(scope)
+      const orders = await fetchOpenOrdersForTable(supabase, scope, point.table_number)
+      setClearImpact(summariseClearImpact(orders))
     } catch (err: unknown) {
       // Never fall back to "assume nothing is owed" -- that is exactly the silent write-off
       // this confirmation exists to prevent.

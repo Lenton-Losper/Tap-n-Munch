@@ -13,11 +13,60 @@
  * widens it, which is why an unpaid count and an explicit confirmation are not optional here.
  */
 import { isPaidPaymentStatus } from '@/lib/payments/payment-integrity'
+import type { OrderRestaurantScope } from '@/lib/supabase/restaurants'
 
 export type ClearTableOrder = {
   id?: string | number
   payment_status?: string | null
   total?: number | string | null
+}
+
+/** The slice of the Supabase client this needs, so the query itself is testable. */
+export type ClearTableQueryClient = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: unknown) => {
+        eq: (column: string, value: unknown) => {
+          eq: (
+            column: string,
+            value: unknown,
+          ) => PromiseLike<{ data: ClearTableOrder[] | null; error: { message: string } | null }>
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The orders the close route would act on, fetched the SAME way the route fetches them.
+ *
+ * This exists as its own function because it was the one piece of #176 nothing covered:
+ * `summariseClearImpact` was unit-tested with arrays, and the end-to-end test drove the route
+ * handler directly. The seam between the button and the money check — the client-side query —
+ * was the only untested new code, and it was the piece that broke.
+ *
+ * `scope.restaurantId` is passed explicitly, NOT the scope object. `resolveOrderRestaurantScope`
+ * returns `{ restaurantId, firebaseRestaurantId }`, and handing that whole object to a filter
+ * throws "object is not iterable" at query-build time — before any request is sent.
+ *
+ * Filters match the route exactly (restaurant, table number, is_closed=false) and deliberately
+ * do NOT exclude completed/cancelled orders: the route does not either, so excluding them here
+ * would make the confirmation disagree with what the server acts on.
+ */
+export async function fetchOpenOrdersForTable(
+  client: ClearTableQueryClient,
+  scope: OrderRestaurantScope,
+  tableNumber: number,
+): Promise<ClearTableOrder[]> {
+  const { data, error } = await client
+    .from('orders')
+    .select('id, payment_status, total')
+    .eq('restaurant_id', scope.restaurantId)
+    .eq('table_number', tableNumber)
+    .eq('is_closed', false)
+
+  if (error) throw new Error(error.message)
+  return data ?? []
 }
 
 export type ClearTableImpact = {
