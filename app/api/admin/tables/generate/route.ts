@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { buildOnboardingTableQrUrl } from '@/lib/onboarding/qr-url'
+import { isTableNumberUniqueViolation } from '@/lib/tables/table-number-conflict'
 import { markSetupStepComplete } from '@/lib/onboarding/setup-status-server'
 import {
   isAuthError,
@@ -53,6 +54,22 @@ export async function POST(request: Request) {
       .from('restaurant_tables')
       .insert(rows)
       .select('*')
+
+    // #174: the "skip if any tables exist" guard above is a read-then-write with no lock, so
+    // two concurrent generate calls on a restaurant with no tables both see zero and both
+    // insert a full set. The unique index added in 20260806000000 stops the second one. Treat
+    // it as the same idempotent outcome the guard produces, rather than a 500: the tables the
+    // merchant asked for exist, they were just created by the other request.
+    if (isTableNumberUniqueViolation(insertError)) {
+      const { data: existing } = await supabase
+        .from('restaurant_tables')
+        .select('*')
+        .eq('restaurant_id', restaurantId)
+        .order('table_number')
+
+      await markSetupStepComplete(supabase, restaurantId, 'tables_configured')
+      return NextResponse.json({ tables: existing ?? [], skipped: true })
+    }
 
     if (insertError) throw insertError
 
