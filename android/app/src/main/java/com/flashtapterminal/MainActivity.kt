@@ -69,6 +69,9 @@ class MainActivity : ReactActivity() {
             resultCode == Activity.RESULT_OK && resultExtra == "00" && voucherNo.isNotBlank() ->
               "success"
             resultCode == Activity.RESULT_OK && resultExtra == "00" -> "ambiguous"
+            // Same split as the promise path above: an orphaned USER CANCEL must not be
+            // reported as ambiguous, or it strands exactly as before.
+            resultCode == Activity.RESULT_CANCELED -> "user_cancelled"
             else -> "ambiguous"
           }
         val errorMessage =
@@ -117,10 +120,22 @@ class MainActivity : ReactActivity() {
             "Payment result was not a confirmed success (gateway result=$resultExtra)",
           )
         }
+      } else if (resultCode == Activity.RESULT_CANCELED) {
+        // The operator dismissed WiseCashier before the reader contacted the gateway, so no
+        // payment order can exist. Mirrors the REFUND path below, which has always done this.
+        //
+        // Keyed on the RESULT_CANCELED CONSTANT ONLY -- never on message text, and never via
+        // the ambiguous bucket. Note this deliberately does NOT catch RESULT_OK with null
+        // data: that is a genuinely unknown outcome and must stay ambiguous, because a card
+        // may have been charged. Widening this branch would start swallowing real declines.
+        promise.reject(
+          "PAYMENT_CANCELLED_BY_USER",
+          "Payment was cancelled on the reader before the gateway was contacted",
+        )
       } else {
         promise.reject(
           "PAYMENT_AMBIGUOUS",
-          "Payment was cancelled or returned without a usable result",
+          "Payment returned without a usable result",
         )
       }
 

@@ -732,6 +732,18 @@ export async function completePayment(
     voucherNo?: string;
     /** Finatic businessOrderNo — backfills paycloud_merchant_order_no if prepare was skipped. */
     businessOrderNo?: string;
+    /**
+     * Why the payment failed, when the terminal KNOWS. Currently set only for a user cancel on
+     * the reader, as TERMINAL_USER_CANCELLED_REASON. The server matches this EXACTLY -- adjacent
+     * values are pinned as non-bypassing -- so it must not be reworded or prefixed.
+     */
+    cancellationReason?: string;
+    /**
+     * True ONLY when WiseCashier returned Activity.RESULT_CANCELED, i.e. the operator dismissed
+     * the screen before the reader contacted the gateway. Lets the server cancel without a
+     * Finatic verify, because no payment order can exist. Never set for an ambiguous outcome.
+     */
+    noGatewayAttempt?: boolean;
   },
 ): Promise<{canClose: boolean}> {
   const response = await terminalFetch(

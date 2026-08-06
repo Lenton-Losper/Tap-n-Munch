@@ -33,6 +33,7 @@ import {
   processPaymentIntent,
   resolveAmbiguousPaymentWithFinatic,
   unconfirmedFailureReference,
+  TERMINAL_USER_CANCELLED_REASON,
 } from '../lib/payment';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {
@@ -482,12 +483,23 @@ export default function PaymentScreen({route, navigation}: Props) {
             : unconfirmedFailureReference());
         const baseError =
           result.error ?? 'Payment outcome could not be confirmed on this device';
+        // A user cancel never reached the gateway, so tell the server explicitly rather than
+        // letting it query Finatic, get E04111 and leave the order pending forever. Set ONLY
+        // for outcomeKind 'user_cancelled', which native raises ONLY on RESULT_CANCELED --
+        // an ambiguous outcome must keep going through verification.
+        const userCancelled = result.outcomeKind === 'user_cancelled';
         const completed = await completePaymentReliably(orderId, token, {
           status: 'failed',
           reference: failureReference,
           amount: total,
           paymentMethod: 'card',
           businessOrderNo: result.businessOrderNo,
+          ...(userCancelled
+            ? {
+                cancellationReason: TERMINAL_USER_CANCELLED_REASON,
+                noGatewayAttempt: true,
+              }
+            : {}),
         });
         paymentFailed(
           completed

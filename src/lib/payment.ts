@@ -12,7 +12,13 @@ export type PaymentOutcomeKind =
   | 'confirmed_failure'
   | 'ambiguous'
   | 'orphaned_success'
-  | 'orphaned_ambiguous';
+  | 'orphaned_ambiguous'
+  /**
+   * The operator dismissed WiseCashier before the reader contacted the gateway. Distinct from
+   * 'ambiguous': no payment order can exist, so the server may cancel without a Finatic verify.
+   * Raised ONLY from Activity.RESULT_CANCELED in native -- never inferred from message text.
+   */
+  | 'user_cancelled';
 
 export interface PaymentResult {
   success: boolean;
@@ -82,6 +88,16 @@ export const UNCONFIRMED_PAYMENT_REF_PREFIX = 'UNCONFIRMED-';
 
 /** Prefix for backend audit refs on a confirmed gateway decline (carries the gateway code). */
 export const DECLINED_PAYMENT_REF_PREFIX = 'DECLINED-';
+
+/**
+ * MUST match TERMINAL_USER_CANCELLED_REASON in the server's
+ * lib/payments/handle-terminal-payment-failed.ts, character for character.
+ *
+ * The server compares with === after trimming, and has tests pinning eight adjacent values
+ * (case, suffix, truncation) as NON-bypassing. Reword this and the fix silently stops working:
+ * orders go back to being verified against a gateway that has no record of them, and strand.
+ */
+export const TERMINAL_USER_CANCELLED_REASON = 'terminal_cancelled_by_user_pre_gateway';
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -287,6 +303,18 @@ export async function processPaymentIntent(
     // PAYMENT_DECLINED — that's a confirmed no-charge, safe to report without a Finatic
     // verify round-trip. Everything else non-"00" is PAYMENT_AMBIGUOUS (not a confirmed
     // decline) and must go through Finatic verify before being treated as failed.
+    // Checked FIRST, on the native error CODE only, and returned before the message-text regex
+    // below can see it. That regex is the fragility this fix removes -- it must not be able to
+    // reclassify a user cancel by wording. Native raises this ONLY on Activity.RESULT_CANCELED.
+    if (code === 'PAYMENT_CANCELLED_BY_USER') {
+      return {
+        success: false,
+        outcomeKind: 'user_cancelled',
+        error: message || 'Payment cancelled on the reader',
+        gatewayResult,
+      };
+    }
+
     const ambiguous =
       code === 'PAYMENT_AMBIGUOUS' ||
       code === 'PAYMENT_FAILED' ||
