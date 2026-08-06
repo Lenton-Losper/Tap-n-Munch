@@ -10,6 +10,13 @@ import {
   updateOrderingPointViaApi,
 } from '@/lib/supabase/tables'
 import { supabase } from '@/lib/supabase/client'
+import { usePermissions } from '@/hooks/use-permissions'
+import { PERMISSIONS } from '@/lib/permissions'
+import {
+  summariseClearImpact,
+  clearTableConfirmationMessage,
+  type ClearTableImpact,
+} from '@/lib/tables/clear-table'
 import { buildMenuUrl } from '@/lib/base-url'
 import {
   KIOSK_NAME_PRESETS,
@@ -155,6 +162,7 @@ export function OrderingPointCard({
   onCopyLink,
   onEdit,
   onDeactivate,
+  onClearTable,
 }: {
   point: OrderingPointRow
   restaurantId: string
@@ -163,6 +171,8 @@ export function OrderingPointCard({
   onCopyLink: (url: string, id: string) => void
   onEdit: (point: OrderingPointRow) => void
   onDeactivate: (point: OrderingPointRow) => void
+  /** #176. Absent for kiosks/view-only points and for staff without tables:manage. */
+  onClearTable?: (point: OrderingPointRow) => void
 }) {
   const qrUrl = resolveOrderingPointQrUrl(restaurantId, point)
   const displayName = orderingPointDisplayName(point)
@@ -226,6 +236,15 @@ export function OrderingPointCard({
             <DropdownMenuItem onClick={() => onCopyLink(qrUrl, point.id)}>
               {copiedLinkId === point.id ? 'Link copied' : 'Copy link'}
             </DropdownMenuItem>
+            {/*
+              #176: Clear Table ends the CURRENT SESSION so the next customer scans the same
+              printed code and starts fresh. Deliberately listed above Deactivate and not styled
+              as destructive, because the two are easy to confuse and only Deactivate kills the
+              QR. Hidden without tables:manage rather than failing at the API.
+            */}
+            {onClearTable && point.active !== false ? (
+              <DropdownMenuItem onClick={() => onClearTable(point)}>Clear table</DropdownMenuItem>
+            ) : null}
             {point.active !== false ? (
               <DropdownMenuItem className="text-red-600" onClick={() => onDeactivate(point)}>
                 Deactivate
@@ -261,6 +280,13 @@ export function QRCodeManagement() {
   const showInactive = searchParams.get('showInactive') === '1'
 
   const [tables, setTables] = useState<OrderingPointRow[]>([])
+  // #176 clear-table confirmation. `clearImpact === null` while the unpaid count is still being
+  // fetched, so the dialog can refuse to offer the button until it knows what is at stake.
+  const [clearTarget, setClearTarget] = useState<OrderingPointRow | null>(null)
+  const [clearImpact, setClearImpact] = useState<ClearTableImpact | null>(null)
+  const [clearBusy, setClearBusy] = useState(false)
+  const { hasPermission, permissionsLoaded } = usePermissions()
+  const canManageTables = permissionsLoaded && hasPermission(PERMISSIONS.TABLES_MANAGE)
   const [loading, setLoading] = useState(true)
   const [isAddTableOpen, setIsAddTableOpen] = useState(false)
   const [isAddKioskOpen, setIsAddKioskOpen] = useState(false)
@@ -520,6 +546,94 @@ export function QRCodeManagement() {
     }
   }
 
+  /**
+   * #176: clearing a table detaches UNPAID orders with their payment_status untouched -- the
+   * debt is preserved but stops appearing on the dashboard. So the merchant is told how much
+   * money is at stake BEFORE anything happens, never after.
+   *
+   * The count uses the same isPaidPaymentStatus normaliser the close route uses. A raw
+   * .eq('payment_status','paid') would classify a stray 'Paid' differently from the server, and
+   * a confirmation that disagrees with what the server does is worse than no confirmation.
+   */
+  const handleClearRequest = async (point: OrderingPointRow) => {
+    if (!restaurantId) return
+    setClearTarget(point)
+    setClearImpact(null)
+
+    try {
+      const scope = orderScope ?? (await resolveOrderRestaurantScope(restaurantId))
+      const { data, error } = await supabase
+        .from('orders')
+        .select('id, payment_status, total')
+        .in('restaurant_id', scope)
+        .eq('table_number', point.table_number)
+        .eq('is_closed', false)
+
+      if (error) throw error
+      setClearImpact(summariseClearImpact(data ?? []))
+    } catch (err: unknown) {
+      // Never fall back to "assume nothing is owed" -- that is exactly the silent write-off
+      // this confirmation exists to prevent.
+      setClearTarget(null)
+      toast({
+        title: 'Could not check open orders',
+        description:
+          err instanceof Error
+            ? `${err.message}. Not clearing, because unpaid orders could not be counted.`
+            : 'Not clearing, because unpaid orders could not be counted.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleClearConfirm = async () => {
+    if (!restaurantId || !clearTarget) return
+    const point = clearTarget
+
+    try {
+      setClearBusy(true)
+      const token = await getAccessToken()
+      const res = await fetch(`/api/tables/${point.table_number}/close`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ restaurantId }),
+      })
+      const body = (await res.json()) as {
+        error?: string
+        completed?: number
+        closedUnpaid?: number
+      }
+      if (!res.ok) throw new Error(body.error || 'Failed to clear table')
+
+      const parts: string[] = []
+      if (body.completed) parts.push(`${body.completed} paid order(s) completed`)
+      if (body.closedUnpaid) parts.push(`${body.closedUnpaid} unpaid order(s) still owed`)
+
+      toast({
+        title: `${orderingPointDisplayName(point)} cleared`,
+        description: parts.length
+          ? `${parts.join('; ')}. The next scan starts a fresh session.`
+          : 'The next scan starts a fresh session.',
+      })
+
+      setClearTarget(null)
+      setClearImpact(null)
+      await loadTables()
+      await refreshTableStatuses()
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to clear table',
+        description: err instanceof Error ? err.message : 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setClearBusy(false)
+    }
+  }
+
   const handleDeactivate = async (point: OrderingPointRow) => {
     if (!restaurantId) return
     const label = orderingPointDisplayName(point)
@@ -648,6 +762,12 @@ export function QRCodeManagement() {
                 onCopyLink={(url, id) => void handleCopyLink(url, id)}
                 onEdit={openEdit}
                 onDeactivate={(p) => void handleDeactivate(p)}
+                // #176: dining tables only -- kiosks and view-only points have no seated
+                // session to end. Undefined without tables:manage, so the item is hidden
+                // rather than shown and then rejected by the API.
+                onClearTable={
+                  canManageTables ? (p) => void handleClearRequest(p) : undefined
+                }
               />
             ))}
           </div>
@@ -721,6 +841,64 @@ export function QRCodeManagement() {
           </div>
         )}
       </section>
+
+      {/*
+        #176 clear-table confirmation. The button stays disabled until the unpaid count is
+        known, so it is never possible to confirm without having been told what is at stake.
+      */}
+      <Dialog
+        open={clearTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !clearBusy) {
+            setClearTarget(null)
+            setClearImpact(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Clear {clearTarget ? orderingPointDisplayName(clearTarget) : 'table'}?
+            </DialogTitle>
+            <DialogDescription>
+              {clearImpact
+                ? clearTableConfirmationMessage(clearImpact)
+                : 'Checking open orders…'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {clearImpact?.requiresConfirmation ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              This money is still owed. Clearing the table keeps the record but removes it from
+              the dashboard, so collect payment first if the customer is still here.
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setClearTarget(null)
+                setClearImpact(null)
+              }}
+              disabled={clearBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={clearImpact?.requiresConfirmation ? 'destructive' : 'default'}
+              onClick={() => void handleClearConfirm()}
+              disabled={clearBusy || clearImpact === null}
+            >
+              {clearBusy
+                ? 'Clearing…'
+                : clearImpact?.requiresConfirmation
+                  ? 'Clear anyway'
+                  : 'Clear table'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isAddTableOpen} onOpenChange={setIsAddTableOpen}>
         <DialogContent>
