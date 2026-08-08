@@ -48,6 +48,12 @@ export interface ReceiptSnapshot {
   channel: string | null
   /** No staff column on orders yet — reserved null until POS waiter identity exists. */
   staff_name: string | null
+  /**
+   * The customer's order-level note (orders.order_instructions), frozen at issue time.
+   * Optional because every snapshot issued before #135 was written without the field —
+   * renderers must treat absent and null the same way.
+   */
+  order_instructions?: string | null
   line_items: ReceiptLineItem[]
   totals: {
     subtotal: number
@@ -213,7 +219,7 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
   const { data: order, error: orderError } = await supabase
     .from('orders')
     .select(
-      'id, restaurant_id, payment_status, payment_method, payment_reference, paycloud_merchant_order_no, paid_at, subtotal, tax, total, items, customer_name, table_number, channel',
+      'id, restaurant_id, payment_status, payment_method, payment_reference, paycloud_merchant_order_no, paid_at, subtotal, tax, total, items, customer_name, table_number, channel, order_instructions',
     )
     .eq('id', orderId)
     .single()
@@ -296,6 +302,12 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
     ]
   }
 
+  // Display-only, never trimmed to fit: it is the customer's own words (an allergy note is
+  // the obvious case). Empty/whitespace is recorded as absent rather than as a blank line.
+  const orderInstructionsRaw =
+    typeof order.order_instructions === 'string' ? order.order_instructions.trim() : ''
+  const orderInstructions = orderInstructionsRaw || null
+
   const tableNumberRaw = order.table_number
   const tableNumber =
     typeof tableNumberRaw === 'number' && Number.isFinite(tableNumberRaw) && tableNumberRaw > 0
@@ -317,6 +329,7 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
     table_number: tableNumber,
     channel: order.channel ? String(order.channel) : null,
     staff_name: null,
+    order_instructions: orderInstructions,
     line_items: lineItems,
     totals: {
       subtotal,
