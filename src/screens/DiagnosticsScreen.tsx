@@ -114,6 +114,8 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
     useState<PrintServicesProbeResult | null>(null);
   const [printFwError, setPrintFwError] = useState<string | null>(null);
   const [systemPrintRunning, setSystemPrintRunning] = useState(false);
+  /** Synchronous mirror of `systemPrintRunning` — see handleSystemPrintTest (#101). */
+  const systemPrintRunningRef = useRef(false);
   const [systemPrintResult, setSystemPrintResult] =
     useState<SystemPrintTestResult | null>(null);
   const [systemPrintError, setSystemPrintError] = useState<string | null>(null);
@@ -337,6 +339,13 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   };
 
   const handleSystemPrintTest = async () => {
+    // #101: `disabled={systemPrintRunning}` is a render behind, so two taps in the same frame
+    // both reached printSystemTestReceipt and the framework printed twice. The ref flips
+    // synchronously. Same pattern as handleDevTestPrint and Reprint Receipt.
+    if (systemPrintRunningRef.current) {
+      return;
+    }
+    systemPrintRunningRef.current = true;
     setSystemPrintRunning(true);
     setSystemPrintError(null);
     try {
@@ -348,6 +357,7 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
         err instanceof Error ? err.message : 'System print test failed',
       );
     } finally {
+      systemPrintRunningRef.current = false;
       setSystemPrintRunning(false);
     }
   };
