@@ -74,6 +74,13 @@ export async function PATCH(
     }
   }
 
+  // Same three spellings and the same "always write something" rule as the terminal status
+  // route, so a cancel through either path is traceable without guessing (#103).
+  const callerReason = String(
+    body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason ?? '',
+  ).trim()
+  const cancellationReason = callerReason || 'staff_cancelled'
+
   const patch: Record<string, string | boolean> = {}
   if (status) {
     patch.status = status
@@ -84,6 +91,7 @@ export async function PATCH(
     if (status === 'cancelled') {
       patch.is_closed = true
       patch.payment_status = 'cancelled'
+      patch.cancellation_reason = cancellationReason
     }
   }
   if (paymentStatus) {
@@ -126,6 +134,28 @@ export async function PATCH(
   }
 
   // Side effects only after a successful claim / update.
+  if (status === 'cancelled') {
+    // Mirrors the audit row handleTerminalPaymentFailed writes on cancel. Best effort: the
+    // order is already cancelled, and failing the request now would tell the caller the
+    // cancel did not happen when it did.
+    const { error: auditError } = await supabase.from('audit_logs').insert({
+      restaurant_id: existingOrder.restaurant_id,
+      action: 'order.cancelled',
+      entity_type: 'order',
+      entity_id: orderId,
+      metadata: {
+        cancellation_reason: cancellationReason,
+        reason_supplied_by_caller: Boolean(callerReason),
+        previous_status: expectedCurrentStatus,
+        staff_user_id: auth.userId,
+        source: 'orders/status',
+      },
+    })
+    if (auditError) {
+      console.error('[orders/status] order.cancelled audit log failed:', auditError)
+    }
+  }
+
   if (paymentStatus === 'paid') {
     await safeIssueReceiptForOrder(orderId, 'orders/status')
   }
