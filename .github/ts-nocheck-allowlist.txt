@@ -1,0 +1,38 @@
+# @ts-nocheck allowlist — issue #172
+#
+# THIS IS A SHRINKING LIST. NEVER ADD TO IT.
+#
+# `@ts-nocheck` disables typechecking for a whole file, so the production deploy gate's
+# `npx tsc --noEmit` step (#141) cannot see these files at all. #141 was added because a
+# TS2339 reached production; TS2339 is exactly the class `@ts-nocheck` suppresses. Every
+# path below is a hole in that gate.
+#
+# The gate's "Reject new @ts-nocheck" step freezes this list: a `@ts-nocheck` on any file in
+# app/, lib/, components/ or workers/ that is NOT listed here fails the build. Entries may
+# only be REMOVED — by deleting the pragma from the file and then deleting the line here.
+# Removing a pragma without removing the line here also fails the build, so the list cannot
+# silently rot into a lie.
+#
+# If you are tempted to add a line: use `@ts-expect-error` on the specific offending lines
+# instead. That keeps the rest of the file checked and shrinks naturally.
+#
+# Priority for clearing is blast radius, not error count. The two payment routes come first:
+# app/api/payments/receipt/route.ts mints merchant order references (see #122) and is
+# entirely unchecked today.
+#
+# Paths are repo-relative, forward-slashed, one per line. Blank lines and `#` comments ignored.
+
+app/api/payments/create/route.ts
+app/api/payments/receipt/route.ts
+app/menu/[restaurantId]/my-orders/page.tsx
+app/menu/[restaurantId]/v2/page.tsx
+components/ActiveOrderBanner.tsx
+components/menu/item-detail-modal.tsx
+components/menu-management.tsx
+components/menu-management-new.tsx
+components/menu-management-v2.tsx
+components/menu-screen.tsx
+components/orders-dashboard.tsx
+lib/supabase/analytics.ts
+lib/supabase/menu.ts
+lib/table-session.ts

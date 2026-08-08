@@ -51,6 +51,14 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      # #172: the Typecheck step below is blind to 14 files that carry `@ts-nocheck`, two of them
+      # payment routes. This does NOT clear those 14 — it freezes them in an allowlist so the
+      # count can only go down, and fails if a NEW one appears. Like the conflict-marker scan
+      # above it runs BEFORE `npm ci`: node_modules genuinely ships `@ts-nocheck` files, so a scan
+      # placed after install would have to filter them out and would be one forgotten flag away
+      # from drowning in false positives. The script has no dependencies for the same reason.
+      - name: Reject new @ts-nocheck (ratchet, #172)
+        run: node scripts/check-ts-nocheck-allowlist.mjs
       - name: Install dependencies
         run: npm ci
       - name: Lint
