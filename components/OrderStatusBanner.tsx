@@ -6,6 +6,7 @@ import {
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
+import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 
 interface Notification {
   id: string
@@ -57,10 +58,13 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
     }
   }, [])
 
+  /**
+   * `status` here is always already through normalizeOrderStatusForDisplay -- see applyOrderDiff.
+   * This switch must never re-decide which words mean which state; that is what produced #173.
+   */
   const getStatusNotification = (
     newStatus: string,
-    orderNumber: number,
-    oldStatus: string
+    orderNumber: number
   ): Notification | null => {
     const id = `${orderNumber}-${newStatus}-${Date.now()}`
 
@@ -73,14 +77,15 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           icon: '✅',
         }
       case 'ready':
+        // Unconditionally "ready". This previously said "is being prepared" when the previous
+        // status was `accepted`, telling the customer their finished order was not finished --
+        // the same defect #131 fixed in the receipt badge mapper. A transition INTO `ready`
+        // means ready, whatever the order was doing a moment ago.
         return {
           id,
-          message:
-            oldStatus === 'accepted'
-              ? `Order #${orderNumber} is being prepared.`
-              : `Order #${orderNumber} is ready!`,
-          type: oldStatus === 'accepted' ? 'info' : 'success',
-          icon: oldStatus === 'accepted' ? '👨‍🍳' : '🍽️',
+          message: `Order #${orderNumber} is ready!`,
+          type: 'success',
+          icon: '🍽️',
         }
       case 'completed':
         return {
@@ -113,13 +118,21 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
         currentIds.add(id)
         const orderNum = orderNumberFromRow(row)
-        const newStatus = String(row.status ?? '')
+        // Normalised at ingestion, so every comparison and every message below is in one
+        // vocabulary. `confirmed` is the terminal's word for `accepted`, and without this the
+        // first thing a staff member does on the terminal told the customer nothing while the
+        // identical dashboard action announced itself (#173, same root cause as #131).
+        //
+        // Safe to normalise wholesale here in a way it was NOT in menu-order-status-tracker:
+        // this component renders transient notifications only. It gates no control, so nothing
+        // a customer can act on changes as a result.
+        const newStatus = normalizeOrderStatusForDisplay(row.status)
         const newPay = String(row.payment_status ?? '')
         const prev = prevById.get(id)
 
         if (prev) {
           if (newStatus !== prev.status) {
-            const notification = getStatusNotification(newStatus, orderNum, prev.status)
+            const notification = getStatusNotification(newStatus, orderNum)
             if (notification) {
               addNotification(notification)
               if ('vibrate' in navigator) {
@@ -149,9 +162,11 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
       for (const [id, prev] of prevById.entries()) {
         if (currentIds.has(id)) continue
+        // prev.status is normalised, so a terminal-confirmed order reaches this list as
+        // `accepted` and gets the same disappearance notification the dashboard flow gets.
         const wasInProgress = ['accepted', 'preparing', 'ready', 'pending'].includes(prev.status)
         if (wasInProgress && prev.status !== 'completed') {
-          const notification = getStatusNotification('completed', prev.order_number, prev.status)
+          const notification = getStatusNotification('completed', prev.order_number)
           if (notification) addNotification(notification)
         }
         prevById.delete(id)
