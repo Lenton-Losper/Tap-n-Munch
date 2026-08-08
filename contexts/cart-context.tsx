@@ -2,6 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { getCurrentSession } from '@/lib/session'
+import { findMergeableLineIndex } from '@/lib/cart/cart-line-identity'
+import { round2 } from '@/lib/tax-rates/apply-tax'
 
 export interface CartItem {
   menu_item_id: string
@@ -61,8 +63,32 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('cart_session_id', sessionId)
   }, [items])
 
+  /**
+   * Adds a line, merging into an identical one when there is one (issue #133).
+   *
+   * "Identical" is decided by cartLineIdentity, which keys on everything the customer sees on
+   * the line -- item, size, variants, add-ons, note and unit price -- so two different sizes
+   * still produce two lines. See lib/cart/cart-line-identity.ts.
+   *
+   * Money is summed from the two lines' own subtotals rather than recomputed, so a merged line
+   * always costs exactly what the two separate lines cost, then rounded to cents so repeated
+   * merges cannot accumulate floating-point residue.
+   */
   const addItem = (item: CartItem) => {
-    setItems(prev => [...prev, item])
+    setItems(prev => {
+      const index = findMergeableLineIndex(prev, item)
+      if (index === -1) return [...prev, item]
+
+      const existing = prev[index]
+      const merged: CartItem = {
+        ...existing,
+        quantity: existing.quantity + item.quantity,
+        subtotal: round2(existing.subtotal + item.subtotal),
+      }
+      const next = [...prev]
+      next[index] = merged
+      return next
+    })
   }
 
   const updateItem = (index: number, item: CartItem) => {
