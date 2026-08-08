@@ -82,12 +82,28 @@ export async function fetchGuestActiveTableOrders(params: {
   return parseGuestOrdersResponse(res)
 }
 
+/**
+ * restaurantId is required, and the table/session binding is sent alongside it: the server gates
+ * every row through guestCanAccessOrder, so an OPEN order only comes back to the table or session
+ * that placed it. The gateway return URL carries both rid and table, so the confirmation screen
+ * has them without asking the customer for anything.
+ */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
-  restaurantId?: string
+  restaurantId: string
+  tableNumber?: number | null
+  sessionId?: string | null
 }): Promise<GuestOrderRow[]> {
-  const qs = new URLSearchParams({ ref: params.paymentRef.trim() })
-  if (params.restaurantId?.trim()) qs.set('restaurantId', params.restaurantId.trim())
+  if (!params.restaurantId.trim()) return []
+  const qs = new URLSearchParams({
+    ref: params.paymentRef.trim(),
+    restaurantId: params.restaurantId.trim(),
+  })
+  if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
+    qs.set('table_number', String(params.tableNumber))
+  }
+  if (params.sessionId?.trim()) qs.set('session_id', params.sessionId.trim())
+
   const res = await fetch(`/api/guest/orders/by-payment-ref?${qs.toString()}`)
   const body = await parseGuestOrdersResponse(res)
   return body.orders

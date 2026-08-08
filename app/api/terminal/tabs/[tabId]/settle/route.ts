@@ -12,6 +12,7 @@ import {
   settleableStatusesForMethod,
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
+import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
 
 export const dynamic = 'force-dynamic'
 
@@ -435,61 +436,15 @@ export async function POST(
 
     const canClose = !remainingError && (remaining ?? []).length === 0
 
-    const tabWasClosedOut = tab.settled_at != null
-
-    // Two statements, not one, and only the second is guarded. Both properties matter and
-    // they were introduced independently:
-    //
-    // 1. SPLIT (from main). These used to be a single UPDATE, so when the status write hit
-    //    the one-open-tab-per-table unique index the whole statement failed and the
-    //    ready-to-pay flags were never cleared, parking a fully paid tab on the ready-to-pay
-    //    queue for good. Clearing the flags must therefore not depend on the status write
-    //    succeeding -- so this one is deliberately NOT guarded on settled_at.
-    //
-    // 2. RESURRECTION GUARD (from cloudflare-staging), below. Reopening used to be
-    //    unconditional. A tab closed via close_table_session carries status='settled' with
-    //    settled_at/settled_type set; flipping it back to 'open' left a contradictory row and,
-    //    far worse, re-armed the partial unique index idx_tabs_one_open_per_table UNIQUE
-    //    (restaurant_id, table_number) WHERE status='open' (supabase/schema.sql:1797). With an
-    //    'open' row present a fresh insert for that table is impossible, so POST /api/tabs hits
-    //    23505 and silently degrades into a JOIN -- handing the NEXT customer the previous
-    //    party's tab, complete with their name, itemised order and receipt, and bypassing the
-    //    tab PIN because that path believes it is creating rather than joining.
-    //
-    //    The guard is `.is('settled_at', null)` in the statement itself rather than a JS check,
-    //    so a close landing concurrently cannot slip through the window. A normal open or
-    //    ready_to_pay tab has settled_at null and still reopens, which is the intended
-    //    "settle, then keep ordering" behaviour.
-    const { error: clearFlagsError } = await supabase
-      .from('tabs')
-      .update({ payment_preference: null, ready_to_pay_at: null })
-      .eq('id', tabId)
-
-    if (clearFlagsError) {
-      console.error('[terminal/tabs/settle] clearing ready-to-pay flags failed', clearFlagsError)
-    }
-
-    const { error: reopenError } = await supabase
-      .from('tabs')
-      .update({ status: 'open' })
-      .eq('id', tabId)
-      .is('settled_at', null)
-
-    if (reopenError) {
-      console.error('[TAB-SETTLE] failed to reopen tab', { tabId, error: reopenError })
-    } else if (tabWasClosedOut) {
-      // Not an error: the payment above is fully recorded. The tab was closed out, so it
-      // stays closed and the table remains free for the next party.
-      console.log('[TAB-SETTLE] tab already closed out — not reopening', {
-        tabId,
-        status: tab.status,
-        settledAt: tab.settled_at,
-      })
-    }
-
-    if (reopenError) {
-      console.error('[terminal/tabs/settle] tab reopen failed', reopenError)
-    }
+    // Split statements + settled_at guard, both explained in full on the helper. This used to
+    // be written out inline here, which is exactly how the single-order terminal payment route
+    // was left holding the original fused, unguarded version (issue #123) -- so it lives in one
+    // place now and every caller that takes tab money shares it.
+    await clearReadyToPayAndReopenTab(supabase, {
+      tabId,
+      logPrefix: '[terminal/tabs/settle]',
+      tabWasClosedOut: tab.settled_at != null,
+    })
 
     return NextResponse.json({
       success: true,

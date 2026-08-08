@@ -267,23 +267,46 @@ export async function fetchGuestActiveTableOrders(params: {
   return { orders: merged, count: merged.length }
 }
 
+/**
+ * Look up orders by the payment reference the gateway hands back on the return URL.
+ *
+ * The restaurant is REQUIRED and the rows are gated through guestCanAccessOrder, the same way
+ * fetchGuestOrderById above does it — a payment reference is a lookup key, never a credential.
+ * Without this, naming a reference returned up to 15 complete order rows (items, totals,
+ * customer_name, session ids) to anyone at all.
+ *
+ * The reference itself is matched by exact equality on the stored column (see
+ * paymentRefOrFilter) and is never parsed, so references issued under any past format keep
+ * resolving unchanged.
+ */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
-  restaurantId?: string | null
+  restaurantId: string
+  tableNumber?: number | null
+  sessionId?: string | null
 }): Promise<GuestOrderRow[]> {
   const supabase = createServerSupabaseClient()
   const ref = params.paymentRef.trim()
-  if (!ref) return []
+  if (!ref || !params.restaurantId.trim()) return []
 
-  let query = supabase.from('orders').select('*').or(paymentRefOrFilter(ref)).limit(15)
+  const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
 
-  if (params.restaurantId?.trim()) {
-    const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
-    query = query.eq('restaurant_id', restaurantUuid)
-  }
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .or(paymentRefOrFilter(ref))
+    .limit(15)
+    .eq('restaurant_id', restaurantUuid)
 
-  const { data, error } = await query
   if (error) throw error
 
-  return (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  const accessParams = {
+    restaurantId: restaurantUuid,
+    tableNumber: params.tableNumber ?? null,
+    sessionId: params.sessionId ?? null,
+  }
+
+  return (data ?? [])
+    .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
+    .filter((order) => guestCanAccessOrder(order, accessParams))
 }
