@@ -81,8 +81,15 @@ export async function POST(
     )
   }
 
+  // The staff-reviewed figures if a review was saved, otherwise the customer's submission.
+  // Both are calculateOrderPricing output -- POST /api/orders prices the submission and PATCH
+  // .../review prices staff edits -- so nothing here is client-supplied, and these are exactly
+  // the numbers the customer's confirmation screen renders (total_reviewed ?? total, see
+  // lib/guest-orders/queries.ts mapOrderRequestToGuestRow) and that the Finatic checkout below
+  // charges.
   const items = Array.isArray(claimed.items_reviewed) ? claimed.items_reviewed : claimed.items
   const subtotal = claimed.subtotal_reviewed ?? claimed.subtotal
+  const tax = claimed.tax_reviewed ?? claimed.tax
   const total = claimed.total_reviewed ?? claimed.total
 
   const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
@@ -104,6 +111,15 @@ export async function POST(
       items: enrichedItems,
       subtotal: Number(subtotal) || 0,
       total: Number(total) || 0,
+      // Record what was quoted, reviewed and charged -- do not let createOrder take a third
+      // pricing pass here. See CreateOrderParams.preauthorizedPricing for why this opt-in is
+      // safe on THIS path and must not be used from the POS route.
+      preauthorizedPricing: {
+        items: enrichedItems,
+        subtotal: Number(subtotal) || 0,
+        tax: Number(tax) || 0,
+        total: Number(total) || 0,
+      },
       paymentMethod: claimed.payment_method,
       paymentChannel: claimed.payment_channel,
       paymentStatus: 'pending',
