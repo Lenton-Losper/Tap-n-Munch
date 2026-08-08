@@ -7,6 +7,7 @@ import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
+import { validateOrderInstructionLengths } from '@/lib/orders/instruction-limits'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 
 export const dynamic = 'force-dynamic'
@@ -44,6 +45,26 @@ export async function POST(req: Request) {
 
     if (!restaurantId) {
       return NextResponse.json({ error: 'Missing restaurantId' }, { status: 400 })
+    }
+
+    // Bound free-text instruction length (issue #129). The three textareas carry
+    // maxLength={MAX_INSTRUCTIONS_LENGTH}, but that is an attribute on someone else's browser
+    // and order_instructions is a `text` column, so nothing stopped a crafted request storing
+    // unbounded text -- which then has to render on a staff order card and a thermal print.
+    // The per-item note needs it too: calculate-order-pricing spreads `{...item}` verbatim into
+    // the stored items JSON, so it was equally uncapped.
+    //
+    // Applies to every channel this route serves, unlike the quantity cap below: all of them
+    // are customer-facing, and staff POS goes through app/api/terminal/orders.
+    //
+    // Length only. This deliberately does not touch pricing, payment, status or the order
+    // creation below it.
+    const instructionsCheck = validateOrderInstructionLengths(
+      orderInstructions,
+      Array.isArray(items) ? items : [],
+    )
+    if (!instructionsCheck.ok) {
+      return NextResponse.json({ error: instructionsCheck.reason }, { status: 400 })
     }
 
     // Bound the per-line quantity on customer-placed orders. calculateOrderPricing's
