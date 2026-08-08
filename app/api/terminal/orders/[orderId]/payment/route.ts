@@ -4,6 +4,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { amountsMatch } from '@/lib/payments/payment-integrity'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
+import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
 
 export const dynamic = 'force-dynamic'
 
@@ -113,14 +114,10 @@ export async function POST(
 
         canClose = (remainingOrders ?? []).length === 0
 
-        await supabase
-          .from('tabs')
-          .update({
-            status: 'open',
-            payment_preference: null,
-            ready_to_pay_at: null,
-          })
-          .eq('id', result.tabId)
+        await clearReadyToPayAndReopenTab(supabase, {
+          tabId: result.tabId,
+          logPrefix: '[terminal/orders/payment]',
+        })
       }
     } else {
       // Never trust a terminal failure report alone when Finatic may already have
@@ -167,14 +164,10 @@ export async function POST(
 
           canClose = (remainingOrders ?? []).length === 0
 
-          await supabase
-            .from('tabs')
-            .update({
-              status: 'open',
-              payment_preference: null,
-              ready_to_pay_at: null,
-            })
-            .eq('id', failedResult.tabId)
+          await clearReadyToPayAndReopenTab(supabase, {
+            tabId: failedResult.tabId,
+            logPrefix: '[terminal/orders/payment:corrected_to_paid]',
+          })
         }
 
         return NextResponse.json({
