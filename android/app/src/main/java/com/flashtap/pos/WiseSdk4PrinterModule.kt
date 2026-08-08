@@ -82,7 +82,12 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     private const val DEFAULT_FEED_DOTS = 100
     private const val DEFAULT_FONT_SIZE = 25
     private const val LARGE_FONT_SIZE = 32
-    private const val DIVIDER_TEXT = "--------------------------------------------"
+    /**
+     * 32 characters, the 384-dot head at font size 25. This was 44, which wrapped onto a second
+     * line and printed as the "double divider" seen alongside #166. printString wraps where
+     * printMultiseriateString clips, so the same width mismatch showed up two different ways.
+     */
+    private const val DIVIDER_TEXT = "--------------------------------"
 
     private const val CANVAS_WIDTH_DOTS = 384
     private const val PRINT_TYPE_INTERNAL = 0
@@ -441,7 +446,9 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
       is LineSnapshot.Row -> {
         val count = line.columns.size
         if (count == 0) return
-        val proportions = IntArray(count) { if (it == 0 && count > 1) 3 else 1 }
+        // #166: this was `if (it == 0 && count > 1) 3 else 1`, the vendor demo's four-column
+        // rule applied to two-column rows, which left the value column ~8 characters.
+        val proportions = receiptColumnProportions(count)
         // NOTE: printMultiseriateString is declared STATIC on Printer, unlike every other print
         // call on this class. It still operates on BaseBinder's shared `protected static
         // mService`, so it is only valid once an instance has been constructed and the binder

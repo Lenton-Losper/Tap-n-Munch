@@ -190,4 +190,9 @@ dependencies {
     // the same package are deliberately NOT included, since using SDK4 for payments would make
     // FlashTap the payment application instead of calling WiseCashier.
     implementation files('libs/SDK4BaseBinderV2.2.29.jar')
+
+    // JVM unit tests for the dependency-free layout arithmetic in ReceiptColumnLayout.kt.
+    // Receipt truncation is invisible from SDK return codes (#166), so the proportion maths
+    // is the only part that can be checked without a P5 in hand.
+    testImplementation("junit:junit:4.13.2")
 }
