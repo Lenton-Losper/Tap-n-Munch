@@ -214,10 +214,23 @@ export async function POST(req: Request) {
       .maybeSingle()
 
     const allowedMethods = settings?.payment_methods ?? ['cash', 'card']
-    if (paymentMethod && !allowedMethods.includes(paymentMethod)) {
+
+    // Validate the RESOLVED method, not the raw request field. `paymentMethod` is undefined
+    // whenever the client omits it, so `paymentMethod && ...` short-circuited and skipped the
+    // allowlist entirely -- while resolvedPaymentMethod had already defaulted to 'cash' above
+    // and is what gets written to order_requests.payment_method / orders.payment_method below.
+    // A card-only restaurant therefore accepted cash orders from any client that simply left
+    // the field out. Checking the value that is actually persisted is the whole point.
+    if (!allowedMethods.includes(resolvedPaymentMethod)) {
       return NextResponse.json(
         {
-          error: `This restaurant does not accept ${paymentMethod} payments.`,
+          error: `This restaurant does not accept ${resolvedPaymentMethod} payments.`,
+          // Separates "you asked for cash" from "you asked for nothing and the server defaulted
+          // to cash", which is otherwise an inexplicable refusal to a customer who chose nothing.
+          code: paymentMethod ? 'PAYMENT_METHOD_NOT_ACCEPTED' : 'PAYMENT_METHOD_REQUIRED',
+          requestedPaymentMethod: paymentMethod ?? null,
+          resolvedPaymentMethod,
+          allowedPaymentMethods: allowedMethods,
           settingsVersion: settings?.settings_version ?? 1,
         },
         { status: 403 }
