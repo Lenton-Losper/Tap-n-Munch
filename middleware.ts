@@ -41,14 +41,20 @@ function handleRivieraSubdomain(request: NextRequest): NextResponse | null {
     return NextResponse.rewrite(rewriteUrl)
   }
 
-  // Printed table QRs point at riviera.flashtap.app/table/N. Rewritten into the real
-  // /menu/[restaurantId] tree rather than served by app/table/[tableNumber]/page.tsx, which
-  // renders the v2 landing OUTSIDE app/menu/[restaurantId]/layout.tsx -- so TabProvider and
-  // RestaurantProvider are never mounted and useTab() throws on mount, blanking every scan.
+  // Printed table QRs point at riviera.flashtap.app/table/N. This rewrite is the ONLY thing
+  // serving them: app/table/[tableNumber]/page.tsx used to, rendering the v2 landing OUTSIDE
+  // app/menu/[restaurantId]/layout.tsx so TabProvider and RestaurantProvider were never mounted
+  // and useTab() threw on mount, and it has been deleted (#118).
   //
   // A rewrite rather than a duplicate app/table/layout.tsx: one provider tree, so this cannot
   // drift when a provider is added to the menu layout. Rewrite rather than redirect so the
   // customer keeps the short URL in the address bar.
+  //
+  // KNOWN GAP, deliberately not closed here: parseTableLandingPath requires an integer, so a
+  // finite-positive non-integer -- /table/5.5, and /table/%205, which middleware sees raw and
+  // Next would decode to " 5" -- is not rewritten and now 404s. That is a safe outcome, not a
+  // correct one; widening the parser is new behaviour on the QR entry path and is being raised
+  // separately. Pinned by __tests__/table-landing-routing.test.ts.
   const tableNumber = parseTableLandingPath(pathname)
   if (tableNumber !== null) {
     const rewriteUrl = request.nextUrl.clone()
