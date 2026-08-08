@@ -21,6 +21,8 @@ interface CartContextType {
   items: CartItem[]
   addItem: (item: CartItem) => void
   updateItem: (index: number, item: CartItem) => void
+  /** Replace the whole line list -- for edits that change the shape of the cart, not one row. */
+  replaceItems: (items: CartItem[]) => void
   removeItem: (index: number) => void
   clearCart: () => void
   getTotal: () => number
@@ -71,6 +73,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
+  const replaceItems = (next: CartItem[]) => {
+    setItems(next)
+  }
+
   const removeItem = (index: number) => {
     setItems(prev => prev.filter((_, i) => i !== index))
   }
@@ -95,6 +101,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         items,
         addItem,
         updateItem,
+        replaceItems,
         removeItem,
         clearCart,
         getTotal,
