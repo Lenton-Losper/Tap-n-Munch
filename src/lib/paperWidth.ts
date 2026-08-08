@@ -19,20 +19,23 @@ export const PAPER_TYPE_80MM = 1;
 export const PAPER_TYPE_104MM = 2;
 
 /**
- * 58mm is the fallback for an unrecognised or missing width, because every other width
- * assumption in the system agrees on it: SDK4's own Printer.PAPER_WIDTH is 384 dots (58mm at
- * 203dpi), WiseSdk6PrinterModule composed to 384, and the backend's parseCharacterWidth
- * defaults to 32 characters. An 80mm default was the outlier that caused #167.
+ * An unrecognised or missing width falls back to 80mm -- matching WiseSdk4PrinterModule's
+ * DEFAULT_PAPER_TYPE exactly, so a config without a usable value prints precisely as it does
+ * today. This is NOT an endorsement of 80mm: #167 argues 58mm is what the rest of the system
+ * assumes (Printer.PAPER_WIDTH is 384 dots, parseCharacterWidth defaults to 32 characters), and
+ * that is probably right. But the physical roll on the P5 has never been measured, so changing
+ * the fallback would alter printed layout on an unverified assumption. Settle it with a ruler
+ * and a receipt, not here.
  */
 export function paperTypeFromWidthMm(mm: number | null | undefined): number {
   switch (mm) {
-    case 80:
-      return PAPER_TYPE_80MM;
-    case 104:
-      return PAPER_TYPE_104MM;
     case 58:
       return PAPER_TYPE_58MM;
+    case 104:
+      return PAPER_TYPE_104MM;
+    case 80:
+      return PAPER_TYPE_80MM;
     default:
-      return PAPER_TYPE_58MM;
+      return PAPER_TYPE_80MM;
   }
 }
