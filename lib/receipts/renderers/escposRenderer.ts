@@ -89,6 +89,44 @@ function twoColumnLine(left: string, right: string, characterWidth: number): str
   return safeLeft + ' '.repeat(padding) + safeRight
 }
 
+/**
+ * Word-wrap to the paper width. Used for the customer's order note, which can run to 280
+ * characters: truncating it at the column width would drop the customer's own words (an
+ * allergy note is the obvious case), so it wraps instead. A single word longer than the
+ * paper is hard-split rather than dropped.
+ */
+function wrapToWidth(text: string, characterWidth: number): string[] {
+  const lines: string[] = []
+  let current = ''
+
+  for (const word of text.trim().split(/\s+/)) {
+    let remaining = word
+    while (remaining.length > characterWidth) {
+      if (current) {
+        lines.push(current)
+        current = ''
+      }
+      lines.push(remaining.slice(0, characterWidth))
+      remaining = remaining.slice(characterWidth)
+    }
+    if (!remaining) continue
+    const candidate = current ? `${current} ${remaining}` : remaining
+    if (candidate.length <= characterWidth) {
+      current = candidate
+    } else {
+      if (current) lines.push(current)
+      current = remaining
+    }
+  }
+  if (current) lines.push(current)
+  return lines
+}
+
+/** '' for both null and a snapshot frozen before order_instructions existed (#135). */
+function orderNote(snapshot: ReceiptSnapshot): string {
+  return typeof snapshot.order_instructions === 'string' ? snapshot.order_instructions.trim() : ''
+}
+
 function centered(text: string, characterWidth: number): string {
   const safe = truncate(text, characterWidth)
   const padding = Math.max(0, Math.floor((characterWidth - safe.length) / 2))
@@ -146,6 +184,15 @@ export function renderReceiptEscPos(
       builder.line(truncate(`  + ${mod}`, characterWidth))
     }
     builder.line(twoColumnLine(qtyPrefix, money(snapshot, item.line_total), characterWidth))
+  }
+
+  const note = orderNote(snapshot)
+  if (note) {
+    builder.line(divider(characterWidth))
+    builder.line(truncate('ORDER NOTE', characterWidth))
+    for (const noteLine of wrapToWidth(note, characterWidth)) {
+      builder.line(noteLine)
+    }
   }
 
   builder.line(divider(characterWidth))

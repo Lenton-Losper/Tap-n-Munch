@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
-import { useCart } from '@/contexts/cart-context'
+import { useCart, type CartItem } from '@/contexts/cart-context'
+import { applyCartLineEdit } from '@/lib/cart/cart-lines'
+import { MAX_LINE_QUANTITY } from '@/lib/orders/quantity-limits'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { useTab } from '@/contexts/tab-context'
 import { Button } from '@/components/ui/button'
@@ -54,7 +56,7 @@ export default function CartPage() {
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
-  const { items, updateItem, removeItem, getTotal, clearCart } = useCart()
+  const { items, updateItem, replaceItems, removeItem, getTotal, clearCart } = useCart()
   const { isInTab, tabId, sessionId, tabStatus, refreshTab } = useTab()
   const storedTabId = readStoredTabId()
   const effectiveTabId = tabIdFromUrl || tabId || storedTabId || ''
@@ -170,12 +172,25 @@ export default function CartPage() {
     }
   }
 
-  const handleUpdateItem = (updatedCartItem: any) => {
-    if (editingIndex !== null) {
-      updateItem(editingIndex, updatedCartItem)
-      setEditingIndex(null)
-      setEditingItem(null)
+  const handleUpdateItem = (updatedCartItem: CartItem) => {
+    if (editingIndex === null) return
+
+    // An edit can turn this line into a copy of another one; applyCartLineEdit folds those
+    // together rather than leaving the customer two rows they cannot tell apart.
+    const result = applyCartLineEdit(items, editingIndex, updatedCartItem)
+    replaceItems(result.items)
+
+    if (result.clamped) {
+      toast({
+        title: 'Combined with the matching item',
+        description: `Up to ${MAX_LINE_QUANTITY} per item. For a larger order, please ask a member of staff.`,
+      })
+    } else if (result.merged) {
+      toast({ title: 'Combined with the matching item in your cart' })
     }
+
+    setEditingIndex(null)
+    setEditingItem(null)
   }
 
   const subtotal = getTotal()
@@ -747,6 +762,7 @@ export default function CartPage() {
       {editingItem && editingIndex !== null && (
         <ItemDetailModal
           item={editingItem}
+          editingLine={items[editingIndex] ?? null}
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => {
             setEditingItem(null)

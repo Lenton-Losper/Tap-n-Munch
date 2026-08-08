@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { useState } from 'react'
@@ -24,6 +23,8 @@ type MenuItemAddon = { name: string; price: number }
 interface ItemDetailModalProps {
   item: MenuItem
   restaurant: any
+  /** The cart line being edited, or null/absent when adding a new one. */
+  editingLine?: CartItem | null
   onClose: () => void
   onAddToCart: (cartItem: CartItem) => void
 }
@@ -31,20 +32,45 @@ interface ItemDetailModalProps {
 export function ItemDetailModal({
   item,
   restaurant,
+  editingLine,
   onClose,
   onAddToCart,
 }: ItemDetailModalProps) {
-  const [quantity, setQuantity] = useState(1)
-  const [selectedSize, setSelectedSize] = useState<MenuItemSize | null>(
-    item.has_sizes && item.sizes.length > 0
-      ? item.sizes.find(s => s.price_modifier === 0) || item.sizes[0]
-      : null
+  // Editing a line seeds every control from that line. The modal is mounted fresh each time
+  // it opens (both call sites render it conditionally), so lazy initialisers are enough --
+  // no seeding effect, and nothing to re-sync mid-edit.
+  const [quantity, setQuantity] = useState(() =>
+    editingLine ? clampLineQuantity(editingLine.quantity) : 1
   )
-  const [selectedAddons, setSelectedAddons] = useState<MenuItemAddon[]>([])
-  const [specialInstructions, setSpecialInstructions] = useState('')
+  const [selectedSize, setSelectedSize] = useState<MenuItemSize | null>(() => {
+    if (editingLine) {
+      const existing = editingLine.selected_size
+      if (!existing) return null
+      // Prefer the menu's current definition of that size (its modifier may have changed);
+      // fall back to the line's own copy, which is all a variant line has.
+      return (item.has_sizes && item.sizes?.find((s: MenuItemSize) => s.name === existing.name)) || existing
+    }
+    return item.has_sizes && item.sizes.length > 0
+      ? item.sizes.find((s: MenuItemSize) => s.price_modifier === 0) || item.sizes[0]
+      : null
+  })
+  const [selectedAddons, setSelectedAddons] = useState<MenuItemAddon[]>(
+    () => editingLine?.selected_addons ?? []
+  )
+  const [specialInstructions, setSpecialInstructions] = useState(
+    () => editingLine?.special_instructions ?? ''
+  )
+
+  // A variant-group line ("Americano - Large") carries an already variant-resolved
+  // base_price, and this modal renders no variant UI to re-resolve it with -- recomputing
+  // from item.base_price is what turned a N$35 Large back into a N$20 Americano (#126).
+  const editedVariants = editingLine?.selected_variants
+  const hasVariantSelection = Boolean(editedVariants && Object.keys(editedVariants).length > 0)
+  const unitBasePrice =
+    hasVariantSelection && editingLine ? editingLine.base_price : item.base_price
 
   const calculatePrice = () => {
-    let price = item.base_price
+    let price = unitBasePrice
     if (selectedSize) {
       price += selectedSize.price_modifier
     }
@@ -59,12 +85,19 @@ export function ItemDetailModal({
       menu_item_id: item.id,
       name: item.name,
       quantity,
-      base_price: item.base_price,
+      base_price: unitBasePrice,
       selected_size: selectedSize,
       selected_addons: selectedAddons,
       special_instructions: specialInstructions,
       subtotal: calculatePrice(),
       image_url: item.image_url,
+    }
+    // Round-trip what this modal cannot edit, so an edit never strips it from the line.
+    if (editingLine?.display_name) {
+      cartItem.display_name = editingLine.display_name
+    }
+    if (editedVariants) {
+      cartItem.selected_variants = editedVariants
     }
     onAddToCart(cartItem)
   }
@@ -120,11 +153,11 @@ export function ItemDetailModal({
               <RadioGroup
                 value={selectedSize?.name || ''}
                 onValueChange={(value) => {
-                  const size = item.sizes.find(s => s.name === value)
+                  const size = item.sizes.find((s: MenuItemSize) => s.name === value)
                   if (size) setSelectedSize(size)
                 }}
               >
-                {item.sizes.map((size) => (
+                {item.sizes.map((size: MenuItemSize) => (
                   <div key={size.name} className="flex min-h-[44px] items-center space-x-3 border-b border-border py-3 last:border-b-0">
                     <RadioGroupItem value={size.name} id={size.name} />
                     <Label
@@ -148,7 +181,7 @@ export function ItemDetailModal({
             <div>
               <Label className="text-base font-semibold mb-4 block font-sans text-foreground">Add-ons</Label>
               <div className="space-y-0">
-                {item.addons.map((addon) => (
+                {item.addons.map((addon: MenuItemAddon) => (
                   <div key={addon.name} className="flex min-h-[44px] items-center space-x-3 border-b border-border py-3 last:border-b-0">
                     <Checkbox
                       id={addon.name}
