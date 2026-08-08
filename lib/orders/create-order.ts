@@ -21,6 +21,21 @@ export interface CreateOrderParams {
   memberSessionId: string | null
   tabSettlementForTabId: string | null
   isClosed?: boolean
+  /**
+   * Pricing that calculateOrderPricing ALREADY produced server-side and that the customer has
+   * already been quoted. When set, createOrder persists it verbatim and does not re-price.
+   *
+   * Only the Accept path may set this. Re-pricing stays the default because the other caller,
+   * app/api/terminal/orders, passes client-supplied subtotal/total -- for that path the
+   * recompute is the anti-tampering control and must not be bypassed. Setting this field with
+   * anything a client sent would be a price-tampering hole.
+   */
+  preauthorizedPricing?: {
+    items: unknown[]
+    subtotal: number
+    tax: number
+    total: number
+  } | null
 }
 
 export interface CreateOrderResult {
@@ -41,19 +56,36 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
   const orderNumber = (count || 0) + 1
 
-  const pricing = await calculateOrderPricing(supabase, params.restaurantId, params.items)
-  for (const warning of pricing.warnings) {
-    console.warn('[ORDERS] pricing warning:', warning)
-  }
-  if (Number.isFinite(params.total) && Math.abs(params.total - pricing.total) > 0.01) {
-    console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
-      restaurantId: params.restaurantId,
-      clientSubtotal: params.subtotal,
-      clientTotal: params.total,
-      serverSubtotal: pricing.subtotal,
-      serverTax: pricing.tax,
-      serverTotal: pricing.total,
-    })
+  // Two pricing modes, and which one applies is the caller's explicit choice.
+  //
+  // Default (POS/terminal): re-price from the catalog and IGNORE the caller's numbers. There
+  // the subtotal/total came from a client, so trusting them would let a caller set its own
+  // prices.
+  //
+  // preauthorizedPricing (Accept): persist verbatim. Those figures are calculateOrderPricing
+  // output taken at submission or staff review, they are what the customer's confirmation
+  // screen shows, and they are what the Finatic checkout charges. Re-pricing them a second time
+  // at Accept made the recorded total drift away from the amount quoted and actually taken.
+  let pricing: { items: unknown[]; subtotal: number; tax: number; total: number }
+
+  if (params.preauthorizedPricing) {
+    pricing = params.preauthorizedPricing
+  } else {
+    const computed = await calculateOrderPricing(supabase, params.restaurantId, params.items)
+    for (const warning of computed.warnings) {
+      console.warn('[ORDERS] pricing warning:', warning)
+    }
+    if (Number.isFinite(params.total) && Math.abs(params.total - computed.total) > 0.01) {
+      console.warn('[ORDERS] client/server total mismatch — using server-recomputed total', {
+        restaurantId: params.restaurantId,
+        clientSubtotal: params.subtotal,
+        clientTotal: params.total,
+        serverSubtotal: computed.subtotal,
+        serverTax: computed.tax,
+        serverTotal: computed.total,
+      })
+    }
+    pricing = computed
   }
 
   const { data: newOrder, error: orderError } = await supabase
