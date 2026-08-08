@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   NativeModules,
@@ -94,6 +94,8 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   const [lastPrint, setLastPrint] = useState('None');
   const [lastError, setLastError] = useState('None');
   const [testPrinting, setTestPrinting] = useState(false);
+  /** Synchronous mirror of `testPrinting` — see handleDevTestPrint (#101). */
+  const testPrintingRef = useRef(false);
   const [toggling, setToggling] = useState(false);
   const [aidlProbing, setAidlProbing] = useState(false);
   const [aidlProbe, setAidlProbe] = useState<UsdkAidlProbeResult | null>(null);
@@ -197,6 +199,12 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   };
 
   const handleDevTestPrint = async () => {
+    // #101: this had no re-entry guard at all — only `disabled={testPrinting}`, which is a
+    // render behind, so a double-tap ran the handler twice and printed twice.
+    if (testPrintingRef.current) {
+      return;
+    }
+    testPrintingRef.current = true;
     setTestPrinting(true);
     try {
       const token = await getTerminalToken();
@@ -259,6 +267,7 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       }
       await refreshPrintDiagnostics();
     } finally {
+      testPrintingRef.current = false;
       setTestPrinting(false);
     }
   };

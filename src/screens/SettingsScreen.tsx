@@ -66,6 +66,8 @@ export default function SettingsScreen() {
   });
   const [showPrinterPicker, setShowPrinterPicker] = useState(false);
   const [testPrinting, setTestPrinting] = useState(false);
+  /** Synchronous mirror of `testPrinting` — see handleTestPrint (#101). */
+  const testPrintingRef = useRef(false);
   const [testPrintResult, setTestPrintResult] = useState<
     {success: boolean; message: string} | null
   >(null);
@@ -139,9 +141,13 @@ export default function SettingsScreen() {
   };
 
   const handleTestPrint = async () => {
-    if (!printerConfig || testPrinting) {
+    // #101: `testPrinting` state alone cannot guard re-entry — two taps in the same frame both
+    // read the pre-render value (as does the button's `disabled`), so both get through and the
+    // terminal prints twice. The ref flips synchronously. Same fix as Reprint Receipt.
+    if (!printerConfig || testPrintingRef.current) {
       return;
     }
+    testPrintingRef.current = true;
     setTestPrinting(true);
     setTestPrintResult(null);
     try {
@@ -245,6 +251,7 @@ export default function SettingsScreen() {
         message: err instanceof Error ? err.message : 'Test print failed',
       });
     } finally {
+      testPrintingRef.current = false;
       setTestPrinting(false);
     }
   };
