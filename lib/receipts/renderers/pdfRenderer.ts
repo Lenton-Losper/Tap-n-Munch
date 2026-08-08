@@ -326,6 +326,37 @@ function drawTotalsBlock(
   return y - 4
 }
 
+/**
+ * The customer's order-level note (#135), wrapped to the content width. Nothing is drawn for
+ * a snapshot with no note, including every snapshot frozen before the field existed.
+ */
+function drawOrderNoteBlock(
+  page: PDFPage,
+  snapshot: ReceiptSnapshot,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  yTop: number,
+): number {
+  const note =
+    typeof snapshot.order_instructions === 'string' ? snapshot.order_instructions.trim() : ''
+  if (!note) return yTop
+
+  const contentWidth = PAGE_WIDTH - MARGIN * 2
+  let y = yTop
+
+  page.drawLine({ start: { x: MARGIN, y }, end: { x: MARGIN + contentWidth, y }, thickness: 1, color: BORDER_LIGHT })
+  y -= 16
+
+  page.drawText('ORDER NOTE', { x: MARGIN, y: y - SMALL_SIZE, size: SMALL_SIZE, font: fonts.bold, color: TEXT_MUTED })
+  y -= SMALL_SIZE + 8
+
+  for (const line of wrapText(note, fonts.regular, BODY_SIZE, contentWidth)) {
+    page.drawText(line, { x: MARGIN, y: y - BODY_SIZE, size: BODY_SIZE, font: fonts.regular, color: TEXT_DARK })
+    y -= ROW_LINE_HEIGHT
+  }
+
+  return y - 8
+}
+
 function drawPaymentsBlock(
   page: PDFPage,
   payments: ReceiptPayment[],
@@ -389,6 +420,7 @@ export async function renderReceiptPdf(
   y = drawHeaderBlock(page, snapshot, options, fonts, y)
   y = drawLineItemsTable(page, snapshot, fonts, y)
   y = drawTotalsBlock(page, snapshot, fonts, y)
+  y = drawOrderNoteBlock(page, snapshot, fonts, y)
   y = drawPaymentsBlock(page, snapshot.payments, fonts, y, snapshot.outlet?.currency ?? 'NAD')
 
   const minContentY = MARGIN + FOOTER_AREA + 20
