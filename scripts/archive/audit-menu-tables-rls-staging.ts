@@ -5,7 +5,12 @@
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { randomUUID } from 'crypto'
-import { rolePermissionConfigEntries } from '../lib/permissions/role-permissions-config'
+// Depth is `../../`: this file lives in scripts/archive/, and scripts/lib/ holds only
+// safe-supabase-linked.ts. The `../lib/...` form used elsewhere in scripts/archive/ resolves to
+// scripts/lib/ and does not exist — those files were moved into archive/ without their imports
+// being updated, and `scripts/archive/**` is excluded from tsconfig so tsc never reported it.
+import { rolePermissionConfigEntries } from '../../lib/permissions/role-permissions-config'
+import { probeTable, type ProbeableClient } from '../../lib/supabase/table-exists'
 
 config({ path: '.env.test', override: true })
 
@@ -256,12 +261,19 @@ async function fetchPolicyCatalogViaRest() {
     /* fall through */
   }
 
+  // #169: this was `.select('*', { count: 'exact', head: true })` reading `!error` as "the table
+  // is reachable". That form returns no error for a table that does not exist, so every absent
+  // table reported as reachable. probeTable drops `head` so PGRST205 actually surfaces.
   const report: Record<string, unknown> = {}
   for (const table of TABLES) {
-    const { data, error } = await dbAdmin
-      .from(table)
-      .select('*', { count: 'exact', head: true })
-    report[table] = { headSelectOk: !error, headError: error?.message ?? null }
+    const probe = await probeTable(dbAdmin as unknown as ProbeableClient, table)
+    report[table] = {
+      exists: probe.exists,
+      inconclusive: probe.inconclusive,
+      code: probe.code,
+      error: probe.message || null,
+      rowCount: probe.count,
+    }
   }
 
   const grantsSql = `
