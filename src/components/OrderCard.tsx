@@ -2,6 +2,7 @@ import React from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {formatCurrency} from '../lib/currency';
+import {formatOrderCardTime} from '../lib/orderCardTime';
 import {Order} from '../types';
 import PaymentStatusBadge from './PaymentStatusBadge';
 import StatusBadge from './StatusBadge';
@@ -9,13 +10,6 @@ import StatusBadge from './StatusBadge';
 interface OrderCardProps {
   order: Order;
   onPress: () => void;
-}
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 export default function OrderCard({order, onPress}: OrderCardProps) {
@@ -45,7 +39,9 @@ export default function OrderCard({order, onPress}: OrderCardProps) {
           {order.status === 'completed' ? (
             <PaymentStatusBadge status={order.payment_status_derived} />
           ) : null}
-          <Text style={styles.time}>{formatTime(order.placed_at)}</Text>
+          <Text style={styles.time}>
+            {formatOrderCardTime(order.placed_at)}
+          </Text>
         </View>
       </View>
 
