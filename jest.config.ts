@@ -9,6 +9,14 @@ const config: Config = {
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
   testTimeout: 15000,
   maxWorkers: 1,
+  // `payments/*.js` are ESM with no `"type": "module"`, so Jest parsed them as CommonJS and threw
+  // on the first `import`. Every existing suite worked around that by MOCKING
+  // `@/payments/paycloud` rather than executing it — which is why a credential fallback that
+  // silently transacted under a global merchant number was never caught by a test.
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {}],
+    '^.+\\.js$': ['ts-jest', { tsconfig: { allowJs: true, module: 'commonjs' } }],
+  },
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
