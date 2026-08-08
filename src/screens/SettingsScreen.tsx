@@ -33,6 +33,7 @@ import {
   recordLastPrintResult,
   setReceiptPrintingEnabled,
 } from '../lib/receiptPrintSettings';
+import {paperTypeFromWidthMm} from '../lib/paperWidth';
 import {
   describeWiseSdk6PrinterError,
   getBuiltInPrinterStatus,
@@ -149,7 +150,9 @@ export default function SettingsScreen() {
         const lines = buildSdk6TestPrintLines(
           printerConfig.printer_name ?? 'Built-in Printer',
         );
-        const printResult = await printBuiltInJob(lines);
+        const printResult = await printBuiltInJob(lines, {
+          paperType: paperTypeFromWidthMm(printerConfig.paper_width_mm),
+        });
         // Never block the spinner on status — getStatus can hang on a stuck SDK call.
         void getBuiltInPrinterStatus().then(setBuiltInStatus);
         await recordLastPrintResult({

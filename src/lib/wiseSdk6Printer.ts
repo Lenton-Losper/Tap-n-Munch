@@ -24,6 +24,17 @@ export type Sdk6ReceiptLine =
 export interface WiseSdk6PrintOptions {
   /** How far to feed the paper after printing finishes, in dots (Y-axis). Defaults to 30 natively. */
   feedAfterDots?: number;
+  /**
+   * PAPER_TYPE_* constant (see paperWidth.ts), derived from the terminal's stored
+   * paper_width_mm. Routes to setPrintPaperType(). When omitted the native module falls back
+   * to its own default -- which is what #167 was about, so supply it at every call site.
+   */
+  paperType?: number;
+  /**
+   * Millimetre width. Routes to setPrintPaperWide() instead of setPrintPaperType(), a native
+   * call not yet exercised on our P5 units. Prefer paperType until that is device-verified.
+   */
+  paperWidthMm?: number;
 }
 
 export interface WiseSdk6Status {

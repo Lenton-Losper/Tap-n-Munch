@@ -71,7 +71,13 @@ class WiseSdk4PrinterModule(private val reactContext: ReactApplicationContext) :
     const val PAPER_TYPE_80MM = 1
     const val PAPER_TYPE_104MM = 2
 
-    private const val DEFAULT_PAPER_TYPE = PAPER_TYPE_80MM
+    /**
+     * Fallback only -- every call site now supplies "paperType" from the terminal's stored
+     * paper_width_mm (#167). 58mm, not 80mm: SDK4's own Printer.PAPER_WIDTH is 384 dots (58mm
+     * at 203dpi), WiseSdk6PrinterModule composed to 384, and the backend's parseCharacterWidth
+     * defaults to 32 characters. The 80mm default was the outlier, introduced with this module.
+     */
+    private const val DEFAULT_PAPER_TYPE = PAPER_TYPE_58MM
     private const val DEFAULT_GRAY_LEVEL = 3
     private const val DEFAULT_FEED_DOTS = 100
     private const val DEFAULT_FONT_SIZE = 25

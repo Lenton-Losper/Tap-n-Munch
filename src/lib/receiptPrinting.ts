@@ -7,6 +7,7 @@ import {
   TerminalPrinterConfig,
   TerminalReceipt,
 } from './api';
+import {paperTypeFromWidthMm} from './paperWidth';
 import {runBluetoothPrintJob} from './printer';
 import {
   describeReceiptPrintError,
@@ -159,7 +160,7 @@ async function printReceiptForOrderInner(
       : config.printer_name || 'Bluetooth printer';
 
   if (config.connection_type === 'BUILTIN') {
-    return {result: await printViaBuiltIn(orderId, token), printerLabel};
+    return {result: await printViaBuiltIn(config, orderId, token), printerLabel};
   }
   return {result: await printViaBluetooth(config, orderId, token), printerLabel};
 }
@@ -247,8 +248,19 @@ async function printViaBluetooth(
  * Built-in P5 path: GET issued receipt → require sdk6Lines → WiseSdk6PrinterModule.printJob
  * (same native entry Settings Test Print uses via printBuiltInJob).
  */
-async function printViaBuiltIn(orderId: string, token: string): Promise<PrintReceiptResult> {
-  const fetched = await fetchIssuedReceipt(orderId, token);
+async function printViaBuiltIn(
+  config: TerminalPrinterConfig,
+  orderId: string,
+  token: string,
+): Promise<PrintReceiptResult> {
+  // #167: both of these come from the terminal's stored config. Before this, the built-in path
+  // fetched the receipt at the backend's default character width and let a native constant pick
+  // the paper width, so neither stored value had any effect.
+  const fetched = await fetchIssuedReceipt(
+    orderId,
+    token,
+    config.character_width ?? undefined,
+  );
   if (fetched.notReady) {
     return {
       success: false,
@@ -287,7 +299,9 @@ async function printViaBuiltIn(orderId: string, token: string): Promise<PrintRec
     };
   }
 
-  const printResult = await printBuiltInJob(receipt.sdk6Lines);
+  const printResult = await printBuiltInJob(receipt.sdk6Lines, {
+    paperType: paperTypeFromWidthMm(config.paper_width_mm),
+  });
 
   await recordReceiptDelivery(
     {

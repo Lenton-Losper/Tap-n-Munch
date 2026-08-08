@@ -22,6 +22,7 @@ import {
   recordLastPrintResult,
   setReceiptPrintingEnabled,
 } from '../lib/receiptPrintSettings';
+import {paperTypeFromWidthMm} from '../lib/paperWidth';
 import {
   getRestaurantId,
   getTerminalId,
@@ -224,7 +225,9 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
         const lines = buildSdk6TestPrintLines(
           config.printer_name ?? 'Built-in Printer',
         );
-        const printResult = await printBuiltInJob(lines);
+        const printResult = await printBuiltInJob(lines, {
+          paperType: paperTypeFromWidthMm(config.paper_width_mm),
+        });
         void getBuiltInPrinterStatus();
         await recordLastPrintResult({
           outcome: printResult.success ? 'success' : 'failed',
