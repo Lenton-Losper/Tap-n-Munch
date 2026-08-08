@@ -194,9 +194,7 @@ describe('renderers show the order note (#135)', () => {
     // printable character ("ESC a 1"), which would otherwise count towards the line width.
     const text = Buffer.from(bytes)
       .toString('ascii')
-      // eslint-disable-next-line no-control-regex
       .replace(/\x1b@/g, '')
-      // eslint-disable-next-line no-control-regex
       .replace(/[\x1b\x1d][\s\S][\s\S]/g, '')
 
     // Every word survives...
