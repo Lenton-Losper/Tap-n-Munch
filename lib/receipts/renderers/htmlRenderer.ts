@@ -36,6 +36,11 @@ function formatMoney(snapshot: ReceiptSnapshot, value: number): string {
   return formatReceiptMoney(value, snapshot.outlet?.currency ?? 'NAD')
 }
 
+/** '' for both null and a snapshot frozen before order_instructions existed (#135). */
+function orderNote(snapshot: ReceiptSnapshot): string {
+  return typeof snapshot.order_instructions === 'string' ? snapshot.order_instructions.trim() : ''
+}
+
 /** Print layout only -- server's local time, same convention as lib/receipts/renderers/pdfRenderer.ts formatDate(). */
 function formatDateTimePrint(iso: string | undefined): string {
   if (!iso) return ''
@@ -101,6 +106,18 @@ function renderScreenCard(snapshot: ReceiptSnapshot): string {
     )
     .join('')
 
+  const noteHtml = orderNote(snapshot)
+    ? `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top: 16px; padding-top: 14px; border-top: 1px dashed #d1d5db;">
+          <tr>
+            <td style="padding: 0 0 6px; font-size: 11px; font-weight: 600; color: ${COLORS.faint}; text-transform: uppercase; letter-spacing: 0.04em;">Order note</td>
+          </tr>
+          <tr>
+            <td style="font-size: 13px; line-height: 1.5; color: ${COLORS.body}; word-break: break-word;">${escapeHtml(orderNote(snapshot))}</td>
+          </tr>
+        </table>`
+    : ''
+
   const paymentsSectionHtml = snapshot.payments.length
     ? `
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top: 20px; padding-top: 16px; border-top: 1px dashed #d1d5db;">
@@ -138,6 +155,7 @@ function renderScreenCard(snapshot: ReceiptSnapshot): string {
                 ${summaryHtml}
               </table>
 
+              ${noteHtml}
               ${paymentsSectionHtml}
             </td>
           </tr>
@@ -235,6 +253,14 @@ function renderPrintLayout(snapshot: ReceiptSnapshot, options: HtmlRenderOptions
     </table>
 
     <div style="font-size: 12px; margin-top: 4px;">Items: ${totalItemCount}</div>
+
+    ${
+      orderNote(snapshot)
+        ? `${dashedLine}
+    <div style="font-size: 11px; font-weight: 700;">ORDER NOTE</div>
+    <div style="font-size: 12px; line-height: 1.4; word-break: break-word;">${escapeHtml(orderNote(snapshot))}</div>`
+        : ''
+    }
 
     <div style="text-align: left; margin-top: 14px; font-size: 13px; font-weight: 700;">Thank you</div>
   </div>`
