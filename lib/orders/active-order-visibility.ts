@@ -33,6 +33,40 @@ export const ACTIVE_ORDER_STATUSES = [
 const TERMINAL_ORDER_STATUSES = ['completed', 'cancelled', 'declined'] as const
 
 /**
+ * Active statuses that sit BEFORE staff have taken the order on.
+ *
+ * `waiting_review` is a QR order queued for Accept; `accepting` is the transient lock Accept
+ * takes and rolls back to `waiting_review` on failure. Nothing has been agreed to in either.
+ */
+export const PRE_ACCEPTANCE_ORDER_STATUSES = ['waiting_review', 'accepting'] as const
+
+/**
+ * Statuses from which an order LEAVING the active list means it was closed out -- served,
+ * settled, done -- rather than turned away.
+ *
+ * Derived, not listed. OrderStatusBanner kept its own inline copy
+ * (['accepted','preparing','ready','pending']) and it fell behind ACTIVE_ORDER_STATUSES by two:
+ * `ready_for_terminal`, so an order that reached the card machine and was then paid and closed
+ * told the customer nothing, and `confirmed`, the terminal's word for `accepted`. Subtracting
+ * from the shared list means a status added to ACTIVE_ORDER_STATUSES later is covered by
+ * default instead of silently dropped the way those two were.
+ *
+ * The subtraction is not symmetry-breaking pedantry: an order vanishing from `waiting_review`
+ * or `accepting` has almost certainly been DECLINED, and "completed. Enjoy your meal!" over a
+ * declined order is worse than saying nothing. Those two are named above and excluded here.
+ */
+export const IN_PROGRESS_ORDER_STATUSES = ACTIVE_ORDER_STATUSES.filter(
+  (status) => !(PRE_ACCEPTANCE_ORDER_STATUSES as readonly string[]).includes(status),
+)
+
+/** True when a disappearance from the active list should read as "this order is finished". */
+export function isInProgressOrderStatus(status: unknown): boolean {
+  return IN_PROGRESS_ORDER_STATUSES.includes(
+    String(status || '').toLowerCase() as (typeof IN_PROGRESS_ORDER_STATUSES)[number],
+  )
+}
+
+/**
  * Collapse the writers' vocabularies into the one the customer-facing renderers switch on.
  *
  * Anything that makes a status VISIBLE must run it through here, because a renderer that has

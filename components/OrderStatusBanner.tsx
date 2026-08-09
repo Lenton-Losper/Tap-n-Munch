@@ -6,6 +6,7 @@ import {
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
+import { isInProgressOrderStatus } from '@/lib/orders/active-order-visibility'
 
 interface Notification {
   id: string
@@ -149,8 +150,14 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
       for (const [id, prev] of prevById.entries()) {
         if (currentIds.has(id)) continue
-        const wasInProgress = ['accepted', 'preparing', 'ready', 'pending'].includes(prev.status)
-        if (wasInProgress && prev.status !== 'completed') {
+        // Derived from ACTIVE_ORDER_STATUSES rather than listed here. The inline copy this
+        // replaces had fallen two statuses behind -- `ready_for_terminal` above all, so an
+        // order that reached the card machine and was then paid and closed said nothing.
+        //
+        // The `prev.status !== 'completed'` clause that used to guard this is gone: `completed`
+        // is a TERMINAL_ORDER_STATUS and can never be in the derived set, so it excluded
+        // nothing while implying the set might contain it.
+        if (isInProgressOrderStatus(prev.status)) {
           const notification = getStatusNotification('completed', prev.order_number, prev.status)
           if (notification) addNotification(notification)
         }
