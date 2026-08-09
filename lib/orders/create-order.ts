@@ -1,5 +1,6 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
+import { insertOrderWithAllocatedNumber } from '@/lib/orders/order-number'
 
 export interface CreateOrderParams {
   restaurantId: string        // UUID
@@ -48,14 +49,6 @@ export interface CreateOrderResult {
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
   const supabase = createServerSupabaseClient()
 
-  // Get next order number scoped to restaurant
-  const { count } = await supabase
-    .from('orders')
-    .select('*', { count: 'exact', head: true })
-    .eq('firebase_restaurant_id', params.firebaseRestaurantId)
-
-  const orderNumber = (count || 0) + 1
-
   // Two pricing modes, and which one applies is the caller's explicit choice.
   //
   // Default (POS/terminal): re-price from the catalog and IGNORE the caller's numbers. There
@@ -88,9 +81,19 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     pricing = computed
   }
 
-  const { data: newOrder, error: orderError } = await supabase
-    .from('orders')
-    .insert({
+  // order_number is allocated per attempt inside the helper (#127): max(order_number)+1 behind a
+  // unique index, retried only on a collision on that index. Every other error, including the
+  // idempotency-key 23505 handled just below, comes back on the first attempt exactly as before.
+  const { data: newOrder, error: orderError } = await insertOrderWithAllocatedNumber<{
+    id: string
+    restaurant_id: string
+    order_number: number
+    payment_status: string
+  }>(
+    supabase,
+    params.firebaseRestaurantId,
+    'id, restaurant_id, order_number, payment_status',
+    (orderNumber) => ({
       restaurant_id: params.restaurantId,
       firebase_restaurant_id: params.firebaseRestaurantId,
       table_number: params.tableNumber,
@@ -114,9 +117,8 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       placed_at: new Date().toISOString(),
       idempotency_key: params.idempotencyKey,
       is_closed: params.isClosed ?? false,
-    })
-    .select('id, restaurant_id, order_number, payment_status')
-    .single()
+    }),
+  )
 
   if (orderError) {
     // Handle idempotency duplicate

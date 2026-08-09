@@ -90,14 +90,19 @@ function makeClient() {
         in: chain,
         gte: chain,
         is: chain,
+        not: chain,
+        order: chain,
+        limit: chain,
         update: chain,
         maybeSingle: async () => {
           if (table === 'order_requests') return { data: requestRow, error: null }
+          // The order-number allocator reads the restaurant's high-water mark (#127):
+          // `.from('orders').select('order_number').eq(...).not(...).order(...).limit(1)`.
+          // 4 here so the allocator issues 5, matching the row the insert stub returns.
+          if (table === 'orders') return { data: { order_number: 4 }, error: null }
           return { data: null, error: null }
         },
         single: async () => ({ data: null, error: null }),
-        // `.from('orders').select('*', { count: 'exact', head: true }).eq(...)` is awaited
-        // directly for the order-number counter.
         then: (resolve: (r: unknown) => unknown) => Promise.resolve(resolve({ count: 4, error: null })),
         insert: (row: Record<string, unknown>) => {
           if (table === 'orders') insertedOrder = row

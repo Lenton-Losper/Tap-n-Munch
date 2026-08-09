@@ -8,6 +8,7 @@ import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
+import { insertOrderWithAllocatedNumber } from '@/lib/orders/order-number'
 
 export const dynamic = 'force-dynamic'
 
@@ -337,13 +338,6 @@ export async function POST(req: Request) {
     // --- Legacy direct-order path (channels other than table/kiosk; terminal/POS uses its
     // own route and never reaches here). Unchanged. ---
 
-    // Get next order number
-    const { count } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
-
-    const orderNumber = (count || 0) + 1
     const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
 
     const pricing = await calculateOrderPricing(supabase, restaurantUuid, itemsWithRouting)
@@ -363,11 +357,22 @@ export async function POST(req: Request) {
       })
     }
 
-    // Create order in Supabase
+    // Create order in Supabase. order_number is allocated per attempt inside the helper (#127):
+    // max(order_number)+1 behind a unique index, retried only on a collision on that index. Any
+    // other error, including the idempotency-key 23505 handled below, is returned on the first
+    // attempt exactly as it was before.
     const t2 = performance.now()
-    const { data: newOrder, error: orderError } = await supabase
-      .from('orders')
-      .insert({
+    const { data: newOrder, error: orderError } = await insertOrderWithAllocatedNumber<{
+      id: string
+      restaurant_id: string
+      order_number: number
+      payment_status: string
+      total: number
+    }>(
+      supabase,
+      orderRestaurantScope.firebaseRestaurantId,
+      'id, restaurant_id, order_number, payment_status, total',
+      (orderNumber) => ({
         restaurant_id: restaurantUuid,
         firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
         table_number: normalizedTableNumber,
@@ -390,9 +395,8 @@ export async function POST(req: Request) {
         customer_name: customerName,
         placed_at: new Date().toISOString(),
         idempotency_key: idempotencyKey,
-      })
-      .select('id, restaurant_id, order_number, payment_status, total')
-      .single()
+      }),
+    )
     console.log(`[ORDERS TIMING] order insert: ${(performance.now() - t2).toFixed(0)}ms`)
 
     if (orderError) {
@@ -434,6 +438,10 @@ export async function POST(req: Request) {
     }
 
     const orderId = newOrder.id
+    // Read the number back off the persisted row rather than reusing a local: after a collision
+    // retry the allocator's first candidate is not what ended up in the database, and the payment
+    // description and the response payload must both quote the number the customer will see.
+    const orderNumber = newOrder.order_number
 
     let kioskOrderNumber: number | undefined
     let kioskOrderLabel: string | undefined
