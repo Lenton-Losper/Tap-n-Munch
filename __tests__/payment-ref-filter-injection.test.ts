@@ -28,6 +28,13 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ||= 'placeholder-service-key'
 
 import { paymentRefOrFilter, isWellFormedPaymentRef } from '../lib/guest-orders/validation'
 
+/**
+ * A real-shaped UUID. `resolveRestaurantUuid` returns a UUID unchanged without querying
+ * (`lib/supabase/restaurants.ts` — `if (isUuid(id)) return id`), so this keeps the suite
+ * hermetic even though the scoping half of #122 now runs before the query.
+ */
+const RESTAURANT_ID = 'ed8bda2b-beb0-4da7-9531-5b597344e6d5'
+
 /** Payloads that must never reach PostgREST. The first is the one proven live on staging. */
 const INJECTIONS = [
   'zzz,total.gte.0',
@@ -116,7 +123,14 @@ describe('the lookup fails CLOSED, and the query is never issued', () => {
     jest.doMock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => client }))
     const { fetchGuestOrdersByPaymentRef } = await import('../lib/guest-orders/queries')
 
-    const rows = await fetchGuestOrdersByPaymentRef({ paymentRef: 'zzz,total.gte.0' })
+    // `restaurantId` became REQUIRED when #122's auth half merged in. That is the other half of
+    // the same fix: this guard stops the filter being widened, the scoping stops a valid
+    // reference being read cross-tenant. Passing a real id here keeps this test aimed at the
+    // injection rather than accidentally passing because the scope check rejected it first.
+    const rows = await fetchGuestOrdersByPaymentRef({
+      paymentRef: 'zzz,total.gte.0',
+      restaurantId: RESTAURANT_ID,
+    })
 
     expect(rows).toEqual([])
     // The strong assertion: not "the filter was safe" but "no filter was sent".
@@ -130,7 +144,10 @@ describe('the lookup fails CLOSED, and the query is never issued', () => {
     jest.doMock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => client }))
     const { fetchGuestOrdersByPaymentRef } = await import('../lib/guest-orders/queries')
 
-    await fetchGuestOrdersByPaymentRef({ paymentRef: 'PAY-20260808-K7M2QRTZ' })
+    await fetchGuestOrdersByPaymentRef({
+      paymentRef: 'PAY-20260808-K7M2QRTZ',
+      restaurantId: RESTAURANT_ID,
+    })
 
     expect(calls.or).toHaveLength(1)
     expect(calls.or[0]).toBe(
