@@ -122,6 +122,14 @@ export async function PATCH(
               terminalId: terminal.terminalId,
               paymentMethod: order.payment_method ? String(order.payment_method) : 'card',
               cancellationReason,
+              /**
+               * The other half of the bypass. This route already forwarded the reason but not
+               * this flag, so handleTerminalPaymentFailed's two-part check could never pass here
+               * either — the same defect as the payment route, one field further along.
+               *
+               * `=== true` deliberately: the JSON string "false" is truthy.
+               */
+              noGatewayAttempt: body?.noGatewayAttempt === true,
               auditAction: 'order.cancelled',
               correctionSource: 'terminal_status_cancel_false_failure_finatic_verified',
               correctionReason:
