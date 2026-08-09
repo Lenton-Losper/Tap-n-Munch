@@ -46,12 +46,18 @@ import {
 let container: HTMLDivElement
 let root: Root
 
-function order(status: string) {
+/**
+ * `paymentStatus` defaults to 'paid' because that is what a genuine close-out looks like: the
+ * order was settled, the poll observed `paid`, and the row was later detached by the table
+ * close. The earlier version of this file hardcoded 'pending' for every case, which said
+ * nothing about payment and so could not distinguish a completed order from a cancelled one.
+ */
+function order(status: string, paymentStatus = 'paid') {
   return {
     id: 'order-1',
     order_number: 41,
     status,
-    payment_status: 'pending',
+    payment_status: paymentStatus,
     table_number: TABLE,
     restaurant_id: RESTAURANT,
     total: 30,
@@ -123,10 +129,13 @@ describe('#173 residual — close-out notification when an order leaves the acti
   // CONTROLS — these must pass BEFORE and AFTER. They are what stops the fix from being
   // "drop ACTIVE_ORDER_STATUSES in wholesale", which would announce a completed meal over
   // an order that was in fact declined before anyone accepted it.
+  //
+  // Deliberately marked PAID, so what silences them is provably the status gate and not the
+  // payment gate added below. An unpaid fixture here would pass for the wrong reason.
   it.each([['waiting_review'], ['accepting']])(
     'says nothing when a %s order disappears (it was declined, not completed)',
     async (status) => {
-      const text = await pollTwice([order(status)], [])
+      const text = await pollTwice([order(status, 'paid')], [])
       expect(text).not.toMatch(CLOSE_OUT)
     },
   )
@@ -136,6 +145,58 @@ describe('#173 residual — close-out notification when an order leaves the acti
   it('says nothing while the order is still on the list', async () => {
     const text = await pollTwice([order('ready_for_terminal')], [order('ready_for_terminal')])
     expect(text).not.toMatch(CLOSE_OUT)
+  })
+})
+
+/**
+ * A CANCEL must never read as a completion.
+ *
+ * The dashboard cancel (app/api/orders/[orderId]/status/route.ts:92-94) writes
+ * `is_closed = true` AND `payment_status = 'cancelled'` in ONE patch, and the guest poll
+ * filters on `is_closed` with no status filter (lib/guest-orders/queries.ts:204-213). So the
+ * row leaves the poll in the very write that cancels it: the banner never observes
+ * `status='cancelled'`, only a disappearance, and `prev` holds whatever preceded the cancel.
+ *
+ * Disappearance is therefore not evidence of completion. What distinguishes the two is the
+ * last payment_status the poll actually saw -- `paid` for an order settled and later detached
+ * by the table close, never `paid` for a cancel, because the cancel is atomic with the
+ * removal. The banner already holds that value, so this costs no extra read.
+ *
+ * `isValidStaffStatusTransition` permits a cancel from every status except completed and
+ * cancelled, so every in-progress status can reach here.
+ */
+describe('an order cancelled out of the active list is not announced as completed', () => {
+  it.each([
+    // The headline case: the card-machine flow, where declined-then-cancelled is routine.
+    ['ready_for_terminal', 'terminal_pending'],
+    ['confirmed', 'pending'],
+    ['accepted', 'pending'],
+    ['preparing', 'pending'],
+    ['ready', 'pending'],
+    ['pending', 'unpaid'],
+  ])('says nothing when a %s order is cancelled (payment_status %s)', async (status, pay) => {
+    const text = await pollTwice([order(status, pay)], [])
+    expect(text).not.toMatch(CLOSE_OUT)
+  })
+
+  // CONTROL — the paid counterpart of each of those must STILL announce. Without it the fix
+  // could be "never announce anything", which would pass every assertion above.
+  it.each([
+    ['ready_for_terminal'],
+    ['confirmed'],
+    ['accepted'],
+    ['preparing'],
+    ['ready'],
+    ['pending'],
+  ])('still announces a paid %s order detached by the table close', async (status) => {
+    const text = await pollTwice([order(status, 'paid')], [])
+    expect(text).toMatch(CLOSE_OUT)
+  })
+
+  // Casing is normalised the same way the rest of the banner does it (normalizePaid).
+  it('treats a stray "Paid" as paid rather than silently swallowing the notification', async () => {
+    const text = await pollTwice([order('ready_for_terminal', 'Paid')], [])
+    expect(text).toMatch(CLOSE_OUT)
   })
 })
 

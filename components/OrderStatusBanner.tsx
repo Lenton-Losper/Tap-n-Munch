@@ -157,7 +157,21 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
         // The `prev.status !== 'completed'` clause that used to guard this is gone: `completed`
         // is a TERMINAL_ORDER_STATUS and can never be in the derived set, so it excluded
         // nothing while implying the set might contain it.
-        if (isInProgressOrderStatus(prev.status)) {
+        //
+        // AND it must have been PAID. A disappearance is not evidence of completion: the guest
+        // poll filters on is_closed with no status filter (lib/guest-orders/queries.ts:204-213),
+        // and the dashboard cancel writes is_closed=true together with
+        // payment_status='cancelled' in a single patch (app/api/orders/[orderId]/status/route.ts
+        // :92-94). So a cancelled order leaves the poll in the very write that cancels it -- the
+        // status seen here is whatever preceded the cancel, and without this check the customer
+        // is told "completed. Enjoy your meal!" about an order that was just cancelled.
+        //
+        // The last observed payment_status is what separates the two, and the banner already
+        // holds it, so this costs no extra request. A genuine close-out was settled first and
+        // detached later by the table close (app/api/tables/[tableNumber]/close/route.ts:95),
+        // so the poll saw 'paid'; a cancel never presents 'paid' because it is atomic with the
+        // removal.
+        if (isInProgressOrderStatus(prev.status) && normalizePaid(prev.payment_status)) {
           const notification = getStatusNotification('completed', prev.order_number, prev.status)
           if (notification) addNotification(notification)
         }
