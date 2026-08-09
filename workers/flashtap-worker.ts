@@ -31,10 +31,16 @@ export default {
       return
     }
 
-    // Both cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
+    // All cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
     // immediately unless a schedule's local send_time has been reached, so per-restaurant
     // send times cost nothing extra and a missed tick catches up on the next one.
-    const cronRoutes = ['cleanup-stale-orders', 'send-scheduled-reports'] as const
+    // reconcile-sale-ledger self-gates the same way, to an hourly cadence, off its own
+    // heartbeat row -- it reports SALE ledger coverage per venue and gates nothing (#156).
+    const cronRoutes = [
+      'cleanup-stale-orders',
+      'send-scheduled-reports',
+      'reconcile-sale-ledger',
+    ] as const
 
     const requestFor = (route: string) =>
       new Request(`${appBaseUrl(env)}/api/cron/${route}`, {

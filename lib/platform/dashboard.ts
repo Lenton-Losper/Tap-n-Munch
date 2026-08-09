@@ -1,6 +1,11 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { checkPaycloudHealth } from '@/payments/paycloud'
 import { RECOVERED_AFTER_AUTO_CANCEL_ACTION } from '@/lib/payments/e04111-recovery'
+import {
+  SALE_LEDGER_WRITE_FAILED_ACTION,
+  SALE_LEDGER_WRITE_SKIPPED_ACTION,
+} from '@/lib/payments/record-settlement-sale-event'
+import { SALE_LEDGER_COVERAGE_DEGRADED_ACTION } from '@/lib/payments/reconcile-sale-ledger-coverage'
 
 export const TERMINAL_OFFLINE_MS = 15 * 60 * 1000
 export const DASHBOARD_POLL_INTERVAL_MS = 30_000
@@ -209,6 +214,99 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
         `Order ${String(row.entity_id ?? row.id)} was auto-cancelled ` +
         `(${meta.previousCancellationReason || 'unknown reason'}) but the payment is real` +
         `${meta.reference ? ` — ref ${meta.reference}` : ''}. Needs reconciliation.`,
+      restaurantId: row.restaurant_id,
+      href: row.restaurant_id ? `/admin/restaurants/${row.restaurant_id}?tab=payments` : '/admin/alerts',
+      createdAt: row.created_at,
+      customersAffected: true,
+    })
+  }
+
+  // A card settlement completed but its SALE ledger row was not written (#156). The charge
+  // happened and payment_events does not know, so a refund against that order answers
+  // SALE_NOT_FOUND before it reaches Finatic and the money cannot be given back.
+  //
+  // This branch is the difference between logging and alerting. The previous implementation
+  // reported the same failure to a console.warn, which is precisely why 294 of these
+  // accumulated across four venues over five weeks without anyone seeing one.
+  const { data: ledgerGaps } = await supabase
+    .from('audit_logs')
+    .select('id, restaurant_id, action, entity_id, created_at, metadata')
+    .in('action', [SALE_LEDGER_WRITE_FAILED_ACTION, SALE_LEDGER_WRITE_SKIPPED_ACTION])
+    .gte('created_at', dayAgo)
+    .order('created_at', { ascending: false })
+    .limit(50)
+
+  for (const row of ledgerGaps ?? []) {
+    const meta = (row.metadata ?? {}) as {
+      reason?: string
+      businessOrderNo?: string
+      amount?: number
+      orderIds?: string[]
+    }
+    const failed = row.action === SALE_LEDGER_WRITE_FAILED_ACTION
+    alerts.push({
+      key: `sale_ledger_gap:${row.id}`,
+      // A failed write may succeed on a retry; a skipped one means the settlement carried no
+      // gateway reference and no retry can invent one. Both leave a gap, so both alert --
+      // the severity split reflects which of them a human can still do something about.
+      severity: failed ? 'critical' : 'warning',
+      title: failed ? 'Sale ledger write failed' : 'Sale ledger write skipped',
+      detail:
+        `A card settlement was not recorded in payment_events ` +
+        `(${meta.reason || 'unknown reason'})` +
+        `${meta.businessOrderNo ? ` — ref ${meta.businessOrderNo}` : ''}` +
+        `${typeof meta.amount === 'number' ? `, ${meta.amount}` : ''}` +
+        `. The charge is not refundable until this is reconciled.`,
+      restaurantId: row.restaurant_id,
+      href: row.restaurant_id ? `/admin/restaurants/${row.restaurant_id}?tab=payments` : '/admin/alerts',
+      createdAt: row.created_at,
+      customersAffected: true,
+    })
+  }
+
+  // Per-venue SALE coverage degradation, from the hourly reconciliation check. Distinct from
+  // the per-settlement gaps above: this catches losses those never saw -- a settle path that
+  // stopped calling the ledger write at all would emit no failure rows, and only the coverage
+  // ratio would show it. That is the exact shape of the 22-29 July outage.
+  const { data: coverageAlerts } = await supabase
+    .from('audit_logs')
+    .select('id, restaurant_id, action, created_at, metadata')
+    .eq('action', SALE_LEDGER_COVERAGE_DEGRADED_ACTION)
+    .gte('created_at', dayAgo)
+    .order('created_at', { ascending: false })
+    .limit(50)
+
+  // One alert per venue, newest only -- an hourly job left firing for a day would otherwise
+  // push 24 identical rows and bury everything else on the console.
+  const seenCoverageVenues = new Set<string>()
+  for (const row of coverageAlerts ?? []) {
+    const venueKey = String(row.restaurant_id ?? 'platform')
+    if (seenCoverageVenues.has(venueKey)) continue
+    seenCoverageVenues.add(venueKey)
+
+    const meta = (row.metadata ?? {}) as {
+      missingCount?: number
+      paidCount?: number
+      missingRatio?: number
+      previousMissingRatio?: number
+      windowHours?: number
+      trigger?: string
+    }
+    const pct = typeof meta.missingRatio === 'number' ? Math.round(meta.missingRatio * 100) : null
+    const prevPct =
+      typeof meta.previousMissingRatio === 'number'
+        ? Math.round(meta.previousMissingRatio * 100)
+        : null
+    alerts.push({
+      key: `sale_ledger_coverage_degraded:${venueKey}:${row.created_at}`,
+      severity: 'critical',
+      title: 'Sale ledger coverage degrading',
+      detail:
+        `${meta.missingCount ?? '?'} of ${meta.paidCount ?? '?'} card payments in the last ` +
+        `${meta.windowHours ?? 1}h have no SALE row` +
+        `${pct !== null ? ` (${pct}%` : ''}${pct !== null && prevPct !== null ? `, was ${prevPct}%` : ''}` +
+        `${pct !== null ? ')' : ''}` +
+        `${meta.trigger ? ` — ${meta.trigger}` : ''}.`,
       restaurantId: row.restaurant_id,
       href: row.restaurant_id ? `/admin/restaurants/${row.restaurant_id}?tab=payments` : '/admin/alerts',
       createdAt: row.created_at,

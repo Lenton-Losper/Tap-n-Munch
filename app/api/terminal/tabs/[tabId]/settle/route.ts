@@ -14,6 +14,10 @@ import {
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
+import {
+  isLedgerGapOutcome,
+  recordSettlementSaleEvent,
+} from '@/lib/payments/record-settlement-sale-event'
 
 export const dynamic = 'force-dynamic'
 
@@ -337,6 +341,31 @@ export async function POST(
       )
     }
 
+    // SALE ledger row, immediately after the claim (#156).
+    //
+    // This route used to set payment_status and write no ledger entry at all -- the SALE row
+    // came from a separate, client-initiated, unawaited call from the terminal, guarded on two
+    // fields and reporting failure only to a console.warn in a worker that had no logging.
+    // 294 card payments across four venues have no SALE row as a result, so a refund against
+    // any of them answers SALE_NOT_FOUND before it ever reaches Finatic.
+    //
+    // Awaited and error-checked, but deliberately NOT allowed to fail the settlement: the
+    // money has already moved by this line. The result is recorded loudly and we continue.
+    // Cash is excluded inside the helper and its behaviour is unchanged.
+    const saleLedger = await recordSettlementSaleEvent(supabase, {
+      restaurantId: terminal.restaurantId,
+      orderIds: claimedIds,
+      method,
+      businessOrderNo,
+      transactionId: voucherNo || gatewayReference,
+      // Server total, never the client-supplied amount -- same rule as the payments insert.
+      amount: expectedAmount,
+      terminalId: terminal.terminalId,
+      initiatedBy: attributedStaffUserId,
+      tabId,
+      logPrefix: '[terminal/tabs/settle]',
+    })
+
     // Gateway-issued merchant order numbers exist only for card. Guarded so a client that
     // sends one alongside a cash settlement cannot stamp a Finatic reference onto it.
     if (businessOrderNo && !isCashSettlement) {
@@ -411,6 +440,11 @@ export async function POST(
         staff_user_id: attributedStaffUserId,
         actor_attribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
         authorization_token_id: authorizationTokenId || null,
+        // So a settle that completed WITHOUT a ledger entry is visible from this row alone,
+        // rather than only inferable by joining paid orders against payment_events later --
+        // which is how #156 was eventually found, five weeks after it started.
+        sale_ledger_outcome: saleLedger.outcome,
+        sale_ledger_gap: isLedgerGapOutcome(saleLedger.outcome),
         // Present only when cash was taken over a card attempt the timeout had declared dead.
         // How long those attempts had actually been hanging is the evidence for whether
         // CARD_IN_FLIGHT_TIMEOUT_SECONDS is set correctly -- it was chosen on reasoning, since
@@ -463,6 +497,10 @@ export async function POST(
       tab_total_stale: newTotal === null,
       can_close: canClose,
       staff_user_id: attributedStaffUserId,
+      // Reported, never enforced. The settlement succeeded either way -- this only tells the
+      // caller whether the ledger row exists, so a failure is observable at the point it
+      // happens instead of being discovered in a reconciliation query weeks later.
+      sale_ledger_outcome: saleLedger.outcome,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
