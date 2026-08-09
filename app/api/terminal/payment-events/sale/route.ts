@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
+import { amountsMatchInCents, roundToCents } from '@/lib/payments/payment-integrity'
 
 export const dynamic = 'force-dynamic'
 
@@ -87,8 +88,23 @@ function orderIdSetsEqual(a: string[], b: string[]): boolean {
   return true
 }
 
+/**
+ * Tolerant, not exact, and for the same reason as the settle route's own dedup.
+ *
+ * Since #156 this endpoint and the settle route both write the SALE row, and they record
+ * deliberately different figures -- the server total here versus what the terminal charged --
+ * with the settle route accepting a client amount up to PAYMENT_AMOUNT_TOLERANCE away. An ===
+ * comparison rejects that tolerated cent and answers 409 to a deployed terminal for a payment
+ * that is already correctly recorded, which the terminal would then keep retrying.
+ *
+ * Float sums compound it: 12.50 + 19.99 is 32.489999999999995, so an exactly equal payment can
+ * still compare unequal. Amounts are rounded to cents on write for that reason.
+ *
+ * Integer cents rather than amountsMatch: amountsMatch compares with a float tolerance, which
+ * rejects 36.4% of real one-cent differences (32.49 - 32.48 is 0.010000000000005116 > 0.01).
+ */
 function amountsEqual(a: unknown, b: number): boolean {
-  return Number(a) === b
+  return amountsMatchInCents(Number(a), b)
 }
 
 export async function POST(req: Request) {
@@ -131,7 +147,10 @@ export async function POST(req: Request) {
       )
     }
 
-    const amount = Number(body.amount)
+    // Rounded to cents on write, so the ledger row holds the monetary value rather than a
+    // float artefact -- and so the dedup comparison against the settle route's row is between
+    // two clean 2dp figures. Validated after rounding, since that is what gets stored.
+    const amount = roundToCents(Number(body.amount))
     if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json(
         { error: 'amount must be a finite number greater than 0' },

@@ -1,5 +1,9 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
-import type { SettlementPaymentMethod } from '@/lib/payments/payment-integrity'
+import {
+  amountsMatchInCents,
+  roundToCents,
+  type SettlementPaymentMethod,
+} from '@/lib/payments/payment-integrity'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -117,6 +121,43 @@ export async function recordSettlementSaleEvent(
   supabase: Supabase,
   params: RecordSettlementSaleEventParams,
 ): Promise<RecordSettlementSaleEventResult> {
+  // The never-throws promise above is ENFORCED here, not just documented.
+  //
+  // postgrest-js currently turns fetch and abort failures into { error } objects rather than
+  // rejecting, so nothing below is expected to throw today -- but "currently" is the whole
+  // problem. A throw escaping this function lands in the settle route's generic catch, which
+  // answers 401 Unauthorized. The orders are already claimed and paid at that point, so staff
+  // would be told the settlement was unauthorized for money that has moved. One try/catch
+  // removes a 401-after-payment from the money path, and it routes into the same loud-failure
+  // path as an insert error rather than swallowing anything.
+  try {
+    return await recordSettlementSaleEventUnguarded(supabase, params)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    await reportLedgerGap(supabase, {
+      action: SALE_LEDGER_WRITE_FAILED_ACTION,
+      restaurantId: params.restaurantId,
+      entityId: params.tabId ?? null,
+      logPrefix: params.logPrefix,
+      message: 'sale ledger write threw',
+      metadata: {
+        reason: 'threw',
+        businessOrderNo: params.businessOrderNo,
+        orderIds: params.orderIds,
+        amount: params.amount,
+        terminalId: params.terminalId,
+        tabId: params.tabId,
+        error: reason,
+      },
+    })
+    return { outcome: 'failed', reason }
+  }
+}
+
+async function recordSettlementSaleEventUnguarded(
+  supabase: Supabase,
+  params: RecordSettlementSaleEventParams,
+): Promise<RecordSettlementSaleEventResult> {
   const {
     restaurantId,
     orderIds,
@@ -213,6 +254,10 @@ export async function recordSettlementSaleEvent(
     return { outcome: 'skipped', reason: 'non_positive_amount' }
   }
 
+  // Stored as whole cents, so the ledger holds the monetary value rather than the binary
+  // artefact of summing order totals in JS. See roundToCents for why this is not cosmetic.
+  const roundedAmount = roundToCents(amount)
+
   // Order #120 (the known-good control) has transaction_id identical to business_order_no --
   // the terminal sends the merchant order number as both. Falling back to it therefore
   // reproduces the shape real rows already have rather than writing a null.
@@ -227,7 +272,7 @@ export async function recordSettlementSaleEvent(
     transaction_id: resolvedTransactionId,
     terminal_id: terminalId,
     app_version: null,
-    amount,
+    amount: roundedAmount,
     currency,
     initiated_by: initiatedBy,
     idempotency_key: businessOrderNo,
@@ -294,7 +339,21 @@ export async function recordSettlementSaleEvent(
       ? existing.order_ids.map((id: unknown) => String(id))
       : []
     const sameOrders = orderIdSetsEqual(existingOrderIds, orderIds)
-    const sameAmount = Number(existing.amount) === Number(amount)
+    // amountsMatch, NOT ===. The two writers record deliberately different figures: this route
+    // writes the server total, while the terminal posts what it actually charged, and the
+    // settle route itself accepts a client amount up to PAYMENT_AMOUNT_TOLERANCE away (see the
+    // amountsMatch call before the claim). Comparing those with === means the route tolerates a
+    // cent that the ledger then rejects -- turning one correctly-recorded payment into a 409 at
+    // a deployed terminal, or a critical requiresAttention alert, with nothing actually wrong.
+    // Float sums make it worse: 12.50 + 19.99 is 32.489999999999995, so even an exactly equal
+    // payment can compare unequal.
+    //
+    // Compared in integer CENTS rather than with amountsMatch, because amountsMatch's float
+    // tolerance rejects 36.4% of genuine one-cent differences (32.49 - 32.48 evaluates to
+    // 0.010000000000005116, which is > 0.01). Caught on staging: the jest case used 35 vs
+    // 34.99, which happens to land on the passing side of that, so only a live run with
+    // different numbers exposed it.
+    const sameAmount = amountsMatchInCents(Number(existing.amount), roundedAmount)
 
     if (sameOrders && sameAmount) {
       console.log(

@@ -6,6 +6,54 @@
 /** Max absolute difference allowed between client amount and server total (NAD cents ≈ 0.01). */
 export const PAYMENT_AMOUNT_TOLERANCE = 0.01
 
+/**
+ * Round a money value to whole cents.
+ *
+ * Summing order totals in JS produces values that are not the amount anyone means:
+ * 12.50 + 19.99 is 32.489999999999995, and roughly a quarter of two-order sums land off the
+ * 2dp value like that. payment_events.amount is `numeric` with no scale, so the artefact is
+ * stored verbatim rather than rounded away by the column.
+ *
+ * That matters in two places beyond tidiness. Comparing a stored 32.489999999999995 against a
+ * terminal-reported 32.49 makes an identical payment look like a disagreement, and the refund
+ * ceiling is checked as (prior + requested) > sale.amount, so a sale row a fraction of a cent
+ * BELOW the true total can refuse a full refund of the amount actually charged.
+ *
+ * Applied on write, so ledger rows hold the monetary value and not a binary artefact of how it
+ * was summed.
+ */
+export function roundToCents(amount: number): number {
+  if (!Number.isFinite(amount)) return amount
+  return Math.round(amount * 100) / 100
+}
+
+/** Whole-cent integer form of a money value. Exact, so comparisons cannot drift. */
+export function toCents(amount: number): number {
+  return Math.round(amount * 100)
+}
+
+/**
+ * True when two money values are within `toleranceCents` of each other, compared as INTEGERS.
+ *
+ * Use this, not amountsMatch, when the question is "are these the same payment". amountsMatch
+ * does `Math.abs(a - b) <= 0.01` in floating point, and a one-cent difference is frequently
+ * NOT representable as exactly 0.01: 32.49 - 32.48 is 0.010000000000005116 and 20 - 19.99 is
+ * 0.010000000000001563, both of which exceed the tolerance, while 35 - 34.99 is
+ * 0.00999999999999801 and passes. Measured across every one-cent pair from 1.00 to 50.00,
+ * 36.4% are rejected. Which side a given pair lands on is an artefact of binary representation,
+ * so a float tolerance gives a comparison that works for some amounts and not others.
+ *
+ * Converting to integer cents first removes the question entirely.
+ */
+export function amountsMatchInCents(
+  a: number,
+  b: number,
+  toleranceCents = 1,
+): boolean {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false
+  return Math.abs(toCents(a) - toCents(b)) <= toleranceCents
+}
+
 export function amountsMatch(
   clientAmount: number,
   expectedAmount: number,

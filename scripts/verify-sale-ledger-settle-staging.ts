@@ -263,6 +263,84 @@ async function main() {
     record('C3.3', rows[0]?.reason_code === 'settle_card', 'the server-written row survived')
   }
 
+  // -------------------------------------- float-sum tab + old-APK dedup
+  console.log('\n=== C5  float-sum tab (12.50 + 19.99) stores 2dp and still dedups ===')
+  {
+    const tabId = await makeTab()
+    const o1 = await makeOrder(tabId, 12.5)
+    const o2 = await makeOrder(tabId, 19.99)
+    const ref = `FT${TAG}-FLOAT`
+
+    // 12.50 + 19.99 === 32.489999999999995 in JS, and payment_events.amount is numeric with
+    // no scale, so an unrounded value would be stored verbatim -- and would then compare
+    // unequal against the 32.49 a terminal reports.
+    console.log(`  JS sum: ${12.5 + 19.99}`)
+
+    const before = (await saleRowsFor(o1)).length
+    console.log(`  SALE rows BEFORE: ${before}`)
+
+    const { status, json } = await settle(tabId, {
+      order_ids: [o1, o2],
+      amount: 32.49,
+      method: 'card',
+      business_order_no: ref,
+      voucher_no: ref,
+    })
+    console.log(`  settle -> ${status} ${JSON.stringify(json)}`)
+
+    const rows = await saleRowsFor(o1)
+    console.log(`  SALE rows AFTER:  ${rows.length}   stored amount: ${rows[0]?.amount}`)
+
+    record('C5.1', status === 200 && json.success === true, `settle succeeded (${status})`)
+    record('C5.2', before === 0 && rows.length === 1, `0 before, exactly 1 after (${rows.length})`)
+    record(
+      'C5.3',
+      Number(rows[0]?.amount) === 32.49,
+      `stored as 32.49, not a float artefact (${rows[0]?.amount})`,
+    )
+
+    // The old APK now posts the clean 32.49 it charged. Against an unrounded stored row this
+    // is the case that produced a spurious 409 and a critical alert.
+    const oldRes = await salePost(
+      new Request('https://staging.local/api/terminal/payment-events/sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          order_ids: [o1, o2],
+          business_order_no: ref,
+          transaction_id: ref,
+          amount: 32.49,
+          currency: 'NAD',
+        }),
+      }),
+    )
+    const after = await saleRowsFor(o1)
+    console.log(`  old-APK post -> ${oldRes.status}; SALE rows now ${after.length}`)
+
+    record('C5.4', oldRes.status === 200, `old client got 200, not a spurious 409 (${oldRes.status})`)
+    record('C5.5', after.length === 1, `still exactly 1 row (${after.length})`)
+
+    // A one-cent difference is what the settle route itself tolerates before the claim.
+    const centRes = await salePost(
+      new Request('https://staging.local/api/terminal/payment-events/sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          order_ids: [o1, o2],
+          business_order_no: ref,
+          transaction_id: ref,
+          amount: 32.48,
+          currency: 'NAD',
+        }),
+      }),
+    )
+    const afterCent = await saleRowsFor(o1)
+    console.log(`  old-APK post at 32.48 -> ${centRes.status}; SALE rows now ${afterCent.length}`)
+
+    record('C5.6', centRes.status === 200, `a tolerated cent is not a conflict (${centRes.status})`)
+    record('C5.7', afterCent.length === 1, `still exactly 1 row (${afterCent.length})`)
+  }
+
   // ------------------------------------------------------ reconciliation
   console.log('\n=== C4  the reconciliation check sees a real gap, and reports only ===')
   {

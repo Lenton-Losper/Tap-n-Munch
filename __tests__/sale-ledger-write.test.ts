@@ -352,6 +352,75 @@ describe('a failed ledger write is loud, durable, and non-fatal', () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * NEVER THROWS is an invariant, not a docstring.
+ * ------------------------------------------------------------------ */
+describe('a client that REJECTS cannot escape as an exception', () => {
+  /**
+   * postgrest-js turns fetch/abort failures into { error } objects today, so this is latent
+   * rather than live -- but a throw escaping here reaches the settle route's generic catch,
+   * which answers 401 Unauthorized AFTER the orders are claimed and paid. Staff would be told
+   * a settlement was unauthorized for money that has already moved.
+   */
+  function rejectingClient(message: string) {
+    return {
+      from: () => ({
+        insert: () => ({
+          select: () => ({ single: async () => Promise.reject(new Error(message)) }),
+          // audit_logs inserts are awaited directly rather than via .select()
+          then: (_res: unknown, rej: (e: unknown) => unknown) => rej(new Error(message)),
+        }),
+      }),
+    }
+  }
+
+  it('resolves to failed instead of throwing', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(
+        recordSettlementSaleEvent(rejectingClient('socket hang up') as never, params()),
+      ).resolves.toMatchObject({ outcome: 'failed' })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('carries the underlying reason rather than swallowing it', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const result = await recordSettlementSaleEvent(
+        rejectingClient('socket hang up') as never,
+        params(),
+      )
+      expect(result).toEqual({ outcome: 'failed', reason: 'socket hang up' })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('still reports the gap loudly when the client throws', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await recordSettlementSaleEvent(rejectingClient('socket hang up') as never, params())
+
+      const payloads = spy.mock.calls.map((c) => String(c[1] ?? ''))
+      const marker = payloads.find((p) => p.includes(SALE_LEDGER_WRITE_FAILED_ACTION))
+      expect(marker).toBeDefined()
+      expect(JSON.parse(marker!).requiresAttention).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('the control is real: the same client DOES reject', async () => {
+    // If this passes trivially the three tests above prove nothing.
+    const client = rejectingClient('socket hang up') as never as {
+      from: () => { insert: () => { select: () => { single: () => Promise<unknown> } } }
+    }
+    await expect(client.from().insert().select().single()).rejects.toThrow('socket hang up')
+  })
+})
+
+/* ------------------------------------------------------------------ *
  * A card settle with no reference is a gap, and must be as visible as
  * a failure. The old client guard skipped this case silently.
  * ------------------------------------------------------------------ */
