@@ -617,7 +617,12 @@ export async function createPaymentRequest(input, options = {}) {
   if (treatAsSuccess && checkoutUrl) {
     if (body.sign) {
       try {
-        console.log('[PayCloud][CHECKOUT][VERIFY] raw_response_body=', raw)
+        // #171: was unconditional. Gated to match its sibling at the `fullCheckoutDebugEnabled()`
+        // block above — the raw body carries the gateway's `sign` and full trade detail, and this
+        // path runs on every SUCCESSFUL checkout, which is the common case rather than a rare one.
+        if (fullCheckoutDebugEnabled()) {
+          console.log('[PayCloud][CHECKOUT][VERIFY] raw_response_body=', raw)
+        }
         console.log(
           '[PayCloud][CHECKOUT][VERIFY] verify_fields=',
           Object.keys(body || {}).sort()
@@ -871,7 +876,10 @@ export async function queryPaymentOrder(input, options = {}) {
   debugLog('Query URL', { requestUrl })
   debugLog('Query body before signing', unsignedPayload)
   debugLog('Signed query body', payload)
-  console.log('[PayCloud][QUERY][PAYLOAD]', JSON.stringify(payload, null, 2))
+  // #171: was raw JSON.stringify of the SIGNED payload — `sign` included — on every order query.
+  // maskSecrets() masks `sign` (and token/secret/key/card fields) while leaving merchant_order_no,
+  // sign_type and the rest of the shape visible, which is what this line is read for.
+  console.log('[PayCloud][QUERY][PAYLOAD]', maskSecrets(payload))
   if (fullQueryDebugEnabled()) {
     console.log('[PayCloud][QUERY][FULL] URL:', requestUrl)
     console.log('[PayCloud][QUERY][FULL] Headers:', PAYCLOUD_JSON_HEADERS)
@@ -922,7 +930,9 @@ export async function queryPaymentOrder(input, options = {}) {
       phase: 'parse',
     })
   }
-  console.log('[PayCloud][QUERY][RAW_RESPONSE]', JSON.stringify(body, null, 2))
+  // #171 (found by the sweep, not named in the issue): the gateway's response carries its own
+  // `sign`. Same treatment — code, msg and trade fields survive, the signature does not.
+  console.log('[PayCloud][QUERY][RAW_RESPONSE]', maskSecrets(body))
 
   if (!response.ok) {
     throw mapPaycloudError(response.status, body, raw)
