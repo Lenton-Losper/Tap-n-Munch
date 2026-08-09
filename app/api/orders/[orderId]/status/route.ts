@@ -10,6 +10,18 @@ import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * Cap on the free-text cancellation reason (#103). It was written unbounded to two places at
+ * once -- orders.cancellation_reason and the order.cancelled audit row's metadata -- so a
+ * 10,000-character reason was stored twice in full.
+ *
+ * 280 matches MAX_INSTRUCTIONS_LENGTH, the cap this codebase already settled on for order
+ * free-text: long enough for a real explanation ("customer left before the food was up, comped by
+ * the duty manager") and short enough to stay readable on a staff order card and a 32-column
+ * thermal print, which is where both of these fields end up being read.
+ */
+const MAX_CANCELLATION_REASON_LENGTH = 280
+
 const TIMESTAMP_FIELDS: Record<string, string> = {
   accepted: 'accepted_at',
   confirmed: 'confirmed_at',
@@ -76,9 +88,19 @@ export async function PATCH(
 
   // Same three spellings and the same "always write something" rule as the terminal status
   // route, so a cancel through either path is traceable without guessing (#103).
-  const callerReason = String(
-    body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason ?? '',
-  ).trim()
+  //
+  // A non-string reason is normalised away rather than rejected. String(...) used to coerce
+  // whatever arrived: `{a:1}` was stored as the literal "[object Object]", `['a','b']` as "a,b",
+  // `42` as "42". None of those is a reason, and the first actively misleads whoever reads the
+  // order history later. Returning 400 instead would change this route's effect on order state --
+  // a request that cancels the order today would stop cancelling it -- so an unusable reason
+  // falls back to the same default an absent one already used, and reason_supplied_by_caller
+  // (below) records honestly that nothing usable came from the caller.
+  const rawReason = body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason
+  const callerReason =
+    typeof rawReason === 'string'
+      ? rawReason.trim().slice(0, MAX_CANCELLATION_REASON_LENGTH).trim()
+      : ''
   const cancellationReason = callerReason || 'staff_cancelled'
 
   const patch: Record<string, string | boolean> = {}
