@@ -35,7 +35,35 @@ export type HandleTerminalPaymentFailedParams = {
   correctionSource?: string
   /** Extra text for the correction audit metadata. */
   correctionReason?: string
+  /**
+   * Set ONLY by the terminal when it has positively identified an operator abort that happened
+   * before the reader contacted the gateway. See TERMINAL_USER_CANCELLED_REASON.
+   */
+  noGatewayAttempt?: boolean
 }
+
+/**
+ * The one cancellation reason that may bypass Finatic verification.
+ *
+ * Why the bypass is safe for this value and nothing else: a payment order is created at the
+ * gateway only when the reader actually contacts it. An operator abort happens before that, so
+ * there is no payment order to find and no charge to miss. Verification cannot tell us anything
+ * — it returns E04111 ("no such merchant order"), which is exactly what has been leaving these
+ * orders pending forever.
+ *
+ * HOW THE TERMINAL IDENTIFIES THAT ABORT (corrected 2026-08-10, terminal vc83): NOT by
+ * Activity.RESULT_CANCELED. WiseCashier never returns it — `AppInvokeUtilKt.onAppInvokeFail` is
+ * hardcoded `setResult(-1, ...)`, so every failure arrives as RESULT_OK and is distinguished
+ * only by the `result` extra. An operator abort is gateway code **K026**, confirmed on a UAT P5
+ * and against WiseCashier's own bytecode. Sibling codes on the identical path — K027 timeout,
+ * K017 processing, K036/K037 auto-reversal — must NEVER reach this bypass. See
+ * docs/wisecashier-result-codes.md in the terminal repo.
+ *
+ * The match is EXACT (===). Not startsWith, not includes, not a regex. A reason that merely
+ * looks similar must go through the gate like everything else, because the cost of bypassing
+ * wrongly is cancelling an order the customer was actually charged for.
+ */
+export const TERMINAL_USER_CANCELLED_REASON = 'terminal_cancelled_by_user_pre_gateway'
 
 export type HandleTerminalPaymentFailedResult =
   | {
@@ -95,7 +123,24 @@ export async function handleTerminalPaymentFailed(
   const paymentMethod = params.paymentMethod || 'card'
   const terminalId = params.terminalId ?? null
 
-  if (merchantOrderNo) {
+  /**
+   * The bypass. BOTH conditions are required, and the reason must match EXACTLY.
+   *
+   * `noGatewayAttempt` alone is not enough: a caller could set it by mistake on an ordinary
+   * decline. The exact-reason check means a wrong flag cannot silently skip verification unless
+   * the caller ALSO names this specific reason, which nothing else in the codebase does.
+   */
+  const skipVerification =
+    params.noGatewayAttempt === true && cancellationReason === TERMINAL_USER_CANCELLED_REASON
+
+  if (skipVerification) {
+    console.log(
+      `[handleTerminalPaymentFailed] order ${params.orderId}: user cancelled on the reader before ` +
+        'the gateway was contacted — cancelling without Finatic verification (no payment order can exist).',
+    )
+  }
+
+  if (merchantOrderNo && !skipVerification) {
     try {
       const usingInjectedQuery = Boolean(options?.queryFinaticOrderPaidFn || stubFn)
       let merchantNo = 'STAGING_STUB'
@@ -221,7 +266,20 @@ export async function handleTerminalPaymentFailed(
       amount: params.amount ?? null,
       terminalId,
       cancellation_reason: cancellationReason,
-      finaticVerifiedBeforeCancel: Boolean(merchantOrderNo),
+      // Was a merchant_order_no present AND actually verified? The bypass makes those two
+      // different questions, so this must no longer be inferred from the reference alone.
+      finaticVerifiedBeforeCancel: Boolean(merchantOrderNo) && !skipVerification,
+      businessOrderNo: merchantOrderNo || null,
+      // WHICH KIND OF EVIDENCE this cancellation rests on. A reader that says "the operator
+      // cancelled" is not the same claim as a gateway that says "no payment exists", and the
+      // record must not blur them.
+      evidence_basis: skipVerification ? 'terminal_asserted' : 'gateway_verified',
+      charge_status_known: true,
+      verification_method: skipVerification
+        ? 'NONE — terminal reported an operator abort (WiseCashier gateway code K026) before the ' +
+          'reader contacted the gateway. No payment order can exist, so Finatic was deliberately ' +
+          'not queried. This is the terminal\'s assertion, not gateway confirmation.'
+        : 'Finatic order.query returned not-paid for this reference before cancelling',
     },
   })
   if (auditError) {

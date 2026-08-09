@@ -32,6 +32,23 @@ export async function POST(
       body?.businessOrderNo != null && String(body.businessOrderNo).trim()
         ? String(body.businessOrderNo).trim()
         : ''
+    /**
+     * The terminal's own classification of WHY the payment failed, and whether it can prove the
+     * gateway was never contacted. Both are required for the verification bypass in
+     * handleTerminalPaymentFailed — see TERMINAL_USER_CANCELLED_REASON.
+     *
+     * These were missing until 2026-08-10. The terminal had been sending both fields since vc80,
+     * this handler read neither, and `body` is `any`, so nothing failed — the reason silently
+     * defaulted to 'payment_declined' and the bypass could never fire. Staging order #79 is the
+     * recorded case: the operator cancelled, the terminal classified it correctly, and the order
+     * still went to Finatic, hit missing credentials, and was left pending.
+     *
+     * `=== true` deliberately, not a truthy check: the JSON string "false" is truthy.
+     */
+    const cancellationReason =
+      body?.cancellationReason != null ? String(body.cancellationReason).trim() : ''
+    const noGatewayAttempt = body?.noGatewayAttempt === true
+
     const amount = Number(body?.amount)
     const paymentMethod = body?.paymentMethod
       ? String(body.paymentMethod).trim()
@@ -138,6 +155,11 @@ export async function POST(
             reference,
             amount: Number.isFinite(amount) ? amount : undefined,
             paymentMethod: paymentMethod || 'card',
+            // Pass the terminal's classification through UNCHANGED. handleTerminalPaymentFailed
+            // does the exact-match check; this layer must not normalise, default or reword the
+            // reason, or the match it performs is against a string we invented.
+            ...(cancellationReason ? { cancellationReason } : {}),
+            noGatewayAttempt,
           },
           { stagingFinaticStub: body?.__stagingFinaticStub },
         )
