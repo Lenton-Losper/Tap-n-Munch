@@ -97,6 +97,31 @@ verification path anyway, because they are **not cancellations** and the fast-ca
 requires a server change: the bypass is an exact string match with adjacent values pinned as
 non-bypassing (see `TERMINAL_USER_CANCELLED_REASON` in `src/lib/payment.ts`).
 
+### K024 and K031 are not ordinary config errors — the harm is to OTHER orders
+
+Worth separating out, because the reason is non-obvious and the general "not a cancellation"
+argument undersells it.
+
+K031 "Please settle first" and K024 "Settlement failed, need to perform batch upload" are the
+only two codes in the "no" group that say something about **money that has already been taken**.
+An unsettled batch is a set of prior transactions that were authorised but not yet submitted to
+the acquirer. For the order in front of you they mean the same thing as a flat battery — no card
+was read, no charge is possible. The difference is what they imply about everything else.
+
+If these silently fast-cancel, staff see an order vanish, shrug, and retry. Nothing tells them a
+batch is sitting unsettled, so nothing gets settled. Unsettled authorisations expire. The
+merchant loses revenue **on completed sales that already happened**, and the loss is invisible
+in FlashTap because those orders are already marked paid — the failure is entirely on the
+acquirer side. K024 is the sharper of the two: a settlement was attempted and *failed*, so
+something is already wrong rather than merely pending.
+
+So the case for holding these on the verification path is not just ledger hygiene. Suppressing
+them converts a recoverable operational alert into silent revenue loss, and the order that
+triggers the alert is the least important thing about it.
+
+The same logic is the strongest argument for #182 (surfacing the real message to staff): "Please
+settle first" is actionable at the till in a way that "gateway result=K031" is not.
+
 ## K026 means operator abort, and only that
 
 All 14 raise sites in v2.1.6.42, every one an abort **before authorisation**:
