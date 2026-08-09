@@ -275,7 +275,13 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   const ref = params.paymentRef.trim()
   if (!ref) return []
 
-  let query = supabase.from('orders').select('*').or(paymentRefOrFilter(ref)).limit(15)
+  // Fail CLOSED on anything that is not a well-formed reference. A string carrying PostgREST
+  // filter syntax is not a reference that failed to match -- it is an attempt to widen the
+  // query, and it must return nothing rather than everything. See paymentRefOrFilter.
+  const refFilter = paymentRefOrFilter(ref)
+  if (!refFilter) return []
+
+  let query = supabase.from('orders').select('*').or(refFilter).limit(15)
 
   if (params.restaurantId?.trim()) {
     const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
