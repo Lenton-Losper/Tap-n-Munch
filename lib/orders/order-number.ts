@@ -88,6 +88,22 @@ interface PostgrestErrorLike {
  * Postgres on staging — so it is gone rather than merely anchored. `message` contains the index
  * name and nothing else a caller can influence. No `.toLowerCase()` either: the index name is
  * already lowercase, and lowercasing only widens what can match.
+ *
+ * IDENTIFIES ITS OWN INDEX, NEVER ANYONE ELSE'S — and `orders(idempotency_key)` is the reason
+ * that distinction is load-bearing rather than stylistic. There are TWO unique indexes on that
+ * column with identical definitions:
+ *
+ *     idx_orders_idempotency_key        (baseline.sql:1717)
+ *     orders_idempotency_key_unique     (baseline.sql:1822)
+ *
+ * both `USING btree (idempotency_key) WHERE idempotency_key IS NOT NULL`. Which name appears in a
+ * given 23505 depends on which index Postgres checks first, so any logic keyed on recognising the
+ * idempotency constraint BY NAME is a coin flip. This predicate deliberately depends on neither:
+ * it recognises `orders_firebase_restaurant_id_order_number_key`, of which there is exactly one,
+ * and treats everything else — including both of the above — as not-a-numbering-collision, to be
+ * handled by the caller unchanged. The duplicate index is a real defect (two identical B-trees
+ * maintained on every keyed insert) and is reported separately; this function is correct either
+ * way, and stays correct if one of them is later dropped.
  */
 export function isOrderNumberCollision(error: PostgrestErrorLike | null | undefined): boolean {
   if (!error || error.code !== '23505') return false
