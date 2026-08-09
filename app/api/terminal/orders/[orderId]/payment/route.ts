@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
-import { amountsMatch } from '@/lib/payments/payment-integrity'
+// canClose asks "does anything on this tab still owe money", which is what owesMoney answers.
+// Asked in SQL as `.neq('payment_status', 'paid')` it also matched CANCELLED orders, so one
+// cancelled order kept a table permanently un-closeable (#104, same class as c362efc).
+import { amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
@@ -108,11 +111,10 @@ export async function POST(
       if (result.tabId) {
         const { data: remainingOrders } = await supabase
           .from('orders')
-          .select('id')
+          .select('id, payment_status')
           .eq('tab_id', result.tabId)
-          .neq('payment_status', 'paid')
 
-        canClose = (remainingOrders ?? []).length === 0
+        canClose = (remainingOrders ?? []).every((o) => !owesMoney(o.payment_status))
 
         await clearReadyToPayAndReopenTab(supabase, {
           tabId: result.tabId,
@@ -158,11 +160,10 @@ export async function POST(
         if (failedResult.tabId) {
           const { data: remainingOrders } = await supabase
             .from('orders')
-            .select('id')
+            .select('id, payment_status')
             .eq('tab_id', failedResult.tabId)
-            .neq('payment_status', 'paid')
 
-          canClose = (remainingOrders ?? []).length === 0
+          canClose = (remainingOrders ?? []).every((o) => !owesMoney(o.payment_status))
 
           await clearReadyToPayAndReopenTab(supabase, {
             tabId: failedResult.tabId,
