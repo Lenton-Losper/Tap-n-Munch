@@ -172,12 +172,16 @@ export default function CartPage() {
     }
   }
 
-  const handleUpdateItem = (updatedCartItem: CartItem) => {
-    if (editingIndex === null) return
-
-    // An edit can turn this line into a copy of another one; applyCartLineEdit folds those
-    // together rather than leaving the customer two rows they cannot tell apart.
-    const result = applyCartLineEdit(items, editingIndex, updatedCartItem)
+  /**
+   * The one way an edited line goes back into the cart.
+   *
+   * An edit can turn this line into a copy of another one; applyCartLineEdit folds those
+   * together rather than leaving the customer two rows they cannot tell apart. Every edit
+   * path has to come through here -- the per-item note used to write its slot with
+   * updateItem() alone, which is the second route to that duplicate state (#133 residual).
+   */
+  const commitLineEdit = (index: number, updatedCartItem: CartItem) => {
+    const result = applyCartLineEdit(items, index, updatedCartItem)
     replaceItems(result.items)
 
     if (result.clamped) {
@@ -188,6 +192,12 @@ export default function CartPage() {
     } else if (result.merged) {
       toast({ title: 'Combined with the matching item in your cart' })
     }
+  }
+
+  const handleUpdateItem = (updatedCartItem: CartItem) => {
+    if (editingIndex === null) return
+
+    commitLineEdit(editingIndex, updatedCartItem)
 
     setEditingIndex(null)
     setEditingItem(null)
@@ -516,8 +526,15 @@ export default function CartPage() {
                       index={index}
                       itemLabel={item.display_name || item.name}
                       value={item.special_instructions || ''}
+                      // Per keystroke: just the text, so the field the customer is typing in
+                      // is never pulled out from under them.
                       onChange={(note) =>
                         updateItem(index, { ...item, special_instructions: note })
+                      }
+                      // On finishing: reconcile, because the note is part of the line's
+                      // identity and this edit may have made the row a duplicate.
+                      onCommit={(note) =>
+                        commitLineEdit(index, { ...item, special_instructions: note })
                       }
                     />
 
