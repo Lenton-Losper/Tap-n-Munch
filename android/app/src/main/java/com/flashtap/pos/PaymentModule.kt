@@ -1,7 +1,9 @@
 package com.flashtap.pos
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.util.Log
 import com.flashtapterminal.BuildConfig
 import com.facebook.react.bridge.Arguments
@@ -11,6 +13,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.Locale
+import org.json.JSONArray
 import org.json.JSONObject
 
 class PaymentModule(private val reactContext: ReactApplicationContext) :
@@ -36,7 +39,20 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     merchantOrderNo: String,
     promise: Promise,
   ) {
+    // INSTRUMENTATION (vc82). First marker on the path, before the guards below can return —
+    // so "JS called launchPayment and it refused" is distinguishable from "JS never called it".
+    recordWiretap(
+      reactContext,
+      "launchPayment.entry",
+      JSONObject().apply {
+        put("orderId", orderId)
+        put("merchantOrderNo", merchantOrderNo)
+        put("amountMinor", amount)
+      },
+    )
+
     val activity = getCurrentActivity() ?: run {
+      recordWiretap(reactContext, "launchPayment.reject", JSONObject().put("code", "NO_ACTIVITY"))
       promise.reject("NO_ACTIVITY", "No current activity")
       return
     }
@@ -46,6 +62,11 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
       // orders.paycloud_merchant_order_no so Finatic webhooks can correlate. Do not mint here.
       val trimmedMerchantOrderNo = merchantOrderNo.trim()
       if (trimmedMerchantOrderNo.isEmpty()) {
+        recordWiretap(
+          reactContext,
+          "launchPayment.reject",
+          JSONObject().put("code", "MISSING_MERCHANT_ORDER_NO"),
+        )
         promise.reject(
           "MISSING_MERCHANT_ORDER_NO",
           "merchantOrderNo is required; call prepare-payment before launching Finatic",
@@ -53,6 +74,11 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
         return
       }
       if (trimmedMerchantOrderNo.length > 32) {
+        recordWiretap(
+          reactContext,
+          "launchPayment.reject",
+          JSONObject().put("code", "INVALID_MERCHANT_ORDER_NO"),
+        )
         promise.reject(
           "INVALID_MERCHANT_ORDER_NO",
           "merchantOrderNo exceeds Finatic 32-character limit",
@@ -95,10 +121,35 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
         orderId = orderId,
         merchantOrderNo = trimmedMerchantOrderNo,
       )
+      // INSTRUMENTATION (vc82). Paired with the onActivityResult capture so an EMPTY wiretap is
+      // unambiguous. Order #75 reached "cancelled" with no merchant_order_no and no audit rows,
+      // which is consistent with WiseCashier never having been launched at all — a hypothesis a
+      // return-only log could never separate from "launched and returned nothing".
+      recordWiretap(
+        reactContext,
+        "launchPayment.dispatch",
+        JSONObject().apply {
+          put("orderId", orderId)
+          put("merchantOrderNo", trimmedMerchantOrderNo)
+          put("amountMinor", amount)
+          put("paddedAmount", paddedAmount)
+          put("action", intent.action ?: "")
+          put("requestCode", PAYMENT_REQUEST_CODE)
+        },
+      )
       activity.startActivityForResult(intent, PAYMENT_REQUEST_CODE)
     } catch (e: Exception) {
       pendingPromise = null
       clearPendingLaunch(reactContext)
+      recordWiretap(
+        reactContext,
+        "launchPayment.error",
+        JSONObject().apply {
+          put("orderId", orderId)
+          put("merchantOrderNo", merchantOrderNo)
+          put("error", e.message ?: e.javaClass.simpleName)
+        },
+      )
       promise.reject("INTENT_ERROR", e.message, e)
     }
   }
@@ -187,6 +238,38 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * INSTRUMENTATION (vc82). Returns the wiretap ring buffer as a JSON array string for the
+   * Diagnostics screen. Deliberately NON-consuming, unlike consumeOrphanedPaymentResult above:
+   * the operator reads this minutes after the payment, and may read it more than once.
+   */
+  @ReactMethod
+  fun readWiseCashierWiretap(promise: Promise) {
+    try {
+      val raw =
+        reactContext
+          .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+          .getString(KEY_WIRETAP, null)
+      promise.resolve(if (raw.isNullOrBlank()) "[]" else raw)
+    } catch (e: Exception) {
+      promise.reject("WIRETAP_READ_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun clearWiseCashierWiretap(promise: Promise) {
+    try {
+      reactContext
+        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .remove(KEY_WIRETAP)
+        .apply()
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("WIRETAP_CLEAR_FAILED", e.message, e)
+    }
+  }
+
   companion object {
     private const val TAG = "PaymentModule"
     private const val PREFS = "flashtap_payment_callback"
@@ -196,6 +279,21 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     private const val KEY_PENDING_AT = "pending_launched_at"
     private const val KEY_ORPHANED_RESULT = "orphaned_payment_result_json"
 
+    /**
+     * INSTRUMENTATION (vc82). A ring buffer of everything WiseCashier hands back, recorded
+     * BEFORE any of FlashTap's own classification runs.
+     *
+     * Why this exists: on 2026-08-07 a user cancel inside the WiseCashier screen did not take
+     * the RESULT_CANCELED branch in MainActivity, and the SDK4 package documents no return
+     * contract for an unsolicited cancel. These terminals have no ADB, so logcat is not a
+     * channel we can read — the only way to learn what actually arrives is to persist it and
+     * render it on Diagnostics. Read, do not consume: the operator reaches Diagnostics several
+     * screens and possibly an app restart after the payment.
+     */
+    private const val KEY_WIRETAP = "wisecashier_wiretap_json"
+    private const val WIRETAP_CAP = 24
+    private const val WIRETAP_VALUE_MAX = 500
+
     const val PAYMENT_REQUEST_CODE = 1001
     const val REFUND_REQUEST_CODE = 1002
 
@@ -204,6 +302,139 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
 
     @Volatile
     private var appContext: ReactApplicationContext? = null
+
+    /**
+     * The symbolic name Android itself would use for a result code. Reported alongside the raw
+     * integer and never instead of it — the whole point of this build is that we do not yet
+     * know which codes WiseCashier uses, so an unrecognised value must still be legible.
+     */
+    fun resultCodeName(resultCode: Int): String =
+      when {
+        resultCode == Activity.RESULT_OK -> "RESULT_OK"
+        resultCode == Activity.RESULT_CANCELED -> "RESULT_CANCELED"
+        resultCode == Activity.RESULT_FIRST_USER -> "RESULT_FIRST_USER"
+        resultCode > Activity.RESULT_FIRST_USER ->
+          "RESULT_FIRST_USER+${resultCode - Activity.RESULT_FIRST_USER}"
+        else -> "UNKNOWN"
+      }
+
+    private fun renderExtraValue(value: Any?): String {
+      val rendered =
+        when (value) {
+          null -> "null"
+          is String -> value
+          is ByteArray -> "byte[${value.size}] " + value.joinToString("") { "%02x".format(it) }
+          is IntArray -> value.contentToString()
+          is LongArray -> value.contentToString()
+          is Array<*> -> value.contentToString()
+          is Bundle ->
+            "{" +
+              value.keySet().joinToString(", ") { k ->
+                @Suppress("DEPRECATION")
+                "$k=${renderExtraValue(value.get(k))}"
+              } + "}"
+          else -> value.toString()
+        }
+      return if (rendered.length > WIRETAP_VALUE_MAX) {
+        rendered.take(WIRETAP_VALUE_MAX) + "…[${rendered.length}]"
+      } else {
+        rendered
+      }
+    }
+
+    /** Append one entry to the ring buffer. Never throws — instrumentation must not break payment. */
+    fun recordWiretap(context: Context?, event: String, detail: JSONObject) {
+      if (context == null) return
+      try {
+        detail.put("event", event)
+        detail.put("at", System.currentTimeMillis())
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val existing = prefs.getString(KEY_WIRETAP, null)
+        val arr = if (existing.isNullOrBlank()) JSONArray() else JSONArray(existing)
+        arr.put(detail)
+        val trimmed =
+          if (arr.length() <= WIRETAP_CAP) {
+            arr
+          } else {
+            JSONArray().also { out ->
+              for (i in (arr.length() - WIRETAP_CAP) until arr.length()) out.put(arr.get(i))
+            }
+          }
+        prefs.edit().putString(KEY_WIRETAP, trimmed.toString()).apply()
+      } catch (e: Exception) {
+        Log.w(TAG, "wiretap append failed for $event: ${e.message}")
+      }
+    }
+
+    /**
+     * Record a raw activity return VERBATIM: the request code, the result code and its symbolic
+     * name, the Intent's action, and every extra key with its runtime type and value. Called
+     * from MainActivity.onActivityResult before any branching, for every request code — an
+     * arrival under a request code we do not recognise is itself a finding worth seeing.
+     */
+    fun recordActivityReturn(context: Context?, requestCode: Int, resultCode: Int, data: Intent?) {
+      if (context == null) return
+      try {
+        val detail =
+          JSONObject().apply {
+            put("requestCode", requestCode)
+            put(
+              "requestCodeName",
+              when (requestCode) {
+                PAYMENT_REQUEST_CODE -> "PAYMENT(SALE)"
+                REFUND_REQUEST_CODE -> "REFUND"
+                else -> "UNEXPECTED"
+              },
+            )
+            put("resultCode", resultCode)
+            put("resultCodeName", resultCodeName(resultCode))
+            put("dataNull", data == null)
+            put("action", data?.action ?: "")
+            put("dataString", data?.dataString ?: "")
+            put("component", data?.component?.flattenToShortString() ?: "")
+            put("flags", data?.flags ?: 0)
+            put("type", data?.type ?: "")
+            put("categories", (data?.categories ?: emptySet<String>()).joinToString(","))
+          }
+
+        val extras = JSONArray()
+        val bundle = data?.extras
+        if (bundle == null) {
+          detail.put("extrasNull", true)
+          detail.put("extrasCount", 0)
+        } else {
+          detail.put("extrasNull", false)
+          // Do NOT filter to keys we expect. The bug is that our expectations are wrong.
+          for (key in bundle.keySet()) {
+            @Suppress("DEPRECATION")
+            val raw = bundle.get(key)
+            extras.put(
+              JSONObject().apply {
+                put("key", key)
+                put("type", raw?.javaClass?.simpleName ?: "null")
+                put("value", renderExtraValue(raw))
+              },
+            )
+          }
+          detail.put("extrasCount", extras.length())
+        }
+        detail.put("extras", extras)
+
+        val pending = readPendingLaunch(context)
+        detail.put("pendingOrderId", pending?.second ?: "")
+        detail.put("pendingMerchantOrderNo", pending?.third ?: "")
+        detail.put("promiseAlive", pendingPromise != null)
+
+        recordWiretap(context, "onActivityResult", detail)
+        Log.i(
+          TAG,
+          "WIRETAP return requestCode=$requestCode resultCode=$resultCode " +
+            "(${resultCodeName(resultCode)}) action=${data?.action} extras=${extras.length()}",
+        )
+      } catch (e: Exception) {
+        Log.w(TAG, "wiretap capture failed: ${e.message}")
+      }
+    }
 
     fun persistPendingLaunch(
       context: Context,

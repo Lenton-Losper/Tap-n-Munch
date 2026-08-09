@@ -47,6 +47,13 @@ class MainActivity : ReactActivity() {
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
 
+    // INSTRUMENTATION (vc82). Verbatim capture BEFORE any of the classification below runs, and
+    // for EVERY request code — including ones we do not recognise, since "the result came back
+    // under a different request code" is one of the live hypotheses for the 2026-08-07 cancel
+    // that did not take the RESULT_CANCELED branch. Read it on Diagnostics; there is no ADB on
+    // these terminals. Records only; changes no outcome.
+    PaymentModule.recordActivityReturn(this, requestCode, resultCode, data)
+
     if (requestCode == PaymentModule.PAYMENT_REQUEST_CODE) {
       val resultExtra = data?.getStringExtra("result")
       val transDataJson = data?.getStringExtra("transData")

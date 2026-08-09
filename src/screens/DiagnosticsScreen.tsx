@@ -24,6 +24,11 @@ import {
 } from '../lib/receiptPrintSettings';
 import {paperTypeFromWidthMm} from '../lib/paperWidth';
 import {
+  clearWiseCashierWiretap,
+  readWiseCashierWiretap,
+  WiretapEntry,
+} from '../lib/payment';
+import {
   getRestaurantId,
   getTerminalId,
   getTerminalToken,
@@ -60,6 +65,16 @@ interface RuntimeInfo {
   worker?: string;
   serviceRoleKeyPrefix?: string;
   error?: string;
+}
+
+/** Local wall-clock, seconds precision — enough to line an entry up with a device test. */
+function formatWiretapTime(at?: number): string {
+  if (!at) {
+    return 'unknown time';
+  }
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function formatLastPrint(result: LastPrintResult | null): {
@@ -123,6 +138,35 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
 
   const [usdkProbe, setUsdkProbe] = useState<UsdkServiceProbe | null>(null);
   const [probing, setProbing] = useState(false);
+
+  /**
+   * INSTRUMENTATION (vc82). What WiseCashier actually hands back, recorded natively before
+   * FlashTap classifies it. No ADB on these terminals, so this screen is the only readout.
+   */
+  const [wiretap, setWiretap] = useState<WiretapEntry[] | null>(null);
+  const [wiretapError, setWiretapError] = useState<string | null>(null);
+
+  const refreshWiretap = useCallback(async () => {
+    try {
+      setWiretap(await readWiseCashierWiretap());
+      setWiretapError(null);
+    } catch (err) {
+      setWiretap(null);
+      setWiretapError(err instanceof Error ? err.message : 'Wiretap read failed');
+    }
+  }, []);
+
+  const handleClearWiretap = useCallback(async () => {
+    try {
+      await clearWiseCashierWiretap();
+    } finally {
+      await refreshWiretap();
+    }
+  }, [refreshWiretap]);
+
+  useEffect(() => {
+    refreshWiretap();
+  }, [refreshWiretap]);
 
   const runUsdkProbe = useCallback(async () => {
     setProbing(true);
@@ -367,6 +411,103 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       <Text style={styles.title}>FlashTap Diagnostics</Text>
 
       <Text style={styles.sectionTitle}>Developer</Text>
+
+      {/* INSTRUMENTATION (vc82). Verbatim WiseCashier returns, newest first, recorded before
+          any FlashTap classification. Survives leaving the payment screen and restarting the
+          app; reading it does not consume it. */}
+      <Text style={styles.subSectionTitle}>WiseCashier wiretap</Text>
+      <Text style={styles.hint}>
+        Every return from WiseCashier exactly as Android delivered it — result code, its
+        symbolic name, the intent action, and every extra. Newest first. Launch markers are
+        recorded too, so an empty log means WiseCashier was never started.
+      </Text>
+
+      <View style={styles.wiretapBtnRow}>
+        <Pressable style={styles.testBtn} onPress={refreshWiretap}>
+          <Text style={styles.testBtnTxt}>Refresh wiretap</Text>
+        </Pressable>
+        <Pressable style={styles.testBtn} onPress={handleClearWiretap}>
+          <Text style={styles.testBtnTxt}>Clear wiretap</Text>
+        </Pressable>
+      </View>
+
+      {wiretapError ? (
+        <Text style={[styles.value, styles.stepFailed]} selectable>
+          Wiretap unavailable: {wiretapError}
+        </Text>
+      ) : null}
+
+      {wiretap && wiretap.length === 0 ? (
+        <Text style={styles.value}>
+          No entries. Nothing has called launchPayment on this install since the log was last
+          cleared.
+        </Text>
+      ) : null}
+
+      {(wiretap ?? []).map((entry, i) => (
+        <View key={`wiretap-${entry.at ?? i}-${i}`} style={styles.wiretapEntry}>
+          <Text style={styles.wiretapHeader} selectable>
+            {formatWiretapTime(entry.at)} — {entry.event ?? 'unknown event'}
+          </Text>
+          {entry.event === 'onActivityResult' ? (
+            <>
+              <Text style={styles.value} selectable>
+                resultCode = {String(entry.resultCode)} ({entry.resultCodeName})
+              </Text>
+              <Text style={styles.value} selectable>
+                requestCode = {String(entry.requestCode)} ({entry.requestCodeName})
+              </Text>
+              <Text style={styles.value} selectable>
+                action = {entry.action ? entry.action : '(none)'}
+              </Text>
+              <Text style={styles.value} selectable>
+                data = {entry.dataNull ? 'NULL' : 'present'}; extras ={' '}
+                {entry.extrasNull ? 'NULL' : String(entry.extrasCount ?? 0)}; promise ={' '}
+                {entry.promiseAlive ? 'alive' : 'GONE'}
+              </Text>
+              {entry.component ? (
+                <Text style={styles.value} selectable>
+                  component = {entry.component}
+                </Text>
+              ) : null}
+              {(entry.extras ?? []).map((x, xi) => (
+                <Text key={`x-${xi}`} style={styles.wiretapExtra} selectable>
+                  • {x.key} ({x.type}) = {x.value}
+                </Text>
+              ))}
+              {entry.pendingMerchantOrderNo ? (
+                <Text style={styles.value} selectable>
+                  pending merchantOrderNo = {entry.pendingMerchantOrderNo}
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {entry.code ? (
+                <Text style={[styles.value, styles.stepFailed]} selectable>
+                  rejected: {entry.code}
+                </Text>
+              ) : null}
+              {entry.error ? (
+                <Text style={[styles.value, styles.stepFailed]} selectable>
+                  error: {entry.error}
+                </Text>
+              ) : null}
+              {entry.merchantOrderNo ? (
+                <Text style={styles.value} selectable>
+                  merchantOrderNo = {entry.merchantOrderNo}
+                </Text>
+              ) : null}
+              {entry.amountMinor ? (
+                <Text style={styles.value} selectable>
+                  amount = {entry.amountMinor}
+                </Text>
+              ) : null}
+            </>
+          )}
+        </View>
+      ))}
+
       <Text style={styles.subSectionTitle}>Receipt Printing</Text>
 
       <View style={styles.toggleRow}>
@@ -996,6 +1137,30 @@ const styles = StyleSheet.create({
   stepFailed: {
     color: '#B00020',
     fontWeight: '600',
+  },
+  wiretapBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  wiretapEntry: {
+    marginTop: 10,
+    padding: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#666',
+    backgroundColor: '#f2f2f2',
+  },
+  wiretapHeader: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  wiretapExtra: {
+    fontSize: 13,
+    color: '#1a1a1a',
+    fontFamily: 'monospace',
+    marginTop: 3,
+    marginLeft: 8,
   },
   label: {
     fontSize: 11,

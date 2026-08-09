@@ -79,9 +79,63 @@ interface PaymentModuleType {
     originBusinessOrderNo: string,
   ) => Promise<RefundNativeResult>;
   consumeOrphanedPaymentResult?: () => Promise<PaymentNativeResult | null>;
+  /** INSTRUMENTATION (vc82) — see WiretapEntry. Optional: older installs will not have it. */
+  readWiseCashierWiretap?: () => Promise<string>;
+  clearWiseCashierWiretap?: () => Promise<boolean>;
 }
 
 const {PaymentModule} = NativeModules as {PaymentModule?: PaymentModuleType};
+
+/**
+ * One raw WiseCashier interaction, recorded natively before FlashTap classifies anything.
+ * Written by PaymentModule.recordWiretap / recordActivityReturn; rendered on Diagnostics.
+ * Every field is optional because the point of the log is to show what actually arrived,
+ * including shapes we did not anticipate.
+ */
+export interface WiretapEntry {
+  event?: string;
+  at?: number;
+  requestCode?: number;
+  requestCodeName?: string;
+  resultCode?: number;
+  resultCodeName?: string;
+  dataNull?: boolean;
+  action?: string;
+  dataString?: string;
+  component?: string;
+  flags?: number;
+  type?: string;
+  categories?: string;
+  extrasNull?: boolean;
+  extrasCount?: number;
+  extras?: Array<{key: string; type: string; value: string}>;
+  pendingOrderId?: string;
+  pendingMerchantOrderNo?: string;
+  promiseAlive?: boolean;
+  orderId?: string;
+  merchantOrderNo?: string;
+  amountMinor?: string;
+  paddedAmount?: string;
+  code?: string;
+  error?: string;
+}
+
+/** Newest first. Returns [] when the native method is absent or the log is empty. */
+export async function readWiseCashierWiretap(): Promise<WiretapEntry[]> {
+  if (!PaymentModule?.readWiseCashierWiretap) {
+    return [];
+  }
+  const raw = await PaymentModule.readWiseCashierWiretap();
+  const parsed = JSON.parse(raw || '[]');
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return (parsed as WiretapEntry[]).slice().reverse();
+}
+
+export async function clearWiseCashierWiretap(): Promise<void> {
+  await PaymentModule?.clearWiseCashierWiretap?.();
+}
 
 /** Prefix for backend audit refs when the device did not confirm a Finatic id. */
 export const UNCONFIRMED_PAYMENT_REF_PREFIX = 'UNCONFIRMED-';
