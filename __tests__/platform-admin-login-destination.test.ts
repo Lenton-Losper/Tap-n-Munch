@@ -148,32 +148,107 @@ describe('a redirect is only honoured for a context the account really has (#66)
   })
 })
 
+/**
+ * The open-redirect guard (#66).
+ *
+ * The previous version of this block proved nothing. Every one of its payloads was already
+ * rejected by isUnderPrefix() before isSafeRedirectPath() was ever consulted -- '//evil.example'
+ * and 'https://evil.example/admin' are not under '/admin' by prefix, and even
+ * '/admin\nSet-Cookie: x=1' fails the segment-boundary check because the character after
+ * '/admin' is a newline rather than '/', '?' or '#'. And its single assertion was an if/else
+ * over resolved.kind in which BOTH arms were satisfiable, so a resolver that returned anything
+ * at all passed. Measured: with isSafeRedirectPath replaced by `() => true`, all 13 tests in
+ * this file still passed.
+ *
+ * So every payload below is of the form '/admin/...' or '/dashboard/...' -- past the prefix
+ * check, honoured for a context the account genuinely has, with isSafeRedirectPath the only
+ * thing standing between it and being returned as a destination. The benign-twin test pins
+ * that property, so a later change to prefix matching cannot quietly make this block vacuous
+ * again the way it was.
+ */
 describe('the open-redirect guard (#66)', () => {
-  const offSite = [
-    '//evil.example',
-    'https://evil.example/admin',
-    '/\\evil.example',            // browsers normalise the backslash to a second slash
-    '/\\/evil.example',
-    'javascript:alert(1)//admin',
-    '/admin\nSet-Cookie: x=1',
-    '/admin /x',
+  beforeEach(() => {
+    resolveUserContexts.mockResolvedValue([PLATFORM, RESTAURANT])
+  })
+
+  /**
+   * Each payload is written with escapes, never a raw control byte. The previous file embedded
+   * literal NULs, which makes git treat the whole file as binary and skip it in review.
+   */
+  const guardIsTheOnlyDefence: Array<[string, string]> = [
+    ['bare LF, response-splitting a Set-Cookie', '/admin/x\nSet-Cookie: a=b'],
+    ['CRLF, splitting a header', '/admin/x\r\nX: 1'],
+    ['tab', '/admin/x\ty'],
+    ['space', '/admin/x y'],
+    ['NUL, which truncates in some downstream parsers', '/admin/x\u0000y'],
+    ['LF on the restaurant-scoped side too', '/dashboard/x\nSet-Cookie: a=b'],
+    ['backslash, which browsers normalise to a slash', '/admin/\\evil.com'],
   ]
 
-  it('never sends an account off-site, whatever it has access to', async () => {
-    resolveUserContexts.mockResolvedValue([PLATFORM, RESTAURANT])
-
-    for (const redirectParam of offSite) {
+  it.each(guardIsTheOnlyDefence)(
+    'refuses %s, and resolves nothing at all',
+    async (_label, redirectParam) => {
       const resolved = await resolveLoginDestination({ userId: 'u1', redirectParam })
-      if (resolved.kind === 'resolved') {
-        // A same-app path is acceptable; anything that could leave the origin is not.
-        expect(resolved.destination.startsWith('/')).toBe(true)
-        expect(resolved.destination).not.toMatch(/[\\\n\r ]/)
-        expect(resolved.destination).not.toMatch(/^\/\//)
-        expect(resolved.destination).not.toContain('://')
-      } else {
-        expect(resolved.kind).toBe('picker')
-      }
-    }
+
+      // Exact outcome, not "one of the acceptable shapes". The account has two contexts and
+      // nothing stored, so a refused redirect must fall all the way through to rule 4.
+      expect(resolved).toEqual({ kind: 'picker', contexts: [PLATFORM, RESTAURANT] })
+      // A refused redirect must also not have quietly selected a context on the way past.
+      expect(upserts).toEqual([])
+    },
+  )
+
+  it('is the only thing rejecting them: the same paths without the hostile character resolve', async () => {
+    // Without this, the block silently reverts to testing prefix matching -- which is exactly
+    // how it became vacuous the first time.
+    expect(await resolveLoginDestination({ userId: 'u1', redirectParam: '/admin/x' })).toEqual({
+      kind: 'resolved',
+      context: PLATFORM,
+      destination: '/admin/x',
+    })
+    expect(await resolveLoginDestination({ userId: 'u1', redirectParam: '/dashboard/x' })).toEqual({
+      kind: 'resolved',
+      context: RESTAURANT,
+      destination: '/dashboard/x',
+    })
+  })
+
+  // POSITIVE CONTROL. A guard that refuses everything would satisfy every assertion above.
+  // These say what must still work, exactly.
+  it('still resolves a legitimate deep path, query and fragment intact', async () => {
+    expect(
+      await resolveLoginDestination({
+        userId: 'u1',
+        redirectParam: '/admin/terminals/T-123?tab=offline#last',
+      }),
+    ).toEqual({
+      kind: 'resolved',
+      context: PLATFORM,
+      destination: '/admin/terminals/T-123?tab=offline#last',
+    })
+
+    expect(
+      await resolveLoginDestination({ userId: 'u1', redirectParam: '/stock/counts/2026-08-09' }),
+    ).toEqual({
+      kind: 'resolved',
+      context: RESTAURANT,
+      destination: '/stock/counts/2026-08-09',
+    })
+  })
+
+  // These never reach isSafeRedirectPath -- the prefix check turns them away first. Kept
+  // because they are still outcomes worth pinning, but labelled so nobody reads them as
+  // evidence about the guard.
+  it.each([
+    ['//evil.example'],
+    ['https://evil.example/admin'],
+    ['/\\evil.example'],
+    ['/\\/evil.example'],
+    ['javascript:alert(1)//admin'],
+    ['/adminish/x'],
+  ])('refuses %s at the prefix check, before the guard is consulted', async (redirectParam) => {
+    const resolved = await resolveLoginDestination({ userId: 'u1', redirectParam })
+    expect(resolved).toEqual({ kind: 'picker', contexts: [PLATFORM, RESTAURANT] })
   })
 })
 
