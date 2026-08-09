@@ -26,7 +26,16 @@ const RESTAURANT_UUID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 const OTHER_RESTAURANT_UUID = 'b2888277-eeab-51e2-be2e-3f12393b2763'
 
 const ORDER_NUMBER_INDEX = 'orders_firebase_restaurant_id_order_number_key'
-const IDEMPOTENCY_INDEX = 'orders_idempotency_key_key'
+/**
+ * The real name, from supabase/migrations/00000000000000_baseline.sql:1717.
+ *
+ * Note `orders` carries TWO unique indexes on (idempotency_key) with identical definitions —
+ * `idx_orders_idempotency_key` and `orders_idempotency_key_unique` (baseline.sql:1822) — so which
+ * name appears in a 23505 depends on which index Postgres checks first. That redundancy is a
+ * separate defect, reported and not fixed here; it is also exactly why isOrderNumberCollision
+ * identifies its OWN index by name rather than trying to recognise everyone else's.
+ */
+const IDEMPOTENCY_INDEX = 'idx_orders_idempotency_key'
 
 type Row = Record<string, unknown>
 
@@ -331,5 +340,71 @@ describe('#127 — order_number allocation cannot collide', () => {
     expect(result.orderNumber).toBe(8)
     // One insert attempt: an idempotency conflict is resolved, never retried.
     expect(state.insertAttempts).toHaveLength(1)
+  })
+})
+
+describe('#127 follow-up — the collision predicate must not be spoofable', () => {
+  /**
+   * Found by the adversarial verification harness, not by me.
+   *
+   * isOrderNumberCollision originally matched on `message + details`, with a fallback branch
+   * looking for the literal "(firebase_restaurant_id, order_number)". PostgREST echoes the
+   * offending VALUE into `details` on a 23505 -- `Key (idempotency_key)=(<the key>) already
+   * exists.` -- and idempotencyKey comes straight off the caller-controlled `x-idempotency-key`
+   * header. So a caller could put the sentinel inside its own idempotency key and make an
+   * idempotency conflict look like a numbering collision.
+   *
+   * The end state stayed correct, which is why nothing else caught it: the bound is spent, the
+   * helper returns the idempotency 23505, and createOrder's existing handler resolves to the
+   * original order. The damage is 8 reads plus 8 failing inserts where 1 and 1 would do -- an
+   * 8x amplification on order creation, triggerable by anyone who can set a header.
+   *
+   * The fix reads only `message`, which is `duplicate key value violates unique constraint
+   * "<name>"` and carries no caller data.
+   */
+  const SPOOF_KEY = 'X(firebase_restaurant_id, order_number)X'
+
+  it('does not retry an idempotency conflict whose KEY spoofs the collision sentinel', async () => {
+    seed(RESTAURANT_UUID, 8, { idempotency_key: SPOOF_KEY, id: 'original-order' })
+
+    const result = await createOrder(params({ idempotencyKey: SPOOF_KEY }))
+
+    expect(state.insertAttempts).toHaveLength(1)
+    expect(result.orderId).toBe('original-order')
+    expect(result.orderNumber).toBe(8)
+  })
+
+  it('CONTROL: a genuine order_number 23505 is still detected and still retried', async () => {
+    // Without this, a predicate tightened until it matches NOTHING would pass every other test
+    // in this file — a collision detector that never fires looks identical to a correct one.
+    seed(RESTAURANT_UUID, 41)
+    state.beforeInsert = (row, attempt) => {
+      if (attempt === 1) seed(RESTAURANT_UUID, row.order_number as number)
+    }
+
+    const result = await createOrder(params())
+
+    expect(state.insertAttempts.length).toBeGreaterThan(1)
+    expect(result.orderNumber).toBe(43)
+  })
+})
+
+describe('#127 follow-up — a missing restaurant scope must not silently allocate 1', () => {
+  it('throws rather than returning order number 1 for a null scope', async () => {
+    // `.eq('firebase_restaurant_id', null)` matches zero rows WITHOUT an error, so the allocator
+    // read an empty restaurant and handed out 1 — a duplicate of that restaurant's first order.
+    // The partial unique index does not cover NULL scopes either, so nothing downstream catches
+    // it. Unreachable from today's callers, but order_requests.firebase_restaurant_id is a
+    // nullable text column and the Accept path passes it through unguarded.
+    await expect(
+      createOrder(params({ firebaseRestaurantId: null as unknown as string })),
+    ).rejects.toThrow(/restaurant/i)
+
+    expect(state.insertAttempts).toHaveLength(0)
+  })
+
+  it('throws on an empty-string scope too', async () => {
+    await expect(createOrder(params({ firebaseRestaurantId: '' }))).rejects.toThrow(/restaurant/i)
+    expect(state.insertAttempts).toHaveLength(0)
   })
 })

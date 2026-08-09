@@ -21,12 +21,38 @@ import { PATCH } from '@/app/api/orders/[orderId]/status/route'
 const RESTAURANT_ID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 const ORDER_ID = 'order-1'
 
-/** Matches MAX_CANCELLATION_REASON_LENGTH in the route. */
+/** The route caps on code points, importing the same constant the UI uses. */
 const MAX_REASON_LENGTH = 280
+
+/**
+ * A lone surrogate — half of a surrogate pair with no partner. Postgres cannot encode one as
+ * UTF-8, so PostgREST rejects the whole request with PGRST102 before any row is touched.
+ * `String.prototype.isWellFormed` is the same test (ES2024); spelled out here so the fake does
+ * not depend on the Node version running the suite.
+ */
+function hasLoneSurrogate(value: string): boolean {
+  return /[\uD800-\uDFFF]/.test(value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))
+}
+
+/** Every string the patch would write, including the JSONB audit metadata. */
+function loneSurrogateIn(payload: unknown): boolean {
+  if (typeof payload === 'string') return hasLoneSurrogate(payload)
+  if (Array.isArray(payload)) return payload.some(loneSurrogateIn)
+  if (payload && typeof payload === 'object') return Object.values(payload).some(loneSurrogateIn)
+  return false
+}
+
+const PGRST102 = {
+  code: 'PGRST102',
+  message: 'Empty or invalid json',
+  details: null,
+  hint: null,
+}
 
 let existingOrder: Record<string, unknown>
 let updatePatch: Record<string, unknown> | null
 let auditRow: Record<string, unknown> | null
+let updateRejected: boolean
 
 jest.mock('@/lib/api/require-staff-permission', () => ({
   requireStaffPermission: async () => ({ userId: 'staff-1' }),
@@ -47,7 +73,14 @@ function makeClient() {
         select: chain,
         eq: chain,
         update: (patch: Record<string, unknown>) => {
-          if (table === 'orders') updatePatch = patch
+          if (table === 'orders') {
+            updatePatch = patch
+            // Postgres refuses a lone surrogate, and this UPDATE also carries status, is_closed
+            // and payment_status — so one bad character rejects the whole cancellation, not just
+            // the reason. A fake that quietly accepted it would report a passing test for a
+            // request that fails against the real database.
+            updateRejected = loneSurrogateIn(patch)
+          }
           return builder
         },
         maybeSingle: async () => {
@@ -55,6 +88,7 @@ function makeClient() {
           // First call is the pre-load; every later one is the conditional-claim update, which
           // must report success so the audit-row side effect actually runs.
           if (updatePatch === null) return { data: existingOrder, error: null }
+          if (updateRejected) return { data: null, error: PGRST102 }
           return {
             data: {
               id: ORDER_ID,
@@ -68,7 +102,10 @@ function makeClient() {
           }
         },
         insert: async (row: Record<string, unknown>) => {
-          if (table === 'audit_logs') auditRow = row
+          if (table === 'audit_logs') {
+            if (loneSurrogateIn(row)) return { error: PGRST102 }
+            auditRow = row
+          }
           return { error: null }
         },
       })
@@ -85,6 +122,7 @@ jest.mock('@/lib/supabase/server', () => ({
 beforeEach(() => {
   updatePatch = null
   auditRow = null
+  updateRejected = false
   existingOrder = { id: ORDER_ID, restaurant_id: RESTAURANT_ID, status: 'pending' }
 })
 
@@ -142,6 +180,7 @@ describe('#103 — cancellation_reason must be a string', () => {
 
     updatePatch = null
     auditRow = null
+    updateRejected = false
     await cancel({ reason: null })
     expect(recordedReason().column).toBe('staff_cancelled')
   })
@@ -163,11 +202,13 @@ describe('#103 — cancellation_reason must be a string', () => {
 
     updatePatch = null
     auditRow = null
+    updateRejected = false
     await cancel({ cancellation_reason: '  duplicate order  ' })
     expect(recordedReason().column).toBe('duplicate order')
 
     updatePatch = null
     auditRow = null
+    updateRejected = false
     await cancel({ cancellationReason: 'kitchen out of stock' })
     expect(recordedReason().column).toBe('kitchen out of stock')
   })
@@ -238,5 +279,64 @@ describe('#103 — the effect on order state is unchanged', () => {
     expect(updatePatch).toMatchObject({ status: 'accepted' })
     expect(updatePatch).not.toHaveProperty('cancellation_reason')
     expect(auditRow).toBeNull()
+  })
+})
+
+describe('#103 — truncation must not split a surrogate pair', () => {
+  /**
+   * 281 UTF-16 code units, and unit 280 is the HIGH half of the last emoji. A cap that counts
+   * code units cuts between the halves and emits a lone surrogate.
+   *
+   * That lone surrogate does not merely corrupt the reason. It travels in the SAME update as
+   * status/is_closed/payment_status, and again in the audit row's JSONB metadata, and Postgres
+   * cannot encode it as UTF-8 — so PostgREST rejects the whole request with PGRST102 and the
+   * order is never cancelled at all. The first version of this fix turned a working cancellation
+   * into a 400 for these inputs, which is precisely the state-effect change it argued against.
+   */
+  const SPLITTING_REASON = 'a' + '😀'.repeat(140)
+
+  it('cancels the order rather than failing on an invalid-JSON rejection', async () => {
+    const { status, body } = await cancel({ reason: SPLITTING_REASON })
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(updatePatch).toMatchObject({
+      status: 'cancelled',
+      is_closed: true,
+      payment_status: 'cancelled',
+    })
+  })
+
+  it('writes a well-formed reason to the column and the audit metadata', async () => {
+    await cancel({ reason: SPLITTING_REASON })
+
+    const { column, audit } = recordedReason()
+    expect(hasLoneSurrogate(String(column))).toBe(false)
+    expect(hasLoneSurrogate(String(audit))).toBe(false)
+    expect(auditRow).not.toBeNull()
+  })
+
+  it('caps on code points, not UTF-16 code units', async () => {
+    // 400 emoji = 800 code units. The cap must keep 280 CODE POINTS, so the stored string is
+    // 560 units long — longer than 280 units, and correct.
+    await cancel({ reason: '😀'.repeat(400) })
+
+    const column = String(recordedReason().column)
+    expect(Array.from(column)).toHaveLength(MAX_REASON_LENGTH)
+    expect(hasLoneSurrogate(column)).toBe(false)
+  })
+
+  it('still truncates plain ASCII to exactly the cap', async () => {
+    // The control that would catch a "fix" that simply stopped truncating.
+    await cancel({ reason: 'x'.repeat(10_000) })
+
+    expect(String(recordedReason().column)).toHaveLength(MAX_REASON_LENGTH)
+  })
+
+  it('CONTROL: the fake really can reject a lone surrogate', async () => {
+    // Without this, every test above would pass against a fake that silently accepts anything.
+    expect(hasLoneSurrogate('a' + '😀'.repeat(140)).valueOf()).toBe(false)
+    expect(hasLoneSurrogate(('a' + '😀'.repeat(140)).slice(0, 280))).toBe(true)
+    expect(loneSurrogateIn({ metadata: { r: '\uD83D' } })).toBe(true)
   })
 })

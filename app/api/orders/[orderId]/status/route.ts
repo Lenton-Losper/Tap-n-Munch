@@ -7,6 +7,7 @@ import {
   STAFF_SETTABLE_STATUSES,
 } from '@/lib/orders/status-transitions'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
+import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,12 +16,32 @@ export const dynamic = 'force-dynamic'
  * once -- orders.cancellation_reason and the order.cancelled audit row's metadata -- so a
  * 10,000-character reason was stored twice in full.
  *
- * 280 matches MAX_INSTRUCTIONS_LENGTH, the cap this codebase already settled on for order
- * free-text: long enough for a real explanation ("customer left before the food was up, comped by
- * the duty manager") and short enough to stay readable on a staff order card and a 32-column
- * thermal print, which is where both of these fields end up being read.
+ * Shares MAX_INSTRUCTIONS_LENGTH rather than redeclaring 280, so the two order free-text limits
+ * cannot drift apart. Note this is the FIRST place in the codebase that actually cuts a string at
+ * that limit -- everywhere else it is an HTML `maxLength`, which stops typing and never truncates
+ * programmatically. That is why the surrogate problem below had not been hit before.
  */
-const MAX_CANCELLATION_REASON_LENGTH = 280
+const MAX_CANCELLATION_REASON_LENGTH = MAX_INSTRUCTIONS_LENGTH
+
+/**
+ * Truncate to `max` CODE POINTS, not UTF-16 code units.
+ *
+ * `slice()` counts code units, so a cut that lands between the halves of a surrogate pair emits a
+ * lone surrogate. Postgres cannot encode one as UTF-8, and PostgREST rejects the whole request
+ * with PGRST102 "Empty or invalid json" -- which here means the UPDATE carrying status, is_closed
+ * and payment_status never lands and the order is not cancelled at all. `'a' + '😀'.repeat(140)`
+ * is 281 units, so unit 280 is a high surrogate and the request 400s; `'😀'.repeat(200)` cuts
+ * cleanly and works. Boundary-dependent, not emoji-dependent, which is what made it survive a
+ * test matrix written entirely in ASCII.
+ *
+ * Array.from iterates code points, so the result is always well formed. A ZWJ sequence (family
+ * emoji, flags) can still be cut mid-cluster -- that yields a valid, encodable string that merely
+ * looks odd, which is a cosmetic problem and not worth pulling in Intl.Segmenter for.
+ */
+function truncateCodePoints(value: string, max: number): string {
+  const points = Array.from(value)
+  return points.length <= max ? value : points.slice(0, max).join('')
+}
 
 const TIMESTAMP_FIELDS: Record<string, string> = {
   accepted: 'accepted_at',
@@ -99,7 +120,7 @@ export async function PATCH(
   const rawReason = body?.cancellation_reason ?? body?.cancellationReason ?? body?.reason
   const callerReason =
     typeof rawReason === 'string'
-      ? rawReason.trim().slice(0, MAX_CANCELLATION_REASON_LENGTH).trim()
+      ? truncateCodePoints(rawReason.trim(), MAX_CANCELLATION_REASON_LENGTH).trim()
       : ''
   const cancellationReason = callerReason || 'staff_cancelled'
 

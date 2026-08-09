@@ -68,14 +68,30 @@ interface PostgrestErrorLike {
  * conflict is a replayed request that must resolve to the ORIGINAL order, never be retried under a
  * new number. Anything this cannot positively identify as a numbering collision is left alone and
  * handled by the caller exactly as before.
+ *
+ * READS `message` ONLY, AND THAT IS THE SECURITY PROPERTY. PostgREST reports a 23505 as:
+ *
+ *     message: duplicate key value violates unique constraint "<index name>"
+ *     details: Key (<columns>)=(<THE OFFENDING VALUES>) already exists.
+ *
+ * `details` echoes the caller's own data. This function used to also match the literal
+ * "(firebase_restaurant_id, order_number)" anywhere in message+details as a belt-and-braces
+ * fallback — and because `idempotencyKey` comes straight off the caller-controlled
+ * `x-idempotency-key` header, a request could put that sentinel inside its own idempotency key
+ * and make an idempotency conflict read as a numbering collision. The result stayed correct (the
+ * retry bound is spent, then createOrder's idempotency handler resolves to the original order),
+ * but it cost 8 reads and 8 failing inserts instead of 1 and 1: an 8x amplification on order
+ * creation available to anyone who can set a header. Found by the adversarial verification
+ * harness on #127.
+ *
+ * The fallback was never needed — the constraint name in `message` was confirmed against live
+ * Postgres on staging — so it is gone rather than merely anchored. `message` contains the index
+ * name and nothing else a caller can influence. No `.toLowerCase()` either: the index name is
+ * already lowercase, and lowercasing only widens what can match.
  */
 export function isOrderNumberCollision(error: PostgrestErrorLike | null | undefined): boolean {
   if (!error || error.code !== '23505') return false
-  const haystack = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase()
-  return (
-    haystack.includes(ORDER_NUMBER_UNIQUE_INDEX) ||
-    haystack.includes('(firebase_restaurant_id, order_number)')
-  )
+  return String(error.message ?? '').includes(ORDER_NUMBER_UNIQUE_INDEX)
 }
 
 /**
@@ -94,6 +110,18 @@ export async function nextOrderNumber(
   supabase: SupabaseServerClient,
   firebaseRestaurantId: string,
 ): Promise<number> {
+  // A missing scope must fail loudly. PostgREST renders `.eq('firebase_restaurant_id', null)` as
+  // `= NULL`, which matches zero rows and returns NO error — so the allocator would read an empty
+  // restaurant and hand out 1, duplicating that restaurant's first order. The partial unique
+  // index does not cover NULL scopes either, so nothing downstream would catch it. Unreachable
+  // from today's callers, but order_requests.firebase_restaurant_id is nullable and the Accept
+  // path passes it straight through.
+  if (!firebaseRestaurantId) {
+    throw new Error(
+      'Cannot allocate an order number without a firebase_restaurant_id (restaurant scope missing)',
+    )
+  }
+
   const { data, error } = await supabase
     .from('orders')
     .select('order_number')
