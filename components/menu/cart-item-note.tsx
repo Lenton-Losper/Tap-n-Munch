@@ -14,6 +14,15 @@ interface CartItemNoteProps {
   itemLabel: string
   value: string
   onChange: (next: string) => void
+  /**
+   * Fired when the customer finishes with the field, not on every keystroke.
+   *
+   * The note is part of a cart line's identity, so a note edit can turn this row into a copy
+   * of another one and the two have to be folded together (#133). That fold cannot run from
+   * onChange: it removes a row, and removing the row being typed into unmounts this textarea
+   * mid-word the moment the text happens to match. So the caller reconciles here instead.
+   */
+  onCommit?: (next: string) => void
 }
 
 /**
@@ -27,7 +36,7 @@ interface CartItemNoteProps {
  * Collapsed by default so a long cart stays scannable; a row that already carries a note
  * opens straight into the textarea, since seeing and correcting it matters more than tidiness.
  */
-export function CartItemNote({ index, itemLabel, value, onChange }: CartItemNoteProps) {
+export function CartItemNote({ index, itemLabel, value, onChange, onCommit }: CartItemNoteProps) {
   const [expanded, setExpanded] = useState(Boolean(value))
 
   if (!expanded) {
@@ -60,6 +69,7 @@ export function CartItemNote({ index, itemLabel, value, onChange }: CartItemNote
         value={value}
         onChange={(e) => onChange(e.target.value)}
         maxLength={MAX_INSTRUCTIONS_LENGTH}
+        onBlur={(e) => onCommit?.(e.target.value)}
         rows={2}
         className="w-full max-w-full font-sans border-border text-sm"
       />
