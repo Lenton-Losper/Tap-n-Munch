@@ -22,6 +22,41 @@ class MainActivity : ReactActivity() {
     // policy (see the REFUND path below, which deliberately declines to guess DECLINE vs
     // FAILED for codes it hasn't confirmed).
     private val KNOWN_DECLINE_CODES = setOf("N003")
+
+    /**
+     * Gateway result codes that mean THE OPERATOR ABORTED before the gateway was contacted.
+     *
+     * WiseCashier does not use RESULT_CANCELED. Its failure return is
+     * AppInvokeUtilKt.onAppInvokeFail, which is hardcoded:
+     *
+     *     intent.putExtra("result",    exceptionCode)
+     *     intent.putExtra("resultMsg", exceptionMsg)
+     *     intent.putExtra("version",   "A01")
+     *     activity.setResult(-1, intent)   // RESULT_OK, unconditionally
+     *
+     * so EVERY failure — cancel, timeout, flat battery — arrives as RESULT_OK and is
+     * distinguished only by `result`. Confirmed on a UAT P5 on 2026-08-09 (vc82 wiretap):
+     * resultCode -1, result=K026, resultMsg="[K026]Manual cancellation by operator".
+     *
+     * NARROW ON PURPOSE. K026 is one of 22 codes in TransactionExceptionMapper, and several
+     * of its siblings must NEVER take the no-gateway-attempt bypass:
+     *   K027 "Transaction timeout ... check transaction status before making another payment"
+     *   K017 "Transaction processing"
+     *   K036 / K037 auto-reversal succeeded / FAILED — a reversal implies an authorisation
+     *   K009 "Unknown Transaction Exception"
+     * Those arrive on this identical path and must keep falling through to Finatic verify.
+     * See docs/wisecashier-result-codes.md for the full table. Do not widen this set without
+     * device evidence for the specific code being added.
+     *
+     * Matched on the CODE, never on resultMsg: resultMsg is composed by
+     * CommonException.getExceptionMessage() as '[' + code + ']' + a LOCALISED string resource
+     * (string/exception_manual_cancel), so its text changes with device language.
+     *
+     * K026 means operator abort and nothing else — all 14 of its raise sites in WiseCashier
+     * 2.1.6.42 are cancel/back handlers or a card-read abort, every one of them before
+     * authorisation. It is never a decline.
+     */
+    private val USER_CANCEL_RESULT_CODES = setOf("K026")
   }
 
   override fun getMainComponentName(): String = "FlashTapTerminal"
@@ -78,6 +113,8 @@ class MainActivity : ReactActivity() {
             resultCode == Activity.RESULT_OK && resultExtra == "00" -> "ambiguous"
             // Same split as the promise path above: an orphaned USER CANCEL must not be
             // reported as ambiguous, or it strands exactly as before.
+            resultCode == Activity.RESULT_OK &&
+              USER_CANCEL_RESULT_CODES.contains(resultExtra) -> "user_cancelled"
             resultCode == Activity.RESULT_CANCELED -> "user_cancelled"
             else -> "ambiguous"
           }
@@ -101,7 +138,20 @@ class MainActivity : ReactActivity() {
       }
 
       if (resultCode == Activity.RESULT_OK && data != null) {
-        if (resultExtra == "00") {
+        if (USER_CANCEL_RESULT_CODES.contains(resultExtra)) {
+          // Checked BEFORE the "00" success test. K026 can never be "00", so the ordering is
+          // defensive rather than load-bearing -- but a cancel must never be reachable through
+          // the success or decline branches, whatever a future edit does to them.
+          //
+          // Same rejection code as the RESULT_CANCELED branch below, so both converge on
+          // outcomeKind 'user_cancelled' -> cancellationReason + noGatewayAttempt -> the server
+          // skips a Finatic verify that would return E04111 and strand the order.
+          promise.reject(
+            "PAYMENT_CANCELLED_BY_USER",
+            "Payment was cancelled on the reader before the gateway was contacted " +
+              "(gateway result=$resultExtra)",
+          )
+        } else if (resultExtra == "00") {
           if (voucherNo.isBlank()) {
             // Ambiguous: gateway said success code but no transaction id for FlashTap to trust.
             promise.reject(
