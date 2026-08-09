@@ -447,12 +447,77 @@ function encryptMerchantCardPayload(cardPayload) {
   return encrypted.toString('base64')
 }
 
+/**
+ * Resolve the merchant identity a request goes out under.
+ *
+ * THE DEFECT THIS CLOSES: this used to be
+ *
+ *     String(input?.merchantNo ?? cfg.merchantNo ?? '').trim()
+ *
+ * and `cfg.merchantNo` is `process.env.PAYCLOUD_MERCHANT_NO`. So a restaurant with a NULL
+ * `finatic_merchant_no` did not fail — it silently transacted under whatever global merchant
+ * happened to be in the environment. In production that value is 342600032359, which is
+ * Mingle's OLD merchant number. A payment for one venue could go out under another venue's
+ * former identity, producing a charge nobody can find, attribute or refund.
+ *
+ * Note it was `??`, not `||`: an EMPTY STRING credential threw, but a NULL one fell through.
+ * The database stores NULL, so the silent path was the one real restaurants took.
+ *
+ * THE RULE NOW: if a caller names a restaurant, that restaurant's own credentials are the only
+ * acceptable identity. There is no fallback. Refusing a payment is recoverable in a minute;
+ * a charge under someone else's merchant number may not be recoverable at all.
+ *
+ * The env credentials remain available ONLY when no restaurant is named — local tools, the
+ * debug query route, and reconciliation scripts that are explicitly given a merchant. That is
+ * why the guard keys on `restaurantId` rather than removing `cfg` outright: removing it would
+ * break those callers without making any live payment path safer.
+ *
+ * Deliberately NOT touching `app/api/payments/push-to-terminal`. It already fails closed with
+ * NO_MERCHANT, and widening a live payment path for a defect that has never fired there would
+ * add risk rather than remove it.
+ */
 function resolveWireMerchantStore(input, cfg) {
-  const merchantNo = String(input?.merchantNo ?? cfg.merchantNo ?? '').trim()
-  const storeNo = String(input?.storeNo ?? cfg.storeNo ?? '').trim()
+  const ownMerchantNo = String(input?.merchantNo ?? '').trim()
+  const ownStoreNo = String(input?.storeNo ?? '').trim()
+  const restaurantId = String(input?.restaurantId ?? '').trim()
+  const restaurantLabel = String(input?.restaurantName ?? '').trim() || restaurantId
+
+  if (restaurantId) {
+    if (!ownMerchantNo || !ownStoreNo) {
+      // Loud on the way out: this is the first time anyone hears about a venue that cannot
+      // take payment, and the alternative to hearing about it is a silent misrouted charge.
+      console.error(
+        '[PayCloud][NOT_CONFIGURED] restaurant is not configured for payments —',
+        'refused before contacting the gateway.',
+        JSON.stringify({
+          event: 'payment.restaurant_not_configured',
+          severity: 'error',
+          requiresAttention: true,
+          restaurantId,
+          restaurantName: input?.restaurantName ?? null,
+          hasMerchantNo: Boolean(ownMerchantNo),
+          hasStoreNo: Boolean(ownStoreNo),
+          orderId: input?.orderId ?? null,
+        })
+      )
+      throw new PaycloudRequestError(
+        `${restaurantLabel} is not set up to take card payments yet. ` +
+          'Its Finatic merchant number and store number are missing, so this payment was ' +
+          'stopped before it reached the card machine — nothing has been charged. ' +
+          'Add the venue\'s own Finatic credentials in Settings, then try again.',
+        { phase: 'validation', code: 'RESTAURANT_NOT_CONFIGURED_FOR_PAYMENTS', restaurantId }
+      )
+    }
+    return { merchantNo: ownMerchantNo, storeNo: ownStoreNo }
+  }
+
+  // No restaurant named — local tools and scripts may use the environment credentials.
+  const merchantNo = ownMerchantNo || String(cfg?.merchantNo ?? '').trim()
+  const storeNo = ownStoreNo || String(cfg?.storeNo ?? '').trim()
   if (!merchantNo || !storeNo) {
     throw new PaycloudRequestError(
-      'merchant_no and store_no are required (configure Finatic credentials for this restaurant in Supabase, or set PAYCLOUD_MERCHANT_NO / PAYCLOUD_STORE_NO for local tools)',
+      'merchant_no and store_no are required (pass a restaurantId with that venue\'s configured ' +
+        'Finatic credentials, or set PAYCLOUD_MERCHANT_NO / PAYCLOUD_STORE_NO for local tools)',
       { phase: 'validation' }
     )
   }
@@ -617,7 +682,12 @@ export async function createPaymentRequest(input, options = {}) {
   if (treatAsSuccess && checkoutUrl) {
     if (body.sign) {
       try {
-        console.log('[PayCloud][CHECKOUT][VERIFY] raw_response_body=', raw)
+        // #171: was unconditional. Gated to match its sibling at the `fullCheckoutDebugEnabled()`
+        // block above — the raw body carries the gateway's `sign` and full trade detail, and this
+        // path runs on every SUCCESSFUL checkout, which is the common case rather than a rare one.
+        if (fullCheckoutDebugEnabled()) {
+          console.log('[PayCloud][CHECKOUT][VERIFY] raw_response_body=', raw)
+        }
         console.log(
           '[PayCloud][CHECKOUT][VERIFY] verify_fields=',
           Object.keys(body || {}).sort()
@@ -871,7 +941,10 @@ export async function queryPaymentOrder(input, options = {}) {
   debugLog('Query URL', { requestUrl })
   debugLog('Query body before signing', unsignedPayload)
   debugLog('Signed query body', payload)
-  console.log('[PayCloud][QUERY][PAYLOAD]', JSON.stringify(payload, null, 2))
+  // #171: was raw JSON.stringify of the SIGNED payload — `sign` included — on every order query.
+  // maskSecrets() masks `sign` (and token/secret/key/card fields) while leaving merchant_order_no,
+  // sign_type and the rest of the shape visible, which is what this line is read for.
+  console.log('[PayCloud][QUERY][PAYLOAD]', maskSecrets(payload))
   if (fullQueryDebugEnabled()) {
     console.log('[PayCloud][QUERY][FULL] URL:', requestUrl)
     console.log('[PayCloud][QUERY][FULL] Headers:', PAYCLOUD_JSON_HEADERS)
@@ -922,7 +995,9 @@ export async function queryPaymentOrder(input, options = {}) {
       phase: 'parse',
     })
   }
-  console.log('[PayCloud][QUERY][RAW_RESPONSE]', JSON.stringify(body, null, 2))
+  // #171 (found by the sweep, not named in the issue): the gateway's response carries its own
+  // `sign`. Same treatment — code, msg and trade fields survive, the signature does not.
+  console.log('[PayCloud][QUERY][RAW_RESPONSE]', maskSecrets(body))
 
   if (!response.ok) {
     throw mapPaycloudError(response.status, body, raw)

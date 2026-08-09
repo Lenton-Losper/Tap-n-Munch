@@ -289,12 +289,23 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   const ref = params.paymentRef.trim()
   if (!ref || !params.restaurantId.trim()) return []
 
+  // Fail CLOSED on anything that is not a well-formed reference. A string carrying PostgREST
+  // filter syntax is not a reference that failed to match -- it is an attempt to widen the
+  // query, and it must return nothing rather than everything. See paymentRefOrFilter.
+  //
+  // MERGE NOTE: this guard and the restaurant scoping below fix the two HALVES of #122 and
+  // arrived on different branches. Keep both. The guard alone still lets a valid reference be
+  // read cross-tenant; the scoping alone still lets `?ref=zzz,total.gte.0` widen the filter
+  // inside one restaurant. Neither is redundant.
+  const refFilter = paymentRefOrFilter(ref)
+  if (!refFilter) return []
+
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
 
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .or(paymentRefOrFilter(ref))
+    .or(refFilter)
     .limit(15)
     .eq('restaurant_id', restaurantUuid)
 

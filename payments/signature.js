@@ -149,12 +149,18 @@ export function signUtf8WithForgePkcs1RsaSha256(signStr, privateKeyPem) {
  * PayCloud (non-Java SDKs): PKCS#1 PEM from env via deep-normalized key material (`payments/config.js`).
  */
 export function loadPrivateKey() {
-  const pkcs1Pem = normalizePrivateKeyEnvToPkcs1Pem()
-  if (!loadPrivateKey._logged) {
-    loadPrivateKey._logged = true
-    console.log('[PayCloud][KEYDIAG] pkcs1_private_key_pem_first60:', pkcs1Pem.slice(0, 60))
-  }
-  return pkcs1Pem
+  // Removed (#171): a KEYDIAG line logging `pkcs1Pem.slice(0, 60)`.
+  //
+  // Measured, not assumed: 60 characters of a PKCS#1 PEM is the 31-character
+  // `-----BEGIN RSA PRIVATE KEY-----` header, a newline, and 28 base64 characters = 21 DER
+  // bytes. Those decode to SEQUENCE/version/modulus-length headers plus the first 9 bytes of
+  // the MODULUS, which is the public half. The private exponent starts ~273 bytes in
+  // (base64 char ~364). No private key material was ever exposed and no rotation was required.
+  //
+  // It is gone anyway because it had no diagnostic value, and because a log line reading
+  // "private_key_pem_first60" costs an hour of alarm every time someone reads it. Key identity
+  // is already answered, safely, by the fingerprint logs in paycloud.js.
+  return normalizePrivateKeyEnvToPkcs1Pem()
 }
 
 export function loadGatewayPublicKey() {
@@ -170,9 +176,12 @@ export function signPayload(payload, privateKey = loadPrivateKey()) {
   console.log('[PayCloud][SIGN] included_fields=', includedKeys.join(','))
   console.log('[PayCloud][SIGN] excluded_fields=', excluded.join(','))
   console.log('[PayCloud][SIGN] signing_public_key_prefix20=', signingPublicKeyPrefix)
-  console.log('[PayCloud][SIGN] canonical_string=', content)
+  // #171: the canonical string is every request field sorted and joined. It was logged verbatim
+  // here, and again as raw hex on the next line. Fingerprint + length answers the question those
+  // lines existed for -- "is our canonical string the same as Finatic's / as last call's?" --
+  // without putting a replayable signed request into Workers Logs.
+  console.log('[PayCloud][SIGN] canonical_string_sha256_8=', loggableFingerprint(content))
   console.log('[PayCloud][SIGN] canonical_string_utf8_bytes=', byteLength)
-  console.log('SIGN_STRING_BYTES:', Buffer.from(content, 'utf8').toString('hex'))
   if (String(payload?.method || '').trim() === 'wisehub.cloud.pay.order') {
     const terminalSignFields = [
       'api_version',
@@ -195,7 +204,10 @@ export function signPayload(payload, privateKey = loadPrivateKey()) {
     )
   }
   const standardBase64 = signUtf8WithForgePkcs1RsaSha256(content, privateKey)
-  console.log('[PayCloud][SIGN] generated_signature_base64=', standardBase64)
+  // #171: was `generated_signature_base64=` — the valid signature itself. With the canonical
+  // string on the line above, the pair was a complete replayable request. The fingerprint still
+  // correlates a signature across log lines and with Finatic support.
+  console.log('[PayCloud][SIGN] generated_signature_sha256_8=', loggableFingerprint(standardBase64))
   return formatPaycloudRequestSignature(standardBase64)
 }
 
@@ -262,13 +274,16 @@ export async function testFullFieldCanonical() {
 
   applyPaycloudSigningStrictFields(values)
   const canonical = buildSignContent(values)
-  console.log('[TEST_FULL_CANON] SIGN_STRING_BYTES:', Buffer.from(canonical, 'utf8').toString('hex'))
+  // #171: same redaction as signPayload. This function is currently unreferenced, but it is
+  // exported, it signs with the REAL private key and it POSTs to the live gateway — one import
+  // away from being a production log leak. See the note on the function above.
+  console.log('[TEST_FULL_CANON] canonical_string_sha256_8=', loggableFingerprint(canonical))
 
   const privatePem = loadPrivateKey()
   const signature = formatPaycloudRequestSignature(signUtf8WithForgePkcs1RsaSha256(canonical, privatePem))
 
   console.log('[TEST_FULL_CANON] checkoutUrl:', checkoutUrl)
-  console.log('[TEST_FULL_CANON] canonical_string_full_fields=', canonical)
+  console.log('[TEST_FULL_CANON] canonical_string_utf8_bytes=', Buffer.byteLength(canonical, 'utf8'))
 
   const body = { ...values, sign: signature }
   const response = await fetch(checkoutUrl, {
@@ -318,6 +333,27 @@ export function getPublicKeyFingerprint(publicKeyPemOrBase64) {
 }
 
 /**
+ * Short, non-reversible stand-in for a value that must NOT be logged (#171).
+ *
+ * The canonical signing string and the signature it produces were both logged verbatim from
+ * 2026-03-28 until this commit. Together they are a complete, replayable signed request. The
+ * *diagnostic* question they were added to answer — "did our canonical string differ from
+ * Finatic's, or between two calls?" (#107) — needs only an equality check, not the content.
+ * Eight hex characters of SHA-256 give that: same input -> same fingerprint, and the string
+ * cannot be recovered from it.
+ *
+ * Log the LENGTH alongside it. Fingerprint answers "is it the same?"; length is what makes a
+ * difference actionable when the answer is no.
+ */
+export function loggableFingerprint(value) {
+  return crypto
+    .createHash('sha256')
+    .update(String(value ?? ''), 'utf8')
+    .digest('hex')
+    .slice(0, 8)
+}
+
+/**
  * Doc sample: RSA-SHA256 over UTF-8 `123456789` with the **doc’s sample private key** only.
  * Stored as base64url of the signature (equivalent to standard base64 from `crypto.sign`).
  */
@@ -330,8 +366,12 @@ export function runPaycloudSign123456789DocTest(privateKeyPem = loadPrivateKey()
   const expectedRawStandardB64 = fromBase64Url(PAYCLOUD_DOC_123456789_SIGNATURE_BASE64URL_EXPECTED)
   const matchesDocPrivateKey = rawStandardB64 === expectedRawStandardB64
   console.log('[PayCloud][SIGN_VECTOR] message=utf8:"123456789"')
-  console.log('[PayCloud][SIGN_VECTOR] signature_raw_standard_base64=' + rawStandardB64)
-  console.log('[PayCloud][SIGN_VECTOR] signature_on_wire=' + onTheWire)
+  // #171: these two were the real key's signature over a known message. That does not expose the
+  // key, but it is a stable artifact that identifies it, and `matches_doc_sample_private_key`
+  // below is the actual verdict this function exists to report.
+  console.log('[PayCloud][SIGN_VECTOR] signature_raw_sha256_8=' + loggableFingerprint(rawStandardB64))
+  console.log('[PayCloud][SIGN_VECTOR] signature_on_wire_sha256_8=' + loggableFingerprint(onTheWire))
+  // Kept: this is the sample signature printed in Finatic's own public documentation, not ours.
   console.log('[PayCloud][SIGN_VECTOR] doc_sample_as_base64url=' + PAYCLOUD_DOC_123456789_SIGNATURE_BASE64URL_EXPECTED)
   console.log('[PayCloud][SIGN_VECTOR] matches_doc_sample_private_key=' + matchesDocPrivateKey)
   return {
