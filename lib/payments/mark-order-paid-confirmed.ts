@@ -1,5 +1,5 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
-import { CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
+import { CLAIMABLE_PAYMENT_STATUSES, owesMoney } from '@/lib/payments/payment-integrity'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
@@ -114,12 +114,20 @@ export async function markOrderPaidConfirmed(
 
   const tabId = claimed.tab_id ? String(claimed.tab_id) : null
   if (tabId) {
-    const { data: unpaidOrders } = await supabase
+    // Partitioned with owesMoney(), not `.neq('payment_status','paid')` -- "not paid" is also
+    // true of a CANCELLED order, so a cancelled order's money kept being carried in tabs.total
+    // (#104, the fifth site of the same question; the other four are in the terminal routes).
+    // This one matters doubly because the caller at
+    // app/api/terminal/orders/[orderId]/payment/route.ts recomputes canClose two statements
+    // later: while these disagreed, one request wrote can_close true and a tab total that
+    // still owed money, and /api/terminal/tables hands staff both figures at once.
+    const { data: tabOrderRows } = await supabase
       .from('orders')
-      .select('total')
+      .select('total, payment_status')
       .eq('tab_id', tabId)
-      .neq('payment_status', 'paid')
-    const newTotal = (unpaidOrders ?? []).reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
+    const newTotal = (tabOrderRows ?? [])
+      .filter((o: { payment_status: unknown }) => owesMoney(o.payment_status))
+      .reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
     await supabase.from('tabs').update({ total: newTotal }).eq('id', tabId)
   }
 
