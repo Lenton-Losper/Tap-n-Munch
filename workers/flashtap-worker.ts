@@ -31,16 +31,21 @@ export default {
       return
     }
 
-    // All cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
+    // Both cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
     // immediately unless a schedule's local send_time has been reached, so per-restaurant
     // send times cost nothing extra and a missed tick catches up on the next one.
-    // reconcile-sale-ledger self-gates the same way, to an hourly cadence, off its own
-    // heartbeat row -- it reports SALE ledger coverage per venue and gates nothing (#156).
-    const cronRoutes = [
-      'cleanup-stale-orders',
-      'send-scheduled-reports',
-      'reconcile-sale-ledger',
-    ] as const
+    //
+    // NOT SCHEDULED YET: 'reconcile-sale-ledger' (#156). The route exists and is tested, but by
+    // decision it is switched on only after a week of clean data -- 294 card payments already
+    // have no SALE row, so from day one it would report a real but historical gap at every
+    // venue, and an alert that is loud and correct on its first day is still an alert people
+    // learn to close. A week of the new server-side write establishes what "clean" looks like
+    // first. Until then it can be run on demand:
+    //   curl -X POST $APP/api/cron/reconcile-sale-ledger -H "x-cron-secret: $CRON_SECRET" \
+    //        -d '{"force":true}'
+    // To enable: add 'reconcile-sale-ledger' to this array. Nothing else needs to change --
+    // the route already self-gates to an hourly cadence off its own heartbeat row.
+    const cronRoutes = ['cleanup-stale-orders', 'send-scheduled-reports'] as const
 
     const requestFor = (route: string) =>
       new Request(`${appBaseUrl(env)}/api/cron/${route}`, {

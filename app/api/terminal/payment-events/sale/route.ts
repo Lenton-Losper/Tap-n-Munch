@@ -38,6 +38,23 @@ function issueReceiptsForOrders(orderIds: string[]): void {
   }
 }
 
+/**
+ * DECISION (#156, 2026-08-09): this endpoint stays UNGUARDED against the settle route's own
+ * SALE write, and so does the terminal's checkoutSuccess that calls it.
+ *
+ * Since #156 the settle route writes the SALE row server-side, so for the whole rollout window
+ * two independent writers describe the same money. That is deliberately left alone rather than
+ * gated behind an APK version check, because a stray write here is harmless: both writers use
+ * business_order_no as idempotency_key and payment_events carries
+ * UNIQUE (restaurant_id, idempotency_key), so the second one loses and resolves to the existing
+ * row instead of creating a duplicate. Verified in both race orders, and on staging.
+ *
+ * The consequence worth knowing: the fix does NOT depend on a TMS push. Terminals can be
+ * updated on their own schedule, and an un-updated one is not a correctness problem.
+ *
+ * Recorded here so this is a decision on the record rather than an oversight someone later
+ * "fixes" by adding a guard that is not needed.
+ */
 type SaleBody = {
   order_ids?: unknown
   business_order_no?: unknown
