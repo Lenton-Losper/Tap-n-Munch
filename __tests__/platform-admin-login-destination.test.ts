@@ -285,7 +285,12 @@ describe('the sign-in entry points honour the redirect (#66)', () => {
     expect(await response.json()).toEqual({ destination: '/admin' })
   })
 
-  it('the email/password path refuses an off-site redirect and falls back to the picker', async () => {
+  // Named for what it actually proves. 'https://evil.example/admin' is turned away by the
+  // PREFIX check, not by isSafeRedirectPath -- it still passes with the guard stubbed to
+  // () => true. The guard itself is covered by the open-redirect block above, whose payloads
+  // reach it. Kept because the end-to-end route behaviour is worth pinning; renamed because
+  // "refuses an off-site redirect" reads as evidence about the guard, and is not.
+  it('the email/password path falls back to the picker for a path matching no context', async () => {
     const response = await resolveContextRoute(
       new Request('https://app.flashtap.test/api/auth/resolve-active-context', {
         method: 'POST',
