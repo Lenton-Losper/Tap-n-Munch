@@ -7,6 +7,7 @@ import {
   amountsMatch,
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
   isCardPaymentStillInFlight,
+  owesMoney,
   secondsSincePush,
   normalizeSettlementPaymentMethod,
   settleableStatusesForMethod,
@@ -352,17 +353,22 @@ export async function POST(
     // Recalculate tab total from what is still owed. A failed read must not be read as
     // "nothing is owed" -- that would write tabs.total = 0 over genuine debt, so the previous
     // total is left standing and the caller is told the figure is stale.
-    const { data: unpaidOrders, error: unpaidError } = await supabase
+    //
+    // Partitioned in JS with owesMoney(), not with `.neq('payment_status', 'paid')` in SQL.
+    // "not paid" is true of a CANCELLED order, so a cancelled order's money kept being
+    // reported as owed -- issue #104, the same defect c362efc fixed in the tables view. SQL
+    // equality is also byte-exact, so a stray 'Paid' would have counted too; owesMoney
+    // normalises before comparing.
+    const { data: tabOrderRows, error: unpaidError } = await supabase
       .from('orders')
       .select('total, payment_status')
       .eq('tab_id', tabId)
-      .neq('payment_status', 'paid')
 
     let newTotal: number | null = null
     if (!unpaidError) {
-      newTotal = (unpaidOrders ?? []).reduce(
-        (sum, o) => sum + Number(o.total), 0
-      )
+      newTotal = (tabOrderRows ?? [])
+        .filter((o) => owesMoney(o.payment_status))
+        .reduce((sum, o) => sum + Number(o.total), 0)
       await supabase
         .from('tabs')
         .update({ total: newTotal })
@@ -424,17 +430,19 @@ export async function POST(
 
     // canClose check. Fails CLOSED: an errored read previously yielded an empty array and so
     // reported the tab fully settled, letting staff close a table that still owed money.
+    // Same owesMoney() partition as the recalc above, and for the same reason (#104): asked as
+    // `!= 'paid'`, one cancelled order kept a table un-closeable from the terminal for good.
     const { data: remaining, error: remainingError } = await supabase
       .from('orders')
-      .select('id')
+      .select('id, payment_status')
       .eq('tab_id', tabId)
-      .neq('payment_status', 'paid')
 
     if (remainingError) {
       console.error('[terminal/tabs/settle] can_close check failed', remainingError)
     }
 
-    const canClose = !remainingError && (remaining ?? []).length === 0
+    const canClose =
+      !remainingError && (remaining ?? []).filter((o) => owesMoney(o.payment_status)).length === 0
 
     // Split statements + settled_at guard, both explained in full on the helper. This used to
     // be written out inline here, which is exactly how the single-order terminal payment route
