@@ -77,6 +77,15 @@ export function renderReceiptSdk6(
     })
   }
 
+  // Frozen snapshots issued before #135 have no order_instructions at all.
+  const note =
+    typeof snapshot.order_instructions === 'string' ? snapshot.order_instructions.trim() : ''
+  if (note) {
+    lines.push({ type: 'divider' })
+    lines.push({ type: 'text', text: 'ORDER NOTE', align: 'LEFT', bold: true })
+    lines.push({ type: 'text', text: note, align: 'LEFT' })
+  }
+
   lines.push({ type: 'divider' })
   lines.push({ type: 'row', columns: ['Subtotal', money(snapshot, snapshot.totals.subtotal)] })
   lines.push({ type: 'row', columns: ['VAT', money(snapshot, snapshot.totals.vat)] })

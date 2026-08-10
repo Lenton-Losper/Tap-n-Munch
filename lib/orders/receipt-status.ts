@@ -33,11 +33,17 @@ export function getReceiptStatusBadge(order: {
   if (payment === 'pending') {
     return { label: 'PENDING', className: 'bg-yellow-100 text-yellow-800' }
   }
-  if (status === 'accepted' || status === 'ready') {
-    return {
-      label: status === 'accepted' ? 'ACCEPTED' : 'PREPARING',
-      className: 'bg-orange-100 text-orange-800',
-    }
+  // Kitchen progress, once payment truth above has had its say. `ready` previously said
+  // PREPARING here too, so a customer whose order was up still read "being prepared";
+  // `preparing` and the terminal's `confirmed` had no case at all and fell to CONFIRMING….
+  if (status === 'accepted' || status === 'confirmed') {
+    return { label: 'ACCEPTED', className: 'bg-orange-100 text-orange-800' }
+  }
+  if (status === 'preparing') {
+    return { label: 'PREPARING', className: 'bg-orange-100 text-orange-800' }
+  }
+  if (status === 'ready' || status === 'ready_for_terminal') {
+    return { label: 'READY', className: 'bg-green-100 text-green-800' }
   }
   if (status === 'pending') {
     return { label: 'NEW', className: 'bg-muted text-foreground' }
