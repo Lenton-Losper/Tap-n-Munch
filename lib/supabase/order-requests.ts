@@ -1,10 +1,27 @@
 import { supabase } from './client'
 import { resolveOrderRestaurantScope, type OrderRestaurantScope } from './restaurants'
 
+/**
+ * Every value order_requests.status can hold.
+ *
+ * Enforced in the database, not inferred from call sites: 20260726100000_order_requests.sql
+ * created the column with CHECK (status IN ('waiting_review','accepted','declined')) and
+ * 20260726120000_order_requests_accepting_status.sql widened it to add 'accepting', the
+ * transient state Accept claims while it creates the order and the checkout session.
+ */
+export const ORDER_REQUEST_STATUSES = [
+  'waiting_review',
+  'accepting',
+  'accepted',
+  'declined',
+] as const
+
+export type OrderRequestStatus = (typeof ORDER_REQUEST_STATUSES)[number]
+
 export type OrderRequest = Record<string, unknown> & {
   id: string
   restaurant_id: string
-  status: string
+  status: OrderRequestStatus
 }
 
 export async function getWaitingOrderRequests(

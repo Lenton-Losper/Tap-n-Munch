@@ -20,12 +20,20 @@ type BugReport = {
   restaurants?: { name?: string } | Array<{ name?: string }> | null
   area?: string | null
   description: string
-  status?: string | null
+  status?: BugReportStatus | null
   created_at: string
 }
 
 const FILTERS = ['all', 'open', 'in_progress', 'resolved', 'closed'] as const
 const STATUS_OPTIONS = ['open', 'in_progress', 'resolved', 'closed'] as const
+
+/**
+ * The four values bug_reports.status can hold. Enforced in the database by
+ * CHECK (status IN ('open','in_progress','resolved','closed')), added in
+ * 20260724180000_platform_ops_console.sql, so this union is not a guess about the
+ * column -- it is the column.
+ */
+type BugReportStatus = (typeof STATUS_OPTIONS)[number]
 
 function restaurantName(report: BugReport) {
   const relation = Array.isArray(report.restaurants) ? report.restaurants[0] : report.restaurants
@@ -75,7 +83,7 @@ export default function BugReportsPage() {
     })
   }, [load])
 
-  const setStatus = async (id: string, status: string) => {
+  const setStatus = async (id: string, status: BugReportStatus) => {
     setUpdating(id)
     setError('')
     try {
@@ -186,7 +194,10 @@ export default function BugReportsPage() {
                   <Select
                     value={report.status || 'open'}
                     disabled={updating === report.id}
-                    onValueChange={(status) => void setStatus(report.id, status)}
+                    // Radix hands back a bare string, but every SelectItem below is
+                    // rendered from STATUS_OPTIONS, so the value is a BugReportStatus
+                    // by construction. This is the single narrowing point.
+                    onValueChange={(status) => void setStatus(report.id, status as BugReportStatus)}
                   >
                     <SelectTrigger className="w-40 border-[#E8E6E1] bg-white capitalize">
                       <SelectValue />
