@@ -114,6 +114,20 @@ If the baseline SHA no longer exists (a rebase can remove it from every
 branch), say so, re-measure, and state which SHA your new baseline came
 from. Do not silently compare against a number.
 
+`main` AND `cloudflare-staging` HAVE DIFFERENT BASELINES. Measured 2026-08-11:
+
+    staging  6 suites / 13 tests
+    main     7 suites / 17 tests
+
+The delta is `guest-orders-validation` — 4 tests, repaired by wave-2's #122,
+which is on staging and not on `main`. So a branch cut from `main` legitimately
+fails 17, and comparing it against staging's 13 reads as four regressions that
+do not exist.
+
+Take the baseline from the ref you actually branched from. This rule already
+said a baseline is pinned to a commit; that alone did not stop the mistake being
+made on a batch branch cut from `main`. The numbers might stop the next one.
+
 THE BASELINE IS FOR RECOGNITION, NOT REPRODUCTION. It exists so you can
 identify a failure as pre-existing if you happen to hit one. You are NOT
 expected to run the named suites — they are the live ones, and the
@@ -153,6 +167,16 @@ A negative probe must be TWO-SIDED. A probe that fails after your change
 proves nothing on its own — it might have failed before. Confirm the bad
 input was ACCEPTED before and is REJECTED after. The one-sided reading is
 the natural one and is nearly worthless.
+
+A SUITE THAT FAILS TO LOAD IS NOT A FAILING-FIRST PROOF. `Tests: 0 total`
+means the harness could not run, not that the old behaviour was wrong. Same
+family as the one-sided negative probe: a result that looks like evidence and
+is not. Live example: proving #123's test red, deleting
+`lib/tabs/settle-tab-state.ts` alongside the two routes made the suite fail to
+import and report `Tests: 0 total` — which proves only that the test needs the
+new module. Keeping the module and reverting ONLY the two routes produced six
+real assertion failures naming the defect. Revert what carries the BEHAVIOUR,
+never the modules the test depends on.
 
 A PASSING TEST IS NOT EVIDENCE THE CODE IS CORRECT. It is evidence the
 code matches the test. Both can be wrong together, and then the test
