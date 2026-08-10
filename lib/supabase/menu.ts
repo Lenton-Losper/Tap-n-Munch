@@ -207,7 +207,9 @@ export async function getSupabaseMenuItemsByCategory(
 
   for (const subcategory of subcategories || []) {
     subcategoryIds.add(subcategory.id)
-    const items = visibleItems.filter((item) => item.subcategory_id === subcategory.id)
+    const items = visibleItems.filter(
+      (item: Record<string, any>) => item.subcategory_id === subcategory.id
+    )
     if (items.length === 0) continue
     grouped[subcategory.id] = {
       subcategory: {
@@ -220,7 +222,7 @@ export async function getSupabaseMenuItemsByCategory(
   }
 
   const uncategorizedItems = visibleItems.filter(
-    (item) => !item.subcategory_id || !subcategoryIds.has(item.subcategory_id)
+    (item: Record<string, any>) => !item.subcategory_id || !subcategoryIds.has(item.subcategory_id)
   )
   if (uncategorizedItems.length > 0) {
     grouped.__category_items__ = {
@@ -442,7 +444,10 @@ export async function createMenuItem(data: Record<string, any>) {
     return payload?.id
   }
 
-  const payload = {
+  // Annotated because the spread of a Record<string, any> loses its index signature, which made
+  // `delete payload.sub_category_id` a type error. The delete is deliberate: callers pass the
+  // sub_category_id spelling, and the column is subcategory_id.
+  const payload: Record<string, any> = {
     ...data,
     base_price: Number(data.base_price ?? 0),
     subcategory_id: (data.sub_category_id ?? data.subcategory_id) || null,
