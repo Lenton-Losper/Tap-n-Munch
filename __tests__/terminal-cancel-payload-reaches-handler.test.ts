@@ -85,14 +85,9 @@ jest.mock('@/lib/supabase/server', () => ({
 jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
   markOrderPaidConfirmed: async () => ({ claimed: true, tabId: null }),
 }))
-// `virtual: true` because this module does not exist on every base this suite may be applied to
-// (it arrives with #123). The route only imports it where present; mocking it virtually keeps the
-// suite identical across branches rather than forking the test file per base.
-jest.mock(
-  '@/lib/tabs/settle-tab-state',
-  () => ({ clearReadyToPayAndReopenTab: async () => undefined }),
-  { virtual: true },
-)
+// NOTE (deploy branch only): @/lib/tabs/settle-tab-state does not exist at this base
+// (#123 introduces it) and nothing here imports it, so no mock is needed. The canonical
+// version of this suite on the main line mocks it.
 
 function paymentRequest(body: unknown) {
   return new NextRequest('https://staging.test/api/terminal/orders/x/payment', {
