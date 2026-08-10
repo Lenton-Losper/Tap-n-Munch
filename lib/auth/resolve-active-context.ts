@@ -24,30 +24,51 @@ const RESTAURANT_SCOPED_PREFIXES = [
 ]
 
 /** Same-app path guard against open redirects: must be a root-relative path,
- *  never protocol-relative ("//host/...") or an absolute URL. */
+ *  never protocol-relative ("//host/..."), an absolute URL, or a backslash form
+ *  ("/\host", which browsers normalise into "//host"). Whitespace and control
+ *  characters never appear in a real path from middleware -- a link carrying them
+ *  is being built by someone else, so refuse it rather than reason about it. */
 function isSafeRedirectPath(redirectParam: string): boolean {
-  return redirectParam.startsWith('/') && !redirectParam.startsWith('//') && !redirectParam.includes('://')
+  return (
+    redirectParam.startsWith('/') &&
+    !redirectParam.startsWith('//') &&
+    !redirectParam.includes('://') &&
+    !redirectParam.includes('\\') &&
+    !/[\s\u0000-\u001f\u007f]/.test(redirectParam)
+  )
+}
+
+/** A path is "under" a route root only at a segment or query/hash boundary --
+ *  '/adminish' is not an admin path. */
+function isUnderPrefix(path: string, prefix: string): boolean {
+  if (path === prefix) return true
+  const next = path.charAt(prefix.length)
+  return path.startsWith(prefix) && (next === '/' || next === '?' || next === '#')
 }
 
 /** Rule 1: match a requested redirect path against the user's REAL contexts.
  *  Returns null (never honored) unless the path maps to a context type the
  *  user actually has -- an unmatched or unrecognized redirect is ignored
- *  entirely, falling through to rule 2, not silently sent somewhere else. */
+ *  entirely, falling through to rule 2, not silently sent somewhere else.
+ *
+ *  The requested path itself is the destination, not the root of the matched
+ *  context: middleware sets ?redirect=<pathname> for any /admin/* bounce, and
+ *  answering /admin/terminals with /admin drops the page the user asked for. */
 function matchRedirectToContext(
   redirectParam: string | null | undefined,
   contexts: UserContext[],
-): UserContext | null {
+): { context: UserContext; destination: string } | null {
   if (!redirectParam || !isSafeRedirectPath(redirectParam)) return null
 
-  if (redirectParam.startsWith('/admin')) {
-    return contexts.find((c) => c.type === 'platform') ?? null
-  }
+  const contextForPath = isUnderPrefix(redirectParam, '/admin')
+    ? contexts.find((c) => c.type === 'platform')
+    : RESTAURANT_SCOPED_PREFIXES.some((prefix) => isUnderPrefix(redirectParam, prefix))
+      ? contexts.find((c) => c.type === 'restaurant')
+      : undefined
 
-  if (RESTAURANT_SCOPED_PREFIXES.some((prefix) => redirectParam.startsWith(prefix))) {
-    return contexts.find((c) => c.type === 'restaurant') ?? null
-  }
+  if (!contextForPath) return null
 
-  return null
+  return { context: contextForPath, destination: redirectParam }
 }
 
 async function writeActiveContext(
@@ -122,10 +143,10 @@ export async function resolveLoginDestination(params: {
   const contexts = await resolveUserContexts(userId)
 
   // Rule 1
-  const redirectContext = matchRedirectToContext(redirectParam, contexts)
-  if (redirectContext) {
-    await writeActiveContext(supabase, userId, redirectContext)
-    return { kind: 'resolved', context: redirectContext, destination: destinationForContext(redirectContext) }
+  const redirectMatch = matchRedirectToContext(redirectParam, contexts)
+  if (redirectMatch) {
+    await writeActiveContext(supabase, userId, redirectMatch.context)
+    return { kind: 'resolved', context: redirectMatch.context, destination: redirectMatch.destination }
   }
 
   // Rule 2
