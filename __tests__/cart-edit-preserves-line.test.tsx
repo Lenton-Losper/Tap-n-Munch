@@ -317,6 +317,7 @@ describe('an edit that collides with another line (#126 / #133)', () => {
     expect(result.items.map((line) => line.quantity)).toEqual([18, 5])
     expect(result.merged).toBe(false)
     expect(result.clamped).toBe(false)
+    expect(result.refusedBecause).toBe('cap')
 
     // Nothing was destroyed: every unit and every cent survives the refusal.
     expect(result.items.reduce((sum, line) => sum + line.quantity, 0)).toBe(23)
@@ -356,6 +357,34 @@ describe('an edit that collides with another line (#126 / #133)', () => {
   })
 
   /**
+   * The two refusals must be told apart by the caller, because they need different words. If
+   * both arrived as a bare `merged: false` the cart could only stay silent, which is the state
+   * that leaves a customer looking at two identical-looking rows with no explanation.
+   */
+  it('distinguishes the two refusals, and stays absent when nothing was refused', () => {
+    const big: CartItem = { ...lineA, quantity: 18, subtotal: 720 }
+    const small: CartItem = { ...lineA, quantity: 5, subtotal: 200 }
+    const cheap: CartItem = { ...lineA, quantity: 2, subtotal: 70 }
+    const dear: CartItem = { ...lineA, quantity: 1, subtotal: 40 }
+
+    expect(applyCartLineEdit([big, small], 1, { ...small }).refusedBecause).toBe('cap')
+    expect(applyCartLineEdit([cheap, dear], 1, { ...dear }).refusedBecause).toBe('price')
+
+    // Folded: same price, under the cap.
+    const folded = applyCartLineEdit(
+      [lineA, lineB],
+      1,
+      { ...lineB, selected_size: { name: 'Large', price_modifier: 15 }, subtotal: 80 },
+    )
+    expect(folded.merged).toBe(true)
+    expect(folded.refusedBecause).toBeUndefined()
+
+    // Collided with nothing at all -- also not a refusal.
+    expect(applyCartLineEdit([lineA, lineB], 0, { ...lineA, quantity: 4, subtotal: 160 }).refusedBecause)
+      .toBeUndefined()
+  })
+
+  /**
    * The original #126 charging bug. The fold applied the EDITED line's unit price to the
    * combined quantity, so a line confirmed at one price was silently re-priced at another.
    * Identity cannot catch it -- two lines can be the same thing to make and still be priced
@@ -371,6 +400,7 @@ describe('an edit that collides with another line (#126 / #133)', () => {
     const result = applyCartLineEdit([cheap, dear], 1, editedDear)
 
     expect(result.merged).toBe(false)
+    expect(result.refusedBecause).toBe('price')
     expect(result.items).toHaveLength(2)
 
     // The line the customer edited is the only line that changed.

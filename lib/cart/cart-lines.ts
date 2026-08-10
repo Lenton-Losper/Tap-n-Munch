@@ -40,9 +40,19 @@ export type CartLineEditResult = {
    * per-line cap and it is this function's job, not the caller's.
    *
    * It is not set by a refused fold: an over-cap collision leaves two lines rather than
-   * capping a combined quantity, so nothing is clamped there.
+   * capping a combined quantity, so nothing is clamped there. See `refusedBecause`.
    */
   clamped: boolean
+  /**
+   * Why a collision was deliberately NOT folded. Absent when nothing was refused, so
+   * "collided with nothing" and "collided and was refused" are distinguishable -- without it
+   * both look like `merged: false` and the customer is left with two identical-looking rows
+   * and no explanation.
+   *
+   * 'cap'   -- folding would have taken one line past MAX_LINE_QUANTITY
+   * 'price' -- the two lines are priced differently per unit
+   */
+  refusedBecause?: 'cap' | 'price'
 }
 
 /**
@@ -121,7 +131,7 @@ export function applyCartLineEdit(
   }
   const editedUnit = unitOf(applied)
   if (collisions.some((i) => unitOf(next[i]) !== editedUnit)) {
-    return { items: next, merged: false, clamped: lineWasCapped }
+    return { items: next, merged: false, clamped: lineWasCapped, refusedBecause: 'price' }
   }
 
   /**
@@ -134,7 +144,7 @@ export function applyCartLineEdit(
    * rather than merging and discarding the overflow.
    */
   if (requestedQuantity > MAX_LINE_QUANTITY) {
-    return { items: next, merged: false, clamped: lineWasCapped }
+    return { items: next, merged: false, clamped: lineWasCapped, refusedBecause: 'cap' }
   }
   const quantity = clampLineQuantity(requestedQuantity)
 

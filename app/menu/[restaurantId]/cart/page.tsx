@@ -178,10 +178,30 @@ export default function CartPage() {
     const result = applyCartLineEdit(items, editingIndex, updatedCartItem)
     replaceItems(result.items)
 
-    if (result.clamped) {
+    /*
+     * Every outcome the customer can see has to say something. A refused fold used to say
+     * nothing at all: it looks identical to "collided with nothing", so the customer got two
+     * rows they cannot tell apart and no reason why. Refusals are reported first because they
+     * are the surprising outcome -- the cart did not do what pressing Save looked like it
+     * would. A capped line and a refused fold cannot both happen from this screen (the modal
+     * cannot emit an over-cap quantity), so the order between them is a formality, not a
+     * dropped message.
+     */
+    if (result.refusedBecause === 'cap') {
       toast({
-        title: 'Combined with the matching item',
-        description: `Up to ${MAX_LINE_QUANTITY} per item. For a larger order, please ask a member of staff.`,
+        title: 'Kept separate — maximum per item',
+        description: `Together that's more than ${MAX_LINE_QUANTITY}. For a larger order, please ask a member of staff.`,
+      })
+    } else if (result.refusedBecause === 'price') {
+      toast({
+        title: 'Kept separate — different prices',
+        description:
+          'These were added at different prices, so we have kept them separate. Each keeps the price you were shown.',
+      })
+    } else if (result.clamped) {
+      toast({
+        title: `Set to ${MAX_LINE_QUANTITY}, the maximum per item`,
+        description: 'For a larger order, please ask a member of staff.',
       })
     } else if (result.merged) {
       toast({ title: 'Combined with the matching item in your cart' })
