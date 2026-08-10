@@ -303,7 +303,7 @@ export function MenuScreen() {
             className="w-full bg-card border border-border rounded-lg p-4 flex gap-4 hover:shadow-md transition-shadow text-left"
           >
             <Image
-              src={item.image_url || "/placeholder.svg"}
+              src={item.image || "/placeholder.svg"}
               alt={item.name}
               width={100}
               height={100}
