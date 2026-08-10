@@ -18,7 +18,6 @@
  *
  *   npx tsx scripts/stock-repro-link-not-tracked-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { getInventorySetupOverview } from '../lib/recipes/queries'
 

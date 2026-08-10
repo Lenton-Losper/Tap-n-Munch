@@ -8,7 +8,6 @@
  *
  *   npx tsx scripts/qr-audit-verify-tab-member-fix.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 

@@ -10,7 +10,6 @@
  *
  *   npx tsx scripts/probe-webhook-sig-fallback-staging.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 import { config } from 'dotenv'

@@ -16,7 +16,6 @@
  *
  *   npx tsx scripts/qr-verify-edit-during-payment-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 

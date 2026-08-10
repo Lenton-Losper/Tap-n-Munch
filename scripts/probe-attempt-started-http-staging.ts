@@ -11,7 +11,6 @@
  * Marker: PROBE_ATTEMPT_STARTED_HTTP_STAGING_OK
  * Trigger: commit message contains [probe-attempt-started-http]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 import { config } from 'dotenv'

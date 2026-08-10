@@ -12,7 +12,6 @@
  * Marker: PROBE_TENANT_ISOLATION_OK
  * Trigger: commit message contains [probe-tenant-isolation]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 

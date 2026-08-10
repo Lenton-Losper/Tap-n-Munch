@@ -7,7 +7,6 @@
  *
  * Trigger: [probe-order67-cron]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { execSync } from 'child_process'
 import { autoCancelStalePosOrders } from '../lib/orders/auto-cancel-stale-pos-orders'

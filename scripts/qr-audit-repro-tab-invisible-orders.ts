@@ -17,7 +17,6 @@
  *
  *   npx tsx scripts/qr-audit-repro-tab-invisible-orders.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 

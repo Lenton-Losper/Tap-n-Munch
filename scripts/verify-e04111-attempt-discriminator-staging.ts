@@ -9,7 +9,6 @@
  *
  *   npx tsx scripts/verify-e04111-attempt-discriminator-staging.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { resolve } from 'path'

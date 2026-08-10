@@ -15,7 +15,6 @@
  *
  *   npx tsx scripts/probe-e04111-recovery-staging.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
 import { resolve } from 'path'

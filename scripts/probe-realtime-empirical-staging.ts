@@ -2,7 +2,6 @@
  * Empirical check: does supabase_realtime actually broadcast orders / order_requests?
  * Subscribes, inserts a row, waits for the event. No pg_catalog access required.
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 
 const url =

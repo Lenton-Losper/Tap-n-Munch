@@ -13,7 +13,6 @@
  *
  * Marker: VERIFY_TERMINAL_PAYMENT_FAILED_FINATIC_GUARD_STAGING_OK
  */
-// @ts-nocheck
 import { config } from 'dotenv'
 import { resolve } from 'path'
 import { createClient } from '@supabase/supabase-js'
