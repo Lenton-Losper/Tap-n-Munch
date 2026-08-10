@@ -65,9 +65,13 @@ jest.mock('@/lib/terminal-auth', () => ({
 jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
   markOrderPaidConfirmed: async () => ({ claimed: true, tabId: null }),
 }))
-jest.mock('@/lib/tabs/settle-tab-state', () => ({
-  clearReadyToPayAndReopenTab: async () => undefined,
-}))
+// virtual: this module does not exist on every base this suite may be applied to (it arrives
+// with #123). Keeps one test file valid across branches instead of forking it per base.
+jest.mock(
+  '@/lib/tabs/settle-tab-state',
+  () => ({ clearReadyToPayAndReopenTab: async () => undefined }),
+  { virtual: true },
+)
 
 const ORDER_ROW = {
   id: ORDER_ID,
