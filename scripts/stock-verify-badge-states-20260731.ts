@@ -13,7 +13,6 @@
  *
  *   npx tsx scripts/stock-verify-badge-states-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { getInventorySetupOverview } from '../lib/recipes/queries'
 import { computeStockStatus } from '../lib/stock/format'
@@ -74,17 +73,17 @@ async function main() {
       .from('menu_items')
       .insert({ restaurant_id: RID, name: `${TAG} ${name}`, base_price: 30, status: 'available', track_inventory: trackInventory })
       .select('id, name, track_inventory').single()
-    created.menuItems.push(mi.id)
+    created.menuItems.push(mi!.id)
 
     const { data: recipe } = await admin
-      .from('recipes').insert({ restaurant_id: RID, menu_item_id: mi.id, is_active: true })
+      .from('recipes').insert({ restaurant_id: RID, menu_item_id: mi!.id, is_active: true })
       .select('id').single()
-    created.recipes.push(recipe.id)
+    created.recipes.push(recipe!.id)
 
     await admin.from('recipe_items').insert({
-      recipe_id: recipe.id, stock_item_id: stockItem.id, quantity: 1, unit_id: unit?.id ?? null,
+      recipe_id: recipe!.id, stock_item_id: stockItem!.id, quantity: 1, unit_id: unit?.id ?? null,
     })
-    return mi
+    return mi!
   }
 
   // Case 1 -- Redbull's real state, deliberately with a differently-spelled stock item name.

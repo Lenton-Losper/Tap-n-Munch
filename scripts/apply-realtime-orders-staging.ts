@@ -4,7 +4,6 @@
  * Prefers STAGING_DATABASE_URL / DATABASE_URL when present; otherwise prints SQL
  * for the Supabase SQL editor.
  */
-// @ts-nocheck
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { createRequire } from 'module'
@@ -55,7 +54,7 @@ async function main() {
     )
     console.log(
       'supabase_realtime tables:',
-      rows.map((r) => r.tablename),
+      rows.map((r: { tablename: string }) => r.tablename),
     )
     console.log('APPLY_REALTIME_ORDERS_STAGING_OK')
   } finally {

@@ -9,7 +9,6 @@
  *
  *   npx tsx scripts/qr-verify-quantity-cap-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 
@@ -43,7 +42,7 @@ async function openTab() {
 async function submit(quantity: unknown, tab: Record<string, unknown>, sid: string) {
   const r = await fetch(`${BASE}/api/orders`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-session-token': tab.sessionToken },
+    headers: { 'Content-Type': 'application/json', 'x-session-token': tab.sessionToken as string },
     body: JSON.stringify({
       restaurantId: RID,
       tableNumber: TABLE,

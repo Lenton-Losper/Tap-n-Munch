@@ -9,7 +9,6 @@
  *
  *   npx tsx scripts/qr-audit-repro-member-lost-update.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 
@@ -97,7 +96,7 @@ async function main() {
   const bad = results.filter((r) => r.verdict === 'LOST UPDATE')
   console.log(`\nSUMMARY: ${bad.length}/${TRIALS} trials lost members.`)
   if (bad.length) {
-    const totalLost = bad.reduce((s, r) => s + r.lost, 0)
+    const totalLost = bad.reduce((s, r) => s + r.lost!, 0)
     console.log(`members silently dropped across all trials: ${totalLost}`)
   }
 }

@@ -6,7 +6,6 @@
  *
  * Marker: PROBE_REALTIME_AND_23505_OK
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { writeFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
@@ -94,7 +93,7 @@ async function queryPublicationViaLinked(): Promise<string[] | null> {
 }
 
 async function queryPublicationViaExecSql(
-  supabase: { rpc: (...args: never[]) => Promise<{ data: unknown; error: { message: string } | null }> },
+  supabase: { rpc: (...args: any[]) => unknown },
 ): Promise<string[] | null> {
   for (const arg of [
     {

@@ -7,7 +7,6 @@
  *
  * Trigger: commit message contains [probe-order-request-accept-race]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 
@@ -143,7 +142,7 @@ async function main() {
     requestId = seeded.id
     log('seeded order_request', { requestId, restaurantId: restaurant.id })
 
-    const acceptUrl = `${WORKER}/api/order-requests/${encodeURIComponent(requestId)}/accept`
+    const acceptUrl = `${WORKER}/api/order-requests/${encodeURIComponent(requestId!)}/accept`
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',

@@ -16,7 +16,6 @@
  *
  *   npx tsx scripts/stock-verify-track-inventory-grant-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { getInventorySetupOverview } from '../lib/recipes/queries'
 
@@ -114,7 +113,7 @@ async function main() {
       .from('stock_items').select('id').eq('restaurant_id', RESTAURANT).limit(1).maybeSingle()
     const { data: unit } = await admin.from('measurement_units').select('id').limit(1).maybeSingle()
     await admin.from('recipe_items').insert({
-      recipe_id: recipe.id, stock_item_id: stockItem?.id, quantity: 1, unit_id: unit?.id ?? null,
+      recipe_id: recipe!.id, stock_item_id: stockItem?.id, quantity: 1, unit_id: unit?.id ?? null,
     })
 
     const overview = await getInventorySetupOverview(admin, RESTAURANT)
@@ -132,8 +131,8 @@ async function main() {
         + 'item then reads as tracked.'
       : `INCONCLUSIVE -- denied_for_user=${deniedForUser} allowed_for_service=${allowedForService} reads_tracked=${readsTracked}`)
 
-    await admin.from('recipe_items').delete().eq('recipe_id', recipe.id)
-    await admin.from('recipes').delete().eq('id', recipe.id)
+    await admin.from('recipe_items').delete().eq('recipe_id', recipe!.id)
+    await admin.from('recipes').delete().eq('id', recipe!.id)
   } finally {
     await admin.from('menu_items').delete().eq('id', item.id)
     console.log('\ncleaned up fixture item')

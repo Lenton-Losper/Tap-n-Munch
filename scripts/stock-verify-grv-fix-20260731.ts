@@ -12,7 +12,6 @@
  *
  *   npx tsx scripts/stock-verify-grv-fix-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 
 const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || ''
@@ -29,7 +28,7 @@ function log(label: string, value: unknown) {
 }
 
 async function main() {
-  const { data: fnMeta } = await admin.rpc('exec_noop').then(() => ({ data: null })).catch(() => ({ data: null }))
+  const { data: fnMeta } = await (admin.rpc('exec_noop').then(() => ({ data: null })) as Promise<{ data: null }>).catch(() => ({ data: null }))
   void fnMeta
 
   const { data: stockItem } = await admin

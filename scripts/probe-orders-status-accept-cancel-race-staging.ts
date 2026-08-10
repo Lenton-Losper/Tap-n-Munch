@@ -8,7 +8,6 @@
  * Marker: PROBE_ORDERS_STATUS_ACCEPT_CANCEL_RACE_OK
  * Trigger: commit message contains [probe-orders-status-race]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 
@@ -142,7 +141,7 @@ async function main() {
     orderId = seeded.id
     log('seeded order', seeded)
 
-    const statusUrl = `${WORKER}/api/orders/${encodeURIComponent(orderId)}/status`
+    const statusUrl = `${WORKER}/api/orders/${encodeURIComponent(orderId!)}/status`
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',

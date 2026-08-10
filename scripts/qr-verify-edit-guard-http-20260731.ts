@@ -12,7 +12,6 @@
  *
  *   npx tsx scripts/qr-verify-edit-guard-http-20260731.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 
@@ -48,7 +47,7 @@ async function staffToken(): Promise<string> {
     email: OWNER, token: link.properties.email_otp, type: 'email',
   })
   if (otpErr) throw new Error(`verifyOtp failed: ${otpErr.message}`)
-  return session.session.access_token
+  return session.session!.access_token
 }
 
 async function makeRequest(status: string) {
