@@ -10,7 +10,6 @@
  *
  *   npx tsx scripts/probe-terminal-finatic-guard-http-staging.ts
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 import { config } from 'dotenv'
@@ -169,9 +168,18 @@ async function main() {
     const payARow = await readOrder(payA)
     log('PAYMENT_A_DB', payARow)
     assert(payARes.status === 200, `pay A status ${payARes.status}`)
-    assert((payARes.json as any)?.outcome === 'cancelled' || (payARes.json as any)?.success === true)
-    assert(payARow.status === 'cancelled' && payARow.payment_status === 'cancelled')
-    assert(payARow.cancellation_reason === 'payment_declined')
+    assert(
+      (payARes.json as any)?.outcome === 'cancelled' || (payARes.json as any)?.success === true,
+      `pay A: expected outcome=cancelled (or legacy success=true), got ${JSON.stringify(payARes.json)}`,
+    )
+    assert(
+      payARow.status === 'cancelled' && payARow.payment_status === 'cancelled',
+      `pay A: order with no merchant_order_no should cancel outright, got status=${payARow.status} payment_status=${payARow.payment_status}`,
+    )
+    assert(
+      payARow.cancellation_reason === 'payment_declined',
+      `pay A: expected cancellation_reason=payment_declined, got ${payARow.cancellation_reason}`,
+    )
     console.log('PAYMENT_A_NO_MERCHANT_CANCELLED_OK')
 
     // B: Finatic paid stub → corrected
@@ -193,8 +201,14 @@ async function main() {
     log('PAYMENT_B_DB', payBRow)
     assert(payBRes.status === 200, `pay B status ${payBRes.status}`)
     assert((payBRes.json as any)?.outcome === 'corrected_to_paid', `pay B outcome=${JSON.stringify(payBRes.json)}`)
-    assert(payBRow.status === 'completed' && payBRow.payment_status === 'paid')
-    assert(!payBRow.cancellation_reason && !payBRow.cancelled_at)
+    assert(
+      payBRow.status === 'completed' && payBRow.payment_status === 'paid',
+      `pay B: order Finatic reports paid should be completed/paid, got status=${payBRow.status} payment_status=${payBRow.payment_status}`,
+    )
+    assert(
+      !payBRow.cancellation_reason && !payBRow.cancelled_at,
+      `pay B: corrected-to-paid order must carry no cancellation, got cancellation_reason=${payBRow.cancellation_reason} cancelled_at=${payBRow.cancelled_at}`,
+    )
     console.log('PAYMENT_B_FALSE_FAILURE_CORRECTED_OK')
 
     // C: Finatic not paid → cancel
@@ -215,8 +229,14 @@ async function main() {
     const payCRow = await readOrder(payC)
     log('PAYMENT_C_DB', payCRow)
     assert(payCRes.status === 200, `pay C status ${payCRes.status}`)
-    assert((payCRes.json as any)?.outcome === 'cancelled')
-    assert(payCRow.status === 'cancelled' && payCRow.cancellation_reason === 'payment_declined')
+    assert(
+      (payCRes.json as any)?.outcome === 'cancelled',
+      `pay C: Finatic reports not paid, expected outcome=cancelled, got ${JSON.stringify(payCRes.json)}`,
+    )
+    assert(
+      payCRow.status === 'cancelled' && payCRow.cancellation_reason === 'payment_declined',
+      `pay C: expected cancelled/payment_declined, got status=${payCRow.status} cancellation_reason=${payCRow.cancellation_reason}`,
+    )
     console.log('PAYMENT_C_NOT_PAID_CANCELLED_OK')
 
     // D: Finatic unreachable → leave pending
@@ -238,8 +258,14 @@ async function main() {
     log('PAYMENT_D_DB', payDRow)
     assert(payDRes.status === 200, `pay D status ${payDRes.status}`)
     assert((payDRes.json as any)?.outcome === 'left_pending_finatic_uncertain', `pay D=${JSON.stringify(payDRes.json)}`)
-    assert(payDRow.status === 'pending' && payDRow.payment_status === 'pending')
-    assert(!payDRow.cancelled_at)
+    assert(
+      payDRow.status === 'pending' && payDRow.payment_status === 'pending',
+      `pay D: Finatic unreachable must leave the order pending, got status=${payDRow.status} payment_status=${payDRow.payment_status}`,
+    )
+    assert(
+      !payDRow.cancelled_at,
+      `pay D: Finatic unreachable must not stamp cancelled_at, got ${payDRow.cancelled_at}`,
+    )
     const { data: payDAudit } = await admin
       .from('audit_logs')
       .select('*')
@@ -247,7 +273,10 @@ async function main() {
       .eq('action', 'payment.verification_uncertain')
     log('PAYMENT_D_UNCERTAIN_AUDIT', payDAudit)
     assert((payDAudit?.length ?? 0) === 1, 'pay D: expected payment.verification_uncertain audit')
-    assert((payDAudit?.[0]?.metadata as any)?.outcome === 'left_pending_finatic_uncertain')
+    assert(
+      (payDAudit?.[0]?.metadata as any)?.outcome === 'left_pending_finatic_uncertain',
+      `pay D: audit metadata.outcome should be left_pending_finatic_uncertain, got ${JSON.stringify(payDAudit?.[0]?.metadata)}`,
+    )
     console.log('PAYMENT_D_UNREACHABLE_LEFT_PENDING_OK')
     console.log('PAYMENT_D_VERIFICATION_UNCERTAIN_AUDIT_OK')
 
@@ -265,8 +294,14 @@ async function main() {
     const stARow = await readOrder(stA)
     log('STATUS_A_DB', stARow)
     assert(stARes.status === 200, `status A ${stARes.status}`)
-    assert(stARow.status === 'cancelled' && stARow.payment_status === 'cancelled')
-    assert(stARow.cancellation_reason === 'terminal_cancelled')
+    assert(
+      stARow.status === 'cancelled' && stARow.payment_status === 'cancelled',
+      `status A: order with no merchant_order_no should cancel outright, got status=${stARow.status} payment_status=${stARow.payment_status}`,
+    )
+    assert(
+      stARow.cancellation_reason === 'terminal_cancelled',
+      `status A: expected cancellation_reason=terminal_cancelled, got ${stARow.cancellation_reason}`,
+    )
     console.log('STATUS_A_NO_MERCHANT_CANCELLED_OK')
 
     // B: Finatic paid stub → corrected
@@ -282,7 +317,10 @@ async function main() {
     log('STATUS_B_DB', stBRow)
     assert(stBRes.status === 200, `status B ${stBRes.status}`)
     assert((stBRes.json as any)?.outcome === 'corrected_to_paid', `status B=${JSON.stringify(stBRes.json)}`)
-    assert(stBRow.status === 'completed' && stBRow.payment_status === 'paid')
+    assert(
+      stBRow.status === 'completed' && stBRow.payment_status === 'paid',
+      `status B: order Finatic reports paid should be completed/paid, got status=${stBRow.status} payment_status=${stBRow.payment_status}`,
+    )
     console.log('STATUS_B_FALSE_CANCEL_CORRECTED_OK')
 
     // C: Finatic not paid → cancel with terminal_cancelled
@@ -297,8 +335,14 @@ async function main() {
     const stCRow = await readOrder(stC)
     log('STATUS_C_DB', stCRow)
     assert(stCRes.status === 200, `status C ${stCRes.status}`)
-    assert((stCRes.json as any)?.outcome === 'cancelled')
-    assert(stCRow.status === 'cancelled' && stCRow.cancellation_reason === 'terminal_cancelled')
+    assert(
+      (stCRes.json as any)?.outcome === 'cancelled',
+      `status C: Finatic reports not paid, expected outcome=cancelled, got ${JSON.stringify(stCRes.json)}`,
+    )
+    assert(
+      stCRow.status === 'cancelled' && stCRow.cancellation_reason === 'terminal_cancelled',
+      `status C: expected cancelled/terminal_cancelled, got status=${stCRow.status} cancellation_reason=${stCRow.cancellation_reason}`,
+    )
     console.log('STATUS_C_NOT_PAID_CANCELLED_OK')
 
     // D: Finatic unreachable → leave pending
@@ -314,7 +358,10 @@ async function main() {
     log('STATUS_D_DB', stDRow)
     assert(stDRes.status === 200, `status D ${stDRes.status}`)
     assert((stDRes.json as any)?.outcome === 'left_pending_finatic_uncertain', `status D=${JSON.stringify(stDRes.json)}`)
-    assert(stDRow.status === 'pending' && stDRow.payment_status === 'pending')
+    assert(
+      stDRow.status === 'pending' && stDRow.payment_status === 'pending',
+      `status D: Finatic unreachable must leave the order pending, got status=${stDRow.status} payment_status=${stDRow.payment_status}`,
+    )
     const { data: stDAudit } = await admin
       .from('audit_logs')
       .select('*')
