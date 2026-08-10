@@ -3,18 +3,50 @@
  * Amounts are compared in major currency units (e.g. NAD) with cent tolerance.
  */
 
-/** Max absolute difference allowed between client amount and server total (NAD cents ≈ 0.01). */
-export const PAYMENT_AMOUNT_TOLERANCE = 0.01
+/**
+ * Tolerance for every terminal payment amount comparison, in WHOLE CENTS.
+ *
+ * One cent rather than zero, deliberately. The terminal and the server can legitimately land a
+ * cent apart, and refusing that is not the safe default it looks like: at two of the three call
+ * sites the card has ALREADY been charged by the time the refusal is issued, so a spurious
+ * mismatch takes the customer's money and loses the order at the same time. Two cents is a real
+ * disagreement and is still refused.
+ */
+export const PAYMENT_AMOUNT_TOLERANCE_CENTS = 1
 
+/**
+ * True when two money values are the same payment, compared as INTEGER CENTS.
+ *
+ * This was `Math.abs(a - b) <= 0.01` in floating point, which is not a one-cent tolerance — it
+ * is a one-cent tolerance for some amounts and a ZERO tolerance for others. Neither operand nor
+ * the literal 0.01 is exactly representable, so a genuine one-cent gap frequently exceeds it:
+ *
+ *   78.36 - 78.35 === 0.010000000000005116   refused
+ *   20.01 - 20.00 === 0.010000000000001563   refused
+ *   35.00 - 34.99 === 0.00999999999999801    accepted
+ *
+ * Measured across every one-cent pair from NAD 10.00 to 500.00, 28.5% were refused — decided by
+ * binary representation rather than by anything about the payment, which is why the same APK
+ * build appeared to work at one price and fail at another (#180).
+ *
+ * Rounding to whole cents first removes the question entirely. Same convention as the ledger
+ * amount comparison in 10cf29c: money is compared as integers in both places.
+ *
+ * `toleranceCents` is a COUNT OF CENTS, not a major-unit amount. It was renamed from `tolerance`
+ * precisely so a leftover `0.01` cannot be passed silently — that would now mean "zero cents"
+ * after rounding, a stricter comparison than any caller intends.
+ */
 export function amountsMatch(
   clientAmount: number,
   expectedAmount: number,
-  tolerance = PAYMENT_AMOUNT_TOLERANCE,
+  toleranceCents = PAYMENT_AMOUNT_TOLERANCE_CENTS,
 ): boolean {
   if (!Number.isFinite(clientAmount) || !Number.isFinite(expectedAmount)) {
     return false
   }
-  return Math.abs(clientAmount - expectedAmount) <= tolerance
+  return (
+    Math.abs(Math.round(clientAmount * 100) - Math.round(expectedAmount * 100)) <= toleranceCents
+  )
 }
 
 /** Payment statuses that may still be claimed as paid by a CARD settlement. */
