@@ -34,7 +34,9 @@ import {
   resolveAmbiguousPaymentWithFinatic,
   unconfirmedFailureReference,
   TERMINAL_USER_CANCELLED_REASON,
+  type PaymentResult,
 } from '../lib/payment';
+import {recordWiretapEvent} from '../lib/wiretap';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {
   describeReceiptPrintError,
@@ -449,13 +451,25 @@ export default function PaymentScreen({route, navigation}: Props) {
   const handleProcessPayment = async () => {
     startPayment(orderId, total);
     let token: string | null = null;
+    /**
+     * Hoisted so the outer catch can see what the device actually decided. Without this the
+     * catch has no idea a user cancel ever happened and reports it as a bare failure — see the
+     * `outer_catch` exit below.
+     */
+    let lastResult: PaymentResult | null = null;
     try {
       token = await getTerminalToken();
       if (!token) {
+        recordWiretapEvent('payment.exit', {
+          exit: 'no_token_pre_payment',
+          reportsToServer: false,
+          note: 'no payment attempted, nothing to report',
+        });
         throw new Error('Session expired');
       }
 
       let result = await processPaymentIntent(total, orderId);
+      lastResult = result;
 
       // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure.
       if (
@@ -465,6 +479,7 @@ export default function PaymentScreen({route, navigation}: Props) {
           result.orphaned)
       ) {
         result = await resolveAmbiguousPaymentWithFinatic(orderId, result);
+        lastResult = result;
       }
 
       if (result.success && result.reference) {
@@ -488,6 +503,17 @@ export default function PaymentScreen({route, navigation}: Props) {
         // for outcomeKind 'user_cancelled', which native raises ONLY on RESULT_CANCELED --
         // an ambiguous outcome must keep going through verification.
         const userCancelled = result.outcomeKind === 'user_cancelled';
+        // Which exit ran, recorded BEFORE the call. If this marker is absent from the wiretap
+        // but a completePayment.request is present, the report came from the outer catch below
+        // and the cancel classification was lost on the way.
+        recordWiretapEvent('payment.exit', {
+          exit: 'main_failure_branch',
+          reportsToServer: true,
+          outcomeKind: result.outcomeKind ?? '(none)',
+          userCancelled,
+          willSendCancelFields: userCancelled,
+          reference: failureReference,
+        });
         const completed = await completePaymentReliably(orderId, token, {
           status: 'failed',
           reference: failureReference,
@@ -533,17 +559,50 @@ export default function PaymentScreen({route, navigation}: Props) {
             });
             return;
           }
+          /**
+           * Carry the device's classification into the catch.
+           *
+           * Found by tracing every exit of this function: this path reported `status: 'failed'`
+           * with NO cancellationReason, so a user cancel that reached here was reported as a
+           * bare failure, sent to Finatic verification, answered E04111 and stranded — the exact
+           * symptom the bypass exists to prevent, on a second path nobody had looked at.
+           *
+           * Guarded on the pre-catch result, not on the error: an exception with no prior
+           * user_cancelled result is genuinely unknown and MUST stay ambiguous. The cancel
+           * already happened before whatever threw, so the classification is still true; what we
+           * lost was only the ability to report it.
+           */
+          const cancelledBeforeThrow =
+            lastResult?.outcomeKind === 'user_cancelled';
+          recordWiretapEvent('payment.exit', {
+            exit: 'outer_catch',
+            reportsToServer: true,
+            threwWith: message,
+            priorOutcomeKind: lastResult?.outcomeKind ?? '(none)',
+            willSendCancelFields: cancelledBeforeThrow,
+          });
           const completed = await completePaymentReliably(orderId, reportToken, {
             status: 'failed',
             reference: unconfirmedFailureReference(),
             amount: total,
             paymentMethod: 'card',
             businessOrderNo: recovered.businessOrderNo,
+            ...(cancelledBeforeThrow
+              ? {
+                  cancellationReason: TERMINAL_USER_CANCELLED_REASON,
+                  noGatewayAttempt: true,
+                }
+              : {}),
           });
           if (!completed) {
             finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
           }
         } else {
+          recordWiretapEvent('payment.exit', {
+            exit: 'outer_catch_no_token',
+            reportsToServer: false,
+            threwWith: message,
+          });
           finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
         }
       } catch (reportErr) {
@@ -551,6 +610,15 @@ export default function PaymentScreen({route, navigation}: Props) {
           '[PaymentScreen] failed to report outer-catch payment outcome:',
           reportErr,
         );
+        // Last exit, and the only one where the server genuinely never hears. Staff see the
+        // "contact support" suffix; this makes it readable afterwards too.
+        recordWiretapEvent('payment.exit', {
+          exit: 'outer_catch_report_threw',
+          reportsToServer: false,
+          threwWith: message,
+          reportError:
+            reportErr instanceof Error ? reportErr.message : String(reportErr),
+        });
         finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
       }
       paymentFailed(finalMessage);

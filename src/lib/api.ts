@@ -766,20 +766,41 @@ export async function completePayment(
       payload.noGatewayAttempt === undefined ? '(not set)' : payload.noGatewayAttempt,
   });
 
-  const response = await terminalFetch(
-    `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/payment`,
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    },
-    token,
-  );
+  let response: Response;
+  try {
+    response = await terminalFetch(
+      `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/payment`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      },
+      token,
+    );
+  } catch (err) {
+    // Transport failure: the request never completed. Distinguishes "server rejected it" from
+    // "it never arrived", which the server side cannot tell us by definition.
+    recordWiretapEvent('completePayment.threw', {
+      orderId,
+      stage: 'fetch',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 
+  // Body is read from a CLONE: parseApiError and response.json() below both consume the
+  // original, and a body can only be read once.
+  let bodyText = '(unread)';
+  try {
+    bodyText = (await response.clone().text()).slice(0, 300);
+  } catch {
+    bodyText = '(clone failed)';
+  }
   recordWiretapEvent('completePayment.response', {
     orderId,
     httpStatus: response.status,
     ok: response.ok,
+    body: bodyText,
   });
 
   throwIfUnauthorized(response);
