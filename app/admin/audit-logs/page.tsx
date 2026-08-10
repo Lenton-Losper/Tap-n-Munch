@@ -15,9 +15,15 @@ import {
 import { EmptyState } from '@/components/platform/ops-shell'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 
+/**
+ * Which audit stream a row came from. Not a column on either table -- withSource() below
+ * stamps it as the two streams are merged, so these are the only two values that exist.
+ */
+type AuditSource = 'platform' | 'tenant'
+
 type AuditRow = {
   id: string
-  source?: 'platform' | 'tenant' | string
+  source?: AuditSource
   action: string
   actor_email?: string | null
   restaurant_id?: string | null
@@ -30,7 +36,7 @@ type AuditRow = {
   created_at: string
 }
 
-function withSource(rows: AuditRow[], source: 'platform' | 'tenant') {
+function withSource(rows: AuditRow[], source: AuditSource) {
   return rows.map((row) => ({ ...row, source: row.source || source }))
 }
 
