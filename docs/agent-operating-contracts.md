@@ -363,6 +363,40 @@ existed on any branch, a branch believed pushed that was not, a baseline pinned 
 had been rebased away, two issue counts that did not reproduce. The verifier's job is mechanical
 and catches exactly that class.
 
+### `git checkout <sha> -- file` stages. A gate cannot catch what this hides.
+
+To prove a test fails without its fix, the obvious move is to revert the source and keep the test:
+
+```
+git checkout <base-sha> -- src/thing.ts     # revert source, keep tests
+npx jest path/to/test                        # confirm red
+git checkout -- src/thing.ts                 # "restore"
+```
+
+**The last line does not restore.** `git checkout <sha> -- file` writes the old content to the
+worktree AND STAGES IT. `git checkout -- file` then restores from the *index*, which now holds the
+reverted version. The fix is silently gone, and `git status --porcelain -uno` reads **clean**,
+because index and worktree agree.
+
+Correct restore:
+
+```
+git checkout HEAD -- src/thing.ts && git reset
+```
+
+Then verify with `git diff --cached --stat` (must be empty) and grep for a marker from the fix.
+
+Observed 2026-08-10 while proving #125's four tests failed without their fix. Caught on the
+`--cached` diff; one step later the branch would have been pushed with the fix removed.
+
+**Why no gate catches this.** The tests were never reverted — only the source. So the pushed branch
+would have carried passing tests and no fix, `tsc` would exit 0, lint would pass, and Build
+Verification would go green. Every mechanical check in the pipeline reports success on a change
+that does nothing. It is caught by looking at the index, or not at all.
+
+Applies to the orchestrator/integrator, not only implementers: the failing-first check is normally
+run by whoever is about to push.
+
 ### The verifier's limit — state it, do not paper over it
 
 **Mechanical gates verify that a commit APPLIES. They cannot verify that it is still TRUE on the
