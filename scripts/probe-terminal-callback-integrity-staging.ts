@@ -9,7 +9,6 @@
  * Marker: PROBE_TERMINAL_CALLBACK_INTEGRITY_OK
  * Trigger: commit message contains [probe-terminal-callback-integrity]
  */
-// @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 import { generateTerminalActivationCode } from '../lib/terminals/activation-code'
@@ -240,8 +239,14 @@ async function main() {
       .single()
     log('status_cancelled_with_reason_db_row', rowC)
     assert(rowC?.cancellation_reason === 'customer_abandoned_at_terminal', `got ${rowC?.cancellation_reason}`)
-    assert(rowC?.payment_status === 'cancelled' && rowC?.status === 'cancelled')
-    assert(Boolean(rowC?.cancelled_at))
+    assert(
+      rowC?.payment_status === 'cancelled' && rowC?.status === 'cancelled',
+      `orderC: caller-supplied reason must still cancel both fields, got status=${rowC?.status} payment_status=${rowC?.payment_status}`,
+    )
+    assert(
+      Boolean(rowC?.cancelled_at),
+      'orderC: cancelled_at missing after cancel with caller-supplied reason',
+    )
     console.log('STATUS_CANCELLED_CALLER_REASON_OK')
 
     console.log('PROBE_TERMINAL_CALLBACK_INTEGRITY_OK')
