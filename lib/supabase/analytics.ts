@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
 
@@ -26,13 +25,24 @@ export async function calculateDailyAnalytics(restaurantId: string, date: string
   const sb = createServerSupabaseClient()
   const dayStart = new Date(`${date}T00:00:00.000Z`).toISOString()
   const dayEnd = new Date(`${date}T23:59:59.999Z`).toISOString()
-  const { data: orders = [] } = await sb
+  const { data: orders, error } = await sb
     .from('orders')
     .select('*')
     .eq('restaurant_id', restaurantId)
     .eq('payment_status', 'paid')
     .gte('placed_at', dayStart)
     .lte('placed_at', dayEnd)
+
+  // Was `data: orders = []`. A destructuring default only fires for undefined, and supabase-js
+  // returns `{ data: null, error }` on failure -- so the default never covered the case it was
+  // written for. Reject rather than fall back to []: an empty list here would report
+  // total_revenue 0 for a day whose revenue query failed, which is indistinguishable from a day
+  // that genuinely took nothing.
+  if (error || !orders) {
+    throw new Error(
+      `Failed to load paid orders for ${date}: ${error?.message || 'query returned no result'}`,
+    )
+  }
 
   const totalOrders = orders.length
   const totalRevenue = orders.reduce((sum: number, o: any) => sum + (Number(o.total) || 0), 0)
@@ -83,13 +93,22 @@ export async function calculateDailyAnalytics(restaurantId: string, date: string
 export async function getDailyAnalytics(restaurantId: string, date: string): Promise<DailyAnalytics> {
   const dayStart = new Date(`${date}T00:00:00.000Z`).toISOString()
   const dayEnd = new Date(`${date}T23:59:59.999Z`).toISOString()
-  const { data: orders = [] } = await supabase
+  const { data: orders, error } = await supabase
     .from('orders')
     .select('*')
     .eq('restaurant_id', restaurantId)
     .eq('payment_status', 'paid')
     .gte('placed_at', dayStart)
     .lte('placed_at', dayEnd)
+
+  // Same defect as calculateDailyAnalytics above, and the one that actually ships: the browser
+  // client types `data` as any, so tsc never flagged this copy. Reject on failure for the same
+  // reason -- this is the reader the analytics dashboard calls.
+  if (error || !orders) {
+    throw new Error(
+      `Failed to load paid orders for ${date}: ${error?.message || 'query returned no result'}`,
+    )
+  }
 
   const totalOrders = orders.length
   const totalRevenue = orders.reduce((sum: number, o: any) => sum + (Number(o.total) || 0), 0)
