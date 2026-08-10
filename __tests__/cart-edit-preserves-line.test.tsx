@@ -324,6 +324,38 @@ describe('an edit that collides with another line (#126 / #133)', () => {
   })
 
   /**
+   * The surviving half of the cap. The cap is not applied ACROSS matching lines (see above),
+   * but it is still applied to the line being edited, and applyCartLineEdit applies it itself
+   * rather than trusting the caller to have done it. The modal's + control stops at the
+   * maximum, so this is the function refusing to depend on that.
+   */
+  it('caps the edited line itself at the per-line maximum and reports it', () => {
+    const overCap: CartItem = { ...lineA, quantity: 25, subtotal: 1000 } // 40 per unit
+    const result = applyCartLineEdit([lineA, lineB], 0, overCap)
+
+    // No collision: lineB is a Regular, lineA is the line being edited.
+    expect(result.merged).toBe(false)
+    expect(result.items).toHaveLength(2)
+
+    expect(result.items[0].quantity).toBe(MAX_LINE_QUANTITY)
+    expect(result.clamped).toBe(true)
+
+    // Capping the quantity reprices the line, so it cannot charge for units that are gone.
+    expect(result.items[0].subtotal).toBe(MAX_LINE_QUANTITY * 40)
+
+    // The line the customer did not touch is untouched.
+    expect(result.items[1]).toEqual(lineB)
+  })
+
+  it('leaves a line at exactly the maximum alone, and does not report a clamp', () => {
+    const atCap: CartItem = { ...lineA, quantity: MAX_LINE_QUANTITY, subtotal: MAX_LINE_QUANTITY * 40 }
+    const result = applyCartLineEdit([lineA, lineB], 0, atCap)
+
+    expect(result.items[0]).toEqual(atCap)
+    expect(result.clamped).toBe(false)
+  })
+
+  /**
    * The original #126 charging bug. The fold applied the EDITED line's unit price to the
    * combined quantity, so a line confirmed at one price was silently re-priced at another.
    * Identity cannot catch it -- two lines can be the same thing to make and still be priced

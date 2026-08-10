@@ -35,7 +35,13 @@ export type CartLineEditResult = {
   items: CartItem[]
   /** True when the edit collided with an existing line and the two were folded into one. */
   merged: boolean
-  /** True when the merged quantity had to be capped at MAX_LINE_QUANTITY. */
+  /**
+   * True when the EDITED LINE's own quantity was capped at MAX_LINE_QUANTITY. This is the
+   * per-line cap and it is this function's job, not the caller's.
+   *
+   * It is not set by a refused fold: an over-cap collision leaves two lines rather than
+   * capping a combined quantity, so nothing is clamped there.
+   */
   clamped: boolean
 }
 
@@ -47,27 +53,54 @@ export type CartLineEditResult = {
  * -- the duplicate-line state #133 removed from the add path -- so identical lines are folded
  * into the earlier of the two positions, keeping the cart order stable.
  *
- * The merged quantity is capped at MAX_LINE_QUANTITY (the server rejects more), and `clamped`
- * reports that so the caller can say so rather than silently dropping units.
+ * Two things stop a fold: a combined quantity over MAX_LINE_QUANTITY, and two lines priced
+ * differently per unit. Both leave the cart as two lines rather than merging on terms the
+ * customer did not agree to.
+ *
+ * The edited line's OWN quantity is capped at MAX_LINE_QUANTITY (the server rejects more) and
+ * `clamped` reports it.
  */
 export function applyCartLineEdit(
   items: CartItem[],
   index: number,
   edited: CartItem,
 ): CartLineEditResult {
+  const requestedLineQuantity = Number(edited.quantity) || 0
+  const unitPrice = requestedLineQuantity > 0 ? Number(edited.subtotal || 0) / requestedLineQuantity : 0
+
+  /**
+   * THE PER-LINE CAP IS ENFORCED HERE, NOT LEFT TO THE CALLER (#126).
+   *
+   * The modal's + control already stops at MAX_LINE_QUANTITY, so an over-cap edit does not
+   * arrive from it in practice. That is the modal's invariant, not this function's. Every edit
+   * path is reconciled here, so this is where the cap is applied -- a shared function does not
+   * trust its callers to have applied it, and a caller added later inherits the cap instead of
+   * having to remember it. Repriced with the line's own unit price, so capping the quantity
+   * cannot leave the subtotal charging for units that are no longer there.
+   *
+   * Only ever downward. Anything at or under the cap is passed through untouched.
+   */
+  const lineWasCapped = requestedLineQuantity > MAX_LINE_QUANTITY
+  const applied: CartItem = lineWasCapped
+    ? {
+        ...edited,
+        quantity: clampLineQuantity(requestedLineQuantity),
+        subtotal: Math.round(unitPrice * clampLineQuantity(requestedLineQuantity) * 100) / 100,
+      }
+    : edited
+
   const next = [...items]
-  next[index] = edited
+  next[index] = applied
 
   const collisions = next
     .map((_, i) => i)
-    .filter((i) => i !== index && sameCartLine(next[i], edited))
+    .filter((i) => i !== index && sameCartLine(next[i], applied))
 
   if (collisions.length === 0) {
-    return { items: next, merged: false, clamped: false }
+    return { items: next, merged: false, clamped: lineWasCapped }
   }
 
-  const editedQuantity = Number(edited.quantity) || 0
-  const unitPrice = editedQuantity > 0 ? Number(edited.subtotal || 0) / editedQuantity : 0
+  const editedQuantity = Number(applied.quantity) || 0
   const requestedQuantity = collisions.reduce(
     (sum, i) => sum + (Number(next[i].quantity) || 0),
     editedQuantity,
@@ -86,9 +119,9 @@ export function applyCartLineEdit(
     const q = Number(l.quantity) || 0
     return q > 0 ? Math.round((Number(l.subtotal || 0) / q) * 100) : 0
   }
-  const editedUnit = unitOf(edited)
+  const editedUnit = unitOf(applied)
   if (collisions.some((i) => unitOf(next[i]) !== editedUnit)) {
-    return { items: next, merged: false, clamped: false }
+    return { items: next, merged: false, clamped: lineWasCapped }
   }
 
   /**
@@ -101,12 +134,12 @@ export function applyCartLineEdit(
    * rather than merging and discarding the overflow.
    */
   if (requestedQuantity > MAX_LINE_QUANTITY) {
-    return { items: next, merged: false, clamped: false }
+    return { items: next, merged: false, clamped: lineWasCapped }
   }
   const quantity = clampLineQuantity(requestedQuantity)
 
   const mergedLine: CartItem = {
-    ...edited,
+    ...applied,
     quantity,
     subtotal: Math.round(unitPrice * quantity * 100) / 100,
   }
@@ -123,5 +156,5 @@ export function applyCartLineEdit(
     out.push(line)
   })
 
-  return { items: out, merged: true, clamped: quantity < requestedQuantity }
+  return { items: out, merged: true, clamped: lineWasCapped || quantity < requestedQuantity }
 }
