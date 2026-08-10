@@ -36,8 +36,6 @@ export type ReceiptStatusBadge =
   | 'COMPLETED'
   | 'CANCELLED'
 
-export type PaymentStatusKey = 'paid' | 'pending' | 'failed' | 'cancelled' | string
-
 export type ReceiptLineItem = {
   quantity: number
   name: string
