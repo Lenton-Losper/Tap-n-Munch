@@ -85,9 +85,23 @@ jest.mock('@/lib/supabase/server', () => ({
 jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
   markOrderPaidConfirmed: async () => ({ claimed: true, tabId: null }),
 }))
-// NOTE (deploy branch only): @/lib/tabs/settle-tab-state does not exist at this base
-// (#123 introduces it) and nothing here imports it, so no mock is needed. The canonical
-// version of this suite on the main line mocks it.
+// There is deliberately no mock for @/lib/tabs/settle-tab-state -- but not for the reason
+// 2f76f9e gave when it removed one.
+//
+// That mock was only ever standing in for a MISSING module. It was never isolating the route
+// from this dependency. 2f76f9e dropped it on the deploy-branch base that predates #123,
+// reasoning "nothing at this base imports it". On THIS base that premise is false: #123
+// (068cdc7) adds lib/tabs/settle-tab-state.ts, and the payment route does import
+// clearReadyToPayAndReopenTab from it.
+//
+// The conclusion holds regardless. With the module present, moduleNameMapper resolves it to a
+// real file that loads, and the real clearReadyToPayAndReopenTab runs harmlessly against the
+// @/lib/supabase/server mock installed above. Putting the mock back would buy nothing.
+// (jest's virtual:true does not bypass moduleNameMapper, which is why the stand-in had to go
+// the moment the mapper had something real to resolve to.)
+//
+// So if you rebase across 2f76f9e onto a base that carries #123: do not "fix" this by
+// restoring the mock. Whether the module EXISTS is what decides, not whether it is imported.
 
 function paymentRequest(body: unknown) {
   return new NextRequest('https://staging.test/api/terminal/orders/x/payment', {
