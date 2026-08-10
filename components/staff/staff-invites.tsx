@@ -26,11 +26,19 @@ import {
   type RestaurantRoleOption,
 } from '@/components/staff/restaurant-roles-client'
 
+/**
+ * Not a database column. staff_invites stores `accepted boolean`; both invite routes
+ * derive this field as `row.accepted ? 'accepted' : 'pending'` (app/api/admin/invites),
+ * so these two values are the whole vocabulary and it is our code, not the schema, that
+ * decides it.
+ */
+export type StaffInviteStatus = 'pending' | 'accepted'
+
 export type StaffInviteRow = {
   id: string
   email: string
   role: string
-  status: string
+  status: StaffInviteStatus
   created_at?: string
 }
 

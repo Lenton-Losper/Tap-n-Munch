@@ -1,14 +1,48 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 
+/**
+ * Every status business_documents.status can hold, across all three document types.
+ *
+ * The database CHECK is document_type-dependent (see
+ * 20260725200000_document_engine_credit_notes_lineage.sql):
+ *
+ *   invoice      draft | sent | paid | partially_paid | overdue | void
+ *   quote        draft | sent | converted | expired | declined
+ *   credit_note  issued | cancelled
+ *
+ * This union is their sum, which is what a function that passes quotes and credit notes
+ * straight through while deriving invoice status actually returns. It deliberately does
+ * not model the per-type split -- that would need the document_type to be in the type,
+ * and nothing here branches on it after the passthrough.
+ */
+export type BusinessDocumentStatus =
+  | 'draft'
+  | 'sent'
+  | 'paid'
+  | 'partially_paid'
+  | 'overdue'
+  | 'void'
+  | 'converted'
+  | 'expired'
+  | 'declined'
+  | 'issued'
+  | 'cancelled'
+
 /** Statuses no payment/overdue/credit recompute is allowed to move a document out of. */
-const TERMINAL_STATUSES = new Set(['void', 'converted', 'expired', 'declined', 'cancelled'])
+const TERMINAL_STATUSES = new Set<BusinessDocumentStatus>([
+  'void',
+  'converted',
+  'expired',
+  'declined',
+  'cancelled',
+])
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
 export type RecomputedDocumentStatus = {
-  status: string
+  status: BusinessDocumentStatus
   balance: number
   changed: boolean
 }
@@ -62,7 +96,7 @@ export async function recomputeDocumentStatus(
   const credited = (credits ?? []).reduce((sum, row) => sum + Number(row.total), 0)
   const balance = round2(Number(doc.total) - paid - credited)
 
-  let status: string
+  let status: BusinessDocumentStatus
   if (balance <= 0) {
     status = 'paid'
   } else if (paid > 0 || credited > 0) {
