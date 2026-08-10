@@ -5,6 +5,7 @@
  * Activation route: POST /api/terminals/activate
  */
 import {FLASHTAP_API_URL} from '../constants';
+import {recordWiretapEvent} from './wiretap';
 import {
   getRefreshToken,
   saveMerchantCredentials,
@@ -746,6 +747,25 @@ export async function completePayment(
     noGatewayAttempt?: boolean;
   },
 ): Promise<{canClose: boolean}> {
+  // INSTRUMENTATION (vc84). Record what actually goes on the wire, before it goes.
+  //
+  // On 2026-08-09 the terminal classified a cancel correctly and the order still did not cancel,
+  // and the server audit could not distinguish "terminal never sent the fields" from "route
+  // discarded them" — the route read `body` field by field, so both look identical downstream.
+  // The route is fixed, but this is the device-side half of that proof and it costs nothing.
+  recordWiretapEvent('completePayment.request', {
+    orderId,
+    status: payload.status,
+    reference: payload.reference,
+    amount: payload.amount,
+    businessOrderNo: payload.businessOrderNo,
+    // The two fields the bypass depends on. Recorded explicitly, including when absent, so the
+    // log distinguishes "sent false" from "never set".
+    cancellationReason: payload.cancellationReason ?? '(not set)',
+    noGatewayAttempt:
+      payload.noGatewayAttempt === undefined ? '(not set)' : payload.noGatewayAttempt,
+  });
+
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/payment`,
     {
@@ -755,6 +775,12 @@ export async function completePayment(
     },
     token,
   );
+
+  recordWiretapEvent('completePayment.response', {
+    orderId,
+    httpStatus: response.status,
+    ok: response.ok,
+  });
 
   throwIfUnauthorized(response);
 

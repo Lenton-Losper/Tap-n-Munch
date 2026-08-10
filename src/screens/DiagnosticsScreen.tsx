@@ -482,27 +482,26 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
               ) : null}
             </>
           ) : (
+            /* Everything that is not an activity return: launch markers and the
+               completePayment request/response pair. Rendered generically from whatever keys
+               are present, so a new event type added natively shows up here without also
+               needing a change to this screen — the previous hardcoded list silently dropped
+               any field it did not know about, which is the same class of bug as the route
+               discarding unknown body fields. */
             <>
-              {entry.code ? (
-                <Text style={[styles.value, styles.stepFailed]} selectable>
-                  rejected: {entry.code}
-                </Text>
-              ) : null}
-              {entry.error ? (
-                <Text style={[styles.value, styles.stepFailed]} selectable>
-                  error: {entry.error}
-                </Text>
-              ) : null}
-              {entry.merchantOrderNo ? (
-                <Text style={styles.value} selectable>
-                  merchantOrderNo = {entry.merchantOrderNo}
-                </Text>
-              ) : null}
-              {entry.amountMinor ? (
-                <Text style={styles.value} selectable>
-                  amount = {entry.amountMinor}
-                </Text>
-              ) : null}
+              {Object.entries(entry)
+                .filter(([k]) => k !== 'event' && k !== 'at')
+                .map(([k, v]) => (
+                  <Text
+                    key={k}
+                    style={[
+                      styles.value,
+                      (k === 'code' || k === 'error') && styles.stepFailed,
+                    ]}
+                    selectable>
+                    {k} = {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                  </Text>
+                ))}
             </>
           )}
         </View>

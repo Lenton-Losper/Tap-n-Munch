@@ -31,4 +31,4 @@ export const RECEIPT_PRINT_LAST_RESULT_KEY = 'flashtap_receipt_print_last_result
 // Kept in step with android/app/build.gradle versionName. These had drifted (1.71 here
 // vs 1.72 in gradle) before the 74/1.73 bump; the on-screen diagnostics version is only
 // useful if it names the build actually installed.
-export const APP_VERSION = '1.82';
+export const APP_VERSION = '1.83';

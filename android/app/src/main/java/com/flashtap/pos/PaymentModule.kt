@@ -256,6 +256,29 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Let JS append to the same wiretap the native side writes to.
+   *
+   * Added vc84. The 2026-08-09 test proved detection worked and the order still did not cancel,
+   * and the server-side audit could not tell us whether the terminal had sent
+   * cancellationReason/noGatewayAttempt or whether the route had discarded them — the route read
+   * `body` field-by-field, so an ignored field and an absent field leave identical traces. This
+   * closes that blind spot from the device end: what JS actually put on the wire is recorded
+   * where it can be read without ADB.
+   */
+  @ReactMethod
+  fun recordWiretapEvent(event: String, detailJson: String, promise: Promise) {
+    try {
+      val detail = if (detailJson.isBlank()) JSONObject() else JSONObject(detailJson)
+      recordWiretap(reactContext, event, detail)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      // Instrumentation must never break a payment: report, do not throw into the JS flow.
+      Log.w(TAG, "recordWiretapEvent($event) failed: ${e.message}")
+      promise.resolve(false)
+    }
+  }
+
   @ReactMethod
   fun clearWiseCashierWiretap(promise: Promise) {
     try {
