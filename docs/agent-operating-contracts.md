@@ -30,11 +30,49 @@ report the mismatch and stop.
 NEVER
 - push to origin, touch main, or dispatch any workflow
 - run any Supabase command, including reads
-- edit outside your worktree
+- WRITE outside your worktree (reading from the main checkout to
+  provision your own worktree is expected — see TOOLCHAIN)
+- file issues yourself (see OWNERSHIP)
 - run the bare full test suite (see TEST ISOLATION)
 - choose a policy answer yourself (see POLICY BOUNDARY)
 
-TOOLCHAIN
+TOOLCHAIN — PROVISION FIRST
+A fresh worktree from `git worktree add` contains NO node_modules and
+NO .env files. Both are gitignored, so neither arrives with the
+checkout. Until you provision, the prescribed typecheck command below
+does not exist on disk and jest has no environment. Do this first,
+before any check whose result you intend to report.
+
+1. node_modules. Preferred: a junction to the main checkout.
+
+   cmd //c mklink /J "<your worktree>\node_modules" ^
+     "C:\Users\223125318\Desktop\mvp\restaurant-menu-screen\node_modules"
+
+   Preferred because it is instantaneous and costs no disk, and because
+   a worktree cut from the same commit has a byte-identical
+   package-lock.json — so there is nothing that can diverge. VERIFY that
+   before junctioning: md5sum package-lock.json against the main
+   checkout's. If they differ, your worktree is on a different base and
+   you must `npm ci` instead.
+
+   The junction shares one mutable directory across every worktree. So:
+   never run npm ci / npm install in a junctioned worktree, and never in
+   two worktrees at once. If you need to install anything, use npm ci in
+   an unjunctioned worktree instead.
+
+   `npm ci` is the fallback: slower and costs disk, but fully isolated.
+
+2. .env. Copy .env.test and .env.local in from the main checkout.
+   jest.setup-env.ts resolves .env.test relative to the WORKTREE root,
+   so without it every live suite fails spuriously and you will report
+   those failures as your own regressions.
+
+Both ft-172 and ft-186 hit this independently on 2026-08-10 and solved
+it two different ways — junction and npm ci respectively — and neither
+solution was written down, so the third agent had to rediscover it.
+That is why this section exists.
+
+TOOLCHAIN — THE COMPILER
 A worktree without node_modules resolves `npx tsc` to a squatter
 package that prints "This is not the tsc command you are looking for"
 and EXITS 0. Any exit-code check sails straight past it, and every
@@ -43,11 +81,6 @@ and EXITS 0. Any exit-code check sails straight past it, and every
 Always invoke node node_modules/typescript/bin/tsc, which cannot
 resolve to anything but the local compiler. Verify --version reads
 5.9.3 before trusting any result.
-
-A fresh worktree also has no .env.test, and jest.setup-env.ts resolves
-it relative to the worktree root — without it, live suites fail
-spuriously and you will report those failures as yours. Copy .env.test
-and .env.local in from the main checkout. Both are gitignored.
 
 TEST ISOLATION
 Never run the bare full suite (`npx jest` with no path filter). The
@@ -97,8 +130,15 @@ Escalate: anything changing what a customer is told about money, what
 is charged, or what a payment means. Do not escalate: which of several
 correct implementations satisfies a ruling you already have.
 
+OWNERSHIP
+You do not file issues. Creating a GitHub issue is an outward-facing
+action in the same family as pushing and dispatching, and it is the
+orchestrator's. Propose them in NEW ISSUES TO FILE — one title and a
+few lines of body each, written well enough to file verbatim — and the
+orchestrator files them and reports the numbers back.
+
 SEPARATE PROBLEMS
-File them separately and continue. Switch only if blocking,
+Write them up and continue. Switch only if blocking,
 security-critical, or likely to invalidate your current fix.
 
 COMPLETION
@@ -127,6 +167,12 @@ COMMITS:
 STATE CHECKED
 - base SHA:
 - what I verified vs. what the brief claimed:
+
+IS THE DEFECT REAL?
+live runtime defect | type-only, no current runtime consequence |
+not a defect | unreachable code
+- evidence:
+- if the brief asserted otherwise, say so here
 
 PROOF TYPE: regression | static | invariant | integration | observational
 
@@ -157,7 +203,8 @@ BASELINE
 COULD NOT DETERMINE
 What is inference rather than verified, and what would settle it.
 
-NEW ISSUES FILED: #___
+NEW ISSUES TO FILE (proposed — the orchestrator files them)
+- title / few-line body, one per problem, written to file verbatim
 
 POLICY BLOCKERS: none | ruling packet attached
 
@@ -233,14 +280,34 @@ a menu.
 
 ## 4. Team Activation
 
-| Size | Shape |
+Two separate questions. Answer both; do not let the first decide the second.
+
+**How big is the work?**
+
+| Size | Meaning |
 |---|---|
-| **S** | One implementer. Typo, isolated UI, obvious null check. |
-| **M** | Investigator + implementer. |
-| **L / H1** | Full issue team. |
+| **S** | Typo, isolated UI, obvious null check. |
+| **M** | One subsystem, some investigation needed before the fix is knowable. |
+| **L / H1** | Multiple surfaces, or the blast radius is not yet known. |
+
+**How many agents does it need?**
+
+| Shape | When |
+|---|---|
+| One implementer | S. Also M or L **when the investigation is already complete** — see below. |
+| Investigator + implementer | M where the fix is not yet knowable. |
+| Full issue team | L / H1 where blast radius, reproduction and domain rules all need establishing. |
+
+**The collapse exit.** If the investigation has already been done and is being handed over —
+authoritative compiler output, a reproduction, an established blast radius — collapse to a
+single implementer regardless of size, and **say so in the brief with the reason**. Sizing a
+task M and then spawning an investigator to rediscover what you already have in hand wastes a
+context and invites a second, differing account of the same facts.
 
 **Auto-qualifies as H1 regardless of apparent size:** payments, auth, migrations, stock,
-destructive data operations, anything touching a shared library with payment callers.
+destructive data operations, anything touching a shared library with payment callers. Note this
+raises the *class*, which drives deployment and confirmation — it does not by itself mandate a
+full team if the investigation is already done.
 
 ### L/H1 team shape
 
@@ -283,6 +350,10 @@ about money, deploy go/no-go.
 
 **Integrator** — sole owner of origin pushes, `main`, and workflow dispatch. Outside every issue
 team. Also the only one who runs the full test suite, once, serially.
+
+**Who files issues** — the orchestrator, not the implementer. Implementers propose in
+`NEW ISSUES TO FILE`; the orchestrator files and reports the numbers back. Issue creation is
+outward-facing and belongs with pushing and dispatching, not with writing code.
 
 **Independent verifier** — distrusts everyone. Reads artifacts, not reports: `git rev-parse`,
 `git cherry`, `git patch-id --stable`, actual test output, `/api/version` **cache-busted**.
