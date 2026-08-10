@@ -7,6 +7,7 @@ const eslintConfig = [
       '.next/**',
       '.open-next/**',
       '.tmp-wise-postman/**',
+      '.wrangler/**',
       'node_modules/**',
       'out/**',
       'build/**',
