@@ -43,6 +43,9 @@ eslint-out.json
 eslint-report.json
 staging_live_schema.sql
 
+# Cloudflare Wrangler local build/dev scratch (bundled worker output, not source)
+.wrangler/
+
 # Vercel
 .vercel
 
