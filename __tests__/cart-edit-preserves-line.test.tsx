@@ -296,17 +296,60 @@ describe('an edit that collides with another line (#126 / #133)', () => {
     expect(result.merged).toBe(false)
   })
 
-  it('caps a merge at the per-line maximum and says so rather than silently overshooting', () => {
-    const big: CartItem = { ...lineA, quantity: 18, subtotal: 720 }
-    const edited: CartItem = { ...lineA, quantity: 5, subtotal: 200 }
-    const result = applyCartLineEdit([big, { ...lineB }], 0, edited)
+  /**
+   * Supersedes the old clamp-and-report contract, which folded 18 + 5 into a single line of
+   * MAX_LINE_QUANTITY and set `clamped` to say so. That destroyed three units the customer had
+   * chosen and told them only in a toast. The cap is per LINE, not across matching lines: two
+   * lines of the same item are legitimately two lines, and the server accepts each on its own
+   * terms. So an over-cap collision is refused, not clamped.
+   */
+  it('refuses to fold past the per-line cap, leaving two lines rather than destroying units', () => {
+    const big: CartItem = { ...lineA, quantity: 18, subtotal: 720 } // 40 per unit
+    const small: CartItem = { ...lineA, quantity: 5, subtotal: 200 } // 40 per unit
 
-    // Nothing collides here (big IS the line being edited); the collision case:
-    const collide = applyCartLineEdit([big, edited], 1, { ...edited })
+    // Same thing to make and the same price -- the cap is the only thing preventing the fold.
+    expect(sameCartLine(big, small)).toBe(true)
+    expect(big.quantity + small.quantity).toBeGreaterThan(MAX_LINE_QUANTITY)
+
+    const result = applyCartLineEdit([big, small], 1, { ...small })
+
+    expect(result.items).toHaveLength(2)
+    expect(result.items.map((line) => line.quantity)).toEqual([18, 5])
     expect(result.merged).toBe(false)
-    expect(collide.items).toHaveLength(1)
-    expect(collide.items[0].quantity).toBe(MAX_LINE_QUANTITY)
-    expect(collide.clamped).toBe(true)
+    expect(result.clamped).toBe(false)
+
+    // Nothing was destroyed: every unit and every cent survives the refusal.
+    expect(result.items.reduce((sum, line) => sum + line.quantity, 0)).toBe(23)
+    expect(result.items.reduce((sum, line) => sum + line.subtotal, 0)).toBe(920)
+  })
+
+  /**
+   * The original #126 charging bug. The fold applied the EDITED line's unit price to the
+   * combined quantity, so a line confirmed at one price was silently re-priced at another.
+   * Identity cannot catch it -- two lines can be the same thing to make and still be priced
+   * differently (a line added before a menu price change). Without the guard this folds to
+   * 5 units at 40 = 200, re-pricing the untouched 2 units from 35 each to 40 each.
+   */
+  it('refuses to fold two lines priced differently, and reprices neither', () => {
+    const cheap: CartItem = { ...lineA, quantity: 2, subtotal: 70 } // 35 per unit
+    const dear: CartItem = { ...lineA, quantity: 1, subtotal: 40 } // 40 per unit
+    expect(sameCartLine(cheap, dear)).toBe(true)
+
+    const editedDear: CartItem = { ...dear, quantity: 3, subtotal: 120 }
+    const result = applyCartLineEdit([cheap, dear], 1, editedDear)
+
+    expect(result.merged).toBe(false)
+    expect(result.items).toHaveLength(2)
+
+    // The line the customer edited is the only line that changed.
+    expect(result.items[1]).toEqual(editedDear)
+
+    // The line they did not touch keeps its own quantity and its own price, to the cent.
+    expect(result.items[0].quantity).toBe(2)
+    expect(result.items[0].subtotal).toBe(70)
+
+    // Total charged is what the two lines charged separately -- no unit silently re-priced.
+    expect(result.items.reduce((sum, line) => sum + line.subtotal, 0)).toBe(190)
   })
 })
 
