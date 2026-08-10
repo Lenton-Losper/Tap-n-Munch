@@ -11,7 +11,7 @@ import {
   readStoredTableNumber,
   SESSION_TOKEN_STORAGE_KEY,
 } from '@/lib/tab-storage'
-import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
+import { isActiveTabStatus, shouldClearTabAfterSettlement, type TabRow } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 
@@ -150,7 +150,7 @@ export function TabProvider({
       setTabStatus(status)
 
       if (
-        shouldClearTabAfterSettlement(data as { status?: string; settled_type?: string | null })
+        shouldClearTabAfterSettlement(data as TabRow)
       ) {
         console.log('[TAB CONTEXT] tab no longer active; clearing session', {
           tabId,
