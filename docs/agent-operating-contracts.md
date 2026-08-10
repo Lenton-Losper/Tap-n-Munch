@@ -82,6 +82,18 @@ Always invoke node node_modules/typescript/bin/tsc, which cannot
 resolve to anything but the local compiler. Verify --version reads
 5.9.3 before trusting any result.
 
+WORKTREES SHARE ONE .git — REFS MOVE UNDER YOU
+Worktrees isolate FILES. They do not isolate rows (see TEST ISOLATION)
+and they do not isolate REFS. Another agent's fetch updates
+origin/<branch> for every worktree at once. Observed 2026-08-10: an
+auditor's origin/cloudflare-staging moved from 4fa1d01 to 5f19e69
+mid-task, and it was caught only because the tip happened to be
+re-printed.
+
+So: re-read any SHA at the moment you use it. Never trust a SHA quoted
+in a brief, including your base — `git rev-parse` it when it matters,
+not once at the start.
+
 TEST ISOLATION
 Never run the bare full suite (`npx jest` with no path filter). The
 live-data suites all write to ONE shared staging Supabase project, so
@@ -102,6 +114,17 @@ If the baseline SHA no longer exists (a rebase can remove it from every
 branch), say so, re-measure, and state which SHA your new baseline came
 from. Do not silently compare against a number.
 
+THE BASELINE IS FOR RECOGNITION, NOT REPRODUCTION. It exists so you can
+identify a failure as pre-existing if you happen to hit one. You are NOT
+expected to run the named suites — they are the live ones, and the
+integrator measures them once, serially.
+
+An EMPTY baseline is a legitimate, complete answer. If no hermetic suite
+covers what you touched, write exactly that, with the grep that shows no
+suite imports your changed modules. "No baseline suite covers this, here
+is the check" is a STRONGER report than a green run of unrelated tests.
+Never run live suites for ceremony.
+
 PROOF
 Classify your proof and produce the right kind:
 - Regression — failing test, fix, passing test. Default for behaviour.
@@ -111,9 +134,34 @@ Classify your proof and produce the right kind:
 - Invariant — query shows bad state, fix, invariant restored.
 - Integration — real request, device, or provider interaction.
 - Observational — logs, version endpoint, runtime artifact.
+- Reachability — for deletions and dead-code removal. tsc exit 0 is
+  NECESSARY BUT NOT SUFFICIENT: a deleted file always typechecks. The
+  proof is the enumeration — the exact grep and its FULL output, plus
+  explicit disposal of every non-literal path: barrel / `export *`
+  re-export, dynamic import() or require() with a computed specifier,
+  framework route convention, and build-time aliases or rewrites.
+  State each one checked, with the command. A Next build is NOT a
+  substitute where next.config sets typescript.ignoreBuildErrors.
+- Archaeological — for audits. The claim is "the code at this ref does
+  or does not contain this fix". Read the file at `<ref>:<path>`; label
+  every finding CODE, commit-message, or inference.
 
 Do not invent an artificial test to satisfy procedure. Say which kind
 you used and why.
+
+A negative probe must be TWO-SIDED. A probe that fails after your change
+proves nothing on its own — it might have failed before. Confirm the bad
+input was ACCEPTED before and is REJECTED after. The one-sided reading is
+the natural one and is nearly worthless.
+
+A PASSING TEST IS NOT EVIDENCE THE CODE IS CORRECT. It is evidence the
+code matches the test. Both can be wrong together, and then the test
+pins the defect in place. Live example: #131 — a ready order is labelled
+PREPARING on production, and main's own
+__tests__/receipt-status-badge.test.ts:25 ASSERTS that it reads
+PREPARING. The suite is green and the bug is load-bearing. When a test
+encodes the behaviour you are about to change, read it as a claim to be
+checked, not as a constraint to satisfy.
 
 SUPPRESSIONS
 Every !, as, any, or ts-nocheck you introduce is disclosed and graded:
@@ -169,7 +217,8 @@ STATE CHECKED
 - what I verified vs. what the brief claimed:
 
 IS THE DEFECT REAL?
-live runtime defect | type-only, no current runtime consequence |
+live runtime defect | latent (real and verified, not yet triggered —
+state the trigger) | type-only, no current runtime consequence |
 not a defect | unreachable code
 - evidence:
 - if the brief asserted otherwise, say so here
