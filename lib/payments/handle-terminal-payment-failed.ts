@@ -1,5 +1,5 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
-import { CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
+import { amountsMatch, CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import {
   finaticErrorCode,
@@ -168,6 +168,61 @@ export async function handleTerminalPaymentFailed(
       })
 
       if (finatic.paid) {
+        /**
+         * The gateway's figure has to agree with the order before it is written as the amount
+         * collected. verify-payment/route.ts:117 has always checked this; this path reached
+         * markOrderPaidConfirmed with `finatic.amount ?? orderTotal` unchecked, so two routes
+         * asking Finatic the same question disagreed about whether the answer needed verifying.
+         *
+         * A disagreement is NOT cancelled. Finatic has just said the customer was charged, and
+         * cancelling on a quibble about the figure is the exact failure this whole path exists
+         * to prevent. Neither is it corrected using the order total instead: if the reference
+         * has correlated to a different sale, that marks THIS order paid on somebody else's
+         * money, and the row would look entirely ordinary afterwards.
+         *
+         * So it takes the outcome that already models "this order's money state is not
+         * established" — left pending, nothing written, visible in the audit trail, and
+         * resolvable by the reconcile cron or a human. Both callers already handle it.
+         *
+         * A missing amount is not a disagreeing amount: Finatic omitting the field falls
+         * through to the order total exactly as before.
+         */
+        if (finatic.amount != null && !amountsMatch(finatic.amount, params.orderTotal)) {
+          const reason =
+            `Finatic reports paid but for ${finatic.amount}, not the order total ${params.orderTotal} — ` +
+            'not correcting to paid, and not cancelling an order the gateway says was charged.'
+          console.error(`[handleTerminalPaymentFailed] order ${params.orderId}: ${reason}`)
+
+          const { error: mismatchAuditError } = await supabase.from('audit_logs').insert({
+            restaurant_id: params.restaurantId,
+            action: 'payment.verification_uncertain',
+            entity_type: 'order',
+            entity_id: params.orderId,
+            metadata: {
+              reason,
+              // Both figures, so the disagreement can be settled from the audit row alone.
+              finaticAmount: finatic.amount,
+              expectedAmount: params.orderTotal,
+              terminalReportedAmount: params.amount ?? null,
+              finaticStatus: finatic.status,
+              finaticTransactionId: finatic.transactionId,
+              businessOrderNo: merchantOrderNo,
+              reference: params.reference || null,
+              terminalId,
+              requestedCancellationReason: cancellationReason,
+              outcome: 'left_pending_finatic_uncertain',
+            },
+          })
+          if (mismatchAuditError) {
+            console.error(
+              '[handleTerminalPaymentFailed] amount-mismatch audit failed:',
+              mismatchAuditError,
+            )
+          }
+
+          return { outcome: 'left_pending_finatic_uncertain', reason }
+        }
+
         const claim = await markOrderPaidConfirmed(supabase, {
           orderId: params.orderId,
           restaurantId: params.restaurantId,
