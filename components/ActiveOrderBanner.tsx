@@ -101,7 +101,8 @@ export function ActiveOrderBanner() {
         setLastOrderLoaded(true)
         return
       }
-      setLastOrder({ id: String(data.id), ...data })
+      // Spread first: `{ id: ..., ...data }` put the raw id back over the normalized one.
+      setLastOrder({ ...data, id: String(data.id) })
       setLastOrderLoaded(true)
     }
 
