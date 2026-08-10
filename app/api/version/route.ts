@@ -15,5 +15,16 @@ function resolveCommitSha(): string | null {
 }
 
 export async function GET() {
-  return NextResponse.json({ commit: resolveCommitSha() })
+  // This endpoint is how a deploy is verified, so a cached answer is worse than no
+  // answer: a stale edge hit is indistinguishable from a stuck rollout. force-dynamic
+  // alone does not stop the edge from caching the RESPONSE -- it only stops Next from
+  // prerendering it -- so the response must opt out explicitly. See #192.
+  return NextResponse.json(
+    { commit: resolveCommitSha() },
+    {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    }
+  )
 }
