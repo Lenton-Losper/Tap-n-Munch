@@ -9,9 +9,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { OrganizationRestaurantOption, TransferListRow } from '@/lib/stock/transfer-queries'
+import type {
+  OrganizationRestaurantOption,
+  TransferListRow,
+  TransferStatus,
+} from '@/lib/stock/transfer-queries'
 
-function statusBadgeClass(status: string) {
+function statusBadgeClass(status: TransferStatus) {
   switch (status) {
     case 'DRAFT':
       return 'border-[#E9E9E7] bg-[#FAFAF8] text-[#37352F]'

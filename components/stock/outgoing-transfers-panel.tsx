@@ -9,9 +9,9 @@ import {
   type ConfigureCanonicalItemTarget,
 } from '@/components/stock/configure-canonical-item-dialog'
 import { cancelTransferAction, dispatchTransferAction, type UnconfiguredItemInfo } from '@/lib/stock/transfer-actions'
-import type { TransferListRow } from '@/lib/stock/transfer-queries'
+import type { TransferListRow, TransferStatus } from '@/lib/stock/transfer-queries'
 
-function statusBadgeClass(status: string) {
+function statusBadgeClass(status: TransferStatus) {
   switch (status) {
     case 'DRAFT':
       return 'border-[#E9E9E7] bg-[#FAFAF8] text-[#37352F]'

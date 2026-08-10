@@ -9,9 +9,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { OrganizationStockItemOption, TransferListRow } from '@/lib/stock/transfer-queries'
+import type {
+  OrganizationStockItemOption,
+  TransferListRow,
+  TransferStatus,
+} from '@/lib/stock/transfer-queries'
 
-function statusBadgeClass(status: string) {
+function statusBadgeClass(status: TransferStatus) {
   return status === 'RECEIVED'
     ? 'border-green-200 bg-green-50 text-green-800'
     : 'border-red-200 bg-red-50 text-red-800'
