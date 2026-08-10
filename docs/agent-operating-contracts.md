@@ -495,6 +495,47 @@ Unchanged and non-negotiable:
 
 ---
 
+## `main` is built by cherry-pick, so "fixed" drifts — measure the gap
+
+**"Fixed on staging" and "fixed in production" are different facts here, and nothing measures the
+distance between them unless someone chooses to.**
+
+`main` is not staging plus pending work. It is built by cherry-pick, so the two diverge in BOTH
+directions and stay diverged. Measured 2026-08-10: 34 commits on `cloudflare-staging` not on
+`main`, 19 on `main` not on `cloudflare-staging`. Any reasoning that treats staging as "main plus
+what is queued" is wrong, and every audit that assumes it produces a confident wrong answer.
+
+Three consequences that have each already happened:
+
+- **A fix can sit one cherry-pick from production for days while others go past it.** #124 was a
+  live payment-method allowlist bypass — `if (paymentMethod && !allowed.includes(paymentMethod))`,
+  so omitting the field skipped the check entirely. The fix was on staging. Three other fixes
+  (#126, #180, #125) were promoted over it before anyone looked.
+- **Branch-merged and issue-fixed are different questions.** #180's branch was never merged, yet
+  the issue is live, because its commits were cherry-picked. #174's DB index shipped to `main`
+  while its sibling UI fix #175 did not — and #174 being closed makes #175 look done.
+- **A close-audit found 31 issues fixed on a branch and not live.** That list is the most valuable
+  output of the exercise precisely because those are the ones everyone assumes are done.
+
+**So the close-audit is a standing step, not a one-off.** Run it on a schedule and before any
+release decision, not when someone happens to ask at 1am. It answers one question — *for each open
+issue, is the fix reachable from `origin/main`?* — and it produces three lists: shipped and live,
+fixed on a branch and not live, genuinely open. The middle list is the deliverable.
+
+Its method matters, because commit messages lie in both directions — a message can cite an issue
+it did not fix, and a fix can land citing nothing. Use `Archaeological` proof: read the file at
+`origin/main:<path>` and label every finding CODE, commit-message, or inference. `git log --grep`
+is where the audit starts, never where it ends.
+
+Two traps found running it:
+
+- There is a **second production line**. `origin/feat/terminal-reconciled` ships to devices by APK;
+  `main` contains no terminal app at all. "Reachable from `origin/main`" is meaningless for those
+  issues, and the three-list model has no slot for "live on devices, not on `main`". Do not assert
+  liveness for a terminal issue without a device version check.
+- **Work can exist on no remote at all.** `feat/156-settle-writes-sale-ledger` carried two answered
+  rulings and existed on one hard drive. An audit that only reads `origin` will not see it.
+
 ## Operating rule
 
 Discover in parallel. Reframe before deciding. Write in isolation. Report structurally.
