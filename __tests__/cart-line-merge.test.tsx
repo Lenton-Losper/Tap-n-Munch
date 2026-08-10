@@ -113,10 +113,15 @@ let cart: ReturnType<typeof useCart> | null = null
 /** Publishes the live context value so a test can drive addItem the way a tap does. */
 function CartProbe() {
   const value = useCart()
+  // Deliberate: this probe exists to publish the live context value out to the test.
+  // react-hooks/globals flags module-scope assignment from a component, which is exactly
+  // what a probe does and is safe here because nothing renders it in the app.
+  /* eslint-disable react-hooks/globals */
   useEffect(() => {
     cart = value
   })
   cart = value
+  /* eslint-enable react-hooks/globals */
   return null
 }
 
