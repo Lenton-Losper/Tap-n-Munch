@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { NextResponse } from 'next/server'
 import { createPaymentRequest } from '@/payments/paycloud'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
@@ -180,6 +179,15 @@ export async function POST(req: Request) {
         table: String(tableNumber),
       },
     })
+
+    // Same as /api/payments/create: createPaymentRequest returns or throws, never resolves
+    // undefined. Reject rather than continue -- the orders are already marked pending above, and
+    // a 201 with defaulted fields would tell the payer a checkout exists for money that was never
+    // requested from the gateway. Throwing leaves them pending, which is what every other
+    // provider failure on this route already does.
+    if (!payment) {
+      throw new Error('PayCloud returned no payment result')
+    }
 
     if (payment.checkoutUrl) {
       await Promise.all(

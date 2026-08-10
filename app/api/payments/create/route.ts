@@ -1,4 +1,3 @@
-// @ts-nocheck — createPaymentRequest is JS without complete typings
 import { NextResponse } from 'next/server'
 import { createPaymentRequest } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
@@ -49,6 +48,14 @@ export async function POST(req: Request) {
       storeNo,
       description: note || `FlashTap Pay - ${merchantName}`,
     })
+
+    // createPaymentRequest returns a result or throws; it never resolves undefined (its body can
+    // only fall off the end syntactically, not on any reachable input). Reject rather than build a
+    // share link around a defaulted checkoutUrl -- that would hand a merchant a link to nowhere
+    // and a 201 saying a payment session exists when none does.
+    if (!payment) {
+      throw new Error('PayCloud returned no payment result')
+    }
 
     const shareUrl = `${new URL(req.url).origin}/flashtap-pay/checkout?merchant=${encodeURIComponent(
       merchantName,
