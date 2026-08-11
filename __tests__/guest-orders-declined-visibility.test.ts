@@ -211,11 +211,15 @@ describe('the record view — a declined request no longer vanishes from the lis
     expect(declined?.status).toBe('declined')
   })
 
-  it('asks the database for both statuses rather than filtering after the fact', async () => {
+  it('asks the database for every opted-in status rather than filtering after the fact', async () => {
+    // `accepting` joined the LIVE set in #219 -- it is the transient claim Accept takes and had
+    // been filtered out at the database, so a stranded request vanished from this same list.
+    // The opt-in this file is about is unaffected: `declined` is still added only on request,
+    // which every other assertion here continues to pin.
     await fetchGuestOrdersBySession({ ...base, includeDeclined: true })
     const statusFilter = stub.applied.order_requests.find(([key]) => key === 'in:status')
     expect(statusFilter).toBeDefined()
-    expect(statusFilter?.[1]).toEqual(['waiting_review', 'declined'])
+    expect(statusFilter?.[1]).toEqual(['waiting_review', 'accepting', 'declined'])
   })
 })
 
