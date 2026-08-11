@@ -1198,3 +1198,84 @@ it is dead code there, not a live defect. Listing it without that caveat would h
 risk. The agent said so rather than padding the count.
 
 Open issues: **116**.
+
+---
+
+## CHECKPOINT 16 — FINAL. Two agents hit the session limit; both delivered first.
+
+`sp-receipt` and `sp-browse` both hit the limit at ~15:58 (resets 18:50 Africa/Windhoek). **Both
+sent complete handoffs before stopping.** Nothing was lost.
+
+### #243/#248 — THE OBVIOUS FIX IS INVALID, and that is the finding
+
+**`order_requests` has NO `payment_status` column.** So "apply the payment filters to the requests
+query too" issues `.eq('payment_status', …)` against a column that does not exist — PostgREST
+errors, the route 500s, and v2's effect is `void run()` with **no catch**. It would trade a silent
+wrong banner for an unhandled rejection on the landing screen.
+
+Channel-only filtering does not rescue it: a request can carry `payment_channel: 'hosted'` while the
+hosted checkout is **deferred to accept**, so it has no payment in flight and still matches.
+
+**Found by reading the migration, not by a green test** — the agent's own stub applies filters to
+fixture objects and can never error on a missing column. It said so.
+
+### #243 dated precisely, and the failure mode is instructive
+
+The block worked for two months. Killed on **2026-07-26 by `7efd00c`**, a *correct* security fix
+scoping by session id — whose `--stat` against `v2/page.tsx` is **empty**. It did not touch the
+caller. It fails to `null` rather than throwing, and "no block" is visually identical to "no pending
+payment". Six weeks unnoticed.
+
+And the sibling call at `v2:577` passes `countOnly: true`, so it works — **anyone eyeballing the file
+sees a working call directly above the broken one.**
+
+### THE ORDERING CONSTRAINT — #248 must land STRICTLY FIRST
+
+Measured both directions. Fixing #243 alone means: a table where **nobody has attempted any
+payment**, with one plain QR request awaiting review, tells a customer who has paid nothing that *"A
+payment is being processed for this table"* and disables ordering for ten minutes.
+
+Including in cherry-pick order onto main.
+
+### #244 CLOSED REPO-WIDE — 198 refs, 144 unique commits
+
+Three negatives, **with a positive control on the same 144 commits** (`sendReceiptEmail`, 817
+matches) so the clean sheet reflects the repository rather than the search:
+
+- `customer_email` — **zero matches, ever**. Every variant hit is the migration *filename* appearing
+  as a string in apply/verify scripts, disposed of by name.
+- Issuance has **never** referenced delivery on any commit. Not "not currently" — never.
+- `lib/receipts/delivery/*` has **never** contained `pending`, so that status and its index have
+  never had a writer.
+
+Also: `sendReceiptEmail` appears in 11 files but has **3 callers** — four of the rest are
+terminal-app files holding a *different* function of the same name. Anyone counting files gets 11.
+
+### A measurement-harness lie, caught by the agent in itself
+
+`EXIT=$?` after a pipe into `head` reports **head's** status, not `git grep`'s — it printed EXIT=0 on
+a search that had found nothing. Re-run without the pipe. The agent's own summary: *"my measurement
+harness lies more often than the code does."* Fifth instance this sprint.
+
+### Also disclosed rather than hidden
+
+`sp-browse` started reading in a fresh worktree **without provisioning it**, `npx jest` resolved
+outside the repo, and it flagged skipping the TOOLCHAIN rule rather than quietly fixing it.
+
+And its committed tests **pin defective behaviour on purpose**, with the file header saying so in
+the imperative: when #248 is fixed they SHOULD go red, and that red is the signal. A green suite
+pinning a defect is a recorded hazard here (#131, #146) and it refused to add another silently.
+
+### FINAL SPRINT STATE
+
+**Production `fdb999a` — never touched. `origin/main` unchanged. Nothing deployed. No migration
+applied. No production write. #127 untouched.**
+
+Open issues **116**, from 82 at start.
+
+Branches, none pushed:
+`sprint/browse-states` (#214 +exploiter) · `sprint/browse-cancellation` (#225, **stacks on
+browse-states**) · `sprint/migration-check-lint` (#212) · `sprint/receipt` (#212 +exploiter +receipt
+coverage) · `sprint/variants` (#200 +#240) · `sprint/qr-state` (#219 +probes) · `sprint/stock-pay`
+(#219, **the better one**) · `fix/207-toast-mount-race` (#207) · `sprint/243-investigation`
+(investigation artifact).
