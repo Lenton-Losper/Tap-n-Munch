@@ -19,12 +19,7 @@ import { useRestaurant } from '@/contexts/restaurant-context'
 import { supabase } from '@/lib/supabase/client'
 import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
-import {
-  ACTIVE_TAB_STATUSES,
-  fetchTabById,
-  isActiveTabStatus,
-  isTabSessionEndedStatus,
-} from '@/lib/tab-session'
+import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
 import {
   clearTabSession,
   persistTabSession,
@@ -427,30 +422,31 @@ export function MenuLandingPageV2Content({
 
     try {
       setTabLoading(true)
-      const cutoffIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
-      let tabQuery = supabase
-        .from('tabs')
-        .select(
-          'id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, firebase_id',
-        )
-        .eq('restaurant_id', restaurantUuid)
-        .in('status', [...ACTIVE_TAB_STATUSES])
-        .gte('created_at', cutoffIso)
-
-      if (table?.id) {
-        tabQuery = tabQuery.eq('table_id', table.id)
-      } else {
-        tabQuery = tabQuery.eq('table_number', tableNum)
+      // #262: this ran as an anon `select ... members ...` on `tabs`, and the anon grant that
+      // permits it has no restaurant scope -- the same key could list every diner's session_id
+      // on every open tab in every restaurant. This screen only needs the member COUNT, so the
+      // whole lookup (12-hour cutoff, table_id/table_number branch and all) now happens
+      // server-side as service_role and comes back with `member_count` instead of `members`.
+      const params = new URLSearchParams({
+        restaurantId: restaurantUuid,
+        tableNumber: String(tableNum),
+      })
+      const tabRes = await fetch(`/api/tabs/active?${params.toString()}`, { cache: 'no-store' })
+      const tabPayload = (await tabRes.json().catch(() => ({}))) as {
+        tab?: {
+          id?: unknown
+          status?: unknown
+          total?: unknown
+          pin_required?: unknown
+          member_count?: unknown
+        } | null
+        error?: unknown
+      }
+      if (!tabRes.ok) {
+        console.error('[TAB CHECK] query error:', tabPayload?.error || tabRes.status)
       }
 
-      const { data: candidates, error: tabQueryError } = await tabQuery.limit(1)
-      if (tabQueryError) {
-        console.error('[TAB CHECK] query error:', tabQueryError)
-      }
-
-      const tabData = (candidates || []).find((row) =>
-        isActiveTabStatus(String((row as Record<string, unknown>).status || ''))
-      ) as Record<string, any> | undefined
+      const tabData = tabPayload?.tab
 
       if (!tabData) {
         setOpenTab(null)
@@ -460,7 +456,7 @@ export function MenuLandingPageV2Content({
       setOpenTab({
         id: String(tabData.id),
         total: Number(tabData.total) || 0,
-        members: Array.isArray(tabData.members) ? tabData.members.length : 0,
+        members: Number(tabData.member_count) || 0,
         pin_required: tabData.pin_required !== false,
         status: String(tabData.status || 'open'),
       })
@@ -470,7 +466,10 @@ export function MenuLandingPageV2Content({
     } finally {
       setTabLoading(false)
     }
-  }, [restaurantId, restaurant?.id, tableNum, table, endTabSession, isViewOnlyTable])
+    // `table` is no longer read here: /api/tabs/active resolves the table row itself. The
+    // realtime effect below still depends on `table?.id` directly, and the effect that calls
+    // this one is gated on `tableFetchDone`, which flips in the same batch as setTable.
+  }, [restaurantId, restaurant?.id, tableNum, endTabSession, isViewOnlyTable])
 
   useEffect(() => {
     // Wait for the table fetch (and therefore isViewOnlyTable) to resolve first -- NOT
