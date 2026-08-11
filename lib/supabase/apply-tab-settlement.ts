@@ -57,23 +57,47 @@ async function markTabOrdersPaid(restaurantId: string, settlementTabId: string) 
     .eq('tab_id', settlementTabId)
   if (error) throw error
   for (const row of rows || []) {
-    await supabase.from('orders').update(markPaidAndCompletedPatch()).eq('id', row.id)
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update(markPaidAndCompletedPatch())
+      .eq('id', row.id)
+    if (updateError) throw updateError
   }
 }
 
+/**
+ * The tab settlement write, and then the orders.
+ *
+ * ORDER MATTERS AND SO DOES THE GUARD (#195). The result of this update used to be discarded, so
+ * a settlement that wrote nothing was followed unconditionally by markTabOrdersPaid -- leaving
+ * every order on the tab paid, the tab still open, and nothing surfaced to the caller or the
+ * operator. Staff would see a tab that will not close after a successful card payment.
+ *
+ * It wrote nothing because the payload named two columns `tabs` does not have. Verified read-only
+ * against BOTH staging and production, and absent from every committed migration (baseline
+ * included -- `grep -rn settlement_type supabase/migrations/` returns nothing):
+ *
+ *   settlement_type -- ABSENT. `settled_type` below already carries card_payment / manual_close,
+ *                      and full-vs-member is carried by which function runs, not by a column.
+ *   updated_at      -- ABSENT. Nothing else on `tabs` maintains it. (`orders.updated_at` DOES
+ *                      exist -- added by 20260714130000 for the patch builders above -- so do not
+ *                      read its removal here as applying to that table.)
+ *
+ * PostgREST rejects the whole statement when a payload names an unknown column, so neither field
+ * was decoration: their presence is what made the settlement silently do nothing.
+ */
 async function applyFullTabSettlement(restaurantId: string, settlementTabId: string): Promise<void> {
   const supabase = createServerSupabaseClient()
-  await supabase
+  const { error } = await supabase
     .from('tabs')
     .update({
       status: 'settled',
       settled_at: new Date().toISOString(),
-      settlement_type: 'full',
       settled_type: 'card_payment',
-      updated_at: new Date().toISOString(),
     })
     .eq('restaurant_id', restaurantId)
     .eq('id', settlementTabId)
+  if (error) throw error
   await markTabOrdersPaid(restaurantId, settlementTabId)
 }
 
@@ -96,7 +120,11 @@ async function applyMemberTabSettlement(
     const mid = String((data as any).member_session_id || (data as any).session_id || '').trim()
     if (mid !== memberSession) continue
     if (String((data as any).payment_status || '').toLowerCase() === 'paid') continue
-    await supabase.from('orders').update(markPaidAndCompletedPatch()).eq('id', (data as any).id)
+    const { error: paidError } = await supabase
+      .from('orders')
+      .update(markPaidAndCompletedPatch())
+      .eq('id', (data as any).id)
+    if (paidError) throw paidError
     memberOrdersTotal += Number((data as any).total) || 0
   }
 
@@ -110,11 +138,15 @@ async function applyMemberTabSettlement(
       .eq('id', settlementTabId)
       .single()
     const current = Number((tab as any)?.total) || 0
-    await supabase
+    // Same two properties as the full path: the member's orders are already marked paid by the
+    // loop above, so a tab balance that silently fails to come down is money owed twice. And
+    // `tabs.updated_at` does not exist, which is what made this write fail in the first place.
+    const { error: totalError } = await supabase
       .from('tabs')
-      .update({ total: Math.max(0, current - delta), updated_at: new Date().toISOString() })
+      .update({ total: Math.max(0, current - delta) })
       .eq('restaurant_id', restaurantId)
       .eq('id', settlementTabId)
+    if (totalError) throw totalError
   }
 }
 
