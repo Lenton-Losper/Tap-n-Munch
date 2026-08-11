@@ -3,8 +3,11 @@
 Four artifacts, plus the roles and deployment rules they depend on. Paste sections 1–3 into
 agent briefs; section 4 and below are for whoever is coordinating.
 
-**Status: provisional.** This was written on 2026-08-10 from one long session and it will be
-wrong within a week. It is version-controlled so the edits have history — when a rule here
+**Status: provisional. Revision 2, 2026-08-11** — see the revision at the end of this document
+for the role model, the activation model, the PROOF CEILING handoff field and rules 7-9. Revision
+1 below is unchanged; nothing in it has been retired.
+
+This was written on 2026-08-10 from one long session and it will be wrong within a week. It is version-controlled so the edits have history — when a rule here
 misfires, change it here rather than working around it in a brief. Test manually on 5–10 real
 issues before automating orchestration.
 
@@ -594,3 +597,220 @@ Discover in parallel. Reframe before deciding. Write in isolation. Report struct
 Integrate serially. Verify independently. Deploy by blast radius.
 
 **Agents may summarize reality. Gates must inspect it.**
+
+---
+
+# Revision 2 — 2026-08-11
+
+Written after a second long session: nine production deploys, sixteen issues closed. Revision 1
+above is unchanged and nothing in it was retired. This adds the role model, the activation model,
+one handoff field, and three rules.
+
+Same standard as revision 1: **every item cites the incident that produced it.** A role or rule
+with no incident behind it is a guess, and should be deleted rather than kept for symmetry.
+
+## Roles
+
+Five agent roles plus the human. These are *functions*, not headcount — one instance may hold
+several, with the single exception stated under Integration & State Auditor.
+
+### Reality & Proof Engineer
+
+Establishes what is actually true before anything is built, and what a proof is worth afterwards.
+Owns the failing-first probe, the negative probe, and the sentence *"the issue's premise is false."*
+
+Origin incidents:
+
+- **#186** — described as a runtime defect; it was type-only, with no runtime consequence. Four
+  issues that session turned out the same way.
+- **#177** — argued from "nothing reads this column." `app/api/terminal/tables/route.ts:50` reads
+  it as a hard gate on the payment terminal's entire table list, and the dangerous direction was
+  the *opposite* of the one filed. Closed and refiled as #216 rather than reframed.
+- **#200** — filed as a live revenue leak. Measured: zero of 2,604 orders affected.
+- **#201** — filed as a customer being shown a false "Payment Confirmed". The button was
+  **unsatisfiable**: it rendered only inside a branch its own condition excluded, so no customer
+  ever clicked it and no write was ever attempted.
+- **#180's blast radius**, inherited from what revision 1 called the Tracer. A change is scoped by
+  *what calls it*, not by what it touches. The integer-cent comparator had callers on four payment
+  legs — and a fifth gate (#197) never called it at all, which is exactly why a sweep defined by
+  the helper missed it.
+
+### Ledger
+
+Owns *"where is this recorded, and who reads that record?"* Distinguishes a log line from a
+durable, queryable fact. A `console.error` in a Worker is not a record.
+
+Origin incidents:
+
+- **#195** — the settle route discarded the result of three writes that ran *after* the orders were
+  claimed paid, including the `payments` INSERT. The money record itself could fail while the route
+  answered `success: true`.
+- **#127** — 282 duplicate `(restaurant, order_number)` pairs on production, which is what blocks
+  the unique index. A ledger question, not a code question.
+- **#187** — a charged-but-refused payment left no record at one call site and a console line at
+  another. Closed with one audit row carrying both figures; the *prevention* half stayed open,
+  because the fix the issue proposed had already been rejected one file over.
+- **`orders.payment_trans_no`** — selected by the ops console, written by a module with **no caller
+  since 2026-06-02**. The field had been blank for ten weeks. Deleting the module did not create
+  the blank; it removed the last code pretending otherwise.
+
+### Canary
+
+Owns *"what would have to be true for this to be observable, and is it?"* Finds the coverage that
+does not exist, rather than the test that fails.
+
+Origin incidents:
+
+- **The Finatic gap** — no public key, no listing API, no code list. Whole classes of gateway
+  behaviour cannot be asserted from this repo at all, and a proof claiming otherwise is wrong.
+- **Staging's missing variant and VAT coverage** — the staging project held no menu item with a
+  variant group and no configured tax rate, so an entire pricing path had never been exercised
+  against real data. Seeding it was a prerequisite to proving anything about it.
+- Corollary the session produced twice: **a green suite can pin the defect.** `stock-status`
+  asserted `computeStockStatus(-5, null) === 'not_tracked'` on the same two shapes that were live
+  and wrong on staging (#146). #131 was the first instance.
+
+### One Writer
+
+Owns the worktree. That only one agent writes per worktree is revision 1's rule. What this session
+added is that **the orchestrator is not exempt**, and that the rule needs *detection*, not only
+prohibition.
+
+Origin incidents, both within the same hour:
+
+- **Bidirectional collision in `ov/ov-d-195`.** An implementer's #165 commit landed under the
+  integrator mid-commit, and the integrator's #195 commit landed under the implementer. Neither
+  knew the other was there. Only `git add <explicit path>` stopped one being authored under the
+  other's message — and neither `tsc` nor any test would have caught it, because the result
+  compiles and passes.
+- **Integrator cwd drift.** A `git push origin HEAD:main` ran from the docs branch instead of the
+  intended worktree. It was rejected as non-fast-forward, and that rejection is the only reason the
+  handover document did not land on `main`.
+
+Controls, all mechanical:
+
+- `git -C <worktree>` for every git command. Never accept a bare `git status` as evidence about
+  your own tree.
+- `git rev-parse HEAD` immediately before and after your own commit. If it moved by more than your
+  commit, someone else is in the tree.
+- Stage by explicit path. Never `git add -A`, `git add .`, or `git commit -a`.
+
+### Integration & State Auditor
+
+Verifies state mechanically, against artifacts, after the fact.
+
+**RULE: this MUST be a SEPARATE INSTANCE — not a second mode of the instance that did the work.**
+
+This is a rule, not a preference, and the reason is specific: the failures it exists to catch are
+*invisible from inside the instance that caused them*, because the mistaken state is the state that
+instance would report from. Both incidents above demonstrate it:
+
+- the **cwd drift** was undetectable by the drifted shell — every relative command it ran agreed
+  with itself;
+- the **worktree collision** was found only because an implementer happened to run
+  `git status --porcelain` *after* committing rather than before, and the integrator did not know
+  it had collided with anyone until told.
+
+Two modes of one instance inherits that blind spot exactly. The auditor must be able to observe a
+state its subject cannot.
+
+### Human Operator — device and reality verification
+
+The human's own role, and not a fallback. Owns what no agent can obtain: taps on a real device, a
+real card on a real terminal, a real phone on mobile data, and go/no-go on production.
+
+Also owns, unchanged from revision 1: policy rulings, customer-facing copy, and anything changing
+what a customer is told about money.
+
+Two of this session's confirmed defects were reachable **only** this way — #202's Riviera
+reproduction, and the "Menu coming soon!" flash during a slow category fetch (#214), which no test
+asserts and which appears on every cold load of the first screen a QR customer sees.
+
+## Activation model
+
+Roles are activated by **failure class exposed**, not by size.
+
+| Size | Chain |
+|---|---|
+| **S** | Reality & Proof → One Writer → integration verification. |
+| **M** | The S chain, plus **Ledger or Canary only where the issue exposes that failure class.** Not both by default; not either by habit. |
+| **H1** | The full chain, with rulings to the human **before** implementation, not after. |
+
+**Auto-H1 regardless of size** — migrations, payments, auth, destructive cleanup, shared state,
+stock, receipt identity, terminal onboarding.
+
+The migration entry earns its place: `20260811120000` changed no enforced behaviour and still
+blocked every production deploy, because the drift guard asks whether the **file and the ledger
+agree**, not what the migration does. "The code doesn't need it" is not the question being asked.
+
+## Addition to section 2 — the handoff block
+
+Add this block. It is the difference between "I proved it" and "I proved as much as this
+environment permits."
+
+```
+PROOF CEILING: UNIT | DB-INTEGRATION | STAGING | DEVICE | LIVE-PROVIDER
+ACHIEVED:
+GAP:
+CEILING BLOCKED BY:
+```
+
+`CEILING BLOCKED BY` is filled **only when the ceiling is currently unreachable**, and must
+distinguish two very different things:
+
+- **obtainable** — "needs one completed staging payment", "needs a device tap". Say what would
+  obtain it. Someone can go and get it.
+- **should not be done** — "needs a write to the live terminal estate", "needs a production
+  migration against an unmeasured constraint". Say why not. Nobody should go and get it.
+
+Precedent for the second: production's `restaurant_terminals_status_check` vocabulary is still
+unverified, deliberately. Settling it means inserting and deleting a row on the table that gates
+terminal authentication, on the live estate. Staging was probed and answered; production was left
+alone and the gap was *stated*.
+
+## Rule 7 — a change that makes existing code reachable
+
+> **WHEN A CHANGE MAKES EXISTING CODE REACHABLE, THE PROOF THAT IT WORKS IS NOT THE PROOF THAT IT
+> IS SAFE.** Enumerate what became reachable, in full, as a separate deliverable.
+
+Origin incident **#204**. Mounting `<Toaster />` app-wide was a one-line fix with a clean two-sided
+proof. What it actually did was make **17 previously-unrenderable strings** visible at once — 10 on
+the cart page, 3 on the tab page, 4 on order-secure, plus 2 on a platform-ops panel — none of which
+any customer had ever seen, and none written in the knowledge that it would be read. Four concerned
+a tab, a settlement or a price. Five rendered raw server error text.
+
+`tsc` was clean, 24 tests passed, and the entire risk lay outside anything a test can assert. The
+enumeration was the bulk of the work, and the contract had not asked for it.
+
+The same commit surfaced `tab/page.tsx`'s "Cash payments are no longer available. Please select
+Card." on a branch that fires for **card and other**, not only cash — a payment-method instruction
+that can be wrong for two of its three triggers, unreachable until that mount and therefore never
+reportable.
+
+## Two further rules this session earned
+
+**A negative probe must verify it LANDED before its result means anything.** In #191 a probe pattern
+matched two sites, so the substitution silently did nothing — and all three tests stayed green,
+which is indistinguishable from evidence. It happened again in #190 through a `sed` delimiter clash,
+leaving 16 green. Echo the substituted line after every edit, or assert the pattern matched. A probe
+that changes nothing looks exactly like a fix that works.
+
+**A test that restates the rule instead of importing it proves nothing.** In #205 five tests stayed
+green against a render site that had been reverted to the defective expression, because the test
+carried its own copy of the rule. Fixed by extracting to `lib/cart/addon-display-price.ts` so the
+test binds to shipped code; the same probe then failed 2 of 5 by name.
+
+State the residual honestly: what that proves is the **rule**. That the call site uses it is covered
+by reading and `tsc`, **not by test**.
+
+## Deletion order, when cleaning up
+
+Enumerate dependents before deleting, and **delete leaves first**.
+
+Origin incident: removing four staging rows from a verification run deleted the audit rows first,
+then failed on `receipt_documents_order_id_fkey` — leaving, for a few seconds, the worse of the two
+half-states: the audit trail gone while the paid order remained.
+
+And: **a cleanup script must discover dependents rather than trust the run's own list.** That run
+reported the orders and audit rows it created. The receipt document it had also issued surfaced only
+when the delete failed.
