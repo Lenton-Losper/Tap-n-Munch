@@ -1689,3 +1689,96 @@ Applied to #262: the "safe, unaffected, service-role" column of the enumeration 
 `origin/feat/terminal-reconciled:src/lib/supabase.ts:5` **does** construct an anon client. But `git grep -ln "supabase\."` over `src/**` returns **nothing** — it is constructed and never imported or used. Its only tabs access is HTTP to a service-role route.
 
 **Stopping at "it builds an anon client" would have reported the opposite conclusion.**
+
+---
+---
+
+# CHECKPOINT — 2026-08-11 late evening. #262 in progress, seam NOT finished.
+
+## STATE
+
+    production / origin/main   97e4fe1e59fc9c0eb3cd69540800357d541af1b6   cache-busted verified
+    origin/cloudflare-staging  99d285376154558a661ede38be53ebc4ab2bc2ed
+    open issues                118
+
+Production path this evening, four gated deploys each verified before the next:
+
+    a43aade -> 7405b26  (#214 + #225, browse-cancellation)
+            -> 237caec  (#262 CONTAINMENT — PIN bypass closed)
+            -> 97e4fe1  (#266 — SUPABASE_SERVICE_ROLE_KEY pinned in both worker deploys)
+
+Closed: **#214, #225, #266**. Filed: **#264, #265, #266**.
+
+## THE SERVICE-ROLE QUESTION — ANSWERED, do not re-derive
+
+`SUPABASE_SERVICE_ROLE_KEY` **IS present in BOTH Worker envs.** Measured, not inferred. The entire "unaffected because service-role" column of #262's enumeration stands.
+
+**The discriminator, reusable on any environment:** `/api/guest/orders/active-table?restaurantId=..&table_number=..&countOnly=1` is an unauthenticated GET returning only an integer (`fetchGuestActiveTableOrders`, `lib/guest-orders/queries.ts:182`, fails closed unless `countOnly`). Production returned `count:2`, `count:2`, `count:5` for three restaurant/table pairs. The anon control — identical filters, public anon key, same project — returned `Content-Range: */0` for all three. `createServerSupabaseClient()` has exactly two possible keys and anon provably cannot see those rows.
+
+Anti-artifact controls proving it is a live query, not a cached constant: `payment_status=paid` → 2, `payment_status=pending` → 0, `payment_channel=qr` → 0, bogus uuid → 0.
+
+**It was set out of band** — present on the Worker, absent from every committed path. That was #266, now fixed: both workflows push it via `wrangler secret put`, and the step **fails** on empty rather than warning. Verified the step executed (`✨ Success! Uploaded secret SUPABASE_SERVICE_ROLE_KEY`), and re-ran the discriminator afterwards to prove the overwrite did not change which role production runs as — still 2 and 5.
+
+**#264 remains open and is the behavioural half:** `lib/supabase/server.ts:10` is `const key = serviceRoleKey || anonKey`. It should THROW, not substitute the public anon key.
+
+## #262 — WHERE IT ACTUALLY STANDS
+
+**SHIPPED:** containment only. `app/api/tabs/[tabId]/join/route.ts` now requires the PIN unconditionally — one line, `if (pinRequired && !alreadyMember)` → `if (pinRequired)`. `alreadyMember` was KEPT: it has a second legitimate job preventing a rejoin appending a duplicate `members[]` entry. Failing-first proof asserts on the TOKEN, not the status code — the unfixed route hands a working session token for a stranger's tab to a caller supplying only a published `session_id`.
+
+**The exposure is still live.** anon still reads `members[]` with `session_id`s on every open tab in every restaurant.
+
+**ASSEMBLED, NOT SHIPPED:** `fix/262-redacting-seam` @ `442467d` (branched off `237caec`). Its #266 half is now on main separately; the rest is not. Contains:
+- NEW `app/api/tabs/active/route.ts` — unauthenticated GET, service-role, `{ id, status, total, pin_required, member_count }` only. Reproduces v2's 12-hour `created_at` cutoff and its `table_id`-else-`table_number` branch, `.limit(1)` with **no `.order()`** (v2 had none; adding one changes which tab is picked). Carries v2's normalisations verbatim including `pin_required !== false` — NOT `Boolean()`, so a null column reads as PIN-required.
+- v2's `~:428` rewired to it. All five fields confirmed consumed; the old query fetched nine columns nobody read.
+- `fetchActiveTabForTable` — `members` REMOVED. Sole consumer `hooks/useSessionTokenGuard.ts:88` reads only `status`/`session_token`.
+- NEW `lib/tab-status.ts` — leaf module for `ACTIVE_TAB_STATUSES`. Necessary because `lib/tab-session.ts` → `lib/supabase/client.ts` constructs a **browser** client at module scope, so an API route must not import it.
+
+**NOT BUILT — this is the remaining work:**
+1. The HMAC opaque member key (ruled below).
+2. `contexts/tab-context.tsx` (~:126) and `lib/tab-session.ts` `fetchTabById` (~:71) still select `members` — they feed `tab/page.tsx:135` and `receipt/page.tsx:142`, which need the pairing.
+3. The migration narrowing the anon grant. **LAST.**
+4. The decisive probe.
+
+## THE OPAQUE MEMBER KEY — RULED, four requirements
+
+**HKDF from `SUPABASE_SERVICE_ROLE_KEY`, tab id as the info parameter.** Chosen over a dedicated secret because it needs no new configuration and the secret is already measured present in both Workers.
+
+1. **Domain separation** — a distinct literal salt/info prefix, `"flashtap:tab-member-key:v1"` or similar, so the derivation can never collide with another use of that secret. The version is the escape hatch for rotating member keys independently.
+2. **Throw if the secret is absent.** No fallback, no default, no empty string. Same requirement as #264's fix; both should land such that a missing service-role key fails loudly at first use.
+3. **Never persist the derived key.** Map at read time on BOTH sides — `members[]` and `order.member_session_id`. Anything writing it to a row is a defect.
+4. **Verify it is per-tab** — same customer, two tabs, two different keys. Test it.
+
+**Why not stripping session_id:** `tab/page.tsx:161-179` groups orders by matching `member.session_id` against `order.member_session_id`; `receipt/page.tsx:140-157` keys its name map the same way. Strip it and both fall into their `members.length === 0` branch, labelling everyone **"Guest"** — explicitly rejected.
+
+**Why not a positional index:** membership churn re-labels past orders.
+
+**Why rotation is safe:** the key is never persisted and both sides are mapped server-side at read time, so a rotation changes both consistently and the join still resolves. It need only be stable within a response, not across time.
+
+## FACTS THAT MUST NOT BE RE-DERIVED
+
+- **PostgREST refuses the ENTIRE query when the select list names an ungranted column.** It does not drop the column. Proven two-sided on production: `select tab_pin` → 42501, `select id,status,total` → OK. This is why the migration is LAST — remove the grant while a client still asks and it is a full guest outage, not a cosmetic degradation.
+- **Postgres reports a COLUMN-level privilege failure as `permission denied for TABLE`.** A single 42501 is one bit. The decisive test is the PAIR, never either half.
+- **`GET /api/tabs/[tabId]` has ZERO callers** — grep for `api/tabs/` outside `app/api/` returns only `/join`, `/member`, `/ready-to-pay`, `/settle`. Its `:30` selects `members` and `:41` returns the row VERBATIM. That leak is independent of the anon grant and activates the moment the seam wires anything to it. `session_id` is itself a credential — `fetchGuestOrdersBySession` (`lib/tab-session.ts:125`) fetches orders BY session id.
+- **Only v2's `~:428` is genuinely pre-token.** `browse`'s two tab reads both run only when the guest already holds a token. My brief said otherwise and was wrong.
+- **`lib/tab-session.ts` names `members` INSIDE the library and five of its six call sites never mention the word.** Enumerate by client-construction site, never by grepping `members`.
+- **`git worktree remove` FOLLOWS a junctioned `node_modules`** and deletes the shared install. Remove the junction link-only (`cmd /c rmdir <path>\node_modules`) first. This happened once today and destroyed ~530 packages mid-session; any test run in that window is suspect.
+
+## THE DECISIVE PROBE — run it after the migration, not before
+
+    select id, members   (public anon key, production)
+
+Must **refuse** where it currently returns 3 rows. That is the only proof #262 is closed. The migration ledger is not evidence — `db query` does not write it and `migration repair` writes it without running SQL (#263).
+
+## STAGING RESEEDED
+
+The staging test restaurant had five drink-like items (Cappuccino, Coke 600ml, Flat White, Rock Shandy, Still Water) in `mains`, which weakened #225's click-test: the human's FAIL indicator named Cappuccino, and a Cappuccino under `drinks` reads as belonging there. Moved all five into `drinks`. `mains` is now food only; a leak is unmistakable. Worth a re-tap of #225, though the code result stands — the loading/heading behaviour is independent of category membership.
+
+Staging tab at table 1001: `8bf5a1cf-cb5a-4998-8835-4b6fc36dd35d`, PIN **4196**, status open.
+
+## OWED TO THE HUMAN
+
+- **#265 recovery-path packet, after #262 lands.** What the recovery should be given staff cannot see the PIN either. Containment REMOVED the only working recovery path, because that path *was* the hole — the `alreadyMember` branch. Correct trade, deliberate, but it makes a real recovery route required rather than optional. Today the product's answer to a forgotten PIN is "staff settles your tab".
+- **#218/#235/#236 packet** — rebuild against measured production state.
+- **#223/#233/#187 one packet** — delivered, awaiting `#223: Q1:A Q2:B ...` format reply.
+- **#242** on `fix/242-webhook-resolver-eq`, **#254** on `fix/254-staging-ref-injection` — both assembled, awaiting deploy decision.
+- **#252 reconciliation** — `reconcile/main-to-staging-2` (`c37e5ca`) then `-batch2` (`715461f`), batch 1 STRICTLY FIRST (proven by cherry-pick conflict). Both gated green and pushed. **The human's to push, not the integrator's.**
