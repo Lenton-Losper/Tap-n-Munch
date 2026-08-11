@@ -61,13 +61,30 @@ export function ItemDetailModal({
     () => editingLine?.special_instructions ?? ''
   )
 
-  // A variant-group line ("Americano - Large") carries an already variant-resolved
-  // base_price, and this modal renders no variant UI to re-resolve it with -- recomputing
-  // from item.base_price is what turned a N$35 Large back into a N$20 Americano (#126).
   const editedVariants = editingLine?.selected_variants
-  const hasVariantSelection = Boolean(editedVariants && Object.keys(editedVariants).length > 0)
+
+  /*
+   * A LINE ALREADY IN THE CART IS A QUOTE, SO AN EDIT KEEPS THE PRICE IT WAS ADDED AT (#189).
+   *
+   * The cart page re-fetches the menu item to open this modal, so `item.base_price` is the
+   * price on the menu RIGHT NOW. A customer who pressed Edit to change a quantity did not
+   * consent to a repricing, so taking it would move the line to a price they were never shown.
+   * If the menu price has changed, that is the NEXT order's price.
+   *
+   * This began as the variant-only carve-out from #126: a variant line ("Americano - Large")
+   * carries an already variant-resolved base_price and this modal renders no variant UI to
+   * re-resolve it, so recomputing turned a N$35 Large back into a N$20 Americano. The reason
+   * generalises -- the stored price is the agreed one either way -- so it now covers every
+   * edited line and the variant case is no longer special.
+   *
+   * The guard is about the STORE, not the menu: the cart is hydrated straight out of
+   * localStorage with no validation (contexts/cart-context.tsx), so a line written by an older
+   * build can arrive with no usable base_price. Only then is the current menu price used, and
+   * only because a line with no price of its own has nothing to preserve.
+   */
+  const storedBasePrice = Number(editingLine?.base_price)
   const unitBasePrice =
-    hasVariantSelection && editingLine ? editingLine.base_price : item.base_price
+    editingLine && Number.isFinite(storedBasePrice) ? storedBasePrice : item.base_price
 
   const calculatePrice = () => {
     let price = unitBasePrice

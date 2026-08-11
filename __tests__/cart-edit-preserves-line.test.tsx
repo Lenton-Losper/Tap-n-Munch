@@ -175,8 +175,16 @@ afterEach(() => {
   container.remove()
 })
 
-/** Renders the modal in edit mode and returns whatever Add to Cart hands back. */
-function addToCartFrom(item: unknown, editingLine: CartItem | null): CartItem {
+/**
+ * Renders the modal in edit mode and returns whatever Add to Cart hands back. `interact` runs
+ * against the open modal before Add to Cart is pressed, for the cases where the customer
+ * changes something rather than confirming untouched.
+ */
+function addToCartFrom(
+  item: unknown,
+  editingLine: CartItem | null,
+  interact?: () => void,
+): CartItem {
   const onAddToCart = jest.fn()
   act(() => {
     root.render(
@@ -189,6 +197,12 @@ function addToCartFrom(item: unknown, editingLine: CartItem | null): CartItem {
       />,
     )
   })
+
+  if (interact) {
+    act(() => {
+      interact()
+    })
+  }
 
   const button = Array.from(container.querySelectorAll('button')).find((el) =>
     /add to cart/i.test(el.textContent || ''),
@@ -257,6 +271,80 @@ describe('editing a cart line (#126)', () => {
     expect(result.selected_addons).toEqual([])
     expect(result.special_instructions).toBe('')
     expect(result.subtotal).toBe(20)
+  })
+})
+
+/**
+ * Issue #189. A line already in the cart is a QUOTE. The cart page re-fetches the menu item to
+ * open this modal, so `item.base_price` is the price on the menu RIGHT NOW -- and a customer
+ * who pressed Edit to change a quantity did not consent to a repricing. If the menu price has
+ * changed since the line was added, that is the next order's price, not this line's.
+ *
+ * #126 already established this for a variant line, but only as a carve-out for a price the
+ * modal could not re-derive. The fixtures above cannot see the general bug at all: CAPPUCCINO
+ * and EXISTING_LINE are both priced at 20, so preserving and recomputing give the same answer.
+ * These use a menu price that has actually moved.
+ */
+describe('a menu price change while the line rests in the cart (#189)', () => {
+  /** The same Cappuccino, after the restaurant put its base price up from N$20 to N$26. */
+  const CAPPUCCINO_REPRICED = { ...CAPPUCCINO, base_price: 26 }
+
+  /** EXISTING_LINE was added at 20 + 15 size + 5 add-on = N$40 a cup, x3 = N$120. */
+  const ADDED_AT_UNIT_PRICE = 40
+
+  it('keeps the added-at price when the customer confirms an edit untouched', () => {
+    const result = addToCartFrom(CAPPUCCINO_REPRICED, EXISTING_LINE)
+
+    // Not 26: the line was agreed at 20 and the customer was never shown the increase.
+    expect(result.base_price).toBe(20)
+    expect(result.subtotal).toBe(120)
+  })
+
+  it('keeps the added-at price when the customer only changes the quantity', () => {
+    const result = addToCartFrom(CAPPUCCINO_REPRICED, EXISTING_LINE, () => {
+      const plus = container.querySelector('[aria-label="Increase quantity"]')
+      if (!plus) throw new Error('quantity + control not rendered')
+      plus.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(result.quantity).toBe(4)
+    expect(result.base_price).toBe(20)
+    // Four cups at the price they were quoted -- not 4 * 46.
+    expect(result.subtotal).toBe(4 * ADDED_AT_UNIT_PRICE)
+  })
+
+  it('charges the NEW menu price for a fresh add, which is the point of the increase', () => {
+    const result = addToCartFrom(CAPPUCCINO_REPRICED, null)
+
+    expect(result.base_price).toBe(26)
+    expect(result.subtotal).toBe(26)
+  })
+
+  /**
+   * The #126 fold guard refuses to merge two lines priced differently per unit, so that a line
+   * confirmed at one price is never re-priced by someone else's edit. Recomputing the edited
+   * line from the current menu MANUFACTURED that difference: two lines added at the same price
+   * became differently-priced the moment one of them was opened, and the customer was told
+   * "Kept separate — different prices" about two lines they had added at the same price.
+   *
+   * Preserving the added-at price means the guard now only fires when the two lines really
+   * were added at different prices, which is what it was written for.
+   */
+  it('no longer manufactures the price difference that refuses a fold', () => {
+    const lineA: CartItem = { ...EXISTING_LINE, quantity: 3, subtotal: 120 }
+    const lineB: CartItem = { ...EXISTING_LINE, quantity: 2, subtotal: 80 }
+
+    // Same thing to make, and both added at the same N$40 a cup.
+    expect(sameCartLine(lineA, lineB)).toBe(true)
+
+    const edited = addToCartFrom(CAPPUCCINO_REPRICED, lineB)
+    const result = applyCartLineEdit([lineA, lineB], 1, edited)
+
+    expect(result.refusedBecause).toBeUndefined()
+    expect(result.merged).toBe(true)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0].quantity).toBe(5)
+    expect(result.items[0].subtotal).toBe(5 * ADDED_AT_UNIT_PRICE)
   })
 })
 
