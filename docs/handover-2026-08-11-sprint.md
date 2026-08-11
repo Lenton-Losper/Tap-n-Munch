@@ -104,3 +104,84 @@ is ever consulted, whether PIN-less venues make it moot), packet it — **do not
 auto-H1**. Then reproduce on staging ONLY if a >12h open tab already exists; explicitly forbidden
 from back-dating one, since that is a write I have not authorised. Then the production `accepting`
 count, read-only.
+
+---
+
+## CHECKPOINT 2 — `sp-stock-pay` and `sp-browse` returned
+
+### #223 — A SIXTH GATEWAY AMOUNT GATE, AND IT CONTRADICTS #187 TWO MINUTES LATER
+
+The most consequential find of the sprint. Verified at `fdb999a` before filing.
+
+```ts
+// lib/orders/auto-cancel-stale-pos-orders.ts:165
+amount: finaticResult.amount ?? Number(order.total),
+```
+
+No comparison. `grep -c payment-integrity` over the module = **0**.
+
+An order refused by #187's amount-mismatch 400 stays `pending`/`pos`. `STALE_POS_TIMEOUT_MS` is
+2 minutes, the cron runs `*/2`. The sweeper asks Finatic and marks it **paid + completed**, clears
+`cancelled_at`, and **issues a receipt for `orders.total`** — the gateway's disagreeing figure
+surviving only in `audit_logs.metadata.amount`.
+
+So the outcome #187 *proposed* already happens automatically, unruled, with less verification than
+#187 asked for — and it is the outcome explicitly declined at
+`handle-terminal-payment-failed.ts:179-207`.
+
+**Why five sweeps missed it, and the method that finds it.** #180's sweep was defined by
+`amountsMatch` call sites; #197's five-gate table enumerated call sites too. **A symbol grep cannot
+find a missing check.** The query that works is `grep -rn markOrderPaidConfirmed lib app` — and at
+`fdb999a` that returns **EIGHT** files. Three have never appeared in any enumeration: the PayCloud
+webhook (an unauthenticated external caller), `e04111-recovery.ts`, and `reconcile-orphan-payments`.
+
+`sp-stock-pay` is now auditing all eight **by writer rather than by comparator**.
+
+### #217 — the #146 prevention packet, with my brief corrected twice
+
+- `saveAdjustmentAction` **has no caller** and has written **zero rows all time** — orphaned
+  deliberately by `844118e` (63 insertions, 0 deletions: the safe action was added beside the old
+  one). My "the one remaining unguarded writer a human can trigger" was wrong in its load-bearing
+  clause, and #159's write-path table carries the same slip.
+- `saveStockCountAction` is **not** unconditionally safe: it writes a DELTA
+  (`actualCount - currentStock`), so a sale landing between the read and the insert lands it
+  negative. It avoids negatives only by construction.
+
+Reframed: the manual-adjustment refuse-vs-confirm question is moot — nobody can make one. The sale
+path is what drives balances negative, and it has three holes, none touched by a manual guard.
+
+### #199 — premise closed, nothing to do
+
+Used by exactly one importer, load-bearing (`expect(LONG_NOTE.length).toBe(MAX_INSTRUCTIONS_LENGTH)`),
+and #199's own closing sentence is a recorded decision to KEEP it until #129 lands. The brief reached
+the agent as a deletion candidate because the issue's first sentence was read without its second.
+
+### #214 — implemented, best-proved commit of the sprint
+
+`706fcb6` on `sprint/browse-states`. My brief named ONE unguarded effect; there are **two**, and the
+one I missed (`loadAllMenuItems`) is the DEFAULT path — `categoryFilter` initialises to `'all'`, so
+the flash the human saw came from the effect not in the brief.
+
+Two-sided with controls green on both sides, negative probe verified landed by blob hash
+(`b181822 -> fe73454`), restored by blob identity. **A probe that did not fire was reported as such**
+rather than counted: deleting the `loadedOnce` gate left everything green, the agent said so, wrote
+the test for the frame it actually defends, found it unobservable in jsdom, and DELETED it rather
+than ship a test failing for the wrong reason.
+
+Audit: no sibling collapse. v2 and kiosk render no menu list. Notably `v2/page.tsx:96-99` already
+carries this exact fix pattern for its own race, with the reasoning written out — and browse never
+got it.
+
+### Filed from this checkpoint
+
+**#223** (sixth gate) · **#224** (search-during-outage false claim) · **#225** (no request
+cancellation) · **#226** (`reconcileOrphanPayments` at order.total).
+
+Open issues: 86.
+
+### Reassigned in the same turn
+
+- `sp-stock-pay` → audit all eight `markOrderPaidConfirmed` writers, by writer not comparator.
+  Fix nothing; payments are auto-H1.
+- `sp-browse` → **Exploiter on its own #214 fix**: reconstruct the ORIGINAL reproduction from the
+  issue text, not from its own test, and report FIXED or UNABLE TO REACH. Then #212's lint rule.
