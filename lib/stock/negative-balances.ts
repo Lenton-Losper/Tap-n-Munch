@@ -1,3 +1,5 @@
+import { roundToStockPrecision } from '@/lib/stock/format'
+
 /**
  * #146 — detection of impossible stock balances.
  *
@@ -44,11 +46,11 @@ function aggregateStockByItem(movements: MovementRow[]): Map<string, number> {
 /**
  * Stock items whose movements sum below zero, worst first.
  *
- * Rounded to 4dp before the comparison because `quantity_delta` is numeric(_,4) and arrives over
- * PostgREST as a string or a float. Without it, a set of movements that cancel exactly can land
- * at -1e-15 through float addition alone and be reported as an impossible balance -- a false
- * alarm on an item that is precisely zero. The rounding is at the same precision the database
- * stores, so it cannot hide a real negative: the smallest representable one is -0.0001.
+ * Rounds through the SAME `roundToStockPrecision` the stock screen's computeStockStatus uses,
+ * rather than repeating the arithmetic here. The two answer one question -- "is this balance
+ * impossible?" -- on two surfaces, and they were briefly allowed to disagree: this path rounded
+ * and the screen did not, so an item at -2.8e-17 was reported clean by the cron and painted
+ * "Impossible (negative)" for the merchant. One definition is what stops that recurring.
  */
 export function findNegativeBalances(movements: MovementRow[]): NegativeBalance[] {
   const balances = aggregateStockByItem(movements)
@@ -61,7 +63,7 @@ export function findNegativeBalances(movements: MovementRow[]): NegativeBalance[
 
   const negatives: NegativeBalance[] = []
   for (const [stockItemId, raw] of balances) {
-    const balance = Math.round(raw * 10000) / 10000
+    const balance = roundToStockPrecision(raw)
     if (balance < 0) {
       negatives.push({ stockItemId, balance, movementCount: counts.get(stockItemId) ?? 0 })
     }
