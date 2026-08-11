@@ -1047,3 +1047,84 @@ Open issues: **110**.
 branches hold unpushed work (it found `menuBodyState` on one local branch and no remote). Sweeping
 ~30 refs for `sendReceiptEmail` / `customer_email` / delivery machinery establishes #244's
 constraint **repo-wide rather than at one ref**, which is the version worth recording.
+
+---
+
+## CHECKPOINT 14 — the drift audit, and TWO corrections to your standing assumptions
+
+### CORRECTION 1: #174/#175 ARE FULLY LIVE. They can come off the do-not-promote list.
+
+Checked because I named them, and reported as a measurement over received wisdom:
+`21d5133` IS an ancestor of `origin/main`; `lib/tables/table-number-conflict.ts` is **identical**
+across refs and carries #175's rationale in its header; the migration is on main;
+`components/qr-code-management.tsx` is **identical** and renders the number at `:208-209`; and
+**both** #175 tests are present on main.
+
+**The "index shipped, sibling UI did not" split was real once and has since closed.** Not closed by
+the agent — that is yours — but the pair is no longer a promotion hazard.
+
+### CORRECTION 2: the `dd3d9eb` trap cited in the CONTRACT has expired
+
+The contract warns that commit would plant a false statement on main — its text asserts
+`lib/tabs/settle-tab-state.ts` exists, true on staging and false on main. **That premise is now TRUE
+on main**; the file is present at both refs. Still not on main, but the stated reason not to promote
+it no longer holds. **Worth correcting in the contract, since it is cited there as a live example.**
+
+### #129 IS PARTIAL, and it is the exact hazard the list exists for — #253
+
+`lib/orders/instruction-limits.ts` is **byte-identical** on both refs, so a file-presence audit
+scores it done. At main its only importer is a **test** — zero production call sites, exactly as
+`d57c659` says. The fix is three input caps plus the staff truncation, **all staging-only**.
+**The constant travelled; the fix did not.**
+
+### #252 — staging is 39 commits behind main, and the gap is THE PAYMENT STACK
+
+Every #195 commit, #187, #190/#197, #191, #189, #205, #146, #106, #165, #122's union, and
+`fdb999a`'s sub-cent rounding.
+
+**Staging is the reproduction environment.** A payment bug reproduced there today is reproduced
+against an older stack than production. Compounds #203/#242 — staging also runs both injectable
+paths, so order-enumeration findings verified there are verified against code production does not
+run, in the unsafe direction.
+
+**Do not reconcile blindly:** `a6bb436 revert(#193)` is a deliberate divergence.
+
+### METHOD FINDING worth more than the table
+
+**`git log main..branch` reports 268 commits "not on main". Patch-equivalence reports 12.** The gap
+is entirely cherry-pick originals whose copies are already live under different SHAs — and **four of
+the twelve are already live under a different SHA**, which a name-based audit would have proposed
+re-promoting into production.
+
+Any audit of this repo must use `git cherry` / `patch-id`, never reachability.
+
+### #200 — "QR only" is TRUE, and the undercharge is FULLY SILENT
+
+My inference that the POS shares it was reasonable and **wrong**. The pricer is channel-agnostic, but
+**the terminal cannot express a variant**: `POSOrderItem` has no variant field, `mapMenuItem` never
+reads `variant_groups`, and `POSSaleScreen` contains "variant" zero times. It can print one the QR
+flow created; it cannot sell one.
+
+**And nothing logs the shortfall.** The size-mismatch warning never fires, because the selection
+travels in `selected_variants` and `extractSizeName` reads only the size fields — so nothing fails to
+match. `POST /api/orders` then prices and inserts without comparing the client total. **No warning,
+no log, no record.** That is why zero-of-2,604 was only findable by measuring menu data.
+
+Plus a trap: the undercharge happens at `POST /api/orders`, not `accept/route.ts` — **anyone hunting
+it in the obvious place finds correct-looking code.**
+
+### #209 Q1 REVISED B → A
+
+The issue's own framing of option A is wrong in our favour: the 403 body **already names** the
+refused method, and the client already holds `paymentPreference` in its own state. **No API change,
+arguably no new string.** Also the branch fires for **cash and card only** — `'other'` is excluded at
+`:80` — so it is correct for one of **two** triggers, not three.
+
+### Filed
+
+**#252** (staging 39 behind) · **#253** (#129 partial). Open: **112**.
+
+### SCOPE STATED PLAINLY: ~42 refs unaudited
+
+59 refs are ahead of main; 33 have tips dated 2026-07-30 or earlier. Ten dated 2026-08-04+ are the
+ones to audit next. **Deprioritised by age — disclosed as a judgement call, not hidden.**
