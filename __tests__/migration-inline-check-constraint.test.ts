@@ -42,11 +42,28 @@ describe('#212 — inline CHECK on ADD COLUMN IF NOT EXISTS', () => {
       // The naive check, run over the real migrations. If this ever finds
       // something, the rest of this file still holds — but the point is that
       // today it finds NOTHING while the parser finds five files.
+      //
+      // MASKED before grepping, and that is not a weakening of the control.
+      // The contrast drawn here is SAME-LINE vs MULTI-LINE, not comment vs
+      // code — masking is what keeps it measuring the one it names.
+      //
+      // Unmasked it false-positives on
+      // 20260811120000_restaurant_terminals_status_check_live_vocabulary.sql,
+      // whose comment block QUOTES the offending pattern three times while
+      // explaining the defect it corrects. That file's only executable SQL is
+      // DROP CONSTRAINT + ADD CONSTRAINT — zero ADD COLUMN. The parser masks
+      // and correctly ignores it; only this grep was fooled, which left the
+      // control weaker than the code it defends at exactly the property it
+      // tests hardest.
+      //
+      // That migration is a deliberate main/staging divergence and is never
+      // reconciled, so unmasked this red would be PERMANENT on staging — the
+      // #257 shape, a standing failure a real regression can hide behind.
       const sameLinePattern = /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS.*CHECK\s*\(/i
       const caughtBySameLineGrep = readdirSync(MIGRATIONS_DIR)
         .filter((f) => f.endsWith('.sql'))
         .filter((f) =>
-          read(f)
+          maskNonCode(read(f))
             .split('\n')
             .some((line) => sameLinePattern.test(line))
         )
