@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireSessionToken } from '@/lib/session-guard'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { redactTabMembers } from '@/lib/tab-member-key'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,7 +39,28 @@ export async function GET(
       return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
     }
 
-    return NextResponse.json({ success: true, tab })
+    // #262. This route had NO callers, and it returned the service_role row VERBATIM -- so
+    // `members` went out with every diner's raw `session_id` in it, to any holder of a session
+    // token for this tab. A session_id is a credential (lib/guest-orders/queries.ts
+    // fetchGuestOrdersBySession reads a diner's orders by it), so one member of a shared tab
+    // could have read every other member's orders. Nothing consumed the field, which is the
+    // only reason it was never exploited; it would have gone live the moment anything was
+    // wired to this route. Members are projected through the same redaction the guest seam
+    // uses (GET /api/tabs/[tabId]/view), so both reads agree on the opaque key.
+    //
+    // Rebuilt field by field rather than spread-and-delete: a column added to the row later
+    // must not travel out of here by default.
+    const row = tab as Record<string, unknown>
+    const { members: _rawMembers, ...safeColumns } = row
+    void _rawMembers
+
+    return NextResponse.json({
+      success: true,
+      tab: {
+        ...safeColumns,
+        members: await redactTabMembers(normalizedTabId, row.members),
+      },
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error'
     return NextResponse.json({ error: message }, { status: 500 })

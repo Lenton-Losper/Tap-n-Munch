@@ -137,23 +137,27 @@ function formatOrderTimestamp(value: unknown): string {
   return '—'
 }
 
+/**
+ * member_key -> display name.
+ *
+ * #262: the key used to be the member's raw `session_id`, which is a credential -- fetching a
+ * diner's orders by it is exactly what lib/guest-orders/queries.ts does. It is now the opaque
+ * per-tab `member_key` that GET /api/tabs/[tabId]/view substitutes, and the SAME derivation is
+ * applied to `orders.member_session_id` in lib/guest-orders/queries.ts, so getOrderCustomerLabel
+ * below still resolves a name for every line it used to.
+ *
+ * The old version also indexed on `member_session_id` and `id`. Neither has ever existed on a
+ * member object -- the shape written by app/api/tabs/[tabId]/join and app/api/orders is
+ * `{ session_id, display_name, joined_at }` -- so both were dead branches, and adding them back
+ * as aliases of member_key would only make it look as though a member carried an order field.
+ */
 function buildMemberNameMap(tab: TabRow | null): Record<string, string> {
   const map: Record<string, string> = {}
   const members = Array.isArray(tab?.members) ? tab.members : []
   for (const member of members) {
-    const row = member as {
-      session_id?: string
-      member_session_id?: string
-      id?: string
-      display_name?: string
-    }
-    const name = String(row.display_name || '').trim() || 'Guest'
-    const keys = [row.session_id, row.member_session_id, row.id]
-      .map((value) => String(value || '').trim())
-      .filter(Boolean)
-    for (const key of keys) {
-      map[key] = name
-    }
+    const key = String(member?.member_key || '').trim()
+    if (!key) continue
+    map[key] = String(member?.display_name || '').trim() || 'Guest'
   }
   return map
 }

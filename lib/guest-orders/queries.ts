@@ -2,6 +2,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { guestCanAccessOrder, paymentRefOrFilter } from './validation'
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
+import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
 import type { GuestOrderRow } from './types'
 
 /**
@@ -88,7 +89,9 @@ export async function fetchGuestOrderById(
     if (!guestCanAccessOrder(order, accessParams)) {
       return { order: null, denied: true }
     }
-    return { order, denied: false }
+    // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
+    const [redacted] = await redactGuestOrderMemberIds([order])
+    return { order: redacted, denied: false }
   }
 
   let requestQuery = supabase.from('order_requests').select('*').eq('id', orderId)
@@ -216,7 +219,17 @@ export async function fetchGuestOrdersBySession(params: {
   if (error) throw error
   if (pendingError) throw pendingError
 
-  const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  // #262. `member_session_id` is the value the tab and receipt screens join against the members
+  // array, and the members array no longer carries raw session ids -- so this side has to travel
+  // through the same per-tab derivation or the pairing silently degrades to "Guest" for
+  // everybody. Read-time only: the stored column is untouched, and staff tooling, Accept and
+  // settle all still see the real id.
+  //
+  // order_requests rows are not mapped because mapOrderRequestToGuestRow builds a fixed shape
+  // that has never included member_session_id.
+  const orders = await redactGuestOrderMemberIds(
+    (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
+  )
   const pendingRows = (pending ?? []).map((row) =>
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
   )
@@ -284,7 +297,10 @@ export async function fetchGuestActiveTableOrders(params: {
   const { data, error } = await query.order('placed_at', { ascending: false })
   if (error) throw error
 
-  const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
+  const orders = await redactGuestOrderMemberIds(
+    (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
+  )
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
   // is included for the same reason as in fetchGuestOrdersBySession -- see
@@ -380,7 +396,12 @@ export async function fetchGuestOrdersByPaymentRef(params: {
     sessionId: params.sessionId ?? null,
   }
 
-  return (data ?? [])
-    .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
-    .filter((order) => guestCanAccessOrder(order, accessParams))
+  // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262). It
+  // matters more here than anywhere else: DOOR 3 lets a PAID order through on restaurant scope
+  // alone, so without this a known payment reference reads back another diner's session id.
+  return redactGuestOrderMemberIds(
+    (data ?? [])
+      .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
+      .filter((order) => guestCanAccessOrder(order, accessParams)),
+  )
 }
