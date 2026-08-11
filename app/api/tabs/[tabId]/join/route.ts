@@ -10,8 +10,15 @@ export const dynamic = 'force-dynamic'
  *
  * Hardened against join-by-UUID alone:
  * - tableNumber is required and must match the tab
- * - if pin_required and sessionId is not already a member → require matching PIN
- * - already-a-member (rejoin) allowed without PIN after table match
+ * - if pin_required → require matching PIN, member or not
+ *
+ * #262: the member exemption was a full authentication bypass. `alreadyMember` is computed from
+ * a CLIENT-SUPPLIED sessionId against tabs.members[], and tabs.members is SELECTable by the
+ * public anon key with no restaurant scope (migration 20260726200000 grants anon SELECT on the
+ * column), so the exact value that satisfied the check was published to anyone holding the anon
+ * key. Presenting a harvested session_id skipped the PIN and was issued a real session token.
+ * `alreadyMember` is kept — it is still what stops a rejoin appending a duplicate members[]
+ * entry — but it no longer gates the PIN.
  */
 export async function POST(
   req: Request,
@@ -84,7 +91,7 @@ export async function POST(
       members.some((m: { session_id?: string }) => String(m?.session_id) === sessionId)
 
     const pinRequired = tabData.pin_required !== false && Boolean(tabData.tab_pin)
-    if (pinRequired && !alreadyMember) {
+    if (pinRequired) {
       if (!pin) {
         return NextResponse.json({ error: 'PIN required to join this tab' }, { status: 403 })
       }
