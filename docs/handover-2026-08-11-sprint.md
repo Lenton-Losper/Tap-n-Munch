@@ -347,3 +347,85 @@ Open issues: 95.
   would even render correctly, and what the safe shape of the fix is.
 - `sp-qr-state` → the `.or()` interpolation write-up (two agents found it independently from
   opposite directions), then **#219**, which is implementable without a ruling.
+
+---
+
+## CHECKPOINT 5 — the Exploiter role caught a live gap in a fix that was already proved
+
+### #212 — EXPLOITER RESULT: **REACHED**, then closed. `64b1638`.
+
+The agent that wrote and two-sided-proved the rule then **defeated it**, with a fixture written as a
+real author would rather than by re-running its own suite:
+
+```sql
+DO $$
+BEGIN
+  IF EXISTS (...) THEN
+    ALTER TABLE public.tabs
+      ADD COLUMN IF NOT EXISTS settlement_state text NOT NULL DEFAULT 'open'
+        CHECK (settlement_state IN ('open','settling','settled'));
+  END IF;
+END $$;
+```
+
+`blankNonCode()` blanked dollar-quoted bodies wholesale — correct, so a function body's semicolons
+could not tear the outer statement — and thereby made **every statement inside such a body
+invisible**. The scanner called the file clean. Four other fixtures were caught.
+
+**Not theoretical.** FOUR committed migrations already put `ALTER TABLE` inside a dollar body, and
+`20260725140000` **is that fixture one edit away** — it adds the column, then guards its CHECK inside
+`DO $$ … END $$`, the *correct* idiom, written by someone who understood the problem. Folding that
+CHECK back onto the column is a one-line change the scanner would have ignored.
+
+Fixed by recursing into bodies with line-mapping, depth-capped. Two-sided: 4→5 fixtures caught, and
+**40 real migrations carrying a dollar body produced zero false positives**. Suite 16→18; the added
+test is the negative twin — the correct idiom inside a DO block must still not be flagged, which is
+what that file actually ships.
+
+**This is the role working as designed on its first serious run.**
+
+### #226 — the obvious fix would have been a NEW defect
+
+`payment_events.amount` is `NOT NULL` with `CHECK (amount > 0)`, so there is **no absent-amount case**
+here — a real difference from the three gateway legs.
+
+But `order_ids` is `uuid[]` and a tab settlement writes **ONE event for the full set**. So
+"pass `event.amount` instead of `row.total`" would record **each order paid at the whole tab
+amount**. The only correct comparison is `event.amount` against the **SUM** of the covered orders.
+
+And the tolerance: the amount is **terminal-submitted**, so it is a CLIENT leg taking
+`PAYMENT_AMOUNT_TOLERANCE_CENTS` (1). Reaching for the gateway constant because the word "reconcile"
+appears would be wrong.
+
+### #237 — a LIVE customer-facing money defect on the ORDINARY settle path
+
+`issueReceipt.ts:283` uses `event.amount` verbatim, matched by `.contains('order_ids',[orderId])`.
+A three-order settle of N$120 issues **three receipts, each reading Total N$40 against a payment
+line of N$120.** Nothing says it is a share.
+
+Found while answering #226; independent of it.
+
+### Filed
+
+**#237** (multi-order settle receipts) · **#238** (`clientAmount` recorded regardless of origin) ·
+**#239** (bulk path marks paid with no audit row). One filing hit a GitHub 502 and was retried.
+
+Open issues: 98.
+
+### Caller count — two agents converged independently
+
+`sp-receipt` reached SIX real callers; `sp-stock-pay` reached the same six plus three direct
+`payment_status: 'paid'` writes. Both disproved two of my eight the same way (definition; doc
+comment). Convergence from opposite directions is the strongest form that count has had.
+
+### Third shell-quoting artifact of the sprint
+
+A bash one-liner mangled escaping and printed "0 migrations with ALTER TABLE in a dollar body". The
+true number is 4 — the agent re-ran from a file and corrected its own under-sell. Third time this
+sprint a shell quoting artifact produced a confident wrong number. **Goes in the contract.**
+
+### Reassigned in the same turn
+
+`sp-receipt` → size **#237** properly (four renderers, what proration would mean across differing
+totals, whether the disagreement is even visible at 32 chars) — enumerate and packet, write no copy;
+then support **#234**'s rule-7 enumeration from the receipt side.
