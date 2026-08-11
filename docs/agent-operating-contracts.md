@@ -122,10 +122,26 @@ from. Do not silently compare against a number.
     staging  6 suites / 13 tests
     main     7 suites / 17 tests
 
-The delta is `guest-orders-validation` — 4 tests, repaired by wave-2's #122,
-which is on staging and not on `main`. So a branch cut from `main` legitimately
-fails 17, and comparing it against staging's 13 reads as four regressions that
-do not exist.
+The delta is `guest-orders-validation` — 4 tests. **CORRECTED 2026-08-11 (rev 2): this is a
+STALE TEST ON MAIN, not a missing code fix on staging.** The earlier wording here said staging
+carried a #122 auth fix that `main` lacked. That inverts which branch is behind, on a
+security-relevant file, and it was propagated into agent briefs before it was caught.
+
+Verified: `guestCanAccessOrder` is **byte-identical at both refs** — same content hash
+`18ce303910cccb41059c23a3570a135c6342f9dd`. The diff between the two `validation.ts` files begins
+*after* that function.
+
+  CODE  main is AHEAD  — `isWellFormedPaymentRef` + a fail-closed `paymentRefOrFilter`.
+                         Staging returns bare `string` with no validation (#254).
+  TEST  main is BEHIND — its four cases call `guestCanAccessOrder` with `{}`, no `restaurantId`,
+                         asserting the contract that existed before `f4f9111` made restaurant
+                         binding mandatory. They have failed ever since. Staging carries the
+                         repaired test, plus two cases that were missing entirely.
+
+So a branch cut from `main` legitimately fails 17, and comparing it against staging's 13 reads as
+four regressions that do not exist — the practical rule is unchanged. But the four reds are on a
+multi-tenant isolation function, they are noise a real regression would hide in, and every agent is
+told to ignore them. Tracked as #257.
 
 Take the baseline from the ref you actually branched from. This rule already
 said a baseline is pinned to a commit; that alone did not stop the mistake being
@@ -510,8 +526,16 @@ Worked example. `dd3d9eb` was a comment-only commit explaining why two test suit
 of `@/lib/tabs/settle-tab-state`. Cherry-picked toward `main` it passed every mechanical check:
 clean forbidden-path scan, clean patch-id, applied without conflict. It would still have planted
 a false statement, because its text asserts *"#123 adds `lib/tabs/settle-tab-state.ts`, and the
-payment route does import from it"* — true on `cloudflare-staging`, false on `main`, which has
+payment route does import from it"* — true on `cloudflare-staging`, false on `main`, which had
 neither.
+
+**THIS INCIDENT HAS EXPIRED, 2026-08-11.** `lib/tabs/settle-tab-state.ts` is now PRESENT at both
+refs, so the statement `dd3d9eb` would plant is true on `main` and the commit is no longer an
+example of anything. It is kept here as an ILLUSTRATION of the failure mode, explicitly labelled
+as historical — the rule stands, its original instance does not. **A rule whose incident has
+become impossible should be deleted, not inherited; this one survives only because the failure
+mode is still reachable by other commits.** If no live instance can be cited the next time this is
+reviewed, delete the rule.
 
 Nothing in `rev-parse`, `cherry`, or `patch-id` can detect that. Someone has to read the content
 against the destination.
@@ -568,7 +592,14 @@ Three consequences that have each already happened:
   (#126, #180, #125) were promoted over it before anyone looked.
 - **Branch-merged and issue-fixed are different questions.** #180's branch was never merged, yet
   the issue is live, because its commits were cherry-picked. #174's DB index shipped to `main`
-  while its sibling UI fix #175 did not — and #174 being closed makes #175 look done.
+  while its sibling UI fix #175 did not — and #174 being closed made #175 look done.
+  **RESOLVED 2026-08-11: #174 and #175 are BOTH fully live on `main` and are off the
+  do-not-promote list.** Measured, not inherited: `21d5133` is an ancestor of `origin/main`,
+  `lib/tables/table-number-conflict.ts` is identical across refs and carries #175's rationale in
+  its header, migration `20260806000000` is on main, `components/qr-code-management.tsx` is
+  identical and renders the number at `:208-209`, and both #175 tests are present. The split was
+  real once and has closed. The EXAMPLE stays because the shape recurs; the pair is no longer an
+  instance of it.
 - **A close-audit found 31 issues fixed on a branch and not live.** That list is the most valuable
   output of the exercise precisely because those are the ones everyone assumes are done.
 
