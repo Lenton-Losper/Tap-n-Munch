@@ -21,6 +21,9 @@ export async function GET(request: Request) {
     const tabId = searchParams.get('tabId')?.trim() || ''
     const countOnly = searchParams.get('countOnly') === '1'
     const excludeSettlement = searchParams.get('excludeSettlement') !== '0'
+    // Opt-in, so the live-view callers keep today's behaviour; only the my-orders list asks
+    // for declined requests. It widens the STATUS filter, never the session scope below.
+    const includeDeclined = searchParams.get('includeDeclined') === '1'
 
     if (!restaurantId) {
       return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
@@ -38,6 +41,7 @@ export async function GET(request: Request) {
       tabId: tabId || null,
       excludeSettlement,
       countOnly,
+      includeDeclined,
     })
 
     if (countOnly) {
