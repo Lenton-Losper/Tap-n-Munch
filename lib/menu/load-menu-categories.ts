@@ -26,6 +26,63 @@ export function categoryMenuUrl(restaurantId: string, categoryId: string): strin
   return `/api/menu/${encodeURIComponent(restaurantId)}/category/${encodeURIComponent(categoryId)}`
 }
 
+export type MenuLoadFailure = {
+  failedCategoryNames: string[]
+  requestedCount: number
+}
+
+export type MenuNotice = {
+  /** `total` — nothing loaded, so the notice REPLACES the item list. `partial` — it sits above it. */
+  tone: 'total' | 'partial'
+  title: string
+  description: string
+  retryLabel: string
+}
+
+/** "Drinks", "Drinks and Desserts", "Drinks, Desserts and Cakes" */
+function joinNames(names: string[]): string {
+  const clean = names.map((name) => String(name || '').trim()).filter(Boolean)
+  if (clean.length === 0) return ''
+  if (clean.length === 1) return clean[0]
+  return `${clean.slice(0, -1).join(', ')} and ${clean[clean.length - 1]}`
+}
+
+/**
+ * What to tell a customer whose menu did not fully load.
+ *
+ * Returns null when there is nothing to say — including for a restaurant that genuinely has no
+ * items, which is the page's existing "Menu coming soon!" case and NOT a failure. Keeping those
+ * apart is the whole point: before this, a total outage and an empty menu rendered identically.
+ *
+ * Deliberately says nothing about prices, payment, or availability of any individual item — a
+ * failed fetch is not evidence about any of those.
+ */
+export function menuLoadNotice(failure: MenuLoadFailure | null): MenuNotice | null {
+  if (!failure) return null
+
+  const failedCount = failure.failedCategoryNames.length
+  if (failedCount === 0) return null
+
+  const retryLabel = 'Try again'
+
+  if (failedCount >= failure.requestedCount) {
+    const only = failedCount === 1 ? joinNames(failure.failedCategoryNames) : ''
+    return {
+      tone: 'total',
+      title: only ? `We couldn’t load ${only}` : 'We couldn’t load the menu',
+      description: 'Please try again, or ask a member of staff.',
+      retryLabel,
+    }
+  }
+
+  return {
+    tone: 'partial',
+    title: 'Part of the menu didn’t load',
+    description: `${joinNames(failure.failedCategoryNames)} couldn’t be loaded. Everything else is shown below.`,
+    retryLabel,
+  }
+}
+
 /**
  * One category's menu. Throws on a non-2xx so the caller can distinguish a failure from an
  * empty category — the API returns 500 `{error}` for a real fault and `{}` for a category that
