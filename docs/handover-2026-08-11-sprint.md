@@ -918,3 +918,76 @@ Not pure waste — each pair found something the other did not, and two independ
 **Four of my briefs were wrong** and agents corrected each rather than implementing them — twice on the same #212 negative control, once on #214's unguarded effect (I named one; there are two, and the one I missed is the default path), once on #146's "only unguarded writer" (it has no caller and has never written a row).
 
 **The Exploiter role earned its place on its first serious run:** the agent that wrote #212's rule, proved it two-sided and shipped it then **defeated it** with a DO-block fixture — and four committed migrations already use that shape.
+
+---
+
+## CHECKPOINT 12 — #200's mechanism is LIVE; two more fixes landed
+
+### #200 — the server pricer has NO CONCEPT OF VARIANTS. Live on production.
+
+`grep -rin "variant" lib/orders/` returns **zero hits** at `fdb999a`.
+`calculate-order-pricing.ts:162` selects `id, base_price, sizes, addons, tax_rate_id, status`.
+
+The client resolves variants; **the server never does.** A variant line is priced from bare
+`base_price` and the modifier is dropped. Customer shown N$60, charged N$45.
+
+**The framing that matters, and the issue does not carry it:** the mechanism is LIVE and the
+historical loss is **ZERO** — those are different facts. It was measured at zero of 2,604 orders.
+So neither "it is leaking money" nor "it measured zero, close it" is right. The next variant order
+undercharges.
+
+Open: does the POS path share it? It also calls `createOrder`. Being traced now rather than
+inferred.
+
+### #203 — PARTLY DISPROVEN. Two of four gaps have closed.
+
+Measured at current refs, not from commit messages: the signature redaction and the global-merchant
+refusal are both now present on staging. The headline "four missing, three security or money" is now
+**one security gap plus one correctness gap**.
+
+**The convergence is the sharp part:** staging runs BOTH the injectable `paymentRefOrFilter` AND the
+injectable webhook resolver (#242). So **anything about order enumeration verified on staging is
+verified against code production does not run — in the unsafe direction.** Amended, not closed.
+
+### #165 Q4 — no legal requirement in the repo, but the repo is not silent on the QUESTION
+
+Zero legal citations anywhere; every "Namibia" hit is marketing copy or a timezone. **The human
+needs an outside source.**
+
+**But this codebase already ships #165 option 1, on the document literally labelled TAX INVOICE** —
+gross line total against gross unit price, ex-VAT only in the totals block, same tax helper, same
+column headings. And the receipt PDF's own comment says it was modelled on that generator: it copied
+the layout, palette and headings and **not** the line-total basis.
+
+So **"leave the receipt as it is" is not a no-change option** — it is a decision to keep a tax
+invoice and a receipt disagreeing about the same sale. Added as **Q5**.
+
+Also prices option C properly: the invoice keeps both bases per line, the receipt snapshot keeps one,
+so labelling the column is impossible for already-issued documents.
+
+### Fixes landed
+
+- **#207** `1eb4503` — `useSyncExternalStore`, removing the mount-effect drop as a CLASS rather than
+  an instance. 30 consumers, tsc clean across all.
+- **#225** `a14ba67` — request cancellation on both menu effects. **Stacks on `sprint/browse-states`
+  and must integrate after it.**
+- **`d46f90e`** — first coverage ever on `issueReceiptForOrder`. The load-bearing test is the one
+  nobody would think to write: *no sale event yet → payment line synthesized from grand_total*, the
+  branch that keeps #237 off the ordinary settle path.
+
+### Three techniques earned this round
+
+- **A NULL PROBE, REPORTED AS ONE.** Removing the finally-guard changed nothing; the agent said so
+  rather than dropping the probe — then found it had written a comment claiming "this one matters",
+  and **corrected its own false comment.** Guard kept, now labelled as untested.
+- **A probe that silently did nothing, caught by hashing.** Fourth instance this sprint. The rule is
+  earning its place: quote a before/after blob hash or the probe is not evidence.
+- **The `test.failing` trap** — it passes whenever its body throws, INCLUDING when the harness breaks
+  and the function never runs. `Tests: 0 total` in another costume. The fix is a control on the
+  identical fixture asserting the function ran to completion while deliberately NOT asserting the
+  value under test. **New, and going in the contract.**
+
+### #214 did NOT introduce #225 — measured, not asserted
+
+Identical suite against genuinely reverted pre-#214 content: same 3 failures by name, same 3
+controls green. I would have accepted the assertion.
