@@ -178,7 +178,7 @@ describe('accept: releasing the accepting claim', () => {
     expect(writes).toEqual([{ status: 'accepting' }, { status: 'waiting_review' }])
 
     const logged = errorLog.mock.calls
-      .map((args) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
+      .map((args) => args.map((a: unknown) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
       .join('\n')
     expect(logged).toMatch(/accepting/i)
     expect(logged).toMatch(/row is locked/)
