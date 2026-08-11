@@ -5,8 +5,21 @@
  * app/api/payments/reconcile/route.ts) but missing from any committed
  * migration. Confirms (1) they didn't exist before this fix, is proven by
  * the issue investigation itself (information_schema query before applying
- * migration 20260714130000), and (2) the real patch-building functions now
- * write successfully against a real orders row.
+ * migration 20260714130000), and (2) the patch shapes now write
+ * successfully against a real orders row.
+ *
+ * The two patch builders this used to import are gone: #195 deleted
+ * lib/supabase/apply-tab-settlement.ts, which had had no caller in app/ or
+ * lib/ since 2026-06-02 (82baa3e removed the last one, in
+ * app/api/payments/reconcile/route.ts). This script was its only remaining
+ * importer, so the shapes are inlined below, copied verbatim from the module
+ * at c9293e3 — the same thing this script already did for the reconcile
+ * route's shape further down. They are a historical record of what #24
+ * verified, not a live code path, and should not be re-exported for reuse.
+ *
+ * The migration itself stands: app/api/payments/reconcile/route.ts:172 still
+ * writes paycloud_transaction_id, and app/api/platform/payments/events/[id]
+ * still reads both columns.
  *
  *   npx tsx scripts/verify-paycloud-columns-staging.ts
  */
@@ -20,19 +33,47 @@ config({ path: resolve(__dirname, '../.env.test'), override: true })
 const STAGING_REF = 'mdqjpxwczrhkxkbqatqa'
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-const ANON_KEY = process.env.SUPABASE_ANON_KEY || ''
 
 if (!SUPABASE_URL.includes(STAGING_REF) || !SERVICE_KEY) {
   throw new Error('Refusing: staging Supabase credentials missing (.env.test)')
 }
-// lib/supabase/apply-tab-settlement.ts transitively imports the browser
-// client module, which reads these at import time.
-process.env.NEXT_PUBLIC_SUPABASE_URL = SUPABASE_URL
-process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = ANON_KEY
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 })
+
+// The two patch shapes #24 was about, copied verbatim from the deleted
+// lib/supabase/apply-tab-settlement.ts at c9293e3. See the header: they are a
+// record of what was verified, not a live path, and nothing else may use them.
+function webhookPaidPatch(currentStatus: string, transNoStr: string | null): Record<string, unknown> {
+  const cs = String(currentStatus || '').toLowerCase()
+  return {
+    payment_status: 'paid',
+    paid_at: new Date().toISOString(),
+    payment_provider: 'paycloud',
+    updated_at: new Date().toISOString(),
+    ...(cs === 'pending' || !cs
+      ? { status: 'accepted', accepted_at: new Date().toISOString() }
+      : {}),
+    payment_trans_no: transNoStr,
+    paycloud_transaction_id: transNoStr || null,
+    is_closed: false,
+  }
+}
+
+function webhookTerminalPaidPatch(transNoStr: string | null): Record<string, unknown> {
+  return {
+    payment_status: 'paid',
+    paid_at: new Date().toISOString(),
+    payment_provider: 'paycloud',
+    status: 'completed',
+    completed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    payment_trans_no: transNoStr,
+    paycloud_transaction_id: transNoStr || null,
+    is_closed: false,
+  }
+}
 
 function ts(): string {
   return new Date().toISOString()
@@ -46,9 +87,6 @@ async function assert(condition: boolean, message: string) {
 let nextOrderNumber = Math.floor(Date.now() / 1000) % 1_000_000
 
 async function main() {
-  const { buildWebhookPaidPatch, buildWebhookTerminalPaidPatch } = await import(
-    '@/lib/supabase/apply-tab-settlement'
-  )
   const tag = randomUUID().slice(0, 8)
   let restaurantId: string | null = null
   const orderIds: string[] = []
@@ -64,7 +102,7 @@ async function main() {
     if (restErr || !restaurant?.id) throw restErr || new Error('restaurant insert failed')
     restaurantId = String(restaurant.id)
 
-    // --- buildWebhookPaidPatch: dine-in tab webhook path ---
+    // --- webhookPaidPatch: dine-in tab webhook path ---
     const order1Id = randomUUID()
     const { error: order1Error } = await admin.from('orders').insert({
       id: order1Id,
@@ -80,9 +118,9 @@ async function main() {
     orderIds.push(order1Id)
 
     const transNo1 = `PC-TRANS-${tag}-1`
-    const patch1 = buildWebhookPaidPatch('pending', transNo1)
+    const patch1 = webhookPaidPatch('pending', transNo1)
     const { error: update1Error } = await admin.from('orders').update(patch1).eq('id', order1Id)
-    await assert(!update1Error, `buildWebhookPaidPatch UPDATE succeeds against real orders row (error: ${update1Error?.message ?? 'none'})`)
+    await assert(!update1Error, `webhookPaidPatch UPDATE succeeds against real orders row (error: ${update1Error?.message ?? 'none'})`)
 
     const { data: order1After, error: order1AfterError } = await admin
       .from('orders')
@@ -95,7 +133,7 @@ async function main() {
     await assert(order1After.payment_status === 'paid', 'payment_status updated to paid')
     await assert(order1After.status === 'accepted', 'status updated to accepted (was pending)')
 
-    // --- buildWebhookTerminalPaidPatch: terminal webhook path ---
+    // --- webhookTerminalPaidPatch: terminal webhook path ---
     const order2Id = randomUUID()
     const { error: order2Error } = await admin.from('orders').insert({
       id: order2Id,
@@ -111,9 +149,9 @@ async function main() {
     orderIds.push(order2Id)
 
     const transNo2 = `PC-TRANS-${tag}-2`
-    const patch2 = buildWebhookTerminalPaidPatch(transNo2)
+    const patch2 = webhookTerminalPaidPatch(transNo2)
     const { error: update2Error } = await admin.from('orders').update(patch2).eq('id', order2Id)
-    await assert(!update2Error, `buildWebhookTerminalPaidPatch UPDATE succeeds against real orders row (error: ${update2Error?.message ?? 'none'})`)
+    await assert(!update2Error, `webhookTerminalPaidPatch UPDATE succeeds against real orders row (error: ${update2Error?.message ?? 'none'})`)
 
     const { data: order2After, error: order2AfterError } = await admin
       .from('orders')
