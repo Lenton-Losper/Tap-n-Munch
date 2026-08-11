@@ -5,6 +5,25 @@ export type StockStatus =
   | 'healthy'
   | 'not_tracked'
 
+/** `stock_movements.quantity_delta` is numeric(_,4). This is that 4. */
+export const STOCK_QUANTITY_DECIMALS = 4
+
+/**
+ * Round to the precision the database actually stores.
+ *
+ * A balance is a SUM of numeric(_,4) values that arrive over PostgREST as strings or floats and
+ * are added in JavaScript, so a set of movements that cancel exactly can land at -2.8e-17 rather
+ * than 0 — see the `0.3 - 0.1 - 0.2` case. Every comparison against zero has to go through here
+ * first, or an item holding precisely nothing gets called impossible.
+ *
+ * It cannot hide a real negative: the smallest one the column can represent is -0.0001, which
+ * survives the rounding intact.
+ */
+export function roundToStockPrecision(value: number): number {
+  const factor = 10 ** STOCK_QUANTITY_DECIMALS
+  return Math.round(value * factor) / factor
+}
+
 /**
  * `negative` is checked FIRST, and deliberately before the par-level branch (#146).
  *
@@ -27,12 +46,19 @@ export type StockStatus =
  * This is DETECTION ONLY. It changes what the stock screen says, not what any write is allowed
  * to do -- nothing here can refuse a deduction or fail an order. The write-time guard is a
  * separate, customer-facing decision (#146 recommendation 4).
+ *
+ * The balance is rounded to the stored precision ONCE, at entry, and every branch below reads
+ * the rounded value. lib/stock/queries.ts:116 passes the raw JavaScript sum of the movement
+ * deltas, so without this the `negative` branch fires on -2.8e-17 and paints "Impossible
+ * (negative)" on an item that holds precisely nothing. Rounding only the negative check would
+ * close that one case and leave this function disagreeing with itself at the zero boundary.
  */
 export function computeStockStatus(currentStock: number, parLevel: number | null): StockStatus {
-  if (currentStock < 0) return 'negative'
+  const balance = roundToStockPrecision(currentStock)
+  if (balance < 0) return 'negative'
   if (parLevel == null) return 'not_tracked'
-  if (currentStock <= 0) return 'out_of_stock'
-  if (currentStock <= parLevel) return 'low_stock'
+  if (balance <= 0) return 'out_of_stock'
+  if (balance <= parLevel) return 'low_stock'
   return 'healthy'
 }
 
