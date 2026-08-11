@@ -39,3 +39,68 @@ _(appended below as handoffs arrive)_
   look done. #139 is being *investigated* only, which is the explicit instruction.
 - Anything needing a migration applied — the drift guard blocks every deploy while a committed
   migration is unrecorded, and applying one is the human's.
+
+---
+
+## CHECKPOINT 1 — `sp-qr-state` returned
+
+### THE FIND OF THE SPRINT SO FAR — filed as #218, and it is a PIN bypass
+
+Found while establishing #211's fix options, not while looking for it. I verified the whole chain
+at `fdb999a` before accepting it:
+
+- The landing's open-tab lookup filters `.gte('created_at', cutoffIso)` with a **12-hour** cutoff
+  (`v2/page.tsx:426`, `:434`). A tab open longer is invisible to the landing.
+- So the landing offers **"Create Tab"**, which hits `idx_tabs_one_open_per_table` and gets 23505.
+- `POST /api/tabs`'s 23505 branch (`route.ts:119-196`) recovers by returning the existing open tab
+  with a **fresh session token** and `joinedExisting: true`.
+- **That branch checks no PIN and no membership.** `grep -ci pin` over the whole branch = **0**.
+  `join/route.ts:86-94` does enforce it.
+
+Net: a walk-up scan at a table whose tab has been open >12h joins that tab, sees the previous
+party's itemised orders and total, and can add to it.
+
+**This reorders the sprint.** #211's likely fix — make "start fresh at this table" primary — routes
+MORE customers through that branch. #218 must be fixed before or with #211.
+
+### Packets ready to rule cold
+
+- **#211** — Q1–Q5. Three mechanisms beyond the filed one: the landing blinds itself to the scanned
+  table's own tab (`v2:419-422`); one-open-tab-per-table is a hard DB constraint, which bounds any
+  "move the tab" answer before it is asked; and the only working escape (`handleViewMenu`) silently
+  discards the tab. **Q4 (movable tabs) is money-adjacent and yours.**
+- **#215** — Q1–Q5. Schema blocker confirmed; reap-to-`waiting_review` confirmed safe against
+  duplicate orders via a fully traced idempotency chain. **NEW finding: the reaper would introduce
+  a price divergence that the stranding currently prevents** — rolling back re-opens the review
+  route, and a re-Accept after an edit returns the EXISTING order (first pricing) while the request
+  finalizes with the NEW figures. Idempotency is what makes the reap safe against duplicates and
+  exactly what makes it unsafe against a re-review.
+
+### Measured
+
+`status='accepting'` on staging: **0**. Whole table 18 rows (10 accepted, 5 waiting_review, 3
+declined). No 2026-07-31 script debris present, so nothing needed discounting. Read with its power:
+18 lifetime rows and 10 lifetime Accepts is a small denominator — this says stranding has never
+happened on staging, not that its rate is low.
+
+### #189 — CLOSED. Premise disproven: nothing was left.
+
+Every decision item discharged on production, including both implementation notes. Note 2 was
+discharged rather than assumed — `cart-edit-preserves-line.test.tsx:322-347` asserts the fold is no
+longer refused by a difference the edit itself created. 27 tests green.
+
+### Filed from this handoff
+
+**#218** (PIN bypass) · **#219** (stranded request vanishes from the list but not its own page) ·
+**#220** ("View Menu" discards an open tab) · **#221** (`flashtap_table` overwritten while the tab
+id points elsewhere) · **#222** (staff told to wait for a payment that will never finish).
+
+Open issues: 82.
+
+### Reassigned immediately
+
+`sp-qr-state` → investigate #218 properly (reachability, what the token grants, whether membership
+is ever consulted, whether PIN-less venues make it moot), packet it — **do not fix, auth is
+auto-H1**. Then reproduce on staging ONLY if a >12h open tab already exists; explicitly forbidden
+from back-dating one, since that is a write I have not authorised. Then the production `accepting`
+count, read-only.
