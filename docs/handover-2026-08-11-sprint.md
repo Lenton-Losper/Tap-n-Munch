@@ -766,3 +766,67 @@ rather than add one. If the repo says nothing, say so plainly; that is the answe
 human they need an outside source. Then **deepen coverage on `issueReceipt.ts`** — money-facing,
 mocked-only, and the thing #226/#234/#237 all turn on. Write the assertion that would have caught
 #237.
+
+---
+
+## CHECKPOINT 11 — I duplicated #219 too. Second collision, both mine.
+
+### TWO independent implementations of #219 exist
+
+`sp-qr-state` → `sprint/qr-state` @ `a61b5bc`
+`sp-stock-pay` → `sprint/stock-pay` @ `1a1b05b`  (~40 minutes later)
+
+Neither agent knew. **Second orchestration collision of the sprint, and like #212 it is mine** — I
+reassigned from a stale picture of what was in flight instead of checking.
+
+**FOR THE HUMAN: take `sp-stock-pay`'s (`1a1b05b`).** Both widen the two queries identically; they
+differ in where the render hazard is closed:
+
+| | where normalised | reach |
+|---|---|---|
+| `a61b5bc` | `my-orders/page.tsx` | the one renderer that keys off raw status |
+| **`1a1b05b`** | **`mapOrderRequestToGuestRow`** | **all three query paths at their convergence point** |
+
+Not a matter of taste. The mapper's **own docstring** claims it maps a request *"with status set to a
+value the UI treats as pre-order ('waiting_review' or 'declined')"* — and `accepting` is neither, so
+the function was not keeping its stated contract. `active-order-visibility.ts:38-41` also says in
+terms that anything making a status visible must run through the normaliser. `1a1b05b` fixes the
+function that was lying about itself; `a61b5bc` fixes the renderer that suffered for it, and does not
+protect `OrderStatusBanner` or `order-confirmation`.
+
+### Both found the "🎉 New" hazard independently
+
+`my-orders/page.tsx:81` ends `configs[status] || configs.pending`, and `configs.pending` is
+`{ emoji: '🎉', label: 'New' }`. So widening the queries alone would have put a request **still
+awaiting staff review** into the customer's list labelled "New" — further along than an accepted
+order, and strictly worse than the disappearance #219 is about. The comment above that table records
+the identical defect being fixed once already.
+
+Two agents reaching that independently is the strongest evidence it is real.
+
+### Two techniques worth keeping from `1a1b05b`
+
+- **The baseline delta was MEASURED, not asserted.** Stashed only `queries.ts` back to the base blob,
+  re-ran, got the identical `4 failed / 2 passed`, popped, confirmed the blob returned and the index
+  was empty. The contract *says* `guest-orders-validation` fails on a main-cut branch; this is the
+  difference between saying it and knowing it.
+- **The failing-first run could not isolate the normalisation** — with the queries unwidened the row
+  is absent and the assertions failed on `undefined`, which is evidence of the wrong thing. The agent
+  said so, then reverted ONLY the mapper line for a clean 3-failed / 12-passed. Probe-must-be-narrow,
+  applied unprompted.
+
+### Filed
+
+**#248** (payment filters applied only to the orders half — and it interacts with #243, which
+currently masks it, so fixing #243 alone would UNMASK this) · **#249** (the two list queries disagree
+about whether requests count toward `countOnly`, while one of them includes in rows what it excludes
+from the count).
+
+Open issues: **108**.
+
+### Reassigned in the same turn
+
+`sp-stock-pay` → **the main→staging half of the drift audit**, with `sp-variants` holding branch→main.
+Nine production deploys landed on main today, so that gap is wider than it has been all week. The
+question that matters: **would the absence of a fix on staging make a staging test lie about
+production?** A suite that passes because staging lacks a fix is worse than a failing one.
