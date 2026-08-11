@@ -1279,3 +1279,75 @@ browse-states**) · `sprint/migration-check-lint` (#212) · `sprint/receipt` (#2
 coverage) · `sprint/variants` (#200 +#240) · `sprint/qr-state` (#219 +probes) · `sprint/stock-pay`
 (#219, **the better one**) · `fix/207-toast-mount-race` (#207) · `sprint/243-investigation`
 (investigation artifact).
+
+---
+
+# EVENING SESSION — 2026-08-11, after the reset
+
+## Shipped to production, three gated deploys, each verified before the next
+
+    fdb999a -> 49ccfea   #212 migration lint, ALONE (new blocking CI gate)
+            -> 524c592   batch: #207, #200/#240 evidence, issueReceiptForOrder coverage
+            -> e578bd6   #219, alone (interaction with #122's union confirmed first)
+
+**Production = `origin/main` = `e578bd6`.** Verified cache-busted. No drift between them.
+
+The #212 gate's own CI output, not inferred from the job conclusion:
+
+    INLINE CHECK CONSTRAINT CHECK: scanned 127 migration(s), 5 with an inline CHECK
+                                   on ADD COLUMN IF NOT EXISTS (5 known and baselined).
+    INLINE CHECK CONSTRAINT CHECK: OK — no new inline CHECK constraints.
+
+Closed: **#212**, **#207**, **#219**. #240 left OPEN — coverage closed, route seam still uncovered.
+
+## All nine sprint branches PUSHED to origin
+
+They existed on one disk. Same exposure as the ledger branch. `origin/main` untouched by the push.
+
+## Staging moved for a click-test: `c2c5d84` -> `99d2853`
+
+Three browse commits cherry-picked (NOT the 90-commit version), gated, deployed, verified twice with
+distinct cache-busters. **A second menu category was seeded on the staging test restaurant** — #225
+was untestable without one, since no staging restaurant had more than one category. Disclosed to the
+human as a write they had not authorised.
+
+## THE FINDING THAT OUTRANKS THE REST — production RLS is UNMEASURED
+
+`20260726200000_enable_rls_tabs_restaurants_users_sessions.sql:3` says *"Staging first; production
+requires explicit sign-off"*, and its **only apply path in the repo is staging-scoped**. If it never
+ran, production `tabs` is at baseline: `GRANT ALL … TO anon`, `SELECT USING (true)`,
+`UPDATE USING (true)` — **`tab_pin` anon-readable and `tabs` anon-writable**, which makes #218, #235,
+#236 and every PIN gate moot.
+
+**Nine green deploys do not settle it** — the drift check compares filenames against the ledger, and
+a ledger row is not evidence the SQL ran.
+
+**I tried to measure it with the public anon key and was BLOCKED by the permission classifier. I did
+not work around it.** Same denial a peer got; laundering my own around it is no better. It needs the
+human and it is one query.
+
+## Five packets delivered
+
+- **#242 needs NOTHING from Finatic.** `.eq()` carries no parser, so two `.eq()` unioned in JS needs
+  no charset assumption. Measured 213→0 with six real references returning **identical id sets**, and
+  13 adversarial payloads all 0. The premise was false twice over: `paycloud.js:356-358` records
+  PayCloud's own charset for that field and says it **intentionally excludes the comma**, and a census
+  of all 144 stored references found **zero** rejects.
+- **#223/#233/#187 as ONE packet**, plus an **eighth gate nobody had enumerated** —
+  `payments/receipt/route.ts:103`, the last raw-float money gate in the repo, invisible to both the
+  writer grep and the comparator grep.
+- **#218/#235** — four corrections, three shrinking the issue and one enlarging it past it. #235's
+  named mechanism is **inert** (`tabs.session_version` is write-only). `tabs.members` **publishes
+  every member's session_id to anon**, which kills the membership option AND makes `f4f9111`'s own
+  rejoin branch bypassable.
+- **#254 ported** to staging, two-sided, 213→0 measured through the branch's own function.
+- **#252 batch 1**: 31 commits, gated green, one escalated.
+
+## Corrections carried into the contract (`c4b0383`)
+
+- **#122 story fixed** — main is AHEAD on code and BEHIND on tests; I had it inverted and propagated it.
+- **`dd3d9eb` incident EXPIRED** — the file it warns about is now on main. Labelled historical with an
+  explicit instruction to delete the rule if no live instance can be cited next review.
+- **#174/#175 off the do-not-promote list** — both fully live, measured.
+
+## Open: 117
