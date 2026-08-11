@@ -163,9 +163,20 @@ jobs:
           else
             echo "WARNING: PRODUCTION_RESEND_API_KEY not set — staff invite emails will not send"
           fi
+          # #266: this was set out of band, so the Worker was not reproducible from the repo.
+          # Unlike the three above, a missing value here does NOT surface as a broken feature:
+          # createServerSupabaseClient() falls back to the anon key (lib/supabase/server.ts), so
+          # every server route would silently run as `anon` under RLS instead of service_role.
+          # A warning nobody reads is how this drifted in the first place — fail the job.
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY is empty — server routes would silently fall back to the anon key."
+            exit 1
+          fi
+          echo "$SUPABASE_SERVICE_ROLE_KEY" | npx wrangler@3.99.0 secret put SUPABASE_SERVICE_ROLE_KEY --config wrangler.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
           TERMINAL_JWT_SECRET: ${{ secrets.PRODUCTION_TERMINAL_JWT_SECRET }}
           RESEND_API_KEY: ${{ secrets.PRODUCTION_RESEND_API_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
