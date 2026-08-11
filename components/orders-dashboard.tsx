@@ -2325,7 +2325,7 @@ export function OrdersDashboard() {
           <DialogHeader>
             <DialogTitle>Decline Order Request</DialogTitle>
             <DialogDescription>
-              This request will never become an order. The customer will see it was declined.
+              This request will never become an order. The customer will see the request was declined, but not this note.
             </DialogDescription>
           </DialogHeader>
           <Input
