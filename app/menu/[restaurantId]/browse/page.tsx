@@ -414,6 +414,12 @@ export default function MenuBrowsePage() {
   }, [restaurantId, tableNumber])
 
   useEffect(() => {
+    // #225: the customer can tap another category before this one answers. Without this flag the
+    // LATE response wins, and the abandoned category's items render under the current category's
+    // heading — along with its failure notice, or its success clearing a notice that belongs to
+    // the category actually on screen. Same idiom as the view-only and tab-pin effects above.
+    let cancelled = false
+
     const loadMenuItems = async () => {
       if (!selectedMenuCategory || !restaurantId) {
         setGroupedItems({})
@@ -427,11 +433,22 @@ export default function MenuBrowsePage() {
 
       try {
         setCategoryMenuLoading(true)
+        // Reset before asking, not after answering. Nothing here is known about the category the
+        // customer just switched TO, and leaving the previous category's items in place renders
+        // them under the new heading for the whole of the fetch — the same wrong-items-wrong-name
+        // symptom as the stale-response race, but unconditional: it needs only a switch and a slow
+        // response, not two requests in flight.
+        setGroupedItems({})
+        setCategoryLoadFailure(null)
+        setCategoryMenuLoadedOnce(false)
+
         const grouped = await fetchCategoryMenu(restaurantId, selectedMenuCategory.id)
+        if (cancelled) return
         setGroupedItems(grouped)
         setCategoryLoadFailure(null)
         setCategoryMenuLoadedOnce(true)
       } catch (err: any) {
+        if (cancelled) return
         console.error('Failed to load menu items:', err)
         setGroupedItems({})
         setCategoryLoadFailure({
@@ -439,14 +456,30 @@ export default function MenuBrowsePage() {
           requestedCount: 1,
         })
       } finally {
-        setCategoryMenuLoading(false)
+        // Guarded so a superseded run cannot report "not loading" while the category the customer
+        // is actually on is still in flight. Measured honestly: with the reset above in place this
+        // guard is NOT load-bearing — removing it leaves all 8 tests in
+        // browse-menu-stale-response green, because the reset clears `loadedOnce` and
+        // menuBodyState then answers `loading` regardless. It is kept for consistency with the two
+        // sibling effects above, which guard every setState they own, and as the second line if
+        // the reset is ever removed. Do not read it as covered by test; it is not.
+        if (!cancelled) setCategoryMenuLoading(false)
       }
     }
 
     loadMenuItems()
+
+    return () => {
+      cancelled = true
+    }
   }, [restaurantId, selectedMenuCategory, menuReloadKey])
 
   useEffect(() => {
+    // #225, same reasoning as the per-category effect above. This one re-runs when the category
+    // LIST changes or on retry, so a superseded fan-out can otherwise land its merged result — and
+    // its failure notice — over a newer one.
+    let cancelled = false
+
     const loadAllMenuItems = async () => {
       if (!restaurantId || menuCategories.length === 0) {
         setAllGroupedItems({})
@@ -462,6 +495,7 @@ export default function MenuBrowsePage() {
       try {
         setAllMenuLoading(true)
         const load = await loadAllMenuCategories(restaurantId, menuCategories)
+        if (cancelled) return
         setAllGroupedItems(load.merged)
         setAllMenuLoadFailure(
           load.failedCategoryNames.length > 0
@@ -477,11 +511,15 @@ export default function MenuBrowsePage() {
         // reachable instead of replacing it with a spinner for a load that is not running.
         setAllMenuLoadedOnce(true)
       } finally {
-        setAllMenuLoading(false)
+        if (!cancelled) setAllMenuLoading(false)
       }
     }
 
     void loadAllMenuItems()
+
+    return () => {
+      cancelled = true
+    }
   }, [restaurantId, menuCategories, menuReloadKey])
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
