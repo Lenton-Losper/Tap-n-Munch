@@ -22,6 +22,19 @@ function StockStatusBadge({ row }: { row: StockOverviewRow }) {
   }
 
   switch (row.stockStatus) {
+    case 'negative':
+      // #146. Not a variant of "Out of Stock" -- a negative balance is impossible, so it is a
+      // data error to investigate, not a level to restock. Said explicitly because the previous
+      // renderings ("Out of Stock" with a par level, "No par level" without one) both read as
+      // ordinary and gave nobody a reason to look.
+      return (
+        <Badge
+          title="This item's movement history sums to less than zero, which cannot be true. A deduction is likely wrong — check the movement history before trusting any figure for this item."
+          className="border-red-300 bg-red-100 text-red-900"
+        >
+          Impossible (negative)
+        </Badge>
+      )
     case 'out_of_stock':
       return <Badge className="border-red-200 bg-red-50 text-red-800">Out of Stock</Badge>
     case 'low_stock':
