@@ -991,3 +991,59 @@ so labelling the column is impossible for already-issued documents.
 
 Identical suite against genuinely reverted pre-#214 content: same 3 failures by name, same 3
 controls green. I would have accepted the assertion.
+
+---
+
+## CHECKPOINT 13 — #244 converted from a risk into a constraint
+
+### Auto-delivery is UNBUILT, not half-built. Four negatives, each checked.
+
+1. **No markers** — zero TODO/FIXME/"Phase 3"/"not yet" in `lib/receipts` or any receipt route.
+2. **No address to send to** — every `email` column in every migration is staff/admin. Even
+   `platform_admins.email` was disposed of by name rather than left as an unexamined candidate.
+   **No customer address is reachable from an order.**
+3. **No consumer** — the three cron routes on disk and the three wired in the worker are the same
+   list. Nothing scans for undelivered receipts.
+4. **The one "Phase 3 prep" migration is fully consumed** — spent, not pending.
+
+**So the safety of #234's backfill is STRUCTURAL and cannot erode by accident.** Reaching auto
+delivery takes three separate additions that do not exist.
+
+### THE TRIPWIRE — posted on #244
+
+**The day a `customer_email` column lands, #244 stops being latent.** That single change flips it,
+because `sendReceiptEmail` has no date bound, no rate limit and no dedup. **The guard belongs in the
+same change as that column, not after it.**
+
+### Two dormant seams — the honest qualification
+
+`receipt_deliveries.status` admits **`pending`** and **nothing ever writes it** — inserts are only
+`sent` or `failed`, with `requested_at` and `completed_at` at the same instant, a synchronous record
+of a send that already happened. A `pending` row is the shape an async model would use, and
+`receipt_deliveries_status_idx` **already exists to scan for it.** That index and that enum member
+are exactly where a future worker would attach.
+
+Found as a status VALUE rather than a column — which is why my phrasing ("a column in a migration
+that is not yet used") would have missed it.
+
+### Filed verbatim from agent-supplied final text
+
+**#250** — sale receipt and tax invoice disagree about the line-item VAT basis. The TAX INVOICE
+shows gross, the receipt shows ex-VAT, same tax helper and same column headings, and the receipt PDF
+says in its own comment that it was modelled on that generator. **Nothing records a decision to
+differ.**
+
+**#251** — `ReceiptLineItem` stores ONE VAT basis, so an issued receipt cannot be re-presented. This
+**prices two of #165's three options**: labelling the column cannot be applied retroactively at all,
+because the other number is not in the document. The underlying data is not lost —
+`calculate-order-pricing.ts:124` already stores the gross line figure on `orders.items` and
+`toLineItem` never reads it — so widening for FUTURE receipts is cheap.
+
+Open issues: **110**.
+
+### Reassigned
+
+`sp-receipt` → **close its own ceiling gap**: the enumeration is `fdb999a`-only, and it knows local
+branches hold unpushed work (it found `menuBodyState` on one local branch and no remote). Sweeping
+~30 refs for `sendReceiptEmail` / `customer_email` / delivery machinery establishes #244's
+constraint **repo-wide rather than at one ref**, which is the version worth recording.
