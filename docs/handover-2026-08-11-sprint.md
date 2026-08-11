@@ -565,3 +565,86 @@ numbered today is a worse artifact than an acknowledged gap.*
   only — and the answer may be a fourth state in `menuBodyState` rather than a new branch), falling
   back to **#165's Q4**, the VAT-invoice question that can eliminate an option before the human
   rules.
+
+---
+
+## CHECKPOINT 8 — the injection is proven; #219 shipped; the Exploiter split works
+
+### #242 — `.or()` injection, PROVEN 0 → 213 rows, unauthenticated, cross-tenant
+
+Staging, read-only, zero writes:
+
+```
+benign   "NONEXISTENT-REF-ZZZZZZ"                 ->   0 rows
+injected "NONEXISTENT-REF-ZZZZZZ,id.not.is.null"  -> 213 rows, 2 restaurants
+```
+
+**Reachable by OMITTING the signature, not forging one.** `verifyWebhook` fails closed, but the
+route treats *not ok* as **fall back to Finatic** rather than *stop*. No charset validation anywhere
+on the path, and the filter carries **no restaurant scope at all**.
+
+Exposure established: order-set widening, and a **200/503 boolean oracle** — "is every order
+matching my predicate already paid?", one bit per request, blind enumeration across tenants.
+
+**No forgery path was constructed, and none is claimed.** The same string goes to Finatic, so it
+would have to be simultaneously a PostgREST fragment and a reference Finatic recognises. The
+residual is stated rather than buried: that rests on Finatic *rejecting* trailing junk, which is
+untestable here — **the single assumption holding the severity down.**
+
+**Weaker than by-payment-ref:** a blind oracle, not a dump. That one returned 15 full rows.
+
+**A missed SITE, not a new class.** `paymentRefOrFilter` already exists and emits the byte-identical
+string; the sweep was defined by the helper's callers, so it could not see the site that does not
+call it. Same shape as #180's fifth gate and #223's sixth.
+
+**The one-line fix needs one external fact first:** the validator is `[A-Za-z0-9-]{1,64}`, but this
+value can arrive as Finatic's `out_trade_no`, which we do not issue. If Finatic uses any character
+outside that class, sanitising fails closed on a LEGITIMATE webhook and the payment is never applied
+— worse than the injection for a real customer.
+
+### #219 — IMPLEMENTED and green, `a61b5bc`
+
+6 named failures before, 13/13 after, with the cross-session scoping guards green on **both** sides.
+No new copy needed — `normalizeOrderStatusForDisplay` already maps `accepting` → `waiting_review`.
+
+Blast radius enumerated properly, including what is NOT affected: `countOnly` returns early **before**
+the order_requests half, so it cannot reach `abandonedCount`, which fires a WRITE. And my-orders was
+the one renderer keying off raw status, falling through to "🎉 New" — surfacing these rows without
+fixing that would have labelled a stranded request New.
+
+**Disclosed suppression that matters:** that file carries a pre-existing `@ts-nocheck`, so **tsc did
+not verify the renderer half**. Proven by reading, not machine-checked. Said plainly rather than
+buried.
+
+### #214 Exploiter — FIXED (ordering) / UNABLE TO REACH (timing)
+
+The agent found its own shipped test and the issue were making **different claims**. A never-resolving
+promise models the state and never the transition, so it structurally could not see a FLASH.
+
+Reverted to the genuine base via `git show fdb999a:<path>`, verified by blob both ways: the flash
+reproduced — 3 commits on the default path, 4 on the tap path. And the `Beef Burger`/`Coke`
+assertions PASSED before the false-claim assertion failed, so the load **completed** and the claim
+was **transient**.
+
+Closing line, kept verbatim: *"a green in this file means the false text is never RENDERED during a
+slow load. It does NOT mean the human's phone shows a clean first screen."*
+
+### #212 (second implementation) — a check that cannot detect its own blindness
+
+With the parser regressed the gate reports "scanned 127, 0 violations" and would **exit 0 looking
+exactly like success**. The baselined offenders turn that into a STALE BASELINE failure instead — so
+the baseline doubles as a self-test for the parser. Designed by accident, noticed, and documented so
+nobody simplifies it into an ignore-list.
+
+Also: `20260628110000` IS a genuine offender at `:24-26` — clean where I looked, dirty further down.
+**Second agent to catch that same wrong brief from me.**
+
+### Filed
+
+**#242** (`.or()` injection) · **#243** (dormant ordering block that can never fire) · **#244**
+(sendReceiptEmail has no bound, rate limit or dedup) · **#245** (verify the five inline CHECKs
+actually exist — a concrete mechanism by which the contract's own deliberately-unverified constraint
+could be genuinely absent).
+
+Open issues: **104**. Fourth shell-quoting artifact of the sprint hit my own filing; switched to
+`--body-file`.
