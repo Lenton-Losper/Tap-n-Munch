@@ -220,8 +220,39 @@ export async function POST(req: Request) {
     // allowlist entirely -- while resolvedPaymentMethod had already defaulted to 'cash' above
     // and is what gets written to order_requests.payment_method / orders.payment_method below.
     // A card-only restaurant therefore accepted cash orders from any client that simply left
-    // the field out. Checking the value that is actually persisted is the whole point.
-    if (!allowedMethods.includes(resolvedPaymentMethod)) {
+    // the field out. Checking the value that is actually persisted is the whole point. (#124)
+
+    /**
+     * A TAB order is exempt, and ONLY a tab order (#202).
+     *
+     * Not a relaxation of #124. On a tab, the customer does not choose a payment method when
+     * they submit -- they choose it later, when the tab is settled at the table. So there is no
+     * method to validate here, and `resolvedPaymentMethod` at this point is not the customer's
+     * answer: it is the server's default from route.ts:109 (and again at :151), applied because
+     * the field was absent. Validating it asks a question that has no answer yet and then judges
+     * the invented one.
+     *
+     * That is the same shape of defect as #124, pointing the other way. #124 was "the server
+     * invents 'cash' and does NOT check it, so a card-only restaurant books cash orders". This
+     * is "the server invents 'cash' and DOES check it, so a card-only restaurant refuses every
+     * tab submission". Both come from treating a defaulted value as a customer's choice.
+     *
+     * Live impact this fixes: Riviera and FNB ChowNow both sit at payment_methods=["card"] in
+     * restaurant_settings, so every QR tab submission returned 403 PAYMENT_METHOD_REQUIRED --
+     * at Riviera, which is the venue the QR path exists to serve.
+     *
+     * The real method is established at settlement, where it IS known and IS validated:
+     * normalizeSettlementPaymentMethod() in lib/payments/payment-integrity.ts gates the terminal
+     * settle routes against the card/cash allowlist. Nothing is left unchecked; the check moves
+     * to the point where there is something to check.
+     *
+     * Scoped deliberately to `isTabOrder` (route.ts:94, true only when a tabId was supplied) so
+     * that the DIRECT-ORDER path -- the one #124 was filed against -- validates exactly as it
+     * did before, including the defaulted-value case.
+     */
+    const paymentMethodIsChosenAtSubmission = !isTabOrder
+
+    if (paymentMethodIsChosenAtSubmission && !allowedMethods.includes(resolvedPaymentMethod)) {
       return NextResponse.json(
         {
           error: `This restaurant does not accept ${resolvedPaymentMethod} payments.`,
