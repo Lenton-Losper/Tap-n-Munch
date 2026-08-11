@@ -10,6 +10,7 @@ import {
   owesMoney,
   secondsSincePush,
   normalizeSettlementPaymentMethod,
+  roundToCents,
   settleableStatusesForMethod,
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
@@ -218,9 +219,11 @@ export async function POST(
       )
     }
 
-    const expectedAmount = (tabOrders ?? []).reduce(
-      (sum, o) => sum + Number(o.total),
-      0,
+    // Rounded because this figure is STORED, not only compared: it becomes payments.amount and
+    // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
+    // next line is unaffected either way -- amountsMatch works in integer cents (#180).
+    const expectedAmount = roundToCents(
+      (tabOrders ?? []).reduce((sum, o) => sum + Number(o.total), 0),
     )
     if (!amountsMatch(amount, expectedAmount)) {
       return NextResponse.json(
@@ -384,23 +387,31 @@ export async function POST(
 
     let newTotal: number | null = null
     if (!unpaidError) {
-      // UNION of two fixes that answer different questions, and both are load-bearing.
+      // THREE fixes compose here, from three different branches. Each answers a different
+      // question, none subsumes another, and dropping any one silently reintroduces a defect
+      // that was already fixed once. Each has its own test and its own negative probe.
       //
-      //   WHAT the total should be   -- #104's owesMoney() filter. Partitioning in JS rather
-      //     than with `.neq('payment_status','paid')` in SQL is deliberate: "not paid" is true
-      //     of a CANCELLED order, so a cancelled order's money kept being reported as owed.
+      //   WHAT to sum      -- #104's owesMoney() filter. Partitioning in JS rather than with
+      //     `.neq('payment_status','paid')` in SQL is deliberate: "not paid" is true of a
+      //     CANCELLED order, so a cancelled order's money kept being reported as owed.
       //     owesMoney also normalises, so a stray 'Paid' cannot slip through byte-exact SQL.
       //
-      //   WHETHER the write landed  -- #195's captured totalWriteError. This UPDATE's error was
-      //     previously discarded entirely, so a failed write left the stored total stale while
-      //     the terminal was handed a figure the database does not hold.
+      //   HOW to round     -- #191's roundToCents. This figure is STORED, not merely compared:
+      //     tabs.total is `numeric` with no scale, and it is the customer-visible one of the
+      //     three sums in this route -- served on to the guest app and the terminal APK as the
+      //     balance owed. A float sum of line totals can land at 78.35000000000001.
       //
-      // They arrived on different branches and collided here. Dropping either one silently
-      // reintroduces a defect that was already fixed once: without the filter a cancelled
-      // order is billed again, without the error check a stale total is reported as fact.
-      const recalculated = (tabOrderRows ?? [])
-        .filter((o) => owesMoney(o.payment_status))
-        .reduce((sum, o) => sum + Number(o.total), 0)
+      //   WHETHER it landed -- #195's captured totalWriteError. This UPDATE's error was
+      //     discarded entirely, so a failed write left the stored total stale while the
+      //     terminal was handed a figure the database does not hold.
+      //
+      // Rounding is applied at the WRITE and only at the write (ruled): one rounding point, and
+      // the stored value is then the single source for everything that reads it back.
+      const recalculated = roundToCents(
+        (tabOrderRows ?? [])
+          .filter((o) => owesMoney(o.payment_status))
+          .reduce((sum, o) => sum + Number(o.total), 0),
+      )
       const { error: totalWriteError } = await supabase
         .from('tabs')
         .update({ total: recalculated })

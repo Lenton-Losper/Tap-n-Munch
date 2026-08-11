@@ -15,6 +15,34 @@
 export const PAYMENT_AMOUNT_TOLERANCE_CENTS = 1
 
 /**
+ * Round a money value to whole cents. Apply on WRITE.
+ *
+ * Summing order totals in JS produces values that are not the amount anyone means:
+ * 35.10 + 27.25 + 42.95 is 105.30000000000001, and roughly a quarter of multi-order sums land
+ * off the 2dp value like that. The money columns are `numeric` with no scale, so the artefact
+ * is stored verbatim rather than rounded away by the column.
+ *
+ * This is NOT about the amount comparison, which is already correct — amountsMatch above
+ * rounds both operands to integer cents, so a 1e-13 drift is absorbed and 105.30000000000001
+ * matches 105.30 even at zero tolerance. It is about what the row then HOLDS. Two consequences
+ * beyond tidiness:
+ *
+ *   - a stored 105.30000000000001 compared against a terminal-reported 105.30 makes an
+ *     identical payment look like a disagreement to any consumer that does not round first,
+ *     and not every consumer of these rows is this codebase;
+ *   - the refund ceiling is checked as (prior + requested) > sale.amount, so a row sitting a
+ *     fraction of a cent BELOW the true total can refuse a full refund of the amount actually
+ *     charged.
+ *
+ * Non-finite input is returned unchanged rather than becoming NaN, so a caller that is already
+ * holding a bad number gets the same bad number and not a second, different failure mode.
+ */
+export function roundToCents(amount: number): number {
+  if (!Number.isFinite(amount)) return amount
+  return Math.round(amount * 100) / 100
+}
+
+/**
  * True when two money values are the same payment, compared as INTEGER CENTS.
  *
  * This was `Math.abs(a - b) <= 0.01` in floating point, which is not a one-cent tolerance — it
