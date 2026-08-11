@@ -1438,3 +1438,128 @@ a real path breaks: scope the SELECT policy by restaurant. Then re-run the decis
 
 **#218's packet waits.** Q1b is now a confirmed exposure rather than a hypothesis, and it eliminates
 the membership option before Q1 is asked.
+
+---
+---
+
+# FINAL CHECKPOINT — 2026-08-11 evening. Written assuming total context loss.
+
+## STATE
+
+    production / origin/main    a43aade7ef50d0d60cb2c21e14fcf40b76bf6ba9   verified cache-busted
+    origin/cloudflare-staging   99d285376154558a661ede38be53ebc4ab2bc2ed   verified cache-busted
+    open issues                 119
+
+Production path this session: `fdb999a` → `49ccfea` (#212) → `524c592` (batch) → `e578bd6` (#219) → `a43aade` (#212 control fix). Four gated deploys, each verified before the next. Closed: **#212, #207, #219**. #240 deliberately left open — coverage closed, route seam is not.
+
+**EVERY BRANCH IS ON ORIGIN. NONE MERGED.** Nine `sprint/*`, `fix/207-toast-mount-race`, `fix/242-webhook-resolver-eq`, `fix/254-staging-ref-injection`, and both reconcile branches. Nothing lives on one disk.
+
+**RECONCILIATION — both gated GREEN, both pushed, NOT merged. The human's to push, not the integrator's:**
+
+    reconcile/main-to-staging-2         c37e5ca   31 commits on staging 99d2853
+    reconcile/main-to-staging-2-batch2  715461f    8 commits stacked on batch 1
+
+**ORDERING IS PROVEN, NOT ASSERTED.** Main's own `e578bd6` (#219) cherry-picked onto RAW `origin/cloudflare-staging` conflicts — `UU lib/guest-orders/queries.ts`, `DU __tests__/guest-orders-declined-visibility.test.ts` — and applies **clean** on batch 1, because batch 1 supplies `63a09a6`. **Batch 1 strictly first.**
+
+Excluded deliberately: `f7ee138` (#122 union) belongs to #254, because its only gain over staging is DOOR 1 and that guard lives in `validation.ts` — landing it alone gives staging a guard that can never fire, under a comment saying it fails closed. `a6bb436`'s `20260811120000` is never reconciled.
+
+---
+
+## THE 42501 CORRECTION — the most valuable thing in this document
+
+**What happened.** A production probe with the public anon key returned `{"code":"42501","message":"permission denied for table tabs"}` on `select tab_pin`. That was read — by the human, and I did not challenge it fast enough — as proof the anon role has **no privilege on `tabs`**, and therefore that the RLS migration had never run.
+
+**Why that reading is wrong.** **Postgres reports a COLUMN-level privilege failure as `permission denied for table`.** The error names the table because that is the object the check was against; it does not tell you whether the role lacks privilege on the *table* or merely on the *column you asked for*. Those two states are **indistinguishable from the error text alone**.
+
+**The decisive test is the PAIR, never either half:**
+
+| query | if GRANT ALL | if no grant | if COLUMN grant |
+|---|---|---|---|
+| `select *` | OK | denied | **denied** |
+| `select id, status, total` | OK | denied | **OK** |
+| `select tab_pin` | OK | denied | **denied** |
+| `select id, members` | OK | denied | **OK** |
+
+Production returned denied / OK / denied / **OK rows=3**. Only the last column matches. So:
+
+1. **The migration DID run on production** — despite its header saying "Staging first; production requires explicit sign-off" and its only in-repo apply path being staging-scoped.
+2. **`tab_pin` IS genuinely protected.** PIN gates are not theatre. Good news, and invisible under the first reading.
+3. **`members` IS granted** — so the exposure is live, which the first reading would have closed as a non-issue.
+
+**The transferable lesson, same class as the lying instruments in Revision 1: an error message describes the CHECK THAT FAILED, not the state of the system.** A single denied query is one bit. Establishing the state took four. The probe that settles it **varies what is asked while holding the credential fixed** — because each outcome is only meaningful against the others.
+
+Second half, filed as **#263**: the migration is live with **no committed production apply path**, and `check-migration-drift.mjs` compares migration *filenames* against a ledger that `db query` does not write and `migration repair` writes **without running SQL**. **For any security-relevant migration the ledger is not evidence; the only proof is probing enforced behaviour.** Same shape as `restaurant_terminals_status_check`.
+
+---
+
+## TOP ITEM — #262, LIVE EXPOSURE, NOT YET FIXED
+
+`20260726200000:53-74` does `REVOKE ALL FROM anon` then `GRANT SELECT (id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, firebase_id, firebase_restaurant_id, settled_at, customer_name) TO anon`, and the anon SELECT policy has **NO restaurant scope**.
+
+Measured on production, public anon key: `members[]` rows exposing a `session_id` = **3 of 3**, keys `["joined_at","session_id","display_name"]`.
+
+**So anyone with the public anon key can list the session_id of every member of every open tab, across all restaurants.** And `app/api/tabs/[tabId]/join/route.ts:82-84` computes `alreadyMember` from a **client-supplied** `sessionId` against that array — so `f4f9111`'s own *"already-a-member rejoin without PIN"* branch, added as part of a join-by-UUID IDOR fix, **is bypassable by reading a value we publish.**
+
+**PLAN, ruled by the human:** remove `members` from the anon column grant. Enumerate every legitimate anon reader FIRST and report breakage rather than discover it. Migration via `npx tsx scripts/safe-supabase-linked.ts`, **no raw `--linked`**. **Staging first**, drift confirmed before and after; production is a separate confirmed step and is the human's. Fallback only if a real path breaks: scope the SELECT policy by restaurant. Then re-run the decisive probe — `select id, members` must **refuse** where it currently returns 3 rows.
+
+Two agents were enumerating readers independently when this session ended. The distinction that decides it is **CLIENT, not file**: browser-anon reads break, service-role server routes do not (`service_role` holds `GRANT ALL`). Enumerate by client construction site, not by the word `members` — `select('*')`, spreads and wholesale responses hide it.
+
+---
+
+## THE PIN QUESTION — ANSWERED. Reads only.
+
+**Can staff see a tab's PIN today? NO. There is no staff surface that reads it.**
+
+`grep -rn tab_pin` over `app components lib contexts` returns only:
+
+- `app/api/tabs/join/route.ts:35,45` — selects and COMPARES it (by-PIN join)
+- `app/api/tabs/[tabId]/join/route.ts:86,91` — COMPARES it
+- `app/api/tabs/route.ts:100` — WRITES it at creation
+- everything else is `tab_pin_required`, the settings **boolean**, not the PIN
+
+**Recovery path if a customer forgets it: NONE, except staff clearing the table.** The PIN is shown once at creation and kept only in the creator's own `sessionStorage` as `flashtap_creator_tab_pin` (`v2/page.tsx:676`, read at `browse:195` and `tab:74`). `clearTabSession` can drop it — which is what makes **#220** ("View Menu" silently discards an open tab) worse than it looks. Once that storage is gone the PIN is unrecoverable by any in-product path; `close_table_session` settles the tab, which is the only escape.
+
+**Bearing on #262: none, and that is the point.** Removing `members` from the anon grant does not touch PIN visibility or recovery, because no anon path reads `tab_pin` today — it already refuses with 42501. The grant change is safe from this angle.
+
+---
+
+## DECISIONS THAT MUST NOT BE RE-DERIVED
+
+- **#212 → take `sprint/migration-check-lint` (`3d7ef8d`).** NOT `sprint/receipt`'s duplicate; they collide on both workflow files. (Already shipped as `49ccfea` + `a43aade`.)
+- **#219 → take `sprint/stock-pay` (`1a1b05b`).** NOT `sprint/qr-state`'s. It normalises at the convergence point, not in one renderer. (Already shipped as `e578bd6`.)
+- **`sprint/243-investigation` must NEVER reach main.** Its tests pin defective behaviour ON PURPOSE — when #248 is fixed they *should* go red. Shipping it puts a green suite on production asserting a bug is correct: **#131's shape exactly.** Noted on #248.
+- **#242 needs NOTHING from Finatic.** `.eq()` carries no parser, so two `.eq()` unioned in JS needs no charset assumption. Measured 213→0 with six real references returning identical id sets, 13 adversarial payloads all 0. Fix assembled on `fix/242-webhook-resolver-eq`, awaiting the Q1 ruling.
+- **#174/#175 are fully live and OFF the do-not-promote list.** Measured, not inherited.
+- **The `dd3d9eb` contract incident has EXPIRED** — the file it warns about is now on main. Labelled historical, with an explicit instruction to delete the rule if no live instance can be cited.
+- **#122's baseline story was INVERTED and is corrected:** `guestCanAccessOrder` is byte-identical at both refs. Main is AHEAD on code, BEHIND on tests. The 4-test delta is a stale test on main (#257).
+
+---
+
+## OUTSTANDING CLICK-TESTS — staging `99d2853`, restated in full
+
+**Verify the build first.** Anything but this SHA and stop:
+
+    curl -s "https://flashtap-staging.llosperofficial.workers.dev/api/version?cb=<any>"
+    -> {"commit":"99d285376154558a661ede38be53ebc4ab2bc2ed"}
+
+**URL, both tests** — use a **fresh incognito window each time** (a stale `flashtap_tab_id` in localStorage dead-ends you on #211, unrelated and unfixed):
+
+    https://flashtap-staging.llosperofficial.workers.dev/menu/a1999166-ddfa-40d1-ad1f-2f01282a1652/v2?table=1001
+
+A `drinks` category with 4 items was seeded on the staging test restaurant — #225 was untestable without a second category. Keep it.
+
+### #214 — a loading menu must not read as an empty one
+
+Phone, **mobile data not wifi**, cold cache, fresh incognito. Open the URL, reach the menu, watch the first screen at the moment items should appear.
+
+**PASS:** a loading treatment, then items. Nothing is ever claimed about what the restaurant sells.
+**FAIL:** "Menu coming soon!" · "This restaurant hasn't added menu items yet." · `No items in "mains" yet.` — at any moment, even for a fraction of a second.
+**What it cannot tell you:** whether the spinner *looks* right or how long it is up. The exploiter proved the false text is never committed during a slow load but reported the TIMING half as **unreachable in jsdom**, not fixed. That judgement is the only reason this needs a phone.
+
+### #225 — a response for a category you have left must not be applied
+
+Same conditions. Reach the menu, tap **mains**, then **within about a second, before its items finish loading, tap drinks.** Repeat, varying the gap.
+
+**PASS:** heading and items always agree. Under `drinks` only Rooibos Tea, Orange Juice, Sparkling Water, Iced Coffee.
+**FAIL — three distinct shapes, each on its own:** Beef Burger / Chicken Wrap / Cappuccino under the **drinks** heading · a notice naming a category you have LEFT ("We couldn't load mains" while on drinks) · drinks items showing while a notice about drinks is **absent** because a stale success cleared it — **that third one is the worst and was not in the original report.**
+**Expected behaviour change to judge:** switching categories now shows a loading treatment instead of the previous category's items. Strictly more honest; whether it feels right on a phone is a legitimate finding.
