@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { amountsMatch } from '@/lib/payments/payment-integrity'
+import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
@@ -77,6 +78,22 @@ export async function POST(
     if (status === 'success') {
       const expectedAmount = Number(order.total)
       if (!amountsMatch(amount, expectedAmount)) {
+        // The card has ALREADY been charged when this runs -- WiseCashier reported success.
+        // Refusing is still right (the figures genuinely disagree), but leaving no trace is
+        // not: the order stays pending and is later swept as auto_timeout or cancelled by hand
+        // as "no charge found", indistinguishable from a genuine abandonment (#187). Records
+        // the disagreement and never throws, so the 400 below is unaffected either way.
+        await recordPaymentAmountMismatch(supabase, {
+          restaurantId: terminal.restaurantId,
+          orderId,
+          expectedAmount,
+          receivedAmount: Number.isFinite(amount) ? amount : null,
+          source: 'terminal_callback',
+          terminalId: terminal.terminalId,
+          businessOrderNo: businessOrderNo || order.paycloud_merchant_order_no || null,
+          reference: reference || null,
+        })
+
         return NextResponse.json(
           {
             error: 'amount does not match order total',
