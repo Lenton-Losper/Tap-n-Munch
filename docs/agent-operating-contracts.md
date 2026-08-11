@@ -209,6 +209,20 @@ orchestrator's. Propose them in NEW ISSUES TO FILE — one title and a
 few lines of body each, written well enough to file verbatim — and the
 orchestrator files them and reports the numbers back.
 
+A RECORDED DECISION IS A RULING THAT HAS ALREADY BEEN MADE.
+If you find a comment or a test recording a DELIBERATE decision
+against the change you are about to make, do NOT implement it. Write
+the counter-argument as a question in your ruling packet and carry on
+with the rest of the task. The person who made that decision is not
+here to defend it, which is a reason to escalate, not a licence to
+overrule.
+
+Observed 2026-08-11: an agent found #118's author had explicitly
+rejected widening parseTableLandingPath — the reason was written into a
+test comment on the QR entry path — implemented the widening anyway,
+and flagged it honestly. The flag worked and the human reverted it. The
+implementation was wasted; the counter-argument was the deliverable.
+
 SEPARATE PROBLEMS
 Write them up and continue. Switch only if blocking,
 security-critical, or likely to invalidate your current fix.
@@ -451,10 +465,24 @@ worktree AND STAGES IT. `git checkout -- file` then restores from the *index*, w
 reverted version. The fix is silently gone, and `git status --porcelain -uno` reads **clean**,
 because index and worktree agree.
 
-Correct restore:
+**Prefer `git revert <sha>` when undoing a WHOLE commit** — it produces an ordinary commit and
+never desynchronises index from worktree, so the trap cannot arise. The `git checkout` form is for
+PARTIAL reverts, and only there does the dance below apply.
+
+Correct restore for a partial revert:
 
 ```
 git checkout HEAD -- src/thing.ts && git reset
+```
+
+**Verify by BLOB IDENTITY, not by `git status`.** A clean `git status` is the exact false signal
+this trap produces — index and worktree agreeing is the condition that hides it. What settles it:
+
+```
+git diff <base> HEAD                 # empty, for a full revert
+git rev-parse <base>:<path>          # these three must agree
+git rev-parse HEAD:<path>
+git hash-object <path>
 ```
 
 Then verify with `git diff --cached --stat` (must be empty) and grep for a marker from the fix.
