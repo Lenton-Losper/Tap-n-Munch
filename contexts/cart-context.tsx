@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { getCurrentSession } from '@/lib/session'
 import { findMergeableLineIndex } from '@/lib/cart/cart-line-identity'
+import { capCartLine } from '@/lib/cart/cart-lines'
 import { round2 } from '@/lib/tax-rates/apply-tax'
 
 export interface CartItem {
@@ -21,7 +22,8 @@ export interface CartItem {
 
 interface CartContextType {
   items: CartItem[]
-  addItem: (item: CartItem) => void
+  /** Adds a line, capped at MAX_LINE_QUANTITY. `clamped` reports whether it had to be. */
+  addItem: (item: CartItem) => { clamped: boolean }
   updateItem: (index: number, item: CartItem) => void
   /** Replace the whole line list -- for edits that change the shape of the cart, not one row. */
   replaceItems: (items: CartItem[]) => void
@@ -73,22 +75,40 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
    * Money is summed from the two lines' own subtotals rather than recomputed, so a merged line
    * always costs exactly what the two separate lines cost, then rounded to cents so repeated
    * merges cannot accumulate floating-point residue.
+   *
+   * TWO SEPARATE CAPS, resolving in opposite directions -- do not collapse them:
+   *
+   *  - the INCOMING LINE's own quantity is clamped by capCartLine, below. Nothing on this path
+   *    did that: findMergeableLineIndex guards the fold, not the line, so a single over-cap
+   *    line appended straight past it and the server refuses the whole order at submit.
+   *  - a FOLD that would cross the cap is REFUSED, leaving two lines, because clamping the sum
+   *    destroys units the customer already had (#126). That is findMergeableLineIndex's job
+   *    and it already does it -- capping first does not disturb it, since a capped line can
+   *    only ever fold where the uncapped one could.
+   *
+   * The cap depends only on the incoming line, so it is applied before the state update and
+   * the merge stays inside the functional update -- two adds in flight must not read the same
+   * `prev` and lose one.
    */
-  const addItem = (item: CartItem) => {
+  const addItem = (item: CartItem): { clamped: boolean } => {
+    const { line, clamped } = capCartLine(item)
+
     setItems(prev => {
-      const index = findMergeableLineIndex(prev, item)
-      if (index === -1) return [...prev, item]
+      const index = findMergeableLineIndex(prev, line)
+      if (index === -1) return [...prev, line]
 
       const existing = prev[index]
       const merged: CartItem = {
         ...existing,
-        quantity: existing.quantity + item.quantity,
-        subtotal: round2(existing.subtotal + item.subtotal),
+        quantity: existing.quantity + line.quantity,
+        subtotal: round2(existing.subtotal + line.subtotal),
       }
       const next = [...prev]
       next[index] = merged
       return next
     })
+
+    return { clamped }
   }
 
   const updateItem = (index: number, item: CartItem) => {
