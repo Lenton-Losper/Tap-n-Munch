@@ -648,3 +648,56 @@ could be genuinely absent).
 
 Open issues: **104**. Fourth shell-quoting artifact of the sprint hit my own filing; switched to
 `--body-file`.
+
+---
+
+## CHECKPOINT 9 — an orchestration error of mine, and the two remaining assignments
+
+### I DUPLICATED #212 ACROSS TWO AGENTS. Two independent implementations exist.
+
+`sp-receipt` → `sprint/receipt` @ `652bf2a`, `64b1638`
+`sp-browse`  → `sprint/migration-check-lint` @ `3d7ef8d`
+
+Both are complete, both two-sided, both baseline the same five offenders, both wire into the two
+workflows. Neither agent knew about the other. **That is my error, not theirs** — I assigned #212 to
+`sp-receipt` in its original brief and again to `sp-browse` when reassigning it after the #214
+exploiter pass, and I did not check what was already in flight.
+
+**Both found things the other did not**, so the duplication was not pure waste:
+
+- `sp-receipt`'s exploiter pass **reached** its own rule with a DO-block fixture, and its fix
+  recurses into dollar-quoted bodies — a gap `sp-browse`'s version may or may not have.
+- `sp-browse` found that **a regressed parser reports "scanned 127, 0 violations" and exits 0**, and
+  that the baseline is what converts that silent blindness into a stale-baseline failure. It also
+  masks comments/strings/`$$` bodies preserving offsets and splits ALTER TABLE actions on
+  **top-level commas only**.
+
+**FOR THE HUMAN: pick one, do not merge both.** The two implementations differ in language (`.ts`
+via tsx vs `.mjs`), in where the suite is wired, and in parser strategy. My reading is that
+`sp-browse`'s is the more defensively built and `sp-receipt`'s has the better-proved parser, and the
+right move is to take one wholesale and port the other's DO-block test into it as a fixture rather
+than reconcile the two scanners.
+
+### Both #212 versions agree on the five offenders
+
+`20260620150000` · `20260628110000` · `20260629120000` · `20260719110000` · `20260724180000`.
+Two independent parsers reaching the same set is the strongest evidence either has.
+
+### Final two assignments of the sprint
+
+- `sp-variants` → **the fixed-on-branch-but-not-live drift audit, BOTH directions.** branch→main and
+  main→staging. A previous audit of this shape found **31 issues already fixed and not live**, and
+  closing them was most of a session's output with no new code. Deliver a table with a PARTIAL
+  column, and treat #129 / #174 / #175 / #186 / #139 as never-closeable — promoting them makes them
+  look done, which is why they are on the list.
+- `sp-qr-state` → **work the issue list from the newest number downward**, Reality & Proof first on
+  every one. Close what is already live at `fdb999a` by reading the file at the ref. Skip #127, any
+  migration-dependent issue, any unruled auto-H1, and the four half-fixed. Report how far it got and
+  every skip with its reason.
+
+### Sprint state
+
+Production `fdb999a`, untouched. `origin/main` unchanged all sprint. Open issues **104**.
+Branches carrying work, none pushed: `sprint/browse-states` (#214 + exploiter),
+`sprint/migration-check-lint` (#212), `sprint/receipt` (#212 + exploiter), `sprint/variants`
+(#200 + #240), `sprint/qr-state` (#219 + probes), `sprint/stock-pay` (empty — audit only).
