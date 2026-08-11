@@ -1351,3 +1351,90 @@ human and it is one query.
 - **#174/#175 off the do-not-promote list** — both fully live, measured.
 
 ## Open: 117
+
+---
+
+## CHECKPOINT — THE 42501 CORRECTION. The reasoning matters more than the finding.
+
+The human ran the production RLS probe I was blocked from running and read the result as:
+
+> *"That's a GRANT-level refusal… The anon role has no privilege on tabs on production."*
+
+**That reading is wrong, and wrong in the direction that hides a live exposure.**
+
+**Postgres reports a COLUMN-level privilege failure as `permission denied for table`.** So a 42501
+on `select tab_pin` does not mean the role has no grant on the table — it means the role lacks
+privilege on **that column**. The two are indistinguishable from the error text alone.
+
+Measured, production, public anon key, read-only:
+
+```
+select tab_pin            -> 42501 permission denied for table tabs
+select id, members        -> OK rows=3          <-- DECISIVE
+select id, status, total  -> OK rows=3
+select *                  -> 42501
+```
+
+**The discriminator is the pair, not either half.** `GRANT ALL` (baseline) would have allowed
+`select *`. No grant at all would have refused `id, status, total`. Only a **column-level** grant
+produces exactly this pattern — and that is precisely what `20260726200000` writes:
+`REVOKE ALL FROM anon`, then `GRANT SELECT (id, …, members, …) TO anon`.
+
+### Three consequences, all inverted from the first reading
+
+1. **The migration DID run on production.** Good news, and it means `tab_pin` is genuinely
+   protected — PIN gates are not theatre.
+2. **`members` IS in the granted column list**, and the anon SELECT policy has **no restaurant
+   scope**. So the exposure is live: `members[]` rows exposing a `session_id` = **3 of 3**, keys
+   `["joined_at","session_id","display_name"]`. Filed **#262**.
+3. Therefore `f4f9111`'s own *"already-a-member rejoin without PIN"* branch is bypassable by reading
+   a value we publish — **an IDOR fix resting on a public value.**
+
+### The transferable lesson
+
+**An error message describes the check that failed, not the state of the system.** A single denied
+query is one bit; the state needed at least three. The probe that settles it is the one that varies
+what is asked while holding the credential fixed — `tab_pin` vs `members` vs `*` — because each
+outcome is only meaningful against the others.
+
+Filed **#263** for the second half: the migration is live with **no committed production apply
+path**, and `check-migration-drift.mjs` compares filenames against a ledger that `db query` does not
+write and `migration repair` writes without running SQL. **For any security-relevant migration the
+ledger is not evidence; the only proof is probing enforced behaviour.** Same shape as
+`restaurant_terminals_status_check`.
+
+## Evening state at this checkpoint
+
+    production / origin/main   a43aade   (fdb999a -> 49ccfea -> 524c592 -> e578bd6 -> a43aade)
+    origin/cloudflare-staging  99d2853   (three browse commits, for the click-test)
+
+Closed this session: **#212, #207, #219**. #240 left open — coverage closed, route seam is not.
+
+**Every branch is now on origin.** Nine sprint branches, `fix/242-webhook-resolver-eq`,
+`fix/254-staging-ref-injection`, and both reconciliation batches. Nothing lives on one disk.
+
+**Reconciliation, both batches gated GREEN, pushed, not merged:**
+`reconcile/main-to-staging-2` @ `c37e5ca` (31 commits) → `…-batch2` @ `715461f` (8 more, 39 ahead).
+Ordering proven by measurement: main's own #219 conflicts on raw staging and applies clean on
+batch 1.
+
+**#212's control was weaker than the code it defends**, at exactly the property it tests hardest —
+the suite has a whole `masking` describe block, and the control that argues masking matters did not
+mask. Fixed on main (`a43aade`) rather than staging, because that migration is a deliberate
+divergence and the red would have been permanent — #257's shape.
+
+**An agent corrected my instruction and was right:** I said rebase batch 2; staging had not moved,
+so a rebase would have been a no-op it could then have reported as work. It cherry-picked instead
+and said so. *"I rebased and it's green"* would have been a true sentence describing an action that
+did nothing.
+
+## NEXT, per the human: #262 FIRST, nothing else until it ships
+
+Remove `members` from the anon column grant. **Enumerate every legitimate anon reader BEFORE
+changing anything** — report breakage rather than discovering it. Migration via
+`safe-supabase-linked`, staging first, then production with drift confirmed both sides. Fallback if
+a real path breaks: scope the SELECT policy by restaurant. Then re-run the decisive probe:
+`select id, members` must REFUSE where it currently returns 3.
+
+**#218's packet waits.** Q1b is now a confirmed exposure rather than a hypothesis, and it eliminates
+the membership option before Q1 is asked.
