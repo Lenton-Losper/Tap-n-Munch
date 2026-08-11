@@ -59,6 +59,16 @@ jest.mock('@/lib/order-routing', () => ({
   enrichOrderItemsWithRouteTo: async (_c: unknown, items: unknown[]) => items,
 }))
 
+// A tab order carries a session token (route.ts:98). Only the tab path reaches this, so the
+// direct-order cases below are unaffected by the mock.
+jest.mock('@/lib/session-guard', () => ({
+  requireSessionToken: async () => ({
+    tabId: 'tab-1',
+    restaurantId: 'a1999166-ddfa-40d1-ad1f-2f01282a1652',
+  }),
+  assertSessionMatchesResource: () => null,
+}))
+
 /** Rows inserted by the route, so a test can assert what was actually persisted. */
 let inserted: Array<{ table: string; row: Record<string, unknown> }> = []
 let allowedPaymentMethods: string[] = ['cash', 'card']
@@ -193,5 +203,55 @@ describe('POST /api/orders — payment method allowlist', () => {
 
     expect(status).toBe(403)
     expect(inserted).toHaveLength(0)
+  })
+})
+
+/**
+ * Issue #202 — a TAB order has no payment method yet, so the allowlist has nothing to check.
+ *
+ * The cart's handleAddToTab sends no paymentMethod at all (it cannot: on a tab the method is
+ * chosen later, at settlement). route.ts:109 then defaults resolvedPaymentMethod to 'cash', and
+ * the #124 guard above — correctly, for a direct order — validates that DEFAULTED value. At a
+ * card-only restaurant the result was a 403 PAYMENT_METHOD_REQUIRED on every QR tab submission.
+ * Riviera and FNB ChowNow both sit at payment_methods=["card"] in production, and Riviera is the
+ * venue the whole QR path exists to serve.
+ *
+ * The defect is not the guard. It is that the guard is being asked a question that has no answer
+ * yet, and the server invents 'cash' to answer it — the same shape of invented value #124 closed.
+ * So the exemption is explicit and scoped to the tab path, and #124's guard is untouched.
+ *
+ * THE CONTROL IS THE DESCRIBE BLOCK ABOVE. Every test in it is a direct order; all five passed
+ * BEFORE this change and must still pass after. That is what proves the exemption did not reopen
+ * #124 — they are the "still rejects" half, and they were never red.
+ *
+ * Of the two tests below, only the CARD-ONLY one was red before (403 PAYMENT_METHOD_REQUIRED).
+ * The cash-only one passed already, because the invented default happens to be 'cash' and 'cash'
+ * happens to be allowed there — which is precisely the accident this exemption removes reliance
+ * on. It is kept as a control showing the exemption is not card-specific, not as failing-first
+ * evidence.
+ */
+describe('POST /api/orders — tab orders are exempt from the allowlist (#202)', () => {
+  const postTabOrder = (extra: Record<string, unknown> = {}) =>
+    postOrder({ tabId: 'tab-1', memberSessionId: 'sess-1', ...extra })
+
+  it('accepts a tab order at a CARD-ONLY restaurant, where the cart sends no method', async () => {
+    // The exact production shape: Riviera at payment_methods=["card"], cart omits paymentMethod.
+    allowedPaymentMethods = ['card']
+
+    const { status, body } = await postTabOrder()
+
+    expect({ status, code: body.code }).toEqual({ status: 200, code: undefined })
+    expect(inserted.length).toBeGreaterThan(0)
+  })
+
+  it('accepts a tab order at a CASH-ONLY restaurant too — the method is simply not yet known', async () => {
+    // Not a special case for 'card'. The point is that NO method has been chosen, so no value
+    // of payment_methods can make the question answerable at submission time.
+    allowedPaymentMethods = ['cash']
+
+    const { status } = await postTabOrder()
+
+    expect(status).toBe(200)
+    expect(inserted.length).toBeGreaterThan(0)
   })
 })
