@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { displayedAddonPrice } from '@/lib/cart/addon-display-price'
 import { MenuItem } from '@/lib/supabase/menu'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -133,9 +134,15 @@ export function ItemDetailModal({
     if (selectedAddons.find(a => a.name === addon.name)) {
       setSelectedAddons(selectedAddons.filter(a => a.name !== addon.name))
     } else {
+      // The object pushed here comes from `item.addons`, i.e. the CURRENT menu. That is the
+      // intended behaviour and the other half of the rule below: a newly ticked add-on is a new
+      // choice and is priced today. Un-ticking a retained one and re-ticking it is therefore a
+      // real change of price, not a no-op -- and now a visible one, because the displayed figure
+      // moves with it instead of staying at the stored price while the total quietly changes.
       setSelectedAddons([...selectedAddons, addon])
     }
   }
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-2 sm:items-center sm:p-4">
@@ -221,7 +228,7 @@ export function ItemDetailModal({
                     >
                       <span className="text-foreground">{addon.name}</span>
                       <span className="text-muted-foreground text-sm">
-                        +{restaurant?.currency || 'N$'}{addon.price.toFixed(2)}
+                        +{restaurant?.currency || 'N$'}{displayedAddonPrice(addon, selectedAddons).toFixed(2)}
                       </span>
                     </Label>
                   </div>
