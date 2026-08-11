@@ -165,9 +165,17 @@ export async function fetchGuestOrdersBySession(params: {
    * for eight callers to serve one. Nothing here relaxes the session scope above: a declined
    * request is returned to the session that placed it and to nobody else.
    */
+  /*
+   * `accepting` is in the DEFAULT set, not behind the opt-in, because it is not a terminal state
+   * the way `declined` is -- it is a `waiting_review` row that an Accept has picked up
+   * (accept/route.ts:73), and `ACTIVE_ORDER_STATUSES` already classes it as LIVE. Omitting it made
+   * the same row simultaneously "Waiting for Review" by direct link (fetchGuestOrderById applies no
+   * status filter) and ABSENT from this list -- for the milliseconds the claim normally lasts, and
+   * forever if the Accept strands it (#215, #219). Both audiences want it, so neither opts in.
+   */
   const requestStatuses = params.includeDeclined
-    ? ['waiting_review', 'declined']
-    : ['waiting_review']
+    ? ['waiting_review', 'accepting', 'declined']
+    : ['waiting_review', 'accepting']
 
   let pendingQuery = supabase
     .from('order_requests')
@@ -267,13 +275,16 @@ export async function fetchGuestActiveTableOrders(params: {
 
   const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
 
-  // Also surface waiting_review order_requests for this session (Order Request model).
+  // Also surface not-yet-decided order_requests for this session (Order Request model).
+  // `accepting` rides with `waiting_review` here for the same reason it does above: it is a
+  // claimed-but-undecided request, and dropping it made a live order vanish from the table view
+  // while its own page still called it under review (#219).
   let requestQuery = supabase
     .from('order_requests')
     .select('*')
     .eq('restaurant_id', restaurantUuid)
     .eq('table_number', params.tableNumber)
-    .eq('status', 'waiting_review')
+    .in('status', ['waiting_review', 'accepting'])
     .eq('session_id', sessionId)
 
   if (params.placedAfter) {

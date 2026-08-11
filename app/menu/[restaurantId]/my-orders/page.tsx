@@ -11,6 +11,7 @@ import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
+import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 
 export default function MyOrdersPage() {
   const params = useParams()
@@ -68,6 +69,12 @@ export default function MyOrdersPage() {
   // An unlisted status fell through to `pending` ("🎉 New"), which reads as further along than
   // the order is. Both order_requests states are spelled out for that reason -- a declined
   // request labelled "New" would be worse than the disappearance it replaces.
+  //
+  // The call site runs the status through normalizeOrderStatusForDisplay first, so the writers'
+  // vocabularies collapse into the ones keyed here rather than each needing its own entry. That
+  // module's contract is that anything making a status VISIBLE goes through it, and this page was
+  // the last customer-facing renderer that did not. It covers `accepting` (#219, -> waiting_review)
+  // and `confirmed`, the terminal's word for `accepted`, which until now rendered here as "New".
   const getStatusConfig = (status: string) => {
     const configs: any = {
       waiting_review: { emoji: '⏳', label: 'Waiting for confirmation' },
@@ -173,7 +180,7 @@ export default function MyOrdersPage() {
         ) : (
           <div className="space-y-4">
             {orders.map((order) => {
-              const statusConfig = getStatusConfig(order.status)
+              const statusConfig = getStatusConfig(normalizeOrderStatusForDisplay(order.status))
               const placedAt = order.placed_at?.toDate
                 ? order.placed_at.toDate()
                 : order.placed_at
