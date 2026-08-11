@@ -82,12 +82,33 @@ export async function fetchGuestActiveTableOrders(params: {
   return parseGuestOrdersResponse(res)
 }
 
+/**
+ * `restaurantId` is REQUIRED, because the route now requires it (#122): without a restaurant
+ * the lookup spans every tenant, so a reference that is merely KNOWN -- printed on a receipt,
+ * carried on a gateway return URL -- reads any restaurant's order.
+ *
+ * `tableNumber` and `sessionId` are optional but matter more than they look. The server gates
+ * each row through guestCanAccessOrder, which lets a PAID or closed order through on restaurant
+ * scope alone but requires the table or the session for one that is still OPEN. The confirmation
+ * screen polls while a payment is pending -- i.e. exactly when the order is open and unpaid --
+ * so omitting both makes the poll return nothing until the payment lands, and the customer
+ * watches an empty screen. Pass them wherever the caller has them.
+ */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
-  restaurantId?: string
+  restaurantId: string
+  tableNumber?: number | null
+  sessionId?: string | null
 }): Promise<GuestOrderRow[]> {
-  const qs = new URLSearchParams({ ref: params.paymentRef.trim() })
-  if (params.restaurantId?.trim()) qs.set('restaurantId', params.restaurantId.trim())
+  const restaurantId = params.restaurantId?.trim() || ''
+  if (!restaurantId) return []
+
+  const qs = new URLSearchParams({ ref: params.paymentRef.trim(), restaurantId })
+  if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
+    qs.set('table_number', String(params.tableNumber))
+  }
+  if (params.sessionId?.trim()) qs.set('session_id', params.sessionId.trim())
+
   const res = await fetch(`/api/guest/orders/by-payment-ref?${qs.toString()}`)
   const body = await parseGuestOrdersResponse(res)
   return body.orders

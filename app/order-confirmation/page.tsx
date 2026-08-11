@@ -15,6 +15,7 @@ import {
   fetchGuestOrdersBySession,
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
+import { parseOptionalInt } from '@/lib/guest-orders/validation'
 
 type OrderDoc = {
   id: string
@@ -250,10 +251,17 @@ async function resolveOrdersByTn(
 ): Promise<{ rows: OrderDoc[]; restaurantId: string | null }> {
   if (!tn.trim()) return { rows: [], restaurantId: restaurantIdHint }
 
+  // #122: the lookup is scoped to one restaurant now, so no hint means no query rather than a
+  // cross-tenant one. Returning empty lets the caller fall through to its session-based path.
   const rid = restaurantIdHint?.trim() || null
+  if (!rid) return { rows: [], restaurantId: null }
   const data = await fetchGuestOrdersByPaymentRef({
     paymentRef: tn,
-    restaurantId: rid || undefined,
+    restaurantId: rid,
+    tableNumber: parseOptionalInt(
+      typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('table') : null,
+    ),
+    sessionId: getSessionIdForReceiptFallback(),
   })
   if (data && data.length > 0) {
     const mapped = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
@@ -301,7 +309,18 @@ function OrderConfirmationContent() {
         if (orderRef) {
           const urlCancel = inferCancelledFromSearchParams(searchParams)
 
-          const sbRows = await fetchGuestOrdersByPaymentRef({ paymentRef: orderRef })
+          // #122: restaurant scope is required. table/session are passed so an order that is
+          // still OPEN (the pending-payment case this screen exists for) survives the per-row
+          // guestCanAccessOrder gate, which only lets a paid or closed order through on
+          // restaurant scope alone.
+          const sbRows = hint
+            ? await fetchGuestOrdersByPaymentRef({
+                paymentRef: orderRef,
+                restaurantId: hint,
+                tableNumber: parseOptionalInt(searchParams.get('table')),
+                sessionId: getSessionIdForReceiptFallback(),
+              })
+            : []
           if (cancelled) return
 
           if (sbRows && sbRows.length > 0) {
@@ -408,7 +427,14 @@ function OrderConfirmationContent() {
     let cancelled = false
     const tick = async () => {
       if (cancelled) return
-      const data = await fetchGuestOrdersByPaymentRef({ paymentRef: orderRef })
+      const pollRid = resolvedRestaurantId || restaurantIdParam
+      if (!pollRid) return
+      const data = await fetchGuestOrdersByPaymentRef({
+        paymentRef: orderRef,
+        restaurantId: pollRid,
+        tableNumber: parseOptionalInt(searchParams.get('table')),
+        sessionId: getSessionIdForReceiptFallback(),
+      })
       if (!data?.length) return
       const combined = combinePaymentStatusFromRows(data)
       const urlCancel = inferCancelledFromSearchParams(searchParams)
@@ -423,7 +449,7 @@ function OrderConfirmationContent() {
       cancelled = true
       clearInterval(id)
     }
-  }, [orderRef, dataSource, receipt?.payment_status, isPaymentConfirmed, searchParams])
+  }, [orderRef, dataSource, receipt?.payment_status, isPaymentConfirmed, searchParams, resolvedRestaurantId, restaurantIdParam])
 
   const currency = restaurant?.currency || 'N$'
 

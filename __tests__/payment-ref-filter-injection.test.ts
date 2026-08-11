@@ -17,6 +17,9 @@
  * rejects input for being unexpected. A stub that refuses to represent the dangerous case cannot
  * test for it.
  */
+
+/** #122: restaurantId is required now; these cases are about the FILTER, not the scope. */
+const RESTAURANT_A = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 // Importing the queries module transitively reaches `lib/supabase/client`, whose
 // createBrowserClient throws at import time without these. Absent them the suite dies before any
 // assertion runs -- a BROKEN SUITE, which is not the same as a failing test and is not evidence
@@ -116,7 +119,10 @@ describe('the lookup fails CLOSED, and the query is never issued', () => {
     jest.doMock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => client }))
     const { fetchGuestOrdersByPaymentRef } = await import('../lib/guest-orders/queries')
 
-    const rows = await fetchGuestOrdersByPaymentRef({ paymentRef: 'zzz,total.gte.0' })
+    const rows = await fetchGuestOrdersByPaymentRef({
+      paymentRef: 'zzz,total.gte.0',
+      restaurantId: RESTAURANT_A,
+    })
 
     expect(rows).toEqual([])
     // The strong assertion: not "the filter was safe" but "no filter was sent".
@@ -130,7 +136,10 @@ describe('the lookup fails CLOSED, and the query is never issued', () => {
     jest.doMock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => client }))
     const { fetchGuestOrdersByPaymentRef } = await import('../lib/guest-orders/queries')
 
-    await fetchGuestOrdersByPaymentRef({ paymentRef: 'PAY-20260808-K7M2QRTZ' })
+    await fetchGuestOrdersByPaymentRef({
+      paymentRef: 'PAY-20260808-K7M2QRTZ',
+      restaurantId: RESTAURANT_A,
+    })
 
     expect(calls.or).toHaveLength(1)
     expect(calls.or[0]).toBe(

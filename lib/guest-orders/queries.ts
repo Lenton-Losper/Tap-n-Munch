@@ -267,29 +267,68 @@ export async function fetchGuestActiveTableOrders(params: {
   return { orders: merged, count: merged.length }
 }
 
+/**
+ * Guest lookup of the orders behind a payment reference.
+ *
+ * THREE INDEPENDENT DOORS, and this function is the only place all three are shut (#122).
+ * Production carried the first, staging carried the other two, and neither branch had the set --
+ * so the union is written here rather than either side being promoted over the other.
+ *
+ *   1. VALIDATED FILTER. `paymentRefOrFilter` returns null for anything that is not a
+ *      well-formed reference, and this fails CLOSED on null. The `.or()` string is PARSED by
+ *      PostgREST, so a comma in the caller's input adds OR terms -- "exact equality, never
+ *      parsed" is true of SQL and false here. `?ref=zzz,total.gte.0` returned 15 full order
+ *      rows across ALL restaurants, unauthenticated, without knowing any reference.
+ *      Reproduced read-only on staging 2026-08-08.
+ *
+ *   2. REQUIRED restaurantId. Without it the query spans every tenant, so a reference that IS
+ *      known -- printed on a receipt, carried on a gateway return URL -- reads any restaurant's
+ *      order. The route rejects an absent one with 400; this returns [] as a second line.
+ *
+ *   3. PER-ROW guestCanAccessOrder. Restaurant scope alone is not authorisation: an OPEN order
+ *      needs the table or session that placed it, while a paid/closed one is reachable on
+ *      restaurant scope (the shareable receipt-link pattern the sibling guest routes use).
+ *
+ * They close different doors and none subsumes another. Validation stops the filter being
+ * widened; the scope stops a known reference crossing tenants; the per-row gate stops a
+ * correctly-scoped caller reading someone else's live order. Dropping any one of the three
+ * leaves a hole the other two do not cover, which is why each has its own test.
+ */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
-  restaurantId?: string | null
+  restaurantId: string
+  tableNumber?: number | null
+  sessionId?: string | null
 }): Promise<GuestOrderRow[]> {
   const supabase = createServerSupabaseClient()
   const ref = params.paymentRef.trim()
-  if (!ref) return []
+  if (!ref || !params.restaurantId.trim()) return []
 
-  // Fail CLOSED on anything that is not a well-formed reference. A string carrying PostgREST
-  // filter syntax is not a reference that failed to match -- it is an attempt to widen the
-  // query, and it must return nothing rather than everything. See paymentRefOrFilter.
+  // DOOR 1. A string carrying PostgREST filter syntax is not a reference that failed to match --
+  // it is an attempt to widen the query, and it must return nothing rather than everything.
   const refFilter = paymentRefOrFilter(ref)
   if (!refFilter) return []
 
-  let query = supabase.from('orders').select('*').or(refFilter).limit(15)
+  // DOOR 2.
+  const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
 
-  if (params.restaurantId?.trim()) {
-    const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
-    query = query.eq('restaurant_id', restaurantUuid)
-  }
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .or(refFilter)
+    .limit(15)
+    .eq('restaurant_id', restaurantUuid)
 
-  const { data, error } = await query
   if (error) throw error
 
-  return (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  // DOOR 3.
+  const accessParams = {
+    restaurantId: restaurantUuid,
+    tableNumber: params.tableNumber ?? null,
+    sessionId: params.sessionId ?? null,
+  }
+
+  return (data ?? [])
+    .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
+    .filter((order) => guestCanAccessOrder(order, accessParams))
 }
