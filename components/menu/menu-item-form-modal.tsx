@@ -185,6 +185,17 @@ function MenuItemFormContent({
   )
   const [canEditInventory, setCanEditInventory] = useState(false)
   const [trackInventory, setTrackInventory] = useState(false)
+  /**
+   * Whether `trackInventory` reflects a value we actually established, rather than the initial
+   * false. #106: the effect below sets canEditInventory BEFORE loading the item's inventory
+   * state and returns early if that load errors, so a failed load used to leave trackInventory
+   * sitting at false while the payload sent it anyway -- silently turning tracking off for an
+   * item whose recipe and ingredients are untouched. `menu_items.track_inventory` is what
+   * getInventorySetupOverview filters on, what deduct_recipe_stock requires, and what
+   * checkStockSufficiency reads, so clearing it stops deduction and hides the item from the
+   * setup UI entirely. Unknown means: leave the column alone.
+   */
+  const [inventoryStateKnown, setInventoryStateKnown] = useState(false)
   const [ingredientRows, setIngredientRows] = useState<MenuItemIngredientRow[]>([emptyIngredientRow()])
   const [stockItems, setStockItems] = useState<StockItemOptionWithLevel[]>([])
   const [measurementUnits, setMeasurementUnits] = useState<MeasurementUnitOption[]>([])
@@ -229,6 +240,7 @@ function MenuItemFormContent({
         setMeasurementUnits(result.data?.measurementUnits ?? [])
         const trackingOn = Boolean(result.data?.trackInventory)
         setTrackInventory(trackingOn)
+        setInventoryStateKnown(true)
         setIngredientRows(
           trackingOn
             ? toIngredientRowsFromLoaded(result.data?.ingredients ?? [])
@@ -244,7 +256,9 @@ function MenuItemFormContent({
         setInventoryLoadError(null)
         setStockItems(result.data?.stockItems ?? [])
         setMeasurementUnits(result.data?.measurementUnits ?? [])
+        // A brand new item has no recipe, so false is established rather than assumed.
         setTrackInventory(false)
+        setInventoryStateKnown(true)
         setIngredientRows([emptyIngredientRow()])
       }
     })()
@@ -374,7 +388,10 @@ function MenuItemFormContent({
     is_popular: itemForm.is_popular,
     status: itemForm.status,
     tax_rate_id: itemForm.tax_rate_id || null,
-    ...(canEditInventory ? { track_inventory: trackInventory } : {}),
+    // Omitted, not defaulted, when the current value was never established (#106).
+    // buildMenuItemDbPayload only writes the column when the key is present, so leaving it out
+    // is a genuine no-op on an item whose tracking state this form never learned.
+    ...(canEditInventory && inventoryStateKnown ? { track_inventory: trackInventory } : {}),
   })
 
   const saveInventoryOnly = async (menuItemId: string) => {
@@ -728,7 +745,12 @@ function MenuItemFormContent({
                 <Switch
                   id="track-inventory-general"
                   checked={trackInventory}
-                  onCheckedChange={setTrackInventory}
+                  onCheckedChange={(checked) => {
+                    // Touching the switch establishes the value even if the load failed --
+                    // an explicit choice is never "unknown".
+                    setTrackInventory(checked)
+                    setInventoryStateKnown(true)
+                  }}
                 />
               </div>
             ) : null}
