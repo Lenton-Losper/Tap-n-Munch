@@ -2327,7 +2327,20 @@ export function OrdersDashboard() {
             </DialogDescription>
           </DialogHeader>
           <Input
-            placeholder="Reason (optional, shown to staff only)"
+            /*
+             * "shown to staff only" was not merely imprecise -- it was false about the only
+             * thing it claimed. `declined_reason` is WRITE-ONLY: a repo-wide grep for it
+             * returns exactly two lines, both in
+             * app/api/order-requests/[requestId]/decline/route.ts (:14 reads it off the body,
+             * :49 writes it), and nothing anywhere reads it back. Not a customer surface, and
+             * not a staff one either. The note is stored and rendered to nobody.
+             *
+             * So the label now says only what is certainly true -- the customer does not see it
+             * -- rather than promising a staff surface that does not exist. Whether to BUILD
+             * that surface or to relabel the field as an internal note is a product decision
+             * (#210); this wording is correct under either.
+             */
+            placeholder="Reason (optional, not shown to the customer)"
             value={declineReason}
             onChange={(e) => setDeclineReason(e.target.value)}
           />
