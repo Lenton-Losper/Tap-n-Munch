@@ -132,6 +132,8 @@ function blankNonCode(sql) {
       const tag = dollar[0]
       const end = sql.indexOf(tag, i + tag.length)
       const stop = end === -1 ? sql.length : end + tag.length
+      // Blanked so the body's semicolons cannot tear the OUTER statement in half. The body is
+      // still SQL and can hold DDL, so it is scanned separately — see dollarBodies().
       blank(i, stop)
       i = stop
       continue
@@ -141,6 +143,51 @@ function blankNonCode(sql) {
   }
 
   return out.join('')
+}
+
+/**
+ * The dollar-quoted bodies of `sql`, with the absolute offset each starts at.
+ *
+ * These are blanked out of the main scan, and scanning them is NOT optional. A DO block is how
+ * conditional DDL is already written in this repo — 20260725140000_orders_terminal_status.sql
+ * adds the column with `ADD COLUMN IF NOT EXISTS` and then guards its CHECK inside `DO $$ ...
+ * END $$`, and three other migrations put ALTER TABLE in a dollar-quoted body too. Folding that
+ * CHECK back onto the ADD COLUMN is a one-line edit, and without this the scanner would report
+ * the result clean. Found by an adversarial pass against the rule, not by a test of it.
+ */
+function dollarBodies(sql) {
+  const bodies = []
+  let i = 0
+  while (i < sql.length) {
+    const two = sql.slice(i, i + 2)
+    if (two === '--') {
+      const end = sql.indexOf('\n', i)
+      i = end === -1 ? sql.length : end
+      continue
+    }
+    if (sql[i] === "'") {
+      let k = i + 1
+      while (k < sql.length) {
+        if (sql[k] === "'" && sql[k + 1] === "'") { k += 2; continue }
+        if (sql[k] === "'") { k++; break }
+        k++
+      }
+      i = k
+      continue
+    }
+    const dollar = /^\$[A-Za-z_0-9]*\$/.exec(sql.slice(i))
+    if (dollar) {
+      const tag = dollar[0]
+      const open = i + tag.length
+      const end = sql.indexOf(tag, open)
+      if (end === -1) break
+      bodies.push({ offset: open, text: sql.slice(open, end) })
+      i = end + tag.length
+      continue
+    }
+    i++
+  }
+  return bodies
 }
 
 /** Index just past a quoted identifier starting at `i`, or `i` when there is none. */
@@ -200,9 +247,20 @@ function lineOf(source, offset) {
 
 const ADD_COLUMN_IF_NOT_EXISTS = /\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+("?[A-Za-z_][A-Za-z_0-9]*"?)/gi
 
-export function findInlineChecks(sql) {
+export function findInlineChecks(sql, depth = 0) {
   const code = blankNonCode(sql)
   const hits = []
+
+  // Nested dollar quoting is legal; the depth cap stops a pathological file recursing forever.
+  if (depth < 4) {
+    for (const body of dollarBodies(sql)) {
+      // A hit on the body's first line sits on the same absolute line the body opens on.
+      const baseLine = lineOf(sql, body.offset) - 1
+      for (const hit of findInlineChecks(body.text, depth + 1)) {
+        hits.push({ ...hit, line: hit.line + baseLine, checkLine: hit.checkLine + baseLine })
+      }
+    }
+  }
 
   for (const stmt of statements(code)) {
     ADD_COLUMN_IF_NOT_EXISTS.lastIndex = 0

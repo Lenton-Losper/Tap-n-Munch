@@ -223,6 +223,57 @@ describe('#212 — parsing that a naive scanner gets wrong', () => {
     expect(hits[0].checkLine).toBe(10)
   })
 
+  it('sees DDL inside a DO $$ block — the one shape that got past the first version', () => {
+    /*
+     * Found by an adversarial pass AGAINST the rule, after the suite below was already green.
+     * The first version blanked dollar-quoted bodies wholesale (so a function body's semicolons
+     * could not tear the outer statement apart) and therefore could not see any DDL inside one.
+     *
+     * Not theoretical. Four committed migrations already put ALTER TABLE inside a dollar-quoted
+     * body, and 20260725140000_orders_terminal_status.sql is this exact file one edit away: it
+     * adds the column with ADD COLUMN IF NOT EXISTS and guards its CHECK in a DO block. Folding
+     * the CHECK back onto the column is a one-line change, and the scanner would have called
+     * the result clean.
+     */
+    const hits = scan({
+      '20260101000000_x.sql': [
+        'DO $$',
+        'BEGIN',
+        "  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'tabs') THEN",
+        '    ALTER TABLE public.tabs',
+        "      ADD COLUMN IF NOT EXISTS settlement_state text NOT NULL DEFAULT 'open'",
+        "        CHECK (settlement_state IN ('open', 'settled'));",
+        '  END IF;',
+        'END $$;',
+      ].join('\n'),
+    })
+
+    expect(hits.map((h) => h.column)).toEqual(['settlement_state'])
+    // Lines are reported against the OUTER file, not the extracted body.
+    expect(hits[0].line).toBe(5)
+    expect(hits[0].checkLine).toBe(6)
+  })
+
+  it('still does not flag the correct idiom when it is inside a DO $$ block', () => {
+    // The negative side of the case above, and the shape 20260725140000 actually ships.
+    expect(
+      scan({
+        '20260101000000_x.sql': [
+          'ALTER TABLE orders ADD COLUMN IF NOT EXISTS terminal_status text;',
+          '',
+          'DO $$',
+          'BEGIN',
+          "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_ts_check') THEN",
+          '    ALTER TABLE orders',
+          '      ADD CONSTRAINT orders_ts_check',
+          "      CHECK (terminal_status IN ('pending', 'failed'));",
+          '  END IF;',
+          'END $$;',
+        ].join('\n'),
+      }),
+    ).toEqual([])
+  })
+
   it('matches case-insensitively and across irregular whitespace', () => {
     const hits = scan({
       '20260101000000_x.sql': 'alter table t\n  add   column\n  if not exists c text\n  check (c > 0);',
