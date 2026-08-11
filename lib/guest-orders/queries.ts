@@ -1,7 +1,20 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { guestCanAccessOrder, paymentRefOrFilter } from './validation'
+import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 import type { GuestOrderRow } from './types'
+
+/**
+ * order_requests statuses that are still the customer's business.
+ *
+ * `accepting` is the transient claim Accept takes before the order row exists
+ * (app/api/order-requests/[requestId]/accept/route.ts), and it is already in
+ * ACTIVE_ORDER_STATUSES for the same reason it belongs here: a request in that window has not
+ * been accepted, has not been declined, and is emphatically not gone. Filtering it out at the
+ * database is what let one request read "Waiting for Review" on its own page while being absent
+ * from every list that should contain it (#219).
+ */
+const LIVE_REQUEST_STATUSES = ['waiting_review', 'accepting'] as const
 
 export async function resolveGuestRestaurantId(restaurantIdInput: string): Promise<string> {
   return resolveRestaurantUuid(restaurantIdInput)
@@ -16,7 +29,13 @@ export async function resolveGuestRestaurantId(restaurantIdInput: string): Promi
  * without changing URL.
  */
 function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow {
-  const status = String(row.status || 'waiting_review')
+  // Normalised, because the sentence above is a contract this function did not keep: `accepting`
+  // is neither 'waiting_review' nor 'declined', and it reached renderers that had never heard of
+  // it. my-orders/page.tsx ends `configs[status] || configs.pending`, so a request still awaiting
+  // review was about to be labelled "New" -- the exact defect the comment above that table
+  // records having already fixed once. normalizeOrderStatusForDisplay owns this vocabulary and
+  // says in terms that anything making a status VISIBLE must run through it.
+  const status = normalizeOrderStatusForDisplay(String(row.status || 'waiting_review'))
   const items = Array.isArray(row.items_reviewed) ? row.items_reviewed : row.items
   const subtotal = row.subtotal_reviewed ?? row.subtotal
   const tax = row.tax_reviewed ?? row.tax
@@ -166,8 +185,8 @@ export async function fetchGuestOrdersBySession(params: {
    * request is returned to the session that placed it and to nobody else.
    */
   const requestStatuses = params.includeDeclined
-    ? ['waiting_review', 'declined']
-    : ['waiting_review']
+    ? [...LIVE_REQUEST_STATUSES, 'declined']
+    : [...LIVE_REQUEST_STATUSES]
 
   let pendingQuery = supabase
     .from('order_requests')
@@ -267,13 +286,15 @@ export async function fetchGuestActiveTableOrders(params: {
 
   const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
 
-  // Also surface waiting_review order_requests for this session (Order Request model).
+  // Also surface still-live order_requests for this session (Order Request model). `accepting`
+  // is included for the same reason as in fetchGuestOrdersBySession -- see
+  // LIVE_REQUEST_STATUSES.
   let requestQuery = supabase
     .from('order_requests')
     .select('*')
     .eq('restaurant_id', restaurantUuid)
     .eq('table_number', params.tableNumber)
-    .eq('status', 'waiting_review')
+    .in('status', [...LIVE_REQUEST_STATUSES])
     .eq('session_id', sessionId)
 
   if (params.placedAfter) {
