@@ -1782,3 +1782,100 @@ Staging tab at table 1001: `8bf5a1cf-cb5a-4998-8835-4b6fc36dd35d`, PIN **4196**,
 - **#223/#233/#187 one packet** — delivered, awaiting `#223: Q1:A Q2:B ...` format reply.
 - **#242** on `fix/242-webhook-resolver-eq`, **#254** on `fix/254-staging-ref-injection` — both assembled, awaiting deploy decision.
 - **#252 reconciliation** — `reconcile/main-to-staging-2` (`c37e5ca`) then `-batch2` (`715461f`), batch 1 STRICTLY FIRST (proven by cherry-pick conflict). Both gated green and pushed. **The human's to push, not the integrator's.**
+
+---
+---
+
+# CHECKPOINT 2 — 2026-08-12, ~00:30. #262 seam SHIPPED, migration BLOCKED.
+
+Supersedes the state block in the previous checkpoint (`c0dd102`), which predates the last two deploys.
+
+## STATE
+
+    production / origin/main   2ccea66fa0f0aee5493e7d948ddc3344e98d88e6   cache-busted verified
+    origin/cloudflare-staging  99d285376154558a661ede38be53ebc4ab2bc2ed
+    open issues                119
+
+Deploy path 2026-08-11 evening, five gated deploys, each verified before the next:
+
+    a43aade -> 7405b26  #214 + #225 (browse-cancellation)          CLOSED
+            -> 237caec  #262 containment — PIN bypass closed
+            -> 97e4fe1  #266 — service-role key pinned in both     CLOSED
+            -> 2ccea66  #262 SEAM — HKDF member key + both selects
+
+Filed tonight: **#264** (helper should throw), **#265** (PIN lockout, packet owed), **#266** (closed), **#267** (worktree junction footgun).
+
+## ⚠️ THE ORDERING TRAP — READ THIS BEFORE TOUCHING THE MIGRATION
+
+**The migration must be APPLIED to production BEFORE its file reaches main.**
+
+`production-worker.yml` has a `Check migration drift (production DB vs supabase/migrations)` step that compares migration **filenames** against the production ledger. A file present in the repo but not applied to the DB makes that step fail, which **blocks every production deploy** — not just this one.
+
+This already happened tonight with `20260811120000` and cost a deploy cycle. The correct order is:
+
+1. Apply the SQL to staging. Verify.
+2. Apply the SQL to production. 
+3. Confirm the drift check reads clean.
+4. **Then** merge the migration file to main.
+
+Note also that `db query` does NOT write the migration ledger (#263) — applying the SQL this way may still leave drift. `migration repair --status applied <version>` writes the ledger **without running SQL**. Verified-present objects get a repair, never a re-run. Never rewrite the committed file.
+
+## #262 — WHERE IT STANDS
+
+**SHIPPED and verified live at `2ccea66`:**
+
+- `lib/tab-member-key.ts` — HKDF opaque member key. Web Crypto (`crypto.subtle`), matching `lib/terminal-auth/pin-credentials.ts`; nothing in the repo imports `node:crypto`.
+
+      PRK        = HKDF-Extract(salt = "flashtap:tab-member-key:v1", ikm = SUPABASE_SERVICE_ROLE_KEY)
+      K_tab      = HKDF-Expand(PRK, info = <tab id>, 32 bytes)
+      member_key = "mk_" || hex(HMAC-SHA256(K_tab, "<label>|" || session_id)[0..16])
+
+  Requirement 1 (versioned label) at `:55`; requirement 2 (throw, no default) at `:88-98`; requirement 3 (never persisted) is **structural** — the module has zero imports so it has no DB client; requirement 4 (per-tab) at `:127`, with a test that goes red when `info` is made constant.
+- NEW `app/api/tabs/[tabId]/view/route.ts` — the seam. Returns `{ display_name, joined_at, member_key }` plus `self_member_keys`. Deliberately **unauthenticated**: putting `loadTab` behind `requireSessionToken` would 410 → `handleSessionExpired` → bounce any guest without a minted token off a live tab on every `/menu` route. It returns a strict subset of what anon can read today.
+- NEW `app/api/tabs/active/route.ts` — unauthenticated count route for the QR landing. `{ id, status, total, pin_required, member_count }`. Reproduces v2's 12-hour cutoff and its `table_id`-else-`table_number` branch. **No `.order()`** — v2 had none; adding one changes which tab is picked. Keeps `pin_required !== false` (NOT `Boolean()`), so a null column reads as PIN-required.
+- `contexts/tab-context.tsx` and `lib/tab-session.ts` `fetchTabById` both routed through the seam. `TabRow.members` typed `PublicTabMember[]`, so **reaching for `session_id` no longer compiles** — stronger than a test.
+- `lib/guest-orders/queries.ts` maps `member_session_id` through the same helper at all four guest read paths, so the client-side join still resolves. Includes `byPaymentRef`, which was actually reading back another diner's session id.
+- `GET /api/tabs/[tabId]` — was returning the row VERBATIM; now projected field-by-field.
+
+**NOT DONE — the exposure is STILL LIVE.** Verified against production at the time of writing:
+
+    select id, restaurant_id, table_number, status, members   (public anon key)
+    -> 3 rows, session_ids visible
+
+**BLOCKER: the migration cannot be applied.** `npx tsx scripts/safe-supabase-linked.ts <ref> db query --linked -f <file>` fails. The CLI is present (2.113.0), `db query` is a valid subcommand, and the project is linked to **staging** (`supabase/.temp/project-ref` = `mdqjpxwczrhkxkbqatqa`). What is missing is the database password — there is no `SUPABASE_DB_PASSWORD` in `.env.test`, `.env.local` or `.env`. An earlier attempt hung on what looked like a password prompt.
+
+**The migration**, written and correct, on `fix/262-redacting-seam` at `supabase/migrations/20260811120000_tabs_anon_grant_drop_members.sql`:
+
+    REVOKE ALL ON TABLE public.tabs FROM anon;
+    GRANT SELECT (
+      id, restaurant_id, table_id, table_number, status, settled_type, total,
+      payment_preference, ready_to_pay_at, pin_required, session_version,
+      created_at, firebase_id, firebase_restaurant_id, settled_at
+    ) ON TABLE public.tabs TO anon;
+
+15 columns — `20260726200000`'s 17 minus `members` and `customer_name`. `customer_name` was verified removable: written/read only by `app/api/tabs/route.ts` under service_role, and the one test touching it uses `getSupabaseAdmin()`. `components/orders-dashboard.tsx` reads `members` but as signed-in staff under the `authenticated` role, which this migration does not touch.
+
+The migration's own two tests were split OUT of the code commit and live in `/tmp/mig-tests.txt` and in the git history of `fix/262-redacting-seam` — they read the migration file, so they must land WITH it, not before.
+
+**THE CLOSE CONDITION, unchanged:** `select id, members` against **production** with the public anon key must REFUSE where it currently returns 3 rows. The migration ledger is not evidence — only probing enforced behaviour is.
+
+**Caveat not to overstate:** the count route was verified live on the NEGATIVE path only (`{"tab":null}`, correct — the tab it would have matched is from 17 July and the route reproduces the 12-hour cutoff). Its positive path rests on unit tests, not a live call.
+
+## GATE NOTE — the jest baseline moved tonight
+
+The measured baseline was **15 failed suites / 11 failed tests** for most of the session. Late runs measured 8/18 then 10/32 at the same ref. **Re-measure the baseline at your own base ref before diffing; do not trust an inherited number.** Every failing suite examined was a live-HTTP/staging suite (`permissions`, `realtime`, `authorize-restaurant-roles`, `recipe-deduction`) and each passed when re-run individually. `realtime.test.ts` asserts a raw WebSocket handshake completes within 3s against live Supabase — genuinely timing-flaky.
+
+## QUEUED, in the human's stated order
+
+1. **#262** — apply the migration, then the production probe. Blocked on the DB password.
+2. **Staging reconciliation** — push `reconcile/main-to-staging-2` (`c37e5ca`, 31 commits) **then** `-batch2` (`715461f`, 8 stacked). **Batch 1 strictly first — the ordering is measured**, proven by a cherry-pick conflict (`e578bd6` conflicts on raw staging, applies clean on batch 1 because batch 1 supplies `63a09a6`). Closes #254 and #252 in one move, since staging gets main's ref fix. Afterwards confirm staging's `paymentRefOrFilter` matches main's and re-run the injected/benign pair to prove it closed there.
+3. **#242** — ship `fix/242-webhook-resolver-eq`. Needs NOTHING from Finatic: `.eq()` carries no parser, so two `.eq()` unioned in JS needs no charset assumption. Measured 213 rows → 0, six real references returning identical id sets, 13 adversarial payloads all 0. **Exploiter runs the ORIGINAL reproduction**, not the implementer's test.
+4. **#223/#233/#187** — one unified packet, three sites one ruling. Outstanding since 2026-08-10. Must include the PayCloud webhook as the only unauthenticated external writer.
+5. **#265** — recovery packet. Framing already agreed: containment REMOVED the only working recovery path, because that path WAS the hole (the `alreadyMember` branch). Correct trade, deliberate. Options needed for what recovery should be **given staff cannot see the PIN either** — no surface reads `tab_pin`; it is compared at `app/api/tabs/join/route.ts:35,45` and `[tabId]/join/route.ts:86,91`, written at `app/api/tabs/route.ts:100`, and stored only in the creator's `sessionStorage` as `flashtap_creator_tab_pin`, which #220's "View Menu" can destroy.
+6. **#127 — DO NOT START WITH THE DELETION.** The human's explicit instruction. **Start with the refund question, which is reads only and is the only part that could bite a customer this week:** two orders share number 420 with different totals (N$34 and N$78). Establish what a refund against order 420 actually does today — which total the system picks, or whether it fails. If a refund is genuinely ambiguous that is an incident to contain, not a migration to run.
+
+   Then, and only then: the 279 fixture pairs are **DELETE**d (restaurants that don't exist, no customer attached, load-test debris — the append-only rule is about business history). **Enumerate dependents first and delete leaves first** — an earlier cleanup left a worse half-state than it started with because audit rows went before the orders they belonged to. The three FNB ChowNow pairs are **NOT renumbered** — those receipts exist and a customer holds them. The unique index then goes on scoped to exclude those three orders, or not at all until they are resolved; report which is possible.
+
+## WHAT THE HUMAN NEEDS TO SET (answered in the final message)
+
+`SUPABASE_DB_PASSWORD`, in `.env.local` (gitignored, and the script's shell inherits it). **Staging and production are separate Supabase projects and have separate database passwords** — one value will not serve both. The CLI is currently linked to staging; switching targets needs `npx supabase link --project-ref ihlmmpmolnpchzgwyhgh` and back. The `safe-supabase-linked.ts` guard takes the expected ref as its first argument and refuses if the link does not match, which is what stops a staging command hitting production.
