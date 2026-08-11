@@ -126,15 +126,39 @@ export const reducer = (state: State, action: Action): State => {
   }
 }
 
-const listeners: Array<(state: State) => void> = []
+const listeners: Array<() => void> = []
 
 let memoryState: State = { toasts: [] }
 
 function dispatch(action: Action) {
   memoryState = reducer(memoryState, action)
   listeners.forEach((listener) => {
-    listener(memoryState)
+    listener()
   })
+}
+
+/**
+ * Store plumbing for useSyncExternalStore (#207).
+ *
+ * `getSnapshot` may only return a value that is REFERENTIALLY STABLE between dispatches, or React
+ * re-renders forever. It is: every branch of `reducer` above builds a new object, and `memoryState`
+ * is reassigned only inside `dispatch`.
+ *
+ * `getServerSnapshot` is the same function on purpose. This module is 'use client', but Next still
+ * renders client components on the server, where the store is always the initial empty state.
+ */
+function subscribe(onStoreChange: () => void) {
+  listeners.push(onStoreChange)
+  return () => {
+    const index = listeners.indexOf(onStoreChange)
+    if (index > -1) {
+      listeners.splice(index, 1)
+    }
+  }
+}
+
+function getSnapshot(): State {
+  return memoryState
 }
 
 type Toast = Omit<ToasterToast, 'id'>
@@ -168,18 +192,21 @@ function toast({ ...props }: Toast) {
   }
 }
 
+/*
+ * A TOAST FIRED FROM A MOUNT EFFECT USED TO BE DROPPED (#207).
+ *
+ * This was `useState(memoryState)` seeded at render plus `useEffect(() => listeners.push(setState))`
+ * to subscribe. Those are two different moments, and React runs effects in child order, so a toast
+ * dispatched from an earlier child's mount effect was written to the store while nothing that could
+ * paint it was subscribed yet -- and the viewport's captured initial state was never re-read. No
+ * error, no message, nothing to notice.
+ *
+ * useSyncExternalStore exists for exactly this hazard: it subscribes before paint and re-reads the
+ * snapshot after subscribing, so a dispatch in that window cannot be missed. It removes the class
+ * rather than this instance, which is why it is preferred over seeding in a layout effect.
+ */
 function useToast() {
-  const [state, setState] = React.useState<State>(memoryState)
-
-  React.useEffect(() => {
-    listeners.push(setState)
-    return () => {
-      const index = listeners.indexOf(setState)
-      if (index > -1) {
-        listeners.splice(index, 1)
-      }
-    }
-  }, [state])
+  const state = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   return {
     ...state,
