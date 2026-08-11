@@ -687,6 +687,240 @@ async function main() {
       .eq('idempotency_key', `order-request-accept:${requestId4}`)
     assert((strayOrders4 ?? 0) === 0, 'a refused accept must never produce an orders row')
 
+    // =====================================================================================
+    // SCENARIO 5 — hosted checkout when the gateway cannot be reached.
+    //
+    // READ THIS BEFORE TRUSTING IT. It does NOT verify a successful Finatic checkout. The
+    // staging Finatic stub (lib/payments/staging-finatic-stub.ts) only stubs
+    // queryFinaticOrderPaid; there is no stub for createPaymentRequest, which is what
+    // accept/route.ts:224 calls. And .env.test carries no PAYCLOUD_* vars at all, so
+    // getPaycloudConfig throws on PAYCLOUD_ENDPOINT. What this scenario therefore drives is
+    // the GATEWAY-UNAVAILABLE path, and what it proves is the claim the code only asserts in
+    // a comment (accept/route.ts:215-218): a failed checkout init is best-effort and must
+    // still leave a correct, accepted order at the quoted total rather than stranding it.
+    // =====================================================================================
+    log('SCENARIO 5: hosted checkout with no reachable gateway')
+    await admin.from('menu_items').update({ base_price: QUOTED_UNIT_PRICE }).eq('id', menuItemId)
+
+    const sessionId5 = `sess_${tag}_5`
+    const quote5Res = await ordersPOST(
+      new Request('https://probe.local/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          restaurantId: RESTAURANT_ID,
+          tableNumber: TABLE_NUMBER,
+          channel: 'table',
+          sessionId: sessionId5,
+          customerName: 'Accept Seam Probe 5',
+          paymentMethod: 'card',
+          paymentChannel: 'hosted',
+          items: [{ menuItemId, name: `${tag} probe item`, quantity: 1 }],
+        }),
+      }),
+    )
+    const quote5Body = await readJson(quote5Res)
+    assert(quote5Res.status === 200, `quote 5 failed: ${JSON.stringify(quote5Body)}`)
+    const requestId5 = String(quote5Body.requestId)
+    requestIds.push(requestId5)
+
+    const { data: quoted5 } = await admin
+      .from('order_requests')
+      .select('total, payment_channel')
+      .eq('id', requestId5)
+      .single()
+    assert(quoted5.payment_channel === 'hosted', 'scenario 5 must be on the hosted channel')
+
+    const accept5Res = await acceptPOST(
+      new Request(`https://probe.local/api/order-requests/${requestId5}/accept`, {
+        method: 'POST',
+        headers: staffHeaders,
+        body: '{}',
+      }),
+      { params: Promise.resolve({ requestId: requestId5 }) },
+    )
+    const accept5Body = await readJson(accept5Res)
+    log('accept on hosted channel', { status: accept5Res.status, body: accept5Body })
+    assert(accept5Res.status === 200, 'a failed checkout init must not fail the Accept')
+    orderIds.push(String(accept5Body.orderId))
+    assert(
+      accept5Body.checkoutUrl == null,
+      'no gateway is configured here, so checkoutUrl must be null -- if it is set, this scenario reached a REAL Finatic and the probe must be changed',
+    )
+
+    const { data: order5 } = await admin
+      .from('orders')
+      .select('total, payment_status, payment_checkout_url')
+      .eq('id', String(accept5Body.orderId))
+      .single()
+    log('PERSISTED orders row (scenario 5)', order5)
+    assert(
+      sameMoney(order5.total, quoted5.total),
+      `hosted accept drifted: quoted ${quoted5.total}, recorded ${order5.total}`,
+    )
+    assert(order5.payment_status === 'pending', 'an unpaid hosted order must be pending')
+
+    const { data: request5After } = await admin
+      .from('order_requests')
+      .select('status')
+      .eq('id', requestId5)
+      .single()
+    assert(
+      request5After.status === 'accepted',
+      `a failed checkout init must not strand the request (status=${request5After.status})`,
+    )
+
+    // =====================================================================================
+    // SCENARIO 6 — kiosk channel: the daily counter branch (accept/route.ts:171-182).
+    // The counter itself is restaurant-wide shared state that other agents' runs also move,
+    // so this asserts only that it is a positive integer written to the row -- never a
+    // specific value.
+    // =====================================================================================
+    log('SCENARIO 6: kiosk channel')
+    const { data: kioskTable } = await admin
+      .from('restaurant_tables')
+      .select('table_number')
+      .eq('restaurant_id', RESTAURANT_ID)
+      .eq('is_kiosk', true)
+      .eq('active', true)
+      .limit(1)
+      .maybeSingle()
+
+    if (!kioskTable?.table_number) {
+      log('SKIPPED: staging has no active kiosk table')
+    } else {
+      const sessionId6 = `sess_${tag}_6`
+      const quote6Res = await ordersPOST(
+        new Request('https://probe.local/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            restaurantId: RESTAURANT_ID,
+            tableNumber: kioskTable.table_number,
+            channel: 'kiosk',
+            sessionId: sessionId6,
+            customerName: 'Accept Seam Probe 6',
+            paymentMethod: 'card',
+            items: [{ menuItemId, name: `${tag} probe item`, quantity: 2 }],
+          }),
+        }),
+      )
+      const quote6Body = await readJson(quote6Res)
+      assert(quote6Res.status === 200, `kiosk quote failed: ${JSON.stringify(quote6Body)}`)
+      const requestId6 = String(quote6Body.requestId)
+      requestIds.push(requestId6)
+
+      const { data: quoted6 } = await admin
+        .from('order_requests')
+        .select('total')
+        .eq('id', requestId6)
+        .single()
+
+      await admin.from('menu_items').update({ base_price: MOVED_UNIT_PRICE }).eq('id', menuItemId)
+
+      const accept6Res = await acceptPOST(
+        new Request(`https://probe.local/api/order-requests/${requestId6}/accept`, {
+          method: 'POST',
+          headers: staffHeaders,
+          body: '{}',
+        }),
+        { params: Promise.resolve({ requestId: requestId6 }) },
+      )
+      const accept6Body = await readJson(accept6Res)
+      log('accept on kiosk channel', { status: accept6Res.status, body: accept6Body })
+      assert(accept6Res.status === 200, `kiosk accept failed: ${JSON.stringify(accept6Body)}`)
+      orderIds.push(String(accept6Body.orderId))
+
+      const { data: order6 } = await admin
+        .from('orders')
+        .select('total, channel, kiosk_order_number')
+        .eq('id', String(accept6Body.orderId))
+        .single()
+      log('PERSISTED orders row (scenario 6)', order6)
+      assert(
+        sameMoney(order6.total, quoted6.total),
+        `kiosk accept drifted: quoted ${quoted6.total}, recorded ${order6.total}`,
+      )
+      assert(order6.channel === 'kiosk', 'kiosk order must record channel=kiosk')
+      assert(
+        Number.isInteger(Number(order6.kiosk_order_number)) &&
+          Number(order6.kiosk_order_number) > 0,
+        `kiosk_order_number must be a positive integer, got ${order6.kiosk_order_number}`,
+      )
+      assert(
+        accept6Body.kioskOrderLabel === `K-${String(order6.kiosk_order_number).padStart(3, '0')}`,
+        `kioskOrderLabel must match the persisted number, got ${accept6Body.kioskOrderLabel}`,
+      )
+      await admin.from('menu_items').update({ base_price: QUOTED_UNIT_PRICE }).eq('id', menuItemId)
+    }
+
+    // =====================================================================================
+    // SCENARIO 7 — two Accepts at once, against real Postgres.
+    //
+    // The claim (accept/route.ts:64-82) is a conditional UPDATE ... WHERE status =
+    // 'waiting_review'. Its correctness is a property of the DATABASE, which is precisely what
+    // a mocked client cannot express: the existing jest suite's stub returns the same row to
+    // every caller, so both would "win". scripts/probe-order-request-accept-race-staging.ts
+    // covers this over HTTP against the DEPLOYED worker; this covers this branch's code.
+    // =====================================================================================
+    log('SCENARIO 7: concurrent Accept')
+    const sessionId7 = `sess_${tag}_7`
+    const quote7Res = await ordersPOST(
+      new Request('https://probe.local/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          restaurantId: RESTAURANT_ID,
+          tableNumber: TABLE_NUMBER,
+          channel: 'table',
+          sessionId: sessionId7,
+          customerName: 'Accept Seam Probe 7',
+          paymentMethod: 'card',
+          items: [{ menuItemId, name: `${tag} probe item`, quantity: 1 }],
+        }),
+      }),
+    )
+    const quote7Body = await readJson(quote7Res)
+    assert(quote7Res.status === 200, `quote 7 failed: ${JSON.stringify(quote7Body)}`)
+    const requestId7 = String(quote7Body.requestId)
+    requestIds.push(requestId7)
+
+    const makeAccept = () =>
+      acceptPOST(
+        new Request(`https://probe.local/api/order-requests/${requestId7}/accept`, {
+          method: 'POST',
+          headers: staffHeaders,
+          body: '{}',
+        }),
+        { params: Promise.resolve({ requestId: requestId7 }) },
+      )
+    const [res7a, res7b] = await Promise.all([makeAccept(), makeAccept()])
+    const [body7a, body7b] = await Promise.all([readJson(res7a), readJson(res7b)])
+    log('concurrent accepts', {
+      a: { status: res7a.status, body: body7a },
+      b: { status: res7b.status, body: body7b },
+    })
+    for (const b of [body7a, body7b]) {
+      if (b?.orderId) orderIds.push(String(b.orderId))
+    }
+
+    const statuses = [res7a.status, res7b.status].sort((x, y) => x - y)
+    assert(
+      statuses[0] === 200 && statuses[1] === 409,
+      `expected one 200 and one 409, got ${res7a.status}/${res7b.status}`,
+    )
+    const loser7 = res7a.status === 409 ? body7a : body7b
+    assert(!loser7.orderId, 'the losing Accept must not return an orderId')
+
+    const { data: orders7 } = await admin
+      .from('orders')
+      .select('id')
+      .eq('idempotency_key', `order-request-accept:${requestId7}`)
+    assert(
+      (orders7 || []).length === 1,
+      `concurrent Accept created ${(orders7 || []).length} orders rows, expected exactly 1`,
+    )
+
     console.log('PROBE_ACCEPT_SEAM_PRICING_OK')
   } finally {
     log('cleanup')
