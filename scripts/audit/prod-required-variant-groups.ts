@@ -210,7 +210,14 @@ async function main() {
       linesForTargets += 1
       const sel = (line?.selectedVariants ?? line?.selected_variants) as Record<string, unknown> | undefined
       const keys = sel && typeof sel === 'object' ? Object.keys(sel).filter((k) => String(sel[k] ?? '').trim()) : []
-      const bucket = `${keys.length === 0 ? 'EMPTY' : 'SELECTED'} / channel=${String(o.channel ?? 'null')}`
+      /*
+       * ABSENT vs EMPTY-OBJECT is the discriminator, not a nicety. cart/page.tsx:293 and :376
+       * both send `selectedVariants: item.selected_variants || {}`, so a line that came from the
+       * QR cart ALWAYS carries the key -- `{}` at worst. A line with the key entirely absent
+       * cannot have been produced by the QR path at all.
+       */
+      const shape = sel === undefined || sel === null ? 'KEY-ABSENT' : keys.length === 0 ? 'KEY-PRESENT-BUT-EMPTY' : 'SELECTED'
+      const bucket = `${shape} / channel=${String(o.channel ?? 'null')}`
       crossTab.set(bucket, (crossTab.get(bucket) ?? 0) + 1)
       if (keys.length === 0) linesEmptySelection += 1
       else linesNonEmptySelection += 1
