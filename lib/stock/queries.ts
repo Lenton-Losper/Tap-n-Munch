@@ -130,8 +130,15 @@ export async function getStockOverview(
 
   return {
     trackedItems: activeRows.length,
+    // 'negative' counts here too (#146). A negative item is the one that most needs attention,
+    // and it used to fall OUT of this figure entirely whenever par_level was null -- it scored
+    // as 'not_tracked'. That is how an item at -8617 contributed nothing to the only number on
+    // the page that says "something needs looking at".
     lowStock: activeRows.filter(
-      (row) => row.stockStatus === 'low_stock' || row.stockStatus === 'out_of_stock',
+      (row) =>
+        row.stockStatus === 'low_stock' ||
+        row.stockStatus === 'out_of_stock' ||
+        row.stockStatus === 'negative',
     ).length,
     lastDeliveryAt: lastDelivery?.received_at ?? null,
     rows,
