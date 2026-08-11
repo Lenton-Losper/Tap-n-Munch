@@ -9,6 +9,7 @@ import {
   isCardPaymentStillInFlight,
   secondsSincePush,
   normalizeSettlementPaymentMethod,
+  roundToCents,
   settleableStatusesForMethod,
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
@@ -217,9 +218,11 @@ export async function POST(
       )
     }
 
-    const expectedAmount = (tabOrders ?? []).reduce(
-      (sum, o) => sum + Number(o.total),
-      0,
+    // Rounded because this figure is STORED, not only compared: it becomes payments.amount and
+    // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
+    // next line is unaffected either way -- amountsMatch works in integer cents (#180).
+    const expectedAmount = roundToCents(
+      (tabOrders ?? []).reduce((sum, o) => sum + Number(o.total), 0),
     )
     if (!amountsMatch(amount, expectedAmount)) {
       return NextResponse.json(
@@ -360,8 +363,10 @@ export async function POST(
 
     let newTotal: number | null = null
     if (!unpaidError) {
-      newTotal = (unpaidOrders ?? []).reduce(
-        (sum, o) => sum + Number(o.total), 0
+      // Same float sum, same rounding, and this is the customer-visible one of the three:
+      // tabs.total is served on to the guest app and the terminal APK as the balance owed.
+      newTotal = roundToCents(
+        (unpaidOrders ?? []).reduce((sum, o) => sum + Number(o.total), 0),
       )
       await supabase
         .from('tabs')
