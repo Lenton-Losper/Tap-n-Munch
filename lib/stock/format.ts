@@ -1,6 +1,35 @@
-export type StockStatus = 'out_of_stock' | 'low_stock' | 'healthy' | 'not_tracked'
+export type StockStatus =
+  | 'negative'
+  | 'out_of_stock'
+  | 'low_stock'
+  | 'healthy'
+  | 'not_tracked'
 
+/**
+ * `negative` is checked FIRST, and deliberately before the par-level branch (#146).
+ *
+ * A negative balance is not a low balance — it is an impossible one. You cannot hold minus
+ * twenty-two of something, so the number is evidence that a deduction is wrong, not that stock
+ * ran out. The vocabulary had no way to say that, and the two ways it used to be reported were
+ * both silent:
+ *
+ *   par_level set   -> 'out_of_stock', which reads exactly like a legitimate zero
+ *   par_level null  -> 'not_tracked', which reads as "nothing to report here"
+ *
+ * That is how a production item sat at -22 for three weeks and, on staging as this was written,
+ * how 'whole milk' sat at -8617 with no par level (invisible) and 'espresso beans' at -154 with
+ * one (indistinguishable from empty). Both live examples, one of each failure mode.
+ *
+ * Ordering it before the `parLevel == null` check is the whole point: the par level is a
+ * reporting threshold, and an impossible quantity is impossible whether or not someone has set
+ * a threshold for it.
+ *
+ * This is DETECTION ONLY. It changes what the stock screen says, not what any write is allowed
+ * to do -- nothing here can refuse a deduction or fail an order. The write-time guard is a
+ * separate, customer-facing decision (#146 recommendation 4).
+ */
 export function computeStockStatus(currentStock: number, parLevel: number | null): StockStatus {
+  if (currentStock < 0) return 'negative'
   if (parLevel == null) return 'not_tracked'
   if (currentStock <= 0) return 'out_of_stock'
   if (currentStock <= parLevel) return 'low_stock'
