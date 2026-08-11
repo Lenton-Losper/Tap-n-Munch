@@ -30,6 +30,7 @@ import {
   menuLoadNotice,
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
+import { menuBodyState } from '@/lib/menu/menu-body-state'
 
 type ItemVariant = {
   size: string
@@ -216,6 +217,15 @@ export default function MenuBrowsePage() {
   const [allMenuLoadFailure, setAllMenuLoadFailure] = useState<MenuLoadFailure | null>(null)
   const [categoryLoadFailure, setCategoryLoadFailure] = useState<MenuLoadFailure | null>(null)
   const [menuReloadKey, setMenuReloadKey] = useState(0)
+  // `loading` below covers the CATEGORY LIST and the table session only. The menu ITEMS are
+  // fetched by two later effects, and until #214 neither had a loading state — so the page went
+  // straight from the spinner to "Menu coming soon!" while the items were still on the wire.
+  // These four track the item fetches. `loadedOnce` is not `!loading`: before the first fetch is
+  // dispatched nothing is in flight either, and that window is where the false claim appeared.
+  const [categoryMenuLoading, setCategoryMenuLoading] = useState(false)
+  const [categoryMenuLoadedOnce, setCategoryMenuLoadedOnce] = useState(false)
+  const [allMenuLoading, setAllMenuLoading] = useState(false)
+  const [allMenuLoadedOnce, setAllMenuLoadedOnce] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
   const [addingItemId, setAddingItemId] = useState<string | null>(null)
@@ -408,13 +418,19 @@ export default function MenuBrowsePage() {
       if (!selectedMenuCategory || !restaurantId) {
         setGroupedItems({})
         setCategoryLoadFailure(null)
+        // No category is selected, so nothing has been asked for and nothing has come back. The
+        // "All" source is what is on screen in that state, and it carries its own flags.
+        setCategoryMenuLoading(false)
+        setCategoryMenuLoadedOnce(false)
         return
       }
 
       try {
+        setCategoryMenuLoading(true)
         const grouped = await fetchCategoryMenu(restaurantId, selectedMenuCategory.id)
         setGroupedItems(grouped)
         setCategoryLoadFailure(null)
+        setCategoryMenuLoadedOnce(true)
       } catch (err: any) {
         console.error('Failed to load menu items:', err)
         setGroupedItems({})
@@ -422,6 +438,8 @@ export default function MenuBrowsePage() {
           failedCategoryNames: [selectedMenuCategory.name || ''],
           requestedCount: 1,
         })
+      } finally {
+        setCategoryMenuLoading(false)
       }
     }
 
@@ -433,19 +451,34 @@ export default function MenuBrowsePage() {
       if (!restaurantId || menuCategories.length === 0) {
         setAllGroupedItems({})
         setAllMenuLoadFailure(null)
+        setAllMenuLoading(false)
+        // A restaurant whose category list came back with nothing in it genuinely has no menu.
+        // That is a COMPLETED determination, not a load still in flight, so it must resolve to
+        // the empty state and not to a spinner that never stops.
+        setAllMenuLoadedOnce(Boolean(restaurantId) && menuCategories.length === 0)
         return
       }
 
-      const load = await loadAllMenuCategories(restaurantId, menuCategories)
-      setAllGroupedItems(load.merged)
-      setAllMenuLoadFailure(
-        load.failedCategoryNames.length > 0
-          ? {
-              failedCategoryNames: load.failedCategoryNames,
-              requestedCount: load.requestedCount,
-            }
-          : null
-      )
+      try {
+        setAllMenuLoading(true)
+        const load = await loadAllMenuCategories(restaurantId, menuCategories)
+        setAllGroupedItems(load.merged)
+        setAllMenuLoadFailure(
+          load.failedCategoryNames.length > 0
+            ? {
+                failedCategoryNames: load.failedCategoryNames,
+                requestedCount: load.requestedCount,
+              }
+            : null
+        )
+        // `loadAllMenuCategories` uses allSettled, so it always COMPLETES; a total failure is
+        // reported through the notice above, which the state rule reads before this flag. Marking
+        // completion rather than success keeps the existing search-with-no-results wording
+        // reachable instead of replacing it with a spinner for a load that is not running.
+        setAllMenuLoadedOnce(true)
+      } finally {
+        setAllMenuLoading(false)
+      }
     }
 
     void loadAllMenuItems()
@@ -457,6 +490,9 @@ export default function MenuBrowsePage() {
   // The notice has to follow whichever source is on screen, or the customer gets told about a
   // failure in a view they are not looking at.
   const menuNotice = menuLoadNotice(useAllMenu ? allMenuLoadFailure : categoryLoadFailure)
+  // Follows the same source as the notice — the flags of the view the customer is looking at.
+  const menuSourceLoading = useAllMenu ? allMenuLoading : categoryMenuLoading
+  const menuSourceLoadedOnce = useAllMenu ? allMenuLoadedOnce : categoryMenuLoadedOnce
   const retryMenuLoad = () => setMenuReloadKey((key) => key + 1)
   const filteredGroupedEntries = Object.values(menuItemsSource)
     .map(({ subcategory, items }) => {
@@ -478,6 +514,16 @@ export default function MenuBrowsePage() {
       if (orderA !== orderB) return orderA - orderB
       return String(a.subcategory?.name || '').localeCompare(String(b.subcategory?.name || ''))
     })
+
+  // Three states, not two. See lib/menu/menu-body-state.ts for why "not loading" is not the same
+  // question as "a load has finished".
+  const bodyState = menuBodyState({
+    hasEntries: filteredGroupedEntries.length > 0,
+    notice: menuNotice,
+    loading: menuSourceLoading,
+    loadedOnce: menuSourceLoadedOnce,
+    searchQuery,
+  })
 
   const menuSectionTitle = selectedMenuCategory?.name
     ? selectedMenuCategory.name
@@ -971,7 +1017,19 @@ export default function MenuBrowsePage() {
             </div>
           ) : null}
 
-          {filteredGroupedEntries.length > 0 ? (
+          {/*
+            * Three states, decided by menuBodyState:
+            *
+            *   items   — something to show.
+            *   loading — we do not yet know. A failed load must never fall through to
+            *             "Menu coming soon!", and neither must a load that is merely SLOW: both
+            *             tell the customer the restaurant sells nothing, which is a claim we have
+            *             no basis for and which is wrong exactly when the kitchen is busiest.
+            *   failed  — the fetch rejected. The notice, with its retry, replaces the list.
+            *   empty   — a fetch completed successfully and returned nothing. Only here is
+            *             "Menu coming soon!" a true statement.
+            */}
+          {bodyState === 'items' ? (
             <div className="space-y-8">
               {filteredGroupedEntries.map(({ subcategory, items }) => (
                 <div key={String(subcategory.id)} className="space-y-3">
@@ -984,48 +1042,48 @@ export default function MenuBrowsePage() {
                 </div>
               ))}
             </div>
+          ) : bodyState === 'loading' ? (
+            /* The page's own loading treatment, reused. It says nothing, which is the point. */
+            <div
+              data-testid="menu-body-loading"
+              className="flex items-center justify-center rounded-2xl border border-gray-100 bg-white py-16"
+            >
+              <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
+            </div>
+          ) : bodyState === 'failed' && menuNotice ? (
+            <div className="rounded-2xl border border-gray-200 bg-white py-16 text-center">
+              <div className="mx-auto max-w-md px-6">
+                <AlertTriangle
+                  className="mx-auto mb-5 h-10 w-10 text-amber-500"
+                  strokeWidth={1.5}
+                  aria-hidden
+                />
+                <h3 className="mb-2 text-xl font-bold text-black">{menuNotice.title}</h3>
+                <p className="mb-6 text-gray-500">{menuNotice.description}</p>
+                <Button onClick={retryMenuLoad} style={{ backgroundColor: ACCENT }}>
+                  {menuNotice.retryLabel}
+                </Button>
+              </div>
+            </div>
           ) : (
-            !loading &&
-            /*
-             * A failed load must never fall through to "Menu coming soon!" — that tells the
-             * customer the restaurant sells nothing, which is a claim we have no basis for and
-             * which is wrong exactly when the kitchen is busiest. The notice replaces it.
-             */
-            (menuNotice && !searchQuery ? (
-              <div className="rounded-2xl border border-gray-200 bg-white py-16 text-center">
-                <div className="mx-auto max-w-md px-6">
-                  <AlertTriangle
-                    className="mx-auto mb-5 h-10 w-10 text-amber-500"
-                    strokeWidth={1.5}
-                    aria-hidden
-                  />
-                  <h3 className="mb-2 text-xl font-bold text-black">{menuNotice.title}</h3>
-                  <p className="mb-6 text-gray-500">{menuNotice.description}</p>
-                  <Button onClick={retryMenuLoad} style={{ backgroundColor: ACCENT }}>
-                    {menuNotice.retryLabel}
-                  </Button>
-                </div>
+            <div className="rounded-2xl border border-gray-100 bg-white py-16 text-center">
+              <div className="mx-auto max-w-md px-6">
+                <div className="mb-6 text-6xl">🍽️</div>
+                <h3 className="mb-2 text-xl font-bold text-black">
+                  {searchQuery ? 'No items found' : 'Menu coming soon!'}
+                </h3>
+                <p className="mb-2 text-gray-500">
+                  {searchQuery
+                    ? `No items found for "${searchQuery}"`
+                    : selectedMenuCategory
+                      ? `No items in "${selectedMenuCategory.name}" yet.`
+                      : "This restaurant hasn't added menu items yet."}
+                </p>
+                {!searchQuery ? (
+                  <p className="text-sm text-gray-400">Please ask staff for assistance.</p>
+                ) : null}
               </div>
-            ) : (
-              <div className="rounded-2xl border border-gray-100 bg-white py-16 text-center">
-                <div className="mx-auto max-w-md px-6">
-                  <div className="mb-6 text-6xl">🍽️</div>
-                  <h3 className="mb-2 text-xl font-bold text-black">
-                    {searchQuery ? 'No items found' : 'Menu coming soon!'}
-                  </h3>
-                  <p className="mb-2 text-gray-500">
-                    {searchQuery
-                      ? `No items found for "${searchQuery}"`
-                      : selectedMenuCategory
-                        ? `No items in "${selectedMenuCategory.name}" yet.`
-                        : "This restaurant hasn't added menu items yet."}
-                  </p>
-                  {!searchQuery ? (
-                    <p className="text-sm text-gray-400">Please ask staff for assistance.</p>
-                  ) : null}
-                </div>
-              </div>
-            ))
+            </div>
           )}
         </section>
       </div>
