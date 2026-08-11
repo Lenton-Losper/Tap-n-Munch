@@ -13,10 +13,15 @@
  * restaurant that sells nothing, and a category the customer could not see was
  * indistinguishable from one the restaurant does not sell.
  *
- * These tests drive the real page over a fake fetch. NOTE the deliberate choice not to use
- * useToast here: <Toaster /> is mounted only in components/dashboard/dashboard-shell.tsx and
- * nowhere in the /menu/** tree, so a toast on this surface renders nothing at all. The notice
- * is in-page, and it has to be, which is why these assertions read the document.
+ * These tests drive the real page over a fake fetch. The notice is in-page, not a toast, which
+ * is why these assertions read the document.
+ *
+ * That choice was originally made because a toast on this surface rendered nothing at all —
+ * <Toaster /> was mounted only in components/dashboard/dashboard-shell.tsx. #204 has since
+ * mounted it in app/providers.tsx, so that reason no longer holds and the note is corrected here
+ * rather than left to mislead. The in-page notice is NOT being revisited by #204: it is a
+ * persistent failure with a retry affordance, and a toast that fades after a few seconds is a
+ * different thing. Anyone wanting to convert it should argue that on the merits.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
