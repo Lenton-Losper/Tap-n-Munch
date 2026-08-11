@@ -4,6 +4,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { queryFinaticOrderPaid } from '@/lib/payments/query-finatic-order-paid'
 import { amountsMatch } from '@/lib/payments/payment-integrity'
+import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 export const dynamic = 'force-dynamic'
@@ -115,11 +116,19 @@ export async function POST(
 
     if (result.paid) {
       if (result.amount != null && !amountsMatch(result.amount, expectedAmount)) {
-        console.error('[terminal/verify-payment] Finatic paid but amount mismatch — not applying', {
+        // Finatic has said the customer WAS charged, for a figure that disagrees. Not applying
+        // is right, but a console.error is ephemeral and cannot be queried by whoever
+        // reconciles a disputed charge days later (#187). Same durable record as the callback
+        // path; never throws, so the response below is unaffected.
+        await recordPaymentAmountMismatch(supabase, {
+          restaurantId: terminal.restaurantId,
           orderId,
-          merchantOrderNo,
           expectedAmount,
-          finaticAmount: result.amount,
+          receivedAmount: result.amount,
+          source: 'terminal_verify_payment',
+          terminalId: terminal.terminalId,
+          businessOrderNo: merchantOrderNo,
+          reference: merchantOrderNo,
         })
       } else {
         const claim = await markOrderPaidConfirmed(supabase, {
