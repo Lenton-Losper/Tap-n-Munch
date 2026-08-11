@@ -39,6 +39,8 @@ export async function fetchGuestOrdersBySession(params: {
   tabId?: string
   excludeSettlement?: boolean
   countOnly?: boolean
+  /** Ask for declined requests too. Only the my-orders list does; see the server counterpart. */
+  includeDeclined?: boolean
 }): Promise<GuestOrdersApiResponse> {
   const qs = new URLSearchParams({ restaurantId: params.restaurantId })
   const sessionIds = [...new Set(
@@ -52,6 +54,7 @@ export async function fetchGuestOrdersBySession(params: {
   if (params.tabId?.trim()) qs.set('tabId', params.tabId.trim())
   if (params.excludeSettlement === false) qs.set('excludeSettlement', '0')
   if (params.countOnly) qs.set('countOnly', '1')
+  if (params.includeDeclined) qs.set('includeDeclined', '1')
 
   const res = await fetch(`/api/guest/orders/by-session?${qs.toString()}`)
   return parseGuestOrdersResponse(res)

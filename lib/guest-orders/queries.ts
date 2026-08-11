@@ -106,6 +106,11 @@ export async function fetchGuestOrdersBySession(params: {
   tabId?: string | null
   excludeSettlement?: boolean
   countOnly?: boolean
+  /**
+   * Include requests staff have DECLINED. Default false, because this function serves two
+   * different audiences and only one of them wants them -- see the status filter below.
+   */
+  includeDeclined?: boolean
 }): Promise<{ orders: GuestOrderRow[]; count: number }> {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
@@ -138,12 +143,38 @@ export async function fetchGuestOrdersBySession(params: {
   // A QR submission lives in order_requests until staff Accept, so counting `orders` alone
   // reports 0 for a customer who has just ordered. Mirrors the fallback that
   // fetchGuestOrderById and fetchGuestActiveTableOrders already do.
+  //
+  /*
+   * A DECLINED REQUEST IS PART OF THE RECORD, BUT IT IS NOT LIVE.
+   *
+   * This function has two kinds of caller and they disagree about declined requests:
+   *
+   *  - The LIVE view -- the status tracker, the active-order banner, and the `countOnly`
+   *    callers that really ask "does this session have orders?" (useTabHasOrders, and the cart
+   *    page's stale-tab cleanup). For them a declined request is over:
+   *    lib/orders/active-order-visibility.ts classifies `declined` as TERMINAL alongside
+   *    `completed` and `cancelled`. Counting one would keep a dead tab alive and suppress the
+   *    cleanup that returns the customer to the menu.
+   *
+   *  - The RECORD view -- the my-orders list. Filtering a declined request out of that list
+   *    deleted the customer's only evidence they had ordered at all: by direct link they were
+   *    told (fetchGuestOrderById applies no status filter), but on the list the row was simply
+   *    gone, while the staff decline dialog promised "The customer will see it was declined".
+   *
+   * So the default is unchanged and the record view opts in, rather than widening the filter
+   * for eight callers to serve one. Nothing here relaxes the session scope above: a declined
+   * request is returned to the session that placed it and to nobody else.
+   */
+  const requestStatuses = params.includeDeclined
+    ? ['waiting_review', 'declined']
+    : ['waiting_review']
+
   let pendingQuery = supabase
     .from('order_requests')
     .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
     .eq('restaurant_id', restaurantUuid)
     .in('session_id', sessionIds)
-    .eq('status', 'waiting_review')
+    .in('status', requestStatuses)
 
   if (tabId) {
     pendingQuery = pendingQuery.eq('tab_id', tabId)

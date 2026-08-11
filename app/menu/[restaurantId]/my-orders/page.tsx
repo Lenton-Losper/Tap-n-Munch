@@ -10,6 +10,7 @@ import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
 import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
+import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
 
 export default function MyOrdersPage() {
   const params = useParams()
@@ -36,6 +37,10 @@ export default function MyOrdersPage() {
         // Orders placed from the tab flow carry the tab-context session id, not this one;
         // querying with only getCurrentSession() shows the customer an empty list.
         sessionIds: [sessionId, readTabSessionId()],
+        // This is the RECORD of what the customer ordered, not the live view. A declined
+        // request used to drop out of it entirely, leaving no trace that the order was ever
+        // placed -- while the staff decline dialog promised the customer would see it.
+        includeDeclined: true,
       })
       const ordersList = (orders || []).filter((order: any) => order.is_closed !== true)
       setOrders(ordersList)
@@ -60,8 +65,13 @@ export default function MyOrdersPage() {
     }
   }
 
+  // An unlisted status fell through to `pending` ("🎉 New"), which reads as further along than
+  // the order is. Both order_requests states are spelled out for that reason -- a declined
+  // request labelled "New" would be worse than the disappearance it replaces.
   const getStatusConfig = (status: string) => {
     const configs: any = {
+      waiting_review: { emoji: '⏳', label: 'Waiting for confirmation' },
+      declined: { emoji: '🚫', label: 'Declined' },
       pending: { emoji: '🎉', label: 'New' },
       accepted: { emoji: '👨‍🍳', label: 'Accepted' },
       preparing: { emoji: '🔥', label: 'Preparing' },
@@ -71,8 +81,14 @@ export default function MyOrdersPage() {
     return configs[status] || configs.pending
   }
 
+  const isDeclined = (order: any) => order?.status === 'declined'
+
+  // A declined request was never accepted, so its total is not money the customer spent.
+  // Leaving it in this sum would have made the fix above state something untrue about money.
   const getTotalSpent = () => {
-    return orders.reduce((sum, order) => sum + (order.total || 0), 0)
+    return orders
+      .filter((order) => !isDeclined(order))
+      .reduce((sum, order) => sum + (order.total || 0), 0)
   }
 
   function getTimeAgo(date: Date): string {
@@ -210,19 +226,31 @@ export default function MyOrdersPage() {
                     </div>
                   </div>
 
-                  {/* Payment Status */}
-                  <div className="mt-4 flex items-center gap-4 text-sm font-sans">
-                    <span className="text-muted-foreground">
-                      Payment: {order.payment_method === 'card' ? '💳' : '💵'} {order.payment_method}
-                    </span>
-                    <span className={`px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
-                      order.payment_status === 'paid'
-                        ? 'bg-foreground text-background'
-                        : 'bg-muted text-foreground'
-                    }`}>
-                      {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
-                    </span>
-                  </div>
+                  {/* Payment Status.
+                      Suppressed for a declined request: it never became an order, so its
+                      payment_status is 'declined' and the badge below would have rendered the
+                      fallback "⏳ Pending" -- telling the customer they still owe for something
+                      the restaurant refused. The decline is stated in words instead. */}
+                  {isDeclined(order) ? (
+                    <p className="mt-4 text-sm font-sans text-muted-foreground">
+                      {/* Same sentence the direct link already shows, so arriving by list and
+                          arriving by link do not tell the customer two different things. */}
+                      {mapOrderStatusToBadge('declined').description}
+                    </p>
+                  ) : (
+                    <div className="mt-4 flex items-center gap-4 text-sm font-sans">
+                      <span className="text-muted-foreground">
+                        Payment: {order.payment_method === 'card' ? '💳' : '💵'} {order.payment_method}
+                      </span>
+                      <span className={`px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                        order.payment_status === 'paid'
+                          ? 'bg-foreground text-background'
+                          : 'bg-muted text-foreground'
+                      }`}>
+                        {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )
             })}
