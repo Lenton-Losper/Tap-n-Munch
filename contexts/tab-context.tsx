@@ -15,13 +15,27 @@ import {
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+// The OTHER session id. lib/session.ts owns `flashtap_session_v1` in localStorage; this context
+// owns `tab_session_id` in sessionStorage. Nothing syncs them and an order carries whichever the
+// placing screen held, so both have to be offered when asking which member row is the caller's.
+import { getCurrentSession } from '@/lib/session'
 
 // The keys and the mint now live in lib/tab-storage.ts, which is also where non-context callers
 // read them from. Two copies of "which id is this customer" is how the two halves come to disagree
 // about who placed an order — see TAB_SESSION_ID_MIRROR_KEY there for the bug that was.
 
+/**
+ * #262: `session_id` is GONE and must not come back.
+ *
+ * The stored `tabs.members` array holds each diner's real session id, which is a credential --
+ * lib/guest-orders/queries.ts fetchGuestOrdersBySession reads a diner's orders by it. The
+ * server (GET /api/tabs/[tabId]/view) substitutes an opaque per-tab `member_key` derived from
+ * the service-role secret, and stamps the same key onto `orders.member_session_id` on its way
+ * out, so the pairing these screens do still resolves against a value that is useless anywhere
+ * else and meaningless on any other tab.
+ */
 export type TabMember = {
-  session_id: string
+  member_key: string
   joined_at: string | { toMillis?: () => number }
   display_name?: string
 }
@@ -34,6 +48,8 @@ type TabContextType = {
   canAddToTab: boolean
   tabTotal: number
   tabMembers: TabMember[]
+  /** The caller's own member_key(s); the client cannot derive them. See TabMember. */
+  selfMemberKeys: string[]
   settlementType: string | null
   tableNumber: string | null
   setTabFromJoin: (nextTabId: string, tableNumber?: string | number) => void
@@ -90,6 +106,13 @@ export function TabProvider({
   const [sessionId, setSessionId] = useState(() => ensureTabSessionId())
   const [tabTotal, setTabTotal] = useState(0)
   const [tabMembers, setTabMembers] = useState<TabMember[]>([])
+  /**
+   * The caller's own `member_key`s, as derived by the server for each session id this context
+   * holds (#262). The client cannot derive them -- that is the whole point -- so "which of these
+   * members is me?" has to be answered server-side. Plural because the app mints two unsynced
+   * session ids; see loadTab.
+   */
+  const [selfMemberKeys, setSelfMemberKeys] = useState<string[]>([])
   const [tabStatus, setTabStatus] = useState<string | null>(null)
   const [settlementType, setSettlementType] = useState<string | null>(null)
 
@@ -110,18 +133,42 @@ export function TabProvider({
   }, [tabIdFromUrl, searchParams])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  /**
+   * #262: this was an anon PostgREST select naming `members`, i.e. every diner's raw
+   * `session_id`, under a policy with no restaurant scope. It now reads through
+   * GET /api/tabs/[tabId]/view, which runs the identical lookup as service_role and returns an
+   * opaque per-tab `member_key` per member instead. Same filters (id + restaurant_id, matched
+   * raw), same "no row -> clear the session" behaviour.
+   *
+   * Both of this context's session ids go along so the route can say which member row is the
+   * caller's: `sessionId` is the sessionStorage `tab_session_id` and getCurrentSession() is the
+   * localStorage `flashtap_session_v1`. Nothing syncs the two and an order carries whichever
+   * one the placing screen held (see lib/guest-orders/queries.ts), so sending only one leaves
+   * `isCurrentUser` wrong on the tab screen.
+   */
   const loadTab = async () => {
     if (!restaurantId || !tabId) return
-    const { data, error } = await supabase
-      .from('tabs')
-      .select(
-        'id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required, session_version, created_at, firebase_id',
-      )
-      .eq('id', tabId)
-      .eq('restaurant_id', restaurantId)
-      .maybeSingle()
 
-    if (error) {
+    const qs = new URLSearchParams({ restaurantId })
+    for (const sid of new Set(
+      [sessionId, getCurrentSession()].map((s) => String(s || '').trim()).filter(Boolean),
+    )) {
+      qs.append('sessionId', sid)
+    }
+
+    let data: Record<string, unknown> | null = null
+    try {
+      const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/view?${qs.toString()}`, {
+        cache: 'no-store',
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        console.error('[TAB CONTEXT] load tab error', body?.error || res.status)
+        return
+      }
+      data = body?.tab || null
+      setSelfMemberKeys(Array.isArray(body?.self_member_keys) ? body.self_member_keys : [])
+    } catch (error) {
       console.error('[TAB CONTEXT] load tab error', error)
       return
     }
@@ -130,6 +177,7 @@ export function TabProvider({
       setTabId(null)
       setTabTotal(0)
       setTabMembers([])
+      setSelfMemberKeys([])
       setTabStatus(null)
       setSettlementType(null)
       clearTabSession()
@@ -150,6 +198,7 @@ export function TabProvider({
         setTabId(null)
         setTabTotal(0)
         setTabMembers([])
+        setSelfMemberKeys([])
         setTabStatus(null)
         setSettlementType(null)
         clearTabSession()
@@ -181,6 +230,7 @@ export function TabProvider({
 
   const contextTabTotal = isMenuRoute ? tabTotal : 0
   const contextTabMembers = isMenuRoute ? tabMembers : []
+  const contextSelfMemberKeys = isMenuRoute ? selfMemberKeys : []
   const contextTabStatus = isMenuRoute ? tabStatus : null
   const contextSettlementType = isMenuRoute ? settlementType : null
 
@@ -222,6 +272,7 @@ export function TabProvider({
     if (!nextTabId) {
       setTabTotal(0)
       setTabMembers([])
+      setSelfMemberKeys([])
       setTabStatus(null)
       setSettlementType(null)
       clearTabSession()
@@ -448,6 +499,7 @@ export function TabProvider({
     canAddToTab,
     tabTotal: contextTabTotal,
     tabMembers: contextTabMembers,
+    selfMemberKeys: contextSelfMemberKeys,
     settlementType: contextSettlementType,
     tableNumber,
     setTabFromJoin,

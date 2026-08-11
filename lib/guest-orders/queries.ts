@@ -3,6 +3,7 @@ import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { guestCanAccessOrder, paymentRefOrFilter, redactGuestOrderRow } from './validation'
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
 import type { GuestOrderRow } from './types'
 
 /**
@@ -104,7 +105,9 @@ export async function fetchGuestOrderById(
     if (!guestCanAccessOrder(order, accessParams)) {
       return { order: null, denied: true }
     }
-    return { order, denied: false }
+    // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
+    const [redacted] = await redactGuestOrderMemberIds([order])
+    return { order: redacted, denied: false }
   }
 
   let requestQuery = supabase.from('order_requests').select('*').eq('id', orderId)
@@ -283,7 +286,29 @@ export async function fetchGuestOrdersBySession(params: {
   const data = mergeById(bySession.data, byMember.data)
   const pending = mergeById(reqBySession.data, reqByMember.data)
 
-  const orders = (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[]
+  // TWO read-time redactions, and neither replaces the other.
+  //
+  //   redactGuestOrderRow       strips edit_lock_token -- a CAPABILITY: whoever holds it can
+  //                             commit an edit to the order.
+  //   redactGuestOrderMemberIds substitutes member_session_id with an opaque per-tab key (#262),
+  //                             because the tab and receipt screens join against the members
+  //                             array and that array no longer carries raw session ids. Read-time
+  //                             only: the stored column is untouched, and staff tooling, Accept
+  //                             and settle all still see the real id.
+  //
+  // WHAT THE #262 REDACTION DOES NOT COVER -- corrected here rather than inherited, because the
+  // comment this replaces claimed it stopped a reader getting "another diner's session id" and it
+  // does not. It rewrites member_session_id ONLY; session_id is never touched. It also skips any
+  // row with no tab_id -- measured on staging 2026-08-14, 104 of 213 orders (49%). And since the
+  // cart writes ONE value into BOTH columns, the raw value still leaves in session_id on every
+  // path, including by-payment-ref where a PAID order is admitted on restaurant scope alone.
+  //
+  // Redacting session_id as well was considered and RULED AGAINST: the client matches ownership
+  // on the real value via heldSessionIds (see ownsOrder), so substituting it would break the
+  // customer's own screens. Filed as a design question instead.
+  const orders = await redactGuestOrderMemberIds(
+    (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
+  )
   const pendingRows = (pending ?? []).map((row) =>
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
   )
@@ -351,7 +376,11 @@ export async function fetchGuestActiveTableOrders(params: {
   const { data, error } = await query.order('placed_at', { ascending: false })
   if (error) throw error
 
-  const orders = (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[]
+  // BOTH redactions, in the order fetchGuestOrdersBySession uses -- see the note there for what
+  // the #262 half does and does not cover.
+  const orders = await redactGuestOrderMemberIds(
+    (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
+  )
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
   // is included for the same reason as in fetchGuestOrdersBySession -- see
@@ -449,7 +478,16 @@ export async function fetchGuestOrdersByPaymentRef(params: {
     sessionId: params.sessionId ?? null,
   }
 
-  return (data ?? [])
-    .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
-    .filter((order) => guestCanAccessOrder(order, accessParams))
+  // BOTH redactions -- see the note in fetchGuestOrdersBySession.
+  //
+  // This path matters most and is ALSO where the #262 comment overstated itself. DOOR 3 admits a
+  // PAID order on restaurant scope alone, so a known payment reference reads back a full row. The
+  // member_session_id substitution below helps; it does NOT stop session_id leaving, because that
+  // column is never rewritten. Stripping edit_lock_token here is what stops the same reference
+  // handing over an edit capability.
+  return redactGuestOrderMemberIds(
+    (data ?? [])
+      .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
+      .filter((order) => guestCanAccessOrder(order, accessParams)),
+  )
 }

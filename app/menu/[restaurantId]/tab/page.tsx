@@ -55,7 +55,7 @@ export default function TabSummaryPage() {
   const tabIdFromUrl = searchParams.get('tabId')?.trim() || ''
 
   const storedTabId = resolveStoredTabId(tabIdFromUrl)
-  const { sessionId, tabMembers, tabStatus, refreshTab } = useTab()
+  const { sessionId, tabMembers, selfMemberKeys, tabStatus, refreshTab } = useTab()
   const { currency, permissions, refresh } = useRestaurant()
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<TabOrder[]>([])
@@ -160,7 +160,17 @@ export default function TabSummaryPage() {
           String(order.member_session_id || order.session_id || 'unknown').trim() || 'unknown'
         let group = bySid.get(memberSid)
         if (!group) {
-          group = { memberKey: memberSid, label: 'Guest', isCurrentUser: memberSid === sessionId, items: [], subtotal: 0 }
+          group = {
+            memberKey: memberSid,
+            label: 'Guest',
+            // #262: `memberSid` is now the server-derived member_key (the orders route stamps
+            // it onto member_session_id), so this compares key to key. `sessionId` stays in the
+            // test because an order with neither member_session_id nor a tab falls through the
+            // mapping untouched and still carries the raw id.
+            isCurrentUser: selfMemberKeys.includes(memberSid) || memberSid === sessionId,
+            items: [],
+            subtotal: 0,
+          }
           bySid.set(memberSid, group)
         }
         group.subtotal += Number(order.total) || 0
@@ -177,15 +187,20 @@ export default function TabSummaryPage() {
 
     return members
       .map((member) => {
-        const memberSid = String(member.session_id || '').trim()
+        // #262: `member_key`, never `session_id`. The array reaches this screen through
+        // GET /api/tabs/[tabId]/view, which substitutes an opaque per-tab key for the raw id,
+        // and lib/guest-orders/queries.ts stamps the SAME key onto `orders.member_session_id`,
+        // so buildGroup's comparison below is unchanged in meaning. The client cannot derive
+        // the key, which is why "is this me?" comes from the server as selfMemberKeys.
+        const memberSid = String(member.member_key || '').trim()
         if (!memberSid) return null
         const displayName = String(member.display_name || '').trim() || 'Guest'
-        const isCurrentUser = memberSid === sessionId
+        const isCurrentUser = selfMemberKeys.includes(memberSid)
         const label = displayName
         return buildGroup(memberSid, label, isCurrentUser)
       })
       .filter((g): g is MemberGroup => Boolean(g && g.items.length > 0))
-  }, [ordersForDisplay, sessionId, tabMembers, currency])
+  }, [ordersForDisplay, sessionId, selfMemberKeys, tabMembers, currency])
 
   const fullTabRunningTotal = useMemo(
     () => ordersForDisplay.reduce((sum, order) => sum + (Number(order.total) || 0), 0),
