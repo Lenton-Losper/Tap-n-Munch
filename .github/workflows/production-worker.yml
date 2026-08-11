@@ -51,6 +51,14 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      # Before `npm ci` because it needs nothing but node and the checkout, and because a
+      # migration that only LOOKS like it constrains a column should fail the run early.
+      # #212: `ADD COLUMN IF NOT EXISTS ... CHECK (...)` silently drops the CHECK wherever the
+      # column already exists. Proven on restaurant_terminals.status (#193). The scan is
+      # statement-oriented, not line-oriented — every real hit puts the CHECK on a continuation
+      # line, so a grep-based step here would report a clean sheet and be worse than nothing.
+      - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
+        run: node scripts/check-migration-inline-checks.mjs
       - name: Install dependencies
         run: npm ci
       - name: Lint
@@ -65,7 +73,7 @@ jobs:
       # customer-facing deploy fail on data drift. Only hermetic suites run here; they need no
       # network and no credentials.
       - name: Unit tests (hermetic, no database)
-        run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate"
+        run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate|migration-inline-check-lint"
 
   deploy:
     needs: build-verification

@@ -524,6 +524,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      # Before `npm ci` because it needs nothing but node and the checkout. See #212 — the scan
+      # is statement-oriented, not line-oriented, because every real hit in this repo puts the
+      # CHECK on a continuation line where a grep would find none of them.
+      - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
+        run: node scripts/check-migration-inline-checks.mjs
       - name: Install dependencies
         run: npm ci
       - name: Lint
@@ -531,7 +536,7 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit and schema tests (no HTTP)
-        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities"
+        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities|migration-inline-check-lint"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
