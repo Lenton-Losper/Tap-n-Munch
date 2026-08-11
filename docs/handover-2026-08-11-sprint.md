@@ -1563,3 +1563,76 @@ Same conditions. Reach the menu, tap **mains**, then **within about a second, be
 **PASS:** heading and items always agree. Under `drinks` only Rooibos Tea, Orange Juice, Sparkling Water, Iced Coffee.
 **FAIL — three distinct shapes, each on its own:** Beef Burger / Chicken Wrap / Cappuccino under the **drinks** heading · a notice naming a category you have LEFT ("We couldn't load mains" while on drinks) · drinks items showing while a notice about drinks is **absent** because a stale success cleared it — **that third one is the worst and was not in the original report.**
 **Expected behaviour change to judge:** switching categories now shows a loading treatment instead of the previous category's items. Strictly more honest; whether it feels right on a phone is a legitimate finding.
+
+---
+
+## #262 — STOP CONDITION HIT. The grant removal cannot go first. Nothing was written or applied.
+
+The human asked to be told about breakage rather than discover it. **There is breakage, and it is larger than "member names disappear".**
+
+### The mechanism, and it is proven by the human's own probe
+
+**PostgREST refuses the ENTIRE query when the select list names an ungranted column.** It does not drop the column and return the rest. Two-sided, from the production measurement already recorded above:
+
+    select tab_pin           -> 42501   (ungranted column -> WHOLE query refused)
+    select id, status, total -> OK      (all granted -> OK)
+
+Every anon select of `tabs` names `members` **alongside** `status`, `total`, `pin_required`, `settled_type`. Drop the grant and all of them return 42501 in full — the guest client can no longer read a tab's total, status or PIN requirement **at all**.
+
+### Four anon select sites, six guest surfaces
+
+Browser anon client (`lib/supabase/client.ts`, no auth session on guest QR pages):
+
+1. `contexts/tab-context.tsx:126-131` — `loadTab()`. On error: logs and **returns**. Silent. `tabTotal`, `tabStatus`, `settlementType`, `tabMembers` freeze at initial values.
+2. `app/menu/[restaurantId]/v2/page.tsx:428-433` — the open-tab lookup on the QR landing. On error `setOpenTab(null)`, so **the "join this tab" affordance silently disappears** — a guest at a table with an open tab is told there is none.
+3. `lib/tab-session.ts:71-76` — `fetchTabById()`. **Throws.**
+4. `lib/tab-session.ts:90-96` — `fetchActiveTabForTable()`. **Throws.**
+
+3 and 4 are the shared library: `fetchTabById` is used by browse, receipt, tab and v2 pages; `fetchActiveTabForTable` by `useSessionTokenGuard` (the session-token guard on guest pages) and `useTabSessionEndedRedirect`.
+
+**Identical at `99d2853`.** Staging breaks the same way — "staging first" would have knocked over the browse click-test environment rather than surfacing a smaller problem.
+
+### Two consumers are real features, not cosmetic
+
+- `app/menu/[restaurantId]/tab/page.tsx:135-188` keys the **per-person bill breakdown** on `member.session_id` and labels it `member.display_name`. Without it everyone renders **"Guest"** — on a surface where people split a bill.
+- `app/menu/[restaurantId]/receipt/page.tsx:140-158` builds the receipt's member name map the same way.
+- Genuinely cosmetic, count-only: `v2:459`/`:1161-1163`, `browse:794-801`.
+
+**That is the collision: the customer-facing member NAMES live in the same array as the session ids.**
+
+### The stated fallback is NOT IMPLEMENTABLE — do not spend anything on it
+
+Scoping the anon SELECT policy by restaurant has nothing to bind to:
+
+1. An anon PostgREST request carries **no restaurant identity**. The anon JWT claims are `role`/`iss`/`ref`/`exp`. The `.eq('restaurant_id', …)` in client queries is a **filter the client supplies**, not an identity a policy can enforce — an attacker supplies a different one. The only request-derived alternative, `current_setting('request.headers')`, is attacker-controlled and therefore not a control.
+2. Even if it worked, the same migration makes `restaurants` anon-listable (`GRANT SELECT (id, name, slug, …) TO anon`, `USING (deleted_at IS NULL)`, no scope). An attacker enumerates every restaurant id and re-runs per restaurant. It converts one query into N.
+
+### The PIN bypass is confirmed LIVE and WORKING, not merely theoretical
+
+`app/api/tabs/[tabId]/join/route.ts` reads `members` under service-role at `:81`, computes at `:82-84`
+
+    const alreadyMember = Boolean(sessionId) && members.some((m) => String(m?.session_id) === sessionId)
+
+and `:86-93` **skips the PIN check entirely** when `alreadyMember`, then issues a real session token at `:112`. **The value that satisfies that check is the value anon can list.**
+
+### And the exposure survives #262 anyway
+
+`app/api/tabs/[tabId]/route.ts:30` selects `members` and `:41` returns the row **verbatim**. That route is session-token guarded and service-role — so closing the anon grant does **not** close it. Anyone holding a token for one tab still reads every co-member's session id. **Redaction at the route boundary is required regardless.**
+
+### REVISED PLAN — code first, then the grant
+
+1. Remove `members` from the four anon select lists.
+2. Make `app/api/tabs/[tabId]/route.ts` return `display_name` + `joined_at` and **not** `session_id`; the tab and receipt pages consume it. Member counts come from the same response.
+3. Ship and verify that code.
+4. **Then** the migration: `REVOKE ALL … FROM anon` + re-`GRANT SELECT` the 16 remaining columns — column grants are not individually revocable, and `REVOKE ALL` + re-`GRANT` is `20260726200000`'s own idiom.
+5. Then the decisive probe: `select id, members` must refuse where it now returns 3 rows.
+
+**Migration LAST, so there is no window where the grant is gone and the client still asks for the column.**
+
+### AWAITING RULING — three questions
+
+- **Q1.** What do the tab and receipt pages show for other people? **A.** redacting seam, names preserved, exposure closed *(recommended — it also closes the token-guarded leak in the same change, and B needs that route anyway for the count)*. **B.** accept degradation to "Guest". **C.** grant first, fix after — **not viable, listed to be ruled out**.
+- **Q2.** Ship order. **A.** code to production first, verified, migration last *(recommended)*. **B.** migration first — that is Q1.C.
+- **Q3.** The PIN bypass is live **now**. Interim containment (require the PIN even for `alreadyMember`), or ship the real fix? Recommended **B, ship the real fix** — with the caveat that it leaves a working bypass open for the duration, and if that is more than a day, contain first.
+
+**Nothing written. No branch, no commit, no migration, nothing applied to staging or production, no Supabase command run.**
