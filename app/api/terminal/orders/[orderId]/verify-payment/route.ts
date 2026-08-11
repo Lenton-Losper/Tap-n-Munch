@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { queryFinaticOrderPaid } from '@/lib/payments/query-finatic-order-paid'
-import { amountsMatch } from '@/lib/payments/payment-integrity'
+import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
 export const dynamic = 'force-dynamic'
@@ -112,15 +112,72 @@ export async function POST(
 
     const expectedAmount = Number(order.total)
     let applied = false
+    let outcome: string | null = null
 
     if (result.paid) {
-      if (result.amount != null && !amountsMatch(result.amount, expectedAmount)) {
-        console.error('[terminal/verify-payment] Finatic paid but amount mismatch — not applying', {
-          orderId,
-          merchantOrderNo,
-          expectedAmount,
-          finaticAmount: result.amount,
+      /**
+       * #190. Two refusals, both of which leave a customer whose card HAS been charged with an
+       * order that stays unpaid until staff intervene — so each one must leave a record, not a
+       * log line. A console.error in a Worker is not a record.
+       *
+       * EXACT agreement, not the client tolerance. Finatic is echoing back our own figure
+       * (push-to-terminal sends Number(order.total) as order_amount; expectedAmount is
+       * Number(order.total) again), so a cent of daylight means the reference correlated to a
+       * different sale — see GATEWAY_AMOUNT_TOLERANCE_CENTS.
+       *
+       * An ABSENT amount is UNVERIFIED, not agreed. `result.amount != null && !amountsMatch(...)`
+       * previously short-circuited and applied the payment with no amount check of any kind, and
+       * nothing in the response or the logs afterwards could distinguish "checked and agreed"
+       * from "never checked". queryFinaticOrderPaid normalises through toMoney, so null here
+       * means the field was genuinely absent or unparseable — not merely oddly formatted.
+       *
+       * Neither refusal cancels: Finatic has just said the customer was charged. The order is
+       * left claimable for the reconcile cron or a human, which is what
+       * payment.verification_uncertain already models on the sibling gateway leg in
+       * handle-terminal-payment-failed.ts — and what the E04111 resolution procedure keys off.
+       */
+      const gatewayAmount = result.amount
+      const verified =
+        gatewayAmount != null &&
+        amountsMatch(gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+      if (!verified) {
+        const reason =
+          gatewayAmount == null
+            ? `Finatic reports paid but returned no amount for ${merchantOrderNo} — the amount was ` +
+              'never verified, so the correction is not applied and the order is left claimable.'
+            : `Finatic reports paid but for ${gatewayAmount}, not the order total ${expectedAmount} — ` +
+              'not applying, and not cancelling an order the gateway says was charged.'
+        console.error(`[terminal/verify-payment] order ${orderId}: ${reason}`)
+
+        const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: terminal.restaurantId,
+          action: 'payment.verification_uncertain',
+          entity_type: 'order',
+          entity_id: orderId,
+          metadata: {
+            reason,
+            // Both figures, so the disagreement can be settled from the audit row alone.
+            // finaticAmount null is the "never checked" case and must stay distinguishable.
+            finaticAmount: gatewayAmount,
+            expectedAmount,
+            amountVerified: false,
+            finaticStatus: result.status,
+            finaticTransactionId: result.transactionId,
+            businessOrderNo: merchantOrderNo,
+            terminalId: terminal.terminalId,
+            source: 'terminal_verify_payment',
+            outcome: 'left_pending_finatic_uncertain',
+          },
         })
+        if (uncertainAuditError) {
+          console.error(
+            '[terminal/verify-payment] payment.verification_uncertain audit failed:',
+            uncertainAuditError,
+          )
+        }
+
+        outcome = 'left_pending_finatic_uncertain'
       } else {
         const claim = await markOrderPaidConfirmed(supabase, {
           orderId,
@@ -135,10 +192,17 @@ export async function POST(
       }
     }
 
+    /**
+     * Still HTTP 200, deliberately. The query itself succeeded, and `applied: false` already
+     * meant "not applied" to every terminal build in the field — an older APK reading only
+     * `paid`/`applied` behaves exactly as it does today. `outcome` is additive: it names WHY
+     * nothing was applied, which is the ambiguity #190 is about.
+     */
     return NextResponse.json({
       ok: true,
       paid: result.paid,
       applied,
+      outcome,
       source: 'finatic',
       merchantOrderNo: result.merchantOrderNo,
       transactionId: result.transactionId,

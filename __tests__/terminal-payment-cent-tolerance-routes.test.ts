@@ -1,19 +1,22 @@
 /**
- * #180 at the ROUTE level — a one-cent difference must not cost the restaurant the order.
+ * #180 at the ROUTE level — a one-cent CLIENT difference must not cost the restaurant the order.
  *
  * __tests__/amounts-match-cent-tolerance.test.ts pins the helper. That is not enough on its
- * own: what matters is what the three terminal payment routes DO with the answer, and the
- * three do different things with it.
+ * own: what matters is what the payment routes DO with the answer.
  *
- *   payment/route.ts:79         400 AMOUNT_MISMATCH — the card is already charged by then
- *   settle/route.ts:224         400 AMOUNT_MISMATCH — same, for a whole tab
- *   verify-payment/route.ts:117 logs and SKIPS applying — Finatic has confirmed the charge
- *                               and the order is still left unpaid, behind a 200
+ *   payment/route.ts:79    400 AMOUNT_MISMATCH — the card is already charged by then
+ *   settle/route.ts:224    400 AMOUNT_MISMATCH — same, for a whole tab
  *
- * Each route is driven through its real exported handler over a real Request, mocked at the
- * same boundary as __tests__/terminal-cancel-payload-reaches-handler.test.ts (terminal-auth,
- * the supabase client, and the paid-claim helper), so the wiring is exercised rather than
- * re-implemented.
+ * SCOPE NARROWED BY #190. This file covered verify-payment/route.ts as a third case, asserting
+ * that a one-cent difference there was APPLIED. That is no longer the behaviour and the
+ * assertion was reversed, not deleted: verify-payment is a GATEWAY leg, where Finatic echoes
+ * back our own figure and a cent of daylight means the reference correlated to a different
+ * sale. It now takes exact agreement, and an absent amount is refused as unverified.
+ *
+ * That route's coverage moved WHOLE to __tests__/gateway-amount-exact-match.test.ts, which
+ * asserts strictly more about it (exact applies, one cent refused, null refused, audit row
+ * written) and holds it side by side with the two client legs below so the split cannot drift.
+ * What remains here is the client-tolerance half of that split.
  *
  * Every case is asserted in BOTH directions: one cent must pass, two cents must still fail.
  * Without the two-cent half, widening the tolerance to something absurd would satisfy every
@@ -254,38 +257,5 @@ describe('POST /api/terminal/tabs/[tabId]/settle — amount tolerance', () => {
   })
 })
 
-// ---------------------------------------------------------------- verify-payment route
-
-describe('POST /api/terminal/orders/[orderId]/verify-payment — amount tolerance', () => {
-  const call = async (finaticAmount: number) => {
-    queryFinaticOrderPaid.mockResolvedValueOnce({
-      paid: true,
-      merchantOrderNo: MERCHANT_ORDER_NO,
-      status: 'paid',
-      transactionId: 'TXN-1',
-      amount: finaticAmount,
-      raw: {},
-    })
-    const { POST } = await import('@/app/api/terminal/orders/[orderId]/verify-payment/route')
-    const res = await POST(jsonRequest('https://staging.test/api/terminal/orders/x/verify-payment', {}), {
-      params: Promise.resolve({ orderId: ORDER_ID }),
-    })
-    return { res, body: await res.json() }
-  }
-
-  it('applies the correction when Finatic is one cent off', async () => {
-    const { body } = await call(ONE_CENT_OVER)
-
-    // Finatic has confirmed the charge. Skipping here leaves a paid customer's order unpaid
-    // behind a 200 that says paid:true.
-    expect({ paid: body.paid, applied: body.applied }).toEqual({ paid: true, applied: true })
-    expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(1)
-  })
-
-  it('still refuses to apply when Finatic is two cents off', async () => {
-    const { body } = await call(TWO_CENTS_OVER)
-
-    expect({ paid: body.paid, applied: body.applied }).toEqual({ paid: true, applied: false })
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
-  })
-})
+// verify-payment/route.ts moved to __tests__/gateway-amount-exact-match.test.ts — see the
+// SCOPE NARROWED BY #190 note in the file header above.
