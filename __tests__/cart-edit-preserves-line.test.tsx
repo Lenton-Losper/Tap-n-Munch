@@ -348,6 +348,90 @@ describe('a menu price change while the line rests in the cart (#189)', () => {
   })
 })
 
+/**
+ * Issue #189, Q1 — RULED: an unchanged size keeps the modifier the line was added at.
+ *
+ * Preserving base_price alone did not deliver the ruling. This modal seeded selectedSize by
+ * PREFERRING the menu's current definition of that size over the line's own stored copy, so a
+ * customer editing only the quantity was still repriced whenever a size modifier had moved.
+ * The ruling is that a line in the cart is a quote, and that covers the size modifier exactly
+ * as it covers the base price.
+ *
+ * Scope, deliberately: only the SEEDED size is pinned here. What a NEWLY CHOSEN size or a
+ * re-ticked add-on should cost is #189 Q2/Q3 and is NOT ruled, so nothing below asserts it --
+ * a test here would pin behaviour no one has decided.
+ */
+describe('a size modifier change while the line rests in the cart (#189 Q1)', () => {
+  /** The same Cappuccino, after the restaurant put Large up from +N$15 to +N$20. */
+  const CAPPUCCINO_SIZE_REPRICED = {
+    ...CAPPUCCINO,
+    sizes: [
+      { name: 'Regular', price_modifier: 0 },
+      { name: 'Large', price_modifier: 20 },
+    ],
+  }
+
+  /** EXISTING_LINE was agreed at 20 base + 15 Large + 5 add-on = N$40 a cup. */
+  const AGREED_UNIT_PRICE = 40
+
+  function clickIncreaseQuantity() {
+    const plus = container.querySelector('[aria-label="Increase quantity"]')
+    if (!plus) throw new Error('quantity + control not rendered')
+    plus.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  /** The ruling's own worked example: quantity 3 -> 4 must cost 4 * 40, not 4 * 45. */
+  it('keeps the added-at modifier when the customer changes only the quantity', () => {
+    const result = addToCartFrom(CAPPUCCINO_SIZE_REPRICED, EXISTING_LINE, clickIncreaseQuantity)
+
+    expect(result.quantity).toBe(4)
+    expect(result.selected_size).toEqual({ name: 'Large', price_modifier: 15 })
+    expect(result.subtotal).toBe(4 * AGREED_UNIT_PRICE) // 160, not 180
+  })
+
+  it('keeps the added-at modifier when the edit is confirmed untouched', () => {
+    const result = addToCartFrom(CAPPUCCINO_SIZE_REPRICED, EXISTING_LINE)
+
+    expect(result.selected_size).toEqual({ name: 'Large', price_modifier: 15 })
+    expect(result.subtotal).toBe(120)
+  })
+
+  /**
+   * Both halves of the quote together -- the full Case A from the ruling packet. Before #189
+   * this line came back at 26 + 20 + 5 = 51 a cup; after the base-price commit alone, 45; the
+   * agreed price is 40.
+   */
+  it('holds when the base price AND the size modifier have both moved', () => {
+    const fullyRepriced = { ...CAPPUCCINO_SIZE_REPRICED, base_price: 26 }
+    const result = addToCartFrom(fullyRepriced, EXISTING_LINE, clickIncreaseQuantity)
+
+    expect(result.base_price).toBe(20)
+    expect(result.selected_size).toEqual({ name: 'Large', price_modifier: 15 })
+    expect(result.subtotal).toBe(4 * AGREED_UNIT_PRICE)
+  })
+
+  /**
+   * Two-sided control. Without this the suite would pass just as happily against a modal that
+   * had stopped reading item.sizes altogether -- which would break every fresh add. Regular is
+   * moved off zero so the default-size lookup cannot coincidentally return the old value.
+   */
+  it('a fresh add still takes the current menu modifiers', () => {
+    const result = addToCartFrom(
+      {
+        ...CAPPUCCINO,
+        sizes: [
+          { name: 'Regular', price_modifier: 3 },
+          { name: 'Large', price_modifier: 20 },
+        ],
+      },
+      null,
+    )
+
+    expect(result.selected_size).toEqual({ name: 'Regular', price_modifier: 3 })
+    expect(result.subtotal).toBe(23)
+  })
+})
+
 describe('an edit that collides with another line (#126 / #133)', () => {
   const lineA: CartItem = { ...EXISTING_LINE, quantity: 3, subtotal: 120 }
   const lineB: CartItem = {

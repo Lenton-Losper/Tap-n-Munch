@@ -44,11 +44,22 @@ export function ItemDetailModal({
   )
   const [selectedSize, setSelectedSize] = useState<MenuItemSize | null>(() => {
     if (editingLine) {
-      const existing = editingLine.selected_size
-      if (!existing) return null
-      // Prefer the menu's current definition of that size (its modifier may have changed);
-      // fall back to the line's own copy, which is all a variant line has.
-      return (item.has_sizes && item.sizes?.find((s: MenuItemSize) => s.name === existing.name)) || existing
+      /*
+       * AN UNCHANGED SIZE KEEPS THE MODIFIER THE LINE WAS ADDED AT (#189).
+       *
+       * This used to prefer the MENU's current definition of that size, deliberately, on the
+       * grounds that "its modifier may have changed". That decision is reversed: a line already
+       * in the cart is a quote, and that covers the size modifier exactly as it covers the base
+       * price. A customer who opened Edit to change a quantity did not consent to a repricing,
+       * and preferring the menu here reprices them by the whole modifier delta even though they
+       * never touched the size control. If the modifier has changed, that is the next order's
+       * price.
+       *
+       * Only the SEEDED value is preserved. Choosing a different size in the RadioGroup below
+       * still takes that size's current modifier from the menu -- that is a new choice rather
+       * than the agreed one, and how it should be priced is #189 Q2, which is not ruled.
+       */
+      return editingLine.selected_size ?? null
     }
     return item.has_sizes && item.sizes.length > 0
       ? item.sizes.find((s: MenuItemSize) => s.price_modifier === 0) || item.sizes[0]
