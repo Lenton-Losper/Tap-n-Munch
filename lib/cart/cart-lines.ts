@@ -31,6 +31,51 @@ export function sameCartLine(a: CartItem, b: CartItem): boolean {
   return lineIdentity(a) === lineIdentity(b)
 }
 
+/**
+ * Cap ONE line's own quantity at MAX_LINE_QUANTITY, repricing from its own unit price.
+ *
+ * Repricing is not optional: capping the quantity without it leaves the subtotal charging for
+ * units that are no longer on the line.
+ *
+ * Only ever downward -- anything at or under the cap is returned untouched, and `clamped` is
+ * false, so "did not need capping" and "was capped" stay distinguishable.
+ *
+ * This is the per-line cap and nothing else. Clamping a quantity SUMMED across lines is a
+ * different operation and is explicitly wrong (see the fold guard in applyCartLineEdit).
+ *
+ * WHY THE ADD PATH GOES THROUGH HERE TOO. Both of today's add callers happen to satisfy the
+ * cap on their own -- ItemDetailModal's + control stops at MAX_LINE_QUANTITY, browse's
+ * quick-add hardcodes 1 -- but those are the callers' invariants, not the cart's, and a caller
+ * added later would have to remember a rule nothing enforced. That is not a hypothetical: on
+ * `main`, CartProvider.addItem was given line merging (#133) as
+ * `quantity: existing.quantity + item.quantity` with no cap, so repeated quick-adds build a
+ * line the server refuses at submit -- in a tree that already contained this ruling for the
+ * edit path.
+ *
+ * NOTE FOR WHOEVER BRINGS THAT MERGE OVER: if addItem starts folding lines, the COMBINED
+ * quantity must refuse the fold, not clamp the sum -- see "THE CAP APPLIES PER LINE, NOT
+ * ACROSS MATCHING LINES" in applyCartLineEdit. This function caps one line and is not that
+ * guard.
+ */
+export function capCartLine(line: CartItem): { line: CartItem; clamped: boolean } {
+  const requested = Number(line.quantity) || 0
+  if (requested <= MAX_LINE_QUANTITY) {
+    return { line, clamped: false }
+  }
+
+  const unitPrice = requested > 0 ? Number(line.subtotal || 0) / requested : 0
+  const quantity = clampLineQuantity(requested)
+
+  return {
+    line: {
+      ...line,
+      quantity,
+      subtotal: Math.round(unitPrice * quantity * 100) / 100,
+    },
+    clamped: true,
+  }
+}
+
 export type CartLineEditResult = {
   items: CartItem[]
   /** True when the edit collided with an existing line and the two were folded into one. */
@@ -85,19 +130,12 @@ export function applyCartLineEdit(
    * arrive from it in practice. That is the modal's invariant, not this function's. Every edit
    * path is reconciled here, so this is where the cap is applied -- a shared function does not
    * trust its callers to have applied it, and a caller added later inherits the cap instead of
-   * having to remember it. Repriced with the line's own unit price, so capping the quantity
-   * cannot leave the subtotal charging for units that are no longer there.
+   * having to remember it.
    *
-   * Only ever downward. Anything at or under the cap is passed through untouched.
+   * The cap and its repricing are capCartLine above, shared with the add path so the two ways
+   * into the cart cannot come to disagree about what the maximum is.
    */
-  const lineWasCapped = requestedLineQuantity > MAX_LINE_QUANTITY
-  const applied: CartItem = lineWasCapped
-    ? {
-        ...edited,
-        quantity: clampLineQuantity(requestedLineQuantity),
-        subtotal: Math.round(unitPrice * clampLineQuantity(requestedLineQuantity) * 100) / 100,
-      }
-    : edited
+  const { line: applied, clamped: lineWasCapped } = capCartLine(edited)
 
   const next = [...items]
   next[index] = applied

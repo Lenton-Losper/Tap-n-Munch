@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { getCurrentSession } from '@/lib/session'
+import { capCartLine } from '@/lib/cart/cart-lines'
 
 export interface CartItem {
   menu_item_id: string
@@ -19,7 +20,8 @@ export interface CartItem {
 
 interface CartContextType {
   items: CartItem[]
-  addItem: (item: CartItem) => void
+  /** Adds a line, capped at MAX_LINE_QUANTITY. `clamped` reports whether it had to be. */
+  addItem: (item: CartItem) => { clamped: boolean }
   updateItem: (index: number, item: CartItem) => void
   /** Replace the whole line list -- for edits that change the shape of the cart, not one row. */
   replaceItems: (items: CartItem[]) => void
@@ -61,8 +63,25 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('cart_session_id', sessionId)
   }, [items])
 
-  const addItem = (item: CartItem) => {
-    setItems(prev => [...prev, item])
+  /**
+   * Adds a line, capped at MAX_LINE_QUANTITY.
+   *
+   * The server refuses an over-cap line at submit (app/api/orders/route.ts, via
+   * validateOrderQuantities), so a customer must not be able to build one here and be told
+   * about it only after they have finished choosing. capCartLine owns the cap and the
+   * repricing that has to go with it; see it for why the callers' own limits are not enough.
+   *
+   * The cap depends only on the incoming line, so it is applied before the state update and
+   * the append stays a functional update -- two adds in flight must not read the same `items`
+   * and lose one.
+   *
+   * Returns whether the line was capped, so a caller can tell the customer. Nothing surfaces
+   * it yet: no current caller can pass an over-cap quantity, so the copy would be unreachable.
+   */
+  const addItem = (item: CartItem): { clamped: boolean } => {
+    const { line, clamped } = capCartLine(item)
+    setItems(prev => [...prev, line])
+    return { clamped }
   }
 
   const updateItem = (index: number, item: CartItem) => {
