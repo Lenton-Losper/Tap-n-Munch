@@ -1,8 +1,11 @@
 import { supabase } from '@/lib/supabase/client'
 import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
 import { clearTabSession, readStoredTabId, readStoredTableNumber, readTabSessionId } from '@/lib/tab-storage'
+import { ACTIVE_TAB_STATUSES, isActiveTabStatus } from '@/lib/tab-status'
 
-export const ACTIVE_TAB_STATUSES = ['open', 'ready_to_pay'] as const
+// Defined in lib/tab-status.ts (no imports, so server code can use it) and re-exported here
+// so the existing `from '@/lib/tab-session'` import sites are unchanged.
+export { ACTIVE_TAB_STATUSES, isActiveTabStatus }
 
 export type TabRow = {
   id: string
@@ -16,11 +19,6 @@ export type TabRow = {
   payment_preference?: string | null
   ready_to_pay_at?: string | null
   pin_required?: boolean | null
-}
-
-export function isActiveTabStatus(status: string | null | undefined): boolean {
-  const s = String(status || '').toLowerCase()
-  return ACTIVE_TAB_STATUSES.includes(s as (typeof ACTIVE_TAB_STATUSES)[number])
 }
 
 /** Tab no longer accepts orders (staff closed table or settlement finished). */
@@ -87,9 +85,14 @@ export async function fetchActiveTabForTable(
   tableId: string | null,
   tableNumber: number
 ): Promise<TabRow | null> {
+  // #262: no `members`. Its only consumer is useSessionTokenGuard's evaluateTabRow, which
+  // reads `status` and `session_token` and never touches members -- and `members` under the
+  // anon key is every diner's session_id on every open tab. Do NOT add it back: PostgREST
+  // refuses the whole query when the select list names an ungranted column, so this select
+  // is what has to change before the grant can be narrowed.
   let query = supabase
     .from('tabs')
-    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, members, payment_preference, ready_to_pay_at, pin_required')
+    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, payment_preference, ready_to_pay_at, pin_required')
     .eq('restaurant_id', restaurantId)
     .in('status', [...ACTIVE_TAB_STATUSES])
 
