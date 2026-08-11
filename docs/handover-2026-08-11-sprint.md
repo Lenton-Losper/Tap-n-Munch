@@ -830,3 +830,91 @@ Open issues: **108**.
 Nine production deploys landed on main today, so that gap is wider than it has been all week. The
 question that matters: **would the absence of a fix on staging make a staging test lie about
 production?** A suite that passes because staging lacks a fix is worse than a failing one.
+
+---
+---
+
+# MORNING REPORT
+
+Written mid-sprint and updated as things land, so it survives an unannounced stop.
+
+**Production is `fdb999a` and was never touched. `origin/main` unchanged all sprint. Nothing deployed. No migration applied. No production write. #127 untouched.**
+
+Open issues **108**, up from 82 at sprint start. That number going UP is the result — almost nothing was broken tonight; a great deal was found.
+
+---
+
+## 1. READY TO TEST — what to click, and where
+
+Everything is on a local branch. **None is pushed**, so nothing can reach production until you say so.
+
+| Branch | Commit | What | How to check it |
+|---|---|---|---|
+| `sprint/stock-pay` | `1a1b05b` | **#219** — a stranded request no longer vanishes from the customer's order list | Hard to reach by hand (needs a stuck `accepting` row). Verified by 15 tests; the render half is read-only-verified. **Take this one, not `a61b5bc`** — see §4. |
+| `sprint/browse-states` | `706fcb6`, `909967e` | **#214** — browse no longer says "Menu coming soon!" while the menu is loading | **Scan a QR code on a real phone, on mobile data, cold cache, and watch the first screen.** That is the one check no test can make and it is the check that produced the issue. |
+| `sprint/variants` | `6896c88`, `ae7b970`, `fdab54a` | **#200** evidence + **#240** — pins the POS repricing control that had no test | Nothing to click. Test-only. |
+| `sprint/migration-check-lint` | `3d7ef8d` | **#212** — CI lint for inline CHECK on `ADD COLUMN IF NOT EXISTS` | Nothing to click. **Blocks a deploy if a new migration carries the pattern** — that is the intended teeth. |
+| `sprint/receipt` | `652bf2a`, `64b1638` | **#212 again** — a second, independent implementation | Pick ONE. See §4. |
+| `sprint/qr-state` | `ae68bad`, `44554ce`, `840f62f`, `a61b5bc` | read-only probes + the duplicate #219 | Probe scripts are inert. |
+
+**The only real click-test is #214 on a phone.** Everything else is proved by test or is evidence.
+
+---
+
+## 2. NEEDS A RULING
+
+Ordered by what it costs to leave alone.
+
+### Money, live, unruled
+
+- **#223 / #233 — a sixth and seventh gateway amount gate.** The stale-POS cron and the PayCloud webhook both mark orders paid with **no amount comparison at all**, and the webhook is the only **unauthenticated external** writer in the set. An order refused by #187's 400 is marked paid two minutes later by the cron and issued a receipt for the order total. **Rule these together with #187** — three sites answer the same question three different ways today, and fixing them piecemeal recreates the split #180 removed.
+- **#234 — staff reconcile marks paid without `paid_at`,** so the receipt sweep structurally cannot see those orders. The safest-looking fix (backfill the true payment date) is **impossible**: that timestamp is recorded nowhere. Options are fix-forward-only, or backfill to `now()` and have every receipt assert the customer paid today. Recommendation: fix forward, then measure the backlog, then decide about it separately.
+- **#237 — a receipt issued late shows the whole settle amount as its payment line.** Not the ordinary path (I over-filed that and it is corrected on the issue) — it fires on recovery and backfill paths, which is exactly the population #234 would enlarge.
+- **#165 — receipt VAT presentation.** The arithmetic is settled and correct. This is purely copy. The useful finding: **the HTML print layout already implements two of the four options**, so the decision is adopting a choice already made rather than inventing one. One question can eliminate options before you rule — whether a Namibian VAT invoice must show the ex-VAT line amount. Being checked now.
+
+### Auth and access, live, unruled
+
+- **#218 — `POST /api/tabs` has NO authentication of any kind**, and its 23505 branch hands over an existing tab's session with no PIN and no membership check. The 12-hour window is not a gate; it only decides whether the UI walks a customer in by accident. The token grants **adding charges to someone else's tab** and **flipping it to `ready_to_pay`**, which locks every legitimate member out mid-meal. **And the request writes to the victim's tab** — it re-arms a tab staff had deliberately killed (#235).
+- **#242 — `.or()` injection from an unauthenticated webhook body.** Measured 0 → 213 rows across 2 restaurants on staging. No forgery path was constructed and none is claimed; the residual assumption holding severity down is that Finatic rejects trailing junk, and that is untestable from here. **The one-line fix needs one external fact first:** what characters Finatic can put in `out_trade_no`, because sanitising with our own validator could fail closed on a legitimate webhook and never apply a real payment.
+- **#241 — `/api/terminals/activate` is unauthenticated with a self-asserted device identity.** Filed on shape, not as an exploit — it is single-use, 1-hour TTL, and redeeming burns the real device's code, so theft is noisy. Two things worth ruling regardless: the code uses `Math.random()`, and nothing in-repo rate-limits the endpoint.
+
+### Smaller, still yours
+
+- **#217** — the #146 prevention half. The refuse-vs-confirm question is **moot**: that path has no caller and has written zero rows all time. The sale path is where balances go negative.
+- **#211 / #215** — Q1–Q5 each, both with money-adjacent questions. #215's reaper is blocked on a schema addition, and the reaper would **introduce** a price divergence the stranding currently prevents.
+- **#224** — two recorded decisions say to do the opposite of what the issue asks. The counter-argument is written; the split is by failure tone.
+- **#210** — `declined_reason` is written by one line and read by nothing. Build the staff surface, or relabel it an internal note.
+
+---
+
+## 3. COULDN'T DO, AND WHY
+
+- **Every production measurement.** An agent was denied by the permission classifier and asked me to run its script instead. **I refused** — running a peer's denied command is permission laundering. So these stay unmeasured and are *not* guessed at: the `accepting` count, production PIN policy, stale-tab population, the #234 backlog size, how often the un-checked cron legs fire, and whether the five inline CHECK constraints actually exist (#245). Every one is a read-only query and the guarded scripts are committed and ready.
+- **The #218 staging reproduction.** I authorised it believing it was zero-write. It is not — it writes a session row and **re-arms the victim tab**, which is the defect itself. Withdrawn.
+- **End-to-end POS submission** and the webhook injection end-to-end. The first needs a staging write I did not authorise; the second **should not be done** — on staging the `__stagingFinaticStub` path is live, so an unsigned probe is one field away from mass-marking orders paid.
+- **#214 on a real phone.** jsdom has no paint and no network. The Exploiter reached the ordering half and reported the timing half as **unreachable**, not fixed.
+- **Finatic's tolerance of malformed references,** and its `out_trade_no` charset. Both need the vendor, not the repo.
+
+---
+
+## 4. TWO DUPLICATIONS — BOTH MY ERROR
+
+I assigned **#212** and **#219** to two agents each, from a stale picture of what was in flight.
+
+- **#212** — `sprint/migration-check-lint` `3d7ef8d` vs `sprint/receipt` `652bf2a`+`64b1638`. **Take one wholesale**, do not merge. They differ in language, wiring and parser strategy. Suggestion: take `3d7ef8d` (better defended — its baseline doubles as a self-test, because a regressed parser would otherwise report "0 violations" and exit 0) and port the other's DO-block case in as a fixture.
+- **#219** — `1a1b05b` vs `a61b5bc`. **Take `1a1b05b`**: it normalises at the convergence point rather than in one renderer, and the function it fixes had a docstring claiming behaviour it did not have.
+
+Not pure waste — each pair found something the other did not, and two independent parsers agreeing on the same five migration offenders is the strongest evidence either has. But it was waste I caused.
+
+---
+
+## 5. WHAT THE SPRINT ACTUALLY PRODUCED
+
+**Three premises disproven**, each of which would have become a fix for a problem that does not exist:
+- **#227** — I filed it. The POS leg IS repriced; the control is documented in writing. Closed.
+- **#200** — the items are orderable, and no QR line can carry an empty selection. The 11 empty lines are POS, a shape the QR cart cannot emit.
+- **#199** — not a deletion. Its own second sentence names its consumer, and its closing line is a decision to keep it.
+
+**Four of my briefs were wrong** and agents corrected each rather than implementing them — twice on the same #212 negative control, once on #214's unguarded effect (I named one; there are two, and the one I missed is the default path), once on #146's "only unguarded writer" (it has no caller and has never written a row).
+
+**The Exploiter role earned its place on its first serious run:** the agent that wrote #212's rule, proved it two-sided and shipped it then **defeated it** with a DO-block fixture — and four committed migrations already use that shape.
