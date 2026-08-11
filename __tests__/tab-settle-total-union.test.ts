@@ -31,6 +31,12 @@ const TAB_ID = '7c2f9a51-3f0e-4a6d-9a3e-1f5c2b8d4e77'
 const SETTLING_TOTAL = 40
 /** Still genuinely owed by someone else on the same tab. */
 const STILL_OWED_TOTAL = 25
+/**
+ * Two line totals whose float sum is NOT a whole number of cents: 0.1 + 0.2 = 0.30000000000000004.
+ * Used only by the rounding test, so the other tests keep their clean arithmetic.
+ */
+const FLOATY_A = 0.1
+const FLOATY_B = 0.2
 /** Cancelled: never served, never owed. `payment_status` is 'pending' -- it is the ORDER
  *  status that is cancelled, which is precisely why `.neq('payment_status','paid')` counted it. */
 const CANCELLED_TOTAL = 999
@@ -43,6 +49,8 @@ type Op = {
 
 let ops: Op[] = []
 let failOp: (op: Op) => { message: string; code: string } | null = () => null
+/** When set, the post-claim recalc returns two rows whose float sum is not a whole cent. */
+let floatyRows = false
 
 jest.mock('@/lib/terminal-auth', () => ({
   requireTerminalAuth: async () => ({
@@ -89,6 +97,16 @@ jest.mock('@/lib/supabase/server', () => ({
           }
           // Post-claim recalc: what is left on the tab. The settled order is now paid; one order
           // is genuinely still owed; one is CANCELLED and must not be counted.
+          if (floatyRows) {
+            return {
+              data: [
+                { total: SETTLING_TOTAL, payment_status: 'paid' },
+                { total: FLOATY_A, payment_status: 'pending' },
+                { total: FLOATY_B, payment_status: 'pending' },
+              ],
+              error: null,
+            }
+          }
           return {
             data: [
               { total: SETTLING_TOTAL, payment_status: 'paid' },
@@ -150,6 +168,7 @@ let errorLog: jest.SpyInstance
 beforeEach(() => {
   ops = []
   failOp = () => null
+  floatyRows = false
   errorLog = jest.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -176,7 +195,7 @@ async function settle() {
   return { res, body: await res.json() }
 }
 
-describe('settle — tab total recalculation holds BOTH halves of the merge', () => {
+describe('settle — tab total recalculation holds ALL THREE composed fixes', () => {
   it('HALF 1 (#104): a cancelled order is excluded from the recalculated tab total', async () => {
     const { res, body } = await settle()
 
@@ -209,5 +228,20 @@ describe('settle — tab total recalculation holds BOTH halves of the merge', ()
         String(c[0] ?? '').includes('[terminal/tabs/settle] tab total write failed'),
       ),
     ).toBe(true)
+  })
+
+  it('HALF 3 (#191): the stored total is rounded to whole cents, not a float artefact', async () => {
+    // 0.1 + 0.2 sums to 0.30000000000000004 in IEEE754. tabs.total is `numeric` with no scale,
+    // so without rounding that artefact is STORED and then served to the guest app and the
+    // terminal APK as the balance owed.
+    floatyRows = true
+
+    const { res, body } = await settle()
+
+    expect(res.status).toBe(200)
+    expect(body.new_tab_total).toBe(0.3)
+
+    const written = ops.find(isTabTotal)
+    expect(written?.payload?.total).toBe(0.3)
   })
 })
