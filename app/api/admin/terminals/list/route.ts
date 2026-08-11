@@ -18,7 +18,9 @@ export async function GET(request: Request) {
       .from('restaurant_terminals')
       .select('id, terminal_name, device_serial, model, status, activation_code, activation_code_expires_at')
       .eq('restaurant_id', restaurantId)
-      .in('status', ['active', 'inactive'])
+      // 'pending' is what generate-code writes for a terminal that has a code but has not
+      // activated yet (#193). Omitting it hid the row for the whole onboarding window.
+      .in('status', ['active', 'inactive', 'pending'])
       .order('created_at', { ascending: false })
 
     if (error) throw error
