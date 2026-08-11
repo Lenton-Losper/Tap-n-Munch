@@ -58,7 +58,23 @@ export async function GET(
       const { data: order, error } = await supabase
         .from('orders')
         .select(
-          'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paycloud_transaction_id, payment_trans_no, placed_at, paid_at, restaurants(name)',
+          // `payment_trans_no` was dropped from this list deliberately (#195).
+          //
+          // Its ONLY writer was lib/supabase/apply-tab-settlement.ts:36 and :45, and that module
+          // has had no caller since 2026-06-02 — which is why 5d611bf deletes it. So the column
+          // has had no effective writer for weeks, and every order placed since then carries a
+          // blank. Removing the module does not create that blank; it removes the last code that
+          // made the field look maintained.
+          //
+          // Nothing displayed it either: this route spread the whole row into the response, but
+          // app/admin/payments/page.tsx never read the field. It was selected, serialised and
+          // dropped.
+          //
+          // The three sibling markers all still have live writers on real payment paths and are
+          // kept: paycloud_transaction_id (app/api/payments/reconcile/route.ts:172),
+          // payment_voucher_no (lib/payments/mark-order-paid-confirmed.ts:68) and
+          // payment_reference (app/api/payments/receipt/route.ts:143).
+          'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paycloud_transaction_id, placed_at, paid_at, restaurants(name)',
         )
         .eq('id', id)
         .maybeSingle()
