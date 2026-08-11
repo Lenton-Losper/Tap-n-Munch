@@ -338,13 +338,31 @@ export async function POST(
 
     // Gateway-issued merchant order numbers exist only for card. Guarded so a client that
     // sends one alongside a cash settlement cannot stamp a Finatic reference onto it.
+    //
+    // Every write from here down runs AFTER the claim, so the money is taken and the orders are
+    // already paid. None of them may abort the request: a throw lands in the catch at the bottom
+    // of this route, which answers 401 Unauthorized -- telling staff a settlement that succeeded
+    // was an auth failure, and inviting a retry against orders that are already claimed. So they
+    // are logged and surfaced instead, the same contract lib/tabs/settle-tab-state.ts states for
+    // its own post-payment writes. What is NOT acceptable is what these three did before (#195):
+    // discard the result entirely, leaving no trace anywhere that the write did not land.
     if (businessOrderNo && !isCashSettlement) {
-      await supabase
+      const { error: stampError } = await supabase
         .from('orders')
         .update({ paycloud_merchant_order_no: businessOrderNo.slice(0, 32) })
         .in('id', claimedIds)
         .eq('restaurant_id', terminal.restaurantId)
         .is('paycloud_merchant_order_no', null)
+
+      if (stampError) {
+        // Reconciliation against Finatic is by this reference, so losing it costs traceability
+        // of a real charge -- not the charge itself.
+        console.error('[terminal/tabs/settle] merchant order number stamp failed', {
+          order_ids: claimedIds,
+          business_order_no: businessOrderNo.slice(0, 32),
+          error: stampError,
+        })
+      }
     }
 
     await safeIssueReceiptsForOrders(claimedIds, 'terminal/tabs/settle')
@@ -360,19 +378,36 @@ export async function POST(
 
     let newTotal: number | null = null
     if (!unpaidError) {
-      newTotal = (unpaidOrders ?? []).reduce(
+      const recalculated = (unpaidOrders ?? []).reduce(
         (sum, o) => sum + Number(o.total), 0
       )
-      await supabase
+      const { error: totalWriteError } = await supabase
         .from('tabs')
-        .update({ total: newTotal })
+        .update({ total: recalculated })
         .eq('id', tabId)
+
+      // A failed WRITE leaves the stored total exactly as stale as a failed read does, so it
+      // gets the same answer: the figure is withheld rather than reported as the tab's balance.
+      // Returning it would have the terminal show a number the database does not hold.
+      if (totalWriteError) {
+        console.error('[terminal/tabs/settle] tab total write failed', {
+          tabId,
+          attempted_total: recalculated,
+          error: totalWriteError,
+        })
+      } else {
+        newTotal = recalculated
+      }
     } else {
       console.error('[terminal/tabs/settle] tab total recalc failed', unpaidError)
     }
 
-    // Create payment record (server amount, not client)
-    await supabase.from('payments').insert({
+    // Create payment record (server amount, not client).
+    //
+    // This is the money record itself. If it fails the orders are paid, the tab is settled and
+    // receipts are out, with no row saying the restaurant was paid -- so the failure is recorded
+    // in three places that outlive the request: the log, the audit trail below, and the response.
+    const { error: paymentInsertError } = await supabase.from('payments').insert({
       restaurant_id: terminal.restaurantId,
       table_id: tab.table_id,
       tab_id: tabId,
@@ -384,6 +419,17 @@ export async function POST(
       payment_reference: paymentReference,
       completed_at: paidAt,
     })
+
+    if (paymentInsertError) {
+      console.error('[terminal/tabs/settle] payment record insert failed', {
+        tabId,
+        order_ids: claimedIds,
+        amount: expectedAmount,
+        method,
+        payment_reference: paymentReference,
+        error: paymentInsertError,
+      })
+    }
 
     // Audit log. Cash carries a real risk of being taken and not recorded, so the trail names
     // the staff member when one authorized it and says so explicitly when none did -- an
@@ -405,6 +451,9 @@ export async function POST(
         staff_user_id: attributedStaffUserId,
         actor_attribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
         authorization_token_id: authorizationTokenId || null,
+        // Whether a payments row exists for this settlement. The audit trail is the only durable
+        // record when it does not, so it must say so rather than imply a payment row by silence.
+        payment_record_written: !paymentInsertError,
         // Present only when cash was taken over a card attempt the timeout had declared dead.
         // How long those attempts had actually been hanging is the evidence for whether
         // CARD_IN_FLIGHT_TIMEOUT_SECONDS is set correctly -- it was chosen on reasoning, since
@@ -455,6 +504,10 @@ export async function POST(
       tab_total_stale: newTotal === null,
       can_close: canClose,
       staff_user_id: attributedStaffUserId,
+      // false means the money moved and the orders are paid but no payments row was created.
+      // The settlement still succeeded, so this is not an error status -- it is a reconciliation
+      // flag, and the only thing at the call site that can tell the difference.
+      payment_record_written: !paymentInsertError,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
