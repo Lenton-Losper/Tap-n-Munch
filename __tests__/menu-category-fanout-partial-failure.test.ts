@@ -14,6 +14,7 @@ import {
   loadAllMenuCategories,
   fetchCategoryMenu,
   categoryMenuUrl,
+  menuLoadNotice,
 } from '@/lib/menu/load-menu-categories'
 
 const RESTAURANT = 'riviera'
@@ -193,6 +194,67 @@ describe('loadAllMenuCategories — a failing category does not empty the menu',
 
     expect(load.merged).toEqual({})
     expect(load.failedCategoryNames).toEqual([])
+  })
+})
+
+describe('menuLoadNotice — what the customer is told', () => {
+  it('says nothing when nothing failed', () => {
+    expect(menuLoadNotice(null)).toBeNull()
+    expect(menuLoadNotice({ failedCategoryNames: [], requestedCount: 3 })).toBeNull()
+  })
+
+  it('reports a total failure without claiming the restaurant has no menu', () => {
+    const notice = menuLoadNotice({
+      failedCategoryNames: ['Food', 'Drinks'],
+      requestedCount: 2,
+    })
+
+    expect(notice?.tone).toBe('total')
+    expect(notice?.title).toMatch(/couldn.t load the menu/i)
+    expect(notice?.description).toMatch(/try again/i)
+    expect(notice?.retryLabel).toBe('Try again')
+    // Never assert anything about the restaurant's stock or the state of its menu.
+    expect(`${notice?.title} ${notice?.description}`).not.toMatch(/coming soon|no items|closed/i)
+  })
+
+  it('names the category when only one was asked for', () => {
+    const notice = menuLoadNotice({ failedCategoryNames: ['Drinks'], requestedCount: 1 })
+
+    expect(notice?.tone).toBe('total')
+    expect(notice?.title).toMatch(/couldn.t load Drinks/i)
+  })
+
+  it('names what is missing on a partial failure and says the rest is below', () => {
+    const notice = menuLoadNotice({
+      failedCategoryNames: ['Drinks', 'Desserts'],
+      requestedCount: 4,
+    })
+
+    expect(notice?.tone).toBe('partial')
+    expect(notice?.description).toContain('Drinks and Desserts')
+    expect(notice?.description).toMatch(/everything else is shown below/i)
+  })
+
+  it('lists three or more missing categories readably', () => {
+    const notice = menuLoadNotice({
+      failedCategoryNames: ['Drinks', 'Desserts', 'Sides'],
+      requestedCount: 5,
+    })
+
+    expect(notice?.description).toContain('Drinks, Desserts and Sides')
+  })
+
+  it('never mentions prices or payment — a failed fetch is not evidence about either', () => {
+    const notices = [
+      menuLoadNotice({ failedCategoryNames: ['Food'], requestedCount: 1 }),
+      menuLoadNotice({ failedCategoryNames: ['Food'], requestedCount: 3 }),
+    ]
+
+    for (const notice of notices) {
+      expect(`${notice?.title} ${notice?.description}`).not.toMatch(
+        /price|pay|charge|cost|N\$|refund/i
+      )
+    }
   })
 })
 

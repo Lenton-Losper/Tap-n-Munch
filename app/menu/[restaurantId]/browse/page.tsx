@@ -12,7 +12,7 @@ import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, ArrowLeft, Receipt, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone } from 'lucide-react'
+import { Search, ArrowLeft, Receipt, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -24,7 +24,12 @@ import { readStoredTabId } from '@/lib/tab-storage'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
-import { loadAllMenuCategories } from '@/lib/menu/load-menu-categories'
+import {
+  fetchCategoryMenu,
+  loadAllMenuCategories,
+  menuLoadNotice,
+  type MenuLoadFailure,
+} from '@/lib/menu/load-menu-categories'
 
 type ItemVariant = {
   size: string
@@ -206,6 +211,11 @@ export default function MenuBrowsePage() {
     Record<string, { subcategory: SubCategory; items: MenuItem[] }>
   >({})
   const [searchQuery, setSearchQuery] = useState('')
+  // Why the menu is empty, when it is empty. Without this a total outage and a restaurant with
+  // no items render identically, and the page then affirmatively tells the customer the wrong one.
+  const [allMenuLoadFailure, setAllMenuLoadFailure] = useState<MenuLoadFailure | null>(null)
+  const [categoryLoadFailure, setCategoryLoadFailure] = useState<MenuLoadFailure | null>(null)
+  const [menuReloadKey, setMenuReloadKey] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
   const [addingItemId, setAddingItemId] = useState<string | null>(null)
@@ -397,48 +407,57 @@ export default function MenuBrowsePage() {
     const loadMenuItems = async () => {
       if (!selectedMenuCategory || !restaurantId) {
         setGroupedItems({})
+        setCategoryLoadFailure(null)
         return
       }
-      
+
       try {
-        const response = await fetch(
-          `/api/menu/${encodeURIComponent(restaurantId)}/category/${encodeURIComponent(selectedMenuCategory.id)}`,
-          { cache: 'no-store' }
-        )
-        if (!response.ok) {
-          throw new Error(`Menu API returned ${response.status}`)
-        }
-        const grouped = (await response.json()) as Record<
-          string,
-          { subcategory: SubCategory; items: MenuItem[] }
-        >
+        const grouped = await fetchCategoryMenu(restaurantId, selectedMenuCategory.id)
         setGroupedItems(grouped)
+        setCategoryLoadFailure(null)
       } catch (err: any) {
         console.error('Failed to load menu items:', err)
         setGroupedItems({})
+        setCategoryLoadFailure({
+          failedCategoryNames: [selectedMenuCategory.name || ''],
+          requestedCount: 1,
+        })
       }
     }
-    
+
     loadMenuItems()
-  }, [restaurantId, selectedMenuCategory])
+  }, [restaurantId, selectedMenuCategory, menuReloadKey])
 
   useEffect(() => {
     const loadAllMenuItems = async () => {
       if (!restaurantId || menuCategories.length === 0) {
         setAllGroupedItems({})
+        setAllMenuLoadFailure(null)
         return
       }
 
       const load = await loadAllMenuCategories(restaurantId, menuCategories)
       setAllGroupedItems(load.merged)
+      setAllMenuLoadFailure(
+        load.failedCategoryNames.length > 0
+          ? {
+              failedCategoryNames: load.failedCategoryNames,
+              requestedCount: load.requestedCount,
+            }
+          : null
+      )
     }
 
     void loadAllMenuItems()
-  }, [restaurantId, menuCategories])
+  }, [restaurantId, menuCategories, menuReloadKey])
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
   const useAllMenu = normalizedSearchQuery.length > 0 || categoryFilter === 'all'
   const menuItemsSource = useAllMenu ? allGroupedItems : groupedItems
+  // The notice has to follow whichever source is on screen, or the customer gets told about a
+  // failure in a view they are not looking at.
+  const menuNotice = menuLoadNotice(useAllMenu ? allMenuLoadFailure : categoryLoadFailure)
+  const retryMenuLoad = () => setMenuReloadKey((key) => key + 1)
   const filteredGroupedEntries = Object.values(menuItemsSource)
     .map(({ subcategory, items }) => {
       if (!normalizedSearchQuery) return { subcategory, items }
@@ -933,6 +952,25 @@ export default function MenuBrowsePage() {
             ) : null}
           </div>
 
+          {menuNotice && menuNotice.tone === 'partial' && filteredGroupedEntries.length > 0 ? (
+            <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
+                <div>
+                  <p className="font-semibold text-amber-900">{menuNotice.title}</p>
+                  <p className="text-sm text-amber-800">{menuNotice.description}</p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={retryMenuLoad}
+                className="shrink-0 border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+              >
+                {menuNotice.retryLabel}
+              </Button>
+            </div>
+          ) : null}
+
           {filteredGroupedEntries.length > 0 ? (
             <div className="space-y-8">
               {filteredGroupedEntries.map(({ subcategory, items }) => (
@@ -947,7 +985,28 @@ export default function MenuBrowsePage() {
               ))}
             </div>
           ) : (
-            !loading && (
+            !loading &&
+            /*
+             * A failed load must never fall through to "Menu coming soon!" — that tells the
+             * customer the restaurant sells nothing, which is a claim we have no basis for and
+             * which is wrong exactly when the kitchen is busiest. The notice replaces it.
+             */
+            (menuNotice && !searchQuery ? (
+              <div className="rounded-2xl border border-gray-200 bg-white py-16 text-center">
+                <div className="mx-auto max-w-md px-6">
+                  <AlertTriangle
+                    className="mx-auto mb-5 h-10 w-10 text-amber-500"
+                    strokeWidth={1.5}
+                    aria-hidden
+                  />
+                  <h3 className="mb-2 text-xl font-bold text-black">{menuNotice.title}</h3>
+                  <p className="mb-6 text-gray-500">{menuNotice.description}</p>
+                  <Button onClick={retryMenuLoad} style={{ backgroundColor: ACCENT }}>
+                    {menuNotice.retryLabel}
+                  </Button>
+                </div>
+              </div>
+            ) : (
               <div className="rounded-2xl border border-gray-100 bg-white py-16 text-center">
                 <div className="mx-auto max-w-md px-6">
                   <div className="mb-6 text-6xl">🍽️</div>
@@ -966,7 +1025,7 @@ export default function MenuBrowsePage() {
                   ) : null}
                 </div>
               </div>
-            )
+            ))
           )}
         </section>
       </div>
