@@ -5,7 +5,6 @@ export const dynamic = 'force-dynamic'
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
-import { supabase } from '@/lib/supabase/client'
 import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, AlertCircle } from 'lucide-react'
@@ -150,9 +149,9 @@ function combinePaymentStatusFromRows(
   if (s.some((x) => x === 'cancelled' || x === 'failed')) return 'cancelled'
   // A QR submission sits in waiting_review until staff Accept, and nothing is charged before
   // then. Collapsing it into 'pending' told the customer their payment was outstanding and
-  // offered them a "Confirm Payment" button for a payment that is not theirs to confirm.
-  // Keep it distinct so the screen can say it is still being confirmed without claiming an
-  // outcome either way.
+  // offered them a "Confirm Payment" button for a payment that is not theirs to confirm. (That
+  // button no longer exists — #201 deleted it — but the distinction is still what lets the
+  // screen say the order is being confirmed without claiming an outcome either way.)
   if (s.some((x) => x === 'waiting_review')) return 'confirming'
   return 'pending'
 }
@@ -291,7 +290,8 @@ function OrderConfirmationContent() {
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
   const [dataSource, setDataSource] = useState<'guest-api' | null>(null)
-  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  // `paymentConfirmed` is NOT the deleted self-confirm flag (#201). Its two remaining writers
+  // both fire only on a real payment_status of 'paid' from the guest API, below.
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
   const isPaymentConfirmed =
     paymentConfirmed || String(receipt?.payment_status || '').toLowerCase() === 'paid'
@@ -482,8 +482,8 @@ function OrderConfirmationContent() {
     const ps = String(receipt.payment_status || '').toLowerCase()
     if (ps === 'paid' || isPaymentConfirmed) return 'success' as const
     if (ps === 'cancelled' || ps === 'failed') return 'cancelled' as const
-    // 'confirming' shares the pending screen but never the Confirm Payment button below --
-    // shouldShowConfirmPayment matches 'pending' exactly, so it stays hidden here.
+    // 'confirming' shares the pending screen. (It used to also be excluded from the Confirm
+    // Payment button, which #201 deleted.)
     return 'pending' as const
   }, [receipt, isPaymentConfirmed])
 
@@ -524,41 +524,24 @@ function OrderConfirmationContent() {
     return () => clearTimeout(timer)
   }, [screenStatus, resolvedRestaurantId, restaurantIdParam, tableForLinks, router])
 
-  const shouldShowConfirmPayment = receipt?.payment_status === 'pending' && !isPaymentConfirmed
-
-  const confirmPayment = async () => {
-    if (!receipt || !shouldShowConfirmPayment || confirmingPayment) return
-    const restaurantId = resolvedRestaurantId || restaurantIdParam
-    if (!restaurantId) return
-
-    const orderIds = String(receipt.id || '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter(Boolean)
-
-    if (orderIds.length === 0) return
-
-    setConfirmingPayment(true)
-    try {
-      await Promise.all(orderIds.map((orderId) =>
-        (supabase as any)
-          .from('orders')
-          .update({
-            payment_status: 'paid',
-            payment_confirmed_by: 'customer',
-            payment_confirmed_at: new Date().toISOString(),
-          } as any)
-          .eq('id', orderId)
-          .eq('restaurant_id', restaurantId)
-      ))
-      setPaymentConfirmed(true)
-      setReceipt((prev) => (prev ? { ...prev, payment_status: 'paid' } : prev))
-    } catch (error) {
-      console.error('[order-confirmation] payment confirm failed', error)
-    } finally {
-      setConfirmingPayment(false)
-    }
-  }
+  /**
+   * REMOVED (#201): the customer-facing "Confirm Payment" button and its handler.
+   *
+   * A customer telling us they paid is not evidence that they paid. The only honest version of
+   * this is one that asks the gateway, which is what the terminal callback and the Finatic
+   * webhook already do — so this was deleted rather than repaired.
+   *
+   * It could not have worked in any case. It wrote payment_confirmed_by / payment_confirmed_at,
+   * which exist in no migration, so PostgREST rejected the whole payload and payment_status
+   * 'paid' never landed either. It wrote through the browser ANON client, and
+   * 20260701160000_orders_rls_update_lockdown.sql grants anon UPDATE on (status,
+   * customer_ready_to_pay) only. And the try/catch could not see either failure, because a
+   * PostgREST error arrives in the RESOLVED object rather than as a throw — so the success path
+   * ran unconditionally.
+   *
+   * Deleting the handler removed this page's only use of the browser anon supabase client; that
+   * import is gone with it.
+   */
 
   if (loading) {
     return (
@@ -775,16 +758,12 @@ function OrderConfirmationContent() {
               </div>
             </div>
 
-            {shouldShowConfirmPayment ? (
-              <Button
-                type="button"
-                onClick={confirmPayment}
-                disabled={confirmingPayment}
-                className="w-full bg-green-600 text-white hover:bg-green-700 py-6 font-semibold font-sans text-base"
-              >
-                {confirmingPayment ? 'Confirming...' : 'Confirm Payment'}
-              </Button>
-            ) : isPaymentConfirmed ? (
+            {/*
+              The "Confirm Payment" button was the first branch of this ternary until #201.
+              It is gone; see the note by the deleted handler above. What remains is the paid
+              badge, which is driven by the order's REAL payment_status — see isPaymentConfirmed.
+            */}
+            {isPaymentConfirmed ? (
               <div className="w-full border border-green-200 bg-green-50 text-green-700 py-4 px-4 flex items-center justify-center gap-2 font-semibold">
                 <CheckCircle2 className="w-5 h-5" aria-hidden />
                 <span>Payment Confirmed</span>
