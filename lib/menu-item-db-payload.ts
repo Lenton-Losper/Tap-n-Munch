@@ -1,3 +1,56 @@
+/**
+ * Round a price to whole cents on the way IN.
+ *
+ * A sub-cent price is not a rounding nuisance, it is a receipt that does not add up. Unit prices
+ * are DISPLAYED rounded but lines are computed from the raw value
+ * (calculate-order-pricing.ts:116 vs :120), so a unit price of 10.005 at quantity 4 prints
+ *
+ *     4 x N$10.01 ......... N$40.02
+ *
+ * and the customer multiplies to 40.04. The total is internally consistent -- what is charged is
+ * the raw computation -- so nobody is over- or under-charged. What breaks is the one arithmetic
+ * check a customer can actually perform on a document we ask them to check.
+ *
+ * Fixed HERE rather than in the pricing code, deliberately (ruled). Rounding before multiplying
+ * would change what is CHARGED in order to fix a DISPLAY problem, which is the wrong trade;
+ * rounding only the printed line leaves the arithmetic inconsistent, just less visibly. Sub-cent
+ * prices should not exist, so they are stopped at the one place every write passes through.
+ *
+ * It is reachable, not theoretical: `menu_items.base_price` is `numeric` with NO scale
+ * (baseline.sql:387), sizes and addons are unconstrained jsonb, and
+ * app/api/admin/menu/items/route.ts spreads the raw request body straight into this builder. The
+ * form's `step="0.01"` is a browser hint, not a server constraint.
+ *
+ * Non-finite input is passed through unchanged rather than becoming NaN -- a caller already
+ * holding a bad number gets the same bad number, not a second, different failure mode. The
+ * column stays `numeric` with no scale for now; a CHECK or a scale is a migration and is queued
+ * on #213.
+ */
+function roundPrice(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return n
+  return Math.round(n * 100) / 100
+}
+
+/**
+ * Sizes and add-ons carry prices too, in unconstrained jsonb, and they feed the same line
+ * arithmetic as the base price. Rounding only `base_price` would leave the identical defect
+ * reachable through a size modifier or an add-on.
+ *
+ * Only the price field of each entry is touched; every other key is passed through untouched,
+ * and a non-array or a non-object entry is returned as-is rather than coerced -- this builder is
+ * not the place to decide what a malformed size list means.
+ */
+function roundPricedList(list: unknown, priceKey: string): unknown {
+  if (!Array.isArray(list)) return list
+  return list.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
+    const row = entry as Record<string, unknown>
+    if (row[priceKey] === undefined || row[priceKey] === null) return row
+    return { ...row, [priceKey]: roundPrice(row[priceKey]) }
+  })
+}
+
 /** Map UI / Firestore-shaped fields to Supabase menu_items columns only. */
 export function buildMenuItemDbPayload(data: Record<string, any>): Record<string, any> {
   const payload: Record<string, any> = {}
@@ -6,7 +59,7 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
   if (data.description !== undefined) {
     payload.description = data.description ? String(data.description) : null
   }
-  if (data.base_price !== undefined) payload.base_price = Number(data.base_price)
+  if (data.base_price !== undefined) payload.base_price = roundPrice(data.base_price)
   if (data.image_url !== undefined) {
     payload.image_url = data.image_url ? String(data.image_url) : null
   }
@@ -37,10 +90,10 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
   }
 
   if (data.has_sizes !== undefined) payload.has_sizes = Boolean(data.has_sizes)
-  if (data.sizes !== undefined) payload.sizes = data.sizes
+  if (data.sizes !== undefined) payload.sizes = roundPricedList(data.sizes, 'price_modifier')
 
   if (data.has_addons !== undefined) payload.has_addons = Boolean(data.has_addons)
-  if (data.addons !== undefined) payload.addons = data.addons
+  if (data.addons !== undefined) payload.addons = roundPricedList(data.addons, 'price')
 
   if (data.track_inventory !== undefined) {
     payload.track_inventory = Boolean(data.track_inventory)
