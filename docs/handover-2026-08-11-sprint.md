@@ -185,3 +185,83 @@ Open issues: 86.
   Fix nothing; payments are auto-H1.
 - `sp-browse` → **Exploiter on its own #214 fix**: reconstruct the ORIGINAL reproduction from the
   issue text, not from its own test, and report FIXED or UNABLE TO REACH. Then #212's lint rule.
+
+---
+
+## CHECKPOINT 3 — `sp-variants` and `sp-receipt` returned. Both corrected my brief.
+
+### #200 — premise disproven for the SECOND time. Answered definitively.
+
+The five items **ARE orderable**, and a QR customer **cannot** produce an empty selection. The
+brief's second half was false in the direction that matters.
+
+- All five required groups are DROPPED before render: they carry no `type`, and
+  `browse/page.tsx:280,282` returns null for any such group. What customers see is the LEGACY
+  `menu_items.variants` column via the fallback at `:315-325`, which synthesises its own required
+  Size group and preselects the first option.
+- The "empty selections" were never QR. Production splits cleanly:
+  `KEY-ABSENT / channel=pos: 11` · `KEY-PRESENT-BUT-EMPTY: 0` · `SELECTED / channel=table: 4`.
+  `cart/page.tsx:293,376` always send the key, so `{}` is the QR floor — absent is a shape QR
+  provably cannot emit.
+
+**The real finding, unasked for:** `required: true` **enforces nothing at any layer**.
+`browse/page.tsx:364-369` is the only enforcement anywhere and it iterates groups normalisation has
+already dropped; server-side `calculate-order-pricing.ts:162` never selects `variant_groups` at all.
+Latent only because the legacy column happens to be populated on all five.
+
+### #139 — ANSWERED. #104 does NOT cover it, and #104 said so itself.
+
+`254c4b0`'s own message: *"THAT RE-DERIVATION IS WHAT #139 EXISTS TO CONSOLIDATE."* A recorded
+decision by the person who shipped it.
+
+- Web half: substantially done, ONE residual (`get-report-data.ts:166-168`).
+- **Terminal half: entirely undone.** #104 touched ZERO terminal files. `TablesScreen.tsx:30` still
+  filters `payment_status !== 'paid'` while its sibling `TableDetailScreen` was fixed — same app.
+  A table card can render "NAD 0.00", "1 unpaid order" and "Ready to Close" at once.
+
+Left open, re-scope proposed. This is exactly why it was on the do-not-promote list.
+
+### #212 — IMPLEMENTED, and MY BRIEF WAS WRONG
+
+I told the agent `20260628110000` must NOT be flagged. It uses the correct idiom three times and
+then commits the slip anyway at `:24-26`. Following my brief would have produced **the false clean
+sheet #212 exists to prevent, from the negative side.** The agent implemented the correct rule and
+flagged the brief. Fourth wrong brief of mine in two days.
+
+Two parse bugs found in the agent's own tool, both returning a **plausible wrong answer** rather
+than an error: blanking quoted identifiers made it report a TYPE as the column name (and the column
+name is the baseline key), and a hand-built `file://${argv[1]}` guard never matches on Windows — so
+the first run **exited 0 having scanned nothing**. A green CI step checking nothing at all.
+
+Five pre-existing hits baselined rather than fixed; the ratchet also fails if a baseline entry stops
+matching.
+
+### #165 — the most complete packet of the sprint
+
+FOUR renderers, not two — HTML and PDF read the same snapshot and show it too, and the PDF labels
+the two bases as `Unit Price | Total`, which reads worse than the unlabelled thermal version.
+
+**The useful half:** `htmlRenderer`'s PRINT layout ALREADY implements options C and D — labelled
+"Subtotal (excl. VAT)" and suppressing the unit price at qty 1. Someone hit this before and chose.
+That reframes the decision from inventing a presentation to adopting one already made.
+
+Also: the inc-VAT line total is **already stored** on `orders.items` as `total`; `toLineItem` simply
+never reads it. So the snapshot seam is a one-field change and the renderer seam is four files plus
+a recomputation.
+
+### Filed from this checkpoint
+
+**#227** (POS orders stored at client totals, no server repricing) · **#228** (`required:true`
+enforces nothing) · **#229** (browse drops typeless variant groups; option sets disagree) ·
+**#230** (terminal TablesScreen counts cancelled as unpaid) · **#231** (terminal paymentIntegrity
+mirror) · **#232** (get-report-data). Plus the #139 answer as a comment.
+
+Open issues: 90.
+
+### Reassigned in the same turn
+
+- `sp-receipt` → **Exploiter on #212** (fresh fixture, never seen by its own suite), then the depth
+  read on #226.
+- `sp-variants` → **#227**, its own issue 3, which is bigger than it flagged: what a terminal token
+  grants, whether a modified client could submit an arbitrary total, and whether fdb999a's sub-cent
+  rounding applies on that leg. Investigate only.
