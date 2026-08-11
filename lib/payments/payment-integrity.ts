@@ -4,13 +4,16 @@
  */
 
 /**
- * Tolerance for every terminal payment amount comparison, in WHOLE CENTS.
+ * Tolerance for a CLIENT-submitted payment amount, in WHOLE CENTS. The default.
  *
  * One cent rather than zero, deliberately. The terminal and the server can legitimately land a
- * cent apart, and refusing that is not the safe default it looks like: at two of the three call
- * sites the card has ALREADY been charged by the time the refusal is issued, so a spurious
- * mismatch takes the customer's money and loses the order at the same time. Two cents is a real
- * disagreement and is still refused.
+ * cent apart, and refusing that is not the safe default it looks like: the card has ALREADY been
+ * charged by the time the refusal is issued, so a spurious mismatch takes the customer's money
+ * and loses the order at the same time. Two cents is a real disagreement and is still refused.
+ *
+ * This was the tolerance for EVERY comparison until #190. It is now the client-leg tolerance
+ * only — see GATEWAY_AMOUNT_TOLERANCE_CENTS for why a gateway echo gets no tolerance at all.
+ * The two client legs are payment/route.ts and tabs/[tabId]/settle/route.ts.
  */
 export const PAYMENT_AMOUNT_TOLERANCE_CENTS = 1
 
@@ -41,6 +44,37 @@ export function roundToCents(amount: number): number {
   if (!Number.isFinite(amount)) return amount
   return Math.round(amount * 100) / 100
 }
+
+/**
+ * Tolerance for a GATEWAY-echoed amount, in WHOLE CENTS. Zero — exact agreement or nothing.
+ *
+ * The default above is right for a CLIENT leg, where a terminal-submitted figure is validated
+ * against the server's total and the two can legitimately land a cent apart. It is wrong for a
+ * gateway leg, and #190 is the split.
+ *
+ * On a gateway leg Finatic is echoing back OUR OWN figure: push-to-terminal sends
+ * Number(order.total) as order_amount, and the verification compares against Number(order.total)
+ * again. There is no device arithmetic, no rounding step, and no second source of truth anywhere
+ * in that round trip — so nothing can produce a legitimate one-cent difference. A cent of
+ * daylight is not a rounding artefact; it means the reference correlated to a DIFFERENT SALE,
+ * which is the one outcome that must never be written through (it would mark this order paid on
+ * somebody else's money, and the row would look entirely ordinary afterwards).
+ *
+ * The three gateway legs:
+ *   app/api/terminal/orders/[orderId]/verify-payment/route.ts
+ *   lib/payments/handle-terminal-payment-failed.ts
+ *   app/api/payments/reconcile/route.ts   (#197 — never called amountsMatch at all)
+ *
+ * ABSENT is not AGREEING. Every one of those sites must also refuse when the gateway response
+ * carries no amount. A tolerance cannot express that, so it is enforced at each site with an
+ * explicit null check: if the gateway did not give us an amount, we did not verify the amount,
+ * and applying the payment while recording "never checked" is the same unguarded write #180
+ * closed.
+ *
+ * Named rather than passed as a bare `0` so the split is greppable and a site cannot drift onto
+ * the wrong tolerance silently.
+ */
+export const GATEWAY_AMOUNT_TOLERANCE_CENTS = 0
 
 /**
  * True when two money values are the same payment, compared as INTEGER CENTS.

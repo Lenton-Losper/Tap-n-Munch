@@ -22,7 +22,26 @@
  * are all live possibilities — which is exactly what that outcome already models. Both callers
  * already handle it (payment/route.ts:202), so no route or type change is needed.
  *
- * One cent must still correct, or the guard reintroduces #180 on this path.
+ * WHAT #190 CHANGED HERE, and why two assertions in this file were REVERSED rather than kept:
+ *
+ * This file asserted that one cent must still correct ("or the guard reintroduces #180 on this
+ * path") and that an omitted amount corrects using the order total ("a missing figure is not a
+ * disagreeing figure"). Both were wrong about this particular site, and #190 ruled them out:
+ *
+ *   ONE CENT. #180's tolerance is right for a CLIENT leg — a device-submitted figure validated
+ *   against the server's total, where the two can genuinely land a cent apart. This is not that.
+ *   Finatic echoes back OUR OWN figure: push-to-terminal sends Number(order.total) as
+ *   order_amount and this compares against orderTotal. No arithmetic happens in between, so a
+ *   cent cannot be a rounding artefact — it means the reference correlated to a different sale,
+ *   the one case that must never be written through. Exact agreement, zero cents.
+ *
+ *   OMITTED AMOUNT. If the gateway did not give us an amount, we did not verify the amount.
+ *   Applying the payment while recording "never checked" is the same shape as the unguarded
+ *   write this guard exists to close, and the record could not afterwards tell the two apart.
+ *
+ * The one-cent case is therefore now the two-cent case's twin, and the null case refuses.
+ * The #180 client tolerance is still pinned, on the sites it belongs to, by
+ * __tests__/terminal-payment-cent-tolerance-routes.test.ts.
  */
 // `@/payments/paycloud` is untransformed ESM and is only reachable via the real Finatic path,
 // which every test here injects around.
@@ -115,22 +134,39 @@ beforeEach(() => {
 })
 
 describe('handleTerminalPaymentFailed — Finatic amount guard on the correction path', () => {
-  it('corrects to paid when Finatic is one cent off', async () => {
+  it('corrects to paid when Finatic echoes the order total exactly', async () => {
     const supabase = makeSupabase()
-    const result = await run(78.36, supabase)
+    const result = await run(ORDER_TOTAL, supabase)
 
     expect(result.outcome).toBe('corrected_to_paid')
     expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(1)
+    // The figure written is the gateway's own, now that it is known to agree exactly.
+    const params = (markOrderPaidConfirmed.mock.calls[0] as unknown[])[1] as Row
+    expect(params.amount).toBe(ORDER_TOTAL)
   })
 
-  it('corrects to paid when Finatic omits the amount, using the order total', async () => {
-    // Unchanged behaviour: a missing figure is not a disagreeing figure.
+  it('leaves the order pending when Finatic is one cent off (#190 — reversed)', async () => {
+    // Was asserted as 'corrected_to_paid' before #190. See the header.
+    const supabase = makeSupabase()
+    const result = await run(78.36, supabase)
+
+    expect(result.outcome).toBe('left_pending_finatic_uncertain')
+    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(supabase.updates).toHaveLength(0)
+  })
+
+  it('leaves the order pending when Finatic omits the amount (#190 — reversed)', async () => {
+    // Was asserted as 'corrected_to_paid' using the order total before #190. An absent amount
+    // is unverified, not agreed, so nothing is written and nothing is cancelled.
     const supabase = makeSupabase()
     const result = await run(null, supabase)
 
-    expect(result.outcome).toBe('corrected_to_paid')
-    const params = (markOrderPaidConfirmed.mock.calls[0] as unknown[])[1] as Row
-    expect(params.amount).toBe(ORDER_TOTAL)
+    expect(result.outcome).toBe('left_pending_finatic_uncertain')
+    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(supabase.updates).toHaveLength(0)
+
+    const audit = supabase.audits.find((a) => a.action === 'payment.verification_uncertain')
+    expect((audit?.metadata as Row)?.finaticAmount).toBeNull()
   })
 
   it('leaves the order pending — not cancelled — when Finatic is two cents off', async () => {
