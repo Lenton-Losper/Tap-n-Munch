@@ -701,3 +701,68 @@ Production `fdb999a`, untouched. `origin/main` unchanged all sprint. Open issues
 Branches carrying work, none pushed: `sprint/browse-states` (#214 + exploiter),
 `sprint/migration-check-lint` (#212), `sprint/receipt` (#212 + exploiter), `sprint/variants`
 (#200 + #240), `sprint/qr-state` (#219 + probes), `sprint/stock-pay` (empty — audit only).
+
+---
+
+## CHECKPOINT 10 — #224: two recorded decisions say to do the opposite
+
+### The packet wrote the counter-argument instead of the change. Correctly.
+
+Two deliberate, reasoned comments in the code point the other way:
+
+```
+lib/menu/menu-body-state.ts   "While searching, a stale notice must not displace the
+                               'no results' wording."   if (notice && !searchQuery) return 'failed'
+browse/page.tsx:471-475        "Marking completion rather than success keeps the existing
+                               search-with-no-results wording reachable instead of replacing
+                               it with a spinner for a load that is not running."
+```
+
+**The reframe that dissolves most of it:** not *"should the notice beat the search wording"* but
+*"does the already-agreed rule that we never assert what the restaurant sells survive a search box"*.
+
+- tone **partial** — some categories loaded, the customer searched them, nothing matched.
+  "No items found" is TRUE of what we have. **The recorded decision is right.**
+- tone **total** — nothing loaded, so there is no corpus that was searched. The wording is not
+  weaker than the notice, it is FALSE — and the word "stale" in the author's own rationale cannot
+  apply to a notice that is the only fact available. **The decision does not reach this case.**
+
+The author's reasoning was held to its own terms rather than to the reviewer's. `searchQuery` is a
+parameter of `menuBodyState` with **zero test coverage**, so the decision is pinned by a comment and
+nothing else.
+
+### Two findings nobody had written down
+
+- **#246, live on main:** the partial-failure banner is gated on `filteredGroupedEntries.length > 0`,
+  so it vanishes exactly when the customer most needs it — searching for something that lives in the
+  category that FAILED. They are told it does not exist, with no retry.
+- **#247, branch blocker:** all-menu marks COMPLETION, category marks SUCCESS-only, so the same
+  situation yields two different wrong screens — and the category path is a **spinner that never
+  resolves**. Would have shipped inside #214.
+
+**And "no retry affordance" is worse than filed:** `main:1023` suppresses even the "ask staff"
+line when a search is active. Total outage + search = a false claim and **zero affordances**.
+
+### My "fourth state" hypothesis was half wrong
+
+`menuBodyState` already HAS four states. #224 needs three changes at three seams and only one is in
+that function. Briefing it my way would have fixed (i) and silently left (ii) — live on main — and
+(iii). The correction is worth more than the recommendations.
+
+### `menuBodyState` exists on ONE local branch and NO remote
+
+Checked across all four refs. The contract's "work can exist on no remote at all" case: anyone
+briefed to edit that file from a main-cut branch would find no such file.
+
+### Filed
+
+**#246** (partial banner hidden by search) · **#247** (branch-only permanent spinner).
+Open issues: **106**.
+
+### Reassigned in the same turn
+
+`sp-receipt` → **#165 Q4** — the Namibian VAT-invoice question, the one that can ELIMINATE an option
+rather than add one. If the repo says nothing, say so plainly; that is the answer and it tells the
+human they need an outside source. Then **deepen coverage on `issueReceipt.ts`** — money-facing,
+mocked-only, and the thing #226/#234/#237 all turn on. Write the assertion that would have caught
+#237.
