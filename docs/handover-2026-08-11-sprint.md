@@ -1128,3 +1128,73 @@ arguably no new string.** Also the branch fires for **cash and card only** — `
 
 59 refs are ahead of main; 33 have tips dated 2026-07-30 or earlier. Ten dated 2026-08-04+ are the
 ones to audit next. **Deprioritised by age — disclosed as a judgement call, not hidden.**
+
+---
+
+## CHECKPOINT 15 — main→staging drift. A wrong explanation of mine, corrected and verified.
+
+### CORRECTION: the #122 "staging has an auth fix main lacks" story is WRONG. I propagated it.
+
+I verified before recording. `guestCanAccessOrder` is **byte-identical at both refs** — same content
+hash `18ce303910cccb41059c23a3570a135c6342f9dd`. The diff between the two `validation.ts` files
+begins *after* that function.
+
+- **Code: main is AHEAD.** `isWellFormedPaymentRef` + fail-closed `paymentRefOrFilter`. Staging
+  returns bare `string`, no validation.
+- **Test: main is BEHIND.** Its four cases call `guestCanAccessOrder` with `{}` — no `restaurantId`
+  — asserting the contract that existed before `f4f9111` made restaurant binding mandatory.
+
+So the 4-test delta is **a stale test on main, not a missing code fix**, and my version inverted
+which branch is behind on a security-relevant file. The agent had it wrong too, corrected itself,
+then flagged it again when my re-send showed the wrong version still circulating. Filed as **#257**:
+four standing reds on a multi-tenant isolation function are exactly the noise a real regression hides
+in — and every agent is told to ignore them.
+
+### THE ANSWER TO "would a staging test lie about production" — worse than the question assumed
+
+All eight fix-suites checked. **Every one is main-only:**
+
+```
+payment-ref-filter-injection · payment-ref-cross-tenant-union · gateway-amount-exact-match
+reconcile-gateway-amount-exact-match · settle-stores-rounded-amount · stock-negative-balances
+stock-negative-balance-report · guest-orders-declined-visibility     all: staging = ABSENT
+```
+
+**No staging test lies, because none exists.** Staging is green on these paths **by omission, not by
+passing** — and that is worse: a red test gets investigated, an absent one is indistinguishable from
+coverage.
+
+### The three headline gaps — filed
+
+- **#254** — the `?ref=` injection is **still open on staging**. It was *reproduced on staging* on
+  2026-08-08 per the fixing commit, and fixed on main only. Compounds #242: two unauthenticated
+  injection points on the reproduction environment.
+- **#255** — **all** of #146's detection is main-only, and the two impossible balances (−8617, −154)
+  are **on staging**. The environment holding the only known bad data is the one with no detector.
+- **#256** — staging sits **between #180 and #190**: integer-cent `amountsMatch` but no gateway
+  split, so gateway echoes get the client tolerance, an absent amount is not refused, and reconcile
+  still compares raw floats at 2 cents. **An intermediate state that exists on no other branch and
+  was never ruled on.**
+
+### Method, again: `git cherry` OVER-reports too
+
+87 by SHA → 39 by `git cherry` → **21 genuine / 7 patch-id false positives / 11 test-or-script-only**.
+Proven not assumed: `ce02bf8` shows as absent while its file is **byte-identical on both refs** — the
+file diverged elsewhere, so the patch-id differs while the fix is present.
+
+Combined with the other direction (268 → 12, four already live), **neither reachability nor patch-id
+alone is trustworthy here. Only reading the file at the ref is.**
+
+### A promotion-order dependency worth having before anyone picks
+
+**`1a1b05b` (#219) depends on `63a09a6` (declined visibility), which is not on staging.** Both touch
+`lib/guest-orders/queries.ts`; `includeDeclined` is 0 at `c2c5d84`. Cherry-picking #219 alone will
+conflict or land incoherently.
+
+### And one gap correctly DE-escalated
+
+#201's self-confirm button is still on staging — but revision 2 records it as **unsatisfiable**, so
+it is dead code there, not a live defect. Listing it without that caveat would have overstated the
+risk. The agent said so rather than padding the count.
+
+Open issues: **116**.
