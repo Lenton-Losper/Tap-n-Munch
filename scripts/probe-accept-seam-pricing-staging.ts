@@ -88,6 +88,13 @@ const REVIEWED_QUANTITY = 3
 /** What the catalog is moved to between review and accept. */
 const MOVED_UNIT_PRICE = 999
 
+const SIZE_NAME = 'Large'
+const SIZE_MODIFIER = 10
+const ADDON_NAME = 'Extra Shot'
+const ADDON_PRICE = 7
+/** A modifier name that exists only in the client payload. It must never affect the price. */
+const UNMATCHED_ADDON_NAME = 'Free Unicorn'
+
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`ASSERTION FAILED: ${msg}`)
 }
@@ -154,8 +161,12 @@ async function main() {
         name: `${tag} probe item`,
         base_price: QUOTED_UNIT_PRICE,
         status: 'available',
+        // Modifiers the probe owns, so scenario 8 can price them without touching a shared
+        // fixture item. Scenarios 1-7 never request a size or addon, so they see base_price.
+        sizes: [{ name: SIZE_NAME, price_modifier: SIZE_MODIFIER }],
+        addons: [{ name: ADDON_NAME, price: ADDON_PRICE }],
       })
-      .select('id, base_price, tax_rate_id')
+      .select('id, base_price, tax_rate_id, sizes, addons')
       .single()
     assert(!menuErr && menuItem?.id, `menu_items insert failed: ${menuErr?.message}`)
     menuItemId = menuItem.id
@@ -921,6 +932,158 @@ async function main() {
       `concurrent Accept created ${(orders7 || []).length} orders rows, expected exactly 1`,
     )
 
+    // =====================================================================================
+    // SCENARIO 8 — size and add-on modifiers through the whole seam, plus the anti-tampering
+    // rule that only modifier names FOUND IN THE CATALOG may contribute to the price
+    // (calculate-order-pricing.ts:98-113). Every previous scenario prices a bare base_price,
+    // so none of this modifier arithmetic was covered end to end.
+    // =====================================================================================
+    log('SCENARIO 8: size + add-on modifiers, and an add-on that exists only in the payload')
+    await admin.from('menu_items').update({ base_price: QUOTED_UNIT_PRICE }).eq('id', menuItemId)
+
+    const sessionId8 = `sess_${tag}_8`
+    const quote8Res = await ordersPOST(
+      new Request('https://probe.local/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          restaurantId: RESTAURANT_ID,
+          tableNumber: TABLE_NUMBER,
+          channel: 'table',
+          sessionId: sessionId8,
+          customerName: 'Accept Seam Probe 8',
+          paymentMethod: 'card',
+          items: [
+            {
+              menuItemId,
+              name: `${tag} probe item`,
+              quantity: 2,
+              size: SIZE_NAME,
+              addons: [ADDON_NAME, UNMATCHED_ADDON_NAME],
+            },
+          ],
+        }),
+      }),
+    )
+    const quote8Body = await readJson(quote8Res)
+    assert(quote8Res.status === 200, `quote 8 failed: ${JSON.stringify(quote8Body)}`)
+    const requestId8 = String(quote8Body.requestId)
+    requestIds.push(requestId8)
+
+    const { data: quoted8 } = await admin
+      .from('order_requests')
+      .select('items, subtotal, tax, total')
+      .eq('id', requestId8)
+      .single()
+    log('order_request 8 as quoted', quoted8)
+
+    // base + matched size + matched addon; the payload-only addon contributes nothing.
+    const expectedUnit8 = QUOTED_UNIT_PRICE + SIZE_MODIFIER + ADDON_PRICE
+    assert(
+      sameMoney(quoted8.items[0].unitPrice, expectedUnit8),
+      `size/addon unit price must be ${expectedUnit8}, got ${quoted8.items[0].unitPrice}`,
+    )
+    assert(
+      sameMoney(quoted8.total, expectedUnit8 * 2),
+      `size/addon total must be ${expectedUnit8 * 2}, got ${quoted8.total}`,
+    )
+
+    // Staff review drops the add-on: the price must fall by exactly the add-on's catalog price.
+    const review8Res = await reviewPATCH(
+      new Request(`https://probe.local/api/order-requests/${requestId8}/review`, {
+        method: 'PATCH',
+        headers: staffHeaders,
+        body: JSON.stringify({
+          items: [
+            {
+              menuItemId,
+              name: `${tag} probe item`,
+              quantity: 2,
+              size: SIZE_NAME,
+              addons: [UNMATCHED_ADDON_NAME],
+            },
+          ],
+        }),
+      }),
+      { params: Promise.resolve({ requestId: requestId8 }) },
+    )
+    const review8Body = await readJson(review8Res)
+    assert(review8Res.status === 200, `review 8 failed: ${JSON.stringify(review8Body)}`)
+
+    const { data: reviewed8 } = await admin
+      .from('order_requests')
+      .select('subtotal_reviewed, tax_reviewed, total_reviewed, items_reviewed')
+      .eq('id', requestId8)
+      .single()
+    const expectedUnit8Reviewed = QUOTED_UNIT_PRICE + SIZE_MODIFIER
+    log('order_request 8 after review', {
+      total_reviewed: reviewed8.total_reviewed,
+      unitPrice: reviewed8.items_reviewed[0].unitPrice,
+    })
+    assert(
+      sameMoney(reviewed8.items_reviewed[0].unitPrice, expectedUnit8Reviewed),
+      `reviewed unit price must be ${expectedUnit8Reviewed}, got ${reviewed8.items_reviewed[0].unitPrice}`,
+    )
+
+    // Move BOTH the base price and the modifier prices, then Accept.
+    await admin
+      .from('menu_items')
+      .update({
+        base_price: MOVED_UNIT_PRICE,
+        sizes: [{ name: SIZE_NAME, price_modifier: 500 }],
+        addons: [{ name: ADDON_NAME, price: 500 }],
+      })
+      .eq('id', menuItemId)
+
+    const repriced8 = await calculateOrderPricing(admin, RESTAURANT_ID, [
+      { menuItemId, quantity: 2, size: SIZE_NAME },
+    ])
+    assert(
+      !sameMoney(repriced8.total, reviewed8.total_reviewed),
+      'scenario 8 counterfactual is not distinguishable',
+    )
+
+    const accept8Res = await acceptPOST(
+      new Request(`https://probe.local/api/order-requests/${requestId8}/accept`, {
+        method: 'POST',
+        headers: staffHeaders,
+        body: '{}',
+      }),
+      { params: Promise.resolve({ requestId: requestId8 }) },
+    )
+    const accept8Body = await readJson(accept8Res)
+    log('accept with modifiers', { status: accept8Res.status, body: accept8Body })
+    assert(accept8Res.status === 200, `accept 8 failed: ${JSON.stringify(accept8Body)}`)
+    orderIds.push(String(accept8Body.orderId))
+
+    const { data: order8 } = await admin
+      .from('orders')
+      .select('subtotal, tax, total, items')
+      .eq('id', String(accept8Body.orderId))
+      .single()
+    log('PERSISTED orders row (scenario 8)', {
+      subtotal: order8.subtotal,
+      tax: order8.tax,
+      total: order8.total,
+      unitPrice: order8.items[0].unitPrice,
+    })
+    assert(
+      sameMoney(order8.total, reviewed8.total_reviewed),
+      `modifier accept drifted: reviewed ${reviewed8.total_reviewed}, recorded ${order8.total}`,
+    )
+    assert(
+      !sameMoney(order8.total, repriced8.total),
+      `modifier accept recorded the accept-time re-price (${repriced8.total})`,
+    )
+    assert(
+      sameMoney(order8.items[0].unitPrice, expectedUnit8Reviewed),
+      `recorded unit price must be the reviewed ${expectedUnit8Reviewed}, got ${order8.items[0].unitPrice}`,
+    )
+    assert(
+      order8.items[0].size === SIZE_NAME,
+      'the chosen size must survive onto the persisted line item',
+    )
+
     console.log('PROBE_ACCEPT_SEAM_PRICING_OK')
   } finally {
     log('cleanup')
@@ -929,7 +1092,11 @@ async function main() {
     if (menuItemId) {
       await admin
         .from('menu_items')
-        .update({ base_price: QUOTED_UNIT_PRICE })
+        .update({
+          base_price: QUOTED_UNIT_PRICE,
+          sizes: [{ name: SIZE_NAME, price_modifier: SIZE_MODIFIER }],
+          addons: [{ name: ADDON_NAME, price: ADDON_PRICE }],
+        })
         .eq('id', menuItemId)
     }
     // order_requests.accepted_order_id FKs orders(id), so requests go first.
