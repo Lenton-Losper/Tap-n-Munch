@@ -1636,3 +1636,56 @@ and `:86-93` **skips the PIN check entirely** when `alreadyMember`, then issues 
 - **Q3.** The PIN bypass is live **now**. Interim containment (require the PIN even for `alreadyMember`), or ship the real fix? Recommended **B, ship the real fix** — with the caveat that it leaves a working bypass open for the duration, and if that is more than a day, contain first.
 
 **Nothing written. No branch, no commit, no migration, nothing applied to staging or production, no Supabase command run.**
+
+---
+
+## #262 — SECOND, INDEPENDENT ENUMERATION. Converges, and adds one finding that changes the blast radius.
+
+Two agents enumerated the anon readers of `tabs.members` separately, neither seeing the other's output. **Both found the SAME four query sites** on the browser anon client:
+
+    contexts/tab-context.tsx:126      loadTab
+    app/menu/[restaurantId]/v2/page.tsx:428   open-tab lookup
+    lib/tab-session.ts:71-72          fetchTabById
+    lib/tab-session.ts:91-92          fetchActiveTabForTable
+
+Independent convergence on a security-critical enumeration is the strongest evidence this sprint has produced, and it is the third time the pattern has paid.
+
+They differ only in surface COUNT — six vs eight — because the second also counts `useTabSessionEndedRedirect` and enumerates the shared-library call sites separately. Not a disagreement about what breaks.
+
+### The hypothesis that mattered — CONFIRMED
+
+**`lib/tab-session.ts` names `members` INSIDE the library, and five of its six call sites never mention the word.** A grep for `members` scoped to pages finds `receipt` and `v2` and **misses `browse`, `tab`, `useTabSessionEndedRedirect` and `useSessionTokenGuard`** — half the surfaces, including the QR browse page.
+
+**Enumerating by client-construction site rather than by the symbol is what finds them.** A symbol grep would have under-reported the blast radius by half.
+
+The other hypothesis — an anon `select('*')` on `tabs` already failing — is a **clean negative**. All 28 `.from('tabs')` sites carry explicit column lists. Checked rather than inferred from the absence of bug reports.
+
+### THE NEW FINDING — the blast radius is ENVIRONMENT-CONDITIONAL
+
+`lib/supabase/server.ts:10`, verified at `origin/main`:
+
+    const key = serviceRoleKey || anonKey
+
+**`createServerSupabaseClient` falls back to the anon key.** Every one of the ~20 `app/api/**` routes treated as service-role is service-role **only while `SUPABASE_SERVICE_ROLE_KEY` is set in that environment**. If it is ever unset, renamed, or missing from a Worker's secrets, those routes silently become **anon** clients — inheriting anon's RLS policy and column grants, **with no code change and no deploy**.
+
+Applied to #262: the "safe, unaffected, service-role" column of the enumeration is conditional on an environment variable nobody has checked. If it were unset, removing `members` from the grant would additionally break the tab-join and order-attribution routes.
+
+**Not a claim that it IS unset anywhere** — the agent explicitly refused to read the Worker env and labelled it a conditional. **What settles it:** confirm `SUPABASE_SERVICE_ROLE_KEY` is present in the production and staging Worker secrets.
+
+**Fix shape regardless: throw on a missing service-role key rather than substituting a weaker credential.** A server helper that silently degrades to the public key is the same class as the lying instruments — it reports success while doing something narrower than its name promises.
+
+### The asymmetry that should shape the fix
+
+`members` is not uniformly load-bearing:
+
+- **`v2` (the unauthenticated QR landing — the widest exposure) needs only a COUNT.** `:459` reduces it immediately to `members.length`, rendered at `:1161-1163` as "N people on this tab". It never touches a single `session_id`.
+- **`browse:794-801`** — same, count only.
+- **`tab/page.tsx:133-145` and `receipt/page.tsx:140-159`** genuinely need the `session_id` ↔ `display_name` pairing, for the per-person split and the receipt name map.
+
+**The surface with the widest exposure has the narrowest requirement.** A `display_name`-only or count-only shape satisfies `v2` and `browse` outright, and only `tab` and `receipt` need the pairing — which is a **server-route** question, not a grant question.
+
+### The terminal — NEGATIVE, and the detail is instructive
+
+`origin/feat/terminal-reconciled:src/lib/supabase.ts:5` **does** construct an anon client. But `git grep -ln "supabase\."` over `src/**` returns **nothing** — it is constructed and never imported or used. Its only tabs access is HTTP to a service-role route.
+
+**Stopping at "it builds an anon client" would have reported the opposite conclusion.**
