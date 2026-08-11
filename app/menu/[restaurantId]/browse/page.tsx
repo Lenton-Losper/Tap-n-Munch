@@ -24,6 +24,7 @@ import { readStoredTabId } from '@/lib/tab-storage'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
+import { loadAllMenuCategories } from '@/lib/menu/load-menu-categories'
 
 type ItemVariant = {
   size: string
@@ -428,49 +429,8 @@ export default function MenuBrowsePage() {
         return
       }
 
-      try {
-        const categoryPayloads = await Promise.all(
-          menuCategories.map(async (category) => {
-            const response = await fetch(
-              `/api/menu/${encodeURIComponent(restaurantId)}/category/${encodeURIComponent(category.id)}`,
-              { cache: 'no-store' }
-            )
-            if (!response.ok) {
-              throw new Error(`Menu API returned ${response.status}`)
-            }
-            return (await response.json()) as Record<
-              string,
-              { subcategory: SubCategory; items: MenuItem[] }
-            >
-          })
-        )
-
-        const merged: Record<string, { subcategory: SubCategory; items: MenuItem[] }> = {}
-        for (let i = 0; i < categoryPayloads.length; i++) {
-          const grouped = categoryPayloads[i]
-          const categoryName = menuCategories[i]?.name || ''
-          for (const [key, entry] of Object.entries(grouped)) {
-            const existing = merged[key]
-            if (!existing) {
-              merged[key] = {
-                subcategory: {
-                  ...entry.subcategory,
-                  categoryName,
-                  categoryOrder: i,
-                },
-                items: [...(entry.items || [])],
-              }
-              continue
-            }
-            existing.items.push(...(entry.items || []))
-          }
-        }
-
-        setAllGroupedItems(merged)
-      } catch (err) {
-        console.error('Failed to load full menu for search:', err)
-        setAllGroupedItems({})
-      }
+      const load = await loadAllMenuCategories(restaurantId, menuCategories)
+      setAllGroupedItems(load.merged)
     }
 
     void loadAllMenuItems()
