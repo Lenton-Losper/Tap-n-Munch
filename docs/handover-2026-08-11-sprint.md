@@ -429,3 +429,75 @@ sprint a shell quoting artifact produced a confident wrong number. **Goes in the
 `sp-receipt` → size **#237** properly (four renderers, what proration would mean across differing
 totals, whether the disagreement is even visible at 32 chars) — enumerate and packet, write no copy;
 then support **#234**'s rule-7 enumeration from the receipt side.
+
+---
+
+## CHECKPOINT 6 — the POS control exists, and nothing tests it
+
+### #240 — the sole control protecting POS money deletes clean, and the suite stays green
+
+The retraction held up, and the reframe is better than the original claim. `create-order.ts:69-89`
+reprices by default; that IS the anti-tampering control and its own doc comment says so. But:
+
+- **Nothing downstream re-derives.** `issueReceipt.ts:266-271` copies `order.subtotal/tax/total`
+  verbatim into the snapshot. `create-document.ts` genuinely does re-derive — but it serves admin
+  quotes/invoices and is not on this path (all three importers checked).
+- **Zero test files import the terminal orders route**, and the one test naming `create-order`
+  **mocks it**.
+
+Measured by breaking it, and the narrowing is the part worth keeping:
+
+| Probe | Result |
+|---|---|
+| A — trust `params.total` unconditionally | Accept leg fails 2 tests → that branch IS covered |
+| **B — replace only the documented bypass** | **43/43 green. Identical to baseline.** |
+
+The agent narrowed from A to B rather than reporting A's failure as the answer. Reverted by blob
+identity (`f7f66d3a…`).
+
+### #241 — `/api/terminals/activate` is unauthenticated with a self-asserted device identity
+
+Exchanges an activation code for a 1h access token + refresh token. `deviceId`/`terminalSn` come
+from the **request body** and are written unverified; `validateTerminalRecord` never checks
+`device_serial` against the token. A token is obtainable with curl, no device.
+
+Filed on **trust-boundary shape, not as an exploit** — and the bounding is why it is credible:
+single-use, 1h TTL, and redeeming **burns the real device's code**, so theft is noisy. Practical
+exposure is a leaked or observed code.
+
+Two things worth deciding regardless: the code is generated with **`Math.random()`**, and **no
+in-repo rate limiting** guards the endpoint.
+
+Also: token `permissions` are hardcoded at signing, so the `orders:update` check is satisfied by
+every validly-issued token. Signed, not forgeable — but not a second gate either.
+
+### Resolved: the variant latent state is NOT UI-reachable
+
+Today's editor always emits a `type`, so #228/#229 are reachable only by **direct API write**.
+Dated precisely: typed editor `2026-07-02`, normalizer `2026-04-14`, the four real orders
+`2026-06-26` — **between** them. Legacy, with the window named. Priority lowered as predicted.
+
+### Answers worth keeping from the POS enumeration
+
+- Client `subtotal`/`total` are **discarded**; `total` is used only as a `> 0` gate.
+- Size/addon **names** are matched against the catalog and unmatched ones dropped — no
+  client-supplied money is reachable.
+- But `priceCatalogLine` spreads `{...item}`, so **money fields are overwritten and LABELS are not**.
+  A POS line's printed name is client-supplied text.
+- **fdb999a's sub-cent rounding covers BOTH legs** — it sanitises at menu write, and both legs price
+  from that catalog. The POS leg is covered.
+
+### Filed
+
+**#240** (POS repricing control untested) · **#241** (activate route trust boundary).
+Open issues: **100**.
+
+### Reassigned in the same turn
+
+- `sp-variants` → **write #240's characterization test**. Authorised under the human's own fallback
+  clause: *"deepen the coverage: non-mocked tests on paths that only have mocked ones, starting with
+  anything money-facing."* Must be two-sided — assert the Accept branch still persists
+  `preauthorizedPricing` verbatim, so the test cannot be satisfied by forcing repricing everywhere —
+  and must be negative-probed with Probe B's exact substitution to confirm it now fails.
+- `sp-receipt` → **#234's rule-7 enumeration from the receipt side**, then back to #237. Both share
+  `issueReceipt.ts` and the same question: what does a receipt assert about a payment.
