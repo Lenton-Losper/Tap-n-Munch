@@ -501,3 +501,67 @@ Open issues: **100**.
   and must be negative-probed with Probe B's exact substitution to confirm it now fails.
 - `sp-receipt` → **#234's rule-7 enumeration from the receipt side**, then back to #237. Both share
   `issueReceipt.ts` and the same question: what does a receipt assert about a payment.
+
+---
+
+## CHECKPOINT 7 — #237 amended down; #234's safest option turns out impossible
+
+### #237 CORRECTED — it is NOT live on the ordinary settle path
+
+The agent retracted its own severity claim, unprompted, against an issue I had already called the
+most consequential thing in its handoff. It was right.
+
+```
+TableDetailScreen.tsx:293   await settleTab(...)     <- AWAITED, issues receipts
+TableDetailScreen.tsx:309   recordSaleEvent(...)     <- fire-and-forget, AFTER
+```
+
+So at settle-time issuance **there is no sale event yet**, and `issueReceipt.ts:291-303` takes the
+correct fallback branch — the payment line equals that order's own total.
+
+**Real only where issuance happens AFTER the event exists:** `payment-events/sale/route.ts:191`
+(reached when settle-time issuance silently failed), and `reconcileOrphanPayments` at `:153`/`:183`,
+where it is **deterministic**. Idempotency limits it — only orders with no document are exposed.
+
+**Left as filed, this would have been reproduced on a happy path, failed, and closed
+not-reproducible.** Title and body amended.
+
+**#226, #234 and #237 are ONE blast radius.** Neither agent had that alone.
+
+### #234 — option A is IMPOSSIBLE, and that is the finding
+
+| Option | Verdict |
+|---|---|
+| **A.** backfill `paid_at` to the true payment date | **Not implementable.** That date does not exist: `paid_at` NULL, no payment event, a *successful* reconcile writes no audit row (only the refusal branch does), and `orders` has **no `updated_at`**. Nothing records when a staff reconcile succeeded. |
+| **B.** backfill to `now()` | The whole backlog enters the 48h sweep window at once, 100 per tick, each receipt asserting the customer paid **today** — plus #237's unprorated line on every multi-order settle in it. **The option rule 7 exists to prevent.** |
+| **C.** fix forward only | Add `paid_at` + `safeIssueReceiptForOrder` at `:237`. Touches no existing row. `payments/reconcile/route.ts` is the ONLY paid-writer with zero `paid_at` occurrences — this brings one outlier onto the existing convention. |
+
+**Issuance notifies nobody** — established independently by two agents from different files. One
+INSERT into `receipt_documents`; every consumer is pull-based; `orders` has no `customer_email`
+column at all, so a bulk mail-out is not merely gated but impossible.
+
+**What a late receipt gets wrong:** the snapshot is BUILT AT ISSUANCE from current rows, then
+frozen. Outlet name, address, VAT and registration number are read **live** — a receipt can gain a
+VAT number the sale never had. `document_number` is a **single global sequence across all
+restaurants**, allocated at issue, on a table with no update or delete policy.
+
+The closing line worth putting in front of the human: *a batch of back-dated fiscal documents
+numbered today is a worse artifact than an acknowledged gap.*
+
+### Two self-limiting notes worth keeping
+
+- `supabase/schema.sql` contains **zero** `CREATE TRIGGER` statements, so it is not authoritative
+  about triggers. The `updated_at` absence is strongly evidenced (dump + no migration + no code
+  reference) but **not DB-verified**, and the agent said which was which.
+- Proration on #237 is **not** a design problem: the settle amount is the sum of the claimed orders'
+  totals, so each share IS its own grand_total — already implemented in the fallback branch. The fix
+  makes the recovery path agree with the path that works, rather than inventing a presentation.
+
+### Reassigned in the same turn
+
+- `sp-stock-pay` → **#219** (implementable, no ruling needed), falling back to the
+  fixed-on-branch-not-live drift audit if it turns out to need one.
+- `sp-receipt` → **#224** (third instance of the same false-claim pattern; needs copy, so packet
+  only — and the answer may be a fourth state in `menuBodyState` rather than a new branch), falling
+  back to **#165's Q4**, the VAT-invoice question that can eliminate an option before the human
+  rules.
