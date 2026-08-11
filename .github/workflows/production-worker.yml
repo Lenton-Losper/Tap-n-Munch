@@ -57,6 +57,14 @@ jobs:
         run: npx eslint . --max-warnings=0
       - name: Typecheck
         run: npx tsc --noEmit
+      # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
+      # when the column already exists — the migration succeeds and the
+      # constraint is never created, so the ledger and the database disagree in
+      # a way nothing downstream can detect. Static, no credentials, no database;
+      # the five existing offenders are baselined inside the script, so this can
+      # only fail on a newly committed migration.
+      - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
+        run: npx tsx scripts/check-migration-inline-check.ts
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the
       # UNPREFIXED SUPABASE_* secrets, which in this repo are the PRODUCTION ones (see the
       # migration-drift step below, which uses the same names against the production DB), and
@@ -64,8 +72,13 @@ jobs:
       # would point a test suite at the production database on every deploy, and would make a
       # customer-facing deploy fail on data drift. Only hermetic suites run here; they need no
       # network and no credentials.
+      # `migration-inline-check` is here rather than left to the CLI step above
+      # because the step above cannot detect its own blindness: if the parser
+      # ever regresses to a line-oriented match it exits 0 and reports a clean
+      # sheet, which is indistinguishable from there being nothing to find.
+      # These tests are what notice. Hermetic — no network, no credentials.
       - name: Unit tests (hermetic, no database)
-        run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate"
+        run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate|migration-inline-check"
 
   deploy:
     needs: build-verification

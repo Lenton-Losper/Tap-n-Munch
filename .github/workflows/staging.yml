@@ -530,6 +530,13 @@ jobs:
         run: npx eslint . --max-warnings=0
       - name: Typecheck
         run: npx tsc --noEmit
+      # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
+      # when the column already exists — the migration succeeds and the
+      # constraint is never created. Static, no credentials, no database.
+      # BLOCKING here, unlike the drift check below: the five existing offenders
+      # are baselined inside the script, so this can only fail on something new.
+      - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
+        run: npx tsx scripts/check-migration-inline-check.ts
       - name: Unit and schema tests (no HTTP)
         run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities"
         env:
