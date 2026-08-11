@@ -320,16 +320,33 @@ export async function fetchGuestActiveTableOrders(params: {
 }
 
 /**
- * Look up orders by the payment reference the gateway hands back on the return URL.
+ * Guest lookup of the orders behind a payment reference.
  *
- * The restaurant is REQUIRED and the rows are gated through guestCanAccessOrder, the same way
- * fetchGuestOrderById above does it — a payment reference is a lookup key, never a credential.
- * Without this, naming a reference returned up to 15 complete order rows (items, totals,
- * customer_name, session ids) to anyone at all.
+ * THREE INDEPENDENT DOORS, and this function is the only place all three are shut (#122, #254).
+ * This branch already carried doors 2 and 3 from wave-2's #122; door 1 landed on `main` only,
+ * which is what #254 is — the reproduction environment ran the injectable filter for three days
+ * after production stopped doing so.
  *
- * The reference itself is matched by exact equality on the stored column (see
- * paymentRefOrFilter) and is never parsed, so references issued under any past format keep
- * resolving unchanged.
+ *   1. VALIDATED FILTER. `paymentRefOrFilter` returns null for anything that is not a
+ *      well-formed reference, and this fails CLOSED on null. The `.or()` string is PARSED by
+ *      PostgREST, so a comma in the caller's input adds OR terms -- "exact equality, never
+ *      parsed" is true of SQL and false here, and this docblock used to assert it.
+ *      `?ref=zzz,total.gte.0` returned 15 full order rows across ALL restaurants,
+ *      unauthenticated, without knowing any reference. Reproduced read-only on staging
+ *      2026-08-08; re-measured against THIS branch's code on staging 2026-08-11.
+ *
+ *   2. REQUIRED restaurantId. Without it the query spans every tenant, so a reference that IS
+ *      known -- printed on a receipt, carried on a gateway return URL -- reads any restaurant's
+ *      order. The route rejects an absent one with 400; this returns [] as a second line.
+ *
+ *   3. PER-ROW guestCanAccessOrder. Restaurant scope alone is not authorisation: an OPEN order
+ *      needs the table or session that placed it, while a paid/closed one is reachable on
+ *      restaurant scope (the shareable receipt-link pattern the sibling guest routes use).
+ *
+ * They close different doors and none subsumes another. Validation stops the filter being
+ * widened; the scope stops a known reference crossing tenants; the per-row gate stops a
+ * correctly-scoped caller reading someone else's live order. Dropping any one of the three
+ * leaves a hole the other two do not cover, which is why each has its own test.
  */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
@@ -341,17 +358,24 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   const ref = params.paymentRef.trim()
   if (!ref || !params.restaurantId.trim()) return []
 
+  // DOOR 1. A string carrying PostgREST filter syntax is not a reference that failed to match --
+  // it is an attempt to widen the query, and it must return nothing rather than everything.
+  const refFilter = paymentRefOrFilter(ref)
+  if (!refFilter) return []
+
+  // DOOR 2.
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId.trim())
 
   const { data, error } = await supabase
     .from('orders')
     .select('*')
-    .or(paymentRefOrFilter(ref))
+    .or(refFilter)
     .limit(15)
     .eq('restaurant_id', restaurantUuid)
 
   if (error) throw error
 
+  // DOOR 3.
   const accessParams = {
     restaurantId: restaurantUuid,
     tableNumber: params.tableNumber ?? null,
