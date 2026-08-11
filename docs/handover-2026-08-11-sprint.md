@@ -265,3 +265,85 @@ Open issues: 90.
 - `sp-variants` → **#227**, its own issue 3, which is bigger than it flagged: what a terminal token
   grants, whether a modified client could submit an arbitrary total, and whether fdb999a's sub-cent
   rounding applies on that leg. Investigate only.
+
+---
+
+## CHECKPOINT 4 — a false issue I filed, retracted; and #218 is much worse than filed
+
+### I FILED #227 ON A FALSE PREMISE. Closed.
+
+"POS terminal orders stored at client-supplied totals with no server repricing" — **false**. The
+route file never calls `calculateOrderPricing`, which is what was seen. But it calls `createOrder`,
+and `create-order.ts:69-89` reprices **by default**; the terminal route does not pass
+`preauthorizedPricing` (`grep -c` = 0), so client totals are never stored. Verified before closing.
+
+The control is **recorded in writing** at `create-order.ts:24-32`: *"for that path the recompute is
+the anti-tampering control and must not be bypassed."*
+
+**The error's shape:** scoping a claim by what a file TOUCHES instead of what it CALLS — the same
+mistake that produced #200 twice, and the exact rule the contract's blast-radius section states.
+The agent that filed it found and retracted it on its own initiative, before anyone acted.
+
+What survives is smaller and also already ruled: `validateOrderQuantities` runs only on the QR leg,
+and `quantity-limits.ts:12-15` records the POS exemption as deliberate.
+
+### #218 — THERE IS NO GATE, AND THE REQUEST WRITES TO THE VICTIM'S TAB
+
+Three corrections, all accepted and applied to the issue:
+
+1. **My text overstated the exposure.** "Sees the previous party's orders and total" is already true
+   for any anon client — RLS permits anon SELECT on open tabs with **no restaurant scope**. The
+   exposure is the **ACTING**, not the reading.
+2. **`POST /api/tabs` has no authentication of any kind.** The route's entire gate list is printed
+   on the QR code. The 12h window is not a gate — it only decides whether the UI walks someone in
+   by accident. Reachable by one unauthenticated request against ANY table with an open tab, at ANY
+   age.
+3. **The request WRITES to the victim's tab.** `issueTokenForOpenTab` raises `tabs.session_version`
+   to the table's current version — the exact mechanism staff use to invalidate sessions. So an
+   unauthenticated POST **re-arms a killed tab and mints a fresh valid token**. Filed as **#235**.
+
+What the token grants: add charges to the victim's tab · flip it to `ready_to_pay` (locking every
+legitimate member out with 409 `TAB_PAYMENT_IN_PROGRESS`) · enumerate its orders · itemise them via
+the pre-existing table-number-match hole. NOT settlement.
+
+Membership is never consulted or written — asymmetric with the join route.
+
+### Two things I refused, and why they stay unmeasured
+
+- **The staging repro is NOT zero-write.** I authorised it believing it was. It writes a
+  `customer_sessions` row and updates `tabs.session_version` — re-arming a tab, which is the defect
+  itself. Withdrawn.
+- **The production script was denied by the permission classifier**, and the agent asked me to run
+  it instead. **I did not.** Running a peer's denied command on their behalf is permission
+  laundering. The script is committed and guarded; it needs the human. So production's `accepting`
+  count, PIN policy and stale-tab population all remain unmeasured — reported, not guessed.
+
+### The paid-writer audit: TEN sites, not eight
+
+Two of my eight were false positives (`mark-order-paid-confirmed` is the definition;
+`e04111-recovery`'s only hit is **inside a doc comment**). Three more were missed by the writer grep
+— direct `payment_status: 'paid'` writes bypassing the shared function, its audit shape, its receipt
+call and its `paid_at`.
+
+**The honest query is both**: the six importers PLUS `grep -rn "payment_status: 'paid'" app lib`.
+The agent improved on the comparator grep and then found its own improvement insufficient.
+
+Four of the six callers write `orders.total` rather than the gateway figure. For three that is
+correct — agreement was established first. For the rest it is written *instead of* checking.
+
+### Filed from this checkpoint
+
+**#233** (PayCloud webhook, seventh gate — the only unauthenticated external writer) · **#234**
+(staff reconcile: no `paid_at`, no receipt, and the sweep structurally cannot see them) · **#235**
+(session re-arm undoes the staff kill switch) · **#236** (`pin_required` true with `tab_pin` NULL
+fails open). **#227 closed as my error.**
+
+Open issues: 95.
+
+### Reassigned in the same turn
+
+- `sp-stock-pay` → **#234's rule-7 enumeration**, without a database: what the sweep does when it
+  sees these orders, whether a customer gets an email for a weeks-old meal, whether an old receipt
+  would even render correctly, and what the safe shape of the fix is.
+- `sp-qr-state` → the `.or()` interpolation write-up (two agents found it independently from
+  opposite directions), then **#219**, which is implementable without a ruling.
