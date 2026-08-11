@@ -24,6 +24,13 @@ export const dynamic = 'force-dynamic'
  * status = 'accepted', and that column FKs to orders(id) -- neither is satisfiable until
  * createOrder() has actually run. Only the claim winner ever calls createOrder(); if it
  * throws, the claim is released back to 'waiting_review' so the request isn't stranded.
+ *
+ * That release is best-effort, not guaranteed, and nothing here is transactional -- the claim,
+ * the order insert and the finalize are three separate round-trips. A row CAN therefore be left
+ * in 'accepting': if the release itself fails, or if the worker dies anywhere between the claim
+ * and either exit. Nothing sweeps such a row, and it is unreachable once it happens. Both
+ * failure exits now say so loudly rather than leaving it to be discovered by a customer who is
+ * still being shown "Waiting for Review".
  */
 export async function POST(
   req: Request,
@@ -133,12 +140,34 @@ export async function POST(
   } catch (err) {
     // Release the claim so the request can be retried (Accept again, or Decline) instead
     // of being stranded in 'accepting' forever.
-    await supabase
+    const { error: releaseError } = await supabase
       .from('order_requests')
       .update({ status: 'waiting_review' })
       .eq('id', requestId)
       .eq('status', 'accepting')
     const message = err instanceof Error ? err.message : 'Failed to create order'
+
+    if (releaseError) {
+      // This is the exit that runs when something has ALREADY gone wrong, and its result used
+      // to be discarded -- making it the least careful path in the file, which is backwards.
+      // A row left in 'accepting' is unreachable from every direction: absent from the staff
+      // list (lib/supabase/order-requests.ts:19 selects only 'waiting_review', and :42-44
+      // evicts anything else from the live list), refused with 409 by accept/decline/review,
+      // and swept by nothing -- both cron sweepers work on `orders`, never `order_requests`.
+      // Meanwhile the customer holding the order id still reads "Waiting for Review"
+      // (lib/guest-orders/queries.ts:75 has no status filter; active-order-visibility.ts:55
+      // normalises 'accepting' to 'waiting_review'). It must not become that silently.
+      console.error('[ORDER_REQUESTS/accept] failed to release accepting claim:', releaseError)
+      return NextResponse.json(
+        {
+          error:
+            `${message} — and the request could not be released: it is now stuck in "accepting", ` +
+            `so it can no longer be accepted or declined (${releaseError.message})`,
+        },
+        { status: 500 },
+      )
+    }
+
     return NextResponse.json({ error: message }, { status: 500 })
   }
 
