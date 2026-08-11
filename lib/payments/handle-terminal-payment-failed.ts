@@ -1,5 +1,9 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
-import { amountsMatch, CLAIMABLE_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
+import {
+  amountsMatch,
+  CLAIMABLE_PAYMENT_STATUSES,
+  GATEWAY_AMOUNT_TOLERANCE_CENTS,
+} from '@/lib/payments/payment-integrity'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import {
   finaticErrorCode,
@@ -170,7 +174,7 @@ export async function handleTerminalPaymentFailed(
       if (finatic.paid) {
         /**
          * The gateway's figure has to agree with the order before it is written as the amount
-         * collected. verify-payment/route.ts:117 has always checked this; this path reached
+         * collected. verify-payment/route.ts has always checked this; this path reached
          * markOrderPaidConfirmed with `finatic.amount ?? orderTotal` unchecked, so two routes
          * asking Finatic the same question disagreed about whether the answer needed verifying.
          *
@@ -184,13 +188,30 @@ export async function handleTerminalPaymentFailed(
          * established" — left pending, nothing written, visible in the audit trail, and
          * resolvable by the reconcile cron or a human. Both callers already handle it.
          *
-         * A missing amount is not a disagreeing amount: Finatic omitting the field falls
-         * through to the order total exactly as before.
+         * EXACT agreement, not the one-cent client tolerance (#190). Finatic echoes back our own
+         * figure, so nothing in the round trip can produce a legitimate cent — see
+         * GATEWAY_AMOUNT_TOLERANCE_CENTS.
+         *
+         * A MISSING AMOUNT IS UNVERIFIED, AND IS REFUSED TOO. This reverses what this comment
+         * said until #190 ("a missing amount is not a disagreeing amount"), which let an absent
+         * field fall through to the order total. If the gateway did not give us an amount, we
+         * did not verify the amount, and applying the payment while recording "never checked" is
+         * the same shape as the unguarded write #180 closed. The safe default holds whether or
+         * not the null branch is live. queryFinaticOrderPaid normalises through toMoney, so null
+         * means the field was genuinely absent or unparseable, not merely oddly formatted.
          */
-        if (finatic.amount != null && !amountsMatch(finatic.amount, params.orderTotal)) {
+        const gatewayAmount = finatic.amount
+        const amountVerified =
+          gatewayAmount != null &&
+          amountsMatch(gatewayAmount, params.orderTotal, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+        if (!amountVerified) {
           const reason =
-            `Finatic reports paid but for ${finatic.amount}, not the order total ${params.orderTotal} — ` +
-            'not correcting to paid, and not cancelling an order the gateway says was charged.'
+            gatewayAmount == null
+              ? `Finatic reports paid but returned no amount for ${merchantOrderNo} — the amount was ` +
+                'never verified, so the order is not corrected to paid, and not cancelled either.'
+              : `Finatic reports paid but for ${gatewayAmount}, not the order total ${params.orderTotal} — ` +
+                'not correcting to paid, and not cancelling an order the gateway says was charged.'
           console.error(`[handleTerminalPaymentFailed] order ${params.orderId}: ${reason}`)
 
           const { error: mismatchAuditError } = await supabase.from('audit_logs').insert({
@@ -201,8 +222,11 @@ export async function handleTerminalPaymentFailed(
             metadata: {
               reason,
               // Both figures, so the disagreement can be settled from the audit row alone.
-              finaticAmount: finatic.amount,
+              // A null finaticAmount is the "never checked" case and must stay distinguishable
+              // from a figure that was checked and agreed.
+              finaticAmount: gatewayAmount,
               expectedAmount: params.orderTotal,
+              amountVerified: false,
               terminalReportedAmount: params.amount ?? null,
               finaticStatus: finatic.status,
               finaticTransactionId: finatic.transactionId,
@@ -228,7 +252,9 @@ export async function handleTerminalPaymentFailed(
           restaurantId: params.restaurantId,
           reference: merchantOrderNo,
           voucherNo: finatic.transactionId || merchantOrderNo,
-          amount: finatic.amount ?? params.orderTotal,
+          // Non-null and exactly equal to orderTotal by the guard above — the previous
+          // `?? params.orderTotal` fallback was the null-skips-verification path (#190).
+          amount: gatewayAmount,
           paymentMethod,
           terminalId,
           source: correctionSource,

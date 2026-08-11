@@ -8,6 +8,7 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
 
 function toMoney(value: unknown) {
   const n = Number(value)
@@ -153,12 +154,76 @@ export async function POST(req: Request) {
         (raw as Record<string, unknown>)?.order_amount ??
         (raw as Record<string, unknown>)?.paid_amount
     )
-    if (paidAmount !== null && Math.abs(paidAmount - expectedAmount) > 0.02) {
+    /**
+     * #197, ruled inside #190 — this was the FIFTH gateway gate and the only one that never
+     * called amountsMatch:
+     *
+     *     if (paidAmount !== null && Math.abs(paidAmount - expectedAmount) > 0.02)
+     *
+     * #180 swept the amountsMatch call sites, so a raw float comparison at two cents was
+     * invisible to it. It carried both defects at once — the float artefact (|78.36 - 78.35| is
+     * 0.010000000000005116, not 0.01) and the null hole (`paidAmount !== null` short-circuits and
+     * the whole batch is marked paid with no amount check of any kind).
+     *
+     * This is a GATEWAY leg: paidAmount comes off Finatic's order.query response, echoing back
+     * our own figure, so it takes exact agreement and no tolerance — see
+     * GATEWAY_AMOUNT_TOLERANCE_CENTS. An absent amount is unverified, not agreed.
+     *
+     * It is staff-triggered and it marks orders paid DIRECTLY, in a batch whose totals are summed
+     * into one expected figure — so a wrong answer here is written across every order at once.
+     * The refusal therefore writes one payment.verification_uncertain row PER ORDER: the staff
+     * member sees the 409, but nobody else does, and these are charged customers whose orders
+     * stay unpaid. The resolution procedure finds them by entity_id on that action.
+     */
+    const amountVerified =
+      paidAmount !== null &&
+      amountsMatch(paidAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+    if (!amountVerified) {
+      const error =
+        paidAmount === null
+          ? `Amount unverified. Finatic reports paid for ${merchantOrderNo} but returned no amount, ` +
+            `so the expected ${expectedAmount.toFixed(2)} could not be confirmed.`
+          : `Amount mismatch. Expected ${expectedAmount.toFixed(2)}, got ${paidAmount.toFixed(2)}`
+      console.error('[RECONCILE] refusing to mark paid:', error)
+
+      for (const { orderId } of rows) {
+        const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: restaurantUuid,
+          action: 'payment.verification_uncertain',
+          entity_type: 'order',
+          entity_id: orderId,
+          metadata: {
+            reason: error,
+            // A null finaticAmount is the "never checked" case and must stay distinguishable
+            // from a figure that was checked and agreed.
+            finaticAmount: paidAmount,
+            expectedAmount,
+            amountVerified: false,
+            businessOrderNo: merchantOrderNo,
+            // The batch this order was reconciled in — expectedAmount is their SUM, so a single
+            // order's total will not match it and the row would be unreadable without this.
+            batchOrderIds: orderIds,
+            source: 'staff_reconcile',
+            outcome: 'left_pending_finatic_uncertain',
+          },
+        })
+        if (uncertainAuditError) {
+          console.error(
+            '[RECONCILE] payment.verification_uncertain audit failed:',
+            uncertainAuditError,
+          )
+        }
+      }
+
       return NextResponse.json(
         {
           ok: false,
           paid: false,
-          error: `Amount mismatch. Expected ${expectedAmount.toFixed(2)}, got ${paidAmount.toFixed(2)}`,
+          error,
+          outcome: 'left_pending_finatic_uncertain',
+          expectedAmount,
+          paidAmount,
         },
         { status: 409 }
       )
