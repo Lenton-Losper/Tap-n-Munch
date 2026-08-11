@@ -88,14 +88,21 @@ async function main() {
     throw new Error(`could not read a restaurant to attach the probe row to: ${restaurantError?.message}`)
   }
 
-  let probeId: string | null = null
+  // Every id this probe creates, and whether cleanup was CONFIRMED for it. A delete whose error
+  // is unread is not a cleanup, it is a hope -- so each one is checked and then re-read.
+  const created: Array<{ status: string; id: string; deleted: boolean; note: string }> = []
+  const activationCodes: string[] = []
+
   try {
     for (const candidate of CANDIDATES) {
+      const activationCode = `PROBE-${Date.now()}-${candidate.value}`
+      activationCodes.push(activationCode)
+
       const { data, error } = await db
         .from('restaurant_terminals')
         .insert({
           restaurant_id: restaurant.id,
-          activation_code: `PROBE-${Date.now()}`,
+          activation_code: activationCode,
           expires_at: new Date(Date.now() + 60_000).toISOString(),
           status: candidate.value,
         })
@@ -104,15 +111,25 @@ async function main() {
 
       if (error) {
         console.log(`REJECTED  ${candidate.value.padEnd(24)} (${candidate.declaredIn}) -- ${error.message}`)
-      } else {
-        console.log(`ACCEPTED  ${candidate.value.padEnd(24)} (${candidate.declaredIn})`)
-        probeId = data?.id ?? null
-        // Delete immediately: an accepted row is a real terminal row and must not outlive the probe.
-        if (probeId) {
-          await db.from('restaurant_terminals').delete().eq('id', probeId)
-          probeId = null
-        }
+        continue
       }
+
+      const probeId = data?.id ?? null
+      console.log(`ACCEPTED  ${candidate.value.padEnd(24)} (${candidate.declaredIn}) id=${probeId}`)
+
+      if (!probeId) {
+        created.push({ status: candidate.value, id: '(insert returned no id)', deleted: false, note: 'CANNOT CLEAN UP -- no id returned' })
+        continue
+      }
+
+      // Delete immediately: an accepted row is a real terminal row and must not outlive the probe.
+      const { error: deleteError } = await db.from('restaurant_terminals').delete().eq('id', probeId)
+      created.push({
+        status: candidate.value,
+        id: probeId,
+        deleted: !deleteError,
+        note: deleteError ? `DELETE FAILED: ${deleteError.message}` : 'deleted',
+      })
     }
 
     // The control must be REJECTED. If it is ACCEPTED, there is no CHECK on this column at all
@@ -120,8 +137,31 @@ async function main() {
     console.log('\nIf the control was ACCEPTED, the column has NO check constraint and the rest of')
     console.log('this output says nothing. That is the result to report, not the per-value lines.')
   } finally {
-    if (probeId) {
-      await db.from('restaurant_terminals').delete().eq('id', probeId)
+    console.log('\n--- ROWS CREATED ---')
+    if (created.length === 0) {
+      console.log('none -- every candidate was rejected, so nothing was ever written')
+    }
+    for (const row of created) {
+      console.log(`  status=${row.status} id=${row.id} -- ${row.note}`)
+    }
+
+    // Independent re-read rather than trusting the delete calls. Anything listed here is a live
+    // row that outlived the probe and must be reported, NOT cleaned up with a second guess.
+    const { data: survivors, error: survivorError } = await db
+      .from('restaurant_terminals')
+      .select('id, status, activation_code')
+      .in('activation_code', activationCodes)
+
+    console.log('\n--- CLEANUP VERIFICATION (re-read, not trusting the deletes) ---')
+    if (survivorError) {
+      console.log(`COULD NOT VERIFY: ${survivorError.message}`)
+    } else if ((survivors ?? []).length === 0) {
+      console.log('CONFIRMED: zero probe rows remain.')
+    } else {
+      console.log(`WARNING: ${survivors!.length} probe row(s) SURVIVED. Report these, do not guess at cleanup:`)
+      for (const row of survivors!) {
+        console.log(`  id=${row.id} status=${row.status} activation_code=${row.activation_code}`)
+      }
     }
   }
 }
