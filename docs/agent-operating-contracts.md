@@ -4,8 +4,9 @@ Four artifacts, plus the roles and deployment rules they depend on. Paste sectio
 agent briefs; section 4 and below are for whoever is coordinating.
 
 **Status: provisional. Revision 3, 2026-08-12** — see the revision at the end of this document
-for two tooling-reliability rules earned landing #262 on a machine whose session notes did not
-survive being pushed. Revision 2 added the role model, the activation model, the PROOF CEILING
+for four tooling-reliability rules. Rules 10-11 were earned landing #262 and re-derived from
+verification after that session's notes were lost; rules 12-13 were ported afterwards from the
+recovered session (docs/checkpoints-home-20260812) without disturbing them. Revision 2 added the role model, the activation model, the PROOF CEILING
 handoff field and rules 7-9. Revisions 1 and 2 below are unchanged; nothing in either has been
 retired.
 
@@ -935,3 +936,86 @@ agent. And now, once, to a human's brief instead of an agent's.
 ran**: `grep -c targetEnvironment scripts/check-migration-drift.mjs` in the checkout the gate used;
 zero means the two-state version, `-- @env:` headers are decoration there, and `76153d8` needs
 porting to `main` before scoping can be trusted on production's own gate.
+
+## Rule 12 — the migration LANDING has four states, and two of them read clean
+
+Distinct from Rule 11, which is about two different *scripts*. This is about the two *facts* a
+single drift check compares — the committed file and the ledger row — and it is why landing a
+migration has an ordering that is not obvious.
+
+Ported from a parallel session that landed #262's anon-grant migration on production 2026-08-12;
+the measurements are that session's, and were taken against the production ledger.
+
+|  file on `main` | ledger row | drift check | |
+|---|---|---|---|
+| no  | no  | **CLEAN** | 127 local / 127 applied, OK — *and the SQL was already applied* |
+| no  | yes | FAILS | `APPLIED_NOT_LOCAL` |
+| yes | no  | FAILS | `LOCAL_NOT_APPLIED` — blocks EVERY production deploy, not just this one |
+| yes | yes | **CLEAN** | 128 local / 128 applied, OK |
+
+**Row one is the one nobody expects.** "Drift is clean" did not mean the migration was unapplied,
+and did not mean it was recorded. It meant *both sides were equally ignorant of it*. A clean drift
+check is not evidence about the database — same family as the 42501 correction and the
+`test.failing` trap: a signal that looks like information and is not.
+
+The consequence is the procedure. Because rows two and three both fail, **the ledger repair and the
+file merge each break the gate on their own, in opposite directions.** They cannot be spaced out:
+
+1. Apply the SQL, and verify it by **probing enforced behaviour** — never by the ledger (#263).
+2. Prepare the commit **completely** and verify it in isolation: real compiler, its own suite, blob
+   identities, clean index. Do not push.
+3. Repair the ledger.
+4. Push immediately.
+5. Re-run the drift check and confirm clean **on the new numbers** — both counts must have moved by
+   one. Unchanged counts mean something did not land.
+
+Steps 3 and 4 are the exposed window; nothing may be interleaved and no deploy may run in it. Doing
+step 2 first is what shrinks that window to seconds. Doing it after step 3 leaves production
+undeployable for as long as the commit takes to prepare — on that landing, a full typecheck.
+
+Corollary, and the reason step 1 stands alone: `db query` does not write the ledger. Confirmed
+again on that landing — the ledger row was absent immediately after a successful apply. **A
+verified-present object gets `migration repair --status applied`, never a re-run**, and the
+committed file is never rewritten.
+
+## Rule 13 — the sixth lying instrument, and the first one built while looking for the failure it hid
+
+> **`git rev-list --count --not --remotes=origin <branch>` returns 0 for every branch, always.**
+> `--not` is POSITIONAL: it inverts every ref that follows it, including the branch you meant to
+> ask about. The command means "reachable from nothing", which is nothing.
+>
+> The correct form puts the branch FIRST: `git rev-list --count <branch> --not --remotes=origin`.
+
+Observed 2026-08-12. A session was asked — explicitly, because three sets of work had already been
+lost that week — to find every local commit not on origin. It ran the broken form across every
+branch, got 0 everywhere, and reported **"none — every local branch tip is reachable from origin"**.
+
+The correct form, run minutes later on the same repository, found **18 branches with unpushed
+commits**, including 8 on the documentation branch from that same day — which existed on no origin
+ref at all and would have been the fourth loss.
+
+Measured side by side, same repo, same branch, same moment:
+
+    WRONG  git rev-list --count --not --remotes=origin docs/agent-operating-contracts   -> 0
+    RIGHT  git rev-list --count docs/agent-operating-contracts --not --remotes=origin   -> 8
+
+**What makes this the worst of the six is not the flag. It is that the instrument was built for the
+express purpose of catching this failure, and it reported the reassuring answer.** The other five
+lied about a thing being checked; this one lied about the check itself, to the person who had just
+said they did not trust it. A green from a safety check written in the same breath as the fear it
+addresses deserves one adversarial test before it is believed.
+
+**The general form, which is the transferable part:** any predicate whose FALSE answer is the
+comfortable one must be shown to be capable of returning TRUE before its FALSE means anything. That
+is the two-sided-probe rule from Revision 1, applied to a diagnostic rather than to a fix — and it
+is cheap here, because a repository always has *something* unpushed to point it at, or one
+`git commit` makes one.
+
+The five preceding instruments, for the pattern: `EXIT=$?` after a pipe reporting `head`'s status ·
+`npx tsc` resolving to a squatter that exits 0 · a `file://` main-module guard that never matches on
+Windows so CI scans nothing · probe substitutions that silently match nothing (repeatedly, and on
+this project usually because the file is CRLF and the pattern was LF-anchored) · a path-relative
+script auditing the wrong checkout (Rule 10). **Every one produced a plausible, well-formatted,
+wrong answer rather than an error, and every one was caught by a second, differently-shaped
+measurement — a blob hash, a version string, a sibling `ls` — never by reading the output more
+carefully.**
