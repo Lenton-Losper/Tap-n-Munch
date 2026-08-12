@@ -887,41 +887,49 @@ from that worktree's own root, never a path reaching into another checkout. Same
 TOOLCHAIN section's `node node_modules/typescript/bin/tsc`, and the identical reason: the thing that
 silently resolves to the wrong target gives no error, only a wrong answer.
 
-## Rule 11 — the drift check has THREE states on one environment and TWO on the other, and nothing says so
+## Rule 11 — PRODUCTION'S deploy gate runs a two-state drift check. Staging's runs three.
 
-`check-migration-drift.mjs`'s own docblock names two failure modes — `LOCAL_NOT_APPLIED` and
-`APPLIED_NOT_LOCAL` — both real. Commit `76153d8` ("teach drift check environment scope", #143)
-added a third, non-blocking tier: a migration applied outside its declared `-- @env:` scope, or a
-target environment that could not be identified from `SUPABASE_URL`, now WARNS rather than either
-passing silently or failing the deploy.
+Say it in that order, because the reverse — "the drift check has three states" — describes
+`scripts/check-migration-drift.mjs` as a single concept and is wrong for the copy that actually
+gates a real deploy. **This rule's own first draft made that mistake**: the instruction that asked
+for it to be written up described "the drift check having THREE states not two" without saying
+staging-only, which is only true of one of the two copies. It was corrected before being recorded
+here, but the instruction that produced it was not verified before being repeated, which is
+precisely what this document's own VERIFY BEFORE TRUSTING rule (section 1) says not to do — including,
+apparently, to a human's own brief.
 
-**Verified this session, by reading each environment's own copy, not inferred from a commit
-message:**
+The two copies, read directly rather than inferred from a commit message:
 
-- `origin/main:scripts/check-migration-drift.mjs` — the TWO-state version. No `targetEnvironment`,
-  no `-- @env:` parsing, no `appliedOutOfScope`. `production-worker.yml:138-139` runs `node
-  scripts/check-migration-drift.mjs` checked out from `main`, so this is what production's actual
-  deploy gate runs.
-- `origin/cloudflare-staging:scripts/check-migration-drift.mjs` — the THREE-state version.
-  `staging.yml:546-551` runs the same command name, checked out from staging, so staging's gate
-  understands scope and production's does not.
+- `origin/main:scripts/check-migration-drift.mjs` — TWO states: OK or FAILED
+  (`LOCAL_NOT_APPLIED` / `APPLIED_NOT_LOCAL`, both from the script's own docblock). No
+  `targetEnvironment`, no `-- @env:` parsing, no scope concept at all.
+  `.github/workflows/production-worker.yml:138-139` runs `node scripts/check-migration-drift.mjs`
+  checked out from `main` — **this is what actually gates a production deploy.**
+- `origin/cloudflare-staging:scripts/check-migration-drift.mjs` — THREE states: OK, a
+  non-blocking WARNING (a migration applied outside its declared `-- @env:` scope, or a target
+  environment `SUPABASE_URL` couldn't identify), or FAILED. Added by `76153d8` (#143, "teach
+  drift check environment scope"). `.github/workflows/staging.yml:546-551` runs the same command,
+  checked out from staging.
 - `76153d8` is reachable from `docs/agent-operating-contracts`, `cloudflare-staging`, and several
-  `fix/*`/`reconcile/*` branches — **not from `origin/main`.**
+  `fix/*`/`reconcile/*` branches — **not from `origin/main`.** Filed as its own issue, **#269** —
+  this is a live gap in the deploy pipeline, not only a documentation finding, and belongs on the
+  issue tracker independent of this rule existing.
 
-**Dormant today** — no migration currently committed on `main` carries an `-- @env:` header (checked
-this session, all files scanned). It stops being dormant the moment someone commits an
-environment-scoped migration believing the docblock's description of it is live everywhere: on
-`main` the header is not recognised at all, the file is scoped `both` by default, and an
-`-- @env: staging`-only migration would be reported `LOCAL_NOT_APPLIED` against production — exactly
-the "genuine dilemma" #143 was written to resolve, silently reintroduced on one of the two
-environments.
+**Dormant today** — no migration currently committed on `main` carries an `-- @env:` header (all
+files scanned this session). It stays dormant only until someone commits an environment-scoped
+migration believing the docblock's description of the feature is live everywhere. On `main` the
+header is not recognised at all, the file is scoped `both` by default, and a migration meant to be
+staging-only would be reported `LOCAL_NOT_APPLIED` against production the moment it's committed —
+the exact "genuine dilemma" #143 was written to resolve, silently reintroduced on whichever
+environment doesn't have the scoping. **Nobody will expect the two environments to disagree about
+it, because nothing about either script's own output says the other one exists.**
 
-**This is the same class Revision 2's close-audit methodology exists to catch** — `main` is built by
-cherry-pick, so "fixed" drifts — except every prior instance was product code. This one is the AUDIT
-TOOLING ITSELF running two different versions of its own rules on the two environments it is
-supposed to be comparing, which is a blind spot no close-audit run FROM either environment can see
-about its own gate — the same shape as Revision 2's Integration & State Auditor section, applied to
-a script instead of an agent.
+**Same class as Revision 2's close-audit methodology** — `main` is built by cherry-pick, so
+"fixed" drifts — except every prior instance was product code. This one is the AUDIT TOOLING
+ITSELF running two different rule sets on the two environments it is supposed to be comparing,
+which is a blind spot no close-audit run FROM either environment can see about its own gate — the
+same shape as Revision 2's Integration & State Auditor section, applied to a script instead of an
+agent. And now, once, to a human's brief instead of an agent's.
 
 **Before relying on a green drift check for anything scope-sensitive, confirm which version actually
 ran**: `grep -c targetEnvironment scripts/check-migration-drift.mjs` in the checkout the gate used;
