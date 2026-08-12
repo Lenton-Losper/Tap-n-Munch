@@ -97,9 +97,7 @@ jest.mock('@/lib/supabase/restaurants', () => ({
 }))
 
 // Imported AFTER the mocks so the module-level client is the fake one.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getSupabaseMenuItemsByCategory } = require('@/lib/supabase/menu')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { calculateOrderPricing, UnmatchedMenuItemError } = require('@/lib/orders/calculate-order-pricing')
 
 /** The pricing query: menu_items filtered by id, plus tax_rates. */
