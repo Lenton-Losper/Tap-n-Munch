@@ -1879,3 +1879,159 @@ The measured baseline was **15 failed suites / 11 failed tests** for most of the
 ## WHAT THE HUMAN NEEDS TO SET (answered in the final message)
 
 `SUPABASE_DB_PASSWORD`, in `.env.local` (gitignored, and the script's shell inherits it). **Staging and production are separate Supabase projects and have separate database passwords** — one value will not serve both. The CLI is currently linked to staging; switching targets needs `npx supabase link --project-ref ihlmmpmolnpchzgwyhgh` and back. The `safe-supabase-linked.ts` guard takes the expected ref as its first argument and refuses if the link does not match, which is what stops a staging command hitting production.
+
+---
+---
+
+# CHECKPOINT 3 — 2026-08-12, fresh session. The staging-first step is NOT SAFE. Nothing applied.
+
+## STATE — verified, not inherited
+
+    production                  2ccea66fa0f0aee5493e7d948ddc3344e98d88e6   cache-busted verified
+    origin/main                 2ccea66   (identical to production, zero drift)
+    origin/cloudflare-staging   99d285376154558a661ede38be53ebc4ab2bc2ed   cache-busted verified
+    open issues                 120       (expected ~118)
+
+**Production URL is `https://flashtap-production.llosperofficial.workers.dev`.** The bare
+`flashtap.llosperofficial.workers.dev` host returns Cloudflare error 1042 and is not the
+production worker. Recorded so the next probe does not spend a cycle finding out.
+
+Refs on origin: 8 `sprint/*`, 26 `fix/*`, both `reconcile/*`. All present, none merged.
+
+### Correction to the received picture of `fix/262-redacting-seam`
+
+It is **an ancestor of `origin/main`**, not a branch parallel to it. `origin/main..seam` is empty;
+`git merge-base --is-ancestor` says yes. The seam commit `9fcb147` is already shipped. What main
+did afterwards is **delete the migration file** (`25724cb chore: hold the #262 anon-grant migration
+out of the code deploy`), then `2ccea66` moved the migration's own tests off main onto the
+migration commit.
+
+So step (c) is a **restore of one file plus its two tests**, not a merge of unshipped code.
+`supabase/migrations/20260811120000_tabs_anon_grant_drop_members.sql` exists only at `9fcb147`
+and is confirmed absent from main's tree — which is exactly why production deploys are not
+blocked right now.
+
+## DB PASSWORDS — stored, verified contained
+
+`SUPABASE_DB_PASSWORD_PROD` and `SUPABASE_DB_PASSWORD_STAGING` are in `.env.local` under distinct
+names, so the right one is exported per run and neither can be swapped in by hand. Verified:
+`.env.local` is untracked and ignored via `.gitignore:29` (`.env.*`); `git status --porcelain` is
+empty; `git grep` for either value across tracked files returns nothing; `git log --all -S` for
+either value returns nothing. **Neither value appears in any script, tracked file, or this
+document.**
+
+**Both were transmitted over chat on 2026-08-12 and should be rotated once #262 lands.**
+
+Related, measured while checking: the old `!Flash01` is **gone from the working tree and from every
+tracked file at HEAD** — removed by `352de10` on 2026-07-09. It survives in git history
+(`e244e0a`, `6657bc1`, `575fefd`). The repo is **PRIVATE**, and the value was a staging *test
+account* password (`STAGING_TEST_PASSWORD`), not a database password. Worth rotating on the same
+pass; not an emergency.
+
+## THE STAGING-FIRST STEP CANNOT BE DONE. Reported before spending it, not after.
+
+**Applying the migration to staging today is a full guest outage on staging, by construction.**
+
+The migration's precondition is that no deployed client asks anon for `members`. Production meets
+it. **Staging does not, and the reconciliation will not fix it either.**
+
+Measured at `origin/cloudflare-staging` (= what staging is running), all four anon select sites
+still name the column:
+
+    lib/tab-session.ts:72         fetchTabById            '... total, members, ...'
+    lib/tab-session.ts:92         fetchActiveTabForTable  '... total, members, ...'
+    contexts/tab-context.tsx:127  loadTab                 '... total, members, ...'
+    v2/page.tsx:429               open-tab lookup         '... total, members, ...'
+
+Against `origin/main`, `lib/tab-session.ts` has ONE remaining select, at `:129`, with **no
+`members`**, and `contexts/tab-context.tsx` no longer contains `.from('tabs')` at all — both are
+routed through the seam.
+
+PostgREST refuses the ENTIRE query when the select list names an ungranted column, so this is not
+cosmetic: the QR landing, the tab context, the tab screen, the receipt screen and the
+session-token guard all fail closed at once. **This is the same finding the previous session
+recorded at "Identical at 99d2853. Staging breaks the same way" — the staging-first instruction
+predates it.**
+
+### The reconciliation does not rescue it — checked, not assumed
+
+Neither `reconcile/main-to-staging-2` (`c37e5ca`) nor `-batch2` (`715461f`) carries the seam:
+
+    lib/tab-member-key.ts               ABSENT on both
+    app/api/tabs/[tabId]/view/route.ts  ABSENT on both
+    lib/tab-session.ts                  still 2 selects naming members, on both
+    9fcb147 / 25724cb / 2ccea66         none is an ancestor of batch2
+
+Both batches were cut before the seam shipped. **After batch 1 and batch 2 both land, staging
+still breaks.** Getting staging migration-ready needs a THIRD landing: the seam cherry-picked on
+top of batch 2.
+
+### Why staging was never a valid rehearsal for this change
+
+The combination it would test — **old client + new grant** — is one that will never exist in
+production. A red there is already predicted with certainty and teaches nothing; a green there
+would be impossible. The real rehearsal for this migration was the **enumeration**, and it was
+done twice last session by two agents who converged independently on the same four sites.
+
+## PRODUCTION PRECONDITION — VERIFIED, and this is the part that matters
+
+Enumerated at `origin/main` by **client-construction site**, not by grepping the column — the
+recorded method, because `lib/tab-session.ts` names `members` inside the library and five of its
+six call sites never mention the word.
+
+25 files import the browser anon client. Every `.from('tabs')` on main was then read with its
+select list. Result:
+
+**Zero browser-anon selects name `members` or `customer_name`.** The only two anon `tabs` reads
+left are `v2/page.tsx:381` (`'id, total, status'`) and `lib/tab-session.ts:129` (11 columns, no
+`members`).
+
+Every site that does name the column is an `app/api/**` route on the service-role client —
+`orders/route.ts`, `orders/history`, `order-requests/[requestId]/accept`, `tabs/[tabId]/{route,
+join, member, view}`, `tabs/{route,active,join}` — and service_role holds `GRANT ALL`, untouched
+by this migration. That key is measured present in both Worker envs (#266), so the
+`createServerSupabaseClient` anon-fallback (#264) does not fire.
+
+**One residual, stated rather than buried.** `components/orders-dashboard.tsx:536` selects
+`members` on the *browser* client, as signed-in staff under the `authenticated` role, which this
+migration does not touch. If that query ever ran before auth hydration it would run as anon and,
+post-migration, return 42501 instead of rows. Today the same pre-auth call would **succeed and
+return tabs for every restaurant**, so the change makes it fail closed. A staff-surface
+degradation, not a leak, and strictly an improvement in the exposure direction — but it is a
+behaviour change on a staff screen and it is not covered by any test.
+
+## BASELINE PROBES — both environments, read-only, BEFORE
+
+Run with the public anon key of each project. The point is the PAIR, per the 42501 correction.
+
+    STAGING (mdqjpxwczrhkxkbqatqa)                PRODUCTION (ihlmmpmolnpchzgwyhgh)
+    select *                  DENIED 42501        select *                  DENIED 42501
+    select id, status, total  OK rows=5           select id, status, total  OK rows=5
+    select tab_pin            DENIED 42501        select tab_pin            DENIED 42501
+    select id, ..., members   OK rows=5           select id, ..., members   OK rows=5
+    select customer_name      OK rows=5           select customer_name      OK rows=5
+
+    members[] rows exposing a session_id: 5 of 5 on BOTH
+    member object keys: ["joined_at","session_id","display_name"] on BOTH
+
+**The exposure is live on staging too**, which was not previously recorded — the earlier
+measurement was production-only.
+
+The AFTER state is a four-way discriminator, not a single bit: `members` and `customer_name` must
+both flip to DENIED **while `id, status, total` stays OK**. If all three refuse, the REVOKE landed
+and the re-GRANT did not, and that is a guest outage rather than a fix.
+
+Probe script: `scratchpad/anon-probe.mjs` (read-only, takes an env file and the two var names).
+
+## THE ROLLBACK, WRITTEN BEFORE THE FORWARD STEP
+
+One statement restores the prior state exactly, and it is the same idiom as the migration:
+
+    GRANT SELECT (members, customer_name) ON TABLE public.tabs TO anon;
+
+Column grants are additive, so this needs no REVOKE and cannot disturb the other 15.
+
+## NOTHING WAS APPLIED
+
+No Supabase command has been run this session. No migration applied to either database, no
+production write, no push, no deploy, no branch created. `git status` clean.
