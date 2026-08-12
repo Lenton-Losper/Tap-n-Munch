@@ -161,4 +161,58 @@ describe('anon `tabs` selects and `members` (#262)', () => {
     }
     expect(offenders).toEqual([])
   })
+
+  it('the migration removes exactly `members` and `customer_name` from the anon grant', () => {
+    const grantedColumns = (sql: string): string[] => {
+      const grant = /GRANT SELECT \(([^)]*)\)\s*ON TABLE public\.tabs TO anon;/.exec(sql)
+      if (!grant) throw new Error('no anon column grant on public.tabs')
+      return grant[1]
+        .split(',')
+        .map((column) => column.replace(/--.*$/gm, '').trim())
+        .filter(Boolean)
+    }
+
+    const before = grantedColumns(
+      read('supabase/migrations/20260726200000_enable_rls_tabs_restaurants_users_sessions.sql'),
+    )
+    const after = grantedColumns(
+      read('supabase/migrations/20260811120000_tabs_anon_grant_drop_members.sql'),
+    )
+
+    // Column grants are not individually revocable, so the whole anon privilege set is dropped
+    // and the survivors are granted back. That makes it very easy to lose a column by accident,
+    // and losing one is a full guest outage: PostgREST refuses the ENTIRE query when the select
+    // list names an ungranted column.
+    expect(before.filter((column) => !after.includes(column))).toEqual([
+      'members',
+      'customer_name',
+    ])
+    expect(after.filter((column) => !before.includes(column))).toEqual([])
+  })
+
+  it('the migration revokes before it re-grants, or the removals do not take', () => {
+    // Statements only. The header quotes the 20260726200000 policy verbatim to explain what was
+    // wrong, and a comment is not a statement.
+    const sql = read('supabase/migrations/20260811120000_tabs_anon_grant_drop_members.sql')
+      .replace(/^[ \t]*--.*$/gm, '')
+
+    const revoke = sql.indexOf('REVOKE ALL ON TABLE public.tabs FROM anon;')
+    const grant = sql.indexOf('GRANT SELECT (')
+    expect(revoke).toBeGreaterThan(-1)
+    expect(grant).toBeGreaterThan(revoke)
+    // The policy, the authenticated grant and the service_role grant are all out of scope.
+    expect(sql).not.toContain('POLICY')
+    expect(sql).not.toContain('TO authenticated')
+    expect(sql).not.toContain('TO service_role')
+  })
+
+  it('the seam and the orders side derive the SAME key, or the pairing silently breaks', () => {
+    // Both halves must go through lib/tab-member-key.ts. A second, independent derivation would
+    // leave every line labelled "Guest" with nothing failing.
+    expect(read('app/api/tabs/[tabId]/view/route.ts')).toContain("from '@/lib/tab-member-key'")
+    expect(read('lib/guest-orders/queries.ts')).toContain("from '@/lib/tab-member-key'")
+    // The zero-caller session-token route returned the row VERBATIM, members included; it is
+    // redacted through the same helper so the two reads cannot disagree.
+    expect(read('app/api/tabs/[tabId]/route.ts')).toContain('redactTabMembers')
+  })
 })
