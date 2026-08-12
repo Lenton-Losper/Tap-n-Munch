@@ -3,9 +3,11 @@
 Four artifacts, plus the roles and deployment rules they depend on. Paste sections 1–3 into
 agent briefs; section 4 and below are for whoever is coordinating.
 
-**Status: provisional. Revision 2, 2026-08-11** — see the revision at the end of this document
-for the role model, the activation model, the PROOF CEILING handoff field and rules 7-9. Revision
-1 below is unchanged; nothing in it has been retired.
+**Status: provisional. Revision 3, 2026-08-12** — see the revision at the end of this document
+for two tooling-reliability rules earned landing #262 on a machine whose session notes did not
+survive being pushed. Revision 2 added the role model, the activation model, the PROOF CEILING
+handoff field and rules 7-9. Revisions 1 and 2 below are unchanged; nothing in either has been
+retired.
 
 This was written on 2026-08-10 from one long session and it will be wrong within a week. It is version-controlled so the edits have history — when a rule here
 misfires, change it here rather than working around it in a brief. Test manually on 5–10 real
@@ -845,3 +847,83 @@ half-states: the audit trail gone while the paid order remained.
 And: **a cleanup script must discover dependents rather than trust the run's own list.** That run
 reported the orders and audit rows it created. The receipt document it had also issued surfaced only
 when the delete failed.
+
+---
+
+# Revision 3 — 2026-08-12
+
+Written from a fresh session on a new machine. The prior session's brief named a checkpoint
+(`55e6dac`) and a "Revision 3" that turned out not to exist on any branch — the session that
+earned them ran on a machine whose work was never pushed, the same failure mode Revision 1 already
+names ("work can exist on no remote at all") applied to this document about itself. What follows is
+**re-derived from this session's own verification**, not recovered from memory, per the human's
+explicit instruction not to guess at what the lost session wrote. Revisions 1 and 2 are unchanged.
+
+Same standard as before: every item cites what was checked, and how.
+
+## Rule 10 — a script's own location is not where you think you are running it against
+
+`scripts/check-migration-drift.mjs` resolves the migrations directory it audits from its OWN file
+location, not from where it is invoked:
+
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const MIGRATIONS_DIR = join(__dirname, '..', 'supabase', 'migrations')
+
+This is ordinary, usually-correct Node.js practice — a script resolving its own assets relative to
+itself works regardless of `cwd`. It becomes a footgun specifically under this project's TOOLCHAIN
+rule: `node_modules` is junctioned across worktrees, but `scripts/` and `supabase/migrations/` are
+not — every worktree carries its OWN copy of this file. A path that reaches into a DIFFERENT
+checkout than the one you are standing in — a stale absolute path copied from an earlier command, a
+habit of running the main checkout's copy from inside a worktree — audits THAT checkout's
+migrations, silently. The output is correctly formatted and confidently wrong; nothing distinguishes
+it from a genuine run against your own tree.
+
+**Demonstrated directly this session, not only reasoned about** — see Rule 11: two worktrees open at
+once turned out to be carrying genuinely different copies of this exact file, which is what led to
+finding Rule 11 in the first place.
+
+**Always invoke the copy inside the worktree you are auditing** — `node scripts/check-migration-drift.mjs`
+from that worktree's own root, never a path reaching into another checkout. Same discipline as the
+TOOLCHAIN section's `node node_modules/typescript/bin/tsc`, and the identical reason: the thing that
+silently resolves to the wrong target gives no error, only a wrong answer.
+
+## Rule 11 — the drift check has THREE states on one environment and TWO on the other, and nothing says so
+
+`check-migration-drift.mjs`'s own docblock names two failure modes — `LOCAL_NOT_APPLIED` and
+`APPLIED_NOT_LOCAL` — both real. Commit `76153d8` ("teach drift check environment scope", #143)
+added a third, non-blocking tier: a migration applied outside its declared `-- @env:` scope, or a
+target environment that could not be identified from `SUPABASE_URL`, now WARNS rather than either
+passing silently or failing the deploy.
+
+**Verified this session, by reading each environment's own copy, not inferred from a commit
+message:**
+
+- `origin/main:scripts/check-migration-drift.mjs` — the TWO-state version. No `targetEnvironment`,
+  no `-- @env:` parsing, no `appliedOutOfScope`. `production-worker.yml:138-139` runs `node
+  scripts/check-migration-drift.mjs` checked out from `main`, so this is what production's actual
+  deploy gate runs.
+- `origin/cloudflare-staging:scripts/check-migration-drift.mjs` — the THREE-state version.
+  `staging.yml:546-551` runs the same command name, checked out from staging, so staging's gate
+  understands scope and production's does not.
+- `76153d8` is reachable from `docs/agent-operating-contracts`, `cloudflare-staging`, and several
+  `fix/*`/`reconcile/*` branches — **not from `origin/main`.**
+
+**Dormant today** — no migration currently committed on `main` carries an `-- @env:` header (checked
+this session, all files scanned). It stops being dormant the moment someone commits an
+environment-scoped migration believing the docblock's description of it is live everywhere: on
+`main` the header is not recognised at all, the file is scoped `both` by default, and an
+`-- @env: staging`-only migration would be reported `LOCAL_NOT_APPLIED` against production — exactly
+the "genuine dilemma" #143 was written to resolve, silently reintroduced on one of the two
+environments.
+
+**This is the same class Revision 2's close-audit methodology exists to catch** — `main` is built by
+cherry-pick, so "fixed" drifts — except every prior instance was product code. This one is the AUDIT
+TOOLING ITSELF running two different versions of its own rules on the two environments it is
+supposed to be comparing, which is a blind spot no close-audit run FROM either environment can see
+about its own gate — the same shape as Revision 2's Integration & State Auditor section, applied to
+a script instead of an agent.
+
+**Before relying on a green drift check for anything scope-sensitive, confirm which version actually
+ran**: `grep -c targetEnvironment scripts/check-migration-drift.mjs` in the checkout the gate used;
+zero means the two-state version, `-- @env:` headers are decoration there, and `76153d8` needs
+porting to `main` before scoping can be trusted on production's own gate.
