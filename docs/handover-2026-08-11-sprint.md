@@ -1879,3 +1879,138 @@ The measured baseline was **15 failed suites / 11 failed tests** for most of the
 ## WHAT THE HUMAN NEEDS TO SET (answered in the final message)
 
 `SUPABASE_DB_PASSWORD`, in `.env.local` (gitignored, and the script's shell inherits it). **Staging and production are separate Supabase projects and have separate database passwords** — one value will not serve both. The CLI is currently linked to staging; switching targets needs `npx supabase link --project-ref ihlmmpmolnpchzgwyhgh` and back. The `safe-supabase-linked.ts` guard takes the expected ref as its first argument and refuses if the link does not match, which is what stops a staging command hitting production.
+
+---
+---
+
+# CHECKPOINT — 2026-08-12, fresh session. Two corrections to inherited state, #223 completed, #265 packet.
+
+## STATE, measured this session, not inherited
+
+    origin/main                 3f521498348bce9b4b7c57e0b5515c75c5fae65f   production, cache-busted ×2, matches exactly
+    origin/cloudflare-staging   6167f5dc1678d6a8da32ea7df58df8b44ffee5c4
+    open issues                 121 (gh issue list, exact count)
+    docs/agent-operating-contracts tip                                     9c3c326 — REVISION 2 is what governs; no Revision 3 exists on this branch
+
+**Two things the incoming brief for this session got wrong, both caught by verifying rather than trusting:**
+
+- **The named checkpoint `55e6dac` does not exist.** Not on this branch, not on any branch — `git cat-file -e` fails and `git log --all` finds nothing. Whatever produced that SHA, it never reached `origin`. The real tip is `9c3c326`, five commits ahead of what this file's last checkpoint (`c0dd102`) described.
+- **"Revision 3 governs" is false as of this checkout.** `agent-operating-contracts.md` at `9c3c326` contains Revision 1 and Revision 2 only. If a Revision 3 exists somewhere it is not on `origin/docs/agent-operating-contracts`.
+
+**`.env.local` is present but not populated.** One line, 39 bytes, `PAYCLOUD_TERMINAL_SN` only — no `SUPABASE_DB_PASSWORD`, no Supabase keys. Functionally the same blocker this file already named at the previous checkpoint: the #262 migration is still stuck behind it. Treated as a hard stop for anything needing real DB/Supabase credentials (matches the standing instruction); did not block #223 (hermetic tests only) or #265 (a ruling packet, no live query needed).
+
+## #223 — COMPLETE on `fix/223-amount-gates`, NOT pushed
+
+`bcbde10` (shared foundation + cron leg, already on the branch from earlier the same day per its own commit timestamp) + `ee93153` (this session — webhook both paths, `reconcileOrphanPayments`, and the `payments/receipt/route.ts` eighth gate). Ruling applied exactly as given: **Q1:A** integer cents / absent-is-not-agreeing extended to all four sites, **Q2:A** (query Finatic where no amount is present — already the cron leg's shape, unchanged), **Q3: quarantine on the cron only, refuse everywhere else.**
+
+- `app/api/webhooks/paycloud/route.ts` — both paths (signature-valid, signature-fallback) shared one bug: `markOrdersPaidConfirmedByIds` wrote `amount: Number(row.total)`, never comparing it to anything the gateway actually said. Fixed by comparing the gateway's one figure against the **SUM** of every order the webhook event names (not a single row — a webhook can settle several orders at once), before writing anything. Refused: both figures recorded (`payment.verification_uncertain` always, `payment.amount_mismatch` when a figure was actually received — the established #187/#190 two-action split), webhook still ACKs 200 (Finatic will report the same disagreeing amount on every retry; a 503 buys nothing).
+- `lib/payments/reconcile-orphan-payments.ts` — same shape, `payment_events.amount` was selected nowhere and never read. Fixed the same way, with one extra trap avoided: the sum has to be over **every** order the event names, not only the currently-unpaid subset, or an already-paid sibling silently shrinks the expected total and manufactures a false mismatch. Covered by a dedicated test (`reconcile-orphan-payments-amount-mismatch.test.ts`, "an already-paid sibling does not shrink the expected total").
+- `app/api/payments/receipt/route.ts` — the **eighth gate**, previously unenumerated by either the writer grep or the comparator grep (it isn't a `markOrderPaidConfirmed` call at all — it's the pre-checkout client-amount validation). Two defects in one line: raw-float comparison (`#180`'s shape) and a **NaN passthrough** — `Math.abs(NaN - x) > 0.02` is `false`, so an absent/garbage client amount silently PASSED instead of being refused. Fixed via `amountsMatch` at `PAYMENT_AMOUNT_TOLERANCE_CENTS` (this is a CLIENT leg — nothing has been charged yet at this point in the flow, same shape as `tabs/[tabId]/settle`, not a gateway leg despite sitting inside the same ruling).
+
+**Four pre-existing hermetic tests had their own coverage silently defeated by the new gate** (fixtures with no `amount`/no matching total) and were caught by running them, not assumed clean: `e04111-recovery-reconcile.test.ts` (three fixtures), `e04111-recovery-webhook-route.test.ts` (one case, was reaching 200 instead of the 503 it asserts). Fixed the fixtures, not the assertions. 11 hermetic suites / 67 tests green. `tsc 5.9.3` exit 0.
+
+**Not pushed.** Sitting on local `fix/223-amount-gates`, one commit ahead of `origin/fix/223-amount-gates`. Standing rule: nothing to production without the human's go, and pushing a branch is visible/shared state even short of that — left for the human to say push or not.
+
+## #265 — RULING PACKET, delivered this checkpoint, unruled
+
+```
+RULING — #265
+
+FINDING
+- The PIN is written once at creation (app/api/tabs/route.ts:100), compared at two join
+  routes (join/route.ts:35,45 and [tabId]/join/route.ts:86,91), and displayed exactly
+  once — to the creator's own device, stored only in that device's sessionStorage
+  (flashtap_creator_tab_pin). No staff surface reads tab_pin; confirmed again this
+  session against origin/main.
+- Before #262's containment, the ONLY way back in after losing that local value was the
+  alreadyMember branch: present a session_id you already held, skip the PIN. That was
+  also the vulnerability — session_id was independently readable by ANY anon caller via
+  tabs.members (no restaurant scope) and returned verbatim by GET /api/tabs/[tabId].
+  Containment made PIN mandatory unconditionally (verified on origin/main this session:
+  join/route.ts now reads "if pinRequired { require PIN, member or not }"), closing the
+  bypass and the recovery path in the same line, because they were the same line.
+- The #262 seam (shipped, on origin/main) has since closed BOTH places that made
+  session_id readable at the application layer — confirmed by reading both routes on
+  origin/main this session: GET /api/tabs/[tabId] no longer selects session_id at all;
+  the new GET /api/tabs/[tabId]/view returns an opaque HKDF-derived member_key in its
+  place. NOT yet closed: the underlying Postgres grant. Migration
+  20260811120000 (REVOKE members from the anon SELECT list) is written and correct but
+  unapplied — blocked on SUPABASE_DB_PASSWORD, confirmed absent from this machine's
+  .env.local too. Until the decisive probe (`select id, members` on production refuses)
+  passes, a caller with nothing but the public anon key and curl can still read
+  session_id directly from Postgres, bypassing the app entirely.
+- member_key is NOT a safe substitute credential for a rejoin check: it is served by an
+  intentionally UNAUTHENTICATED route to anyone who knows the tabId, by design (mirrors
+  the pre-token v2 landing read). Using it the way session_id was used would recreate
+  the identical bypass with an opaque value standing in for a raw one.
+
+REFRAMED DECISION
+Not "how do we let staff read out a PIN" — no staff surface reads it today and building
+one is a new capability, not a restoration. Two questions, because they answer two
+different failure shapes: (a) same device, PIN specifically lost, session_id still
+valid locally; (b) different device, or local storage wholly cleared.
+
+Q1. Is "no staff surface may ever display tab_pin" a hard requirement going forward, or
+    incidental — true today only because nothing needed it yet?
+  A. Hard requirement. Every option below must not expose the raw PIN to staff, ever.
+  B. Incidental. A staff-visible PIN (e.g. on the table/tab card) is an acceptable
+     fourth option.
+  RECOMMENDATION: A — nothing about the PIN's role (a same-party gate, not a payment
+  credential) argues for widening who can read it, and widening reachable columns has
+  already produced #262 once this sprint.
+
+Q2. Failure shape (a) — same device, PIN lost, session_id still valid locally. Restore
+    automatic recognition?
+  A. Reinstate the alreadyMember bypass (or equivalent), gated on the #262 migration
+     being CONFIRMED applied (the decisive probe passing), not merely committed.
+  B. Leave it closed permanently; treat every forgotten-PIN case as shape (b).
+  RECOMMENDATION: A — the thing that made the bypass dangerous is a closed
+  application-layer surface and one migration away from closed at the database layer
+  too; once both are true this is an ordinary bearer-token check, and it silently
+  resolves most forgotten-PIN cases with zero staff involvement.
+
+Q3. Failure shape (b) — different device, or local storage cleared. What replaces
+    "staff settles your tab"?
+  A. Staff-triggered re-mint, PIN never staff-visible. A terminal/POS action ("Reset
+     PIN for this tab") flags the tab for one re-mint; the customer re-scans the SAME
+     static table QR they already have; the flow detects the flag, mints a NEW PIN
+     server-side, and displays it ONCE on the customer's own device — reusing the exact
+     creation-time UX rather than inventing a new one. Staff's screen never shows the
+     value; they only trigger the flag. tab_pin changes; session_version is NOT
+     touched, so other members already holding a valid session are undisturbed.
+  B. Staff-visible PIN, relayed verbally. Forecloses Q1:A.
+  C. No product change; staff continues settling the whole tab. Status quo — the thing
+     #265 exists because of.
+  RECOMMENDATION: A — the only option that resolves every forgotten-PIN case (device
+  changed or not) without reopening what #262 just closed or mooting Q1 before it is
+  answered.
+
+CUSTOMER IMPACT
+Today: no self-service recovery; staff must settle the whole table's tab, disruptive
+mid-meal and does not scale under load — Riviera's own 13:30-16:00 service window is
+exactly the case this bites hardest. Q2:A resolves the common case automatically the
+moment the migration lands. Q3:A resolves the rest with one staff tap and no verbal PIN
+sharing.
+
+BLOCKS
+Q2's implementation is blocked on the #262 migration landing and being PROBED, not
+assumed — the decisive probe is the only acceptable evidence, per this file's own
+standing rule. Q3 has no such dependency and can ship independently, before or after Q2.
+
+CONFIDENCE: high on the finding (read directly from shipped code at origin/main this
+session); medium on Q3's exact UX (assumes the landing page can cheaply distinguish
+"fresh table, no tab" from "this table's tab flagged for re-mint" — plausible from
+v2/page.tsx's existing 12-hour-cutoff lookup shape, not verified against the current
+file this session).
+
+COULD NOT DETERMINE
+Whether product/support has an operational reason to want a staff-visible PIN for
+dispute resolution ("customer says we never got one") — a support-policy question, not
+one the code answers. Folded into Q1 rather than assumed either way.
+
+Reply format: #265: Q1:_ Q2:_ Q3:_
+```
+
+## Queued rather than idled
+
+`#262`'s migration and everything gated on it (Q2 above, plus the standing decisive-probe requirement) stayed queued behind the missing `SUPABASE_DB_PASSWORD` — not attempted, not worked around. Staging's `#262` third landing intentionally left alone per instruction: Riviera is trading 13:30–16:00 and staging is the fallback environment if anything goes wrong during service.
