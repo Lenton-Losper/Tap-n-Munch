@@ -214,6 +214,11 @@ export const OWES_MONEY_PAYMENT_STATUSES = [
   'cash_pending',
   'failed',
   'terminal_pending',
+  // #223. A held order has a REAL gateway payment against it whose amount we could not agree,
+  // so it is not settled and the restaurant is still owed. Omitting it here is the exact failure
+  // the paragraph above describes: it would drop out of the tab's unpaid total and let
+  // can_close report true over genuine debt.
+  'amount_mismatch_hold',
 ] as const
 
 export function owesMoney(status: unknown): boolean {
@@ -226,8 +231,47 @@ export function owesMoney(status: unknown): boolean {
  * been pushed to the terminal before, or whose card attempt failed, can still be paid in
  * cash; only the live attempt blocks it.
  */
+/**
+ * #223 — the quarantine status. A gateway CONFIRMED a payment against this order and the amount
+ * did not agree with what the order says it costs.
+ *
+ * WHY A DISTINCT STATUS RATHER THAN LEAVING IT `pending`.
+ *
+ * The held state must be POSITIVELY IDENTIFIABLE, not an absence. `auto-cancel-stale-pos-orders`
+ * already has an outcome that is an absence -- `skippedUncertain` leaves the order `pending`, so
+ * it is indistinguishable from an order the sweep has not reached, and it is re-queried every two
+ * minutes forever. That is #215's shape and it is what this must not copy. A distinct value is
+ * queryable, is visible on the staff surfaces that read payment_status, and drops out of the
+ * sweep's `payment_status = 'pending'` filter for free.
+ *
+ * The value follows `terminal_pending`, the existing precedent for a payment_status outside
+ * {paid, pending, cancelled, failed}. Neither needs a CHECK constraint change: the column is free
+ * text (#180's packet established there is no constraint to widen).
+ *
+ * WHY IT IS NOT CASH-SETTLEABLE, which the derivation below would otherwise have made it.
+ *
+ * Every other member of OWES_MONEY can legitimately be collected in cash. This one cannot: a card
+ * payment has ALREADY been taken against it. Offering staff a cash button would collect the same
+ * order twice, which is a worse defect than the mismatch that produced the hold. It is excluded
+ * explicitly rather than by calling it a mid-flight card payment, because it is not one -- the
+ * attempt finished, and what is unresolved is the figure, not the outcome.
+ *
+ * It is also absent from CLAIMABLE_PAYMENT_STATUSES, so a card settlement cannot sweep it up
+ * either. Resolution is a human decision, deliberately: both figures are recorded and someone has
+ * to say which is right.
+ */
+export const AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS = 'amount_mismatch_hold'
+
+export const HELD_FOR_REVIEW_PAYMENT_STATUSES = [
+  AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS,
+] as const
+
+export function isHeldForReviewPaymentStatus(status: unknown): boolean {
+  return matchesStatusSet(status, HELD_FOR_REVIEW_PAYMENT_STATUSES)
+}
+
 export const CASH_SETTLEABLE_PAYMENT_STATUSES = OWES_MONEY_PAYMENT_STATUSES.filter(
-  (status) => !isMidFlightCardPayment(status),
+  (status) => !isMidFlightCardPayment(status) && !isHeldForReviewPaymentStatus(status),
 )
 
 export function isCashSettleablePaymentStatus(status: unknown): boolean {

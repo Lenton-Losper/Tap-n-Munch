@@ -5,6 +5,11 @@ import {
   queryFinaticOrderPaid,
 } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import {
+  AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS,
+  amountsMatch,
+  GATEWAY_AMOUNT_TOLERANCE_CENTS,
+} from '@/lib/payments/payment-integrity'
 
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 
@@ -34,6 +39,78 @@ export type AutoCancelStalePosOrdersResult = {
    * apart without re-probing Finatic.
    */
   e04111Ids: string[]
+  /**
+   * #223. Gateway confirmed a payment whose amount did not agree with the order total (or
+   * carried no amount at all). NOT paid and NOT cancelled -- moved to a distinct
+   * payment_status and left for a human. Reported separately so a caller can tell a hold
+   * from an uncertain skip, which is the distinction that makes it visible.
+   */
+  heldForAmountReviewCount: number
+  heldForAmountReviewIds: string[]
+}
+
+/**
+ * #223 quarantine. A gateway-confirmed payment whose amount we could not agree.
+ *
+ * POSITIVELY IDENTIFIABLE, which is the requirement. The order moves to a distinct
+ * payment_status, so it is queryable, it shows on the staff surfaces that read payment_status,
+ * and -- because the sweep's candidate filter is `payment_status = 'pending'` -- it drops out of
+ * the sweep instead of being re-held every two minutes. Contrast `skippedUncertain`, which leaves
+ * the order `pending` and is therefore indistinguishable from an order the sweep has not reached
+ * yet: that is the invisible-absence shape this must not copy.
+ *
+ * The audit row carries BOTH figures, so a human resolving it does not have to re-query Finatic
+ * to see what the disagreement was.
+ *
+ * The `.eq('payment_status', 'pending')` re-assertion is the same concurrency guard cancelByIds
+ * uses: a live terminal callback that resolved the order first wins, and this writes nothing.
+ */
+async function holdForAmountReview(
+  supabase: Supabase,
+  params: {
+    orderId: string
+    restaurantId: string
+    merchantOrderNo: string
+    gatewayAmount: number | null
+    orderTotal: number
+    transactionId: string | null
+  },
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('orders')
+    .update({ payment_status: AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS })
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .eq('payment_status', 'pending')
+    .select('id')
+
+  if (error) throw error
+  if (!data || data.length === 0) return false
+
+  const { error: auditError } = await supabase.from('audit_logs').insert({
+    restaurant_id: params.restaurantId,
+    entity_type: 'order',
+    entity_id: params.orderId,
+    action: 'payment_amount_mismatch_held',
+    metadata: {
+      source: 'auto_cancel_cron_finatic_verified',
+      merchantOrderNo: params.merchantOrderNo,
+      transactionId: params.transactionId,
+      // BOTH figures, named unambiguously. `gatewayAmount: null` means Finatic confirmed the
+      // payment but returned no amount -- ABSENT is not AGREEING, and it is held for the same
+      // reason a disagreeing figure is.
+      gatewayAmount: params.gatewayAmount,
+      orderTotal: params.orderTotal,
+      reason:
+        params.gatewayAmount === null
+          ? 'Finatic confirmed a payment but returned no amount, so the amount was never verified.'
+          : 'Finatic confirmed a payment whose amount does not equal the order total.',
+    },
+  })
+  // A failed audit insert must not leave the hold unrecorded and the order silently moved.
+  if (auditError) throw new Error(`holdForAmountReview audit: ${auditError.message}`)
+
+  return true
 }
 
 async function cancelByIds(
@@ -108,6 +185,8 @@ export async function autoCancelStalePosOrders(
     skippedUncertainCount: 0,
     skippedUncertainIds: [],
     e04111Ids: [],
+    heldForAmountReviewCount: 0,
+    heldForAmountReviewIds: [],
   }
 
   let candidateQuery = supabase
@@ -157,19 +236,76 @@ export async function autoCancelStalePosOrders(
       const finaticResult = await queryFinaticOrderPaidFn({ merchantOrderNo, merchantNo, storeNo })
 
       if (finaticResult.paid) {
+        // #223. This leg marked the order paid on Finatic's word with NO amount comparison at
+        // all -- `finaticResult.amount ?? Number(order.total)` USES the gateway figure as the
+        // written value and never asks whether it agrees. A confirmed N$20 payment marked an
+        // N$200 order paid, issued a receipt for the order total, and the disagreeing figure
+        // survived only in audit_logs.metadata.
+        //
+        // Gateway leg, so GATEWAY_AMOUNT_TOLERANCE_CENTS (zero) and ABSENT-is-not-AGREEING: if
+        // Finatic did not give us an amount, we did not verify the amount.
+        const gatewayAmount =
+          typeof finaticResult.amount === 'number' && Number.isFinite(finaticResult.amount)
+            ? finaticResult.amount
+            : null
+        const orderTotal = Number(order.total)
+        const amountAgrees =
+          gatewayAmount !== null &&
+          amountsMatch(gatewayAmount, orderTotal, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+        if (!amountAgrees) {
+          // QUARANTINE, ruled 2026-08-12. Not refuse, which every other writer does.
+          //
+          // Refusing here is the WORST of the three outcomes: the order stays `pending`, this
+          // same sweep reaches it two minutes later, and cancels it -- on a card that has
+          // already been charged. Cancelling a paid customer is worse than holding a figure we
+          // cannot agree.
+          //
+          // So: do not mark paid, do NOT cancel, record BOTH figures, leave it for a human.
+          const held = await holdForAmountReview(supabase, {
+            orderId,
+            restaurantId: orderRestaurantId,
+            merchantOrderNo,
+            gatewayAmount,
+            orderTotal,
+            transactionId: finaticResult.transactionId ?? null,
+          })
+          if (held) result.heldForAmountReviewIds.push(orderId)
+          continue
+        }
+
         const claim = await markOrderPaidConfirmed(supabase, {
           orderId,
           restaurantId: orderRestaurantId,
           reference: merchantOrderNo,
           voucherNo: finaticResult.transactionId || merchantOrderNo,
-          amount: finaticResult.amount ?? Number(order.total),
-          // #268: record Finatic's own figure separately, so a later mismatch is investigable
-          // rather than being folded into a field that also carries the order total.
-          gatewayAmount: finaticResult.amount ?? null,
+          /**
+           * BOTH RULINGS, and they compose. Ruled 2026-08-17 after measuring.
+           *
+           * #223 — `amount: gatewayAmount`, never `?? Number(order.total)`. This line is only
+           * reached when `amountAgrees`, so the gateway figure already equals the order total
+           * within GATEWAY_AMOUNT_TOLERANCE_CENTS (zero); the fallback was only ever reachable in
+           * the case that now quarantines. So #223 costs #268 nothing here.
+           *
+           * #268 — keep `gatewayAmount` as a FIRST-CLASS argument, not just audit metadata.
+           * `markOrderPaidConfirmed` derives `amountMeaning: gatewayAmount != null ?
+           * 'gateway_reported' : 'order_total'` from it. Dropping the argument COMPILES, because
+           * the parameter is optional, and silently writes `amountMeaning: 'order_total'` for a
+           * figure that came from the gateway — a false statement about provenance in the payment
+           * audit trail, invisible to tsc and to every existing test. The #306 class, in the
+           * ledger.
+           */
+          amount: gatewayAmount,
+          gatewayAmount,
           source: 'auto_cancel_cron_finatic_verified',
           extraAuditMetadata: {
             correctionReason:
               'Order hit the stale-POS timeout with no confirmed terminal callback, but Finatic confirmed a successful payment before cancellation -- corrected instead of cancelled.',
+            // #223: recorded on the AGREEING path too, so "we checked" is a fact in the row
+            // rather than an inference from the absence of a hold.
+            gatewayAmount,
+            orderTotal,
+            amountVerified: true,
           },
           fromPaymentStatuses: ['pending'],
         })
@@ -218,6 +354,7 @@ export async function autoCancelStalePosOrders(
 
   result.cancelledCount = result.cancelledIds.length
   result.correctedToPaidCount = result.correctedToPaidIds.length
+  result.heldForAmountReviewCount = result.heldForAmountReviewIds.length
   result.skippedUncertainCount = result.skippedUncertainIds.length
   return result
 }
