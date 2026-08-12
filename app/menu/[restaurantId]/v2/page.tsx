@@ -20,6 +20,7 @@ import { supabase } from '@/lib/supabase/client'
 import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
+import { isStoredTabAtAnotherTable } from '@/lib/tabs/landing-tab-actions'
 import {
   clearTabSession,
   persistTabSession,
@@ -58,6 +59,33 @@ function TabPaymentInProgressCard() {
     </div>
   )
 }
+
+/**
+ * #211 — copy for the "your tab is at a different table" case.
+ *
+ * Kept together and named so the wording is one decision in one place rather than string literals
+ * buried in JSX. Customer-facing and set by the human; no behaviour depends on the wording.
+ *
+ * THE SUBTEXT IS NOT DECORATION. Both actions below replace the stored tab on this phone — the
+ * previous tab stays open and settleable, but it leaves this device (same class as #220). Leaving
+ * a tab with money on it is the one thing a customer is anxious about here, so the reassurance is
+ * required, and it sits BENEATH the action rather than inside it: a button says what happens when
+ * you tap it, the subtext answers "but what about my bill?".
+ *
+ * If this is ever moved somewhere a second line genuinely cannot render, fold the clause into the
+ * label ("Start a new tab at Table 7 — your Table 3 tab stays open") rather than dropping it.
+ * Ruled 2026-08-12: the clause is the part that matters.
+ */
+const TAB_ELSEWHERE_COPY = {
+  /** Heading on the rejoin card when the stored tab belongs to another table. */
+  heading: (tabTable: number) => `Your tab is open at Table ${tabTable}`,
+  /** Secondary action when the SCANNED table has no open tab of its own. */
+  startHere: (scannedTable: number) => `Start a new tab at Table ${scannedTable}`,
+  /** Secondary action when the SCANNED table already has an open tab. PIN-gated. */
+  joinHere: (scannedTable: number) => `Join the tab at Table ${scannedTable}`,
+  /** Reassurance beneath either action. Names the table the EXISTING tab belongs to. */
+  staysOpen: (tabTable: number) => `Your Table ${tabTable} tab stays open`,
+} as const
 
 export type MenuLandingPageV2ContentProps = {
   restaurantIdOverride?: string
@@ -99,7 +127,13 @@ export function MenuLandingPageV2Content({
     pin_required: boolean
     status: string
   } | null>(null)
-  const [myStoredTab, setMyStoredTab] = useState<{ id: string; total: number; status: string } | null>(null)
+  // #211: `tableNumber` is the table the stored tab actually BELONGS to, which is not necessarily
+  // the table that was just scanned. Without it the landing cannot tell "you are back at your own
+  // table" from "you have walked to a different one", and it offered "Rejoin your tab" for both.
+  // The value costs nothing to carry: fetchTabById already selects table_number and threw it away.
+  const [myStoredTab, setMyStoredTab] = useState<
+    { id: string; total: number; status: string; tableNumber: number | null } | null
+  >(null)
   const [storedTabChecked, setStoredTabChecked] = useState(false)
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
@@ -358,6 +392,10 @@ export function MenuLandingPageV2Content({
       }
     }
 
+    // #211: captured locally rather than read back off `myStoredTab`, because a setState is not
+    // visible to the rest of this same pass and the open-tab decision below is made in it.
+    let storedTabTable: number | null = null
+
     if (!storedId) {
       setMyStoredTab(null)
       const { count: openOrdersCount } = await fetchGuestActiveTableOrders({
@@ -389,11 +427,17 @@ export function MenuLandingPageV2Content({
           }
 
           if (openTabRow) {
-            persistTabSession(storedId, tableNum)
+            // #211/#221: persist the tab's OWN table, never the scanned one. This used to write
+            // `tableNum`, so walking to another table silently re-pointed the stored tab at
+            // wherever you last scanned -- which destroys the comparison below on the next load
+            // and is why the mismatch was invisible.
+            storedTabTable = tab?.table_number == null ? null : Number(tab.table_number)
+            persistTabSession(storedId, storedTabTable ?? tableNum)
             setMyStoredTab({
               id: String(openTabRow.id),
               total: Number(openTabRow.total) || 0,
               status: 'open',
+              tableNumber: storedTabTable,
             })
           } else {
             clearTabSession()
@@ -411,7 +455,17 @@ export function MenuLandingPageV2Content({
 
     setStoredTabChecked(true)
 
-    if (readStoredTabId()) {
+    // #211: this used to blind the screen unconditionally whenever a tab was stored, so the
+    // scanned table's own tab was never looked up and the "a tab is already open for this table"
+    // branch below was unreachable for exactly the customers who had walked to a different table.
+    //
+    // It is still skipped when the stored tab IS this table's -- there is nothing to compare and
+    // the rejoin card is the whole answer. It is only performed when the tables differ, because
+    // then the customer needs to know what is waiting HERE before choosing.
+    const storedTabIdNow = readStoredTabId()
+    const storedTabIsElsewhere =
+      Boolean(storedTabIdNow) && isStoredTabAtAnotherTable(storedTabTable, tableNum)
+    if (storedTabIdNow && !storedTabIsElsewhere) {
       setOpenTab(null)
       return
     }
@@ -688,10 +742,43 @@ export function MenuLandingPageV2Content({
     }
   }
 
+  /**
+   * #211: the stored tab belongs to a table other than the one just scanned.
+   *
+   * Null-safe on purpose. A tab whose `table_number` we do not know is treated as "not
+   * elsewhere", so the screen falls back to today's behaviour rather than inventing a mismatch
+   * from missing data.
+   */
+  const storedTabIsAtAnotherTable = isStoredTabAtAnotherTable(myStoredTab?.tableNumber, tableNum)
+
   const handleContinueAfterPin = () => {
     if (!createdTabPin) return
     router.push(browseWithTab(createdTabPin.tabId))
     setCreatedTabPin(null)
+  }
+
+  /**
+   * #211: join the tab belonging to the table that was just SCANNED, even though this customer
+   * already holds a tab elsewhere.
+   *
+   * Deliberately not `handleStartJoinTab`, which short-circuits to the stored tab whenever one
+   * exists -- correct for every other caller and exactly wrong here, because the whole point of
+   * this action is that the two tables differ.
+   *
+   * It routes through the PIN entry (or the no-PIN join) like any other join, so it reaches
+   * `POST /api/tabs/[tabId]/join`, which enforces the PIN unconditionally since #262's
+   * containment. It must never fall through to `handleCreateTab`: creating against a table that
+   * already has an open tab hits `idx_tabs_one_open_per_table`, and `POST /api/tabs`'s 23505
+   * recovery branch still performs a PIN-less join (#218, open).
+   */
+  const handleJoinTabAtThisTable = () => {
+    if (openTab?.pin_required === false) {
+      void handleJoinWithoutPin()
+      return
+    }
+    setJoinPin('')
+    setJoinPinError(null)
+    setShowJoinPinEntry(true)
   }
 
   const handleStartJoinTab = () => {
@@ -1106,7 +1193,11 @@ export function MenuLandingPageV2Content({
             {tableNum > 0 && storedTabChecked && !tabLoading && myStoredTab ? (
               <div className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-6 text-center space-y-4">
                 <div>
-                  <p className="font-sans text-lg font-semibold text-white">Rejoin your tab</p>
+                  <p className="font-sans text-lg font-semibold text-white">
+                    {storedTabIsAtAnotherTable && myStoredTab.tableNumber != null
+                      ? TAB_ELSEWHERE_COPY.heading(myStoredTab.tableNumber)
+                      : 'Rejoin your tab'}
+                  </p>
                   <p className="font-sans text-sm text-white/80 mt-2">
                     Total so far: {currency}{(myStoredTab.total || 0).toFixed(2)}
                   </p>
@@ -1124,6 +1215,44 @@ export function MenuLandingPageV2Content({
                 >
                   {tabActionLoading === 'join' ? 'Rejoining…' : 'Rejoin your tab'}
                 </Button>
+                {/*
+                  #211: the second action. Without it "Rejoin your tab" is the ONLY thing offered
+                  to a customer sitting at a different table, which is the dead end the issue is
+                  about. Which action it is depends on what is waiting at the SCANNED table --
+                  join its existing tab (PIN-gated) or start a new one. Offering "start" against a
+                  table that already has an open tab would hit the unique index and fall into
+                  #218's PIN-less 23505 recovery branch, so the two cases must not be collapsed.
+                */}
+                {storedTabIsAtAnotherTable && myStoredTab.tableNumber != null && (
+                  <div className="space-y-2">
+                    {openTab ? (
+                      <Button
+                        variant="outline"
+                        size="lg"
+                        onClick={handleJoinTabAtThisTable}
+                        disabled={tabActionLoading !== null || blockOrderingForHostedPending}
+                        className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                      >
+                        {TAB_ELSEWHERE_COPY.joinHere(tableNum)}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="lg"
+                        onClick={handleCreateTab}
+                        disabled={tabActionLoading !== null || blockOrderingForHostedPending}
+                        className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
+                      >
+                        {tabActionLoading === 'create'
+                          ? 'Creating tab…'
+                          : TAB_ELSEWHERE_COPY.startHere(tableNum)}
+                      </Button>
+                    )}
+                    <p className="font-sans text-xs text-white/60">
+                      {TAB_ELSEWHERE_COPY.staysOpen(myStoredTab.tableNumber)}
+                    </p>
+                  </div>
+                )}
                 <Button
                   variant="outline"
                   size="lg"
