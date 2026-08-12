@@ -2587,3 +2587,90 @@ Integrity-helper references per writer (`amountsMatch|payment-integrity|PAYMENT_
 
 Four writers with ZERO amount comparison, and the count grep is only a starting point — a symbol
 grep cannot find a missing check, which is how five sweeps missed #223.
+
+---
+---
+
+# CHECKPOINT 8 — 2026-08-12. #223 packet RULED, #268 filed, #242 SHIPPED.
+
+## STATE
+
+    production / origin/main   3f521498348bce9b4b7c57e0b5515c75c5fae65f   cache-busted x3
+    origin/cloudflare-staging  6167f5d
+    open issues                121
+
+Production path today, three gated deploys:
+
+    2ccea66 -> e326a55   #262 migration file + restored assertions
+            -> f7f28fc   #211 table-mismatch landing
+            -> 3f52149   #242 webhook resolver .or() -> two .eq()
+
+## #223/#233/#187/#226 — RULED. `Q1:A Q2:A Q3:B-for-the-cron-only, A everywhere else`
+
+Recorded in full on #223; cross-linked from #233, #187, #226.
+
+**Three corrections the packet made before asking anything:**
+
+1. **Three paid-writers and one pre-payment gate, not four writers.** My own enumeration table
+   conflated them and the brief inherited it. `app/api/payments/receipt/route.ts` writes
+   `payment_status: 'pending'` and a checkout URL — it never marks anything paid. It is the last
+   RAW-FLOAT comparison in the repo (`Math.abs(...) > 0.02`), not a missing one.
+2. **None of the three can mark an order paid on money that never arrived.** All require an
+   independent confirmation. The real defect is narrower: *money arrived and we never checked it
+   was THIS MUCH.* Framing it the other way would have justified adding verification that already
+   exists and left the amount unchecked.
+3. **Two writers capture the gateway figure into an audit row beside the order total and never
+   compare them** — the evidence needed to detect the defect is recorded at the moment the defect
+   is committed.
+
+**The ruling:** extend the existing gateway rule (`GATEWAY_AMOUNT_TOLERANCE_CENTS = 0`, integer
+cents, ABSENT-is-not-AGREEING) to all four; #226 compares against the SUM of covered orders (same
+rule, right operand — explicitly NOT an exception); the webhook valid-signature path queries
+Finatic rather than depending on an unestablished payload shape; everything refuses on mismatch
+**except #223's cron, which QUARANTINES** — refusing there means the same sweep cancels the order
+two minutes later on a card already charged.
+
+**The quarantine state must be distinguishable from "not yet swept"**, or it is #215's shape again.
+
+Ruled, NOT implemented. Auto-H1.
+
+## #268 FILED — the forensic gap, deliberately not bundled
+
+The webhook valid-signature path records **no amount at all** — not compared, not stored. So for
+that path "has this already bitten us?" is **permanently unanswerable**, and stays unanswerable
+after the Q1 fix lands. The other three are retrospectively auditable (`audit_logs.metadata`,
+`payment_events.amount`, `finaticAmount`). Filed so nobody reads a clean audit of the three as a
+clean sheet for all four.
+
+## #242 — SHIPPED and closed by the Exploiter pass
+
+Rebased onto `f7f28fc` cleanly. **The branch did not compile** — three TS2352 in the probe script
+the branch itself adds, `origin/main` clean, and Typecheck is a production gate, so it could not
+have shipped. Fixed as one disclosed boundary cast (graded ASSERTED, contained to a read-only
+script) rather than three at the use sites.
+
+**Exploiter, both formulations measured side by side in ONE run against real staging data:**
+
+    NEGATIVE  "…,id.not.is.null"        .or() 213  ->  two .eq() 0
+              "\"NONEXISTENT\",id.not…"  .or() 213  ->  two .eq() 0
+              11 further payloads already 0 through both — reported as such, not counted as saves
+    POSITIVE  6 real references, both charsets, IDENTICAL ID SET: true on every one
+    CENSUS    0 stored values would be rejected by the validator; only "-" ever observed
+
+Unit 12/12, two-sided: restoring the `.or()` gave **4 named failures**, verified landed by blob
+(`20875c66` -> `b3f500f0`) and restored.
+
+**PROOF CEILING: DB-INTEGRATION.** The webhook HTTP path is NOT exercised end to end, and that is
+a *should-not-be-done*: staging's `__stagingFinaticStub` is live, so an unsigned probe is one field
+away from mass-marking orders paid.
+
+## Post-deploy smoke, production
+
+    landing 200 · guest count route count:2 · by-payment-ref benign 0 · injected 0
+
+## Two more CRLF probe misses, both caught by hashing
+
+A `python` substring replace and a `perl -0` pattern each reported success and changed nothing,
+because the files are CRLF and the patterns were LF-anchored. Both caught by comparing the blob
+hash before and after, both retried line-anchored with `\r?`. **The rule keeps paying: quote a
+before/after blob hash or the probe is not evidence.**
