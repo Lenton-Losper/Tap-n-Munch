@@ -2674,3 +2674,79 @@ A `python` substring replace and a `perl -0` pattern each reported success and c
 because the files are CRLF and the patterns were LF-anchored. Both caught by comparing the blob
 hash before and after, both retried line-anchored with `\r?`. **The rule keeps paying: quote a
 before/after blob hash or the probe is not evidence.**
+
+---
+---
+
+# CHECKPOINT 9 — 2026-08-12. Riviera cleaned for live service. #200 contained and corrected.
+
+Two authorised PRODUCTION writes, both against `ihlmmpmolnpchzgwyhgh`, CLI relinked to staging
+afterwards and the guard verified refusing a production command from that state.
+
+## #200 — Cappucinno pulled at Riviera, and the DIRECTION was backwards
+
+All 197 Riviera items scanned: `variant_groups` **0**, legacy `variants` **1**, `sizes` **0**. So
+the path #200 is written around is empty at Riviera; the exposure arrives through the legacy column
+and browse's synthesised Size group.
+
+    Cappucinno   base_price 45   variants [Large 45, Small 35]   has_sizes false, sizes []
+      default (Large) -> shown 45, charged 45   correct
+      select Small    -> shown 35, charged 45   OVERCHARGED N$10
+
+**#200 is filed as a revenue leak. Riviera runs it the other way.** The sign of the error is
+`variant_price - base_price`: above base_price undercharges, below it OVERCHARGES. Nothing in the
+code chooses — the stored prices do. FNB ChowNow's five sat on one side, Riviera's one sits on the
+other. A fix scoped only to "stop losing money" would be the wrong shape.
+
+And the cheaper option is the one a customer is *more* likely to tap, so the overcharge direction
+is not the rarer branch.
+
+**Contained, not fixed:** `status = 'inactive'`. NOT deleted (it returns when the pricer handles
+variants; the `variants` array is preserved) and **`base_price` deliberately left at 45** — the
+human's ruling: setting it to 35 inverts an overcharge into an undercharge, which is still a price
+nobody agreed to, and leaves a wrong number a later reader takes as correct.
+
+Verified after: **193 active Riviera items, 0 with any variant data.**
+
+## Riviera test-order cleanup — 79 orders and everything under them, gone
+
+**Dependents DISCOVERED, not assumed.** Two hard FKs onto `orders`, both NO ACTION
+(`receipt_documents.order_id`, `order_requests.accepted_order_id`), one leaf below
+(`receipt_deliveries.receipt_document_id`), and three SOFT references with no FK at all —
+`audit_logs.entity_id` (text), `payment_events.order_ids` and `payments.order_ids` (uuid[]).
+The soft set is the class that broke the previous cleanup.
+
+**THE SCOPING TRAP, and it was the most valuable part of the report.** Riviera had **118** audit
+rows but only **55** concerning orders; the other 63 are menu, settings and terminal history.
+The instruction as written — scope by `restaurant_id` — would have destroyed the audit trail of the
+objects that were explicitly being kept. Scoped to `restaurant_id AND entity_id IN (order ids)`.
+The human accepted the correction.
+
+**Cross-restaurant checks, all zero:** no `payment_events` or `payments` row spanning Riviera and
+another restaurant; no row in the delete set carrying a foreign `restaurant_id`. `restaurant_id`
+scoping and array-overlap scoping returned identical counts (3 and 10), so scoping by
+`restaurant_id` is both correct and sufficient.
+
+**Count re-read immediately before the write** — and the instruction earned itself: the global order
+count moved 2646 -> 2656 between the first read and the report. A guard in the transaction aborted
+if Riviera's count was not exactly 79, converting a surprise into a stop.
+
+Executed leaves-first in ONE transaction:
+
+    1 receipt_deliveries   1     5 payments          10
+    2 receipt_documents    1     6 order_requests     2
+    3 audit_logs          55     7 orders            79   <- last of the order tree
+    4 payment_events       3     8 tabs              29
+                                 9 restaurant_tables -> available
+
+Post-read, every target zero and every keep intact:
+
+    orders 0 · receipt_documents 0 · payment_events 0 · payments 0 · order_requests 0 · tabs 0
+    orphaned customer_sessions GLOBAL: 0    (tabs cascade worked)
+    audit_logs surviving: 63                (exactly 118 - 55, as predicted)
+    tables available: 11 of 11
+    menu_items 197 kept, 193 active · restaurant row kept
+    other restaurants' orders 1262 UNCHANGED · null-restaurant orders 1315 UNCHANGED
+
+`restaurant_tables` was checked for a tab pointer before deleting tabs — it has none
+(`current_session_version` is a counter, not a reference), so nothing dangles.
