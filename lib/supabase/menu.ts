@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
 import { resolveRestaurantUuid } from './restaurants'
 import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
+import { isCustomerVisibleMenuStatus } from '@/lib/menu/menu-item-status'
 
 /** Map Supabase column names to fields expected by menu-management UI. */
 export function normalizeMenuItemForClient(row: Record<string, any>) {
@@ -157,9 +158,13 @@ export async function deleteSupabaseMenuItem(itemId: string) {
   if (error) throw error
 }
 
+/**
+ * #272: this was a denylist (`status !== 'hidden'`) while order pricing used an allowlist
+ * ('available' | 'active'), so every other status rendered as orderable and was refused at
+ * checkout. Both sides now read lib/menu/menu-item-status.ts and nothing else.
+ */
 function isCustomerMenuItemVisible(item: Record<string, any>) {
-  const status = String(item.status || 'available').toLowerCase()
-  return status !== 'hidden'
+  return isCustomerVisibleMenuStatus(item?.status)
 }
 
 function normalizeCustomerMenuItem(item: Record<string, any>) {

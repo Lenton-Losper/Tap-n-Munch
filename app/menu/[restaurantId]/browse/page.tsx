@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
+import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
@@ -712,6 +713,16 @@ export default function MenuBrowsePage() {
 
   const handleAddToCart = async (item: MenuItem) => {
     if (!effectiveIsInTab && !isKiosk) return
+    // #272. Nothing the checkout would refuse may enter a cart. Two paths reach this
+    // function and only one was guarded: the inline Add button is disabled for
+    // 'out_of_stock' (renderAddButton), but an item with sizes/addons routes to
+    // ItemDetailModal instead, whose own Add button has no status check at all. This is the
+    // single funnel both paths pass through, so the guard belongs here.
+    //
+    // Deliberately `!isChargeable` rather than "is display-only": for the TTL.MENU window
+    // after a menu edit, a cached payload can still contain an item that is no longer
+    // visible, and that item must not be addable either.
+    if (!isChargeableMenuStatus(item.status)) return
     const hasInlineVariantGroups = getVariantGroups(item).length > 0
     if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
       setAddingItemId(item.id)
