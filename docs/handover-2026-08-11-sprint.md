@@ -2312,3 +2312,160 @@ CATEGORY list route was not read and still needs checking.
 **NOT STARTED, deliberately:** #272 implementation, #273, order editing, unpaid-tab-elsewhere flag.
 Stopped on the human's standing instruction rather than half-building the order-status lock. No
 uncommitted edits anywhere; nothing half-applied.
+
+---
+
+## #272 SHIPPED TO STAGING — `2d77fe4`, verified two-sided on the deployed worker
+
+**Branch** `fix/272-menu-status-parity` · **commits** `28b5dc1` (fix) + `2d77fe4` (lint) ·
+**base** `6167f5d` · staging fast-forwarded, `/api/version` cache-busted reads `2d77fe4`.
+Nothing to production.
+
+### The premise was true, and the measurement narrowed it
+
+Cappucinno IS `inactive` on production Riviera — read with the anon key through the same path
+a customer's browser uses: `7e70e5cf`, N$45, category **Hot Bevs**, siblings Americano
+(`active`) and coffee (`available`). Two corrections to the brief, both measured:
+
+- **The gap holds TWO items on Riviera, not one.** The second is **Duck Confit, `out_of_stock`,
+  N$380**. Status distribution across Riviera's 198 items: 193 `active`, 2 `hidden`,
+  1 `out_of_stock`, 1 `available`, 1 `inactive`.
+- **Cappucinno has `has_sizes: false`.** The size options the brief describes come from the
+  legacy `variants` column, not `has_sizes` — consistent with #200's finding that
+  `variant_groups` is inert and `variants` is what customers actually see.
+
+### What shipped — three parts, plus one the parts made necessary
+
+1. **`lib/menu/menu-item-status.ts`** — one table, both answers per status. `visible` and
+   `chargeable` are declared together, so a new status cannot be given one and silently
+   inherit the other. Unknown fails closed on both sides, which matters because
+   `menu_items.status` has **no CHECK constraint** (`schema.sql:502`, DB default `'active'`
+   while the admin UI writes `'available' | 'out_of_stock' | 'hidden'` — `'inactive'` is not
+   in the UI's vocabulary at all, which is why it could only have been set out-of-band).
+2. **`invalidateMenuCache` on all five `menu_items` writes** in
+   `app/api/admin/menu/items/route.ts` (POST insert, PATCH update, DELETE hard + soft-hide).
+   Wrapped so a Redis failure can never lose a saved menu edit.
+3. **Category list: checked, and the brief's premise does not fire.** Measured on Riviera:
+   **zero categories empty** under the tightened filter, and zero are empty today. See the
+   separate finding below — the fix that looks obvious would be a regression.
+4. **`handleAddToCart` guard** (`browse/page.tsx`). Not scope creep — it is what makes part 1's
+   choice honest. See the ruling below.
+
+### THE ONE DECISION I MADE, AND WHY — `out_of_stock`
+
+A single strict allowlist (`available | active` on both sides) would have deleted a
+**deliberate, pre-existing affordance**: three render sites in `browse/page.tsx` give
+`out_of_stock` a red "Out of stock" badge and a disabled Add button. Under the contract's
+*"a recorded decision is a ruling already made"*, deleting that is not mine to do — so
+`out_of_stock` stays **visible and not chargeable**, and Duck Confit keeps its badge.
+
+**But that affordance was advisory only, and that is the part that had to be fixed.** The
+disabled Add button is bypassed by any item with sizes/addons, which routes to
+`ItemDetailModal` — whose Add button has **no status guard at all**. So the guard went into
+`handleAddToCart`, the single funnel both paths pass through. It tests `!isChargeable` rather
+than "is display-only" deliberately: for the `TTL.MENU` (600s) window after an edit, a cached
+payload can still carry an item that is no longer visible, and that must not be addable either.
+
+**If you want `out_of_stock` hidden from the menu entirely, it is a one-line change** — flip
+`out_of_stock` to `visible: false` in the table. That is your call, not mine; it changes what a
+customer sees.
+
+### PROOF
+
+**Regression.** `__tests__/menu-item-status-parity.test.ts` drives the **real** menu query and
+the **real** pricing function with only Supabase faked, and asserts the relationship between
+their two answers — it never restates the rule (the #205 failure mode). Reverting **only** the
+browse predicate, keeping the shared module the test imports (the `Tests: 0 total` trap), turns
+**12 of 19 red**, including `parity for status "inactive"` **by name**. Restore verified by
+**blob identity** `f707ba2c…`, index empty.
+
+**Integration, two-sided, on the deployed worker.** Same URL, same item, same DB row; the only
+variable is the deployed commit:
+
+| worker | items served | Cappuccino |
+|---|---|---|
+| `6167f5d` unfixed | 9 | **`[inactive] Cappuccino` SERVED** |
+| `2d77fe4` fixed | 8 | **NOT SERVED** |
+
+**Compiler.** `node node_modules/typescript/bin/tsc --version` = 5.9.3, exit 0 unpiped. Proven
+two-sided: a deliberate type error in the new module gives **exit 2** naming
+`menu-item-status.ts(101,7)`, and 0 on restore — so the green means something.
+
+**BASELINE — the inherited number was stale.** The contract says staging is 6 suites / 13 tests.
+Full serial run at my commit: **7 suites / 14 tests**. Rather than accept the mismatch I
+re-measured **at my own base ref** `6167f5d`: the **same 7 suites, same 14 tests**, identical by
+name (`apk-terminal`, `payment`, `push-to-terminal-merchant-order`,
+`push-to-terminal-race-and-trim`, `schema-constraints`, `supabase-schema`, `web-routing` — all
+live-HTTP). **Zero new failures. The true staging baseline at `6167f5d` is 7/14; the contract's
+6/13 should be updated.** 19 hermetic suites / 163 tests covering everything touched: all green.
+
+### PROOF CEILING
+
+`STAGING` for the filter — **ACHIEVED**, on the deployed worker.
+
+`STAGING` for the cache invalidation — **NOT achieved. Gap stated rather than papered over.**
+The after-probe returned 8 items because the Redis entry had **expired naturally** (>10 min at
+TTL 600s), not because invalidation ran. **CEILING BLOCKED BY: obtainable** — it needs one
+authenticated menu edit through the admin UI as an owner of the staging fixture restaurant.
+`STAGING_TEST_PASSWORD` does not authenticate `flashtap.staging.test@gmail.com` (that account IS
+an owner, `5a6406e5`; the password belongs to another account), and I did not guess at
+credentials. **This is step 3 of the click-test below** — you are the owner, and it takes 30
+seconds.
+
+### SEPARATE FINDINGS — proposed issues, not filed
+
+1. **Category chips render for categories with zero visible items, and the obvious fix is a
+   regression.** `browse/page.tsx` gets chips from `getSupabaseCategories`, a **direct anon
+   Supabase query from the browser** — not the terminal-auth `categories` route, which has
+   **zero callers**. Its embed is `menu_categories -> menu_subcategories -> menu_items`, which
+   **structurally cannot see items whose `subcategory_id` is null**. Filtering chips on that
+   payload would therefore hide any category whose items are all uncategorized — worse than the
+   cosmetic problem it fixes. Tapping an emptied category shows "Menu coming soon!". Blast
+   radius today: **zero categories** on Riviera. Family of **#224/#246**.
+2. **`getSupabaseCategories` does not filter `active`.** `deleteSupabaseCategory` soft-deletes
+   via `active: false` and this query ignores it, so a soft-deleted category still renders a
+   chip. Zero on Riviera today (0 of 30 inactive), so latent.
+3. **`/api/cache/menu/invalidate` is unreachable for restaurant owners and fails silently.**
+   `menu-management-v2.tsx` calls it from 9 sites **with no Authorization header**, and the
+   route is gated `requireStagingPlatformAdmin` — 404 in production, 401/403 on staging. The
+   `fetch` result is never checked. It has been a no-op for every real user; part 2 of this fix
+   is what actually invalidates now.
+4. **`getSupabaseMenuItems` (`menu.ts:118`) has zero callers.** Dead.
+5. **`ItemDetailModal` has no status guard of its own.** Fixed at the funnel here; the modal is
+   still unguarded if another caller is ever added.
+
+### CLICK-TEST — staging, and read this first
+
+**Riviera is a PRODUCTION restaurant. It does not exist on staging, and neither does
+Cappucinno.** `.env.test`'s `RIVIERA_URL` points at the staging *worker*, which is what made it
+look otherwise. So the pass condition as written — "Cappucinno is gone from Riviera's menu" —
+**cannot be observed on staging at all**, and nothing deployable to staging would make it
+observable. I seeded the equivalent condition instead: staging's own **Cappuccino**
+(`d13186c1`, restaurant "staging test") is now `inactive`, exactly as Cappucinno is on Riviera.
+
+**URL** —
+`https://flashtap-staging.llosperofficial.workers.dev/menu/a1999166-ddfa-40d1-ad1f-2f01282a1652/browse?table=1`
+
+1. Tap the **drinks** category.
+2. **PASS: "Cappuccino" is not in the list.** You should see 8 drinks — Coke (600ml), Flat
+   White, Iced Coffee, Orange Juice, Rock Shandy, Rooibos Tea, Sparkling Water, Still Water.
+   Flat White and Iced Coffee are still there, so a blank list means something else broke.
+   **FAIL: Cappuccino still listed** — with or without a price, greyed or not. Being refused at
+   Add to Tab is also a FAIL; the point is that it must never be offered.
+3. **The cache half** (the part I could not prove): sign in as owner, set any drinks item to
+   Hidden in the menu editor, then reload the customer menu **immediately**. PASS: it is gone at
+   once. FAIL: it lingers for up to 10 minutes — that means `invalidateMenuCache` is not firing
+   and part 2 did not land, even though the filter did.
+
+**To revert the staging seed:** set Cappuccino (`d13186c1`) back to `available`. It was
+`available` before I touched it; nothing else on staging was changed.
+
+### PRODUCTION — not touched, and what it needs
+
+The fix is on staging only. When it is promoted, the same two production items are what change:
+Cappucinno disappears from Hot Bevs, and Duck Confit keeps its "Out of stock" badge but can no
+longer be added via the sizes/addons modal.
+
+### NOT STARTED, per instruction
+
+#273, order editing, the unpaid-tab flag. Untouched.
