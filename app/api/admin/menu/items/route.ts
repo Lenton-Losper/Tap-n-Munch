@@ -11,10 +11,34 @@ import {
   type ExistingMenuItem,
   type MenuItemDraft,
 } from '@/lib/menu/validate-menu-item'
+import { invalidateMenuCache } from '@/lib/cache/menu-cache'
 
 export const dynamic = 'force-dynamic'
 
 const LOG_PREFIX = '[API/admin/menu/items]'
+
+/**
+ * #272. The customer menu is cached in Redis (`lib/cache/menu-cache.ts`) and NOTHING in
+ * this route cleared it, so a menu edit kept serving the stale payload for the whole
+ * `TTL.MENU` window. That matters most for the status fix shipping alongside this: setting
+ * an item inactive would have changed nothing a customer could see, and read as a failed fix.
+ *
+ * The cache key is built from the restaurantId that appears in the CUSTOMER url
+ * (`app/api/menu/[restaurantId]/category/[categoryId]/route.ts`), and Riviera's subdomain
+ * rewrites to the bare UUID (`next.config.mjs`) — the same id resolved here, so these keys
+ * do match. Non-UUID aliases in a customer URL would cache under a different key; none are
+ * in use today.
+ *
+ * Never allowed to fail the write. `invalidateMenuCache` already swallows its own Redis
+ * errors; this wrapper catches anything left, so a cache problem cannot lose a saved edit.
+ */
+async function invalidateMenuCacheAfterWrite(restaurantId: string) {
+  try {
+    await invalidateMenuCache(restaurantId)
+  } catch (err) {
+    console.error(`${LOG_PREFIX} menu cache invalidation failed`, err)
+  }
+}
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -215,6 +239,7 @@ export async function POST(request: Request) {
     }
 
     console.log(`${LOG_PREFIX} insert succeeded`, { id: data?.id })
+    await invalidateMenuCacheAfterWrite(restaurantId)
     return NextResponse.json({ success: true, id: data?.id, data })
   } catch (error: unknown) {
     logRouteError('POST handler failed', error)
@@ -315,6 +340,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
     }
 
+    await invalidateMenuCacheAfterWrite(restaurantId)
     return NextResponse.json({ success: true, data })
   } catch (error: unknown) {
     logRouteError('PATCH handler failed', error)
@@ -375,6 +401,7 @@ export async function DELETE(request: Request) {
       .eq('restaurant_id', restaurantId)
 
     if (!hardDeleteError) {
+      await invalidateMenuCacheAfterWrite(restaurantId)
       return NextResponse.json({ success: true, deleted: true })
     }
 
@@ -397,6 +424,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Menu item not found' }, { status: 404 })
     }
 
+    await invalidateMenuCacheAfterWrite(restaurantId)
     return NextResponse.json({ success: true, deleted: false, hidden: true })
   } catch (error: unknown) {
     logRouteError('DELETE handler failed', error)

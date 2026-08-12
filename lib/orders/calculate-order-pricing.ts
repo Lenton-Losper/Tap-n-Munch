@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
 import type { TaxRateOption } from '@/lib/tax-rates/format'
 import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
+import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 
 type MenuItemPricingRow = {
   id: string
@@ -129,11 +130,9 @@ function priceCatalogLine(
   }
 }
 
-function isChargeableMenuStatus(status: string | null | undefined): boolean {
-  const s = String(status || 'available').toLowerCase()
-  // Schema default historically 'active'; UI uses 'available'. Reject OOS/hidden/inactive.
-  return s === 'available' || s === 'active'
-}
+// #272: the allowlist that used to live here is now lib/menu/menu-item-status.ts, shared
+// with the customer menu query so the two cannot drift apart again. Behaviour is unchanged
+// on this side — 'available' | 'active' remain the only chargeable statuses.
 
 /**
  * Authoritative order pricing: for each line item, prices from the restaurant's real
