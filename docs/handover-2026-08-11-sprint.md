@@ -2088,3 +2088,36 @@ Revision 3, pushed to `origin/docs/agent-operating-contracts` (`9c3c326..3af332b
 
 Nothing deployed. No migration applied. No production write. `.env.local` held for the
 DB/Supabase credentials still incoming — nothing attempted that needed them.
+
+---
+---
+
+# CHECKPOINT — 2026-08-12, same session. Two corrections, both from the human, both applied.
+
+## #269 filed. Rule 11 corrected.
+
+The human caught two things in the just-written Revision 3:
+
+1. **`76153d8` not reaching `origin/main` deserved its own issue**, separate from being a
+   contract note — it is a live gap in the deploy pipeline, not only a process finding. Filed as
+   **#269**.
+2. **The human's own instruction that asked for Rule 11 described the three-state drift check
+   without saying staging-only** — true of one copy of the script, not of the one that actually
+   gates a production deploy. Rule 11 is corrected to lead with "production's gate runs two
+   states, staging's runs three" rather than "the drift check has three states," and now records
+   that its own first draft repeated the imprecise framing before being corrected — the same
+   VERIFY BEFORE TRUSTING rule this document already states, applied to a human's brief instead
+   of an agent's, for the first time on record.
+
+Both pushed: `docs/agent-operating-contracts` at `9b9a9c2`.
+
+## fix/265-pin-recovery pushed
+
+Same reason as `#223`: nothing lives on one disk. `origin/fix/265-pin-recovery` now carries
+`7826624`.
+
+## HOLD
+
+Per instruction: holding for `.env.local` (DB password, Supabase keys). Neither `#223` nor
+`#265`'s Q3 ships to production while Riviera is trading — both need a staging pass first.
+Nothing further attempted this session.
