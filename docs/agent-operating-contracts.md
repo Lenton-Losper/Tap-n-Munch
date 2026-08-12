@@ -3,9 +3,11 @@
 Four artifacts, plus the roles and deployment rules they depend on. Paste sections 1–3 into
 agent briefs; section 4 and below are for whoever is coordinating.
 
-**Status: provisional. Revision 2, 2026-08-11** — see the revision at the end of this document
-for the role model, the activation model, the PROOF CEILING handoff field and rules 7-9. Revision
-1 below is unchanged; nothing in it has been retired.
+**Status: provisional. Revision 3, 2026-08-12** — see the revisions at the end of this document.
+Revision 2 adds the role model, the activation model, the PROOF CEILING handoff field and rules
+7-9. Revision 3 adds rules 10-11, both earned landing #262's migration on production: the drift
+check is bidirectional and has THREE states, and `check-migration-drift.mjs` audits its own tree.
+Revision 1 below is unchanged; nothing in it has been retired.
 
 This was written on 2026-08-10 from one long session and it will be wrong within a week. It is version-controlled so the edits have history — when a rule here
 misfires, change it here rather than working around it in a brief. Test manually on 5–10 real
@@ -845,3 +847,101 @@ half-states: the audit trail gone while the paid order remained.
 And: **a cleanup script must discover dependents rather than trust the run's own list.** That run
 reported the orders and audit rows it created. The receipt document it had also issued surfaced only
 when the delete failed.
+
+---
+
+# Revision 3 — 2026-08-12
+
+Two rules, both earned landing #262's anon-grant migration on production. Same standard as
+revisions 1 and 2: **each cites the incident that produced it**, and should be deleted when that
+incident stops being possible.
+
+## Rule 10 — the drift check is BIDIRECTIONAL and has THREE states, not two
+
+> **Applied to the database with NEITHER the ledger row NOR the file present reads CLEAN.** The
+> file set and the ledger agree the migration does not exist, so nothing is out of sync. The repair
+> and the merge therefore each break drift **on their own, in opposite directions**, and must land
+> together.
+
+`scripts/check-migration-drift.mjs` fails on both:
+
+- `LOCAL_NOT_APPLIED` — a committed file with no ledger row. This is the trap already recorded in
+  revision 2: it blocks **every** production deploy, not just the one carrying the migration, and
+  `20260811120000` cost a deploy cycle that way on 2026-08-11.
+- `APPLIED_NOT_LOCAL` — a ledger row with no committed file. Undocumented drift. Equally fatal.
+
+The three states, measured on production 2026-08-12 while landing `20260811120000`:
+
+| file on main | ledger row | drift | note |
+|---|---|---|---|
+| no | no | **CLEAN** | 127 local / 127 applied, OK — *and the SQL was already applied* |
+| no | yes | FAILS | `APPLIED_NOT_LOCAL` |
+| yes | no | FAILS | `LOCAL_NOT_APPLIED` — the revision-2 trap |
+| yes | yes | **CLEAN** | 128 local / 128 applied, OK |
+
+**The first row is the one nobody expects.** "Drift is clean" did not mean the migration was
+unapplied, and it did not mean the migration was recorded. It meant *both sides were equally
+ignorant of it*. A clean drift check is not evidence about the database — same family as the 42501
+correction and the `test.failing` trap: a signal that looks like information and is not.
+
+**The procedure this forces**, and it is the whole rule:
+
+1. Apply the SQL, and verify it by **probing enforced behaviour** — never by the ledger (#263).
+2. Prepare the commit **completely** and verify it in isolation: real compiler, its own suite,
+   blob identities, clean index. Do not push.
+3. Repair the ledger.
+4. Push immediately.
+5. Re-run the drift check and confirm it is clean **on the new numbers** — the counts must both
+   have moved by one.
+
+Steps 3 and 4 are the exposed window. Nothing else may be interleaved between them, and no deploy
+may run in it. Doing step 2 first is what shrinks that window to seconds; doing it after step 3
+leaves production undeployable for as long as the commit takes to prepare — which, on this landing,
+was a full typecheck.
+
+Corollary, and it is the reason step 1 is separate: `db query` does not write the ledger. Confirmed
+again here — `has_262 = 0` immediately after a successful apply. **A verified-present object gets a
+`migration repair --status applied`, never a re-run**, and the committed file is never rewritten.
+
+## Rule 11 — the fifth lying instrument: `check-migration-drift.mjs` audits its OWN tree
+
+> **The script resolves `MIGRATIONS_DIR` from its own `__dirname`, not from the current working
+> directory.** Invoking it by path from another checkout audits *whatever tree the script lives
+> in*, not the one you are checking — and it reports a confident, wrong, fully-formatted answer.
+
+```js
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const MIGRATIONS_DIR = join(__dirname, '..', 'supabase', 'migrations')
+```
+
+Observed twice in a row on 2026-08-12. Checking what production CI would see at `origin/main`, both
+runs were issued as `node ../restaurant-menu-screen/scripts/check-migration-drift.mjs` from a
+worktree checked out at `origin/main`. Both read the **docs branch's** migrations directory, which
+carries four files `main` does not, and both reported:
+
+    131 local migration(s) ... FAILED
+      Committed migrations NOT applied on target DB:
+        - 20260705210000
+        - 20260705220000
+        - 20260811120000
+
+**None of that was `main`'s state.** Main had 127 local against 127 applied and was **clean**. The
+second run even printed `migrations on main: 127` from a sibling `ls` in the same command, directly
+above the script's own `131 local` — and the contradiction was still nearly missed, because the
+script's output is the more authoritative-looking of the two.
+
+**The rule: run the worktree's OWN copy** (`cd <worktree> && node scripts/check-migration-drift.mjs`),
+which means provisioning `node_modules` there first. If you invoke a script by path from another
+checkout, the number is about a tree you are not shipping.
+
+This is the **fifth** instrument this project has caught lying, and the class is now well
+established — `EXIT=$?` after a pipe reporting `head`'s status; `npx tsc` resolving to a squatter
+that exits 0; a `file://` main-module guard that never matches on Windows so CI scans nothing; a
+probe substitution that silently matches nothing (twice more this session — a CRLF/LF mismatch that
+left the blob hash unchanged); and now a path-relative script auditing the wrong checkout.
+
+**The generalisation worth keeping: a tool that takes its scope from its own location rather than
+from its argument will happily answer a question you did not ask.** Every one of these produced a
+plausible, well-formatted, wrong answer rather than an error — which is why each was caught by a
+*second, differently-shaped* measurement (a blob hash, a version string, a sibling `ls`) and never
+by reading the output more carefully.
