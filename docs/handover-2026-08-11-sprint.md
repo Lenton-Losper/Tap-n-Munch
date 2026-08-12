@@ -2121,3 +2121,94 @@ Same reason as `#223`: nothing lives on one disk. `origin/fix/265-pin-recovery` 
 Per instruction: holding for `.env.local` (DB password, Supabase keys). Neither `#223` nor
 `#265`'s Q3 ships to production while Riviera is trading — both need a staging pass first.
 Nothing further attempted this session.
+
+---
+---
+
+# OVERNIGHT — 2026-08-12/13. Two ships, one stop condition.
+
+## STATE
+
+    production / origin/main   c0bee8b62b18efec979ba0f1c0c376b69b41ec8a   cache-busted x3
+    origin/cloudflare-staging  6167f5dc1678d6a8da32ea7df58df8b44ffee5c4   UNCHANGED
+    production ledger          128 applied, drift gate green in CI
+    open issues                118 (from 121)
+
+Production path tonight, two gated deploys, each verified before the next:
+
+    3f52149 -> 6867ecc   #269 drift-check environment scope
+            -> c0bee8b   #223 amount gates, ALONE
+
+## 1. #269 SHIPPED
+
+Ported the environment-scope half of `76153d8` to main. **Not a whole cherry-pick** — that commit
+also adds three migration FILES, none applied on production (verified against the live ledger via
+`list_applied_migration_versions`: 128 rows, all three absent). Taking it whole would have tripped
+`LOCAL_NOT_APPLIED` three times and blocked every production deploy — Rule 12's third row,
+self-inflicted by the commit meant to improve the gate.
+
+Two-sided from the tree's own copy (Rule 10): unscoped fake migration -> FAILED naming it; same
+file with `-- @env: staging` -> excluded, OK. `targetEnvironment` 0 -> 2 on main.
+
+## 2. #223 SHIPPED, ALONE
+
+Full suite at `origin/main` first, then the branch, same worktree:
+
+    main      8 failed / 108 passed suites · 18 failed / 961 passed tests
+    branch    8 failed / 112 passed suites · 18 failed / 983 passed tests
+
+**Identical failing set BY NAME. No green->red.** Branch adds 4 suites / 22 tests, all green.
+
+Exploiter reconstructed #223's ORIGINAL scenario from the issue text, not the branch's tests:
+order N$200, Finatic confirms PAID for N$20 -> quarantined, not paid, not cancelled, both figures
+in the audit row. Plus a control proving the gate does NOT fire on an agreeing amount — without it
+the first assertion would also pass if the gate held every order. Control ceiling disclosed: the
+in-memory double cannot carry `markOrderPaidConfirmed` to completion, so it asserts the
+discriminating property rather than `payment_status === 'paid'`.
+
+Smoke on production after: webhook 503 on an unknown reference (correct, pre-existing), landing 200,
+guest count route serving, by-payment-ref benign 0 / injected 0, `/api/tabs/active` responding,
+**#262 still closed (anon `members` -> 401)**. Receipt route's remaining `0.02` hits are both in the
+explanatory comment; live code is `amountsMatch(...)`, and it closed a real NaN hole — an ABSENT
+client amount used to pass silently because `NaN > 0.02` is false.
+
+Closed, each verified by reading the file AT THE DEPLOYED SHA: **#269, #223, #233, #187, #226**.
+**#268 deliberately left open** — the webhook valid-signature path still recorded no amount
+historically, so that question stays permanently unanswerable and the fix does not close it.
+
+## 3. #265 — STOP CONDITION, not deployed
+
+`fix/265-pin-recovery` (`7826624`) carries **`20260812130000_tabs_pin_reset_token.sql`** — two
+columns plus a partial index on `tabs`. Verified NOT applied on staging (ledger 131 rows, absent).
+
+That is two of the stated stop conditions at once: *a migration you didn't expect*, and
+*anything needing a migration applied* on the skip list. Pushing the branch to staging would also
+have put an unapplied migration file there and failed staging's own drift gate — taking down the
+environment needed if tomorrow goes wrong.
+
+**Nothing deployed, nothing applied.** Note for when it is ruled: the new columns are NOT in
+`20260811120000`'s anon grant list, so anon cannot read `pin_reset_token` — the #262 narrowing
+protects them by construction, which is the right default and worth keeping.
+
+## 4. Load simulation — harness built and validated, NO latency numbers yet
+
+`scripts/load-sim-qr-staging.ts`, on `test/load-sim-qr-staging`. Staging-only by construction:
+refuses unless the Supabase URL carries the staging ref AND the worker host is staging.
+
+**It produced a finding before any measurement: `POST /api/orders` REFUSES an order with no
+established table session** — 403 *"This table has been closed. Please scan the QR code to start a
+new session."* So the flow cannot be load-tested by posting orders directly; each simulated
+customer must first walk the real QR path and hold a session token. **That leg is not implemented,
+so there are no latency figures at 400 and none are claimed.**
+
+Also found: the tab-contention phase targeted `tables+1`, which does not exist on the staging test
+restaurant, so it returned 404 rather than exercising the index. The staging test restaurant's real
+tables are 1, 2, 120, 1001, 5001-5006, 9129, 9137, 9563, 9761, 9895, 9903 — only 120, 1001, 5006,
+9761, 9895, 9903 are `active: true`.
+
+## 5. #270 FILED — post-order customer feedback, spec only
+
+Not started, as instructed. The three constraints that make it non-trivial are recorded: there is
+no customer identity or address anywhere (#244, zero `customer_email` matches repo-wide); "after
+the order is done" has three non-equivalent candidates (`completed` / `paid` / tab `settled`) at two
+different grains; and any email-capable answer must land #244's guard in the same change.
