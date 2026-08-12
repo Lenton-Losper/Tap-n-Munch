@@ -2035,3 +2035,290 @@ Column grants are additive, so this needs no REVOKE and cannot disturb the other
 
 No Supabase command has been run this session. No migration applied to either database, no
 production write, no push, no deploy, no branch created. `git status` clean.
+
+---
+---
+
+# CHECKPOINT 4 — 2026-08-12. Reconciliation landed; #254 closed on staging; #127's refund question answered.
+
+## STATE
+
+    production / origin/main   2ccea66   unchanged this session, untouched
+    origin/cloudflare-staging  6167f5dc1678d6a8da32ea7df58df8b44ffee5c4   cache-busted verified
+    open issues                120
+
+Staging path this session, three gated deploys each verified cache-busted before the next:
+
+    99d2853 -> c37e5ca   reconcile batch 1 (31 commits)      deploy success
+            -> 715461f   reconcile batch 2 (8 commits)       deploy success
+            -> 6167f5d   #254 port (?ref= injection)         deploy success
+
+**No production write, no migration applied, no production deploy, `origin/main` untouched.**
+
+## RECONCILIATION — done, and the brief's expectation was half right
+
+Both batches pushed in the stated order. Ancestry made the order self-enforcing (staging → batch1 →
+batch2 are all fast-forwards), but they were pushed and **gated separately** so each got its own
+verified deploy, which is the point of "strictly that order".
+
+**Batch 2 is 8 commits, not 7.** Measured: `rev-list --count batch1..batch2` = 8, total 39 ahead of
+the old staging tip.
+
+### #252 — substantially closed. Six of the eight main-only fix suites are now on staging:
+
+    gateway-amount-exact-match              PRESENT (was absent)
+    reconcile-gateway-amount-exact-match    PRESENT (was absent)
+    settle-stores-rounded-amount            PRESENT (was absent)
+    stock-negative-balances                 PRESENT (was absent)
+    stock-negative-balance-report           PRESENT (was absent)
+    guest-orders-declined-visibility        PRESENT (was absent)
+    payment-ref-filter-injection            ABSENT  <- #254
+    payment-ref-cross-tenant-union          ABSENT  <- #254
+
+### ⚠️ #254 was NOT closed by the reconciliation. The brief said it would be.
+
+Both batches were cut before `fix/254-staging-ref-injection`, and `f7ee138` was **deliberately
+excluded** from them (recorded last session). So after both batches staging still ran the raw
+interpolating filter:
+
+    origin/cloudflare-staging  paymentRefOrFilter(ref: string): string
+                               return `paycloud_merchant_order_no.eq.${trimmed},...`   <- no guard
+
+Measured live at `715461f`, unauthenticated, through the real HTTP boundary:
+
+    benign   "NONEXISTENT-REF-ZZZZZZ"                 -> count 0
+    injected "NONEXISTENT-REF-ZZZZZZ,id.not.is.null"  -> count 15, 13 of them PAID
+
+Single-tenant (the route's `guestCanAccessOrder` gate holds), but **15 full order rows returned to
+an unauthenticated caller holding no valid payment reference at all.**
+
+## #254 — CLOSED ON STAGING. `6167f5d`, two-sided with positive controls.
+
+`b330b98` cherry-picked onto the reconciled tip as `port/254-onto-staging` → `6167f5d`. It
+auto-merged `lib/guest-orders/queries.ts` cleanly.
+
+Worktree `wt-254`, provisioned per TOOLCHAIN: package-lock md5 verified identical before
+junctioning `node_modules`, `.env.test` + `.env.local` copied in. Compiler verified
+`node node_modules/typescript/bin/tsc --version` = **5.9.3**, `--noEmit` exit **0**.
+
+**Failing-first, and the probe had to be taken twice.** The first `perl` substitution reported
+success and changed nothing — the file is CRLF and the pattern was LF-anchored. Caught because the
+blob hash was unchanged (`15b36de7…` before and after). Fifth-plus instance of this class; the
+hash is what caught it, exactly as the rule says.
+
+With the guard actually removed (blob `15b36de7…` → `66eab781…`):
+
+    12 failed / 10 passed — failures NAMED, e.g.
+      refuses to build a filter for "zzz,id.not.is.null"
+      issues NO query at all for an injected reference
+      DOOR 1: an injected reference does not widen the query
+
+Restored by blob identity — HEAD, worktree and expected all `15b36de7098fd8e4955a6bc9bc076583171476e0`,
+`git diff --cached --stat` empty, `isWellFormedPaymentRef` still present. Then **39/39 green across
+4 suites**.
+
+Both suites import shipped code (`import { paymentRefOrFilter } from '../lib/guest-orders/validation'`;
+the union suite `await import('../lib/guest-orders/queries')`), so they bind to the rule rather than
+restating it.
+
+### EXPLOITER — the ORIGINAL reproduction against the deployed build, not the implementer's test
+
+    staging 6167f5d, unauthenticated
+      benign   NONEXISTENT-REF-ZZZZZZ                  -> 0
+      INJECTED NONEXISTENT-REF-ZZZZZZ,id.not.is.null   -> 0    (was 15)
+      INJECTED zzz,total.gte.0                         -> 0
+      INJECTED zzz,payment_status.eq.paid              -> 0
+      INJECTED zzz),(total.gte.0                       -> 0
+      INJECTED zzz,or(total.gte.0)                     -> 0
+      INJECTED *                                       -> 0
+
+    POSITIVE CONTROLS — the feature must still work, both charsets
+      4bb7867bbc014bf789b0783510549808   -> count 1
+      05ec878a37d1410c83aa783510769454   -> count 1
+      PAY-20260701-ESU7U3V2              -> count 1
+      15ddbcc326da4c0d9cb6783510605602   -> count 1
+
+Without the controls this would only have proved the endpoint was broken, not fixed.
+
+**A caught false result worth recording:** the first exploiter run was executed before the deploy
+had propagated and reproduced the injection at full strength. `/api/version` still read `715461f`,
+so it was discarded rather than reported. A bare probe would have called the fix a failure.
+
+## #127 — THE REFUND QUESTION. ANSWERED. Reads only, zero writes.
+
+**A refund against "order 420" is NOT ambiguous at any machine layer. The system does not "pick" a
+total, and cannot refund the wrong amount.**
+
+The whole chain is keyed by UUID, never by `order_number`:
+
+    OrdersScreen -> navigate('OrderDetail', {orderId: item.id})            uuid
+    OrderDetailScreen -> navigate('RefundAuth', {orderId, orderNumber, total})
+        orderNumber and total are DISPLAY ONLY
+    getSaleRecordForOrder(orderId) -> GET /api/terminal/payment-events/sale?order_id=<uuid>
+        400 unless isUuid(order_id); payment_events where event_type='sale'
+        AND order_ids @> [orderId]; ordered created_at desc, limit 1
+    POST /api/terminal/payment-events/refund  — order_ids must be UUIDs, each validated
+        to exist AND belong to the terminal's restaurant
+    record_terminal_refund_event  — locks THAT sale FOR UPDATE, ceiling is
+        v_sale.amount - SUM(prior refund_succeeded), raising AMOUNT_EXCEEDS_REMAINING
+
+The refund amount is `saleRecord.remaining`, derived from the **sale event**, not from the `total`
+carried through navigation. So even a wrong `total` in the nav params cannot set the refund figure.
+
+### Measured on production, service_role, read-only
+
+    order_number 420, restaurant FNB ChowNow (b161c758), SAME tenant, 2 rows:
+      4517ee94-c846-4453-a48e-b176dede4f3f  N$34  paid/completed  placed 06:40:10.201
+      295b2965-ced4-4525-9a00-7867c07295bc  N$78  paid/completed  placed 06:40:10.388
+
+    each resolves to exactly ONE sale event, with its own reference and its own correct amount:
+      4517ee94 -> bon=FT17848752118882682  sale.amount=N$34  covers 1 order  prior=0  remaining=34
+      295b2965 -> bon=FT17848752118016413  sale.amount=N$78  covers 1 order  prior=0  remaining=78
+
+    sale events covering MORE THAN ONE of the 420s: 0
+    refund events already recorded against either: 0
+
+187 ms apart. A double-submit, not a numbering race across sessions.
+
+**The residual is human, not mechanical.** `OrderCard` renders `#{order_number}`, the table, the
+item lines, `formatOrderCardTime(placed_at)` and `formatCurrency(total)`. Two rows both read
+**#420**, and at 187 ms apart the time will render identically. They are distinguishable **only by
+total and item lines**. If the operator taps the wrong row the refund still succeeds for the
+correct amount *of the order they tapped* — a wrong-order refund, not a wrong-amount one, and not
+an over-refund, because each ceiling is per-sale.
+
+**So: nothing to contain this week.** No refund can be issued for the wrong figure. The exposure is
+that a customer could be refunded N$34 when they were owed N$78, and the second refund would still
+be fully available afterwards.
+
+**#448 is the same shape and was not previously named:** N$46 / N$26, same restaurant, 247 ms apart,
+both paid.
+
+### The scale numbers all reproduce — and the recorded framing is right, mine was wrong
+
+| key | rows with NULL key | duplicated keys | excess rows |
+|---|---|---|---|
+| `(firebase_restaurant_id, order_number)` — **what the issue proposes** | 4 | **282** | 944 |
+| `(restaurant_id, order_number)` | 1315 | 3 | 3 |
+
+**282 reproduces exactly.** And 282 = **279 debris + 3 FNB ChowNow**, which reconciles every number
+in the handover.
+
+I tested whether the cheaper index would do and it will not — worth recording so nobody retries it:
+
+- `(restaurant_id, order_number)` looks nearly free because **1315 of 2646 orders have
+  `restaurant_id` NULL** and NULLs never collide in a plain unique btree. Only the 3 real pairs
+  would block it.
+- **But it is the wrong key.** Both numbering sites derive
+  `count(*) + 1` scoped by **`firebase_restaurant_id`** (`create-order.ts:52-56`,
+  `app/api/orders/route.ts:341-345`). And the mapping is **not 1:1** — one `restaurant_id` maps to
+  two `firebase_restaurant_id`s (reverse is clean). So a unique index on
+  `(restaurant_id, order_number)` would be *stricter than the generator* and could reject a
+  legitimate future order for that restaurant. It does not currently collide, so this is latent,
+  not live.
+
+**The debris is unambiguous debris:** 1315 rows, `restaurant_id` NULL, 1314 with a non-null
+`firebase_restaurant_id` across 10 distinct ids, statuses 876 cancelled / 438 cash_pending /
+1 pending — **zero paid** — **total value N$0**, all placed 2026-04-27 → 2026-06-16. Nothing
+recent, no money, no tenant.
+
+**Fixtures untouched. Nothing deleted, nothing renumbered, no index created.**
+
+## CORRECTION — `orders.updated_at` EXISTS. #234's option A was ruled out on a false clause.
+
+Checkpoint 7 recorded, for #234: *"`orders` has **no `updated_at`**"*, and used it to argue that
+backfilling `paid_at` to the true payment date is impossible. That agent explicitly flagged the
+claim as **not DB-verified** — dump plus no migration plus no code reference. It is now DB-verified,
+and it is **wrong**:
+
+    orders has 48 columns. There is NO created_at (creation is `placed_at`).
+    updated_at IS one of the 48.
+
+**But the conclusion survives, and is now measured rather than inferred.** Across 1000 rows ordered
+newest-first, including orders paid minutes before the query:
+
+    updated_at NULL          : 1000 of 1000
+    updated_at == placed_at  : 0
+    updated_at AFTER placed  : 0
+
+The column exists, has no trigger and no writer, and has never been written. So it records nothing
+and **option A stays impossible** — for a better-stated reason than the one on file.
+
+**New latent hazard worth its own issue:** a column named `updated_at` that is always NULL is
+exactly what a future author reaches for and trusts. It is a trap with a reassuring name.
+
+## #211 — SCOPED. Shippable today, and it does NOT drag in tab-moving.
+
+Read at `origin/main`, `app/menu/[restaurantId]/v2/page.tsx` (1270 lines).
+
+### The mechanism, precisely
+
+Two pieces of state, and the render is a strict three-way chain at `~:1106-1200`:
+
+    myStoredTab  -> "Rejoin your tab"                  + View Menu
+    else openTab -> "A tab is already open for this table" + Join Tab + View Menu
+    else         -> "Create Tab"
+
+**`myStoredTab` wins unconditionally, and it carries no table number** — its state shape is
+`{ id, total, status }`. The landing never compares the stored tab's table against the scanned one.
+
+And `syncTabLandingState` **blinds itself on purpose** at `~:414-417`:
+
+    if (readStoredTabId()) {
+      setOpenTab(null)
+      return
+    }
+
+So when you hold a tab, the scanned table's own open tab is never looked up. Branch 2 is
+unreachable for exactly the customers #211 is about.
+
+Worse, `:392` calls `persistTabSession(storedId, tableNum)` with the **scanned** table number —
+silently rewriting your table-3 tab's stored table to the table you just scanned. That is #221, and
+it would destroy any comparison added naively.
+
+### What the narrow fix needs — four changes, all in one file plus one state shape
+
+1. `myStoredTab` carries `table_number`. **This is free** — `fetchTabById` already selects it
+   (`lib/tab-session.ts:129`: `id, restaurant_id, table_id, table_number, status, settled_type,
+   total, payment_preference, ready_to_pay_at, pin_required`). The value is fetched today and
+   thrown away. No new query, no new column, no API change.
+2. Lift the blinding so `openTab` is resolved **even when a stored tab exists**, but only when the
+   scanned table differs. `/api/tabs/active` already returns exactly what is needed
+   (`{id, status, total, pin_required, member_count}`) and is already unauthenticated.
+3. Render both actions when `myStoredTab.table_number !== tableNum`.
+4. Stop `persistTabSession` overwriting the stored table with the scanned one.
+
+### Why the third clause is what makes it shippable — the interaction that decides the estimate
+
+`idx_tabs_one_open_per_table` is a hard DB constraint. So "start here at this table" when that table
+already has an open tab **cannot create** — it hits 23505.
+
+And **`POST /api/tabs`'s 23505 branch still has no PIN check.** Verified AT `origin/main`, not from
+a working tree: every `pin` reference in that file is in the *creation* path (`:72, :80-81, :100-101,
+:229`); the recovery branch at `:119-196` has none. The containment that shipped as `237caec` fixed
+`app/api/tabs/[tabId]/join/route.ts` only — that route now reads `if (pinRequired)` at `:94`. **#218's
+create-tab hole is still open on production.**
+
+So the naive #211 fix — offer "Create Tab" at the new table — routes MORE customers into the
+still-open #218 hole, exactly as checkpoint 1 warned.
+
+**Handling the already-open case is therefore not polish, it is the thing that makes #211
+shippable without #218.** Detect the open tab first and offer *"Join the tab at this table"*, which
+goes through `[tabId]/join` and IS PIN-enforced. No new traffic reaches the 23505 branch.
+
+### Estimate and verdict
+
+**Shippable today. It does not touch tab-moving.** Rejoin-where-it-is and start-here are both
+non-moving actions; the money-adjacent Q4 stays closed. One file, one state shape, ~4 changes, no
+schema, no API, no new query.
+
+**It surfaces exactly one copy decision, which is the human's** — see the packet.
+
+### A METHOD SLIP OF MINE, recorded because it nearly landed a wrong finding
+
+I first read `app/api/tabs/[tabId]/join/route.ts` **from the working tree** while checked out on
+`docs/agent-operating-contracts`, and read the UNCONTAINED `if (pinRequired && !alreadyMember)`. I
+was about to report the containment missing from production. The docs branch's `app/` tree is NOT
+main's — `git diff origin/main HEAD -- app lib` is non-empty. Re-read at the ref, it is contained.
+**The `POST /api/tabs` finding was then re-verified at `origin/main` and holds.** This is exactly
+the base-conditional rule, tripped on my own reads rather than on a brief.
