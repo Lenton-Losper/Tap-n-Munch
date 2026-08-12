@@ -107,6 +107,10 @@ export function MenuLandingPageV2Content({
   const tableNum =
     tableNumberOverride ??
     (tableNumberParam ? Number(tableNumberParam) : 0)
+  // #265. Present only on a recovery QR staff generated via POST /api/tabs/[tabId]/reset-pin --
+  // never typed or seen by staff. Redeeming it replaces the normal "enter PIN" prompt with an
+  // automatic re-mint, once the open tab for this table has loaded.
+  const pinResetToken = searchParams?.get('pinReset') || null
   
   const [restaurant, setRestaurant] = useState<any>(null)
   const [table, setTable] = useState<any>(null)
@@ -887,6 +891,44 @@ export function MenuLandingPageV2Content({
     handleStartJoinTab()
   }
 
+  /**
+   * #265. Redeems a staff-issued PIN-reset token instead of prompting for a PIN the customer
+   * does not have. Reuses joinExistingTab (same route, same session/member bookkeeping) with
+   * `resetToken` set; on success the server has already minted a NEW tab_pin, so this shows
+   * it the same way tab creation does -- via `createdTabPin`, the "Your tab PIN is" screen --
+   * rather than inventing a second display path for the same fact.
+   */
+  const handleRedeemPinReset = async () => {
+    if (!requireDisplayName()) return
+    if (!restaurantId || !openTab?.id || !pinResetToken) return
+    try {
+      setTabActionLoading('join')
+      setTabActionError(null)
+      const result = await joinExistingTab({
+        restaurantId,
+        tabId: openTab.id,
+        tableNumber: tableNum,
+        displayName: displayName.trim() || undefined,
+        resetToken: pinResetToken,
+      })
+      if (result?.tabPin) {
+        setCreatedTabPin({ tabId: openTab.id, pin: result.tabPin })
+      } else {
+        // Token was consumed by another device, or already used -- fall back to the ordinary
+        // join flow rather than leaving the screen stuck.
+        router.push(browseWithTab(openTab.id))
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Could not reset the PIN. Ask staff for a new recovery link.'
+      console.error('[V2] pin reset redemption failed:', err)
+      setTabActionError(message)
+    } finally {
+      setTabActionLoading(null)
+    }
+  }
+
+
   // Loading state
   if (loading) {
     return (
@@ -1100,6 +1142,33 @@ export function MenuLandingPageV2Content({
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
                   Continue
+                </Button>
+              </div>
+            ) : pinResetToken && tableNum > 0 && storedTabChecked && !tabLoading && openTab ? (
+              // #265. Staff have started a PIN reset for this tab (POST /api/tabs/[tabId]/reset-pin)
+              // and displayed this exact URL as a QR for the recovering customer to scan. There is
+              // nothing to type here but a name -- the whole point is the customer does not have
+              // the PIN -- so this replaces the ordinary "enter PIN" prompt rather than sitting
+              // alongside it.
+              <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">Get your new tab PIN</p>
+                  <p className="font-sans text-sm text-white/80 mt-2">
+                    Staff have started a PIN reset for this table.
+                  </p>
+                </div>
+                {tabActionError ? (
+                  <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
+                    <p className="font-sans text-xs text-red-200/90">{tabActionError}</p>
+                  </div>
+                ) : null}
+                <Button
+                  size="lg"
+                  onClick={handleRedeemPinReset}
+                  disabled={tabActionLoading !== null}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  {tabActionLoading === 'join' ? 'Getting your PIN…' : 'Get My New PIN'}
                 </Button>
               </div>
             ) : showJoinPinEntry ? (

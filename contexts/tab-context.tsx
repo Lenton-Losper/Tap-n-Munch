@@ -64,7 +64,10 @@ type TabContextType = {
     tabId: string
     tableNumber?: string | number
     displayName?: string
-  }) => Promise<void>
+    /** #265. A staff-issued PIN-recovery token. When present and valid, the server mints a
+     * NEW tab_pin and returns it — the return value's `tabPin` field. */
+    resetToken?: string
+  }) => Promise<{ tabPin?: string }>
   joinTabWithPin: (params: {
     restaurantId: string
     tableNumber: string | number
@@ -364,13 +367,15 @@ export function TabProvider({
     tabId: targetTabId,
     tableNumber: tableNum,
     displayName,
+    resetToken,
   }: {
     restaurantId: string
     tabId: string
     tableNumber?: string | number
     displayName?: string
+    resetToken?: string
   }) => {
-    console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum })
+    console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum, hasResetToken: Boolean(resetToken) })
     const sid = sessionId || ensureTabSessionId()
     const storedDisplayName =
       typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_display_name') || '' : ''
@@ -384,6 +389,7 @@ export function TabProvider({
         sessionId: sid,
         tableNumber: tableNum,
         displayName: resolvedDisplayName,
+        ...(resetToken ? { resetToken } : {}),
       }),
     })
 
@@ -403,7 +409,15 @@ export function TabProvider({
       localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
     }
 
+    // #265. Present only when this request redeemed a PIN-reset token. Stored under the same
+    // key tab creation uses, so every downstream reader (browse:195, tab:74) needs no changes.
+    if (data?.tabPin && typeof window !== 'undefined') {
+      sessionStorage.setItem('flashtap_creator_tab_pin', String(data.tabPin))
+    }
+
     persistTabId(targetTabId, tableNum ?? data?.tableNumber)
+
+    return { tabPin: data?.tabPin ? String(data.tabPin) : undefined }
   }
 
   const createNewTab = async ({
