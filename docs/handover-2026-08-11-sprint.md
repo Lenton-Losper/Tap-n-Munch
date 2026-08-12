@@ -2526,3 +2526,64 @@ Copy lives in one place, `TAB_ELSEWHERE_COPY`, marked **PENDING COPY DECISION**.
 behaviour depends on the wording.
 
 **HELD: not committed, not pushed, not deployed.** Riviera is live 13:30–16:00.
+
+---
+---
+
+# CHECKPOINT 7 — 2026-08-12. #211 SHIPPED to production.
+
+## STATE
+
+    production / origin/main   f7f28fcfab854d0c386da7ca835ae4ef646fdab5   cache-busted x3
+    origin/cloudflare-staging  6167f5dc1678d6a8da32ea7df58df8b44ffee5c4
+    production ledger          128 applied, drift gate GREEN in CI
+
+Production path today, two gated deploys:
+
+    2ccea66 -> e326a55   #262 migration file + its three restored assertions
+            -> f7f28fc   #211 table-mismatch landing
+
+**The production drift gate passed in CI.** That is the first independent confirmation that
+rule 10's landing sequence worked — file on main and ledger row present, counts agreeing at 128.
+
+## #211 — LIVE
+
+Copy ruled by the human (D1:A, D2:C with revised strings), subtext beneath the action rather than
+inside the button:
+
+    Your tab is open at Table 3
+      [ Rejoin your tab ]
+      [ Start a new tab at Table 7 ]   free table
+      [ Join the tab at Table 7 ]      occupied table, PIN-gated
+      Your Table 3 tab stays open      subtext, either action
+      [ View Menu ]
+
+Post-deploy smoke, all green: `/api/tabs/active` responds, the service-role count route still
+returns `count:2`, the landing returns 200, and **#262 is still closed** — anon `id,status,total`
+200 / anon `id,members` 401.
+
+Commented on **#211** (with the phone check still owed — no test can reach table-hopping),
+**#221** (fixed as part of it), and **#218** (explicitly NOT closed by this landing).
+
+## #223/#233/#187 packet — enumeration started
+
+The honest query is both halves, run at `origin/main`:
+
+    importers of markOrderPaidConfirmed   8 files
+    direct payment_status: 'paid' writes  4 files (2 overlap)
+
+Integrity-helper references per writer (`amountsMatch|payment-integrity|PAYMENT_AMOUNT_TOLERANCE`):
+
+    terminal/orders/[orderId]/payment/route.ts        2
+    terminal/orders/[orderId]/verify-payment/route.ts 3
+    payments/handle-terminal-payment-failed.ts        3
+    payments/reconcile/route.ts                       4
+    terminal/tabs/[tabId]/settle/route.ts             4
+    payments/e04111-recovery.ts                       1
+    webhooks/paycloud/route.ts                        0   <- #233, unauthenticated external
+    orders/auto-cancel-stale-pos-orders.ts            0   <- #223, the stale-POS cron
+    payments/reconcile-orphan-payments.ts             0   <- #226
+    payments/receipt/route.ts                         0   <- the eighth gate
+
+Four writers with ZERO amount comparison, and the count grep is only a starting point — a symbol
+grep cannot find a missing check, which is how five sweeps missed #223.
