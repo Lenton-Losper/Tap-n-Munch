@@ -2436,3 +2436,93 @@ map — no crash, no user-visible error.
 `select id, …, members` on staging still returns rows with `session_id`s. Staging needs the third
 landing — batch1 + batch2 (both now in) **plus the seam cherry-picked on top** — before the same
 migration can be applied there. Tracked as the remaining half of #262.
+
+---
+---
+
+# CHECKPOINT 6 — 2026-08-12. #211 built and green, HELD for the copy decision. Contract at revision 3.
+
+## Contract — revision 3 committed (`ccdc902`)
+
+Two rules, both from the #262 production landing, each citing it:
+
+- **Rule 10 — the drift check is BIDIRECTIONAL and has THREE states.** Applied to the DB with
+  neither the ledger row nor the file present reads **CLEAN**, because both sides agree it does not
+  exist. So the repair and the merge each break drift on their own, in opposite directions, and must
+  land together: prepare and verify the commit fully, then repair and push back to back. Includes
+  the four-state table measured on production.
+- **Rule 11 — `check-migration-drift.mjs` audits its OWN tree.** It resolves `MIGRATIONS_DIR` from
+  `__dirname`, not cwd. Two runs invoked by path from a worktree reported 131 local with three
+  missing; `main` was 127 and clean. **Fifth lying instrument**, with the class generalised: a tool
+  that takes its scope from its own location rather than from its argument will answer a question
+  you did not ask, in a well-formatted way.
+
+Header bumped to "Revision 3, 2026-08-12".
+
+## #211 — IMPLEMENTED, green, NOT COMMITTED. Awaiting the human's copy.
+
+Branch `fix/211-table-mismatch` in `wt-262main`, cut from `origin/main` @ `e326a55`.
+
+    tsc (node node_modules/typescript/bin/tsc, 5.9.3)   exit 0
+    eslint on the changed page                          clean
+    5 suites / 72 tests                                 all pass
+    negative probe                                      3 named failures, verified landed by hash
+
+### The four changes, as scoped
+
+1. **`myStoredTab` carries `tableNumber`.** Free — `fetchTabById` already selects `table_number`
+   (`lib/tab-session.ts:129`, and `TabRow.table_number` is typed) and the landing threw it away. No
+   new query, no new column, no API change.
+2. **`persistTabSession` now stores the tab's OWN table, not the scanned one.** It wrote `tableNum`,
+   so walking to another table silently re-pointed the stored tab at wherever you last scanned —
+   #221, and the thing that would have destroyed the comparison on the next load.
+3. **The blinding is lifted only when the tables differ.** `if (readStoredTabId()) { setOpenTab(null); return }`
+   became conditional on `isStoredTabAtAnotherTable(...)`. Same table → unchanged behaviour; different
+   table → the scanned table's own tab is resolved, which is what makes the second action possible.
+4. **The render offers a second action** when the stored tab is elsewhere, choosing between
+   *join here* and *start here* by what is actually at the scanned table.
+
+### The decision was EXTRACTED, so the test binds to shipped code
+
+`lib/tabs/landing-tab-actions.ts` — `isStoredTabAtAnotherTable` and `resolveLandingTabActions`,
+returning `rejoin_only | rejoin_or_join_here | rejoin_or_start_here`. The landing imports it at
+**both** seams (the render and the open-tab gate).
+
+This is #205's pattern deliberately: a test that re-implemented the comparison would prove nothing
+about the screen. Stated honestly in the test header — **it proves the RULE; that the page calls it
+at both seams is covered by reading and `tsc`, not by test.**
+
+Negative probe: collapsing the two "elsewhere" outcomes into a single `start_here` — the exact
+mistake the module exists to prevent — produced **3 named failures** (`offers JOIN, never start…`,
+`fails safe to JOIN…`, `never offers start-here for an occupied table at ANY table pairing`).
+Verified landed by blob (`1ce0bda1…` → `97bb4279…`) and restored to `1ce0bda1…`.
+
+### WHY THE THIRD CLAUSE IS LOad-BEARING, re-verified at the ref
+
+`POST /api/tabs`'s 23505 recovery branch **still has no PIN check** on `origin/main` — every `pin`
+reference in that file is in the *creation* path. `237caec` contained
+`POST /api/tabs/[tabId]/join` (now `if (pinRequired)` at `:94`), not this route. **#218 is open.**
+
+`idx_tabs_one_open_per_table` means "start a tab here" against an occupied table cannot create — it
+raises 23505 and lands in that branch. So collapsing the two outcomes would have turned #211's fix
+into a **new funnel into an open PIN bypass**. Routing the occupied case to a join reaches
+`[tabId]/join`, which enforces the PIN unconditionally.
+
+**Residual, disclosed rather than claimed away:** this removes the *systematic* funnel, not a race.
+If the open-tab lookup and the create disagree — someone opens a tab at that table in between — the
+create still hits 23505 and still lands in the PIN-less branch. That exposure already exists on
+today's third branch ("Create Tab"), so #211 does not add a new class; it simply does not eliminate
+it. **#218 remains the real fix.**
+
+### The other consequence the copy has to survive
+
+Both new actions **replace the stored tab**. `handleCreateTab` and the join paths both
+`router.push(browseWithTab(tabId))`, and `contexts/tab-context.tsx:140` calls
+`persistTabSession(tabIdFromUrl, …)` on arrival — so `flashtap_tab_id` is overwritten and the
+customer's previous tab becomes unreachable from that phone. Same class as #220. Whether the copy
+warns about that is the human's second decision.
+
+Copy lives in one place, `TAB_ELSEWHERE_COPY`, marked **PENDING COPY DECISION**. Nothing about the
+behaviour depends on the wording.
+
+**HELD: not committed, not pushed, not deployed.** Riviera is live 13:30–16:00.
