@@ -148,12 +148,25 @@ async function main() {
   if (censusError) {
     console.log(`  ERROR: ${censusError.message}`)
   } else {
+    // ONE disclosed cast, at the boundary, instead of three at the use sites.
+    //
+    // GRADED: ASSERTED, not established. `.select()` is given a string built at RUNTIME from
+    // REFERENCE_COLUMNS, so supabase-js cannot infer a row shape and types `data` as
+    // GenericStringError -- which is why the previous per-use `r as Record<string, unknown>`
+    // could not compile (TS2352: neither type sufficiently overlaps). Widening through `unknown`
+    // once says plainly that the shape is unverifiable here, rather than three times over.
+    //
+    // Safe in this file specifically: it is a READ-ONLY probe, every value is immediately passed
+    // through String(), and a wrong key yields '' rather than a throw. Do not copy the pattern
+    // into app code -- there, name the columns literally and let inference do the work.
+    const censusRows = (rows ?? []) as unknown as Record<string, unknown>[]
+
     for (const column of REFERENCE_COLUMNS) {
-      const present = (rows ?? []).filter((r) => String((r as Record<string, unknown>)[column] ?? '').trim() !== '')
-      const rejected = present.filter((r) => !isWellFormedPaymentRef(String((r as Record<string, unknown>)[column])))
+      const present = censusRows.filter((r) => String(r[column] ?? '').trim() !== '')
+      const rejected = present.filter((r) => !isWellFormedPaymentRef(String(r[column])))
       const punctuation = new Set<string>()
       for (const r of present) {
-        for (const ch of String((r as Record<string, unknown>)[column])) {
+        for (const ch of String(r[column])) {
           if (!/[A-Za-z0-9]/.test(ch)) punctuation.add(ch)
         }
       }
