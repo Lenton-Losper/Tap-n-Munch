@@ -2292,3 +2292,23 @@ the lock."* Taking it.
 **Still open, for whoever picks it up:** the edit lock itself (3-minute expiry, staff-wins on
 simultaneous fire), the re-acceptance branch when the total changes, the dashboard indicators, and
 the decision on whether `payment_status`-only patches come under the CAS.
+
+---
+
+## FINAL — #272 diagnosis corrected; builds NOT started, stopped on context
+
+**#272's mechanism is a denylist/allowlist mismatch, not a missing filter.** My first diagnosis was
+wrong. `isCustomerMenuItemVisible` (`lib/supabase/menu.ts:160-163`) admits everything except
+`hidden`; `isChargeableMenuStatus` admits only `available`/`active`. The gap is every other status
+(`inactive`, `out_of_stock`, `archived`, and anything added later). Correction posted on the issue.
+
+Right fix: ONE shared predicate used by both sides, not a second copy of the rule in the query.
+
+**Confirmed, not assumed:** `invalidateMenuCache` exists at `lib/cache/menu-cache.ts:35` and the
+admin item write path (`app/api/admin/menu/items/route.ts`) NEVER CALLS IT — the cache gotcha is
+real. Subcategory grouping already skips empty groups (`if (items.length === 0) continue`); the
+CATEGORY list route was not read and still needs checking.
+
+**NOT STARTED, deliberately:** #272 implementation, #273, order editing, unpaid-tab-elsewhere flag.
+Stopped on the human's standing instruction rather than half-building the order-status lock. No
+uncommitted edits anywhere; nothing half-applied.
