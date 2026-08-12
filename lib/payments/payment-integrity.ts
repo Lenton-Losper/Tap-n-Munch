@@ -13,7 +13,9 @@
  *
  * This was the tolerance for EVERY comparison until #190. It is now the client-leg tolerance
  * only — see GATEWAY_AMOUNT_TOLERANCE_CENTS for why a gateway echo gets no tolerance at all.
- * The two client legs are payment/route.ts and tabs/[tabId]/settle/route.ts.
+ * The three client legs are payment/route.ts, tabs/[tabId]/settle/route.ts, and (#223)
+ * payments/receipt/route.ts — validating a client-submitted amount before the PayCloud
+ * checkout is created, so nothing has been charged yet at any of the three.
  */
 export const PAYMENT_AMOUNT_TOLERANCE_CENTS = 1
 
@@ -60,10 +62,17 @@ export function roundToCents(amount: number): number {
  * which is the one outcome that must never be written through (it would mark this order paid on
  * somebody else's money, and the row would look entirely ordinary afterwards).
  *
- * The three gateway legs:
+ * The gateway legs:
  *   app/api/terminal/orders/[orderId]/verify-payment/route.ts
  *   lib/payments/handle-terminal-payment-failed.ts
- *   app/api/payments/reconcile/route.ts   (#197 — never called amountsMatch at all)
+ *   app/api/payments/reconcile/route.ts        (#197 — never called amountsMatch at all)
+ *   lib/orders/auto-cancel-stale-pos-orders.ts (#223 — quarantines rather than refuses; see
+ *                                                AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS for why)
+ *   app/api/webhooks/paycloud/route.ts         (#223 — both the signature-valid and the
+ *                                                signature-fallback path)
+ *   lib/payments/reconcile-orphan-payments.ts  (#223 — compared against the SUM of every
+ *                                                order a payment_events row names, not a
+ *                                                single order's total)
  *
  * ABSENT is not AGREEING. Every one of those sites must also refuse when the gateway response
  * carries no amount. A tolerance cannot express that, so it is enforced at each site with an

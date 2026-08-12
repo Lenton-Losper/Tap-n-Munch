@@ -89,6 +89,15 @@ async function runCleanup(req: Request) {
           reconcile.recoveredAfterAutoCancelIds,
         )
       }
+      // #223. A payment_events row whose amount did not agree with its named orders' total.
+      // Nothing was applied; both figures are on each order's audit_logs row.
+      if (reconcile.amountMismatchCount > 0) {
+        console.error(
+          '[CLEANUP-STALE-ORDERS] Orphan payment amount mismatch, left for review:',
+          reconcile.amountMismatchCount,
+          reconcile.amountMismatchIds,
+        )
+      }
     }
   } catch (error) {
     console.error('[CLEANUP-STALE-ORDERS] Reconcile failed:', error)
