@@ -9,6 +9,8 @@ import {
   isCancelledOnE04111Evidence,
   recordRecoveredAfterAutoCancel,
 } from '@/lib/payments/e04111-recovery'
+import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
+import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 
 function webhookAck() {
   return new Response('success', {
@@ -53,6 +55,22 @@ function extractWebhookMerchantOrderNo(payload: Record<string, unknown>): string
   return ''
 }
 
+/**
+ * #223. The payload's own claimed amount, for the signature-valid path. Same field
+ * precedence payments/webhook.js's extractWebhookOrderRef already uses for this gateway
+ * (`amount`, falling back to `paid_amount`), so a field this webhook already trusts for
+ * everything else is not read under a different name here.
+ *
+ * Returns null for absent/unparseable -- ABSENT is not AGREEING, same convention as
+ * queryFinaticOrderPaid's toMoney.
+ */
+function extractWebhookGatewayAmount(payload: Record<string, unknown>): number | null {
+  const raw = payload.amount ?? payload.paid_amount
+  if (raw === null || raw === undefined || raw === '') return null
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
 function isPaidTransStatus(transStatus: unknown): boolean {
   if (transStatus === 2 || transStatus === '2') return true
   const s = String(transStatus ?? '').toLowerCase()
@@ -76,6 +94,12 @@ type MarkPaidOutcome = {
   claimedIds: string[]
   /** Orders the claim UPDATE could not apply, with why. */
   unclaimed: Array<{ orderId: string; reason: 'already_paid' | 'claim_conflict' }>
+  /**
+   * #223. True when the gateway's amount did not agree with the covered orders' total, or was
+   * absent. Nothing was marked paid and nothing was cancelled; both figures were recorded on
+   * every affected order for a human to resolve.
+   */
+  amountMismatch: boolean
 }
 
 /**
@@ -94,6 +118,16 @@ type MarkPaidOutcome = {
  * Cancelled orders: an order auto-cancelled by the E04111 rule sits outside
  * CLAIMABLE_PAYMENT_STATUSES, so the claim would match zero rows and discard the payment.
  * claimableStatusesForRecovery widens the transition for exactly those orders.
+ *
+ * #223. GATEWAY leg: `gatewayAmount` must agree with the SUM of the covered orders' totals
+ * before anything is written, at GATEWAY_AMOUNT_TOLERANCE_CENTS (zero) with ABSENT treated as
+ * unverified, not agreeing -- same rule as the other three gateway legs named on
+ * GATEWAY_AMOUNT_TOLERANCE_CENTS's own docblock. Compared ONCE against the sum, not per order:
+ * a webhook event can name several orders at once (a tab settle), and the gateway's single
+ * figure is for all of them together. REFUSED here, not quarantined -- quarantine is #223's
+ * cron leg only, because refusing there would let the same sweep cancel a card that had
+ * already been charged. This route has no such follow-up sweep, so refusing (leaving the
+ * orders exactly as they were, both figures recorded) is the safe default.
  */
 async function markOrdersPaidConfirmedByIds(
   supabase: ReturnType<typeof createServerSupabaseClient>,
@@ -102,9 +136,16 @@ async function markOrdersPaidConfirmedByIds(
     reference: string
     source: string
     extraAuditMetadata?: Record<string, unknown>
+    /** #223. The gateway-confirmed amount for this event, covering ALL orderIds combined. null means the gateway gave no amount at all. */
+    gatewayAmount: number | null
   },
 ): Promise<MarkPaidOutcome> {
-  const outcome: MarkPaidOutcome = { updateError: null, claimedIds: [], unclaimed: [] }
+  const outcome: MarkPaidOutcome = {
+    updateError: null,
+    claimedIds: [],
+    unclaimed: [],
+    amountMismatch: false,
+  }
   if (!orderIds.length) return outcome
 
   const { data: rows, error: loadError } = await supabase
@@ -117,7 +158,66 @@ async function markOrdersPaidConfirmedByIds(
     return outcome
   }
 
-  for (const row of rows ?? []) {
+  const orderRows = rows ?? []
+  const expectedAmount = orderRows.reduce((sum, row) => sum + (Number(row.total) || 0), 0)
+  const verified =
+    params.gatewayAmount !== null &&
+    amountsMatch(params.gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+  if (!verified) {
+    const reason =
+      params.gatewayAmount === null
+        ? `PayCloud webhook confirmed a payment for ${params.reference} but gave no amount -- ` +
+          'the amount was never verified, so it is not applied.'
+        : `PayCloud webhook confirmed ${params.gatewayAmount} for ${params.reference}, but the ` +
+          `covered order(s) total ${expectedAmount} -- not applying, and not cancelling an ` +
+          'order the gateway says was charged.'
+    console.error(`[WEBHOOK] ${reason}`)
+
+    for (const row of orderRows) {
+      const orderId = String(row.id)
+      const restaurantId = String(row.restaurant_id)
+
+      if (params.gatewayAmount !== null) {
+        await recordPaymentAmountMismatch(supabase, {
+          restaurantId,
+          orderId,
+          expectedAmount,
+          receivedAmount: params.gatewayAmount,
+          source: 'paycloud_webhook',
+          businessOrderNo: params.reference,
+          reference: params.reference,
+        })
+      }
+
+      const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: restaurantId,
+        action: 'payment.verification_uncertain',
+        entity_type: 'order',
+        entity_id: orderId,
+        metadata: {
+          reason,
+          gatewayAmount: params.gatewayAmount,
+          expectedAmount,
+          amountVerified: false,
+          businessOrderNo: params.reference,
+          source: params.source,
+          outcome: 'left_pending_finatic_uncertain',
+        },
+      })
+      if (uncertainAuditError) {
+        console.error(
+          '[WEBHOOK] payment.verification_uncertain audit failed:',
+          uncertainAuditError,
+        )
+      }
+    }
+
+    outcome.amountMismatch = true
+    return outcome
+  }
+
+  for (const row of orderRows) {
     const orderId = String(row.id)
     const restaurantId = String(row.restaurant_id)
     const recoveringAutoCancelled = isCancelledOnE04111Evidence(row)
@@ -256,10 +356,17 @@ export async function POST(req: Request) {
       reference: merchantOrderNo,
       source: 'paycloud_webhook_valid_signature',
       extraAuditMetadata: { businessOrderNo: merchantOrderNo, path },
+      gatewayAmount: extractWebhookGatewayAmount(payload),
     })
     if (markOutcome.updateError) {
       console.error('[WEBHOOK] mark paid failed:', markOutcome.updateError)
       return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
+    }
+    if (markOutcome.amountMismatch) {
+      // #223. Recorded on every affected order already. ACK rather than 503 -- Finatic will
+      // keep sending the same disagreeing amount on retry, so there is nothing a retry can
+      // resolve; a human resolves it from the audit trail.
+      return webhookAck()
     }
     const blocked = unappliedClaims(markOutcome)
     if (blocked.length) {
@@ -361,10 +468,16 @@ export async function POST(req: Request) {
         finaticAmount: fallback.finatic.amount,
         orderIds,
       },
+      gatewayAmount: fallback.finatic.amount,
     })
     if (markOutcome.updateError) {
       console.error('[WEBHOOK] fallback mark paid failed:', markOutcome.updateError)
       return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
+    }
+    if (markOutcome.amountMismatch) {
+      // #223. Same reasoning as the signature-valid path: recorded already, and a retry
+      // cannot change what Finatic reports for this reference.
+      return webhookAck()
     }
     const blocked = unappliedClaims(markOutcome)
     if (blocked.length) {
