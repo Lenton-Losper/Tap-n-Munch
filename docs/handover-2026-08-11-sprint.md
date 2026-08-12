@@ -2014,3 +2014,77 @@ Reply format: #265: Q1:_ Q2:_ Q3:_
 ## Queued rather than idled
 
 `#262`'s migration and everything gated on it (Q2 above, plus the standing decisive-probe requirement) stayed queued behind the missing `SUPABASE_DB_PASSWORD` — not attempted, not worked around. Staging's `#262` third landing intentionally left alone per instruction: Riviera is trading 13:30–16:00 and staging is the fallback environment if anything goes wrong during service.
+
+---
+---
+
+# CHECKPOINT — 2026-08-12, same session continued. #265 ruled and Q3 implemented, #223 pushed, Revision 3 written.
+
+## #265 — RULED: Q1:A Q2:A Q3:A. Q3 implemented this checkpoint; Q2 deliberately not.
+
+`fix/265-pin-recovery`, cut from `origin/main` at `3f52149`, commit `7826624`. **Not pushed** —
+no instruction to push this one specifically, only `fix/223-amount-gates`.
+
+- Migration `20260812130000_tabs_pin_reset_token.sql` — adds `pin_reset_token` +
+  `pin_reset_token_expires_at` to `tabs`. **Not applied anywhere** — same `SUPABASE_DB_PASSWORD`
+  gap as `#262`'s migration. Written and reviewed, not run.
+- `POST /api/tabs/[tabId]/reset-pin` — new, terminal-auth (staff/POS), mints the token via
+  `crypto.randomUUID()` (not `Math.random`, which `#241` already flagged weak for a comparable
+  code), 15-minute TTL, returns a recovery URL for staff to render as a QR on their OWN screen.
+  Touches neither `tab_pin` nor `session_version`.
+- `POST /api/tabs/[tabId]/join` — gained a `resetToken` branch, checked before the ordinary
+  `pin_required` gate. A live match mints a NEW `tab_pin` and clears both reset columns in the
+  SAME update; verified single-use under a race by checking the update's RETURNED ROW, not just
+  the absence of an error — an unchecked update would have let a race loser proceed with a
+  `newPin` that was never actually written. New PIN returned only in that response.
+- `v2/page.tsx` reads a `pinReset` query param (what the recovery QR encodes) and shows a
+  "Get My New PIN" card ahead of the ordinary open-tab branches; on success reuses the EXISTING
+  `createdTabPin` "Your tab PIN is" screen rather than a second one. `tab-context.tsx`'s
+  `joinExistingTab` carries the token through and stores the returned PIN under the same
+  `flashtap_creator_tab_pin` key creation uses.
+- **7 new tests** (`tab-pin-reset.test.ts`), plus the pre-existing `#262` PIN-bypass suite and
+  the landing/tab-context suites re-run clean — 84 tests / 7 suites, `tsc 5.9.3` exit 0.
+
+**NOT DONE, disclosed:** the migration is unapplied (blocked on the DB password); the frontend
+was **not click-tested in a browser** — no populated Supabase credentials on this machine to run
+a live dev server against, so this needs the same staging click-test `#214`/`#225` got before it
+ships (PROOF CEILING: STAGING, not reached). Q2 (reinstating same-device recognition once the
+migration is confirmed applied) is intentionally not implemented here — separate, smaller change,
+gated on the decisive probe, not on this commit.
+
+## #223 — pushed to origin
+
+`fix/223-amount-gates` pushed per explicit instruction: `bcbde10..ee93153`. See the prior
+checkpoint in this file for what `ee93153` contains (webhook both paths, `reconcileOrphanPayments`,
+the `payments/receipt/route.ts` eighth gate).
+
+## Contract corrections — re-derived, not recalled, and pushed
+
+The incoming brief this session cited checkpoint `55e6dac` and "Revision 3 governs" — neither
+existed on any branch (`git cat-file -e` / `git log --all` came up empty for the SHA; the docs
+branch tip only carried Revision 2). Per instruction, did not try to reconstruct Revision 3 from
+memory. Instead re-derived two rules from this session's own verification and added them as
+Revision 3, pushed to `origin/docs/agent-operating-contracts` (`9c3c326..3af332b`):
+
+- **Rule 10** — `check-migration-drift.mjs` resolves its migrations directory via `__dirname`,
+  not `cwd`. Demonstrated directly, not just reasoned about: two worktrees open this session
+  turned out to be carrying genuinely different copies of the file, which is what led to finding
+  Rule 11.
+- **Rule 11** — that difference is because `76153d8` (#143, environment-scoped migrations, a
+  three-state OK/WARNING/FAILED drift check) is reachable from staging and several feature
+  branches but **not from `origin/main`**. Verified by reading each environment's own copy of
+  the script plus the workflow files that invoke it (`production-worker.yml:138-139`,
+  `staging.yml:546-551`): production's actual deploy gate still runs the two-state version.
+  Dormant today (no `-- @env:` header on any committed migration on `main`, checked this
+  session) but silent the day one lands.
+
+## State at this checkpoint
+
+    origin/main                 3f52149   unchanged this session
+    origin/cloudflare-staging   6167f5d   unchanged this session
+    fix/223-amount-gates        ee93153   PUSHED
+    fix/265-pin-recovery        7826624   NOT pushed
+    docs/agent-operating-contracts   3af332b   PUSHED (Revision 3)
+
+Nothing deployed. No migration applied. No production write. `.env.local` held for the
+DB/Supabase credentials still incoming — nothing attempted that needed them.
