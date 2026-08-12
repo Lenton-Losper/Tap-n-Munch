@@ -2212,3 +2212,83 @@ Not started, as instructed. The three constraints that make it non-trivial are r
 no customer identity or address anywhere (#244, zero `customer_email` matches repo-wide); "after
 the order is done" has three non-equivalent candidates (`completed` / `paid` / tab `settled`) at two
 different grains; and any email-capable answer must land #244's guard in the same change.
+
+---
+---
+
+# CHECKPOINT — 2026-08-12 late. Staging cleaned, #265 migration applied, order editing NOT started.
+
+## STATE
+
+    production / origin/main   c0bee8b   unchanged
+    origin/cloudflare-staging  6167f5d   unchanged (nothing deployed)
+    staging DB                 20260812130000 APPLIED + ledger repaired
+    open issues                120  (#270 feedback spec, #271 load results filed)
+
+## 1. STAGING CLEANED
+
+Restaurant-scoped, leaves-first, using the sim's own `ls*` session marker so pre-existing rows were
+never in range.
+
+    order_requests   1564 -> 18     (1546 synthetic deleted)
+    tabs              137 -> 93     (44 created today, none referenced by an order)
+    orders            198 -> 198    UNCHANGED
+    tables occupied     - -> 0
+
+## 2. #265 MIGRATION APPLIED TO STAGING, code NOT deployed
+
+`20260812130000_tabs_pin_reset_token.sql` applied via `safe-supabase-linked`, ledger repaired
+(`db query` does not write it). **Verified by behaviour, not the ledger:** selecting
+`pin_reset_token, pin_reset_token_expires_at` returns HTTP 200.
+
+Note `migration repair` GLOBS THE FILE FROM DISK — it fails with `LegacyMigrationFileNotFoundError`
+if the version is not present in `supabase/migrations/`. The file had to be placed in the working
+tree for the repair and removed afterwards. Worth knowing before the next repair on a branch that
+does not carry the file.
+
+**The deploy did NOT happen.** Cherry-picking `7826624` onto staging conflicts on
+`app/api/tabs/[tabId]/join/route.ts` — staging does not have #262's containment (`if (pinRequired)`
+at main's `:94`), and #265 edits that same function. So #265 cannot land on staging alone; it needs
+the containment commit first, then itself.
+
+Aborted rather than resolved. That file is the PIN gate on an auth path, and resolving a conflict
+there thin, late, and unverified is the exact "worse than none" case. Cherry-pick aborted, worktree
+clean at `6167f5d`.
+
+**Consequence for the morning: there is no PIN-recovery flow to click-test.** The migration being
+applied is harmless on its own — two nullable columns and a partial index, read by no deployed code,
+and NOT in #262's anon grant list so anon cannot see them.
+
+## 3. LOAD RESULTS FILED — #271
+
+No breaking point below 400. Flat latency 25->400 (p50 2063 -> 1743ms), 6.5 orders/sec sustained,
+zero failures at the top rung, connection ceiling never reached. Baseline **~1.7-2.0s p50 is the
+finding** — it is the floor, not congestion.
+
+#127 reframed by measurement: a QR order is an `order_request` with NO order_number; the number is
+allocated at staff Accept. **Customer load cannot collide it.** #218 fires **39 of 40** under
+simultaneous scans at one table.
+
+Dashboard keep-up NOT measured — the harness queried the wrong table and its own number is an
+artifact; said so on the issue rather than reporting it.
+
+## 4. ORDER EDITING — investigated, NOT built. Stopped deliberately.
+
+The human's instruction: *"If you run low on context, STOP and checkpoint rather than half-building
+the lock."* Taking it.
+
+**What the investigation established, and it changes the design:**
+
+- **There is no customer-facing edit path today.** No PATCH/PUT on `app/api/orders/[orderId]`; only
+  staff `order-requests/[requestId]/{review,accept,decline}`.
+- **Two staff devices are ALREADY protected for `status`.**
+  `app/api/orders/[orderId]/status/route.ts:115` does `.eq('status', expectedCurrentStatus)` — a
+  real database compare-and-set. The loser gets **409 "Order status changed; refresh and try
+  again"**, and the dashboard uses this route at all three call sites. **Not last-write-win.** The
+  lock has a foundation to extend rather than invent.
+- **The gap is real and narrow:** the CAS is applied only when `status` is in the patch. A
+  `payment_status`-only patch skips it deliberately (comment at `:105-107`) and IS last-write-win.
+
+**Still open, for whoever picks it up:** the edit lock itself (3-minute expiry, staff-wins on
+simultaneous fire), the re-acceptance branch when the total changes, the dashboard indicators, and
+the decision on whether `payment_status`-only patches come under the CAS.
