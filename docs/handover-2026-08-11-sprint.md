@@ -2322,3 +2322,117 @@ was about to report the containment missing from production. The docs branch's `
 main's — `git diff origin/main HEAD -- app lib` is non-empty. Re-read at the ref, it is contained.
 **The `POST /api/tabs` finding was then re-verified at `origin/main` and holds.** This is exactly
 the base-conditional rule, tripped on my own reads rather than on a brief.
+
+---
+---
+
+# CHECKPOINT 5 — 2026-08-12. #262 IS CLOSED ON PRODUCTION.
+
+Ruled by the human: **option A, production first.** Staging cannot rehearse this — old client +
+new grant is a combination that will never exist in production, so a red there was certain and a
+green impossible. The enumeration was the rehearsal.
+
+## STATE
+
+    production DB              anon grant narrowed, VERIFIED
+    origin/main                e326a55602862ceba1e22c5201af75f6f186b79d
+    origin/cloudflare-staging  6167f5dc1678d6a8da32ea7df58df8b44ffee5c4
+    production ledger          128 applied · drift check OK 128/128
+    CLI link                   back on staging (mdqjpxwczrhkxkbqatqa), guard verified refusing prod
+
+## THE CLOSE CONDITION — MET
+
+    select id, restaurant_id, table_number, status, members
+    (production, public anon key)  ->  HTTP 401  42501 permission denied for table tabs
+
+It returned 5 rows before. **That is #262 closed**, and it is proven by probing enforced behaviour,
+not by the ledger (#263).
+
+### The four-way discriminator, before and after, same credential
+
+| probe | BEFORE | AFTER |
+|---|---|---|
+| `select *` | 42501 | 42501 |
+| `select id, status, total` | OK rows=5 | **OK rows=5** |
+| `select tab_pin` | 42501 | 42501 |
+| `select id, …, members` | **OK rows=5** | **42501** |
+| `select customer_name` | **OK rows=5** | **42501** |
+
+`id, status, total` still returning rows is the load-bearing half: it distinguishes "REVOKE and
+re-GRANT both landed" from "REVOKE landed, re-GRANT did not", which would have been a full guest
+outage rather than a fix. The rollback (`GRANT SELECT (members, customer_name) … TO anon`) was
+written before the forward step and was not needed.
+
+### The authoritative artifact — information_schema.column_privileges
+
+    anon           15 cols · members ABSENT · customer_name ABSENT · tab_pin ABSENT
+    authenticated  19 cols · members PRESENT · customer_name PRESENT · tab_pin PRESENT
+    service_role   19 cols · members PRESENT · customer_name PRESENT · tab_pin PRESENT
+
+Exactly the migration's list. Staff and every service-role route untouched.
+
+Cross-checked live: `service_role` still reads `id,members`, `customer_name` and `*` on `tabs`
+(OK rows=2 each), so no service-role route lost anything.
+
+## THE ORDER, AND A CORRECTION TO IT
+
+The human's sequence was apply → drift clean → then merge the file. The drift check is
+**bidirectional** (`scripts/check-migration-drift.mjs`): `LOCAL_NOT_APPLIED` *and*
+`APPLIED_NOT_LOCAL` both fail. So there is a third state the instruction did not anticipate, and it
+is the one we were in immediately after applying:
+
+**applied to the DB, recorded on NEITHER side — and drift reads CLEAN**, because the file set and
+the ledger agree that it does not exist. Verified: 127 local / 127 applied, OK.
+
+That means ledger repair and file merge each *individually* break drift, in opposite directions.
+They were therefore prepared fully and landed back to back:
+
+1. commit prepared and verified locally (`e326a55`) — tsc exit 0, suite 10/10
+2. `migration repair --linked --status applied 20260811120000` → ledger 127 → 128
+3. push to main immediately
+4. drift re-checked: **128 local / 128 applied, OK**
+
+`db query` did not write the ledger (has_262 = 0 confirmed after applying), and the objects were
+verified present, so this was a **repair, never a re-run** — the standing rule.
+
+### A measurement trap caught in passing
+
+`check-migration-drift.mjs` resolves `MIGRATIONS_DIR` from **its own `__dirname`**, not from cwd.
+Running `node ../restaurant-menu-screen/scripts/check-migration-drift.mjs` from a worktree silently
+audits the *other* checkout's migrations. My first two runs did exactly that and reported 131 local
+with three missing — none of which was main's state. The docs branch carries 4 migration files main
+does not. **Run the worktree's own copy, or the number is about a tree you are not shipping.**
+
+## THE `orders-dashboard.tsx:536` WATCH — closed by measurement, not by argument
+
+The concern: it selects `members` on the **browser** client, so a pre-auth-hydration load would run
+as `anon` and, post-migration, get 42501 where it used to get rows.
+
+**That path is unreachable.** Measured with the production anon key:
+
+    anon select orders(id)  ->  HTTP 200, rows=0
+
+Anon gets an empty set from `orders` (RLS filters, it is not a grant refusal). `loadTabs` is gated
+on `tabIds.length`, which is derived from `allOrders`. Unauthenticated, `allOrders` is empty,
+`tabIds.length === 0`, and the function **returns before issuing the tabs query at all**.
+
+Belt and braces: `authenticated` retains `members`, and the error branch is `console.error` +
+`return` with no `setTabInfoById`, so even a hypothetical failure is silent and leaves the previous
+map — no crash, no user-visible error.
+
+**Nothing surfaced.**
+
+## Live guest surfaces after the change
+
+- `/api/guest/orders/active-table?…&countOnly=1` — the #266 service-role discriminator — still
+  returns `count:2` and `count:0` for the two live tables. Service-role unaffected.
+- `/api/tabs/active` returns `{"tab":null}` for all three open production tabs. **Correct, and
+  still only the negative path**: every open production tab is from 2026-07-17 to 2026-08-11, all
+  older than the route's 12-hour cutoff. The positive path remains unverified live, exactly as the
+  previous checkpoint disclosed. Not a regression, and not new evidence either.
+
+## STAGING STILL HAS THE EXPOSURE
+
+`select id, …, members` on staging still returns rows with `session_id`s. Staging needs the third
+landing — batch1 + batch2 (both now in) **plus the seam cherry-picked on top** — before the same
+migration can be applied there. Tracked as the remaining half of #262.
