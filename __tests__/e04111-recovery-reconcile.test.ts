@@ -126,6 +126,7 @@ describe('reconcileOrphanPayments recovery of auto-cancelled orders', () => {
         event_type: 'sale',
         business_order_no: 'FT149',
         order_ids: ['ord-cancelled', 'ord-plain'],
+        amount: 52.5, // #223: must equal the sum of the named orders' totals (42.5 + 10) or the event is refused, not recovered.
         created_at: '2026-08-03T11:00:00.000Z',
       },
     ]
@@ -184,6 +185,7 @@ describe('reconcileOrphanPayments recovery of auto-cancelled orders', () => {
         event_type: 'sale',
         business_order_no: 'FT149',
         order_ids: ['ord-cancelled'],
+        amount: 42.5, // #223: matches the single named order's total.
         created_at: '2026-08-03T11:00:00.000Z',
       },
     ]
@@ -224,6 +226,7 @@ describe('reconcileOrphanPayments recovery of auto-cancelled orders', () => {
         event_type: 'sale',
         business_order_no: 'FT149',
         order_ids: ['ord-cancelled', 'ord-plain'],
+        amount: 52.5, // #223: matches the sum of the named orders' totals (42.5 + 10).
         created_at: '2026-08-03T11:00:00.000Z',
       },
     ]

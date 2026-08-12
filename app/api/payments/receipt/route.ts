@@ -5,6 +5,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
+import { amountsMatch, PAYMENT_AMOUNT_TOLERANCE_CENTS, roundToCents } from '@/lib/payments/payment-integrity'
 
 export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
@@ -98,14 +99,23 @@ export async function POST(req: Request) {
       sum += Number(data.total) || 0
     }
 
-    const roundedSum = Math.round(sum * 100) / 100
-    const roundedClient = Math.round(clientAmount * 100) / 100
-    if (Math.abs(roundedSum - roundedClient) > 0.02) {
+    /**
+     * #223. This was `Math.abs(Math.round(sum*100)/100 - Math.round(clientAmount*100)/100) > 0.02`
+     * -- raw floats, and a NaN passthrough: when `body.amount` was missing or unparseable,
+     * `clientAmount` was `NaN`, `Math.abs(NaN - x)` is `NaN`, and `NaN > 0.02` is `false` -- so an
+     * ABSENT client amount silently passed the check instead of being refused. amountsMatch
+     * compares integer cents and explicitly returns false for a non-finite operand, closing both
+     * at once. CLIENT leg (validating a client-submitted amount before the PayCloud checkout is
+     * created, same shape as tabs/[tabId]/settle/route.ts's guard), so PAYMENT_AMOUNT_TOLERANCE_CENTS
+     * applies, not the zero-tolerance gateway constant -- nothing has been charged yet here.
+     */
+    if (!amountsMatch(clientAmount, sum, PAYMENT_AMOUNT_TOLERANCE_CENTS)) {
       return NextResponse.json(
         { ok: false, error: 'Amount does not match order total. Please refresh and try again.' },
         { status: 400 }
       )
     }
+    const roundedSum = roundToCents(sum)
 
     let merchantNo: string
     let storeNo: string

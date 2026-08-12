@@ -6,6 +6,8 @@ import {
   isCancelledOnE04111Evidence,
   recordRecoveredAfterAutoCancel,
 } from '@/lib/payments/e04111-recovery'
+import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
+import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -16,6 +18,14 @@ export type ReconcileOrphanPaymentsResult = {
   /** Orders restored after the E04111 auto-cancel rule had cancelled them. */
   recoveredAfterAutoCancel: number
   recoveredAfterAutoCancelIds: string[]
+  /**
+   * #223. A payment_events 'sale' row whose amount did not agree with the total of the orders
+   * it names (or the row's amount was absent, which cannot happen today -- payment_events.amount
+   * is NOT NULL -- but is still checked explicitly rather than assumed). Nothing was marked
+   * paid; both figures were recorded on every named order for a human to resolve.
+   */
+  amountMismatchCount: number
+  amountMismatchIds: string[]
 }
 
 /**
@@ -41,10 +51,11 @@ export async function reconcileOrphanPayments(
 
   const markedPaidIds: string[] = []
   const recoveredAfterAutoCancelIds: string[] = []
+  const amountMismatchIds: string[] = []
 
   const { data: events, error: eventsError } = await supabase
     .from('payment_events')
-    .select('id, business_order_no, order_ids, created_at')
+    .select('id, business_order_no, order_ids, amount, created_at')
     .eq('event_type', 'sale')
     .gte('created_at', since)
     .order('created_at', { ascending: false })
@@ -60,18 +71,90 @@ export async function reconcileOrphanPayments(
       : []
     if (!orderIds.length) continue
 
-    const { data: unpaid } = await supabase
+    // #223. Load ALL orders this event names, not only the currently-unpaid ones. The
+    // event's amount was for the WHOLE original transaction (a tab settle can cover several
+    // orders in one event), so comparing against just the unpaid subset would understate the
+    // expected total the moment any sibling order is already paid, and manufacture a mismatch.
+    const { data: eventOrders } = await supabase
       .from('orders')
       .select(
         'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, paycloud_merchant_order_no',
       )
       .in('id', orderIds)
-      .neq('payment_status', 'paid')
 
-    if (!unpaid?.length) continue
+    if (!eventOrders?.length) continue
+
+    const merchantNo = String(event.business_order_no || '').trim()
+
+    // #223. GATEWAY leg: payment_events.amount is NOT NULL (schema constraint), so there is no
+    // absent-amount case in practice -- checked explicitly anyway rather than assumed, per the
+    // same rule as the other three gateway legs. Compared ONCE against the sum of every order
+    // the event names, at GATEWAY_AMOUNT_TOLERANCE_CENTS (zero).
+    const expectedAmount = eventOrders.reduce((sum, row) => sum + (Number(row.total) || 0), 0)
+    const gatewayAmount =
+      typeof event.amount === 'number' && Number.isFinite(event.amount) ? event.amount : null
+    const verified =
+      gatewayAmount !== null && amountsMatch(gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+
+    if (!verified) {
+      const reason =
+        gatewayAmount === null
+          ? `payment_events ${event.id} (sale, ${merchantNo || 'no business_order_no'}) has no ` +
+            'amount -- never verified, orders left as they were.'
+          : `payment_events ${event.id} (sale, ${merchantNo || 'no business_order_no'}) reports ` +
+            `${gatewayAmount}, the named orders total ${expectedAmount} -- not applying, and not ` +
+            'cancelling orders the event says were paid.'
+      console.error(`[reconcileOrphanPayments] ${reason}`)
+
+      for (const row of eventOrders) {
+        if (String(row.payment_status || '').toLowerCase() === 'paid') continue
+        const orderId = String(row.id)
+        const restaurantId = String(row.restaurant_id)
+
+        if (gatewayAmount !== null) {
+          await recordPaymentAmountMismatch(supabase, {
+            restaurantId,
+            orderId,
+            expectedAmount,
+            receivedAmount: gatewayAmount,
+            source: 'reconcile_orphan_payments',
+            businessOrderNo: merchantNo || null,
+            reference: merchantNo || null,
+          })
+        }
+
+        const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: restaurantId,
+          action: 'payment.verification_uncertain',
+          entity_type: 'order',
+          entity_id: orderId,
+          metadata: {
+            reason,
+            gatewayAmount,
+            expectedAmount,
+            amountVerified: false,
+            paymentEventId: String(event.id),
+            businessOrderNo: merchantNo || null,
+            source: 'cron_reconcile_orphan_payments',
+            outcome: 'left_pending_finatic_uncertain',
+          },
+        })
+        if (uncertainAuditError) {
+          console.error(
+            '[reconcileOrphanPayments] payment.verification_uncertain audit failed:',
+            uncertainAuditError,
+          )
+        }
+        amountMismatchIds.push(orderId)
+      }
+
+      continue
+    }
+
+    const unpaid = eventOrders.filter((row) => String(row.payment_status || '').toLowerCase() !== 'paid')
+    if (!unpaid.length) continue
 
     const paidAt = new Date().toISOString()
-    const merchantNo = String(event.business_order_no || '').trim()
     const autoCancelled = unpaid.filter((row) => isCancelledOnE04111Evidence(row))
     const plain = unpaid.filter((row) => !isCancelledOnE04111Evidence(row))
     const ids = unpaid.map((row) => String(row.id))
@@ -190,5 +273,7 @@ export async function reconcileOrphanPayments(
     receiptsIssued,
     recoveredAfterAutoCancel: recoveredAfterAutoCancelIds.length,
     recoveredAfterAutoCancelIds: [...new Set(recoveredAfterAutoCancelIds)],
+    amountMismatchCount: amountMismatchIds.length,
+    amountMismatchIds: [...new Set(amountMismatchIds)],
   }
 }
