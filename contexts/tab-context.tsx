@@ -10,13 +10,15 @@ import {
   readStoredTabId,
   readStoredTableNumber,
   SESSION_TOKEN_STORAGE_KEY,
+  ensureTabSessionId,
 } from '@/lib/tab-storage'
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 
-const TAB_SESSION_KEY = 'tab_session_id'
-const LEGACY_TAB_SESSION_KEY = 'flashtap_tab_session_id'
+// The keys and the mint now live in lib/tab-storage.ts, which is also where non-context callers
+// read them from. Two copies of "which id is this customer" is how the two halves come to disagree
+// about who placed an order — see TAB_SESSION_ID_MIRROR_KEY there for the bug that was.
 
 export type TabMember = {
   session_id: string
@@ -63,21 +65,6 @@ type TabContextType = {
 }
 
 const TabContext = createContext<TabContextType | undefined>(undefined)
-
-function ensureTabSessionId() {
-  if (typeof window === 'undefined') return ''
-  const existing = sessionStorage.getItem(TAB_SESSION_KEY)?.trim()
-  if (existing) return existing
-  const legacy = sessionStorage.getItem(LEGACY_TAB_SESSION_KEY)?.trim()
-  if (legacy) {
-    sessionStorage.setItem(TAB_SESSION_KEY, legacy)
-    sessionStorage.removeItem(LEGACY_TAB_SESSION_KEY)
-    return legacy
-  }
-  const generated = `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
-  sessionStorage.setItem(TAB_SESSION_KEY, generated)
-  return generated
-}
 
 function getRestaurantIdFromPath(pathname: string) {
   const match = pathname.match(/^\/menu\/([^/]+)/)
