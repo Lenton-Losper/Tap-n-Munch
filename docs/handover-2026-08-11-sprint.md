@@ -2469,3 +2469,103 @@ longer be added via the sizes/addons modal.
 ### NOT STARTED, per instruction
 
 #273, order editing, the unpaid-tab flag. Untouched.
+
+---
+
+## #272 PROMOTED TO PRODUCTION — `9dcf401`, closed on the live close condition
+
+`origin/main` `c0bee8b` → **`9dcf401`**. Production `/api/version` cache-busted, three probes,
+all `9dcf401`. #272 CLOSED. New issue **#274** filed.
+
+### Close condition, verified on the live customer endpoint
+
+```
+=== Riviera / Hot Bevs — HTTP 200, 2 items ===
+   [active] Americano
+   [available] coffee
+>>> Cappucinno: GONE — PASS <<<
+```
+
+Americano and coffee still serve, so the category is intact rather than emptied.
+
+### THE CORRECTION THAT MATTERED — Duck Confit does NOT disappear
+
+The instruction to promote accepted, as a cost, that "Duck Confit (out_of_stock, N$380)
+disappears from Riviera's menu under this fix as well." **That is not what the fix does**, and
+it was corrected before dispatch rather than after. `out_of_stock` is
+`{ visible: true, chargeable: false }` — the ruling recorded in the previous checkpoint.
+Confirmed on production after the deploy:
+
+```
+   [out_of_stock] Duck Confit      <- still rendered, greyed, as designed
+```
+
+So the product outcome the instruction was reluctantly accepting is the one that was already
+shipped. The question was filed anyway, reframed to match reality, as **#274** — *should an
+out-of-stock item render greyed or disappear?* Option B is a one-line flip plus a test update
+plus deleting three render sites; the issue says so.
+
+**Generalisation worth keeping:** a stated willingness to accept a cost is not evidence the cost
+exists. Check the shipped table before accepting a consequence attributed to it.
+
+### Promotion method — the gate, in the order it was run
+
+`main` is built by cherry-pick and diverges in both directions, so "it applied cleanly" proves
+nothing on its own. What was actually established:
+
+1. **Base parity, per file.** All five files touched are **byte-identical between `6167f5d`
+   (my staging base) and `origin/main`** — `menu.ts` `b668131`, `calculate-order-pricing.ts`
+   `e9aee19`, admin items route `b001a54`, `browse/page.tsx` `e638209`, `menu-cache.ts`
+   `309f61d`. The patch lands on the ground it was written against.
+2. **Result parity, per file.** After cherry-pick, all six changed files are **byte-identical to
+   `origin/cloudflare-staging`** — the exact tree that was click-tested.
+3. **Patch-id.** `e828eb4f6effc3e2df9ed15f167e07b7d65dae65` on both branches.
+4. **Base-conditional claims read against `main`**, since no mechanical gate can catch a comment
+   that is true on one branch and false on another: `ItemDetailModal` has no status guard on
+   main (0 hits), `next.config.mjs` rewrites Riviera to the bare UUID, `schema.sql:502` is
+   `"status" "text" DEFAULT 'active'` with **no** `menu_items_status_check`, and
+   `renderAddButton` still handles `out_of_stock`. All four hold.
+5. **Gate:** `node node_modules/typescript/bin/tsc` 5.9.3 exit 0 unpiped · `npx eslint .
+   --max-warnings=0` exit 0 · 15 hermetic suites / 139 tests green · **drift 128/128 OK against
+   production**, exit 0 unpiped · no file under `supabase/` touched.
+
+### RULE 11 IS NOW STALE — #269 landed
+
+Rule 11 says `origin/main:scripts/check-migration-drift.mjs` is the TWO-state version and that
+porting `76153d8` is an open gap. Measured on `main` today:
+`grep -c targetEnvironment scripts/check-migration-drift.mjs` → **2**, and the run self-reports
+`target=production`. **Main now has the three-state, environment-scoped version.** The rule's
+incident has closed; per the document's own standard ("delete the rule when the incident stops
+being possible") Rule 11 should be rewritten as history or removed, not inherited as live
+guidance. Rule 10 (invoke the copy inside the worktree you are auditing) is untouched by this
+and still bites.
+
+### The one gap, stated again rather than quietly dropped
+
+**Cache invalidation is proven by test and by reading, not by a live invalidation event.** The
+staging after-probe returned 8 items because Redis had **expired naturally** at `TTL.MENU` 600s.
+Established: five call sites, they compile, and the cache key matches the customer URL's
+restaurantId (Riviera rewrites to the bare UUID). Not established: an observed invalidation.
+Closing it needs one authenticated admin menu edit plus an immediate customer reload — noted on
+#272 rather than left implicit.
+
+### Staging seed — still in place
+
+Staging's Cappuccino (`d13186c1`, restaurant "staging test") remains `inactive` from the
+click-test. It was `available` before; revert whenever the fixture is wanted back to normal.
+Nothing else on staging was changed.
+
+### State at handover
+
+| | |
+|---|---|
+| `origin/main` | `9dcf401` |
+| production `/api/version` | `9dcf401` (cache-busted ×3) |
+| `origin/cloudflare-staging` | `2d77fe4` |
+| `origin/docs/agent-operating-contracts` | this commit |
+| unpushed, all local branches | zero |
+| #272 | CLOSED · #274 filed |
+
+### NOT STARTED
+
+Order editing (next session, brief to follow), #273, the unpaid-tab flag.
