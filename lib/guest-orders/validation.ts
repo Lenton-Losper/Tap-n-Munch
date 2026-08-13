@@ -16,6 +16,8 @@ export function guestCanAccessOrder(
   params: {
     tableNumber?: number | null
     sessionId?: string | null
+    /** Every OTHER id the client holds. See ownsOrder: one id is never the whole answer. */
+    sessionIds?: Array<string | null | undefined>
     restaurantId?: string | null
   },
 ): boolean {
@@ -42,11 +44,61 @@ export function guestCanAccessOrder(
     return true
   }
 
-  if (session && String(order.session_id || '').trim() === session) {
+  // Delegated rather than restated. This used to compare `params.sessionId` against
+  // `order.session_id` only — one id, one column — which is what made it the ROOT of the three
+  // session-id bugs rather than a fourth instance of them.
+  //
+  // Adding member_session_id is a NEW true path, so it is structurally more permissive. MEASURED
+  // before shipping, on both environments: ZERO rows have a member_session_id that differs from
+  // their session_id — 0 of 213 on staging, 0 of 1000 on production. So it admits nothing today
+  // that was not already admitted. #262's seam does not change that either: it substitutes the
+  // opaque member_key on the way OUT, in the response, and never writes it to the column this
+  // reads.
+  if (ownsOrder(order, [session, ...(params.sessionIds ?? [])])) {
     return true
   }
 
   return false
+}
+
+/**
+ * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
+ *
+ * Two facts make this necessary, and both cost a bug on 2026-08-13 alone:
+ *
+ * 1. The app mints TWO session ids and nothing syncs them —
+ *      lib/session.ts     flashtap_session_v1  localStorage  `sess_<uuid>`
+ *      lib/tab-storage.ts tab_session_id       mirrored      `session_<ts>_<rand>`
+ *    An order carries whichever the placing screen held, and the cart submits the TAB one. So
+ *    the answer depends on EVERY id the client holds, never one. Use heldSessionIds() to build
+ *    the list; do not assemble it per call site.
+ *
+ * 2. An order records the placer in TWO columns, `session_id` and `member_session_id`. Checking
+ *    one was the third bug: guest queries had a sessionIds parameter for (1) but still compared
+ *    a single column, My Orders showed an empty list, and the edit route answered 404 to the
+ *    customer's own order.
+ *
+ * The rule is therefore: EVERY id, against BOTH columns. Any caller that restates it instead of
+ * importing it is the fourth bug waiting to happen.
+ *
+ * NOT a credential check. A session id is a bearer value the client supplies, so this answers
+ * "does the caller know an id this row was placed under", nothing stronger. What makes that
+ * acceptable is that the ids are unguessable — see the note on `session_<ts>_<rand>` in the
+ * issue filed alongside this, because that one is Math.random and weaker than it looks.
+ */
+export function ownsOrder(
+  order: { session_id?: unknown; member_session_id?: unknown },
+  sessionIds: Array<string | null | undefined>,
+): boolean {
+  const held = new Set(
+    (sessionIds ?? []).map((id) => String(id ?? '').trim()).filter(Boolean),
+  )
+  if (held.size === 0) return false
+  const rowIds = [
+    String(order.session_id ?? '').trim(),
+    String(order.member_session_id ?? '').trim(),
+  ].filter(Boolean)
+  return rowIds.some((rowId) => held.has(rowId))
 }
 
 /**

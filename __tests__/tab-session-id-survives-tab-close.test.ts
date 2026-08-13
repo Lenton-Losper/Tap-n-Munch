@@ -26,6 +26,7 @@ import {
   LEGACY_TAB_SESSION_ID_KEY,
   clearTabSessionId,
   ensureTabSessionId,
+  mintTabSessionId,
   readTabSessionId,
 } from '@/lib/tab-storage'
 
@@ -39,11 +40,53 @@ beforeEach(() => {
   window.localStorage.clear()
 })
 
+/**
+ * The mint is a CSPRNG, because `ownsOrder` makes knowing this id the WHOLE authorisation for
+ * reading and editing an order. It was `Date.now()` plus `Math.random().toString(36).slice(2)`:
+ * a timestamp that is not a secret and ~11 base-36 characters of xorshift128+. lib/session.ts
+ * already used crypto.randomUUID for its own id; this one — the id most orders actually carry —
+ * did not.
+ */
+describe('the tab session id is unguessable', () => {
+  it('is a UUID behind the session_ prefix', () => {
+    const id = mintTabSessionId()
+    expect(id).toMatch(
+      /^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    )
+  })
+
+  it('contains no timestamp — the old format published when the order was placed', () => {
+    // `session_1786615850151_...` leaked its own mint time in the id. A caller who knows roughly
+    // when an order was placed knew most of the search space.
+    expect(mintTabSessionId()).not.toMatch(/^session_\d{10,}_/)
+  })
+
+  it('does not repeat', () => {
+    const ids = new Set(Array.from({ length: 200 }, () => mintTabSessionId()))
+    expect(ids.size).toBe(200)
+  })
+
+  it('keeps the session_ prefix, so the format stays recognisable', () => {
+    // Deliberate: it is how these ids are told apart from lib/session.ts's `sess_` ids in logs
+    // and in tabs.members[]. Changing the shape would be a second variable in one change.
+    expect(mintTabSessionId().startsWith('session_')).toBe(true)
+  })
+
+  it('accepts an OLD weak id that is already stored — new mints only', () => {
+    // A customer mid-meal when this ships must not be logged out, and no row is rewritten.
+    window.sessionStorage.setItem(TAB_SESSION_ID_KEY, 'session_1786615850151_8kbbfwp6jne')
+    expect(ensureTabSessionId()).toBe('session_1786615850151_8kbbfwp6jne')
+    expect(readTabSessionId()).toBe('session_1786615850151_8kbbfwp6jne')
+  })
+})
+
 describe('the id a QR order is submitted with survives the browser tab closing', () => {
   it('mints into BOTH storages', () => {
     const minted = ensureTabSessionId()
 
-    expect(minted).toMatch(/^session_\d+_/)
+    // The CSPRNG format. This assertion used to pin the WEAK one (`session_<ts>_<rand>`), which is
+    // how a test holds a defect in place: it was green on precisely the id it should have rejected.
+    expect(minted).toMatch(/^session_[0-9a-f-]{36}$/i)
     expect(window.sessionStorage.getItem(TAB_SESSION_ID_KEY)).toBe(minted)
     expect(window.localStorage.getItem(TAB_SESSION_ID_MIRROR_KEY)).toBe(minted)
   })
