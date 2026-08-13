@@ -2572,7 +2572,7 @@ Order editing (next session, brief to follow), #273, the unpaid-tab flag.
 
 ---
 
-# CHECKPOINT — 2026-08-13. ORDER EDITING BUILT AND ON STAGING. Written assuming total context loss.
+# CHECKPOINT — 2026-08-13. ORDER EDITING BUILT AND ON STAGING (#276). Written assuming total context loss.
 
 ## STATE
 
@@ -2716,10 +2716,15 @@ checkout's `supabase/.temp/`, or `db query --linked` fails with `LegacyDbConfigI
 - **COPY IS PLACEHOLDER.** 17 strings, ALL in `EDIT_COPY_PENDING` (`lib/orders/edit-lock.ts`), each
   prefixed `PENDING COPY — `. Nothing else in the feature holds copy. The human has asked NOT to have
   copy drafted until they have seen the placeholders on a real screen. Do not draft it.
-- **NO GITHUB ISSUE EXISTS for order editing.** All 200 issues plus a full-text search were checked;
-  the feature was built from the brief directly. Nothing was filed, because filing is the
-  orchestrator's/human's action, not an implementer's. If a tracker entry is wanted, the ruling in
-  section 2 above is the body.
+- **~~NO GITHUB ISSUE EXISTS for order editing.~~ CORRECTED, same session: #276 FILED.** All 200
+  issues plus a full-text search had confirmed none existed — the feature was built from a chat brief
+  directly. The human's instruction on being told: *"Built from a chat brief with no tracker entry is
+  the same shape as work living on one disk."* **#276** now carries the whole feature scope (lock
+  columns, staff-wins, the 3-minute expiry, the re-acceptance rule with removals NOT exempt, the
+  hole-that-was-closed, the proof, and the 17 copy strings). **#275** filed alongside it for the raw
+  `Invalid transition: pending → preparing` staff string — predates this work, refusal is correct,
+  only the wording is wrong, and it is deliberately a separate issue so nobody "fixes" it by relaxing
+  `isValidStaffStatusTransition`. Cross-linked both ways.
 - **`staging.yml` wiring NOT done, deliberately** — the human wants to see the feature behave before
   the probe becomes a gate. When it is wanted, the existing race-probe jobs are the pattern
   (commit-message trigger).
