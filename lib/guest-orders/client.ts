@@ -4,6 +4,8 @@ type FetchGuestOrderParams = {
   restaurantId: string
   tableNumber?: number
   sessionId?: string
+  /** Every id the browser holds. Build it with heldSessionIds(); see ownsOrder for why. */
+  sessionIds?: Array<string | null | undefined>
 }
 
 async function parseGuestOrdersResponse(res: Response): Promise<GuestOrdersApiResponse> {
@@ -22,8 +24,11 @@ export async function fetchGuestOrderById(
   if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
     qs.set('table_number', String(params.tableNumber))
   }
-  if (params.sessionId?.trim()) {
-    qs.set('session_id', params.sessionId.trim())
+  // Repeated params, never comma-joined: a session id containing a comma could otherwise be
+  // split into two bogus ids server-side. Same shape by-session already uses.
+  for (const sid of [...new Set([params.sessionId, ...(params.sessionIds ?? [])]
+    .map((v) => String(v ?? '').trim()).filter(Boolean))]) {
+    qs.append('session_id', sid)
   }
   const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}?${qs.toString()}`)
   if (res.status === 404) return null

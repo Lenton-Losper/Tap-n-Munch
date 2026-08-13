@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { CheckCircle2, Download, Mail } from 'lucide-react'
 import { getCurrentSession } from '@/lib/session'
+import { heldSessionIds } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -47,7 +48,7 @@ export default function KioskSuccessPage() {
         const row = await fetchGuestOrderById(orderId, {
           restaurantId,
           tableNumber: Number.isFinite(tableNumber) ? tableNumber : undefined,
-          sessionId: getCurrentSession() || undefined,
+          sessionIds: heldSessionIds(),
         })
         if (cancelled || !row) return
         if (String(row.payment_status || '').toLowerCase() === 'paid') {

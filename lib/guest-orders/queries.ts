@@ -82,6 +82,8 @@ export async function fetchGuestOrderById(
   params: {
     tableNumber?: number | null
     sessionId?: string | null
+    /** Every id the client holds; forwarded to guestCanAccessOrder -> ownsOrder. */
+    sessionIds?: Array<string | null | undefined>
     restaurantId?: string | null
   },
 ): Promise<{ order: GuestOrderRow | null; denied: boolean }> {

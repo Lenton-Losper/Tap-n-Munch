@@ -13,7 +13,7 @@ import {
 } from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
 import { getCurrentSession } from '@/lib/session'
-import { readTabSessionId } from '@/lib/tab-storage'
+import { readTabSessionId, heldSessionIds } from '@/lib/tab-storage'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
 import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
@@ -115,7 +115,12 @@ export default function OrderConfirmationPage() {
         const row = await fetchGuestOrderById(orderId, {
           restaurantId,
           tableNumber: tableNumber > 0 ? tableNumber : undefined,
-          sessionId: getCurrentSession() || undefined,
+          // Every id this browser holds. This load previously matched only via the
+          // table_number branch of guestCanAccessOrder — the session comparison was wrong and
+          // masked. Verified on live staging traffic before this change: the session branch
+          // alone resolves the order with no table_number, so this is not the only thing
+          // holding the page up (see #279, which narrows that branch afterwards).
+          sessionIds: heldSessionIds(),
         })
 
         if (cancelled) return
@@ -153,7 +158,7 @@ export default function OrderConfirmationPage() {
       const row = await fetchGuestOrderById(orderId, {
         restaurantId,
         tableNumber: tableNumber > 0 ? tableNumber : order.table_number,
-        sessionId: getCurrentSession() || undefined,
+        sessionIds: heldSessionIds(),
       })
       if (cancelled || !row) return
       setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
