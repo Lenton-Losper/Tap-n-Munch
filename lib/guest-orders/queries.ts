@@ -164,17 +164,43 @@ export async function fetchGuestOrdersBySession(params: {
     return { orders: [], count: 0 }
   }
 
-  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-
-  query = query.eq('restaurant_id', restaurantUuid).in('session_id', sessionIds)
-
-  if (tabId) {
-    query = query.eq('tab_id', tabId)
+  /**
+   * One query per PLACER COLUMN, merged in JS — never a single `.or()`.
+   *
+   * An order records who placed it in `session_id` OR `member_session_id` (see ownsOrder in
+   * ./validation), so filtering one column is half an answer. The obvious one-query form is
+   * `.or('session_id.in.(…),member_session_id.in.(…)')`, and that is exactly the #242/#254 shape:
+   * the filter string is PARSED by PostgREST, the comma is its term separator, and these ids come
+   * from the client. Two parser-free `.in()` calls and a Map cost one extra round trip and
+   * reintroduce nothing.
+   */
+  const ordersQueryFor = (column: 'session_id' | 'member_session_id') => {
+    let q = supabase
+      .from('orders')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .in(column, sessionIds)
+    if (tabId) q = q.eq('tab_id', tabId)
+    if (params.excludeSettlement !== false) q = q.is('tab_settlement_for_tab_id', null)
+    return q
   }
 
-  if (params.excludeSettlement !== false) {
-    query = query.is('tab_settlement_for_tab_id', null)
-  }
+  /**
+   * `countOnly` stays SINGLE-COLUMN, deliberately, and this is the measurement that makes it safe
+   * rather than an assumption: on 2026-08-13, ZERO rows had a `member_session_id` differing from
+   * their `session_id` — 0 of 213 on staging, 0 of 1000 on production — because
+   * app/menu/[restaurantId]/cart/page.tsx:286 writes the one value into both columns.
+   *
+   * So the second query cannot add a row here today. It is omitted because counts CANNOT be
+   * merged the way rows can: `count` comes back as a number with no ids, so adding the two counts
+   * double-counts every row both columns match, which today is every row. A wrong count is worse
+   * than a narrow one — these callers ask "does this session have orders?" and drive the stale-tab
+   * cleanup that returns a customer to the menu.
+   *
+   * If that measurement ever stops holding, this needs ids rather than counts. Re-measure before
+   * assuming it still does.
+   */
+  const query = ordersQueryFor('session_id')
 
   // A QR submission lives in order_requests until staff Accept, so counting `orders` alone
   // reports 0 for a customer who has just ordered. Mirrors the fallback that
@@ -205,16 +231,20 @@ export async function fetchGuestOrdersBySession(params: {
     ? [...LIVE_REQUEST_STATUSES, 'declined']
     : [...LIVE_REQUEST_STATUSES]
 
-  let pendingQuery = supabase
-    .from('order_requests')
-    .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-    .eq('restaurant_id', restaurantUuid)
-    .in('session_id', sessionIds)
-    .in('status', requestStatuses)
-
-  if (tabId) {
-    pendingQuery = pendingQuery.eq('tab_id', tabId)
+  // Same both-columns treatment as orders above, same reason, same no- rule.
+  const requestsQueryFor = (column: 'session_id' | 'member_session_id') => {
+    let q = supabase
+      .from('order_requests')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .in(column, sessionIds)
+      .in('status', requestStatuses)
+    if (tabId) q = q.eq('tab_id', tabId)
+    return q
   }
+
+  // countOnly: single column, for the reason measured above.
+  const pendingQuery = requestsQueryFor('session_id')
 
   if (params.countOnly) {
     const [{ count, error }, { count: pendingCount, error: pendingError }] = await Promise.all([
@@ -226,12 +256,30 @@ export async function fetchGuestOrdersBySession(params: {
     return { orders: [], count: (count ?? 0) + (pendingCount ?? 0) }
   }
 
-  const [{ data, error }, { data: pending, error: pendingError }] = await Promise.all([
-    query.order('placed_at', { ascending: false }),
-    pendingQuery.order('placed_at', { ascending: false }),
+  // The row paths DO merge both placer columns — see ordersQueryFor / requestsQueryFor above.
+  const [bySession, byMember, reqBySession, reqByMember] = await Promise.all([
+    ordersQueryFor('session_id').order('placed_at', { ascending: false }),
+    ordersQueryFor('member_session_id').order('placed_at', { ascending: false }),
+    requestsQueryFor('session_id').order('placed_at', { ascending: false }),
+    requestsQueryFor('member_session_id').order('placed_at', { ascending: false }),
   ])
-  if (error) throw error
-  if (pendingError) throw pendingError
+  for (const result of [bySession, byMember, reqBySession, reqByMember]) {
+    if (result.error) throw result.error
+  }
+
+  /** Merged by id, so a row that both columns match appears once rather than twice. */
+  const mergeById = (...sets: Array<unknown[] | null>) => {
+    const byId = new Map<string, Record<string, unknown>>()
+    for (const set of sets) {
+      for (const row of (set ?? []) as Record<string, unknown>[]) {
+        byId.set(String(row.id), row)
+      }
+    }
+    return [...byId.values()]
+  }
+
+  const data = mergeById(bySession.data, byMember.data)
+  const pending = mergeById(reqBySession.data, reqByMember.data)
 
   const orders = (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[]
   const pendingRows = (pending ?? []).map((row) =>
