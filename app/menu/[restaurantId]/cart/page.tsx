@@ -28,7 +28,7 @@ import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
-import { CART_COPY_PENDING } from '@/lib/cart/cart-copy-pending'
+import { CART_COPY } from '@/lib/cart/cart-copy'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -760,14 +760,14 @@ export default function CartPage() {
                     onClick={handleAddToTab}
                     disabled={paying || tabReadyToPay || tabStatus !== 'open'}
                   >
-                    {paying ? CART_COPY_PENDING.placeOrderBusy : CART_COPY_PENDING.placeOrderCta}
+                    {paying ? CART_COPY.placeOrderBusy : CART_COPY.placeOrderCta}
                   </Button>
                   {/* What the button actually does, because "Add to Tab" read as bookkeeping — as
                       though the order were being noted down rather than sent to the kitchen. The
                       tab flow is the only one that said "Add"; the kiosk button below has always
                       read "Place Order", so this also makes the two agree. */}
                   <p className="mt-2 text-center text-sm text-muted-foreground font-sans">
-                    {CART_COPY_PENDING.placeOrderHelp}
+                    {CART_COPY.placeOrderHelp}
                   </p>
                 </div>
               )}
