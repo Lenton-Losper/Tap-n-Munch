@@ -2569,3 +2569,167 @@ Nothing else on staging was changed.
 ### NOT STARTED
 
 Order editing (next session, brief to follow), #273, the unpaid-tab flag.
+
+---
+
+# CHECKPOINT — 2026-08-13. ORDER EDITING BUILT AND ON STAGING. Written assuming total context loss.
+
+## STATE
+
+    origin/main / production      9dcf401   UNCHANGED (probed cache-busted x2)
+    origin/cloudflare-staging     2d77fe4 -> 1b273bd
+    staging /api/version          1b273bd   (cache-busted x3)
+    staging DB                    20260813120000 APPLIED + ledger repaired
+    unpushed, all local branches  zero (positional form, two-sided control: 114)
+    worktree                      wt-order-edit, branch feat/order-editing-lock
+
+Three commits: `ae9c65e` the feature, `d3eba56` the four-scenario probe, `1b273bd` the
+re-acceptance ruling recorded.
+
+## WHAT IT IS, in one paragraph
+
+A customer may change an order only before preparation starts; once preparing, editing is closed
+permanently for that order. The lock is `edit_lock_token` / `edit_lock_session_id` /
+`edit_lock_expires_at` on BOTH `orders` and `order_requests` (migration `20260813120000`), 3-minute
+TTL. Every write is a conditional UPDATE: acquire is CAS'd on the token observed a moment earlier,
+commit is CAS'd on the caller's own token plus the status and payment allowlists. Customer routes
+are `POST` / `PATCH` / `DELETE /api/guest/orders/[orderId]/edit`.
+
+## DECISIONS THAT MUST NOT BE RE-DERIVED
+
+**1. STAFF WINS is one line, not a policy.** `PATCH /api/orders/[orderId]/status` NULLS
+`edit_lock_token` whenever it moves an order out of `{pending, accepted}`. The customer's commit is
+an UPDATE conditioned on that token, so an edit in flight matches zero rows and is refused. Nothing
+in any staff path CONSULTS the lock — a staff status change is never blocked, delayed or queued
+behind a customer. If you find yourself adding a lock check to a staff route, that is the ruling
+being reversed.
+
+**2. Re-acceptance: ANY total movement, and only NOTES are exempt.** RULED by the human 2026-08-13.
+The original brief said "removing items or changing notes only — no re-acceptance", which cannot
+hold alongside "an edit changing the TOTAL requires staff re-acceptance", because a removal changes
+the total. It was surfaced as a contradiction rather than silently resolved, and ruled: a removal
+changes what the kitchen makes and what the customer pays, so staff see it before cooking. The
+tempting simplification `return nextTotal > previousTotal` in `editRequiresReacceptance` was
+CONSIDERED AND REJECTED — there is a named test that fails if it is ever substituted.
+
+**3. order_requests amendments get their OWN columns.** `20260726100000_order_requests.sql` records
+in the table definition that `items/subtotal/tax/total` are "never mutated after insert (audit
+trail)". That is a recorded decision and it was honoured: the customer's amendment goes to
+`items_customer` / `*_customer`. Precedence is `reviewed ?? customer ?? original`, in ONE place —
+`lib/orders/order-request-pricing.ts` — imported by the Accept route, the guest query mapper and the
+dashboard card, which previously carried three copies of the two-tier version.
+
+**4. A customer edit DOES null a stale staff review** (preserving it in `edit_history` and setting
+`requires_reacceptance`). Not an oversight: Accept reads `items_reviewed` FIRST, so leaving a review
+of the previous item list in place would silently discard the customer's edit and charge them for an
+item they just removed. That is money-facing; a re-review is recoverable, a wrong charge is not.
+
+**5. Reductions are re-summed from the order's OWN priced lines, never repriced against the live
+menu** (`lib/orders/reprice-priced-lines.ts`). `calculateOrderPricing` is right everywhere a
+customer CHOOSES items, but an edit is not a new order: repricing survivors would move the price of
+items the customer is keeping, and would throw `UnmatchedMenuItemError` if any survivor had since
+gone `out_of_stock` — refusing a removal for a reason unrelated to the removal. Quantities may only
+FALL; raising one is refused because it would route around the stock check, the quantity cap and the
+payment-method allowlist that `POST /api/orders` runs. "Order More Items" already places a new order.
+
+**6. Editing is closed while money is settled OR in flight.** The `payment_status` allowlist is
+`{pending, cash_pending}` (allowlist, not denylist — #124's shape). A live `payment_checkout_url`
+also closes it even though payment_status is still `pending`: that Finatic session was created for
+the OLD total, and the webhook is the sole confirmation QR payments have.
+
+**7. `payment_status`-only patches are now under the CAS.** They were last-write-win by explicit
+comment. The claim matches the value that was READ, so a repeated Mark-as-Paid still succeeds; only
+a payment_status that moved to something DIFFERENT loses, with 409 "Payment status changed". A NULL
+payment_status needs `.is('payment_status', null)` — `.eq` never matches NULL, and without that
+branch every order with no payment_status would 409 forever.
+
+## THE HOLE THIS FEATURE OPENED, AND CLOSED — read before touching guest reads
+
+`edit_lock_token` is a CAPABILITY: whoever holds it can commit an edit. Every guest read path uses
+`select('*')`, and `guestCanAccessOrder` deliberately admits an OPEN order on `table_number` ALONE —
+correct for a read on a shared table, and the reason a second diner could otherwise fetch someone
+else's order, read the token out of the JSON, and edit their order despite the edit route's own
+session check.
+
+`redactGuestOrderRow` (in `lib/guest-orders/validation.ts`, NOT queries.ts) strips it at all five
+row exits and substitutes `edit_lock_held: boolean`. It lives in validation.ts because queries.ts
+builds a Supabase client at import time, which turns any hermetic suite importing it into
+`Tests: 0 total`. The staging probe asserts the token never appears in a read body.
+
+The edit route's own auth is the session id matched against `session_id` OR `member_session_id` —
+deliberately NOT `guestCanAccessOrder`, because table-number binding is wrong for a WRITE. A
+non-owner gets 404, not 403, so the response cannot confirm an order exists at that id.
+
+## PROOF
+
+- `node node_modules/typescript/bin/tsc` 5.9.3 exit 0 unpiped · `npx eslint . --max-warnings=0`
+  exit 0 · `npx tsx scripts/check-migration-inline-check.ts` exit 0 (the BLOCKING gate)
+- 3 new suites, 74 tests. 7 suites / 102 tests green including the 4 pre-existing suites covering
+  the Accept precedence refactor. **No new failure by name.**
+- **Three two-sided probes, each restored and re-verified green:** removing
+  `.eq('edit_lock_token', ...)` from the commit → 1 test red; disabling the lock-nulling in the
+  status route → 2 red; substituting the rejected `nextTotal > previousTotal` → 2 red. Each
+  substitution was ECHOED before the run (a probe that silently matches nothing looks exactly like a
+  fix that works).
+- **`scripts/probe-order-edit-lock-race-staging.ts`, exit 0 against the DEPLOYED worker.** Four
+  scenarios. A: staff-first → commit refused 409 `preparation_started`, items UNCHANGED (2 lines,
+  N$225), `customer_edit_count` 0, lock cleared, re-open refused. B: customer-first → N$225→200, back
+  to `pending`, `requires_reacceptance`, `total_before_edit` 225, then re-accept→start works and the
+  edit record SURVIVES it. C: true race → forbidden state (preparing AND edited) asserted impossible.
+  D: two sessions → 409 `locked_by_other`, holder can renew, lock passes on after release.
+
+**Why the probe has deliberately-ordered scenarios and not just a race.** Its first version raced
+and passed, having fallen customer-first — so it never touched the direction the ruling is about. A
+nondeterministic test of an asymmetric rule proves the asymmetry only half the time. Scenario C still
+falls whichever way it falls; A is what proves STAFF WINS.
+
+**Scenario B corrected a wrong ASSERTION, not a wrong behaviour.** After a total-changing edit the
+order is `pending`, so staff get **400 "Invalid transition: pending → preparing"** — pending→preparing
+was never legal in `isValidStaffStatusTransition`. Staff must Accept the new figure first. That is the
+re-acceptance requirement being enforced by the existing transition table rather than by anything this
+feature added.
+
+## STAGING DRIFT IS RED, AND WAS BEFORE THIS WORK — do not attribute it here
+
+    132 local / 133 applied     both counts moved by exactly ONE
+    LOCAL_NOT_APPLIED   20260811120000   (restaurant_terminals_status_check live vocabulary)
+    APPLIED_NOT_LOCAL   20260809120000
+    APPLIED_NOT_LOCAL   20260812130000   (#265 PIN reset token — expected, see prior checkpoint)
+
+`20260813120000` is in NEITHER failure list. Staging's gate is `continue-on-error: true`
+(`.github/workflows/staging.yml`), so it did not block; production's is BLOCKING, which matters
+whenever this is promoted. The three above were left alone deliberately — `20260811120000` is a CHECK
+constraint on the table that gates terminal authentication, and applying it is a separate task.
+
+**"Drift clean" was NOT claimed and must not be recorded as claimed.** What was established is that
+this migration contributes zero drift.
+
+Two tooling notes earned here. `node scripts/check-migration-drift.mjs` under Git Bash dies with a
+libuv assertion at exit and returns a garbage code (`-1073740791`, `127`) — run it from PowerShell if
+the exit code matters; the TEXT is what counts either way. And the CLI needs more than `project-ref`
+to work in a fresh worktree: copy `linked-project.json`, `pooler-url`, `postgres-version`,
+`rest-version`, `gotrue-version`, `storage-version`, `storage-migration`, `cli-latest` from the main
+checkout's `supabase/.temp/`, or `db query --linked` fails with `LegacyDbConfigIpv6Error`.
+
+## OPEN, and owned by the human
+
+- **COPY IS PLACEHOLDER.** 17 strings, ALL in `EDIT_COPY_PENDING` (`lib/orders/edit-lock.ts`), each
+  prefixed `PENDING COPY — `. Nothing else in the feature holds copy. The human has asked NOT to have
+  copy drafted until they have seen the placeholders on a real screen. Do not draft it.
+- **NO GITHUB ISSUE EXISTS for order editing.** All 200 issues plus a full-text search were checked;
+  the feature was built from the brief directly. Nothing was filed, because filing is the
+  orchestrator's/human's action, not an implementer's. If a tracker entry is wanted, the ruling in
+  section 2 above is the body.
+- **`staging.yml` wiring NOT done, deliberately** — the human wants to see the feature behave before
+  the probe becomes a gate. When it is wanted, the existing race-probe jobs are the pattern
+  (commit-message trigger).
+- **Click-test in progress by the human:** scenarios 1, 2, 4, 6, 7 of the step list (pre-Accept edit,
+  post-Accept edit + re-accept, closed-once-preparing, the two-device collision, two phones one
+  table). 3 (notes-only), 5 (expiry) and 8 (money) deferred unless something looks off.
+- Staging's Cappuccino (`d13186c1`) is STILL `inactive` from the #272 click-test.
+
+## WHAT WAS NOT TOUCHED
+
+Production. `origin/main` is `9dcf401` and was probed cache-busted twice after the work. No file
+under `.github/` changed. #273, #274, the unpaid-tab flag, and the three pre-existing drift entries
+are all untouched.
