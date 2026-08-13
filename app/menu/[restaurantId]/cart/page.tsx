@@ -28,6 +28,7 @@ import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
+import { CART_COPY_PENDING } from '@/lib/cart/cart-copy-pending'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -752,14 +753,23 @@ export default function CartPage() {
               )}
 
               {inTabFlow && (
-                <Button
-                  className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
-                  size="lg"
-                  onClick={handleAddToTab}
-                  disabled={paying || tabReadyToPay || tabStatus !== 'open'}
-                >
-                  {paying ? 'Adding…' : 'Add to Tab'}
-                </Button>
+                <div>
+                  <Button
+                    className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
+                    size="lg"
+                    onClick={handleAddToTab}
+                    disabled={paying || tabReadyToPay || tabStatus !== 'open'}
+                  >
+                    {paying ? CART_COPY_PENDING.placeOrderBusy : CART_COPY_PENDING.placeOrderCta}
+                  </Button>
+                  {/* What the button actually does, because "Add to Tab" read as bookkeeping — as
+                      though the order were being noted down rather than sent to the kitchen. The
+                      tab flow is the only one that said "Add"; the kiosk button below has always
+                      read "Place Order", so this also makes the two agree. */}
+                  <p className="mt-2 text-center text-sm text-muted-foreground font-sans">
+                    {CART_COPY_PENDING.placeOrderHelp}
+                  </p>
+                </div>
               )}
 
               {isKiosk && !inTabFlow && (
