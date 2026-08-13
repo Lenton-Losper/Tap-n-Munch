@@ -185,13 +185,20 @@ export function requestEditRefusalReason(
 /**
  * Whether an edit sends the order back to staff for re-acceptance.
  *
- * THE ONE SWITCH. The ruling reads: "An edit changing the TOTAL requires staff
- * re-acceptance ... Removing items or changing notes only — no re-acceptance." Those two
- * sentences do not both hold, because removing an item changes the total. What is
- * implemented is the first: ANY movement in the total returns the order to review, and a
- * notes-only edit does not. If the intent was that removals are exempt because the total
- * can only fall, this function is the only place that changes — return
- * `nextTotal > previousTotal` instead, and nothing else in the feature moves.
+ * RULED, 2026-08-13, by the human, and this is a DECISION ALREADY MADE — do not "simplify" it
+ * back. ANY movement in the total returns the order to review. **Only a notes-only edit is
+ * exempt.** Removals are NOT exempt.
+ *
+ * The reason, in the words of the ruling: a removal changes what the kitchen makes and what
+ * the customer pays, so staff see it before cooking. An earlier draft of the ruling read
+ * "removing items or changing notes only — no re-acceptance", which cannot hold alongside "an
+ * edit changing the TOTAL requires staff re-acceptance" because a removal changes the total.
+ * That was surfaced as a contradiction rather than resolved silently, and the exemption was
+ * ruled down to notes.
+ *
+ * So the tempting change here — `return nextTotal > previousTotal`, exempting removals on the
+ * grounds that the total can only fall — is the one thing this function must not do. It was
+ * considered and rejected. Escalate rather than implement it.
  *
  * Compared in integer cents, not with a float tolerance. `Math.abs(a - b) <= 0.01` is a
  * one-cent tolerance for some amounts and a zero tolerance for others purely by binary

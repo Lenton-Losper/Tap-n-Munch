@@ -175,6 +175,21 @@ describe('re-acceptance is decided in cents, not by float tolerance', () => {
     expect(editRequiresReacceptance(120.5, 120.5)).toBe(false)
   })
 
+  /**
+   * RULED 2026-08-13: removals are NOT exempt. A removal changes what the kitchen makes and
+   * what the customer pays, so staff see it before cooking; only a notes-only edit is exempt.
+   *
+   * This test exists to fail if someone implements the rejected alternative
+   * (`nextTotal > previousTotal`, exempting a falling total) from the comment on
+   * editRequiresReacceptance. A comment alone did not seem like enough to stop that.
+   */
+  it('is required for a REMOVAL, which lowers the total — removals are not exempt', () => {
+    expect(editRequiresReacceptance(225, 200)).toBe(true)
+    // The rejected alternative would return false here. If this ever passes as false, the
+    // ruling has been reversed without anyone saying so.
+    expect(editRequiresReacceptance(225, 200)).not.toBe(200 > 225)
+  })
+
   it('sees a one-cent change at an amount where a 0.01 float tolerance would not', () => {
     // 28.5% of exact one-cent differences fail `Math.abs(a-b) <= 0.01` by binary
     // representation alone (#180). A cent moving IS the total changing.
