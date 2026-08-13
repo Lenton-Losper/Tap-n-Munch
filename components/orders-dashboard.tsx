@@ -22,6 +22,8 @@ import {
 } from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
@@ -194,6 +196,7 @@ function OrderRequestCard({
   request,
   currency,
   timeAgoLabel,
+  nowMs,
   busy,
   onSaveReview,
   onAccept,
@@ -202,26 +205,33 @@ function OrderRequestCard({
   request: OrderRequest & Record<string, any>
   currency: string
   timeAgoLabel: string
+  /** The dashboard's shared clock, so a lock going stale re-renders without a row changing. */
+  nowMs: number
   busy: boolean
   onSaveReview: (requestId: string, items: Record<string, any>[]) => Promise<void>
   onAccept: (requestId: string) => void
   onDecline: (requestId: string) => void
 }) {
-  const originalItems = Array.isArray(request.items) ? request.items : []
-  const reviewedItems = Array.isArray(request.items_reviewed) ? request.items_reviewed : null
-  const isReviewed = reviewedItems != null
+  // Precedence imported, not restated. This card used to carry its own two-tier copy of
+  // "reviewed ?? original", which is now a THREE-tier rule because a customer can amend their
+  // own request (order editing). A third copy is how staff come to review one item list while
+  // Accept charges for another.
+  const effective = effectiveRequestPricing(request)
+  const isReviewed = effective.source === 'staff_reviewed'
+  const wasCustomerEdited = (Number(request.customer_edit_count) || 0) > 0
+  const effectiveItems = effective.items as Record<string, any>[]
 
   const [editing, setEditing] = useState(false)
-  const [workingItems, setWorkingItems] = useState<Record<string, any>[]>(reviewedItems ?? originalItems)
+  const [workingItems, setWorkingItems] = useState<Record<string, any>[]>(effectiveItems)
   const [saving, setSaving] = useState(false)
 
-  const displayItems = editing ? workingItems : reviewedItems ?? originalItems
-  const displaySubtotal = isReviewed ? request.subtotal_reviewed : request.subtotal
-  const displayTax = isReviewed ? request.tax_reviewed : request.tax
-  const displayTotal = isReviewed ? request.total_reviewed : request.total
+  const displayItems = editing ? workingItems : effectiveItems
+  const displaySubtotal = effective.subtotal
+  const displayTax = effective.tax
+  const displayTotal = effective.total
 
   const startEditing = () => {
-    setWorkingItems((reviewedItems ?? originalItems).map((item) => ({ ...item })))
+    setWorkingItems(effectiveItems.map((item) => ({ ...item })))
     setEditing(true)
   }
 
@@ -269,7 +279,15 @@ function OrderRequestCard({
               Edited
             </Badge>
           )}
+          {/* Distinct from the "Edited" badge above, which means STAFF edited it. This one
+              means the customer did, and staff have not necessarily seen the new list. */}
+          <span className="ml-2 inline-flex items-center gap-2 align-middle">
+            <OrderEditBadges order={request} nowMs={nowMs} />
+          </span>
           <p className="text-muted-foreground text-sm mt-1">Requested {timeAgoLabel}</p>
+          {wasCustomerEdited && (
+            <OrderEditTotalDelta order={{ ...request, total: displayTotal }} currency={currency} />
+          )}
         </div>
       </div>
 
@@ -1714,6 +1732,7 @@ export function OrdersDashboard() {
                   request={request}
                   currency={restaurant?.currency || 'N$'}
                   timeAgoLabel={formatTimeAgo(request.placed_at)}
+                  nowMs={nowMs}
                   busy={requestActionKey?.startsWith(`${request.id}:`) ?? false}
                   onSaveReview={handleSaveRequestReview}
                   onAccept={handleAcceptRequest}
@@ -1874,6 +1893,7 @@ export function OrdersDashboard() {
                     {getStatusBadge(normalizedOrder.status as OrderStatus)}
                     {getPaymentChannelBadge(normalizedOrder)}
                     {getPaymentStatusBadge(normalizedOrder)}
+                    <OrderEditBadges order={normalizedOrder} nowMs={nowMs} />
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />
@@ -1885,6 +1905,13 @@ export function OrdersDashboard() {
                   <span className="text-lg font-bold">
                     {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
+                  {/* What the total was before the customer changed it, and by how much. Sits
+                      beside the figure staff act on, not in a detail panel they would have to
+                      open to discover the number moved. */}
+                  <OrderEditTotalDelta
+                    order={normalizedOrder}
+                    currency={restaurant?.currency || 'N$'}
+                  />
                   {normalizedOrder.tab_status === 'ready_to_pay' && normalizedOrder.tab_payment_preference && (
                     <div className="flex items-center justify-end gap-1.5 mt-1">
                       <span className="text-sm">

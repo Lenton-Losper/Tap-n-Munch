@@ -45,6 +45,12 @@ export type OrderConfirmationViewProps = {
   cashReadySlot?: React.ReactNode
   cashNotifiedSlot?: React.ReactNode
   orderReadyBanner?: React.ReactNode
+  /**
+   * Customer order editing. Sits directly under the item summary, because the thing being
+   * changed is the list of items and the customer should be looking at it when they decide.
+   * The slot renders nothing of its own when the order is past editing.
+   */
+  editSlot?: React.ReactNode
   className?: string
 }
 
@@ -75,6 +81,7 @@ export function OrderConfirmationView({
   readyToPaySlot,
   cashReadySlot,
   cashNotifiedSlot,
+  editSlot,
   orderReadyBanner,
   className,
 }: OrderConfirmationViewProps) {
@@ -188,6 +195,8 @@ export function OrderConfirmationView({
             vat={tax}
             total={total}
           />
+
+          {editSlot ? <div className="mt-6 print:hidden">{editSlot}</div> : null}
 
           <div className="mt-8 pt-6 text-center border-t border-dashed border-[#E5E7EB]">
             <p className="font-serif text-2xl text-[#111827] italic flex items-center justify-center gap-2">

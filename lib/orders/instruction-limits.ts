@@ -11,3 +11,18 @@
  * is a change to the order-creation path and was deliberately left out of the fix.
  */
 export const MAX_INSTRUCTIONS_LENGTH = 280
+
+/**
+ * Trim and cap instruction text server-side, returning null for an empty note.
+ *
+ * The comment above records that capping was deliberately left out of the ORDER-CREATION
+ * path, and that stands — POST /api/orders is untouched and #129 is still open. This exists
+ * for the customer order-edit route, which is a new write path introduced after that
+ * decision, and which feeds the same staff order card and 32-column thermal print. A new
+ * door does not get to be the unvalidated one because an older door is.
+ */
+export function normalizeOrderInstructions(raw: unknown): string | null {
+  const text = String(raw ?? '').trim()
+  if (!text) return null
+  return text.slice(0, MAX_INSTRUCTIONS_LENGTH)
+}

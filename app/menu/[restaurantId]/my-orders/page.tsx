@@ -11,6 +11,25 @@ import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
+import {
+  EDIT_COPY_PENDING,
+  editRefusalReason,
+  requestEditRefusalReason,
+} from '@/lib/orders/edit-lock'
+
+/**
+ * Whether to offer the edit button on a list card. The row here comes from the guest API,
+ * which states which table it came from (`surface`), so the two status vocabularies are not
+ * guessed at. Session id is passed as the row's own, because an entry in THIS list is by
+ * construction one of this session's orders — the lock-holder check is what that argument is
+ * for, and a customer is never locked out by their own lock.
+ */
+function isEditableHere(order: any): boolean {
+  const params = { sessionId: String(order?.session_id || ''), nowMs: Date.now() }
+  return order?.surface === 'order_requests'
+    ? requestEditRefusalReason(order, params) == null
+    : editRefusalReason(order, params) == null
+}
 
 export default function MyOrdersPage() {
   const params = useParams()
@@ -225,6 +244,28 @@ export default function MyOrdersPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* Edit entry point. Routes to the per-order confirmation screen, which is
+                      where the editor lives — one place a customer can change an order from,
+                      rather than a second editor embedded in a list card. The button appears
+                      only while the order is still open to editing; the server refuses
+                      regardless, so this only avoids offering a dead control. */}
+                  {isEditableHere(order) && (
+                    <div className="mt-4">
+                      <Button
+                        variant="outline"
+                        className="w-full font-sans font-semibold"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          router.push(
+                            `/menu/${restaurantId}/order-confirmation/${order.id}${tableNumber ? `?table=${tableNumber}` : ''}`,
+                          )
+                        }}
+                      >
+                        {EDIT_COPY_PENDING.editCta}
+                      </Button>
+                    </div>
+                  )}
 
                   {/* Payment Status.
                       Suppressed for a declined request: it never became an order, so its

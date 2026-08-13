@@ -36,7 +36,15 @@ export type AppliedTax = {
  * portion out of it; exclusive rates treat the raw amount as pre-tax and add VAT on top. No
  * rate (or 0%) charges the raw amount as-is with no tax.
  */
-export function applyTaxToAmount(amount: number, rate: TaxRateOption | null): AppliedTax {
+export function applyTaxToAmount(
+  // Narrowed to the two fields the body actually reads, so a caller holding only a stored
+  // line's taxRatePercentage/taxInclusive can reuse this rule instead of restating it (see
+  // lib/orders/reprice-priced-lines.ts). Widening the accepted type, not changing it: every
+  // existing caller passes a full TaxRateOption and still satisfies it. Same `Pick` idiom
+  // formatTaxRateLabel already uses one file over.
+  amount: number,
+  rate: Pick<TaxRateOption, 'percentage' | 'is_inclusive'> | null,
+): AppliedTax {
   const percentage = rate ? Number(rate.percentage) || 0 : 0
   const isInclusive = rate?.is_inclusive ?? true
 

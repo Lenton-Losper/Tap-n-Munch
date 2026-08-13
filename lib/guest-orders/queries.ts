@@ -1,7 +1,8 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { guestCanAccessOrder, paymentRefOrFilter } from './validation'
+import { guestCanAccessOrder, paymentRefOrFilter, redactGuestOrderRow } from './validation'
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import type { GuestOrderRow } from './types'
 
 /**
@@ -36,10 +37,11 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
   // records having already fixed once. normalizeOrderStatusForDisplay owns this vocabulary and
   // says in terms that anything making a status VISIBLE must run through it.
   const status = normalizeOrderStatusForDisplay(String(row.status || 'waiting_review'))
-  const items = Array.isArray(row.items_reviewed) ? row.items_reviewed : row.items
-  const subtotal = row.subtotal_reviewed ?? row.subtotal
-  const tax = row.tax_reviewed ?? row.tax
-  const total = row.total_reviewed ?? row.total
+  // Precedence imported rather than restated. The Accept route charges from this same helper,
+  // and the customer's confirmation screen must never show a figure different from the one
+  // that gets charged — two copies of the rule is exactly how they come to disagree. Adds the
+  // customer's own amendment as a third tier (order editing, 20260813120000).
+  const { items, subtotal, tax, total } = effectiveRequestPricing(row)
 
   return {
     id: String(row.id),
@@ -60,6 +62,18 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
     tax,
     total,
     customer_ready_to_pay: false,
+    surface: 'order_requests',
+    // Edit state. This mapper builds an explicit object rather than spreading the row, so
+    // anything the customer's own screens need has to be named here — a pass-through-by-spread
+    // would be quietly wrong the other way, exposing decided_by and idempotency_key to a guest.
+    edit_lock_session_id: row.edit_lock_session_id ?? null,
+    edit_lock_expires_at: row.edit_lock_expires_at ?? null,
+    // Presence, not the token. The token is a capability: whoever holds it can commit an edit,
+    // so it is returned once to the session that acquired it and never again by a read path.
+    edit_lock_held: Boolean(String(row.edit_lock_token ?? '').trim()),
+    customer_edited_at: row.customer_edited_at ?? null,
+    customer_edit_count: Number(row.customer_edit_count) || 0,
+    total_before_edit: row.total_before_edit ?? null,
   } as GuestOrderRow
 }
 
@@ -84,7 +98,7 @@ export async function fetchGuestOrderById(
   if (error) throw error
 
   if (data) {
-    const order = { id: String(data.id), ...data } as GuestOrderRow
+    const order = redactGuestOrderRow({ id: String(data.id), ...data }) as GuestOrderRow
     if (!guestCanAccessOrder(order, accessParams)) {
       return { order: null, denied: true }
     }
@@ -98,7 +112,10 @@ export async function fetchGuestOrderById(
   if (requestError) throw requestError
   if (!request) return { order: null, denied: false }
 
-  const requestRow = { id: String(request.id), ...request } as GuestOrderRow
+  const requestRow = redactGuestOrderRow(
+    { id: String(request.id), ...request },
+    'order_requests',
+  ) as GuestOrderRow
   if (!guestCanAccessOrder(requestRow, accessParams)) {
     return { order: null, denied: true }
   }
@@ -216,7 +233,7 @@ export async function fetchGuestOrdersBySession(params: {
   if (error) throw error
   if (pendingError) throw pendingError
 
-  const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  const orders = (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[]
   const pendingRows = (pending ?? []).map((row) =>
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
   )
@@ -284,7 +301,7 @@ export async function fetchGuestActiveTableOrders(params: {
   const { data, error } = await query.order('placed_at', { ascending: false })
   if (error) throw error
 
-  const orders = (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[]
+  const orders = (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[]
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
   // is included for the same reason as in fetchGuestOrdersBySession -- see
@@ -383,6 +400,6 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   }
 
   return (data ?? [])
-    .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
+    .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
     .filter((order) => guestCanAccessOrder(order, accessParams))
 }

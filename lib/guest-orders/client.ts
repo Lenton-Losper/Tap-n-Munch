@@ -113,3 +113,119 @@ export async function fetchGuestOrdersByPaymentRef(params: {
 }
 
 export const GUEST_ORDER_POLL_MS = 5000
+
+// ---------------------------------------------------------------------------
+// Order editing (before preparation starts)
+// ---------------------------------------------------------------------------
+
+export type EditLockGrant = {
+  lockToken: string
+  expiresAt: string
+  surface: 'orders' | 'order_requests'
+  items: Array<Record<string, unknown>>
+  subtotal: number
+  tax: number
+  total: number
+  orderInstructions: string | null
+}
+
+export type EditCommitResult = {
+  totalChanged: boolean
+  previousTotal: number
+  total: number
+  requiresReacceptance: boolean
+  status?: string | null
+  message: string
+}
+
+/**
+ * A refusal the customer can be shown, carrying the server's own reason code. The reason
+ * matters more than the status: 409 covers "the kitchen started", "someone else is editing"
+ * and "your lock expired", and those are three different things to say.
+ */
+export class OrderEditRefused extends Error {
+  readonly reason: string
+  readonly httpStatus: number
+  constructor(message: string, reason: string, httpStatus: number) {
+    super(message)
+    this.name = 'OrderEditRefused'
+    this.reason = reason
+    this.httpStatus = httpStatus
+  }
+}
+
+async function editRequest<T>(
+  orderId: string,
+  method: 'POST' | 'PATCH' | 'DELETE',
+  body: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}/edit`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (!res.ok) {
+    throw new OrderEditRefused(
+      String(parsed.error || `Edit request failed (${res.status})`),
+      String(parsed.reason || 'unknown'),
+      res.status,
+    )
+  }
+  return parsed as T
+}
+
+export function acquireOrderEditLock(params: {
+  orderId: string
+  restaurantId: string
+  sessionId: string
+}): Promise<EditLockGrant> {
+  return editRequest<EditLockGrant>(params.orderId, 'POST', {
+    restaurantId: params.restaurantId,
+    sessionId: params.sessionId,
+  })
+}
+
+/**
+ * `keep` names stored line indexes and the quantity remaining on each — never prices. The
+ * server re-sums from its own priced lines, so nothing the customer's browser believes about
+ * money reaches the order.
+ */
+export function commitOrderEdit(params: {
+  orderId: string
+  restaurantId: string
+  sessionId: string
+  lockToken: string
+  keep?: Array<{ index: number; quantity: number }>
+  orderInstructions?: string | null
+}): Promise<EditCommitResult> {
+  return editRequest<EditCommitResult>(params.orderId, 'PATCH', {
+    restaurantId: params.restaurantId,
+    sessionId: params.sessionId,
+    lockToken: params.lockToken,
+    ...(params.keep ? { keep: params.keep } : {}),
+    ...(params.orderInstructions !== undefined
+      ? { orderInstructions: params.orderInstructions }
+      : {}),
+  })
+}
+
+export async function releaseOrderEditLock(params: {
+  orderId: string
+  restaurantId: string
+  sessionId: string
+  lockToken: string
+}): Promise<void> {
+  // Best effort by design. The lock expires on its own after EDIT_LOCK_TTL_MS, so a release
+  // that never lands costs the customer a wait and nothing else — throwing here would turn
+  // closing an editor into an error the customer has to understand.
+  try {
+    await editRequest(params.orderId, 'DELETE', {
+      restaurantId: params.restaurantId,
+      sessionId: params.sessionId,
+      lockToken: params.lockToken,
+    })
+  } catch {
+    /* expired or already taken; nothing to report */
+  }
+}

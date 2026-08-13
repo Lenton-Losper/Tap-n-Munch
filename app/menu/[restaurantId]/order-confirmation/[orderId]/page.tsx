@@ -17,6 +17,7 @@ import { OrderConfirmationView } from '@/components/receipt/order-confirmation-v
 import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { OrderEditPanel } from '@/components/order-edit-panel'
 
 type Order = {
   id: string
@@ -96,8 +97,13 @@ export default function OrderConfirmationPage() {
   const { currency: restaurantCurrency } = useRestaurant()
 
   const [order, setOrder] = useState<Order | null>(null)
+  // The raw guest row as well as the mapped one. The edit panel needs fields the Order type
+  // above deliberately does not carry (surface, payment_checkout_url, the lock state), and
+  // widening that type would push them through every prop of OrderConfirmationView.
+  const [orderRow, setOrderRow] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [terminalNotifiedLocal, setTerminalNotifiedLocal] = useState(false)
+  const [editReloadKey, setEditReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -119,6 +125,7 @@ export default function OrderConfirmationPage() {
         }
 
         setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
+        setOrderRow(row as Record<string, unknown>)
         setLoading(false)
       } catch (err) {
         console.error('Failed to load order:', err)
@@ -133,7 +140,7 @@ export default function OrderConfirmationPage() {
     return () => {
       cancelled = true
     }
-  }, [orderId, restaurantId, router, tableNumber])
+  }, [orderId, restaurantId, router, tableNumber, editReloadKey])
 
   useEffect(() => {
     if (!orderId || !order) return
@@ -149,6 +156,7 @@ export default function OrderConfirmationPage() {
       })
       if (cancelled || !row) return
       setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
+      setOrderRow(row as Record<string, unknown>)
     }
 
     const interval = window.setInterval(() => {
@@ -240,6 +248,18 @@ export default function OrderConfirmationPage() {
       cashNotifiedSlot={
         showReadyToPayCashNotified(order) ? (
           <InfoBanner variant="notify">Staff has been notified. They will be with you shortly.</InfoBanner>
+        ) : undefined
+      }
+      editSlot={
+        orderRow ? (
+          <OrderEditPanel
+            orderId={order.id}
+            restaurantId={restaurantId}
+            sessionId={getCurrentSession()}
+            order={orderRow}
+            currency={currency === 'NAD' ? 'N$' : `${currency} `}
+            onEdited={() => setEditReloadKey((key) => key + 1)}
+          />
         ) : undefined
       }
       orderReadyBanner={

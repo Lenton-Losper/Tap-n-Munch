@@ -50,6 +50,39 @@ export function guestCanAccessOrder(
 }
 
 /**
+ * Strip the edit-lock token from any row about to leave for a guest, replacing it with the
+ * boolean the UI actually needs.
+ *
+ * This is not tidiness, it is the hole customer order editing would otherwise open.
+ * `edit_lock_token` is a CAPABILITY: PATCH /api/guest/orders/[orderId]/edit accepts it as proof
+ * that the caller holds the lock. Every guest read path selects `*`, and guestCanAccessOrder
+ * above deliberately admits an OPEN order on table_number alone — correct for a read on a
+ * shared table, and the reason a second diner could otherwise fetch someone else's order, read
+ * the token out of the response, and commit an edit to it despite the edit route's own session
+ * check.
+ *
+ * So the token is returned exactly once, by the POST that mints it, to the session that
+ * acquired it. Never by a read.
+ *
+ * Lives here rather than in queries.ts so it can be tested without a Supabase client: that
+ * module builds one at import time, which turns any hermetic suite importing it into
+ * `Tests: 0 total` — a suite that fails to LOAD looks like a failing test and is not one.
+ */
+export function redactGuestOrderRow(
+  row: Record<string, unknown>,
+  /**
+   * Which table the row came from, stated rather than inferred. The customer's edit panel has
+   * to pick between two status vocabularies, and every way of guessing from the row's own
+   * contents is wrong for some row — `order_number` is 0 for a request AND for an order whose
+   * number has not been allocated, and a request carries a payment_method like an order does.
+   */
+  surface: 'orders' | 'order_requests' = 'orders',
+): Record<string, unknown> {
+  const { edit_lock_token: token, ...rest } = row
+  return { ...rest, surface, edit_lock_held: Boolean(String(token ?? '').trim()) }
+}
+
+/**
  * Payment references and merchant order numbers as this system issues them.
  *
  *   payment_reference          PAY-20260808-K7M2QRTZ   (lib/payment-reference.ts)
