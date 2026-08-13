@@ -520,6 +520,52 @@ that does nothing. It is caught by looking at the index, or not at all.
 Applies to the orchestrator/integrator, not only implementers: the failing-first check is normally
 run by whoever is about to push.
 
+#### FIRED AGAIN 2026-08-13, on an agent that had this document in context. Twice in one week.
+
+The form was `git checkout origin/cloudflare-staging -- .` — used to refresh a worktree, not to
+revert a file, which is why the rule above did not feel like it applied. It stages all of it. The
+next commit in that worktree swept in **eight files belonging to another branch's commit** and
+described them in a message about something else.
+
+**Why it evades detection, stated plainly because knowing the rule was not enough:**
+
+> `git status` compares the INDEX to the WORKTREE. This trap makes them agree. So a clean
+> `git status` is the SYMPTOM of the trap, not the all-clear — it is what you see *because* the
+> unintended content is staged, not evidence that nothing is.
+
+Every mechanical gate reports success on the result: it compiles, it lints, tests pass, `git status`
+is clean. There is nothing wrong with the CONTENT — the files are byte-identical to the branch they
+came from — so no diff-based check flags it either. What is wrong is the AUTHORSHIP and the scope of
+the commit.
+
+**The two checks that work, both before every commit:**
+
+```
+git diff --cached --stat        # what is ACTUALLY staged
+```
+
+then compare that file list against **what you intended to change**. If a path you did not touch is
+in it, stop. That comparison is the whole check; the command alone is not enough, because a staged
+foreign file looks exactly like a staged intended one.
+
+**And the one that catches it after the fact**, which is how this instance was caught:
+
+```
+git merge-base --is-ancestor <the other commit> HEAD    # NO means you re-applied its content
+git rev-parse HEAD:<path>                               # against origin/<branch>:<path>
+```
+
+Blobs matching the branch while the branch's commit is NOT an ancestor is the signature: the content
+arrived without the history. The push was going to be rejected as non-fast-forward, which is luck
+rather than a control — the same luck that stopped the cwd-drift push in revision 2. `git rebase`
+onto the real tip reduced the commit to its intended four files.
+
+**Generalisation worth keeping:** the reason this rule needed restating is that it was written about
+`git checkout <sha> -- <file>` for partial reverts, and the instance was `git checkout <ref> -- .`
+for a worktree refresh. Same command, different intent, so the rule did not fire in the reader's
+head. The rule is really about the FLAG-FREE FORM OF `git checkout` WITH A PATHSPEC, whatever the
+pathspec is and whatever it was for.
+
 ### The verifier's limit — state it, do not paper over it
 
 **Mechanical gates verify that a commit APPLIES. They cannot verify that it is still TRUE on the
