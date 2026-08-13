@@ -20,12 +20,13 @@ import {
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
  * which states which table it came from (`surface`), so the two status vocabularies are not
- * guessed at. Session id is passed as the row's own, because an entry in THIS list is by
- * construction one of this session's orders — the lock-holder check is what that argument is
- * for, and a customer is never locked out by their own lock.
+ * guessed at. Ownership is judged on the ids this BROWSER holds, never the row's own.
  */
-function isEditableHere(order: any): boolean {
-  const params = { sessionId: String(order?.session_id || ''), nowMs: Date.now() }
+function isEditableHere(order: any, sessionIds: string[]): boolean {
+  // The BROWSER's ids, never the row's own. Echoing the row's id back would make ownership
+  // trivially true, and guestCanAccessOrder releases an OPEN order on table_number alone -- so a
+  // second diner at the same table would be offered an edit button on somebody else's order.
+  const params = { sessionIds, nowMs: Date.now() }
   return order?.surface === 'order_requests'
     ? requestEditRefusalReason(order, params) == null
     : editRefusalReason(order, params) == null
@@ -40,6 +41,9 @@ export default function MyOrdersPage() {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const sessionId = getCurrentSession()
+  // Every id this browser holds. The order carries whichever the placing screen used, and the
+  // cart submits the tab-context one, so a single id both empties this list and 404s the edit.
+  const editSessionIds = [sessionId, readTabSessionId()].filter(Boolean) as string[]
   const sessionInfo = getSessionInfo()
 
   useEffect(() => {
@@ -250,7 +254,7 @@ export default function MyOrdersPage() {
                       rather than a second editor embedded in a list card. The button appears
                       only while the order is still open to editing; the server refuses
                       regardless, so this only avoids offering a dead control. */}
-                  {isEditableHere(order) && (
+                  {isEditableHere(order, editSessionIds) && (
                     <div className="mt-4">
                       <Button
                         variant="outline"

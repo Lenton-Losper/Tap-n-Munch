@@ -40,6 +40,7 @@ import {
   editRefusalReason,
   editRequiresReacceptance,
   isEditLockActive,
+  normalizeSessionIds,
   requestEditRefusalReason,
   type EditRefusalReason,
 } from '@/lib/orders/edit-lock'
@@ -126,20 +127,28 @@ async function loadTarget(
   return null
 }
 
-/** The write must belong to the session that placed the order, not merely to the table. */
-function sessionOwnsRow(row: Record<string, unknown>, sessionId: string): boolean {
-  const asked = sessionId.trim()
-  if (!asked) return false
-  return (
-    String(row.session_id ?? '').trim() === asked ||
-    String(row.member_session_id ?? '').trim() === asked
-  )
+/**
+ * The write must belong to the session that placed the order, not merely to the table.
+ *
+ * Matches EVERY id the client holds against BOTH columns. The customer app mints two session
+ * ids in different storages and nothing syncs them, and the cart submits the tab-context one as
+ * both `session_id` and `member_session_id` — so checking one id against one column rejected the
+ * customer's own order with a 404. Measured on the deployed worker before this fix; see
+ * EditLockAsker in lib/orders/edit-lock.ts.
+ */
+function sessionOwnsRow(row: Record<string, unknown>, sessionIds: string[]): boolean {
+  if (sessionIds.length === 0) return false
+  const rowIds = [
+    String(row.session_id ?? '').trim(),
+    String(row.member_session_id ?? '').trim(),
+  ].filter(Boolean)
+  return rowIds.some((rowId) => sessionIds.includes(rowId))
 }
 
-function refusalFor(target: LoadedTarget, sessionId: string, nowMs: number) {
+function refusalFor(target: LoadedTarget, sessionIds: string[], nowMs: number) {
   return target.surface === 'orders'
-    ? editRefusalReason(target.row, { sessionId, nowMs })
-    : requestEditRefusalReason(target.row, { sessionId, nowMs })
+    ? editRefusalReason(target.row, { sessionIds, nowMs })
+    : requestEditRefusalReason(target.row, { sessionIds, nowMs })
 }
 
 /**
@@ -166,7 +175,8 @@ function effectiveOf(target: LoadedTarget) {
 
 type ParsedBody = {
   restaurantId: string
-  sessionId: string
+  /** Every id the client holds, deduped. The first is the one recorded as the lock holder. */
+  sessionIds: string[]
   lockToken: string
   keep: LineKeepInstruction[] | null
   orderInstructions: string | null
@@ -182,7 +192,19 @@ async function parseBody(req: Request): Promise<ParsedBody> {
 
   return {
     restaurantId: String(body.restaurantId ?? body.restaurant_id ?? '').trim(),
-    sessionId: String(body.sessionId ?? body.session_id ?? '').trim(),
+    // `sessionId` stays accepted so an older client keeps working; `sessionIds` is what the
+    // current one sends. Repeated values are deduped, and order is preserved so the primary id
+    // stays first — that is the one written to edit_lock_session_id.
+    sessionIds: normalizeSessionIds([
+      body.sessionId as string | undefined,
+      body.session_id as string | undefined,
+      ...(Array.isArray(body.sessionIds) ? (body.sessionIds as unknown[]) : []).map((v) =>
+        v == null ? '' : String(v),
+      ),
+      ...(Array.isArray(body.session_ids) ? (body.session_ids as unknown[]) : []).map((v) =>
+        v == null ? '' : String(v),
+      ),
+    ]),
     lockToken: String(body.lockToken ?? body.lock_token ?? '').trim(),
     keep: Array.isArray(rawKeep)
       ? rawKeep.map((entry) => {
@@ -212,7 +234,7 @@ async function prepare(
   if (!parsed.restaurantId) {
     return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
   }
-  if (!parsed.sessionId) {
+  if (parsed.sessionIds.length === 0) {
     return NextResponse.json({ error: 'sessionId is required' }, { status: 400 })
   }
 
@@ -225,7 +247,7 @@ async function prepare(
   }
   // Same answer for "no such order" and "not your order": a 403 here would confirm that an
   // order exists at an id the caller cannot otherwise see.
-  if (!sessionOwnsRow(target.row, parsed.sessionId)) {
+  if (!sessionOwnsRow(target.row, parsed.sessionIds)) {
     return NextResponse.json({ error: 'Order not found' }, { status: 404 })
   }
 
@@ -237,14 +259,14 @@ async function explainLostWrite(
   supabase: SupabaseLike,
   orderId: string,
   restaurantUuid: string,
-  sessionId: string,
+  sessionIds: string[],
   nowMs: number,
 ) {
   const fresh = await loadTarget(supabase, orderId, restaurantUuid)
   if (!fresh) {
     return NextResponse.json({ error: 'Order not found' }, { status: 404 })
   }
-  const reason = refusalFor(fresh, sessionId, nowMs)
+  const reason = refusalFor(fresh, sessionIds, nowMs)
   if (reason) return refuse(reason)
 
   // The row is still editable but our conditional write matched nothing, which leaves one
@@ -268,7 +290,7 @@ export async function POST(req: Request, { params }: RouteParams) {
     const { supabase, restaurantUuid, target } = prepared
 
     const nowMs = Date.now()
-    const reason = refusalFor(target, parsed.sessionId, nowMs)
+    const reason = refusalFor(target, parsed.sessionIds, nowMs)
     if (reason) return refuse(reason)
 
     const observedToken = String(target.row.edit_lock_token ?? '').trim()
@@ -279,7 +301,7 @@ export async function POST(req: Request, { params }: RouteParams) {
       .from(target.surface)
       .update({
         edit_lock_token: newToken,
-        edit_lock_session_id: parsed.sessionId,
+        edit_lock_session_id: parsed.sessionIds,
         edit_lock_expires_at: expiresAt,
       })
       .eq('id', target.row.id as string)
@@ -310,7 +332,7 @@ export async function POST(req: Request, { params }: RouteParams) {
       return NextResponse.json({ error: claimError.message }, { status: 500 })
     }
     if (!locked) {
-      return explainLostWrite(supabase, String(target.row.id), restaurantUuid, parsed.sessionId, Date.now())
+      return explainLostWrite(supabase, String(target.row.id), restaurantUuid, parsed.sessionIds, Date.now())
     }
 
     const effective = effectiveOf(target)
@@ -350,7 +372,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     }
 
     const nowMs = Date.now()
-    const reason = refusalFor(target, parsed.sessionId, nowMs)
+    const reason = refusalFor(target, parsed.sessionIds, nowMs)
     if (reason) return refuse(reason)
 
     // The token has to be live AND ours. An expired token is not a lock, and committing on
@@ -480,7 +502,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       return NextResponse.json({ error: writeError.message }, { status: 500 })
     }
     if (!updated) {
-      return explainLostWrite(supabase, String(target.row.id), restaurantUuid, parsed.sessionId, Date.now())
+      return explainLostWrite(supabase, String(target.row.id), restaurantUuid, parsed.sessionIds, Date.now())
     }
 
     // Tab bookkeeping, same recomputation the Accept route does: sum the tab's non-settlement

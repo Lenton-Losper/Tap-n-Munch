@@ -142,7 +142,7 @@ async function call(
   const req = new Request('http://localhost/api/guest/orders/order-1/edit', {
     method,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ restaurantId: 'rest-1', sessionId: SESSION, ...body }),
+    body: JSON.stringify({ restaurantId: 'rest-1', sessionIds: [SESSION], ...body }),
   })
   const res = await handler(req, { params: Promise.resolve({ orderId: 'order-1' }) })
   return { status: res.status, body: await res.json() }

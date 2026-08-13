@@ -110,17 +110,41 @@ export function isEditLockActive(row: EditLockRow, nowMs: number): boolean {
  * renewal, not a conflict — reloading the page mid-edit must not lock them out of their own
  * order for three minutes.
  */
-export function isEditLockHeldByOther(
-  row: EditLockRow,
-  params: { sessionId: string; nowMs: number },
-): boolean {
+export function isEditLockHeldByOther(row: EditLockRow, params: EditLockAsker): boolean {
   if (!isEditLockActive(row, params.nowMs)) return false
   const holder = String(row.edit_lock_session_id ?? '').trim()
-  const asker = String(params.sessionId ?? '').trim()
   // A live lock with no recorded holder belongs to nobody identifiable, so it is treated as
   // somebody else's. Failing open here would hand the lock to whoever asked next.
   if (!holder) return true
-  return holder !== asker
+  return !normalizeSessionIds(params.sessionIds).includes(holder)
+}
+
+/**
+ * WHO IS ASKING — and it is a LIST, not one id.
+ *
+ * The customer app mints TWO session ids, in different storages and different formats, and
+ * nothing syncs them:
+ *
+ *   lib/session.ts        flashtap_session_v1  localStorage    `sess_<uuid>`
+ *   lib/tab-storage.ts    tab_session_id       (mirrored)      `session_<ts>_<rand>`
+ *
+ * An order carries whichever the placing screen held — the cart submits the TAB one as both
+ * `session_id` and `member_session_id` — so a single-id check silently rejects the customer's own
+ * order. Measured against the deployed worker 2026-08-13: POST .../edit with a `sess_`-style id
+ * on a request whose `session_id` was `session_1786615850151_8kbbfwp6jne` returned
+ * `404 Order not found`. The edit button was dead for every tab-flow QR order.
+ *
+ * This is the same shape as lib/guest-orders/queries.ts's `sessionIds` parameter, and the same
+ * root cause as the My Orders empty-state bug. Third time: any code asking "is this the
+ * customer's own order" must take every id the client holds.
+ */
+export type EditLockAsker = {
+  sessionIds: Array<string | null | undefined>
+  nowMs: number
+}
+
+export function normalizeSessionIds(ids: Array<string | null | undefined>): string[] {
+  return [...new Set((ids ?? []).map((id) => String(id ?? '').trim()).filter(Boolean))]
 }
 
 /**
@@ -136,7 +160,7 @@ export function isEditLockHeldByOther(
  */
 export function editRefusalReason(
   row: EditLockRow,
-  params: { sessionId: string; nowMs: number },
+  params: EditLockAsker,
 ): EditRefusalReason | null {
   if (!isEditableOrderStatus(row.status)) {
     return KITCHEN_HAS_IT.has(String(row.status ?? '').trim().toLowerCase())
@@ -167,7 +191,7 @@ export function editRefusalReason(
  */
 export function requestEditRefusalReason(
   row: EditLockRow,
-  params: { sessionId: string; nowMs: number },
+  params: EditLockAsker,
 ): EditRefusalReason | null {
   const status = String(row.status ?? '').trim().toLowerCase()
   if (!isEditableRequestStatus(status)) {

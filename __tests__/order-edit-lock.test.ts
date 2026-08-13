@@ -20,6 +20,7 @@ import {
   isEditLockActive,
   isEditLockHeldByOther,
   isEditableOrderStatus,
+  normalizeSessionIds,
   requestEditRefusalReason,
   appendEditHistory,
 } from '@/lib/orders/edit-lock'
@@ -50,7 +51,7 @@ describe('the ruling: editable only before preparation starts', () => {
 
   it('closes editing permanently once preparing, and stays closed after', () => {
     for (const status of ['preparing', 'ready', 'completed', 'served']) {
-      expect(editRefusalReason(editableOrder({ status }), { sessionId: 's1', nowMs: NOW })).toBe(
+      expect(editRefusalReason(editableOrder({ status }), { sessionIds: ['s1'], nowMs: NOW })).toBe(
         'preparation_started',
       )
     }
@@ -60,13 +61,13 @@ describe('the ruling: editable only before preparation starts', () => {
     // The gate is an allowlist. A denylist would let any status added later be editable by
     // default, and the failure mode is a customer editing an order that is already out.
     expect(
-      editRefusalReason(editableOrder({ status: 'awaiting_courier' }), { sessionId: 's1', nowMs: NOW }),
+      editRefusalReason(editableOrder({ status: 'awaiting_courier' }), { sessionIds: ['s1'], nowMs: NOW }),
     ).toBe('not_editable_status')
   })
 
   it('refuses ready_for_terminal — the amount is being collected at the table', () => {
     expect(
-      editRefusalReason(editableOrder({ status: 'ready_for_terminal' }), { sessionId: 's1', nowMs: NOW }),
+      editRefusalReason(editableOrder({ status: 'ready_for_terminal' }), { sessionIds: ['s1'], nowMs: NOW }),
     ).toBe('not_editable_status')
   })
 })
@@ -78,7 +79,7 @@ describe('money closes editing before the kitchen does', () => {
 
   it('refuses a paid order', () => {
     expect(
-      editRefusalReason(editableOrder({ payment_status: 'paid' }), { sessionId: 's1', nowMs: NOW }),
+      editRefusalReason(editableOrder({ payment_status: 'paid' }), { sessionIds: ['s1'], nowMs: NOW }),
     ).toBe('payment_settled')
   })
 
@@ -88,7 +89,7 @@ describe('money closes editing before the kitchen does', () => {
     expect(
       editRefusalReason(
         editableOrder({ payment_checkout_url: 'https://checkout.example/abc' }),
-        { sessionId: 's1', nowMs: NOW },
+        { sessionIds: ['s1'], nowMs: NOW },
       ),
     ).toBe('payment_in_flight')
   })
@@ -116,8 +117,8 @@ describe('the lock: three minutes, and whose it is', () => {
       edit_lock_session_id: 's2',
       edit_lock_expires_at: new Date(NOW + 60_000).toISOString(),
     })
-    expect(editRefusalReason(row, { sessionId: 's1', nowMs: NOW })).toBe('locked_by_other')
-    expect(editRefusalReason(row, { sessionId: 's1', nowMs: NOW + 61_000 })).toBeNull()
+    expect(editRefusalReason(row, { sessionIds: ['s1'], nowMs: NOW })).toBe('locked_by_other')
+    expect(editRefusalReason(row, { sessionIds: ['s1'], nowMs: NOW + 61_000 })).toBeNull()
   })
 
   it('lets the holder renew their own lock — reloading is not a conflict', () => {
@@ -126,8 +127,8 @@ describe('the lock: three minutes, and whose it is', () => {
       edit_lock_session_id: 's2',
       edit_lock_expires_at: new Date(NOW + 60_000).toISOString(),
     })
-    expect(isEditLockHeldByOther(row, { sessionId: 's2', nowMs: NOW })).toBe(false)
-    expect(editRefusalReason(row, { sessionId: 's2', nowMs: NOW })).toBeNull()
+    expect(isEditLockHeldByOther(row, { sessionIds: ['s2'], nowMs: NOW })).toBe(false)
+    expect(editRefusalReason(row, { sessionIds: ['s2'], nowMs: NOW })).toBeNull()
   })
 
   it('treats a live lock with no recorded holder as somebody else’s', () => {
@@ -137,30 +138,66 @@ describe('the lock: three minutes, and whose it is', () => {
       edit_lock_session_id: null,
       edit_lock_expires_at: new Date(NOW + 60_000).toISOString(),
     })
-    expect(isEditLockHeldByOther(row, { sessionId: 's1', nowMs: NOW })).toBe(true)
+    expect(isEditLockHeldByOther(row, { sessionIds: ['s1'], nowMs: NOW })).toBe(true)
   })
 
   it('treats a token with no expiry as not a lock', () => {
     expect(isEditLockActive(editableOrder({ edit_lock_token: 'tok' }), NOW)).toBe(false)
   })
+
+  /**
+   * TWO SESSION IDS. The app mints `sess_<uuid>` in localStorage (lib/session.ts) and
+   * `session_<ts>_<rand>` via lib/tab-storage.ts, nothing syncs them, and an order carries
+   * whichever the placing screen held — the cart submits the tab-context one as BOTH session_id
+   * and member_session_id.
+   *
+   * Measured on the deployed worker 2026-08-13: POST .../edit sending only the `sess_` id, on a
+   * request whose session_id was `session_1786615850151_8kbbfwp6jne`, returned
+   * `404 Order not found`. The edit button was dead for every tab-flow QR order.
+   */
+  it('recognises the holder by ANY id the browser holds, not just the first', () => {
+    const row = editableOrder({
+      edit_lock_token: 'tok',
+      edit_lock_session_id: 'session_1786615850151_8kbbfwp6jne',
+      edit_lock_expires_at: new Date(NOW + 60_000).toISOString(),
+    })
+    // The browser holds both. The lock was taken under the tab-context one.
+    const asker = { sessionIds: ['sess_abc', 'session_1786615850151_8kbbfwp6jne'], nowMs: NOW }
+
+    expect(isEditLockHeldByOther(row, asker)).toBe(false)
+    expect(editRefusalReason(row, asker)).toBeNull()
+    // With only the localStorage id — what the panel used to send — it reads as somebody else's.
+    expect(isEditLockHeldByOther(row, { sessionIds: ['sess_abc'], nowMs: NOW })).toBe(true)
+  })
+
+  it('ignores blank and duplicate ids rather than matching on empty string', () => {
+    // A blank id must never match a blank holder column; normalizeSessionIds drops them.
+    expect(normalizeSessionIds(['', null, undefined, ' a ', 'a'])).toEqual(['a'])
+    const row = editableOrder({
+      edit_lock_token: 'tok',
+      edit_lock_session_id: '',
+      edit_lock_expires_at: new Date(NOW + 60_000).toISOString(),
+    })
+    expect(isEditLockHeldByOther(row, { sessionIds: ['', null], nowMs: NOW })).toBe(true)
+  })
 })
 
 describe('the pre-Accept surface has its own vocabulary', () => {
   it('is editable while waiting for review', () => {
-    expect(requestEditRefusalReason({ status: 'waiting_review' }, { sessionId: 's1', nowMs: NOW })).toBeNull()
+    expect(requestEditRefusalReason({ status: 'waiting_review' }, { sessionIds: ['s1'], nowMs: NOW })).toBeNull()
   })
 
   it('refuses during the transient accepting claim — the checkout is being built', () => {
-    expect(requestEditRefusalReason({ status: 'accepting' }, { sessionId: 's1', nowMs: NOW })).toBe(
+    expect(requestEditRefusalReason({ status: 'accepting' }, { sessionIds: ['s1'], nowMs: NOW })).toBe(
       'payment_in_flight',
     )
   })
 
   it('tells an accepted request apart from a declined one', () => {
-    expect(requestEditRefusalReason({ status: 'accepted' }, { sessionId: 's1', nowMs: NOW })).toBe(
+    expect(requestEditRefusalReason({ status: 'accepted' }, { sessionIds: ['s1'], nowMs: NOW })).toBe(
       'request_accepted',
     )
-    expect(requestEditRefusalReason({ status: 'declined' }, { sessionId: 's1', nowMs: NOW })).toBe(
+    expect(requestEditRefusalReason({ status: 'declined' }, { sessionIds: ['s1'], nowMs: NOW })).toBe(
       'request_declined',
     )
   })

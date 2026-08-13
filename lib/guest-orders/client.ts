@@ -178,11 +178,11 @@ async function editRequest<T>(
 export function acquireOrderEditLock(params: {
   orderId: string
   restaurantId: string
-  sessionId: string
+  sessionIds: string[]
 }): Promise<EditLockGrant> {
   return editRequest<EditLockGrant>(params.orderId, 'POST', {
     restaurantId: params.restaurantId,
-    sessionId: params.sessionId,
+    sessionIds: params.sessionIds,
   })
 }
 
@@ -194,14 +194,14 @@ export function acquireOrderEditLock(params: {
 export function commitOrderEdit(params: {
   orderId: string
   restaurantId: string
-  sessionId: string
+  sessionIds: string[]
   lockToken: string
   keep?: Array<{ index: number; quantity: number }>
   orderInstructions?: string | null
 }): Promise<EditCommitResult> {
   return editRequest<EditCommitResult>(params.orderId, 'PATCH', {
     restaurantId: params.restaurantId,
-    sessionId: params.sessionId,
+    sessionIds: params.sessionIds,
     lockToken: params.lockToken,
     ...(params.keep ? { keep: params.keep } : {}),
     ...(params.orderInstructions !== undefined
@@ -213,7 +213,7 @@ export function commitOrderEdit(params: {
 export async function releaseOrderEditLock(params: {
   orderId: string
   restaurantId: string
-  sessionId: string
+  sessionIds: string[]
   lockToken: string
 }): Promise<void> {
   // Best effort by design. The lock expires on its own after EDIT_LOCK_TTL_MS, so a release
@@ -222,7 +222,7 @@ export async function releaseOrderEditLock(params: {
   try {
     await editRequest(params.orderId, 'DELETE', {
       restaurantId: params.restaurantId,
-      sessionId: params.sessionId,
+      sessionIds: params.sessionIds,
       lockToken: params.lockToken,
     })
   } catch {

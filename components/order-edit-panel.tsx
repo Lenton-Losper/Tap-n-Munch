@@ -15,12 +15,13 @@
  * edit is not the place to change that.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Minus, Pencil, XCircle } from 'lucide-react'
 import {
   EDIT_COPY_PENDING,
   editRefusalReason,
+  normalizeSessionIds,
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import {
@@ -60,20 +61,31 @@ function toWorkingLines(items: Array<Record<string, unknown>>): WorkingLine[] {
 export function OrderEditPanel({
   orderId,
   restaurantId,
-  sessionId,
+  sessionIds: sessionIdsProp,
   order,
   currency,
   onEdited,
 }: {
   orderId: string
   restaurantId: string
-  sessionId: string | null
+  /**
+   * EVERY session id this browser holds, not one. The app mints two in different storages and
+   * nothing syncs them; an order carries whichever the placing screen held, and the cart submits
+   * the tab-context one. Passing a single id sent the customer's own order a 404 — measured on
+   * the deployed worker. See EditLockAsker in lib/orders/edit-lock.ts.
+   */
+  sessionIds: Array<string | null | undefined>
   /** The order/request row as the customer's screen already has it. */
   order: Record<string, unknown>
   currency: string
   /** Called after a committed edit so the parent can refetch. */
   onEdited: () => void
 }) {
+  // Normalised once. Memoised on the JOINED value rather than the array identity, because a
+  // parent that rebuilds the array each render would otherwise re-run every effect keyed to it.
+  const sessionIdsKey = normalizeSessionIds(sessionIdsProp).join('|')
+  const sessionIds = useMemo(() => (sessionIdsKey ? sessionIdsKey.split('|') : []), [sessionIdsKey])
+
   const [grant, setGrant] = useState<EditLockGrant | null>(null)
   const [lines, setLines] = useState<WorkingLine[]>([])
   const [notes, setNotes] = useState('')
@@ -105,8 +117,8 @@ export function OrderEditPanel({
   // row came from is wrong for some row.
   const isRequestSurface = order.surface === 'order_requests'
   const refusal = isRequestSurface
-    ? requestEditRefusalReason(order, { sessionId: sessionId ?? '', nowMs })
-    : editRefusalReason(order, { sessionId: sessionId ?? '', nowMs })
+    ? requestEditRefusalReason(order, { sessionIds, nowMs })
+    : editRefusalReason(order, { sessionIds, nowMs })
 
   const release = useCallback(() => {
     const held = grantRef.current
@@ -115,10 +127,10 @@ export function OrderEditPanel({
     void releaseOrderEditLock({
       orderId,
       restaurantId,
-      sessionId: sessionId ?? '',
+      sessionIds,
       lockToken: held.lockToken,
     })
-  }, [orderId, restaurantId, sessionId])
+  }, [orderId, restaurantId, sessionIds])
 
   useEffect(() => release, [release])
 
@@ -145,7 +157,7 @@ export function OrderEditPanel({
     setError(null)
     setNotice(null)
     try {
-      const acquired = await acquireOrderEditLock({ orderId, restaurantId, sessionId: sessionId ?? '' })
+      const acquired = await acquireOrderEditLock({ orderId, restaurantId, sessionIds })
       setGrant(acquired)
       setLines(toWorkingLines(acquired.items))
       setNotes(String(acquired.orderInstructions ?? ''))
@@ -199,7 +211,7 @@ export function OrderEditPanel({
       const result = await commitOrderEdit({
         orderId,
         restaurantId,
-        sessionId: sessionId ?? '',
+        sessionIds,
         lockToken: grant.lockToken,
         ...(itemsChanged
           ? { keep: kept.map((line) => ({ index: line.index, quantity: line.quantity })) }
@@ -262,7 +274,7 @@ export function OrderEditPanel({
           variant="outline"
           className="w-full font-semibold"
           onClick={() => void open()}
-          disabled={busy || !sessionId}
+          disabled={busy || sessionIds.length === 0}
         >
           <Pencil className="mr-2 h-4 w-4" />
           {EDIT_COPY_PENDING.editCta}

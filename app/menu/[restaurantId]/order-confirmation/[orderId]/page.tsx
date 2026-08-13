@@ -13,6 +13,7 @@ import {
 } from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
 import { getCurrentSession } from '@/lib/session'
+import { readTabSessionId } from '@/lib/tab-storage'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
 import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
@@ -255,7 +256,18 @@ export default function OrderConfirmationPage() {
           <OrderEditPanel
             orderId={order.id}
             restaurantId={restaurantId}
-            sessionId={getCurrentSession()}
+            /**
+             * BOTH ids this BROWSER holds — and deliberately NOT the row's own session_id.
+             *
+             * The order carries whichever the placing screen held (the cart submits the
+             * tab-context one), so passing only getCurrentSession() sent the customer their own
+             * order as a 404. But echoing the row's id back would make the server's ownership
+             * check pass unconditionally, and `guestCanAccessOrder` releases an OPEN order on
+             * table_number alone — so a second diner at the same table could load this page for
+             * someone else's order and edit it. That is the hole redactGuestOrderRow exists to
+             * close, reopened from the other end.
+             */
+            sessionIds={[getCurrentSession(), readTabSessionId()]}
             order={orderRow}
             currency={currency === 'NAD' ? 'N$' : `${currency} `}
             onEdited={() => setEditReloadKey((key) => key + 1)}
