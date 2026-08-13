@@ -295,7 +295,9 @@ async function main() {
     Boolean(anonE2eTable.row?.id) &&
     Boolean(anonE2eKiosk.row?.id) &&
     guestMenuRes.status === 200 &&
-    !guestMenuBody.includes('not available for ordering') &&
+    // #273: match the code, not the prose (see the production probe for why).
+    !guestMenuBody.includes('MENU_ITEM_NOT_ORDERABLE') &&
+    !guestMenuBody.includes('no longer on the menu') &&
     kioskRes.status === 200 &&
     staffCreate.status === 200
 

@@ -74,7 +74,10 @@ export async function PATCH(
     pricing = await calculateOrderPricing(supabase, request.restaurant_id, items)
   } catch (err) {
     if (err instanceof UnmatchedMenuItemError) {
-      return NextResponse.json({ error: err.message }, { status: 400 })
+      return NextResponse.json(
+        { error: err.message, code: err.code, unavailableItems: err.items },
+        { status: 400 },
+      )
     }
     throw err
   }
