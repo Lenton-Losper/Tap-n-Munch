@@ -18,6 +18,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
@@ -179,7 +180,16 @@ export default function MenuBrowsePage() {
     return `?table=${tableNumber}`
   }, [tableNumber, tabIdParam, tabId])
 
-  const myOrdersHref = useMemo(() => {
+  /**
+ * THE CART. This was called `myOrdersHref` and the button above it read "My Orders", but it has
+ * always pointed at /cart — and nothing in the app navigated to /menu/[id]/my-orders at all, so
+ * the order list was unreachable except by typing the URL. A customer who had just placed an
+ * order tapped "My Orders", landed on an emptied cart, and was told "Your cart is empty".
+ *
+ * The destination was right and the label was wrong: the cart is where an order is submitted, so
+ * the button is the Cart. A separate My Orders entry sits beside it.
+ */
+  const cartHref = useMemo(() => {
     const params = new URLSearchParams()
     if (tableNumber > 0) params.set('table', String(tableNumber))
     if (tabId || tabIdParam) params.set('tabId', tabId || tabIdParam)
@@ -192,6 +202,14 @@ export default function MenuBrowsePage() {
     }
     return `/menu/${restaurantId}/cart?${params.toString()}`
   }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency, isKiosk, orderingCtx.customerName])
+
+  /** The order list — the page `cartHref` was mislabelled as. Carries the table so the list can
+   * scope itself, and nothing else: it reads orders by session, not by tab. */
+  const myOrdersHref = useMemo(() => {
+    const params = new URLSearchParams()
+    if (tableNumber > 0) params.set('table', String(tableNumber))
+    return `/menu/${restaurantId}/my-orders${params.toString() ? `?${params.toString()}` : ''}`
+  }, [restaurantId, tableNumber])
 
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
 
@@ -842,13 +860,25 @@ export default function MenuBrowsePage() {
                   </Button>
                 </Link>
               )}
+              {/* My Orders — the order list. Separate from the Cart button beside it, because
+                  they are different places: this one is the record of what has been ordered, that
+                  one is what has not been submitted yet. */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => router.push(myOrdersHref)}
+                className="h-11 cursor-pointer rounded-full px-4 font-sans text-xs font-semibold sm:text-sm"
+              >
+                <Receipt className="mr-1.5 h-4 w-4 stroke-[1.5]" />
+                {CUSTOMER_NAV_COPY.myOrders}
+              </Button>
               <Button
                 size="sm"
                 disabled={myOrdersLoading}
                 onClick={() => {
                   if (myOrdersLoading) return
                   setMyOrdersLoading(true)
-                  router.push(myOrdersHref)
+                  router.push(cartHref)
                 }}
                 className="relative h-11 cursor-pointer rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 disabled:opacity-70 disabled:cursor-not-allowed sm:text-sm"
               >
@@ -858,7 +888,7 @@ export default function MenuBrowsePage() {
                     Loading...
                   </>
                 ) : (
-                  'My Orders'
+                  CUSTOMER_NAV_COPY.cart
                 )}
                 {!myOrdersLoading && getItemCount() > 0 ? (
                   <span

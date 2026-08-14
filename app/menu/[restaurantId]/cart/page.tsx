@@ -29,6 +29,7 @@ import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
 import { CART_COPY } from '@/lib/cart/cart-copy'
+import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -474,11 +475,21 @@ export default function CartPage() {
             <ShoppingCart className="w-16 h-16 text-muted-foreground mx-auto mb-6" />
             <h2 className="text-xl font-serif font-bold text-foreground mb-2">Your cart is empty</h2>
             <p className="text-muted-foreground font-sans mb-8">Add some items to get started!</p>
-            <Link href={`/menu/${restaurantId}/browse${menuQuery}`}>
-              <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8">
-                Browse Menu
-              </Button>
-            </Link>
+            <div className="flex flex-col items-center gap-3">
+              <Link href={`/menu/${restaurantId}/browse${menuQuery}`}>
+                <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8">
+                  Browse Menu
+                </Button>
+              </Link>
+              {/* This is the screen a customer lands on right after placing an order — the cart
+                  has just been emptied by the submit. Without this they are told they have
+                  nothing, with no route to the thing they just did. */}
+              <Link href={`/menu/${restaurantId}/my-orders${menuQuery}`}>
+                <Button variant="outline" className="font-sans px-8">
+                  {CUSTOMER_NAV_COPY.myOrders}
+                </Button>
+              </Link>
+            </div>
           </div>
         </div>
       </div>
