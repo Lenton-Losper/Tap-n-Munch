@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
+import { TAB_FLAG_COPY } from '@/lib/tabs/tab-flag-copy'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
@@ -439,8 +440,16 @@ export function OrdersDashboard() {
     if (!dashboardRestaurantId) setOrderScope(null)
   }
   const [tabInfoById, setTabInfoById] = useState<
-    Record<string, { status: string; payment_preference: string | null; members: any[] }>
+    Record<string, { status: string; payment_preference: string | null; members: any[]; linked_unpaid_tab_id: string | null }>
   >({})
+  /**
+   * Linked tabs that are STILL unpaid, by linked tab id. Staff-only: nothing in the customer
+   * app reads this, and the flag is a prompt to ask, never a block on anything.
+   */
+  const [unpaidTabElsewhere, setUnpaidTabElsewhere] = useState<
+    Record<string, { table_number: number | null; total: number }>
+  >({})
+
   const tabInfoScopeId = orderScope?.restaurantId ?? ''
   const [tabInfoScopeKey, setTabInfoScopeKey] = useState(tabInfoScopeId)
   if (tabInfoScopeKey !== tabInfoScopeId) {
@@ -551,7 +560,7 @@ export function OrdersDashboard() {
     const loadTabs = async () => {
       const { data, error } = await supabase
         .from('tabs')
-        .select('id, status, payment_preference, members')
+        .select('id, status, payment_preference, members, linked_unpaid_tab_id')
         .eq('restaurant_id', restaurantUuid)
         .in('id', tabIds)
 
@@ -561,14 +570,51 @@ export function OrdersDashboard() {
         return
       }
 
-      const next: Record<string, { status: string; payment_preference: string | null; members: any[] }> = {}
+      const next: Record<string, { status: string; payment_preference: string | null; members: any[]; linked_unpaid_tab_id: string | null }> = {}
       for (const row of data || []) {
         next[String(row.id)] = {
           status: String(row.status || ''),
           payment_preference: row.payment_preference ? String(row.payment_preference) : null,
           members: Array.isArray(row.members) ? row.members : [],
+          linked_unpaid_tab_id: row.linked_unpaid_tab_id ? String(row.linked_unpaid_tab_id) : null,
         }
       }
+      /**
+       * The unpaid-tab-elsewhere flag (#211 follow-up), resolved in a SECOND pass.
+       *
+       * A tab records the tab its customer already held when this one was created. The flag
+       * must show only while that other tab is STILL unpaid — that is how "clears on settle"
+       * is implemented without a write on the settle path: nothing clears the pointer, the
+       * render simply stops matching once the linked tab leaves open/ready_to_pay.
+       *
+       * Second query rather than a join because the linked tab is usually NOT one of the tabs
+       * already on screen — it belongs to a different table, which is the entire point.
+       */
+      const linkedIds = [...new Set(
+        Object.values(next)
+          .map((info) => info.linked_unpaid_tab_id)
+          .filter((id): id is string => Boolean(id)),
+      )]
+      if (linkedIds.length > 0) {
+        const { data: linkedRows } = await supabase
+          .from('tabs')
+          .select('id, status, table_number, total')
+          .eq('restaurant_id', restaurantUuid)
+          .in('id', linkedIds)
+        if (cancelled) return
+        const stillUnpaid: Record<string, { table_number: number | null; total: number }> = {}
+        for (const row of linkedRows || []) {
+          if (!['open', 'ready_to_pay'].includes(String(row.status || ''))) continue
+          stillUnpaid[String(row.id)] = {
+            table_number: row.table_number != null ? Number(row.table_number) : null,
+            total: Number(row.total) || 0,
+          }
+        }
+        setUnpaidTabElsewhere(stillUnpaid)
+      } else {
+        setUnpaidTabElsewhere({})
+      }
+
       setTabInfoById(next)
     }
 
@@ -1894,6 +1940,25 @@ export function OrdersDashboard() {
                     {getPaymentChannelBadge(normalizedOrder)}
                     {getPaymentStatusBadge(normalizedOrder)}
                     <OrderEditBadges order={normalizedOrder} nowMs={nowMs} />
+                    {/* Unpaid tab elsewhere (#211 follow-up). FLAG, never a block: staff are
+                        told, nothing is prevented, and the customer never sees it. Renders only
+                        while the LINKED tab is still unpaid, which is how it clears on settle
+                        without anything writing to the settle path. */}
+                    {(() => {
+                      const linkedId = tabIdOf(order) ? tabInfoById[tabIdOf(order)]?.linked_unpaid_tab_id : null
+                      const linked = linkedId ? unpaidTabElsewhere[linkedId] : null
+                      if (!linked) return null
+                      return (
+                        <Badge className="border-0 bg-amber-600 text-white">
+                          {TAB_FLAG_COPY.unpaidTabElsewhere
+                            .replace('{table}', String(linked.table_number ?? '?'))
+                            .replace(
+                              '{total}',
+                              `${restaurant?.currency || 'N$'}${linked.total.toFixed(2)}`,
+                            )}
+                        </Badge>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />

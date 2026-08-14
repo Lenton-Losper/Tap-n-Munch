@@ -434,6 +434,18 @@ export function TabProvider({
         sessionId: sid,
         displayName,
         customer_name: customerName || null,
+        /**
+         * #211 follow-up: the tab this browser already held when it started a NEW one, which
+         * after #211's landing fix is a legitimate thing to do — scan another table and start
+         * fresh while an unpaid tab is still open elsewhere.
+         *
+         * Recorded AT CREATION because this is the only moment both ids are known in one place.
+         * The server validates it (same restaurant, still unpaid, different table) and stores
+         * null otherwise, so this is a hint, not an assertion. If the browser has no stored tab
+         * — cleared storage, a fresh device — there is nothing to send and no link is made. That
+         * is the accepted limit of the feature, not a bug in it.
+         */
+        linkedUnpaidTabId: readStoredTabId() || null,
       }),
     })
 

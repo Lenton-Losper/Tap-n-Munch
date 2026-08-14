@@ -16,6 +16,15 @@ export async function POST(req: Request) {
     const sessionId = String(body.sessionId ?? body.session_id ?? '').trim()
     const displayName = String(body.displayName ?? body.display_name ?? 'Person 1').trim() || 'Person 1'
     const customerName = String(body.customerName ?? body.customer_name ?? '').trim() || null
+    /**
+     * The tab this customer already held elsewhere, if any (#211 follow-up). Client-supplied and
+     * therefore NOT trusted — validated below against a real, still-unpaid tab in the SAME
+     * restaurant before it is stored. FLAG, not block: a bad value becomes null and the tab is
+     * created regardless. Nothing about ordering depends on it.
+     */
+    const claimedLinkedTabId = String(
+      body.linkedUnpaidTabId ?? body.linked_unpaid_tab_id ?? '',
+    ).trim()
 
     const restaurantId = String(restaurantIdRaw || '').trim()
     const tableNumber = Number(tableNumberRaw)
@@ -90,6 +99,27 @@ export async function POST(req: Request) {
         ]
       : []
 
+    /**
+     * Validated, not trusted. A client could name any uuid; storing it unchecked would put an
+     * arbitrary pointer on a staff-facing flag. Requirements: it exists, it belongs to THIS
+     * restaurant, it is still unpaid, and it is not this same table (which would be a rejoin,
+     * not a second tab). Anything else stores null and the flag simply does not appear.
+     */
+    let linkedUnpaidTabId: string | null = null
+    if (claimedLinkedTabId) {
+      const { data: linkedTab } = await supabase
+        .from('tabs')
+        .select('id, status, table_number')
+        .eq('id', claimedLinkedTabId)
+        .eq('restaurant_id', restaurantUuid)
+        .maybeSingle()
+      const stillUnpaid =
+        linkedTab && ['open', 'ready_to_pay'].includes(String(linkedTab.status || ''))
+      if (stillUnpaid && Number(linkedTab.table_number) !== Number(tableNumber)) {
+        linkedUnpaidTabId = String(linkedTab.id)
+      }
+    }
+
     const insertPayload = {
       restaurant_id: restaurantUuid,
       table_id: tableRow.id,
@@ -100,6 +130,7 @@ export async function POST(req: Request) {
       tab_pin: tabPin,
       pin_required: pinRequired,
       customer_name: customerName,
+      linked_unpaid_tab_id: linkedUnpaidTabId,
     }
 
     console.log('[TABS] inserting tab row', {
