@@ -2738,3 +2738,126 @@ checkout's `supabase/.temp/`, or `db query --linked` fails with `LegacyDbConfigI
 Production. `origin/main` is `9dcf401` and was probed cache-busted twice after the work. No file
 under `.github/` changed. #273, #274, the unpaid-tab flag, and the three pre-existing drift entries
 are all untouched.
+
+---
+
+# CHECKPOINT — 2026-08-14. Autonomous run: 19 commits, staging drift CLEAN, #262 closed on staging.
+
+## STATE
+
+    origin/main / production      9dcf401   UNCHANGED (probed cache-busted)
+    origin/cloudflare-staging     1b273bd -> b3d5c6d   (19 commits)
+    staging /api/version          b3d5c6d   (cache-busted x3)
+    staging DB drift              135 local / 135 applied — OK, CLEAN
+    unpushed, all local branches  zero (positional form; control: main-not-on-staging 114)
+    dirty worktrees               ov-i-179 only (2 files, another session's, untouched)
+
+## THE HEADLINE: STAGING DRIFT IS CLEAN
+
+Red all day and for weeks before that — long enough that `.github/workflows/staging.yml`
+made the check `continue-on-error: true` to work around it. Three entries, each resolved
+differently:
+
+| version | was | resolved by |
+|---|---|---|
+| `20260812130000` | APPLIED_NOT_LOCAL | the #265 cherry-pick brought the file |
+| `20260811120000` | LOCAL_NOT_APPLIED **and a version collision** | mirroring `a6bb436`, then landing #262's migration at the freed version |
+| `20260809120000` | APPLIED_NOT_LOCAL | committing #127's index with `-- @env: staging` |
+
+**Production's gate is BLOCKING where staging's is not**, so this matters for any promotion.
+
+## #262 IS CLOSED ON STAGING — the exposure is gone
+
+Four commits, in the order main used: containment → anon-count → seam → migration.
+
+Decisive probe, live staging DB with the PUBLISHED anon key:
+
+    BEFORE  select id,members  -> 200, real session ids incl. session_1782915071979_mo80796cpyk
+    AFTER   select id,members  -> 401 42501 permission denied
+            select customer_name -> 401 42501
+            select id,status,table_number -> 200 (still works)
+
+The third probe matters as much as the first: the grant is NARROWED, not revoked.
+
+## THE SEAM CONFLICT — resolved, and it corrected a false comment
+
+`9fcb147` conflicted in `lib/guest-orders/queries.ts` (4 regions) because that file had changed
+three times the same day. Both sides were read-time redactions and **neither replaced the other**:
+
+    redactGuestOrderRow        strips edit_lock_token — a CAPABILITY (commit an edit)
+    redactGuestOrderMemberIds  substitutes member_session_id with an opaque per-tab key
+
+Resolution: `mergeById` → `redactGuestOrderRow` per row → `await redactGuestOrderMemberIds`.
+
+**The seam's own comment was corrected rather than inherited.** It claimed the redaction stopped a
+known payment reference reading back "another diner's session id". It does not: it rewrites
+`member_session_id` ONLY, and skips rows with no `tab_id` — measured, **104 of 213 staging orders
+(49%)**. Since the cart writes one value into both columns, the raw value still leaves in
+`session_id`. Filed as **#282**.
+
+## THE SESSION-ID CLASS — root fixed, all ~12 sites converted
+
+Three bugs in one day from one cause. Now: **one helper, one predicate, no site restating either.**
+
+    heldSessionIds()   lib/tab-storage.ts   every id THIS BROWSER holds; read-only, never mints
+    ownsOrder(row,ids) lib/guest-orders/validation.ts   every id x BOTH placer columns
+
+`guestCanAccessOrder` — the root, which compared one id against one column and never looked at
+`member_session_id` — now delegates. Widening measured before shipping: **0 of 213 staging / 0 of
+1000 production** rows have a differing `member_session_id`.
+
+Converted: the by-id read (client + route + query), by-session (both row paths, both tables),
+active-table (client + route + query), the confirmation page, kiosk-success, ActiveOrderBanner,
+menu-order-status-tracker (which had a FOURTH private copy), useActiveOrders, useActiveTableOrders.
+
+**Two `.in()` merged in JS, never `.or()`** — client ids in a parsed filter string is #242/#254.
+`countOnly` stays single-column with the measurement recorded beside it, because counts return a
+number with no ids and summing double-counts.
+
+**THE CANARY.** `order-confirmation/[orderId]:118` only resolved via the table_number branch. Before
+shipping, against the deployed worker: session id alone with NO table_number **resolves**; wrong
+session with no table is **refused**. So the session branch carries real traffic on its own — the
+measurement #279's narrowing needed.
+
+## CSPRNG (#277)
+
+`ensureTabSessionId` minted `session_${Date.now()}_${Math.random().toString(36).slice(2)}` — and
+`ownsOrder` makes knowing that id the whole authorisation. Now `crypto.randomUUID()`, prefix kept,
+**new mints only**. It does NOT silently degrade: `getRandomValues` is the fallback and with neither
+it THROWS, because a security fix quietly falling back to Math.random would reintroduce the defect
+invisibly. Human's rulings recorded on the issue: age out don't rotate · no format refusal in
+ownsOrder · second factor for edit-acquire later.
+
+## ALSO SHIPPED
+
+- **#273** — the pricer names the item, not its UUID; two distinct refusals; all offending lines at
+  once; a CODE so the two verification scripts stop matching on prose.
+- **My Orders was unreachable.** The button labelled "My Orders" pointed at `/cart` and always had;
+  nothing navigated to `/menu/[id]/my-orders`. Button is now **Cart** (keeping its badge), with a
+  separate **My Orders** entry on the browse header and on the cart's empty state — the screen a
+  customer lands on right after ordering.
+- **#211** landing fix cherry-picked (patch-id SAME).
+- **Unpaid-tab-elsewhere flag** — migration `20260814090000`, link recorded and VALIDATED at
+  creation, staff-only by construction (anon gets 42501 since #262's migration), and it clears on
+  settle **without a write**: the column is a pointer and the flag renders only while the linked tab
+  is still unpaid.
+- **#265's PIN recovery** and **#262's containment** landed earlier in the run; the join route is
+  byte-identical to `origin/main`.
+
+## ISSUES FILED THIS RUN
+
+**#280** drift check keys on the numeric prefix alone — two files sharing a version silence each
+other; this was LIVE on two branches for three days · **#281** a migration applied to staging while
+its file lived only on `wave3/payment-seq` · **#282** `session_id` leaves on guest reads and is now a
+capability (design question, ruled: mitigate elsewhere) · earlier: **#277** CSPRNG · **#278** the
+session-id pattern · **#279** the table_number branch.
+
+## OPEN / NOT DONE
+
+- **PENDING COPY**: 17 in `lib/orders/edit-lock.ts`, 2 in `lib/orders/calculate-order-pricing.ts`,
+  1 in `lib/tabs/tab-flag-copy.ts`. `git grep "PENDING COPY"` returns only these.
+- **#279's narrowing** is ruled but SEQUENCED — prerequisite (the consolidation) is now done and the
+  canary measurement exists, so it is unblocked.
+- **Nothing promoted to production.** `origin/main` is `9dcf401`, untouched all run.
+- The `git checkout <ref> -- .` trap fired once mid-run and was caught by ancestry+blob comparison;
+  the contract was updated (`8aafd4b`) with the reason it evades `git status`.
