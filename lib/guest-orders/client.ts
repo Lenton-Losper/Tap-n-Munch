@@ -69,6 +69,8 @@ export async function fetchGuestActiveTableOrders(params: {
   restaurantId: string
   tableNumber: number
   sessionId?: string
+  /** Every id the browser holds; build it with heldSessionIds(). See ownsOrder. */
+  sessionIds?: Array<string | null | undefined>
   paymentStatus?: string
   paymentChannel?: string
   placedAfter?: string
@@ -79,7 +81,11 @@ export async function fetchGuestActiveTableOrders(params: {
     restaurantId: params.restaurantId,
     table_number: String(params.tableNumber),
   })
-  if (params.sessionId?.trim()) qs.set('session_id', params.sessionId.trim())
+  // Repeated params, never comma-joined — an id containing a comma must not split into two.
+  for (const sid of [...new Set([params.sessionId, ...(params.sessionIds ?? [])]
+    .map((v) => String(v ?? '').trim()).filter(Boolean))]) {
+    qs.append('session_id', sid)
+  }
   if (params.paymentStatus) qs.set('payment_status', params.paymentStatus)
   if (params.paymentChannel) qs.set('payment_channel', params.paymentChannel)
   if (params.placedAfter) qs.set('placed_after', params.placedAfter)

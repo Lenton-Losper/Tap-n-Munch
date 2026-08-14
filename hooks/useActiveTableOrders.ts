@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { getCurrentTableSession } from '@/lib/table-session'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { heldSessionIds } from '@/lib/tab-storage'
 
 export interface ActiveTableOrder {
   id: string
@@ -55,6 +56,7 @@ export function useActiveTableOrders(): {
         const { orders } = await fetchGuestOrdersBySession({
           restaurantId,
           sessionId: tableSessionId,
+          sessionIds: heldSessionIds(),
         })
         if (cancelled) return
 

@@ -6,6 +6,7 @@ import {
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
 import { isActiveOrderStatus } from '@/lib/orders/active-order-visibility'
+import { heldSessionIds } from '@/lib/tab-storage'
 
 /** Ignore banner orders older than this (stale visits / previous days). */
 const BANNER_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -97,6 +98,7 @@ export function useActiveOrders(
           restaurantId,
           tableNumber: Number(tableNumber),
           sessionId: scopedSessionId,
+          sessionIds: heldSessionIds(),
         })
 
         if (cancelled) return

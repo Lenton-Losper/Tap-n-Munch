@@ -27,6 +27,7 @@ export async function GET(request: Request) {
       restaurantId,
       tableNumber,
       sessionId: sessionId || null,
+      sessionIds: searchParams.getAll('session_id'),
       paymentStatus,
       paymentChannel,
       placedAfter,

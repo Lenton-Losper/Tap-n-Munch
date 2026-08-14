@@ -326,6 +326,8 @@ export async function fetchGuestActiveTableOrders(params: {
   restaurantId: string
   tableNumber: number
   sessionId?: string | null
+  /** Every id the client holds. Matched against BOTH placer columns, like by-session. */
+  sessionIds?: Array<string | null | undefined>
   isClosed?: boolean
   paymentStatus?: string | null
   paymentChannel?: string | null
@@ -336,45 +338,57 @@ export async function fetchGuestActiveTableOrders(params: {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
   const sessionId = String(params.sessionId || '').trim()
+  const heldIds = [...new Set(
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '').trim()).filter(Boolean),
+  )]
 
   // Fail closed for open-table polling: require session scope so one guest never
   // sees another customer's open orders/requests at the same table.
-  if (!sessionId && !params.countOnly) {
+  if (heldIds.length === 0 && !params.countOnly) {
     return { orders: [], count: 0 }
   }
 
-  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-
-  query = query
-    .eq('restaurant_id', restaurantUuid)
-    .eq('table_number', params.tableNumber)
-    .eq('is_closed', params.isClosed ?? false)
-
-  if (sessionId) {
-    query = query.eq('session_id', sessionId)
-  }
-
-  if (params.paymentStatus) {
-    query = query.eq('payment_status', params.paymentStatus)
-  }
-  if (params.paymentChannel) {
-    query = query.eq('payment_channel', params.paymentChannel)
-  }
-  if (params.placedAfter) {
-    query = query.gte('placed_at', params.placedAfter)
-  }
-  if (params.placedBefore) {
-    query = query.lt('placed_at', params.placedBefore)
+  /**
+   * One query per PLACER COLUMN, merged in JS — same rule and same reason as
+   * fetchGuestOrdersBySession: an order records its placer in session_id OR member_session_id,
+   * and building a single `.or()` from client-supplied ids is the #242/#254 injection shape.
+   */
+  const ordersQueryFor = (column: 'session_id' | 'member_session_id' | null) => {
+    let q = supabase
+      .from('orders')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .eq('table_number', params.tableNumber)
+      .eq('is_closed', params.isClosed ?? false)
+    if (column && heldIds.length > 0) q = q.in(column, heldIds)
+    if (params.paymentStatus) q = q.eq('payment_status', params.paymentStatus)
+    if (params.paymentChannel) q = q.eq('payment_channel', params.paymentChannel)
+    if (params.placedAfter) q = q.gte('placed_at', params.placedAfter)
+    if (params.placedBefore) q = q.lt('placed_at', params.placedBefore)
+    return q
   }
 
   if (params.countOnly) {
-    const { count, error } = await query
+    // Single column, for the reason measured in fetchGuestOrdersBySession: counts return a
+    // number with no ids, so summing two would double-count every row both columns match —
+    // which on 2026-08-14 is every row (0 of 213 staging / 0 of 1000 production differ).
+    const { count, error } = await ordersQueryFor(heldIds.length > 0 ? 'session_id' : null)
     if (error) throw error
     return { orders: [], count: count ?? 0 }
   }
 
-  const { data, error } = await query.order('placed_at', { ascending: false })
-  if (error) throw error
+  const [bySession, byMember] = await Promise.all([
+    ordersQueryFor('session_id').order('placed_at', { ascending: false }),
+    ordersQueryFor('member_session_id').order('placed_at', { ascending: false }),
+  ])
+  if (bySession.error) throw bySession.error
+  if (byMember.error) throw byMember.error
+
+  const dedupe = new Map<string, Record<string, unknown>>()
+  for (const row of [...(bySession.data ?? []), ...(byMember.data ?? [])]) {
+    dedupe.set(String((row as Record<string, unknown>).id), row as Record<string, unknown>)
+  }
+  const data = [...dedupe.values()]
 
   // BOTH redactions, in the order fetchGuestOrdersBySession uses -- see the note there for what
   // the #262 half does and does not cover.
@@ -391,7 +405,7 @@ export async function fetchGuestActiveTableOrders(params: {
     .eq('restaurant_id', restaurantUuid)
     .eq('table_number', params.tableNumber)
     .in('status', [...LIVE_REQUEST_STATUSES])
-    .eq('session_id', sessionId)
+    .in('session_id', heldIds.length > 0 ? heldIds : [sessionId])
 
   if (params.placedAfter) {
     requestQuery = requestQuery.gte('placed_at', params.placedAfter)
