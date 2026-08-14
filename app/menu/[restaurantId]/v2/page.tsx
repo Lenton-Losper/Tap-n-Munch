@@ -136,8 +136,31 @@ export function MenuLandingPageV2Content({
   // table" from "you have walked to a different one", and it offered "Rejoin your tab" for both.
   // The value costs nothing to carry: fetchTabById already selects table_number and threw it away.
   const [myStoredTab, setMyStoredTab] = useState<
-    { id: string; total: number; status: string; tableNumber: number | null } | null
+    {
+      id: string
+      total: number
+      status: string
+      tableNumber: number | null
+      /**
+       * Whether rejoining this tab needs the PIN. Carried because #262's containment made the
+       * gate UNCONDITIONAL: the rejoin path used to get in without a PIN and now cannot, so the
+       * landing has to know BEFORE it offers rejoin as an action. The value was already being
+       * fetched and thrown away.
+       */
+      pinRequired: boolean
+    } | null
   >(null)
+  /**
+   * Which tab the PIN entry is currently unlocking.
+   *
+   * 'scanned-table' joins the open tab at the table just scanned, by table number.
+   * 'stored-tab'    rejoins the tab this browser already holds, BY ID — which may be at another
+   *                 table, where joining by table number would silently join the wrong tab.
+   *
+   * Before this existed the PIN entry only ever meant the first, and the rejoin path skipped it
+   * entirely and dead-ended on "PIN required to join this tab" with no field on screen.
+   */
+  const [pinTarget, setPinTarget] = useState<'scanned-table' | 'stored-tab'>('scanned-table')
   const [storedTabChecked, setStoredTabChecked] = useState(false)
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
@@ -442,6 +465,8 @@ export function MenuLandingPageV2Content({
               total: Number(openTabRow.total) || 0,
               status: 'open',
               tableNumber: storedTabTable,
+              // Same default the server applies: a tab is PIN-gated unless it explicitly is not.
+              pinRequired: (tab?.pin_required ?? openTabRow?.pin_required) !== false,
             })
           } else {
             clearTabSession()
@@ -780,6 +805,7 @@ export function MenuLandingPageV2Content({
       void handleJoinWithoutPin()
       return
     }
+    setPinTarget('scanned-table')
     setJoinPin('')
     setJoinPinError(null)
     setShowJoinPinEntry(true)
@@ -794,6 +820,7 @@ export function MenuLandingPageV2Content({
       void handleJoinWithoutPin()
       return
     }
+    setPinTarget('scanned-table')
     setJoinPin('')
     setJoinPinError(null)
     setShowJoinPinEntry(true)
@@ -832,6 +859,21 @@ export function MenuLandingPageV2Content({
       setTabActionError('No open tab found to join.')
       return
     }
+    /**
+     * #262's containment made the PIN gate UNCONDITIONAL, so this path — which sends no PIN —
+     * can no longer succeed on a PIN-gated tab. It used to fail with the server's raw "PIN
+     * required to join this tab" while the only action on screen was the button that had just
+     * failed: the #211 shape, on a different surface.
+     *
+     * The PIN entry already existed here; the stored-tab branch simply short-circuited past it.
+     */
+    if (myStoredTab?.pinRequired) {
+      setPinTarget('stored-tab')
+      setJoinPin('')
+      setJoinPinError(null)
+      setShowJoinPinEntry(true)
+      return
+    }
     try {
       setTabActionLoading('join')
       setTabActionError(null)
@@ -846,6 +888,15 @@ export function MenuLandingPageV2Content({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
       console.error('[V2] rejoin tab failed:', err)
+      // Belt and braces. `pinRequired` above is read from a snapshot taken at landing; staff can
+      // set a PIN in between, and a refusal must never leave the screen with no way forward.
+      if (/pin required/i.test(message)) {
+        setPinTarget('stored-tab')
+        setJoinPin('')
+        setJoinPinError(null)
+        setShowJoinPinEntry(true)
+        return
+      }
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
@@ -866,12 +917,32 @@ export function MenuLandingPageV2Content({
       setTabActionLoading('join')
       setJoinPinError(null)
       persistDisplayName()
-      const joinedTabId = await joinTabWithPin({
-        restaurantId,
-        tableNumber: tableNum,
-        pin: joinPin.trim(),
-        displayName: displayName.trim() || undefined,
-      })
+      /**
+       * Which tab this PIN unlocks, and why the two branches are not interchangeable.
+       *
+       * `joinTabWithPin` resolves the open tab AT THE SCANNED TABLE by table number. For a
+       * stored tab that is a different tab whenever the customer has walked to another table —
+       * so rejoining through it would silently join the wrong tab, with the right PIN, and look
+       * like it worked. The stored-tab branch joins BY ID instead.
+       */
+      let joinedTabId: string
+      if (pinTarget === 'stored-tab' && myStoredTab?.id) {
+        await joinExistingTab({
+          restaurantId,
+          tabId: myStoredTab.id,
+          tableNumber: myStoredTab.tableNumber ?? tableNum,
+          displayName: displayName.trim() || undefined,
+          pin: joinPin.trim(),
+        })
+        joinedTabId = myStoredTab.id
+      } else {
+        joinedTabId = await joinTabWithPin({
+          restaurantId,
+          tableNumber: tableNum,
+          pin: joinPin.trim(),
+          displayName: displayName.trim() || undefined,
+        })
+      }
       setShowJoinPinEntry(false)
       setJoinPin('')
       router.push(browseWithTab(joinedTabId))

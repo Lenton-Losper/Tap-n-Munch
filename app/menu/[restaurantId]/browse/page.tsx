@@ -806,7 +806,7 @@ export default function MenuBrowsePage() {
         <div className="mx-auto max-w-4xl px-4 py-3 sm:py-4">
           <div className="flex items-center justify-between gap-2">
             {/* Left: Back + Restaurant Info */}
-            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               <Button
                 variant="ghost"
                 size="icon"
@@ -869,8 +869,12 @@ export default function MenuBrowsePage() {
                 onClick={() => router.push(myOrdersHref)}
                 className="h-11 cursor-pointer rounded-full px-4 font-sans text-xs font-semibold sm:text-sm"
               >
-                <Receipt className="mr-1.5 h-4 w-4 stroke-[1.5]" />
-                {CUSTOMER_NAV_COPY.myOrders}
+                <Receipt className="h-4 w-4 stroke-[1.5] sm:mr-1.5" />
+                {/* Label collapses on small screens, exactly as the Receipt button beside it
+                    already does. Adding a third control pushed the left block past its
+                    truncation point — the restaurant name rendered as "S…" and the table as
+                    "T…", which is worse than an unlabelled icon. */}
+                <span className="hidden sm:inline">{CUSTOMER_NAV_COPY.myOrders}</span>
               </Button>
               <Button
                 size="sm"

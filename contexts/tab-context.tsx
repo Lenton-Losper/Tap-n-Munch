@@ -66,6 +66,9 @@ type TabContextType = {
     tabId: string
     tableNumber?: string | number
     displayName?: string
+    /** The tab PIN. Required since #262 made the gate unconditional; rejoining by tab id had
+     * no way to supply one, which is what dead-ended the landing. */
+    pin?: string
     /** #265. A staff-issued PIN-recovery token. When present and valid, the server mints a
      * NEW tab_pin and returns it — the return value's `tabPin` field. */
     resetToken?: string
@@ -354,12 +357,14 @@ export function TabProvider({
     tabId: targetTabId,
     tableNumber: tableNum,
     displayName,
+    pin,
     resetToken,
   }: {
     restaurantId: string
     tabId: string
     tableNumber?: string | number
     displayName?: string
+    pin?: string
     resetToken?: string
   }) => {
     console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum, hasResetToken: Boolean(resetToken) })
@@ -376,6 +381,8 @@ export function TabProvider({
         sessionId: sid,
         tableNumber: tableNum,
         displayName: resolvedDisplayName,
+        // #262 made the PIN gate unconditional, so rejoining a PIN-gated tab BY ID needs one.
+        ...(pin ? { pin } : {}),
         ...(resetToken ? { resetToken } : {}),
       }),
     })
