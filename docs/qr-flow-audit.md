@@ -7,6 +7,59 @@ Started 2026-08-15.
 
 ---
 
+> # ⚠ STATUS: THIS DOCUMENT DESCRIBES THE STATE BEFORE THE 2026-08-15 REPAIR ROUND
+>
+> **Everything below was written against `origin/main` `9dcf401` and
+> `origin/cloudflare-staging` `4861492`, and it has not been rewritten.** Four findings were
+> fixed and shipped the same evening. The body of this audit still describes them as live,
+> deliberately — a finding rewritten in place loses the evidence that produced it, and the
+> reproduction steps below are what a reviewer needs in order to check the fix. Read the body as
+> a record of what was true, and this box for what is true now.
+>
+> Any review, repair plan or triage of this document written before 2026-08-15 evening is
+> reading four already-closed items.
+>
+> ## Closed
+>
+> | Finding | Fix | On `origin/main` (production) | On `origin/cloudflare-staging` |
+> |---|---|---|---|
+> | **QRA-02 / QRA-03** — the P0 chain: unauthenticated `POST /api/tabs` mints a tab session token, which then orders onto a stranger's bill and reads every member's raw `session_id` | the `23505` recovery branch now requires the tab's PIN, and refuses outright when the tab has none (#236's territory); a PIN-verified recovery also appends the member via `add_tab_member` | ✅ **LIVE**, `8f96483` | on `fix/qr-production-exposures` only |
+> | **QRA-18** — `PATCH /api/tabs/[tabId]/member`: no auth, **no restaurant scope**, service-role client | `requireSessionToken` + `assertSessionMatchesResource`, a restaurant scope on both statements, and the rename limited to the caller's own member entry | ✅ **LIVE**, `8f96483` · re-verified in production read-only: a PATCH with no token now returns `410` from the guard where the old code returned `404` after reading the tab | on `fix/qr-production-exposures` only |
+> | **QRA-19** — a paid order's receipt issued and emailed anywhere on restaurant scope alone | new `guestCanReceiveOrderDelivery`: restaurant **plus** the table or a placing session. `guestCanAccessOrder` deliberately untouched (#279 is a recorded decision with a test pinning it) | ✅ **LIVE**, `3c6eec9` | on `fix/qr-production-exposures` only |
+> | **QRA-01** — the edit lock refused its own holder; order editing was shipped and 100% non-functional | the acquire wrote a JS array into a `text` column and the reader compared it as a scalar; it now records the primary id | **N/A — and must stay that way.** The edit route does not exist on `main` | on `fix/qr-production-exposures` only |
+>
+> Also shipped, and **new since this audit was written**: the landing now opens the PIN prompt on
+> `TAB_PIN_REQUIRED` / `TAB_PIN_INCORRECT` instead of printing a refusal with nothing to press —
+> the dead end that closing QRA-02/03 created, same shape as #211. Live on `3c6eec9`.
+>
+> ## Not closed — and one state worth noticing
+>
+> Everything else in section 19-Q stands as written, including **QRA-12** (`/tab`'s *"Full tab
+> running total"* is one device's own orders, #119), **QRA-17** (every customer realtime
+> subscription is dead), **QRA-15**, **QRA-16**, **QRA-05**, **QRA-06** to **QRA-11**,
+> **QRA-13**, **QRA-14**, **QRA-20**, **QRA-21**, **QRA-22**.
+>
+> **`origin/cloudflare-staging` is still `4861492` and carries none of these fixes.** They are on
+> `fix/qr-production-exposures`, promoted to `main` from there. So for the first time in this
+> record **production is AHEAD of staging on four security fixes** — the drift the operating
+> contract warns about, pointing the unusual way round. Anything cut from `cloudflare-staging`
+> after 2026-08-15 reintroduces all four unless it merges that branch first.
+>
+> ## What proved it
+>
+> `scripts/probe-qr-exposures-staging.ts` — two-sided, against a local dev server built from the
+> branch and the staging project, with a control per scenario so a fix that refuses everything
+> cannot reach green. Before: 8 EXPOSED / 0 controls broken. After: 0 EXPOSED / 0 controls
+> broken / `PROBE_QR_EXPOSURES_OK`.
+>
+> One thing the repair round found that this audit did not, and it belongs here: **the operating
+> contract's own provisioning step told agents to copy `.env.local` into a worktree, and
+> `.env.local` holds PRODUCTION credentials** — `next dev` loads it ahead of `.env.test`, so a
+> writing probe run per the documented procedure would have written to live customers. Caught
+> before the server was started, and fixed in `docs/agent-operating-contracts.md` `0f9d5b2`.
+
+---
+
 ## 0. STATE AT START OF AUDIT
 
 Measured, not inherited. Every command run from the main checkout
