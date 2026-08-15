@@ -28,7 +28,9 @@ export async function GET(
     const supabase = createServerSupabaseClient()
     const { data: tab, error } = await supabase
       .from('tabs')
-      .select('id, restaurant_id, table_id, table_number, status, total, members, session_version')
+      .select(
+        'id, restaurant_id, table_id, table_number, status, total, members, session_version, pin_required, tab_pin',
+      )
       .eq('id', normalizedTabId)
       .maybeSingle()
 
@@ -51,14 +53,40 @@ export async function GET(
     // Rebuilt field by field rather than spread-and-delete: a column added to the row later
     // must not travel out of here by default.
     const row = tab as Record<string, unknown>
-    const { members: _rawMembers, ...safeColumns } = row
+    const { members: _rawMembers, tab_pin: _rawPin, ...safeColumns } = row
     void _rawMembers
+    void _rawPin
+
+    // The tab PIN, to a holder of a session token FOR THIS TAB and nobody else.
+    //
+    // WHY DISCLOSING IT HERE IS NOT NEW EXPOSURE. The session token is strictly stronger than
+    // the PIN: the PIN's only power is to mint a token (POST /api/tabs/[tabId]/join), and the
+    // caller already holds one -- it is what lets them add orders to this tab
+    // (app/api/orders/route.ts). Handing them the PIN gives them nothing they cannot already
+    // do. It is a downgrade of a credential they hold, not a new one.
+    //
+    // WHY NOT ON /view. That route is deliberately unauthenticated (see its docblock) because
+    // loadTab runs on every /menu route before a token may exist. A live PIN there would be
+    // readable by anyone holding the tab UUID, which is the whole thing the PIN guards against.
+    //
+    // WHY ITS OWN, STRICTER PREDICATE than the route's 403 above. That check is the shared
+    // idiom (assertSessionMatchesResource) and passes a token whose tabId is absent. That
+    // cannot happen today -- validateSessionToken joins `tabs!inner`, so a valid token always
+    // carries a tab -- but "cannot happen today" is not the standard a credential should be
+    // released under. An absent tabId denies here.
+    //
+    // Never logged: reset-pin's and join's audit rows both deliberately omit the PIN, on the
+    // grounds that those rows are read by more people than should see a live one. Same here.
+    const tokenTabId = String(guard.tabId || '').trim()
+    const pinRequired = row.pin_required !== false && Boolean(row.tab_pin)
+    const disclosePin = Boolean(tokenTabId) && tokenTabId === normalizedTabId && pinRequired
 
     return NextResponse.json({
       success: true,
       tab: {
         ...safeColumns,
         members: await redactTabMembers(normalizedTabId, row.members),
+        ...(disclosePin ? { tab_pin: String(row.tab_pin) } : {}),
       },
     })
   } catch (err) {
