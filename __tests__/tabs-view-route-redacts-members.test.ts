@@ -47,19 +47,31 @@ type Filters = Array<[string, string, unknown]>
 let tabFilters: Filters
 let selected: string
 let tabRow: Record<string, unknown> | null
+/** The orders read added 2026-08-15 for the authoritative outstanding total. */
+let orderFilters: Filters
+let ordersSelected: string
+let orderRows: Array<Record<string, unknown>>
 
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
-    from() {
+    // Table-aware since 2026-08-15: the route now reads `orders` as well, to compute the
+    // authoritative outstanding total. Recording both separately is what stops an assertion
+    // about the tabs query silently passing against the orders one.
+    from(table: string) {
+      const isOrders = table === 'orders'
       return {
         select(columns: string) {
-          selected = columns
+          if (isOrders) ordersSelected = columns
+          else selected = columns
           const builder: Record<string, unknown> = {
             eq: (col: string, val: unknown) => {
-              tabFilters.push(['eq', col, val])
+              ;(isOrders ? orderFilters : tabFilters).push(['eq', col, val])
               return builder
             },
             maybeSingle: async () => ({ data: tabRow, error: null }),
+            // The orders read is awaited directly rather than via maybeSingle.
+            then: (resolve: (v: unknown) => unknown) =>
+              resolve({ data: isOrders ? orderRows : tabRow, error: null }),
           }
           return builder
         },
@@ -76,6 +88,9 @@ jest.mock('@/lib/session-guard', () => ({
 beforeEach(() => {
   tabFilters = []
   selected = ''
+  orderFilters = []
+  ordersSelected = ''
+  orderRows = []
   tabRow = {
     id: TAB_ID,
     restaurant_id: RESTAURANT_UUID,
@@ -152,6 +167,36 @@ describe('GET /api/tabs/[tabId]/view — the redacting seam (#262)', () => {
       ['eq', 'id', TAB_ID],
       ['eq', 'restaurant_id', 'riviera-slug'],
     ])
+  })
+
+  /**
+   * THE AUTHORITATIVE TAB TOTAL (RULED 2026-08-15). `tabs.total` is a display-only cache with two
+   * live definitions; this seam is where every customer surface now gets the real figure, so the
+   * shape of that answer is asserted here rather than only in the pure-function tests.
+   */
+  it('returns an outstanding_total computed from the orders, not the tabs.total cache', async () => {
+    orderRows = [
+      { total: 100, payment_status: 'pending' },
+      { total: 150, payment_status: 'paid' },
+      { total: 40, payment_status: 'cancelled' },
+    ]
+    const { body } = await callView(`restaurantId=${RESTAURANT_UUID}`)
+
+    expect(body.tab.outstanding_total).toBe(100)
+    // The cache is still returned for staff callers, and it must NOT be what the figure equals.
+    expect(body.tab.total).not.toBe(body.tab.outstanding_total)
+    expect(ordersSelected).toContain('payment_status')
+    expect(ordersSelected).toContain('tab_settlement_for_tab_id')
+    expect(orderFilters).toEqual([['eq', 'tab_id', TAB_ID]])
+  })
+
+  it('returns 0 for a tab with no orders — absence of debt, not absence of an answer', async () => {
+    // A zero is a number a customer would believe. Absence has to be distinguishable.
+    orderRows = []
+    const { body } = await callView(`restaurantId=${RESTAURANT_UUID}`)
+    // No orders is genuinely zero owed. The NULL case is a query ERROR, which this mock cannot
+    // produce -- covered instead by the route reading `ordersError` before computing.
+    expect(body.tab.outstanding_total).toBe(0)
   })
 
   it('asks PostgREST for members but is the only thing that ever sees them', async () => {

@@ -3,7 +3,6 @@
 
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import {
   clearTabSession,
   persistTabSession,
@@ -14,6 +13,7 @@ import {
 } from '@/lib/tab-storage'
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
+import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { TabActionRefused } from '@/lib/tabs/tab-action-refused'
 // The OTHER session id. lib/session.ts owns `flashtap_session_v1` in localStorage; this context
@@ -215,7 +215,21 @@ export function TabProvider({
         setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
         return
       }
-    setTabTotal(Number(data.total) || 0)
+    /**
+     * THE AUTHORITATIVE FIGURE, not `data.total`.
+     *
+     * `tabs.total` is a display-only cache with two live definitions (see
+     * lib/tabs/tab-outstanding.ts); `outstanding_total` is computed server-side on this same
+     * read and is what the customer owes now. A non-finite value means the server could not sum
+     * it -- leave the previous figure standing rather than render a zero, because a zero is a
+     * number a customer would act on.
+     */
+    const outstanding = Number((data as { outstanding_total?: unknown }).outstanding_total)
+    if (Number.isFinite(outstanding)) {
+      setTabTotal(outstanding)
+    } else {
+      console.error('[TAB CONTEXT] no authoritative tab total in the view response', { tabId })
+    }
     setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
     setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
   }
@@ -241,34 +255,43 @@ export function TabProvider({
   const canAddToTab =
     Boolean(tabId) && isActiveTabStatus(contextTabStatus) && contextTabStatus === 'open'
 
+  /**
+   * POLLED, NOT SUBSCRIBED. RULED 2026-08-15.
+   *
+   * This used to hold a `postgres_changes` subscription on `tabs`. It never fired: `public.tabs`
+   * has never been in the `supabase_realtime` publication -- confirmed on staging from
+   * pg_publication_tables, which contains `orders` and `order_requests` and nothing else, and no
+   * migration or script in this repository has ever added it. A subscription to an unpublished
+   * table still reaches SUBSCRIBED and silently delivers nothing, which is why seven of these
+   * survived across the customer app (QRA-17).
+   *
+   * Publishing `tabs` was considered and RULED AGAINST: the anon SELECT policy on that table is
+   * `status = ANY('open','ready_to_pay','settled')` with NO restaurant scope and NO table scope,
+   * so the only thing preventing a platform-wide read is a column GRANT -- and whether Realtime
+   * honours column privileges on a change payload is unverified. That is an unaudited read path
+   * on the table that was leaking session ids three days ago.
+   *
+   * So the tab total, status and members refresh on a timer, at the same cadence the four other
+   * customer screens already poll at. The point is that the code now claims exactly what it
+   * delivers.
+   */
   useEffect(() => {
     if (!restaurantId || !tabId) return
-    if (tabId && tabStatus) return // already initialised, skip
 
     let active = true
-    const run = async () => {
-      await loadTab()
+    const run = () => {
       if (!active) return
+      void loadTab()
     }
-    void run()
-
-    const channel = supabase
-      .channel(`tab-${restaurantId}-${tabId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${tabId}` },
-        () => {
-          void loadTab()
-        }
-      )
-      .subscribe()
+    run()
+    const interval = window.setInterval(run, GUEST_ORDER_POLL_MS)
 
     return () => {
       active = false
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
-    // tabStatus guard prevents double-init; loadTab is recreated each render and would churn subscriptions.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once per restaurantId/tabId pair
+    // loadTab is recreated every render; depending on it would restart the interval each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one poll per restaurantId/tabId pair
   }, [restaurantId, tabId])
 
   const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {

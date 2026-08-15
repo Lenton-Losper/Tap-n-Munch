@@ -17,6 +17,7 @@ import { getCurrentSession } from '@/lib/session'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
+import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { cn } from '@/lib/utils'
 
@@ -119,9 +120,23 @@ export default function TabSummaryPage() {
         }
       }
     }
+    /**
+     * THE POLL THIS SCREEN NEVER HAD. RULED 2026-08-15.
+     *
+     * /tab was the only customer screen with neither a working subscription nor an interval: it
+     * loaded once and never updated, and it is the screen with the money and the pay button on
+     * it. Its `tabs` subscription lived in tab-context and never fired, because `public.tabs` has
+     * never been in the supabase_realtime publication (QRA-17).
+     *
+     * Same cadence as the four screens that already poll. This refreshes both the tab record --
+     * which now carries the authoritative outstanding total -- and the order list beneath it, so
+     * the headline figure and the lines under it cannot drift apart.
+     */
     void load()
+    const interval = window.setInterval(() => void load(), GUEST_ORDER_POLL_MS)
     return () => {
       cancelled = true
+      window.clearInterval(interval)
     }
   }, [restaurantId, tableNumber, storedTabId, router, canLoadTab, tableNumVal])
 
@@ -202,10 +217,26 @@ export default function TabSummaryPage() {
       .filter((g): g is MemberGroup => Boolean(g && g.items.length > 0))
   }, [ordersForDisplay, sessionId, selfMemberKeys, tabMembers, currency])
 
-  const fullTabRunningTotal = useMemo(
-    () => ordersForDisplay.reduce((sum, order) => sum + (Number(order.total) || 0), 0),
-    [ordersForDisplay]
-  )
+  /**
+   * THE TABLE'S OUTSTANDING TOTAL, from the server. Never a client sum.
+   *
+   * This was `ordersForDisplay.reduce(...)` -- a sum over the orders THIS DEVICE can see, which
+   * fetchOrdersForTab scopes to this session by construction. On a shared tab it was roughly half
+   * the truth, rendered under the words "Full tab running total" (#119 / QRA-12), and it is why
+   * the human ruled that a customer must never be shown a total derived from their own device.
+   *
+   * `null` means the server could not compute it. Every site below then renders an em dash and
+   * the pay action is disabled -- a payment must never be confirmed against an unknown amount,
+   * and a fallback zero is a number a customer would act on.
+   */
+  const outstandingTotal = useMemo(() => {
+    const n = Number(tabRecord?.outstanding_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.outstanding_total])
+
+  const outstandingLabel = outstandingTotal == null ? '—' : `${currency}${outstandingTotal.toFixed(2)}`
+  /** Not display: this gates the pay action, so it must fail closed on an unknown amount. */
+  const canSettle = outstandingTotal != null && outstandingTotal > 0
 
   const updateMemberName = async (newName: string) => {
     if (!storedTabId || !sessionId || !restaurantId) return
@@ -343,10 +374,7 @@ export default function TabSummaryPage() {
 
         <div className="mb-8 rounded-lg border-2 border-border bg-card p-6 text-center">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Full tab running total</p>
-          <p className="mt-2 font-serif text-4xl font-bold text-foreground">
-            {currency}
-            {fullTabRunningTotal.toFixed(2)}
-          </p>
+          <p className="mt-2 font-serif text-4xl font-bold text-foreground">{outstandingLabel}</p>
         </div>
 
         <div className="space-y-4">
@@ -389,8 +417,7 @@ export default function TabSummaryPage() {
         </div>
 
         <div className="mt-8 rounded-md border border-dashed border-border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
-          Tab total {currency}
-          {fullTabRunningTotal.toFixed(2)}
+          Tab total {outstandingLabel}
         </div>
 
         <div className="mt-8 space-y-4">
@@ -414,10 +441,9 @@ export default function TabSummaryPage() {
               type="button"
               className="w-full py-4 px-6 text-base font-semibold text-white bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
               onClick={() => setShowPaymentSelector(true)}
-              disabled={fullTabRunningTotal <= 0}
+              disabled={!canSettle}
             >
-              Settle Tab • {currency}
-              {fullTabRunningTotal.toFixed(2)}
+              Settle Tab • {outstandingLabel}
             </Button>
           )}
 
@@ -457,11 +483,11 @@ export default function TabSummaryPage() {
               <Button
                 className="w-full py-4 px-6 text-base font-semibold text-white bg-[#16A34A] hover:bg-green-700 h-auto min-h-[3rem]"
                 onClick={() => void handleReadyToPay()}
-                disabled={!paymentPreference || readyToPayLoading}
+                disabled={!paymentPreference || readyToPayLoading || !canSettle}
               >
                 {readyToPayLoading
                   ? 'Sending…'
-                  : `Confirm — ${currency}${fullTabRunningTotal.toFixed(2)}`}
+                  : `Confirm — ${outstandingLabel}`}
               </Button>
               <button
                 onClick={() => {

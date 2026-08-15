@@ -106,8 +106,21 @@ export default function MyOrdersPage() {
 
   const isDeclined = (order: any) => order?.status === 'declined'
 
-  // A declined request was never accepted, so its total is not money the customer spent.
-  // Leaving it in this sum would have made the fix above state something untrue about money.
+  /**
+   * NOT THE TAB TOTAL, and deliberately left as-is pending a ruling.
+   *
+   * This sums THIS SESSION'S OWN orders. It is neither of the two tab figures defined in
+   * lib/tabs/tab-outstanding.ts -- not what the table owes, and not what the table has ordered --
+   * so it must never be used to answer either, and no tab screen may import it.
+   *
+   * It is also the last customer-facing money figure derived on the device. Two things are
+   * unresolved and both are product questions: whether "Total Spent" should count orders that
+   * have not been paid for (it currently does), and whether a per-session figure should come
+   * from a server read like the tab total now does. Raised rather than answered here.
+   *
+   * A declined request was never accepted, so its total is not money the customer spent.
+   * Leaving it in this sum would have made the fix above state something untrue about money.
+   */
   const getTotalSpent = () => {
     return orders
       .filter((order) => !isDeclined(order))

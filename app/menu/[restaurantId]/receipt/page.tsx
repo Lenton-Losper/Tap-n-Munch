@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
@@ -267,37 +266,31 @@ export default function ReceiptPage() {
       void validateAndLoad()
     }, GUEST_ORDER_POLL_MS)
 
-    const channel = supabase
-      .channel(`receipt-tab-${storedTabId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedTabId}` },
-        () => {
-          void fetchTabById(storedTabId, restaurantId).then((tab) => {
-            if (!tab || String(tab.status || '').toLowerCase() === 'settled' || !isActiveTabStatus(tab.status)) {
-              handleSessionExpired(restaurantId)
-              return
-            }
-            setTabRecord(tab)
-          })
-          void validateAndLoad()
-          void refreshTab()
-        }
-      )
-      .subscribe()
+    /**
+     * The `tabs` subscription that used to sit here never fired -- `public.tabs` has never been
+     * in the supabase_realtime publication (QRA-17). The 5s `ordersPoll` above already re-runs
+     * validateAndLoad, which re-fetches the tab and redirects on settlement, so removing it
+     * costs nothing and stops the code claiming liveness it never had.
+     */
 
     return () => {
       cancelled = true
       window.clearInterval(ordersPoll)
-      supabase.removeChannel(channel)
     }
   }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const tabGrandTotal = useMemo(
-    () => orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0),
-    [orders]
-  )
+  /**
+   * THE TABLE'S OUTSTANDING TOTAL, from the server. Never a client sum.
+   *
+   * This was `orders.reduce(...)` over `fetchOrdersForTab`, which is session-scoped by
+   * construction -- so a screen labelled "Tab Total" was showing one device's share (#119 /
+   * QRA-12). `null` renders an em dash rather than a number nobody can vouch for.
+   */
+  const tabOutstandingTotal = useMemo(() => {
+    const n = Number(tabRecord?.outstanding_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.outstanding_total])
 
   const memberNameMap = useMemo(() => buildMemberNameMap(tabRecord), [tabRecord])
 
@@ -424,7 +417,7 @@ export default function ReceiptPage() {
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
               <span className="text-lg font-semibold text-foreground">Tab Total</span>
               <span className="text-2xl font-bold text-foreground">
-                {currency}{tabGrandTotal.toFixed(2)}
+                {tabOutstandingTotal == null ? '—' : `${currency}${tabOutstandingTotal.toFixed(2)}`}
               </span>
             </div>
           </div>

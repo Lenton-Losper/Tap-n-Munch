@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { createTabMemberKeyDeriver, redactTabMembers } from '@/lib/tab-member-key'
+import { TAB_TOTAL_ORDER_COLUMNS, computeTabOutstanding } from '@/lib/tabs/tab-outstanding'
 
 export const dynamic = 'force-dynamic'
 
@@ -109,10 +110,38 @@ export async function GET(
       }
     }
 
+    /**
+     * THE AUTHORITATIVE TAB TOTAL, computed here rather than read off `tabs.total`.
+     *
+     * RULED 2026-08-15. `tabs.total` is a cache with five writers and two incompatible
+     * definitions (see lib/tabs/tab-outstanding.ts), so it is demoted to display-only and this
+     * is what every customer surface must render. Computed in ONE place, on the read every guest
+     * tab screen already makes, so there is no second round trip and no client sum anywhere.
+     *
+     * Failing the whole request on a sum error would blank a screen that renders fine without
+     * the figure, so the error is surfaced as a NULL rather than swallowed as a zero -- a zero
+     * is a number a customer would believe.
+     */
+    const { data: tabOrders, error: ordersError } = await supabase
+      .from('orders')
+      .select(TAB_TOTAL_ORDER_COLUMNS)
+      .eq('tab_id', normalizedTabId)
+
+    if (ordersError) {
+      console.error('[TABS] outstanding total query failed', ordersError)
+    }
+
+    const outstandingTotal = ordersError ? null : computeTabOutstanding(tabOrders)
+
     return NextResponse.json({
       tab: {
         ...safeColumns,
         members: await redactTabMembers(normalizedTabId, row.members),
+        /**
+         * `total` above is the CACHE and is knowingly wrong on some rows. It stays in the
+         * response only because staff-facing callers still read it; no customer surface may.
+         */
+        outstanding_total: outstandingTotal,
       },
       self_member_keys: selfMemberKeys,
     })

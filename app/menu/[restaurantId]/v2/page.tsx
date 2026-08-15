@@ -17,7 +17,7 @@ import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { supabase } from '@/lib/supabase/client'
-import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
+import { fetchGuestActiveTableOrders, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
 import { isStoredTabAtAnotherTable } from '@/lib/tabs/landing-tab-actions'
@@ -572,77 +572,40 @@ export function MenuLandingPageV2Content({
     }
   }, [syncTabLandingState, tableFetchDone])
 
+  /**
+   * POLLED AND FOCUS-DRIVEN, NOT SUBSCRIBED. RULED 2026-08-15.
+   *
+   * Three `postgres_changes` subscriptions used to live here -- the stored tab, this table's
+   * `restaurant_tables` row, and every tab in the restaurant. None of them ever fired: neither
+   * `public.tabs` nor `public.restaurant_tables` has ever been in the `supabase_realtime`
+   * publication, and a subscription to an unpublished table still reaches SUBSCRIBED and
+   * delivers nothing (QRA-17). Publishing them was ruled against -- the anon SELECT policy on
+   * `tabs` carries no restaurant scope and no table scope, so the only thing holding the line is
+   * a column grant whose interaction with Realtime is unverified.
+   *
+   * The focus listener is what was actually keeping this screen current, and it stays. A poll is
+   * added alongside it so a customer sitting on the landing sees a tab open at their table
+   * without having to leave and come back.
+   */
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) return
 
-    const restaurantUuid = String(restaurant?.id || restaurantId || '')
-    const storedId = readStoredTabId()
-
-    const onTabChange = () => {
+    const refresh = () => {
       void syncTabLandingState()
     }
 
-    const channels: ReturnType<typeof supabase.channel>[] = []
-
-    if (storedId) {
-      channels.push(
-        supabase
-          .channel(`v2-stored-tab-${storedId}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedId}` },
-            onTabChange
-          )
-          .subscribe()
-      )
-    }
-
-    if (table?.id) {
-      channels.push(
-        supabase
-          .channel(`v2-table-row-${table.id}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'restaurant_tables', filter: `id=eq.${table.id}` },
-            onTabChange
-          )
-          .subscribe()
-      )
-    }
-
-    channels.push(
-      supabase
-        .channel(`v2-restaurant-tabs-${restaurantUuid}-${tableNum}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'tabs', filter: `restaurant_id=eq.${restaurantUuid}` },
-          (payload) => {
-            const row = (payload.new || payload.old) as Record<string, unknown> | null
-            if (!row) return
-            const rowTableNum = Number(row.table_number || 0)
-            const rowTableId = String(row.table_id || '')
-            if (rowTableNum === tableNum || (table?.id && rowTableId === String(table.id))) {
-              onTabChange()
-            }
-          }
-        )
-        .subscribe()
-    )
-
-    const onFocus = () => {
-      void syncTabLandingState()
-    }
+    const interval = window.setInterval(refresh, GUEST_ORDER_POLL_MS)
     if (typeof window !== 'undefined') {
-      window.addEventListener('focus', onFocus)
+      window.addEventListener('focus', refresh)
     }
 
     return () => {
-      channels.forEach((channel) => supabase.removeChannel(channel))
+      window.clearInterval(interval)
       if (typeof window !== 'undefined') {
-        window.removeEventListener('focus', onFocus)
+        window.removeEventListener('focus', refresh)
       }
     }
-  }, [restaurantId, restaurant?.id, tableNum, table?.id, syncTabLandingState, myStoredTab?.id])
+  }, [restaurantId, tableNum, syncTabLandingState])
 
   const canTrackHostedPending = Boolean(restaurantId && tableNum > 0)
   const hostedPendingKey = `${restaurantId}|${tableNum}`

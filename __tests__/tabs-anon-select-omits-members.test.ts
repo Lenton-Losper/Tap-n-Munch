@@ -80,8 +80,16 @@ function fnBody(source: string, name: string): string {
 }
 
 /**
- * Every first-party file that builds a `tabs` query on the BROWSER (anon) Supabase client, found
- * by importer of '@/lib/supabase/client' rather than by grepping for `members`.
+ * Every first-party file that builds -- or has historically built -- a `tabs` query on the
+ * BROWSER (anon) Supabase client. Originally derived from importers of '@/lib/supabase/client'
+ * rather than by grepping for `members`.
+ *
+ * Files that no longer import that client are KEPT in this list deliberately. As of 2026-08-15
+ * FOUR of them no longer import it at all -- contexts/tab-context.tsx,
+ * app/menu/[restaurantId]/receipt/page.tsx, hooks/useSessionTokenGuard.ts and
+ * hooks/useTabSessionEndedRedirect.ts -- having had their dead `tabs` realtime subscriptions
+ * removed (QRA-17). Dropping them would leave the next anon `tabs` select added to any of them
+ * unguarded, and the sweep costs nothing on a file with no matches.
  * components/orders-dashboard.tsx is deliberately absent: it runs for signed-in staff, whose
  * grants come from the `authenticated` role and are untouched by the migration.
  */

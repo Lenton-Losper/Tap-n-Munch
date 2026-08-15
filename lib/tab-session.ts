@@ -17,7 +17,17 @@ export type TabRow = {
   table_number?: number | null
   status?: string | null
   settled_type?: string | null
+  /**
+   * THE CACHE. Display-only, and knowingly wrong on some rows: five writers, two incompatible
+   * definitions, seven money-changing events that skip it (lib/tabs/tab-outstanding.ts). No
+   * customer surface may render this. Kept because staff-facing callers still read it.
+   */
   total?: number | null
+  /**
+   * THE AUTHORITATIVE FIGURE — what this table owes right now, computed server-side on the read
+   * that returns it. `null` means the server could not sum it; render nothing rather than zero.
+   */
+  outstanding_total?: number | null
   /**
    * #262: NEVER a `session_id`. The server substitutes an opaque per-tab `member_key`
    * (lib/tab-member-key.ts) before this ever reaches a client. Typed as the redacted shape so a
