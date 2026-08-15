@@ -21,6 +21,7 @@ import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
 import { isStoredTabAtAnotherTable } from '@/lib/tabs/landing-tab-actions'
+import { shouldPromptForTabPin } from '@/lib/tabs/tab-action-refused'
 import {
   clearTabSession,
   persistTabSession,
@@ -734,8 +735,38 @@ export function MenuLandingPageV2Content({
       }
       router.push(browseWithTab(result.tabId))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
       console.error('[V2] create tab failed:', err)
+      /**
+       * The table already has an open tab and it is PIN-gated (QRA-02/03).
+       *
+       * Before this, the customer got the sentence in `tabActionError` and nothing to press. The
+       * landing only renders a Join affordance when GET /api/tabs/active returned a tab, and the
+       * two ways to reach Create on an occupied table are exactly the two where it did not: the
+       * genuine create race, and a tab older than the landing's 12-hour window (#218). So the
+       * cases that produce this refusal are precisely the cases with no visible way forward.
+       *
+       * Route it into the PIN prompt that already exists instead. The tab that refused us is the
+       * open tab AT THIS TABLE, and handleSubmitJoinPin on this branch joins unconditionally via
+       * joinTabWithPin — by table number — which is exactly that tab.
+       *
+       * NO setPinTarget HERE, and the difference from cloudflare-staging is deliberate. Staging
+       * carries #211's `pinTarget` state to choose between the scanned table and a stored tab at
+       * another table; that state does not exist on this branch, so the staging version of this
+       * block would throw a ReferenceError the moment a customer hit the refusal. `@ts-nocheck`
+       * at the top of this file means the compiler cannot see it either. When #211 is promoted,
+       * add `setPinTarget('scanned-table')` back — the target is the scanned table either way.
+       *
+       * TAB_ALREADY_OPEN is deliberately not handled here: it means the open tab has no PIN, so
+       * there is nothing to prompt for and its copy sends the customer to staff.
+       */
+      if (shouldPromptForTabPin(err)) {
+        setTabActionError(null)
+        setJoinPin('')
+        setJoinPinError(err.message)
+        setShowJoinPinEntry(true)
+        return
+      }
+      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
