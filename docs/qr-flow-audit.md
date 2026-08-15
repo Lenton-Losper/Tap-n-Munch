@@ -3133,3 +3133,207 @@ not consult it. **PROVABLY REACHABLE**, and it is the one place a staff member c
 amount they never saw.
 
 ---
+
+# 15. USER EVENT STORIES
+
+Run after section 16, per the brief, so these are collision discovery rather than seventeen
+retellings. Where a persona adds nothing, it says so in one line.
+
+All personas are on **staging** (`4861492`) unless marked; on production, every persona involving
+*Change this order* collapses to "the customer cannot, and there is no button".
+
+## Persona 1 — Solo diner
+
+Nothing new. The happy path in section 2 is exactly this. **One line worth keeping:** a solo diner
+on a tab never sees a confirmation page — `handleAddToTab` returns them to `/browse` with a toast
+(`cart/page.tsx:329-334`), which is already the redesign's proposed destination.
+
+## Persona 2 — Indecisive customer
+
+*Orders, immediately reduces quantity, removes something, and wants another item.*
+
+- **T0** A places 2 Burgers + 2 Cokes. `order_requests` row, `waiting_review`.
+- **T1** A opens *Change this order* → `POST …/edit` → lock acquired, editor shows both lines.
+- **T2** A decrements a Burger to 1 and removes the Cokes. Purely local state.
+- **T3** A presses Save → `PATCH` with `keep:[{index:0,quantity:1}]`.
+  **QRA-01 fires: 409 `locked_by_other`.** A is told *"Someone else at your table is changing this
+  order"*, the editor closes, the changes are discarded, and the order stays locked for the
+  remainder of the 3 minutes because the panel nulls its ref without releasing.
+  *(Absent QRA-01: the edit lands, `items_customer` is written, the total falls, and
+  `requires_reacceptance` is set.)*
+- **T4** A wants Fries. **There is no path.** *+ Add something* does not exist; the only route is
+  *Order More Items* → browse → cart → a second submission → a second kitchen card and a second
+  order number.
+
+**Potential flaw:** this persona is the whole product question. The customer's mental model is one
+order being adjusted; the system's model is one order that can only shrink, plus a second order.
+
+## Persona 3 — Multiple rounds
+
+Drinks, then food, then another drink, then settles. Three `order_requests` → three `orders` →
+three `order_number`s → one tab. Nothing new beyond section 8, **except one thing worth stating:**
+`tabs.total` is re-summed at each Accept, so a customer watching the browse strip sees it move on
+the restaurant's clock, not their own — and if the third round is still `waiting_review` at
+settlement time it is **not in `tabs.total` and not claimed by the settle route**, which filters
+`orders` by `tab_id`. An un-Accepted round is invisible to the bill.
+
+## Persona 4 — Couple, one pays
+
+- **T0/T1** A creates the tab, gets the PIN. B joins with the PIN.
+- **T2** both order. Two requests, two orders.
+- **T3** A opens `/tab` to pay. **A sees only A's own orders and only A's own total**, under the
+  words *"Full tab running total"* (QRA-12). B does not appear at all — B's member group is
+  filtered out because it has no items from A's session.
+- **T4** A taps *Ready to pay*, chooses card. `tabs.status='ready_to_pay'`.
+- **T5** staff settle both orders on the terminal for the true sum.
+
+**Potential flaw, and it is the most likely real-world complaint in this document:** A chose a
+payment method and expected to pay N$100, and is charged N$250. Nothing in the app ever showed A
+the correct figure. The browse strip did — but A navigated away from it to reach the pay button.
+
+## Persona 5 — Group of four
+
+As persona 4, ×4. **New collision:** `tabs.members` is appended by four different code paths, three
+of which are read-modify-write (QRA-09). Four phones joining within the same second through
+`POST /api/tabs/[tabId]/join` (the rejoin/by-id path, which is the one the landing uses when a tab
+id is already stored) lose members. The `add_tab_member` RPC that fixes this is wired only to
+`POST /api/tabs/join` (join by table number + PIN). **Which path a phone takes depends on whether
+its browser already holds a tab id**, so a group where some phones have stale state and some do not
+will silently use both.
+
+## Persona 6 — One person orders for everyone
+
+Only A scans; A places several rounds. Nothing new — this is persona 3. **One line:** because
+`tabs.members` has one entry, `/tab` renders one member group, and for this persona alone
+*"Full tab running total"* is actually correct.
+
+## Persona 7 — Late arrival
+
+A/B/C have an active tab; D arrives 30 minutes later and scans.
+
+- `GET /api/tabs/active` returns the tab (30 min < the 12-hour cutoff), so D sees *"a tab is already
+  open"* and a Join action.
+- D needs the PIN. **A/B/C cannot show it to D on production** — `creatorTabPin` lives in the
+  creator's `sessionStorage` only, and production's `GET /api/tabs/[tabId]` does not return
+  `tab_pin`. So on production the PIN must be read aloud by whoever created the tab, and if that
+  person has closed their browser tab it is unrecoverable except through #265's staff reset.
+  **On staging** the PIN is fetched by every member (`browse:300-324`), which is QRA-04.
+- **New collision:** if D's browser is carrying a stale `flashtap_tab_id` from another restaurant
+  or another table, `syncTabLandingState` takes the `storedTabIsElsewhere` branch (#211) and offers
+  *"Your tab is open at Table N"* — correct behaviour, and the reason `linkedUnpaidTabId` exists.
+
+## Persona 8 — Refresh-heavy customer
+
+Refreshes at every stage. **Nothing breaks, and one thing is revealed:** because there are no
+working realtime subscriptions (QRA-17), this customer has a *strictly better* experience than a
+patient one. Refreshing is the only way to see the tab total move, the person count change, or a
+settlement land. **The product's liveness is entirely the customer's own refreshing.**
+
+The one place refreshing costs: mid-edit. The lock survives the reload, the editor does not, and
+re-opening returns `locked_by_other`.
+
+## Persona 9 — Browser-Back customer
+
+Most navigations are `router.replace` (cart → confirmation, cart → browse), so Back from a
+confirmation skips the cart and lands on browse. `/session-ended` actively defeats Back with
+`pushState` + `onpopstate`. **New finding, small:** `tab-context.tsx:129-136` persists any `?tabId=`
+from the URL in a `useLayoutEffect` with no validation, so navigating Back to an older URL carrying
+a *previous* tab id silently re-points `localStorage.flashtap_tab_id` at it. The next
+`syncTabLandingState` then finds a settled tab and ends the session.
+
+## Persona 10 — Slow editor
+
+Opens an order and exceeds the 3-minute hold. The client countdown hits zero, clears `grant`, and
+shows *"That took too long, so nothing was saved."* — correct copy for once. The server would refuse
+anyway (`isEditLockActive` false). **The lock row is not cleaned up**: `edit_lock_token` stays
+populated until someone re-acquires or staff move the status. Nothing sweeps it. The staff
+dashboard's *"Customer editing now"* indicator keys on the token, so it keeps saying that.
+
+## Persona 11 — Competing editors
+
+**Not reachable through the product**, per section 6A: B is 404'd by `sessionOwnsRow` before the
+lock is consulted. Reachable only with a harvested session id (QRA-05), and then the lock holds.
+
+## Persona 12 — Kitchen beats customer
+
+Section 7A in full. **Nothing new; the mechanism works.** One line worth keeping: A's editor stays
+open and looks live for up to three minutes after the kitchen took the order, because the 5-second
+poll re-renders the parent without touching `OrderEditPanel`'s local `grant` state.
+
+## Persona 13 — Customer pays while someone edits
+
+Section 6C / X-2 / X-5. **New in persona form:** B's *Ready to pay* does not notify A, does not
+close A's editor, and does not appear on any screen A is looking at. A finds out when Save either
+works (nothing changed) or is refused with `payment_settled` (the settle already landed) — and that
+second message is the one QRA-20 gets wrong when the payment merely failed.
+
+## Persona 14 — Failed payment
+
+**Nothing customer-facing exists.** A failed terminal payment leaves the order at
+`payment_status='failed'`, which is outside `EDITABLE_PAYMENT_STATUSES`, so the customer's own
+screens now refuse an edit with *"This order has been paid for"* (QRA-20). There is no retry
+affordance for the customer, no failure banner, and `/tab` still says *"waiter notified"*. Retry is
+entirely a staff action on the terminal.
+
+## Persona 15 — Payment succeeds, browser disappears
+
+Tab path: irrelevant, the browser is not in the loop. Hosted path: the webhook is authoritative,
+`markOrderPaidConfirmed` is idempotent, and the route deliberately does not ACK a payment it could
+not apply so Finatic keeps retrying. **Attacked; held.**
+
+## Persona 16 — Old customer returns to a re-occupied table
+
+Section 11's boundary attack, in narrative form. A opens an old page:
+
+- `/menu/{rid}/browse` → `useTabSessionEndedRedirect` loads the stored tab, finds it `settled`,
+  hard-redirects to `/session-ended`, which clears the token and the tab id. **Correct.**
+- `/menu/{rid}/order-confirmation/{oldOrderId}` → **still renders**. `guestCanAccessOrder` returns
+  `true` because `is_closed === true`. A sees their own old order. Arguably correct as a receipt.
+- `/menu/{rid}/my-orders` → the list filters `is_closed !== true`, so it is empty with no
+  explanation.
+- A rescans the QR → a fresh landing for C/D's tab, and A is offered *Join* with a PIN they do not
+  have — or, via the API, QRA-02.
+
+**Potential flaw:** three screens give three different answers about whether A's session is over,
+and only one of them says so.
+
+## Persona 17 — Curious / malicious customer
+
+The productive one. Everything below was established by reading the implementation; nothing was
+executed against a live system.
+
+- **T0** A reads `restaurantId` out of the URL and `table` out of the QR.
+- **T1** `GET /api/tabs/active?restaurantId&tableNumber=N` → the tab UUID, its total, its status,
+  its member count, for **any** table, unauthenticated. Enumerating N=1..50 maps the whole venue's
+  occupancy and takings.
+- **T2** `GET /api/tabs/{tabId}/view?restaurantId=…` → member display names.
+- **T3** `PATCH /api/tabs/{tabId}/member {sessionId, displayName}` → **writes** to that tab, with
+  no credential and **no restaurant scope** (QRA-18).
+- **T4** `POST /api/tabs {restaurantId, tableNumber}` → `409`? No: `23505` → **a valid session
+  token** (QRA-02).
+- **T5** with that token: `GET /api/orders?tabId=…` → every order on the tab **including each
+  one's raw `session_id`** (QRA-05).
+- **T6** with a harvested `session_id`: `GET /api/guest/orders/by-session?session_id=…` → that
+  diner's full order history for the restaurant; and `POST /api/guest/orders/{id}/edit` → the edit
+  lock on their order.
+- **T7** with the token: `POST /api/orders {tabId, items}` → **items on someone else's bill**
+  (QRA-03); or `POST /api/tabs/{tabId}/ready-to-pay` → the table is frozen.
+- **T8** with any paid order's UUID: `POST /api/guest/orders/{id}/receipt/email {email}` → the
+  receipt is issued and mailed anywhere (QRA-19).
+
+**What stops them, and it is short:** the order UUID (unguessable), the tab PIN where it is
+actually required, and — for T5–T7 — nothing, because T4 supplies the credential T5–T7 need.
+
+**Two things they cannot do**, both worth recording as attacks that failed:
+`close_table_session` (QRA-14 — SECURITY INVOKER, and `anon` has no `UPDATE` on `tabs`), and any
+double-settle (the conditional claim at `settle/route.ts:283-334`).
+
+## Persona 18 (added) — the customer whose first poll fails
+
+Not in the brief; added because the implementation revealed it. `my-orders`' `loadOrders` has no
+`try/catch` and is invoked as `void loadOrders()`. A transient failure on the **first** call leaves
+`loading` permanently `true` and the customer looking at a spinner with no retry, no error, and a
+5-second interval that can never clear it because `setLoading(false)` is unreachable after the
+throw.
+
+---
