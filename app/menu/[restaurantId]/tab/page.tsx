@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
-import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { cn } from '@/lib/utils'
 
@@ -393,7 +393,7 @@ export default function TabSummaryPage() {
           <p className="mt-2 font-serif text-4xl font-bold text-foreground">{outstandingLabel}</p>
           {hasPending && (
             <p className="mt-2 text-xs font-sans text-amber-600">
-              {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', money(pendingTotal))}
+              {TAB_FIGURES_COPY.tabPendingSuffix.replace('{pending}', money(pendingTotal))}
             </p>
           )}
         </div>
@@ -441,7 +441,7 @@ export default function TabSummaryPage() {
           Tab total {outstandingLabel}
           {hasPending && (
             <span className="block mt-1 text-xs">
-              {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', money(pendingTotal))}
+              {TAB_FIGURES_COPY.tabPendingSuffix.replace('{pending}', money(pendingTotal))}
             </span>
           )}
         </div>
@@ -478,6 +478,13 @@ export default function TabSummaryPage() {
               <p className="text-center text-sm font-semibold text-foreground font-sans">
                 How would you like to pay?
               </p>
+              {/* The sheet charges PAYABLE. If pending money exists the two figures differ, and
+                  the customer is told why here rather than being left to notice it. */}
+              {hasPending && (
+                <p className="text-center text-xs font-sans text-amber-600">
+                  {TAB_FIGURES_COPY.settleSheetPendingNotice.replace('{pending}', money(pendingTotal))}
+                </p>
+              )}
               <div className="grid gap-2">
                 {(['cash', 'card', 'other'] as const)
                   .filter((method) => {

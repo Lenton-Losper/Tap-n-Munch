@@ -177,17 +177,23 @@ export function computeTabFigures(
 }
 
 /**
- * PENDING COPY — wording not signed off. Every string here is customer-facing and money-adjacent,
- * so it is the human's ruling. Shipped as placeholders so the screens are truthful meanwhile.
- * `{pending}` is substituted at the render site by plain interpolation.
+ * Customer-facing copy for the pending figure. Signed off by the human 2026-08-16, so no PENDING
+ * COPY marker and no "PENDING" in the name: nothing here is a placeholder any more.
+ *
+ * `{pending}` is substituted at the render site by plain `.replace()`, so it must stay literal.
+ * The amount is dynamic — the signed-off text was given with a worked example (N$107.00) and the
+ * token is what ships.
+ *
+ * `tabPendingSuffix` CARRIES ITS OWN SEPARATOR. It is appended to a total that is already
+ * rendered, so the render site must not add another middot.
  */
-export const TAB_FIGURES_COPY_PENDING = {
-  /** Shown beside the tab total whenever pending money exists. */
-  awaitingConfirmation: 'PENDING COPY — {pending} awaiting confirmation',
-  /** Shown in the pay flow when pending exists, so the button and the strip cannot disagree. */
-  payableOnly:
-    'PENDING COPY — you can pay {payable} now. {pending} is still with the restaurant and cannot be paid yet.',
-  /** Shown when there is nothing accepted to pay for but money is pending. */
-  nothingPayableYet:
-    'PENDING COPY — nothing to pay yet. The restaurant has not confirmed your order.',
+export const TAB_FIGURES_COPY = {
+  /** Appended after the tab total wherever the total is shown inline. Includes the separator. */
+  tabPendingSuffix: '· {pending} awaiting confirmation',
+  /** In the settle sheet, so the button's figure and the screen's figure cannot disagree. */
+  settleSheetPendingNotice:
+    '{pending} is still waiting for the restaurant to confirm. You can pay for it once they do.',
+  /** On My Orders, where a customer looks after ordering. */
+  myOrdersPendingNotice:
+    '{pending} is still waiting for the restaurant to confirm. You can pay for it once they do.',
 } as const

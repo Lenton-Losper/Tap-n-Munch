@@ -24,7 +24,7 @@ import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
-import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
@@ -105,7 +105,7 @@ export default function MenuBrowsePage() {
    */
   const stripPendingSuffix =
     (Number(tabPending) || 0) > 0
-      ? ` · ${TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', `${currency}${(Number(tabPending) || 0).toFixed(2)}`)}`
+      ? ` ${TAB_FIGURES_COPY.tabPendingSuffix.replace('{pending}', `${currency}${(Number(tabPending) || 0).toFixed(2)}`)}`
       : ''
 
   // Authoritative view-only check: looked up from the real restaurant_tables row for this

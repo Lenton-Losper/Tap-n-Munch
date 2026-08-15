@@ -11,6 +11,9 @@ import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
+import { useTab } from '@/contexts/tab-context'
+import { useRestaurant } from '@/contexts/restaurant-context'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import {
   EDIT_COPY,
   editRefusalReason,
@@ -45,6 +48,18 @@ export default function MyOrdersPage() {
   // cart submits the tab-context one, so a single id both empties this list and 404s the edit.
   const editSessionIds = [sessionId, readTabSessionId()].filter(Boolean) as string[]
   const sessionInfo = getSessionInfo()
+  /**
+   * The pending figure comes from the SERVER (useTab -> /api/tabs/[tabId]/view), not from a sum
+   * over the rows on this screen. Two reasons: it is the same number every other surface shows,
+   * so they cannot disagree; and summing `orders` here would be a client-derived money figure,
+   * which is the thing that made /tab wrong.
+   *
+   * It is the TAB's pending, not this session's — a customer looking at My Orders is being told
+   * what the restaurant has not yet confirmed for their table, which is what the copy says.
+   */
+  const { tabPending } = useTab()
+  const { currency } = useRestaurant()
+  const pendingAmount = Number(tabPending) || 0
 
   useEffect(() => {
     if (!sessionId) {
@@ -187,6 +202,14 @@ export default function MyOrdersPage() {
                   N${getTotalSpent().toFixed(2)}
                 </span>
               </div>
+              {pendingAmount > 0 && (
+                <p className="text-xs font-sans text-amber-600 pt-1">
+                  {TAB_FIGURES_COPY.myOrdersPendingNotice.replace(
+                    '{pending}',
+                    `${currency}${pendingAmount.toFixed(2)}`,
+                  )}
+                </p>
+              )}
             </div>
           )}
         </div>

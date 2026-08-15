@@ -17,7 +17,7 @@ import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { getReceiptStatusBadge } from '@/lib/orders/receipt-status'
-import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import {
   fetchOrdersForTab,
   fetchTabById,
@@ -430,7 +430,7 @@ export default function ReceiptPage() {
                 {tabOutstandingTotal == null ? '—' : `${currency}${tabOutstandingTotal.toFixed(2)}`}
                 {(tabPendingTotal ?? 0) > 0 && (
                   <span className="block text-xs font-normal text-amber-600">
-                    {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace(
+                    {TAB_FIGURES_COPY.tabPendingSuffix.replace(
                       '{pending}',
                       `${currency}${(tabPendingTotal ?? 0).toFixed(2)}`,
                     )}
