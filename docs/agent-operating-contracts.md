@@ -3,6 +3,15 @@
 Four artifacts, plus the roles and deployment rules they depend on. Paste sections 1–3 into
 agent briefs; section 4 and below are for whoever is coordinating.
 
+**AMENDED 2026-08-15, section 1 TOOLCHAIN step 2 and a new PROBES THAT WRITE block.** The old
+step 2 said "copy .env.test and .env.local in from the main checkout". `.env.local` holds
+**PRODUCTION** credentials and `next dev` loads it ahead of `.env.test`, so an agent that followed
+that step and started a dev server was aiming every write at live customers. It was a near-miss,
+not an incident, and only because the agent checked before starting the server rather than after.
+**A provisioning step that produces the outcome the document exists to prevent is the highest-severity
+kind of error this file can contain**, which is why it is recorded at the top rather than in a
+revision section at the bottom.
+
 **Status: provisional. Revision 3, 2026-08-12** — see the revision at the end of this document
 for four tooling-reliability rules. Rules 10-11 were earned landing #262 and re-derived from
 verification after that session's notes were lost; rules 12-13 were ported afterwards from the
@@ -68,15 +77,66 @@ before any check whose result you intend to report.
 
    `npm ci` is the fallback: slower and costs disk, but fully isolated.
 
-2. .env. Copy .env.test and .env.local in from the main checkout.
-   jest.setup-env.ts resolves .env.test relative to the WORKTREE root,
-   so without it every live suite fails spuriously and you will report
-   those failures as your own regressions.
+2. .env. Copy **.env.test ONLY**. jest.setup-env.ts resolves .env.test
+   relative to the WORKTREE root, so without it every live suite fails
+   spuriously and you will report those failures as your own regressions.
+
+   **NEVER COPY .env.local. IT HOLDS PRODUCTION CREDENTIALS.**
+
+   `.env.local` points at the PRODUCTION Supabase project
+   (`ihlmmpmolnpchzgwyhgh`) — the same one flashtap.app itself uses.
+   Verified 2026-08-15 by reading the ref out of production's own served
+   JS, not inferred from the filename.
+
+   Next.js env precedence is
+   `.env.development.local` > `.env.local` > `.env.development` > `.env`,
+   and `.env.test` is loaded ONLY when NODE_ENV=test. `next dev` runs as
+   `development`. So a worktree provisioned by the OLD version of this
+   step — copy both files — answers every API request against
+   PRODUCTION, and `.env.test` is never consulted at all.
+
+   If you then run any probe that writes, you are writing to live
+   customers' tabs, orders and payments while believing you are on
+   staging.
+
+   For a dev server, write a staging-only file instead, using the names
+   lib/supabase/server.ts actually reads:
+
+       .env.development.local
+         NEXT_PUBLIC_SUPABASE_URL=<staging url from .env.test>
+         NEXT_PUBLIC_SUPABASE_ANON_KEY=<staging anon key>
+         SUPABASE_SERVICE_ROLE_KEY=<staging service role key>
+
+   and DELETE any .env.local the worktree already has. Both files are
+   gitignored, so this is local-only and commits nothing.
 
 Both ft-172 and ft-186 hit this independently on 2026-08-10 and solved
 it two different ways — junction and npm ci respectively — and neither
 solution was written down, so the third agent had to rediscover it.
 That is why this section exists.
+
+**THE NEAR-MISS THAT REWROTE STEP 2, 2026-08-15.** An agent fixing four
+QR customer-flow exposures needed a dev server to prove them. It
+provisioned the worktree exactly as this section then instructed — both
+env files — and was one command from starting `next dev` and pointing a
+WRITING probe at it. The probe created tabs, placed orders, seeded rows
+and deleted them afterwards. Every one of those writes would have landed
+on production.
+
+It was caught only because the agent checked which project the server
+would talk to BEFORE starting it, and the answer was not the one this
+document implied. Nothing in the toolchain would have said otherwise:
+the server starts, the routes answer, the fixture inserts succeed, and
+the probe prints a clean result. **It is the sixth-instrument pattern —
+a plausible, well-formatted, wrong answer rather than an error — except
+that here the wrong answer is a write to live customer data, so there is
+no second measurement that undoes it.**
+
+The rule this earns is broader than the file name: **before any probe
+that writes, establish which environment the thing under test is
+actually connected to, from the thing under test — not from the env
+file you believe you supplied.** The two-guard pattern under PROBES THAT
+WRITE below is how.
 
 TOOLCHAIN — THE COMPILER
 A worktree without node_modules resolves `npx tsc` to a squatter
@@ -110,6 +170,67 @@ failures in suites unrelated to either change.
 Run hermetic suites only: ones that mock @/lib/supabase/* or never
 import __tests__/helpers. Pick the ones covering what you touched.
 The integrator runs the full suite once, serially, at the end.
+
+PROBES THAT WRITE — TWO GUARDS, BOTH FATAL, BOTH IN THE PROBE
+Any probe that creates, updates or deletes a row must refuse to run
+until it has proved TWICE that it is not pointed at production. One
+guard is not enough because the two things that can be wrong are
+different things, and each guard only sees one of them.
+
+  GUARD 1 — the probe's OWN credentials.
+    if (!url.includes(STAGING_REF)) throw new Error(...)
+    Catches: you loaded the wrong env into the probe process.
+    Blind to:  the SERVER you are driving over HTTP, which loads its
+               own env and may have loaded a different one.
+
+  GUARD 2 — the SERVER under test, asked from outside.
+    Read something through the server that ONLY EXISTS ON STAGING — a
+    fixture restaurant, a seeded table — and abort if it is absent.
+    Catches: the server is on production credentials while your probe
+             is on staging ones, which is exactly what the .env.local
+             trap produces.
+    Blind to:  nothing the first guard covers.
+
+Guard 2 is the one that matters and the one everybody omits, because it
+is the only guard that interrogates the system under test rather than
+the process doing the testing. A probe with guard 1 alone reports that
+it is safely on staging while every request it makes lands somewhere
+else.
+
+Worked example, scripts/probe-qr-exposures-staging.ts:
+
+    if (!url.includes(STAGING_REF)) throw ...            // guard 1
+    const r = await api(`/api/tabs/active?restaurantId=${RID}...`)
+    if (r.status === 404) throw new Error(               // guard 2
+      'the server cannot resolve the staging fixture restaurant. '
+      + 'It is not running on staging credentials. '
+      + 'Aborting before any write.')
+
+Both run BEFORE the first insert, and guard 2 runs before the fixture
+is used rather than after it is created.
+
+THREE MORE RULES FOR A WRITING PROBE, each earned the same session:
+
+- SEED YOUR OWN FIXTURE IN A RANGE NOBODY ELSE USES, and clean it up in
+  a `finally`. Table numbers 9200-9599 and session ids prefixed
+  `probe-` made it possible to prove afterwards, by query, that nothing
+  of the run survived — and to tell the run's leftovers apart from
+  another agent's live click-test, which was sitting on the same
+  project at the same time.
+
+- DELETE LEAVES FIRST and DISCOVER dependents rather than trusting the
+  run's own list. Revision 2 already says this; a probe needs it more
+  than a cleanup script, because the routes it drives insert rows it
+  never saw (customer_sessions from the token routes, receipts from an
+  Accept).
+
+- PREFER AN ORACLE THAT STOPS SHORT OF THE SIDE EFFECT. To prove an
+  authorization gate on a route that SENDS something, seed a row that
+  passes the gate and fails the NEXT check. The QR receipt-email probe
+  used an order that is `completed` but not `paid`: 400 means auth
+  passed, 404 means auth refused, and no email is ever sent in either
+  direction. Proving an exfiltration gate by exfiltrating is not a
+  proof, it is the incident.
 
 BASELINE
 You will be given the known-failing suites by NAME and by SHA. Compare
