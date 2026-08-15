@@ -34,8 +34,9 @@ if (!url.includes(STAGING_REF)) throw new Error(`GUARD 1 FAILED: ${url} is not s
 const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
 const RID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 
-const created = { tableIds: [] as string[], tabIds: [] as string[], orderIds: [] as string[] }
+const created = { tableIds: [] as string[], tabIds: [] as string[], orderIds: [] as string[], requestIds: [] as string[] }
 let failures = 0
+let ctxTable = 0
 
 function check(id: string, expected: unknown, actual: unknown, note: string) {
   const ok = expected === actual
@@ -44,8 +45,10 @@ function check(id: string, expected: unknown, actual: unknown, note: string) {
 }
 
 async function cleanup() {
+  for (const id of created.requestIds) await admin.from('order_requests').delete().eq('id', id)
   for (const id of created.orderIds) await admin.from('orders').delete().eq('id', id)
   for (const id of created.tabIds) {
+    await admin.from('order_requests').delete().eq('tab_id', id)
     await admin.from('orders').delete().eq('tab_id', id)
     await admin.from('customer_sessions').delete().eq('tab_id', id)
     await admin.from('tabs').delete().eq('id', id)
@@ -65,6 +68,7 @@ async function view(tabId: string) {
 
 async function main() {
   const tableNumber = 9600 + Math.floor(Math.random() * 300)
+  ctxTable = tableNumber
   console.log(`=== one authoritative tab total — server ${BASE}, table ${tableNumber} ===\n`)
 
   const { data: table, error: tErr } = await admin
@@ -119,26 +123,51 @@ async function main() {
   console.log('two diners, four money states; tabs.total poisoned to 99999\n')
 
   const t = await view(tab.tabId)
-  check('T1', 250, t.outstanding_total, 'A(100 pending) + B(150 pending); paid and cancelled excluded')
+  check('T1', 250, t.payable_total, 'A(100 pending) + B(150 pending); paid and cancelled excluded')
   check('T2', 99999, Number(t.total), 'the cache is still returned for staff, and is NOT the figure')
-  check('T3', true, t.outstanding_total !== Number(t.total), 'authoritative figure is not the cache')
+  check('T3', true, t.payable_total !== Number(t.total), 'authoritative figure is not the cache')
 
   // The whole point: the answer does not depend on who is asking.
   const asA = await fetch(`${BASE}/api/tabs/${tab.tabId}/view?restaurantId=${RID}&sessionId=${encodeURIComponent(sidA)}`)
   const asB = await fetch(`${BASE}/api/tabs/${tab.tabId}/view?restaurantId=${RID}&sessionId=${encodeURIComponent(sidB)}`)
   const a = (await asA.json())?.tab ?? {}
   const b = (await asB.json())?.tab ?? {}
-  check('T4', 250, a.outstanding_total, 'diner A sees the WHOLE table')
-  check('T5', 250, b.outstanding_total, 'diner B sees the same number')
-  check('T6', true, a.outstanding_total === b.outstanding_total, 'two devices, one answer (INV-8)')
+  check('T4', 250, a.payable_total, 'diner A sees the WHOLE table')
+  check('T5', 250, b.payable_total, 'diner B sees the same number')
+  check('T6', true, a.payable_total === b.payable_total, 'two devices, one answer (INV-8)')
 
   // QRA-15 directly: cancelling drops the money with no re-sum anywhere.
   const { data: toCancel } = await admin
     .from('orders').select('id').eq('tab_id', tab.tabId).eq('payment_status', 'pending').limit(1).single()
   await admin.from('orders').update({ payment_status: 'cancelled', status: 'cancelled' }).eq('id', toCancel.id)
   const afterCancel = await view(tab.tabId)
-  check('T7', true, afterCancel.outstanding_total < 250, 'a cancelled order stops being owed immediately (QRA-15)')
+  check('T7', true, afterCancel.payable_total < 250, 'a cancelled order stops being owed immediately (QRA-15)')
   check('T8', 99999, Number(afterCancel.total), 'and the cache is still stale — which no longer matters')
+
+  // PENDING — the figure the reported NAD0.00 was missing. Every QR submission is an
+  // order_request until staff Accept, so payable alone reads 0 while the customer holds the food.
+  const reqSid = `probe-pending-${randomUUID()}`
+  const seedReq = async (total: number, status: string) => {
+    const { data, error } = await admin
+      .from('order_requests')
+      .insert({
+        restaurant_id: RID, tab_id: tab.tabId, table_number: ctxTable,
+        channel: 'table', session_id: reqSid, member_session_id: reqSid,
+        status, items: [{ name: 'probe', quantity: 1 }], subtotal: total, tax: 0, total,
+        placed_at: new Date().toISOString(),
+      })
+      .select('id').single()
+    if (error) throw new Error(`seed request failed: ${error.message}`)
+    created.requestIds.push(data.id)
+  }
+  await seedReq(107, 'waiting_review')
+  await seedReq(25, 'waiting_review')
+  await seedReq(20, 'declined')
+
+  const withPending = await view(tab.tabId)
+  check('T9', 132, withPending.pending_total, 'two waiting_review requests; the DECLINED one excluded')
+  check('T10', true, withPending.pending_total !== withPending.payable_total, 'the two figures are separate')
+  check('T11', true, Number(withPending.payable_total) < 250, 'payable still reflects the cancel, untouched by pending')
 
   console.log(`\n=== ${failures === 0 ? 'PROBE_TAB_OUTSTANDING_OK' : failures + ' FAILURES'} ===`)
 }

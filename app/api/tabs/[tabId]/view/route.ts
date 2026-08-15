@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { createTabMemberKeyDeriver, redactTabMembers } from '@/lib/tab-member-key'
-import { TAB_TOTAL_ORDER_COLUMNS, computeTabOutstanding } from '@/lib/tabs/tab-outstanding'
+import {
+  TAB_PENDING_REQUEST_COLUMNS,
+  TAB_PENDING_REQUEST_STATUSES,
+  TAB_TOTAL_ORDER_COLUMNS,
+  computeTabFigures,
+} from '@/lib/tabs/tab-outstanding'
 
 export const dynamic = 'force-dynamic'
 
@@ -122,16 +127,22 @@ export async function GET(
      * the figure, so the error is surfaced as a NULL rather than swallowed as a zero -- a zero
      * is a number a customer would believe.
      */
-    const { data: tabOrders, error: ordersError } = await supabase
-      .from('orders')
-      .select(TAB_TOTAL_ORDER_COLUMNS)
-      .eq('tab_id', normalizedTabId)
+    const [{ data: tabOrders, error: ordersError }, { data: tabRequests, error: requestsError }] =
+      await Promise.all([
+        supabase.from('orders').select(TAB_TOTAL_ORDER_COLUMNS).eq('tab_id', normalizedTabId),
+        supabase
+          .from('order_requests')
+          .select(TAB_PENDING_REQUEST_COLUMNS)
+          .eq('tab_id', normalizedTabId)
+          .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
+      ])
 
-    if (ordersError) {
-      console.error('[TABS] outstanding total query failed', ordersError)
-    }
+    if (ordersError) console.error('[TABS] payable total query failed', ordersError)
+    if (requestsError) console.error('[TABS] pending total query failed', requestsError)
 
-    const outstandingTotal = ordersError ? null : computeTabOutstanding(tabOrders)
+    const figures = computeTabFigures(tabOrders, tabRequests)
+    const payableTotal = ordersError ? null : figures.payable
+    const pendingTotal = requestsError ? null : figures.pending
 
     return NextResponse.json({
       tab: {
@@ -140,8 +151,17 @@ export async function GET(
         /**
          * `total` above is the CACHE and is knowingly wrong on some rows. It stays in the
          * response only because staff-facing callers still read it; no customer surface may.
+         *
+         * TWO FIGURES, never one. `payable_total` is what settlement charges and the only figure a
+         * decision may use; `pending_total` is money the customer has committed to that the
+         * restaurant has not answered yet. A screen that shows only payable tells a customer who
+         * has just ordered N$132 that they owe nothing, which is how this was found.
+         *
+         * NULL on either means the sum could not be taken. Render nothing rather than zero — a
+         * zero is a number a customer would act on.
          */
-        outstanding_total: outstandingTotal,
+        payable_total: payableTotal,
+        pending_total: pendingTotal,
       },
       self_member_keys: selfMemberKeys,
     })

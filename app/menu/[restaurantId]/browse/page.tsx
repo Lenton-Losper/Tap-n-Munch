@@ -24,6 +24,7 @@ import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
+import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
@@ -94,8 +95,18 @@ export default function MenuBrowsePage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem, clearCart } = useCart()
-  const { isInTab, tabId, tabTotal, tabMembers, tabStatus, clearTab } = useTab()
+  const { isInTab, tabId, tabTotal, tabPending, tabMembers, tabStatus, clearTab } = useTab()
   const { restaurant, currency } = useRestaurant()
+  /**
+   * The strip DISPLAYS, so it shows both figures: `tabTotal` is payable + pending, and the
+   * pending part is named whenever it exists. Showing payable alone is what told a customer who
+   * had just ordered N$132 that they owed NAD0.00 — every QR submission is an order_request
+   * until staff Accept, and payable counts orders only.
+   */
+  const stripPendingSuffix =
+    (Number(tabPending) || 0) > 0
+      ? ` · ${TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', `${currency}${(Number(tabPending) || 0).toFixed(2)}`)}`
+      : ''
 
   // Authoritative view-only check: looked up from the real restaurant_tables row for this
   // table_number, never trusted from a URL flag. Until it resolves, isViewOnly stays false
@@ -855,7 +866,7 @@ export default function MenuBrowsePage() {
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
             <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
               {tabStatus === 'ready_to_pay'
-                ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
+                ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)}${stripPendingSuffix} — waiter notified`
                 : tabStatus === 'closed'
                   ? `Tab closed • ${currency}${(0).toFixed(2)} • 0 people`
                   : tabPin && tabPinRequired ? (
@@ -866,7 +877,7 @@ export default function MenuBrowsePage() {
                         <span className="font-bold text-emerald-400">{tabPin}</span> — Tap to settle →
                       </>
                     ) : (
-                      `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)} • ${
+                      `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)}${stripPendingSuffix} • ${
                         tabMembers.length
                       } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`
                     )}

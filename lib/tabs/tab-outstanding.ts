@@ -26,6 +26,7 @@
  * consumer including this one follows.
  */
 import { owesMoney, roundToCents } from '@/lib/payments/payment-integrity'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 
 export type TabOrderRow = {
   total?: unknown
@@ -35,6 +36,46 @@ export type TabOrderRow = {
 
 /** The columns this module needs. Kept here so callers cannot under-select and get a wrong sum. */
 export const TAB_TOTAL_ORDER_COLUMNS = 'total, payment_status, tab_settlement_for_tab_id'
+
+/**
+ * The request columns PENDING needs. `*_reviewed` and `*_customer` are here because
+ * effectiveRequestPricing resolves `reviewed ?? customer ?? original` — pricing a pending request
+ * from the raw `total` would show the customer a figure a staff review has already moved.
+ *
+ * NOTE the `*_customer` columns exist on cloudflare-staging only (migration 20260813120000). On a
+ * database without them PostgREST omits the keys, effectiveRequestPricing sees `undefined`, and
+ * precedence falls through to the original submission. That degrades safely, but it means this
+ * computes from a different tier per environment — stated so it is not discovered as a discrepancy.
+ */
+export const TAB_PENDING_REQUEST_COLUMNS =
+  'status, items, subtotal, tax, total, items_reviewed, subtotal_reviewed, tax_reviewed, total_reviewed, items_customer, subtotal_customer, tax_customer, total_customer'
+
+/**
+ * The ONLY request status that counts as pending.
+ *
+ * RULED 2026-08-15: "pending means the restaurant has not yet answered. The moment it answers, the
+ * money belongs to the order or to nobody."
+ *
+ *   waiting_review  the restaurant has not answered            -> PENDING
+ *   accepting       it is answering; the claim has been taken  -> excluded, see the note below
+ *   accepted        answered yes; the money is now an `orders` row and payable counts it
+ *   declined        answered no; not owed and not pending, EXCLUDED EXPLICITLY rather than
+ *                   incidentally — the same reasoning as a cancelled order in QRA-15
+ *
+ * WHY EXCLUDING `accepting` IS SAFE, and why it is not free. The Accept route claims the request
+ * into `accepting` BEFORE it inserts the order, so by the time an order exists the request has
+ * already left this set — the same money can never be in both figures. That ordering exists to
+ * satisfy the order_requests_accepted_has_order CHECK, not for this, so we are relying on it:
+ * if Accept ever inserts first, this becomes a double count.
+ *
+ * The cost is a window between the claim landing and the insert returning in which the money is in
+ * NEITHER figure. One round trip normally, and permanent for a row stranded in `accepting` — which
+ * the Accept route documents as possible. Named rather than designed around.
+ */
+export const TAB_PENDING_REQUEST_STATUSES = ['waiting_review'] as const
+
+/** Statuses explicitly NOT pending, listed so the exclusion is a decision and not a side effect. */
+export const TAB_NOT_PENDING_REQUEST_STATUSES = ['accepting', 'accepted', 'declined'] as const
 
 function isSettlementArtefact(row: TabOrderRow): boolean {
   return Boolean(String(row.tab_settlement_for_tab_id ?? '').trim())
@@ -84,3 +125,69 @@ export function computeTabGrossOrdered(rows: readonly TabOrderRow[] | null | und
     list.filter((row) => !isSettlementArtefact(row)).reduce((sum, row) => sum + amount(row), 0),
   )
 }
+
+export type TabRequestRow = {
+  status?: unknown
+  total?: unknown
+  total_reviewed?: unknown
+  total_customer?: unknown
+  items?: unknown
+  items_reviewed?: unknown
+  items_customer?: unknown
+}
+
+/**
+ * PENDING — submitted by a customer, not yet answered by the restaurant.
+ *
+ * Display only. Nothing that DECIDES may use this: the restaurant has not agreed to make it, its
+ * price can still move at review, and it can be declined outright. Settlement charges `payable`.
+ */
+export function computeTabPending(rows: readonly TabRequestRow[] | null | undefined): number {
+  const list = Array.isArray(rows) ? rows : []
+  return roundToCents(
+    list
+      .filter((row) =>
+        (TAB_PENDING_REQUEST_STATUSES as readonly string[]).includes(
+          String(row.status ?? '').trim().toLowerCase(),
+        ),
+      )
+      .reduce((sum, row) => sum + (Number(effectiveRequestPricing(row).total) || 0), 0),
+  )
+}
+
+export type TabFigures = {
+  /** Accepted and unpaid. What settlement charges. The only figure a decision may use. */
+  payable: number
+  /** Submitted and unanswered. Display only. */
+  pending: number
+}
+
+/**
+ * Both figures, from one place.
+ *
+ * RULED: two figures everywhere — anything that DECIDES uses `payable`, anything that DISPLAYS
+ * shows both. They are returned together so a caller cannot take one and forget the other, and
+ * they are never summed here: the sum is a presentation choice and belongs at the render site.
+ */
+export function computeTabFigures(
+  orders: readonly TabOrderRow[] | null | undefined,
+  requests: readonly TabRequestRow[] | null | undefined,
+): TabFigures {
+  return { payable: computeTabOutstanding(orders), pending: computeTabPending(requests) }
+}
+
+/**
+ * PENDING COPY — wording not signed off. Every string here is customer-facing and money-adjacent,
+ * so it is the human's ruling. Shipped as placeholders so the screens are truthful meanwhile.
+ * `{pending}` is substituted at the render site by plain interpolation.
+ */
+export const TAB_FIGURES_COPY_PENDING = {
+  /** Shown beside the tab total whenever pending money exists. */
+  awaitingConfirmation: 'PENDING COPY — {pending} awaiting confirmation',
+  /** Shown in the pay flow when pending exists, so the button and the strip cannot disagree. */
+  payableOnly:
+    'PENDING COPY — you can pay {payable} now. {pending} is still with the restaurant and cannot be paid yet.',
+  /** Shown when there is nothing accepted to pay for but money is pending. */
+  nothingPayableYet:
+    'PENDING COPY — nothing to pay yet. The restaurant has not confirmed your order.',
+} as const

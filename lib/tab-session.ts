@@ -24,10 +24,14 @@ export type TabRow = {
    */
   total?: number | null
   /**
-   * THE AUTHORITATIVE FIGURE — what this table owes right now, computed server-side on the read
-   * that returns it. `null` means the server could not sum it; render nothing rather than zero.
+   * THE TWO AUTHORITATIVE FIGURES, computed server-side on the read that returns them.
+   * `null` means the server could not sum it; render nothing rather than zero.
+   *
+   * payable — accepted and unpaid. What settlement charges. The ONLY figure a decision may use.
+   * pending — submitted, not yet answered by the restaurant. Display only.
    */
-  outstanding_total?: number | null
+  payable_total?: number | null
+  pending_total?: number | null
   /**
    * #262: NEVER a `session_id`. The server substitutes an opaque per-tab `member_key`
    * (lib/tab-member-key.ts) before this ever reaches a client. Typed as the redacted shape so a

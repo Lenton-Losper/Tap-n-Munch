@@ -47,7 +47,12 @@ type TabContextType = {
   sessionId: string
   isInTab: boolean
   canAddToTab: boolean
+  /** payable + pending. Display sites render this and must also name `tabPending` when non-zero. */
   tabTotal: number
+  /** Accepted and unpaid. The ONLY figure a decision (pay, settle, gate) may use. */
+  tabPayable: number
+  /** Submitted, not yet answered by the restaurant. Display only. */
+  tabPending: number
   tabMembers: TabMember[]
   /** The caller's own member_key(s); the client cannot derive them. See TabMember. */
   selfMemberKeys: string[]
@@ -108,7 +113,14 @@ export function TabProvider({
     return readStoredTabId()
   })
   const [sessionId, setSessionId] = useState(() => ensureTabSessionId())
-  const [tabTotal, setTabTotal] = useState(0)
+  /**
+   * TWO FIGURES, never one (RULED 2026-08-15). `tabPayable` is accepted-and-unpaid — what
+   * settlement charges, and the only one a decision may use. `tabPending` is submitted and
+   * unanswered; display only. `tabTotal` is their sum and exists so a display site cannot show
+   * one and silently omit the other.
+   */
+  const [tabPayable, setTabPayable] = useState(0)
+  const [tabPending, setTabPending] = useState(0)
   const [tabMembers, setTabMembers] = useState<TabMember[]>([])
   /**
    * The caller's own `member_key`s, as derived by the server for each session id this context
@@ -179,7 +191,8 @@ export function TabProvider({
 
     if (!data) {
       setTabId(null)
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setSelfMemberKeys([])
       setTabStatus(null)
@@ -200,7 +213,8 @@ export function TabProvider({
           settled_type: data.settled_type,
         })
         setTabId(null)
-        setTabTotal(0)
+        setTabPayable(0)
+      setTabPending(0)
         setTabMembers([])
         setSelfMemberKeys([])
         setTabStatus(null)
@@ -210,7 +224,8 @@ export function TabProvider({
       }
 
       if (status === 'closed') {
-        setTabTotal(0)
+        setTabPayable(0)
+      setTabPending(0)
         setTabMembers([])
         setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
         return
@@ -224,12 +239,13 @@ export function TabProvider({
      * it -- leave the previous figure standing rather than render a zero, because a zero is a
      * number a customer would act on.
      */
-    const outstanding = Number((data as { outstanding_total?: unknown }).outstanding_total)
-    if (Number.isFinite(outstanding)) {
-      setTabTotal(outstanding)
-    } else {
-      console.error('[TAB CONTEXT] no authoritative tab total in the view response', { tabId })
-    }
+    const row = data as { payable_total?: unknown; pending_total?: unknown }
+    const payable = Number(row.payable_total)
+    const pending = Number(row.pending_total)
+    if (Number.isFinite(payable)) setTabPayable(payable)
+    else console.error('[TAB CONTEXT] no payable figure in the view response', { tabId })
+    if (Number.isFinite(pending)) setTabPending(pending)
+    else console.error('[TAB CONTEXT] no pending figure in the view response', { tabId })
     setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
     setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
   }
@@ -239,14 +255,17 @@ export function TabProvider({
   if ((pathname || '') !== pathnameKey) {
     setPathnameKey(pathname || '')
     if (!isMenuRoute) {
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setTabStatus(null)
       setSettlementType(null)
     }
   }
 
-  const contextTabTotal = isMenuRoute ? tabTotal : 0
+  const contextTabPayable = isMenuRoute ? tabPayable : 0
+  const contextTabPending = isMenuRoute ? tabPending : 0
+  const contextTabTotal = contextTabPayable + contextTabPending
   const contextTabMembers = isMenuRoute ? tabMembers : []
   const contextSelfMemberKeys = isMenuRoute ? selfMemberKeys : []
   const contextTabStatus = isMenuRoute ? tabStatus : null
@@ -297,7 +316,8 @@ export function TabProvider({
   const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {
     setTabId(nextTabId)
     if (!nextTabId) {
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setSelfMemberKeys([])
       setTabStatus(null)
@@ -550,6 +570,8 @@ export function TabProvider({
     isInTab: Boolean(tabId),
     canAddToTab,
     tabTotal: contextTabTotal,
+    tabPayable: contextTabPayable,
+    tabPending: contextTabPending,
     tabMembers: contextTabMembers,
     selfMemberKeys: contextSelfMemberKeys,
     settlementType: contextSettlementType,

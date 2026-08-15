@@ -1,4 +1,9 @@
-import { computeTabGrossOrdered, computeTabOutstanding } from '@/lib/tabs/tab-outstanding'
+import {
+  computeTabFigures,
+  computeTabGrossOrdered,
+  computeTabOutstanding,
+  computeTabPending,
+} from '@/lib/tabs/tab-outstanding'
 
 /**
  * The two definitions that were living in one column.
@@ -82,5 +87,80 @@ describe('computeTabGrossOrdered — a DIFFERENT question, under its own name', 
         { total: 100, payment_status: 'paid', tab_settlement_for_tab_id: 'tab-1' },
       ]),
     ).toBe(100)
+  })
+})
+
+/**
+ * PENDING — submitted, not yet answered. The whole reason this exists: every QR submission is an
+ * `order_requests` row until staff Accept, so a tab with two live orders and nothing accepted had
+ * a payable of 0 and showed the customer NAD0.00 while they were holding N$132 of food.
+ */
+describe('computeTabPending — submitted, not yet answered', () => {
+  it('counts waiting_review only', () => {
+    expect(
+      computeTabPending([
+        { status: 'waiting_review', total: 107 },
+        { status: 'waiting_review', total: 25 },
+      ]),
+    ).toBe(132)
+  })
+
+  it('excludes DECLINED explicitly — the restaurant answered no', () => {
+    expect(
+      computeTabPending([
+        { status: 'waiting_review', total: 25 },
+        { status: 'declined', total: 20 },
+      ]),
+    ).toBe(25)
+  })
+
+  /**
+   * The double-count guard. Accept claims the request into `accepting` BEFORE inserting the order,
+   * so by the time an order exists the request is out of this set. If either ever counted it, the
+   * same money would appear in payable and pending at once.
+   */
+  it('excludes accepting and accepted, so money is never in both figures', () => {
+    expect(
+      computeTabPending([
+        { status: 'accepting', total: 50 },
+        { status: 'accepted', total: 60 },
+      ]),
+    ).toBe(0)
+  })
+
+  it('prices through effectiveRequestPricing — a staff review beats the original', () => {
+    expect(
+      computeTabPending([
+        { status: 'waiting_review', total: 100, items_reviewed: [], total_reviewed: 80 },
+      ]),
+    ).toBe(80)
+  })
+
+  it('is 0, never NaN, for junk', () => {
+    expect(computeTabPending(null)).toBe(0)
+    expect(computeTabPending([])).toBe(0)
+    expect(computeTabPending([{ status: 'waiting_review', total: 'x' }])).toBe(0)
+  })
+})
+
+describe('computeTabFigures — the two together', () => {
+  it('keeps them separate: the same money never lands in both', () => {
+    const orders = [{ total: 25, payment_status: 'pending' }]
+    const requests = [
+      { status: 'waiting_review', total: 107 },
+      { status: 'accepted', total: 25 },
+    ]
+    expect(computeTabFigures(orders, requests)).toEqual({ payable: 25, pending: 107 })
+  })
+
+  it('reproduces the reported tab: two live requests, nothing accepted', () => {
+    // table 120, tab b513a80c: payable was 0 and the strip read NAD0.00.
+    const figures = computeTabFigures([], [
+      { status: 'waiting_review', total: 107 },
+      { status: 'waiting_review', total: 25 },
+    ])
+    expect(figures.payable).toBe(0)
+    expect(figures.pending).toBe(132)
+    expect(figures.payable + figures.pending).toBe(132)
   })
 })

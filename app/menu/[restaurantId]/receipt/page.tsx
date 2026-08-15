@@ -17,6 +17,7 @@ import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { getReceiptStatusBadge } from '@/lib/orders/receipt-status'
+import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
 import {
   fetchOrdersForTab,
   fetchTabById,
@@ -287,10 +288,19 @@ export default function ReceiptPage() {
    * construction -- so a screen labelled "Tab Total" was showing one device's share (#119 /
    * QRA-12). `null` renders an em dash rather than a number nobody can vouch for.
    */
-  const tabOutstandingTotal = useMemo(() => {
-    const n = Number(tabRecord?.outstanding_total)
+  /** DISPLAY surface: shows both figures, never one. */
+  const tabPayableTotal = useMemo(() => {
+    const n = Number(tabRecord?.payable_total)
     return Number.isFinite(n) ? n : null
-  }, [tabRecord?.outstanding_total])
+  }, [tabRecord?.payable_total])
+  const tabPendingTotal = useMemo(() => {
+    const n = Number(tabRecord?.pending_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.pending_total])
+  const tabOutstandingTotal =
+    tabPayableTotal == null && tabPendingTotal == null
+      ? null
+      : (tabPayableTotal ?? 0) + (tabPendingTotal ?? 0)
 
   const memberNameMap = useMemo(() => buildMemberNameMap(tabRecord), [tabRecord])
 
@@ -418,6 +428,14 @@ export default function ReceiptPage() {
               <span className="text-lg font-semibold text-foreground">Tab Total</span>
               <span className="text-2xl font-bold text-foreground">
                 {tabOutstandingTotal == null ? '—' : `${currency}${tabOutstandingTotal.toFixed(2)}`}
+                {(tabPendingTotal ?? 0) > 0 && (
+                  <span className="block text-xs font-normal text-amber-600">
+                    {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace(
+                      '{pending}',
+                      `${currency}${(tabPendingTotal ?? 0).toFixed(2)}`,
+                    )}
+                  </span>
+                )}
               </span>
             </div>
           </div>

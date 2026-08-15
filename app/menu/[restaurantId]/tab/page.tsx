@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { TAB_FIGURES_COPY_PENDING } from '@/lib/tabs/tab-outstanding'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { cn } from '@/lib/utils'
 
@@ -229,14 +230,29 @@ export default function TabSummaryPage() {
    * the pay action is disabled -- a payment must never be confirmed against an unknown amount,
    * and a fallback zero is a number a customer would act on.
    */
-  const outstandingTotal = useMemo(() => {
-    const n = Number(tabRecord?.outstanding_total)
+  const payableTotal = useMemo(() => {
+    const n = Number(tabRecord?.payable_total)
     return Number.isFinite(n) ? n : null
-  }, [tabRecord?.outstanding_total])
+  }, [tabRecord?.payable_total])
 
-  const outstandingLabel = outstandingTotal == null ? '—' : `${currency}${outstandingTotal.toFixed(2)}`
-  /** Not display: this gates the pay action, so it must fail closed on an unknown amount. */
-  const canSettle = outstandingTotal != null && outstandingTotal > 0
+  const pendingTotal = useMemo(() => {
+    const n = Number(tabRecord?.pending_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.pending_total])
+
+  /** DISPLAY shows both, so the headline is their sum. */
+  const displayTotal =
+    payableTotal == null && pendingTotal == null ? null : (payableTotal ?? 0) + (pendingTotal ?? 0)
+  const money = (n: number | null) => (n == null ? '—' : `${currency}${n.toFixed(2)}`)
+  const outstandingLabel = money(displayTotal)
+  const hasPending = (pendingTotal ?? 0) > 0
+
+  /**
+   * DECIDES, so it uses PAYABLE only and fails closed on an unknown amount. A customer must never
+   * tap a button charging one number while the screen shows another, and pending money is not
+   * chargeable — the restaurant has not agreed to make it.
+   */
+  const canSettle = payableTotal != null && payableTotal > 0
 
   const updateMemberName = async (newName: string) => {
     if (!storedTabId || !sessionId || !restaurantId) return
@@ -375,6 +391,11 @@ export default function TabSummaryPage() {
         <div className="mb-8 rounded-lg border-2 border-border bg-card p-6 text-center">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Full tab running total</p>
           <p className="mt-2 font-serif text-4xl font-bold text-foreground">{outstandingLabel}</p>
+          {hasPending && (
+            <p className="mt-2 text-xs font-sans text-amber-600">
+              {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', money(pendingTotal))}
+            </p>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -418,6 +439,11 @@ export default function TabSummaryPage() {
 
         <div className="mt-8 rounded-md border border-dashed border-border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
           Tab total {outstandingLabel}
+          {hasPending && (
+            <span className="block mt-1 text-xs">
+              {TAB_FIGURES_COPY_PENDING.awaitingConfirmation.replace('{pending}', money(pendingTotal))}
+            </span>
+          )}
         </div>
 
         <div className="mt-8 space-y-4">
@@ -443,7 +469,7 @@ export default function TabSummaryPage() {
               onClick={() => setShowPaymentSelector(true)}
               disabled={!canSettle}
             >
-              Settle Tab • {outstandingLabel}
+              Settle Tab • {money(payableTotal)}
             </Button>
           )}
 
@@ -487,7 +513,7 @@ export default function TabSummaryPage() {
               >
                 {readyToPayLoading
                   ? 'Sending…'
-                  : `Confirm — ${outstandingLabel}`}
+                  : `Confirm — ${money(payableTotal)}`}
               </Button>
               <button
                 onClick={() => {
