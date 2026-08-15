@@ -8,6 +8,7 @@ import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
+import { getSessionToken } from '@/lib/fetch-with-session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
@@ -200,6 +201,18 @@ export default function MenuBrowsePage() {
 
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
 
+  /**
+   * The creator's own device remembering its own PIN, written once at creation.
+   *
+   * This is NOT a check of anything — it is sessionStorage, which the client wrote itself — so
+   * it can only ever show the PIN to the one person who created the tab, and it dies when the
+   * browser tab closes. Everyone who JOINED the tab had no way to see the PIN they had just
+   * typed, which is most of why #265 (staff-driven PIN recovery) exists at all.
+   *
+   * Demoted to a pre-fetch fallback below. Kept rather than deleted because it costs nothing and
+   * is not a disclosure: it is this device showing this device's own PIN, exactly as today. It
+   * is never treated as proof of membership — `fetchedTabPin` is the real source.
+   */
   const creatorTabPin = useMemo(() => {
     if (typeof window === 'undefined') return null
     const activeTabId = tabIdParam || tabId || readStoredTabId() || ''
@@ -209,6 +222,14 @@ export default function MenuBrowsePage() {
     if (storedTabId === activeTabId && pin) return pin
     return null
   }, [tabIdParam, tabId])
+
+  /** The PIN as returned by the session-token-guarded read. Null until it resolves, and on any
+   *  failure — so the display falls back to `creatorTabPin` rather than to nothing. */
+  const [fetchedTabPin, setFetchedTabPin] = useState<string | null>(null)
+
+  /** What the header and the tab strip actually render. */
+  const tabPin = fetchedTabPin ?? creatorTabPin
+
   const [tabPinRequired, setTabPinRequired] = useState(true)
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
@@ -260,6 +281,47 @@ export default function MenuBrowsePage() {
       cancelled = true
     }
   }, [effectiveIsInTab, effectiveTabId, restaurantId])
+
+  /**
+   * The tab PIN, for EVERY member of the tab rather than only its creator.
+   *
+   * GET /api/tabs/[tabId] is the session-token-guarded read (the same guard that lets this
+   * customer add orders to the tab), and it returns `tab_pin` only to a holder of a token for
+   * THIS tab. See that route for why that is a downgrade of a credential the caller already
+   * holds and not new exposure — and for why the PIN is deliberately NOT on the unauthenticated
+   * /view read that `fetchTabById` above uses.
+   *
+   * Plain `fetch`, deliberately NOT `fetchWithSession`: that helper treats any 410 as "your
+   * dining session is over" and calls handleSessionExpired, which wipes the token, the tab id
+   * and the cart and hard-redirects to /session-ended. A cosmetic PIN readout must never be able
+   * to eject someone from their meal. Here a missing or rejected token means "no PIN to show", and
+   * nothing else — the state falls back to `creatorTabPin`.
+   */
+  useEffect(() => {
+    if (!effectiveIsInTab || !effectiveTabId) return
+
+    const token = getSessionToken()
+    if (!token) return
+
+    let cancelled = false
+    void fetch(`/api/tabs/${encodeURIComponent(effectiveTabId)}`, {
+      headers: { 'x-session-token': token },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return
+        const pin = data?.tab?.tab_pin
+        setFetchedTabPin(pin ? String(pin) : null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setFetchedTabPin(null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveIsInTab, effectiveTabId])
 
   const pushCartToast = (name: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000)
@@ -773,6 +835,39 @@ export default function MenuBrowsePage() {
             </div>
             )}
           </div>
+
+          {/* THE TAB PIN — persistently, to every member of the tab rather than only whoever
+              created it, and inside the sticky header so it is on screen wherever the customer
+              has scrolled to. Static text, not a control: there is nothing to tap, it exists to
+              be read out to the next person joining the table.
+
+              WHY ITS OWN LINE AND NOT A CHIP IN THE ACTION ROW ABOVE. That was the intended
+              placement; it does not fit, and this is measured rather than estimated. The action
+              row is `shrink-0`, so every pixel it takes comes out of the left block. At a 360px
+              viewport, rendered against this branch:
+
+                                     action row   left text column   name        Table N
+                today                 151px        69px              truncated   fits (69/69)
+                + a 50px PIN chip     207px        12.8px            gone        truncated
+
+              The row is already at capacity — the note on the My Orders button below records a
+              third control pushing the name to "S…", and 69px against the 80px the name wants is
+              exactly that. A fourth control does not shave the left block, it deletes it, and
+              takes the table number with it. Even at 390px the column is 42.8px and both
+              truncate. The narrowest useful chip (no label under 640px, 4 digits, minimum
+              padding) still measures 50.2px, so there is no version of this that fits.
+
+              A full-width line costs zero horizontal space and ~26px of sticky height. */}
+          {!isViewOnly && effectiveIsInTab && tabPinRequired && tabPin && (
+            <div className="-mx-4 mt-2 border-t border-border px-4 pt-1.5">
+              <div className="flex items-center gap-1.5 font-sans text-xs">
+                <span className="text-muted-foreground">PIN</span>
+                <span className="font-bold tabular-nums tracking-widest text-foreground">
+                  {tabPin}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
@@ -784,12 +879,12 @@ export default function MenuBrowsePage() {
                 ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
                 : tabStatus === 'closed'
                   ? `Tab closed • ${currency}${(0).toFixed(2)} • 0 people`
-                  : creatorTabPin && tabPinRequired ? (
+                  : tabPin && tabPinRequired ? (
                       <>
                         Tab open • {currency}
                         {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
                         {tabMembers.length === 1 ? 'person' : 'people'} • PIN:{' '}
-                        <span className="font-bold text-emerald-400">{creatorTabPin}</span> — Tap to settle →
+                        <span className="font-bold text-emerald-400">{tabPin}</span> — Tap to settle →
                       </>
                     ) : (
                       `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)} • ${
