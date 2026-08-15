@@ -16,6 +16,8 @@ export function guestCanAccessOrder(
   params: {
     tableNumber?: number | null
     sessionId?: string | null
+    /** Every OTHER id the client holds. See ownsOrder: one id is never the whole answer. */
+    sessionIds?: Array<string | null | undefined>
     restaurantId?: string | null
   },
 ): boolean {
@@ -42,13 +44,184 @@ export function guestCanAccessOrder(
     return true
   }
 
-  if (session && String(order.session_id || '').trim() === session) {
+  // Delegated rather than restated. This used to compare `params.sessionId` against
+  // `order.session_id` only — one id, one column — which is what made it the ROOT of the three
+  // session-id bugs rather than a fourth instance of them.
+  //
+  // Adding member_session_id is a NEW true path, so it is structurally more permissive. MEASURED
+  // before shipping, on both environments: ZERO rows have a member_session_id that differs from
+  // their session_id — 0 of 213 on staging, 0 of 1000 on production. So it admits nothing today
+  // that was not already admitted. #262's seam does not change that either: it substitutes the
+  // opaque member_key on the way OUT, in the response, and never writes it to the column this
+  // reads.
+  if (ownsOrder(order, [session, ...(params.sessionIds ?? [])])) {
     return true
   }
 
   return false
 }
 
+/**
+ * The access question for actions that SEND the order somewhere, rather than answering the
+ * caller who already holds its id.
+ *
+ * WHY THIS IS NOT `guestCanAccessOrder` (QRA-19). That helper short-circuits to `true` on
+ * `is_closed`, `payment_status = 'paid'`, `status = 'completed'` and `status = 'cancelled'` —
+ * the shareable-receipt-link pattern, and a deliberate decision. It is defensible for a READ,
+ * where the caller already possesses the order UUID and learns nothing they could not learn by
+ * opening the link they were given.
+ *
+ * It is not defensible for `POST /api/guest/orders/[orderId]/receipt/email`, which is a
+ * different kind of act: it takes an attacker-chosen address and has the restaurant send that
+ * customer's itemised receipt to it. Under the read rule the whole gate for a PAID order was
+ * restaurant scope alone — and the restaurant uuid is in every menu URL. It also has a write
+ * side effect: `issueReceiptForOrder` allocates a document number and inserts a
+ * `receipt_documents` row for an order that had none, stamping today's numbering context onto
+ * an older sale.
+ *
+ * So delivery requires what a READ of an OPEN order requires: the restaurant, plus either the
+ * table the order sits at or a session id it was placed under. Concretely, the same predicate
+ * with the terminal-state short-circuit removed.
+ *
+ * `guestCanAccessOrder` is deliberately left exactly as it is. Narrowing its table branch is
+ * #279, it is sequenced behind a measurement, and `__tests__/owns-order-both-columns.test.ts`
+ * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
+ * ruling already made, so this adds a stricter sibling rather than editing it.
+ */
+/**
+ * The access question for actions that SEND the order somewhere, rather than answering the
+ * caller who already holds its id.
+ *
+ * WHY THIS IS NOT `guestCanAccessOrder` (QRA-19). That helper short-circuits to `true` on
+ * `is_closed`, `payment_status = 'paid'`, `status = 'completed'` and `status = 'cancelled'` —
+ * the shareable-receipt-link pattern, and a deliberate decision. It is defensible for a READ,
+ * where the caller already possesses the order UUID and learns nothing they could not learn by
+ * opening the link they were given.
+ *
+ * It is not defensible for `POST /api/guest/orders/[orderId]/receipt/email`, which is a
+ * different kind of act: it takes an attacker-chosen address and has the restaurant send that
+ * customer's itemised receipt to it. Under the read rule the whole gate for a PAID order was
+ * restaurant scope alone — and the restaurant uuid is in every menu URL. It also has a write
+ * side effect: `issueReceiptForOrder` allocates a document number and inserts a
+ * `receipt_documents` row for an order that had none, stamping today's numbering context onto
+ * an older sale.
+ *
+ * So delivery requires what a READ of an OPEN order requires: the restaurant, plus either the
+ * table the order sits at or a session id it was placed under. Concretely, the same predicate
+ * with the terminal-state short-circuit removed.
+ *
+ * `guestCanAccessOrder` is deliberately left exactly as it is. Narrowing its table branch is
+ * #279, it is sequenced behind a measurement, and `__tests__/owns-order-both-columns.test.ts`
+ * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
+ * ruling already made, so this adds a stricter sibling rather than editing it.
+ */
+export function guestCanReceiveOrderDelivery(
+  order: GuestOrderRow,
+  params: {
+    tableNumber?: number | null
+    sessionId?: string | null
+    sessionIds?: Array<string | null | undefined>
+    restaurantId?: string | null
+  },
+): boolean {
+  const orderRestaurant = String(order.restaurant_id || '').trim()
+  const wantRestaurant = String(params.restaurantId || '').trim()
+  if (!wantRestaurant || !orderRestaurant || wantRestaurant !== orderRestaurant) {
+    return false
+  }
+
+  const table = params.tableNumber
+  if (table != null && Number.isFinite(table) && Number(order.table_number) === table) {
+    return true
+  }
+
+  return ownsOrder(order, [params.sessionId, ...(params.sessionIds ?? [])])
+}
+
+/**
+ * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
+ *
+ * Two facts make this necessary, and both cost a bug on 2026-08-13 alone:
+ *
+ * 1. The app mints TWO session ids and nothing syncs them —
+ *      lib/session.ts     flashtap_session_v1  localStorage  `sess_<uuid>`
+ *      lib/tab-storage.ts tab_session_id       mirrored      `session_<ts>_<rand>`
+ *    An order carries whichever the placing screen held, and the cart submits the TAB one. So
+ *    the answer depends on EVERY id the client holds, never one. Use heldSessionIds() to build
+ *    the list; do not assemble it per call site.
+ *
+ * 2. An order records the placer in TWO columns, `session_id` and `member_session_id`. Checking
+ *    one was the third bug: guest queries had a sessionIds parameter for (1) but still compared
+ *    a single column, My Orders showed an empty list, and the edit route answered 404 to the
+ *    customer's own order.
+ *
+ * The rule is therefore: EVERY id, against BOTH columns. Any caller that restates it instead of
+ * importing it is the fourth bug waiting to happen.
+ *
+ * NOT a credential check. A session id is a bearer value the client supplies, so this answers
+ * "does the caller know an id this row was placed under", nothing stronger. What makes that
+ * acceptable is that the ids are unguessable — see the note on `session_<ts>_<rand>` in the
+ * issue filed alongside this, because that one is Math.random and weaker than it looks.
+ */
+/**
+ * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
+ *
+ * Two facts make this necessary, and both cost a bug on 2026-08-13 alone:
+ *
+ * 1. The app mints TWO session ids and nothing syncs them —
+ *      lib/session.ts     flashtap_session_v1  localStorage  `sess_<uuid>`
+ *      lib/tab-storage.ts tab_session_id       mirrored      `session_<ts>_<rand>`
+ *    An order carries whichever the placing screen held, and the cart submits the TAB one. So
+ *    the answer depends on EVERY id the client holds, never one. Use heldSessionIds() to build
+ *    the list; do not assemble it per call site.
+ *
+ * 2. An order records the placer in TWO columns, `session_id` and `member_session_id`. Checking
+ *    one was the third bug: guest queries had a sessionIds parameter for (1) but still compared
+ *    a single column, My Orders showed an empty list, and the edit route answered 404 to the
+ *    customer's own order.
+ *
+ * The rule is therefore: EVERY id, against BOTH columns. Any caller that restates it instead of
+ * importing it is the fourth bug waiting to happen.
+ *
+ * NOT a credential check. A session id is a bearer value the client supplies, so this answers
+ * "does the caller know an id this row was placed under", nothing stronger. What makes that
+ * acceptable is that the ids are unguessable — see the note on `session_<ts>_<rand>` in the
+ * issue filed alongside this, because that one is Math.random and weaker than it looks.
+ */
+export function ownsOrder(
+  order: { session_id?: unknown; member_session_id?: unknown },
+  sessionIds: Array<string | null | undefined>,
+): boolean {
+  const held = new Set(
+    (sessionIds ?? []).map((id) => String(id ?? '').trim()).filter(Boolean),
+  )
+  if (held.size === 0) return false
+  const rowIds = [
+    String(order.session_id ?? '').trim(),
+    String(order.member_session_id ?? '').trim(),
+  ].filter(Boolean)
+  return rowIds.some((rowId) => held.has(rowId))
+}
+
+/**
+ * Strip the edit-lock token from any row about to leave for a guest, replacing it with the
+ * boolean the UI actually needs.
+ *
+ * This is not tidiness, it is the hole customer order editing would otherwise open.
+ * `edit_lock_token` is a CAPABILITY: PATCH /api/guest/orders/[orderId]/edit accepts it as proof
+ * that the caller holds the lock. Every guest read path selects `*`, and guestCanAccessOrder
+ * above deliberately admits an OPEN order on table_number alone — correct for a read on a
+ * shared table, and the reason a second diner could otherwise fetch someone else's order, read
+ * the token out of the response, and commit an edit to it despite the edit route's own session
+ * check.
+ *
+ * So the token is returned exactly once, by the POST that mints it, to the session that
+ * acquired it. Never by a read.
+ *
+ * Lives here rather than in queries.ts so it can be tested without a Supabase client: that
+ * module builds one at import time, which turns any hermetic suite importing it into
+ * `Tests: 0 total` — a suite that fails to LOAD looks like a failing test and is not one.
+ */
 /**
  * Payment references and merchant order numbers as this system issues them.
  *
