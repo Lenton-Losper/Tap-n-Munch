@@ -62,6 +62,56 @@ export function guestCanAccessOrder(
 }
 
 /**
+ * The access question for actions that SEND the order somewhere, rather than answering the
+ * caller who already holds its id.
+ *
+ * WHY THIS IS NOT `guestCanAccessOrder` (QRA-19). That helper short-circuits to `true` on
+ * `is_closed`, `payment_status = 'paid'`, `status = 'completed'` and `status = 'cancelled'` —
+ * the shareable-receipt-link pattern, and a deliberate decision. It is defensible for a READ,
+ * where the caller already possesses the order UUID and learns nothing they could not learn by
+ * opening the link they were given.
+ *
+ * It is not defensible for `POST /api/guest/orders/[orderId]/receipt/email`, which is a
+ * different kind of act: it takes an attacker-chosen address and has the restaurant send that
+ * customer's itemised receipt to it. Under the read rule the whole gate for a PAID order was
+ * restaurant scope alone — and the restaurant uuid is in every menu URL. It also has a write
+ * side effect: `issueReceiptForOrder` allocates a document number and inserts a
+ * `receipt_documents` row for an order that had none, stamping today's numbering context onto
+ * an older sale.
+ *
+ * So delivery requires what a READ of an OPEN order requires: the restaurant, plus either the
+ * table the order sits at or a session id it was placed under. Concretely, the same predicate
+ * with the terminal-state short-circuit removed.
+ *
+ * `guestCanAccessOrder` is deliberately left exactly as it is. Narrowing its table branch is
+ * #279, it is sequenced behind a measurement, and `__tests__/owns-order-both-columns.test.ts`
+ * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
+ * ruling already made, so this adds a stricter sibling rather than editing it.
+ */
+export function guestCanReceiveOrderDelivery(
+  order: GuestOrderRow,
+  params: {
+    tableNumber?: number | null
+    sessionId?: string | null
+    sessionIds?: Array<string | null | undefined>
+    restaurantId?: string | null
+  },
+): boolean {
+  const orderRestaurant = String(order.restaurant_id || '').trim()
+  const wantRestaurant = String(params.restaurantId || '').trim()
+  if (!wantRestaurant || !orderRestaurant || wantRestaurant !== orderRestaurant) {
+    return false
+  }
+
+  const table = params.tableNumber
+  if (table != null && Number.isFinite(table) && Number(order.table_number) === table) {
+    return true
+  }
+
+  return ownsOrder(order, [params.sessionId, ...(params.sessionIds ?? [])])
+}
+
+/**
  * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
  *
  * Two facts make this necessary, and both cost a bug on 2026-08-13 alone:
