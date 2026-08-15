@@ -15,6 +15,7 @@ import {
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
+import { TabActionRefused } from '@/lib/tabs/tab-action-refused'
 // The OTHER session id. lib/session.ts owns `flashtap_session_v1` in localStorage; this context
 // owns `tab_session_id` in sessionStorage. Nothing syncs them and an order carries whichever the
 // placing screen held, so both have to be offered when asking which member row is the caller's.
@@ -465,7 +466,16 @@ export function TabProvider({
     }
 
     if (!response.ok) {
-      throw new Error(data?.error || `Failed to create tab (${response.status})`)
+      // Carries the server's code so the landing can open the PIN prompt rather than printing a
+      // refusal with no way forward. POST /api/tabs refuses the 23505 recovery branch with
+      // TAB_PIN_REQUIRED / TAB_PIN_INCORRECT / TAB_ALREADY_OPEN (QRA-02/03); the first two are
+      // actionable and the third is not. Plain `new Error(data.error)` threw the code away.
+      throw new TabActionRefused(
+        data?.error || `Failed to create tab (${response.status})`,
+        data?.code,
+        response.status,
+        data?.tabId,
+      )
     }
 
     if (data?.sessionToken) {

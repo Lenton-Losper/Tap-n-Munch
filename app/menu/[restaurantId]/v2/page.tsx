@@ -21,6 +21,7 @@ import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
 import { isStoredTabAtAnotherTable } from '@/lib/tabs/landing-tab-actions'
+import { shouldPromptForTabPin } from '@/lib/tabs/tab-action-refused'
 import {
   clearTabSession,
   persistTabSession,
@@ -763,8 +764,33 @@ export function MenuLandingPageV2Content({
       }
       router.push(browseWithTab(result.tabId))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
       console.error('[V2] create tab failed:', err)
+      /**
+       * The table already has an open tab and it is PIN-gated (QRA-02/03).
+       *
+       * Before this, the customer got the sentence in `tabActionError` and nothing to press. The
+       * landing only renders a Join affordance when GET /api/tabs/active returned a tab, and the
+       * two ways to reach Create on an occupied table are exactly the two where it did not: the
+       * genuine create race, and a tab older than the landing's 12-hour window (#218). So the
+       * cases that produce this refusal are precisely the cases with no visible way forward.
+       *
+       * Route it into the PIN prompt that already exists instead. `scanned-table` is the right
+       * target: the tab that refused us is the open tab AT THIS TABLE, which is what
+       * joinTabWithPin resolves by table number — see the note in handleSubmitJoinPin for why the
+       * stored-tab branch is not interchangeable.
+       *
+       * TAB_ALREADY_OPEN is deliberately not handled here: it means the open tab has no PIN, so
+       * there is nothing to prompt for and its copy sends the customer to staff.
+       */
+      if (shouldPromptForTabPin(err)) {
+        setTabActionError(null)
+        setPinTarget('scanned-table')
+        setJoinPin('')
+        setJoinPinError(err.message)
+        setShowJoinPinEntry(true)
+        return
+      }
+      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
