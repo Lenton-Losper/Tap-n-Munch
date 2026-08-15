@@ -3337,3 +3337,332 @@ Not in the brief; added because the implementation revealed it. `my-orders`' `lo
 throw.
 
 ---
+
+# 17. THE PROPOSED REDESIGN AGAINST CURRENT REALITY
+
+Evaluated only now, per the brief. Two of the proposals turn out to be **already implemented**, one
+rests on a statement that is **currently false**, and one is a genuine domain decision.
+
+## 17.1 Menu → Cart → Place Order → My Orders, with a banner instead of a confirmation page
+
+| | |
+|---|---|
+| **Replaces** | For the **tab flow, nothing — this is already the behaviour.** `handleAddToTab` (`cart/page.tsx:329-334`) calls `clearCart()`, raises a toast (*"Request sent! Waiting for the restaurant to confirm…"*) and `router.replace`s to **`/browse`**. There is no confirmation page in the tab flow today. For the **non-tab flow** it replaces `router.replace('/menu/{rid}/order-confirmation/{orderId}')` (`cart:429`). |
+| **Reusable** | The toast, the `sessionStorage` return pointers (`last_order_id`, `flashtap_return_order_id`, `flashtap_return_table`), the whole of `/my-orders`. |
+| **Conflicting backend assumption** | **The banner's wording.** Today's toast says *"Request sent"*, which is accurate; the proposal's *"Sent to the kitchen"* is **not** — see 17.4. |
+| **New states** | None. |
+| **Races** | None new. One existing hazard is inherited: the tab flow lands on `/browse`, whose tab strip renders `tabs.total`, which does not include the just-placed request until staff Accept. Landing on My Orders instead is strictly better here — My Orders reads `order_requests` too. |
+| **Authorization** | None new. |
+| **UI-only or domain?** | **UI-only**, and it is a simplification: it makes the two flows agree. |
+
+The one thing the proposal must keep: the confirmation route is still needed for the **gateway
+return** (`/order-confirmation?tn=…`), which is a different page (`app/order-confirmation/page.tsx`,
+805 lines) from the per-order one. The proposal already says so.
+
+**It also resolves D3 (two confirmation screens) only if the per-order route keeps the editor.**
+Today `/my-orders` links card taps to the *root* route and the edit button to the *per-order* route.
+Moving editing into My Orders removes the reason to navigate anywhere.
+
+## 17.2 Menu header and the tab strip
+
+Proposed header: restaurant · table · My Orders · Cart with badge. **That is what
+`browse/page.tsx:726-880` renders today**, since the 2026-08-14 fix that discovered *"the button
+labelled My Orders pointed at `/cart` and always had"*. Nothing to change.
+
+Tab strip content — running total, people, PIN, settle affordance — evaluated against actual domain
+behaviour:
+
+| Element | Belongs there? | Why |
+|---|---|---|
+| open-tab state | **yes** | it is the only screen that reads `tabs.status` on every load |
+| running total | **yes, and it is the ONLY correct total in the product** — it renders `tabs.total`, while `/tab` and `/receipt` render session-scoped sums (QRA-12) | but it is stale until refresh (QRA-17) and inflated by cancellations (QRA-15) |
+| number of people | yes | `tabs.members.length`, via the redacted read |
+| PIN | **on production, no** — the PIN is not readable by a joiner at all, so the strip renders it only for the tab's creator. On staging it is readable by every member (QRA-04) | the honest question is not *where* the PIN goes but *who may read it*, which is QRA-02/QRA-04 |
+| settlement affordance | see 17.8 |
+
+## 17.3 Item popup for every item
+
+**ALREADY IMPLEMENTED, and the brief's premise is out of date.** `handleAddToCart`
+(`browse/page.tsx:690-703`) does `setSelectedItem(item)` unconditionally — there is no variant
+check — and the docblock explains it as a deliberate change:
+
+> *"EVERY item opens the popup, including one with nothing to choose. An item with no options used
+> to be added straight from the card. The add itself worked, but it was silent … A popup they have
+> to dismiss is the confirmation."*
+
+**What is NOT implemented:** the card itself is not tappable. `renderMenuItemCard`
+(`:614-…`) has no `onClick` on the `<article>`; only the `+` button (`renderAddButton:594-612`)
+opens the modal. So the remaining work is *"tapping anywhere on the row opens it"*, which is
+**UI-only**.
+
+`ItemDetailModal`'s contents against the proposal: image ✅, name ✅, description ✅, variants ✅,
+add-ons ✅, per-item note ✅ (`specialInstructions`), quantity ✅, Add-with-price ✅
+(`getItemDisplayPrice` + `getDefaultGroupSelection`). **Nothing in this proposal needs a backend
+change.**
+
+One live constraint the redesign must not lose: `handleAddToCart` is the **single funnel** where
+`isChargeableMenuStatus(item.status)` is checked (#272). Any new entry point into the modal must go
+through it, not around it.
+
+## 17.4 The Cart's help text — **currently false, in three ways**
+
+Proposed: *"This sends your order to the kitchen. You can pay for everything together at the end."*
+
+1. **It does not go to the kitchen.** A QR submission becomes an `order_requests` row
+   (`orders/route.ts:305-335`). There is no kitchen ticket, no `route_to` enrichment and no order
+   number until a staff member presses Accept. `enrichOrderItemsWithRouteTo` is called from the
+   Accept route, not from submission. The customer's own screens say *"Waiting for confirmation"* —
+   which is the truthful version.
+2. **"Pay for everything together at the end" is not always available.** A tab in `ready_to_pay`
+   refuses further orders (`orders/route.ts:138-143`), and there is no route back to `open`. Once
+   any member has tapped *Ready to pay*, "at the end" has already happened for everyone.
+3. **It is false for the non-tab flow entirely.** `/order-secure` posts `paymentChannel: 'hosted'`
+   and the customer pays that order immediately.
+
+**This is a change to what a customer is told about money and is therefore the human's ruling**, not
+an implementation choice. The truthful minimum is something like *"This sends your order to the
+restaurant to confirm"*, and any promise about paying together needs a condition on
+`tabs.status = 'open'`.
+
+## 17.5 My Orders as the hub — and what "My" can truthfully mean
+
+**"My" today means: orders placed by any session id this browser holds.** It is
+`fetchGuestOrdersBySession({sessionIds: heldSessionIds()})`, which is session-scoped by
+construction and cannot return another diner's rows.
+
+The brief asks whether it could mean "the table's orders". Answered from the permissions matrix:
+
+- **Visibility** — the table's orders are readable (`guestCanAccessOrder`'s table branch), but there
+  is **no endpoint that lists them**. `fetchGuestActiveTableOrders` fails closed without session
+  ids for the row path. Making My Orders table-scoped needs a **new server capability**, and that
+  capability is exactly what #279 is trying to remove.
+- **Mutation** — creator-only (`sessionOwnsRow`). It will not widen without a new authorization
+  model, because the only thing that identifies a member is a bearer id that other members can
+  already read (QRA-05).
+
+**So yes, this is a product-language problem, and it is the sharpest one in the audit.** Visibility
+and mutation have different owners:
+
+| | can see | can change |
+|---|---|---|
+| own orders | ✅ | ✅ |
+| table's orders | ✅ *(readable, but nothing lists them)* | ⛔ |
+
+A My Orders that showed the table would promise a permission the domain does not grant, and the
+customer would meet the refusal as a `404`. **Recommendation for the copy, not the code: keep it
+session-scoped and stop calling the other screens' figures "the tab".** The fix for a customer who
+wants to see the table's total is the browse strip, which already shows it correctly.
+
+## 17.6 Customer-facing statuses — four words vs the current six-step tracker
+
+Today's tracker (`components/menu/menu-order-status-tracker.tsx:41-71`) has **six** steps:
+`Waiting for Review → Received → Accepted → Preparing → Ready → Paid`. My Orders has its own
+seven-entry `configs` map. `mapOrderStatusToBadge` has a third vocabulary.
+
+Mapping the proposal onto every backend state that can reach a customer:
+
+| Backend state | Proposed word | Truthful? |
+|---|---|---|
+| `waiting_review` | Waiting for the restaurant | ✅ |
+| `accepting` | Waiting for the restaurant | ✅ (`normalizeOrderStatusForDisplay` already maps it) |
+| `pending` | Waiting for the restaurant | ✅ — and this is where a **re-acceptance** lands |
+| `accepted` / `confirmed` | Being prepared | ⚠️ **not true.** `accepted` means staff took the order; the kitchen may not have started. The current tracker distinguishes them |
+| `preparing` | Being prepared | ✅ |
+| `ready` | Ready | ✅ |
+| `ready_for_terminal` | *(none)* | ❌ **the customer must act** — they asked for the terminal |
+| `completed` + `paid` | Paid | ✅ |
+| `cancelled` | *(none)* | ❌ **hides a state the customer must know about** |
+| `declined` | *(none)* | ❌ same — and #219's whole point was that a declined request must remain visible |
+| `payment_status = 'failed'` | *(none)* | ❌ the customer must retry with staff |
+
+**Four words cannot carry it.** Three states are omitted entirely and one is merged wrongly.
+The minimum truthful set is six: *Waiting for the restaurant · Accepted · Being prepared · Ready ·
+Paid · Needs your attention* (covering `declined`, `cancelled`, `failed`, `ready_for_terminal`).
+
+**Domain-changing?** No — it is a render-site change. But it must go through
+`normalizeOrderStatusForDisplay`, which the existing render sites bypass (D5).
+
+## 17.7 Removing the decorative NEW badge
+
+**Verified before judging, as the brief asks.** `my-orders/page.tsx:98` maps `pending → {🎉, 'New'}`,
+and `:104` is `return configs[status] || configs.pending` — so **any unmapped status renders as
+"🎉 New"**. The file's own comment records this having already caused a bug
+(`:91-93`), and `mapOrderRequestToGuestRow` now normalises upstream specifically to stop it.
+
+So the badge is not merely decorative — it is a **fallback that lies**. A `ready_for_terminal`
+order, or any status added later, reads as *"New"*. Removing it is right; removing it **without
+replacing the fallback** just moves the lie. The fallback should be an explicit unknown-state
+render, not the first entry in the map.
+
+Note also: it is *"New"* on a `pending` order, and `pending` is precisely where a **re-accepted
+edited order** lands. So today a customer who edits an order sees it go from *Accepted* back to
+*"🎉 New"*.
+
+## 17.8 In-place editing inside My Orders
+
+| | |
+|---|---|
+| **Replaces** | `OrderEditPanel` mounted in `OrderConfirmationView`'s `editSlot` on the per-order route, plus the list's *Change this order* button that navigates there. |
+| **Reusable** | **All of it.** `OrderEditPanel` takes `{orderId, restaurantId, sessionIds, order, currency, onEdited}` and renders self-contained. Moving it into a list card is a placement change. |
+| **Conflicting assumption** | The panel needs the **raw guest row** (`surface`, `payment_checkout_url`, `edit_lock_*`), which is exactly what `fetchGuestOrdersBySession` already returns. No new fetch. |
+| **New states** | None. |
+| **Races** | **One, and it is new.** Today only one editor can exist because the customer must navigate to a single order's page. In a list, N cards each with an editor means N locks on N orders held by one customer at once, each for 3 minutes, each released only on unmount. `OrderEditPanel`'s `release` is keyed to its own unmount, so this works — but a customer who opens three editors and closes the tab holds three locks. Low impact; worth a single-open-editor rule. |
+| **Authorization** | None new — `sessionIds` is the same. |
+| **UI-only or domain?** | **UI-only.** |
+
+**Nothing is committed until Save** — already true. `WorkingLine[]` is local state; the only server
+calls are acquire, commit and release.
+
+## 17.9 "+ Add something" — **the architectural question**
+
+The proposed flow: *Change order → + Add something → menu in picker mode → configure → back to the
+pending editor → Save commits the whole mutation.*
+
+**The first thing to state is that no part of this exists.** Section 5D: the edit wire format is
+`keep: {index, quantity}[]` over stored line indexes, and `repriceKeptLines:99-101` rejects any
+index outside the existing array. There is no field for a menu item, and the pricing function is a
+strict reduction by construction.
+
+### Model A — the addition mutates the existing order
+
+| Dimension | Consequence |
+|---|---|
+| **kitchen workflow** | Within the edit window the kitchen has not started (that is what the window *is*), so nothing is un-cooked. But an `accepted` order that gains an item must return to `pending` — which the existing rule already does for any total change. Coherent. |
+| **KDS** | The ticket changes under staff. `total_before_edit` and `requires_reacceptance` exist to explain that and are already rendered on the dashboard card. |
+| **acceptance / preparation state** | Re-acceptance is already the rule for any total movement. No new rule. |
+| **concurrency** | Reuses the existing lock and the two conditional UPDATEs. **No new race** — the addition is part of the same CAS'd commit. This is Model A's strongest point. |
+| **inventory** | ⚠️ **`checkStockSufficiency` is not called by the edit route.** It runs only in `POST /api/orders`. Model A must add it — and it is the oversell path (#146/#147), whose race was *measured* not to be fixed by locking. |
+| **VAT / tax** | The order becomes **mixed-vintage**: survivors keep the rate and inclusivity stored at placement (`reprice-priced-lines` re-uses `taxRatePercentage` / `taxInclusive` per line), while a new line is priced at the live rate. That is defensible and is what a real bill does — but it must be deliberate, and the four receipt renderers already disagree about VAT basis. |
+| **pricing** | Same: survivors at the quoted price, the addition at today's price. Requires `calculateOrderPricing` for one line while `repriceKeptLines` handles the rest — **two pricing engines in one commit.** |
+| **payment** | Inherits `payment_in_flight`: a live `payment_checkout_url` already blocks the edit, so a hosted checkout quoted for the old total cannot be undercut. ✅ |
+| **tab total** | Already re-summed by the edit route. ✅ |
+| **receipts** | One order, one receipt. ✅ — the cleanest outcome of either model. |
+| **reporting** | One order. ✅ |
+| **order numbering** | Unchanged. ✅ |
+| **audit history** | `edit_history` already stores `previous_items`; an addition fits without a schema change. ✅ |
+| **realtime** | `orders` / `order_requests` are published, so staff see it. Customers see nothing either way (QRA-17). |
+| **refunds / cancellation** | One unit. ✅ |
+| **staff comprehension** | One card that changed, with a before/after figure. Arguably the easiest to read. |
+| **the quantity cap and the payment-method allowlist** | ⚠️ Both live in `POST /api/orders` and neither is in the edit path. |
+
+### Model B — the addition creates a second internal order
+
+| Dimension | Consequence |
+|---|---|
+| **kitchen / KDS** | Two tickets — **exactly what happens today**. Staff already understand it. |
+| **acceptance** | Two Accept decisions for one customer intent. |
+| **concurrency** | Reuses `POST /api/orders` entirely: idempotency key, stock check, quantity cap, payment allowlist, view-only guard, tab-status guard. **Zero new guards to write.** |
+| **inventory / VAT / pricing** | All correct by reuse. |
+| **payment** | Both orders sit on the tab and settle together. ✅ |
+| **tab total** | Re-summed at Accept. ⚠️ But an **un-Accepted** second ticket is not in `tabs.total` and is not claimed by `settle` (which filters `orders` by `tab_id`) — persona 3. |
+| **receipts** | **Two receipts.** `receipt_documents` is per order, and the snapshot is built at issuance. |
+| **reporting** | Two orders, two `order_number`s. |
+| **order numbering** | ⚠️ **The customer is told they changed one order and the receipt shows two.** |
+| **audit history** | No link exists. Would need a new column (`amends_order_id` / `parent_order_id`) for anything downstream to group them. |
+| **refunds** | Two units. |
+| **staff comprehension** | Unchanged from today. |
+
+### The recommendation, argued from the domain and not from the UI
+
+**Model B, with an explicit link column — and the customer must not be told the original order
+changed.**
+
+The decisive fact is not elegance, it is **where the sale controls live**. Four guards protect the
+creation of a sale — the stock sufficiency check, the per-line quantity cap, the payment-method
+allowlist, and pricing against the live menu — and **all four are attached to `POST /api/orders`
+and none of them is in the edit route.** That is not an accident: `reprice-priced-lines.ts:114-116`
+says so in terms, as the reason a quantity may not be raised.
+
+Model A requires porting all four into a route whose entire safety argument is *"this is a strict
+reduction of what is already there"*. The moment it can add, that argument is gone and the route
+needs to be re-reasoned from scratch — including `UnmatchedMenuItemError` handling, out-of-stock
+refusal on a line the customer did not touch, and the oversell race.
+
+Model B keeps additions on the path that already has every control, at the cost of a second order
+number and a second receipt. **Both of those are visible to the customer**, which is why the second
+half of the recommendation matters: if the internal reality is two orders, the customer-facing
+language must be *"add to my table"* rather than *"change my order"*. Presenting Model B as Model A
+is the one option that is actually unsafe, because it makes the receipt contradict the interface at
+exactly the moment money is being discussed.
+
+**If Model A is chosen anyway** — and it is a legitimate choice — the prerequisites are, in order:
+(1) `checkStockSufficiency` in the edit commit; (2) `validateOrderQuantities` in the edit commit;
+(3) a decision on whether an addition needs the payment-method allowlist (it does not on a tab,
+per #202); (4) a written ruling on mixed-vintage pricing on one order; (5) a probe of the
+addition-vs-Accept race, which the existing probe does not cover.
+
+## 17.10 Editing deadline vs edit hold
+
+The proposal wants these kept distinct. **The implementation already separates them cleanly**, and
+this is the part of the redesign that is best supported today:
+
+| Concept | Implementation | Event-driven or timed? |
+|---|---|---|
+| **Deadline** | `EDITABLE_ORDER_STATUSES = ['pending','accepted']` plus the payment allowlist plus `payment_checkout_url` | **event-driven** — the moment staff move the status, the token is nulled |
+| **Hold** | `edit_lock_token` + `edit_lock_expires_at`, 3 minutes | **timed** |
+
+So *"You can change this order until the kitchen starts it"* is **true today** and needs no backend
+change — with one caveat the copy must survive: it is also closed by payment settling, by a live
+checkout session, and (wrongly worded) by a *failed* payment (QRA-20).
+
+*"Held for you · 2:44"* is `EDIT_COPY.lockHeld` (`'{seconds}s left to make changes'`), substituted
+at the render site. **True today** — with the caveat that today it is only ever shown to the holder,
+and QRA-01 makes the holder's own commit fail at the end of it.
+
+*"The kitchen has started this order, so it can't be changed now."* — `EDIT_COPY.preparationStarted`,
+**exists verbatim** and is returned with `409 preparation_started`. **True today.**
+
+*"That took too long, so nothing was saved. Open the order again to change it."* —
+`EDIT_COPY.lockExpired`, **exists verbatim**. **True today except in one case**: it is also the
+message for `lock_lost`, which includes *"your commit succeeded but the response was lost"*. See
+14.1.
+
+**Backend changes needed to make those four messages truthful: one — QRA-01.** Everything else is
+already there. That is the strongest single finding in favour of the redesign.
+
+## 17.11 Payment placement
+
+Open product question. What the domain says:
+
+- **The authoritative payable amount is `tabs.total`**, and the **only** screen that renders it is
+  the browse tab strip. `/tab` and `/receipt` render session-scoped sums (QRA-12). So today,
+  *"settle from the tab strip"* is the only placement where the customer sees the right number
+  before acting.
+- **Payment concurrency** is a non-issue for placement: `ready-to-pay` is CAS'd and idempotent, and
+  the real charge is on the terminal.
+- **Duplicate responsibility already exists** and is worse than the proposal contemplates: `/tab`
+  writes `tabs.status`, while `/order-confirmation/[orderId]` offers `ReadyToPayTerminalButton` and
+  `ReadyToPayCashButton`, which write `orders.customer_ready_to_pay` / `orders.status =
+  'ready_for_terminal'`. **Two different "call the waiter" affordances writing to two different
+  tables, with nothing reconciling them** (D8).
+- **Discoverability**: `/tab` is reached only through the strip, so putting settlement in My Orders
+  as well creates a third path.
+
+**What the domain actually requires, whichever placement is chosen:** the screen that offers
+settlement must render `tabs.total`, not a client sum. That is QRA-12 and it is a prerequisite for
+*any* answer to this question.
+
+## 17.12 Order numbering
+
+- `orders.order_number` is a **per-restaurant counter**, allocated in `createOrder`. Migration
+  `20260809120000` added a unique index on `(restaurant_id, order_number)`; the operating contract
+  records 282 pre-existing duplicate pairs on production that blocked it, so the guarantee is
+  environment-dependent.
+- A QR customer sees the real number in three places — `my-orders:219`
+  (`Order #{order_number || id.slice(-6)}`), the confirmation view, and the receipt.
+- **Before Accept there is no number at all**: `mapOrderRequestToGuestRow` sets `order_number: 0`
+  (`queries.ts:59`), so a `waiting_review` order renders as `Order #` + the last six characters of
+  its UUID. So the customer already sees two different identifier schemes for the same order,
+  depending on when they look.
+
+**Is customer-relative numbering safe?** Only if the real number remains reachable, because staff
+and customer must be able to talk about the same order — the kitchen ticket, the terminal, the
+receipt and every staff screen use `order_number`. A customer saying *"my Order #2"* to a waiter
+looking at `#417` is a support failure.
+
+**Recommendation:** customer-relative labels are safe as a *presentation* layer only if the real
+number is shown alongside or on the receipt. The stronger argument for them is the one the audit
+turned up rather than the proposal: **Model B makes "Order #1" and "Order #2" appear for a single
+customer intent**, and a customer-relative label is how that is made legible.
+
+---
