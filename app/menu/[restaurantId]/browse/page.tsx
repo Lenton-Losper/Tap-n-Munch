@@ -13,7 +13,7 @@ import OrderStatusBanner from '@/components/OrderStatusBanner'
 import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, ArrowLeft, Receipt, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
+import { Search, ArrowLeft, Receipt, ListChecks, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -716,7 +716,7 @@ export default function MenuBrowsePage() {
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               {tableNumber > 0 && (
                 <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}${tabId || tabIdParam ? `&tabId=${encodeURIComponent(tabId || tabIdParam)}` : ''}`}>
-                  <Button variant="outline" size="sm" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
+                  <Button variant="outline" size="sm" aria-label="Receipt" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
                     <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
                     <span className="hidden sm:inline">Receipt</span>
                   </Button>
@@ -729,9 +729,14 @@ export default function MenuBrowsePage() {
                 size="sm"
                 variant="outline"
                 onClick={() => router.push(myOrdersHref)}
+                aria-label={CUSTOMER_NAV_COPY.myOrders}
                 className="h-11 cursor-pointer rounded-full px-4 font-sans text-xs font-semibold sm:text-sm"
               >
-                <Receipt className="h-4 w-4 stroke-[1.5] sm:mr-1.5" />
+                {/* Not Receipt — that is the button beside this one. Below `sm` both labels are
+                    hidden and the icon is the only thing distinguishing them, so they must not
+                    share a glyph. ListChecks has no bounding rectangle, which reads clearly
+                    apart from Receipt's outlined shape at 16px. */}
+                <ListChecks className="h-4 w-4 stroke-[1.5] sm:mr-1.5" />
                 {/* Label collapses on small screens, exactly as the Receipt button beside it
                     already does. Adding a third control pushed the left block past its
                     truncation point — the restaurant name rendered as "S…" and the table as
