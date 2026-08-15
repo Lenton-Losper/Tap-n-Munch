@@ -1600,3 +1600,507 @@ no destructuring of `error` at all; sites 1 and 3 log and continue by explicit d
 re-sum is therefore indistinguishable from a successful one from anywhere in the system.
 
 ---
+
+# STAGE 2
+
+---
+
+# 4. MULTI-CUSTOMER TABLE BEHAVIOUR
+
+## Event 4A — Customer A arrives and orders Burger N$80 + Coke N$20
+
+Traced at `4861492`. The **prices shown are not the prices stored**: `calculateOrderPricing` reads
+the live menu and overwrites both (`app/api/orders/route.ts:306`, `:323-326`).
+
+Resulting server state:
+
+| Row | Values |
+|---|---|
+| `restaurant_tables` | `status` → `'occupied'`; `current_session_version` unchanged |
+| `tabs` | one row, `status='open'`, `total=0`, `tab_pin='NNNN'`, `pin_required=true`, `members=[{session_id: B_A, joined_at, display_name}]` |
+| `customer_sessions` | one row, `token=<uuid>`, `tab_id`, `table_id`, `restaurant_id`, `session_version=<table's>`, `active=true`, `expires_at=+24h` |
+| `order_requests` | one row, `status='waiting_review'`, `tab_id`, `session_id=B_A`, `member_session_id=B_A`, `items=[…]`, `subtotal/tax/total` from the server |
+| `orders` | **none** |
+
+**Kitchen state:** the request appears in the staff *Waiting for Review* list
+(`lib/supabase/order-requests.ts:14-23`). There is no kitchen ticket and no `route_to` enrichment
+yet — both are deferred to Accept.
+
+**Ownership:** the only ownership fact recorded anywhere is `session_id`/`member_session_id` on the
+request row. `tabs.members` records that B_A is *at the table*; nothing links a member entry to an
+order.
+
+**`tabs.total` is still 0** until staff Accept. So A's own tab strip reads *"Tab open • N$0.00"*
+while A's order sits in the queue. VERIFIED — the only writer that would move it on this path is
+the Accept route.
+
+## Event 4B — Customer B scans the same QR on another phone
+
+`/menu/{rid}/v2?table=12` loads. `TabProvider` mints B's own `tab_session_id` (B_B) on construction.
+`createFreshSession` mints B's `flashtap_session_v1` (A_B). `syncTabLandingState` finds no stored
+tab, so `GET /api/tabs/active?restaurantId&tableNumber=12` returns
+`{tab:{id, status:'open', total, pin_required:true, member_count:1}}` — **unauthenticated**.
+
+**B sees** *"A tab is already open at this table"* with the running total, the person count, and a
+**Join** action that opens PIN entry.
+
+Answering the brief's questions, each with what the server actually does:
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does B join the same table session? | Yes, once B passes the PIN — `POST /api/tabs/join` issues a `customer_sessions` row for the **same** `tab_id`. | `app/api/tabs/join/route.ts:74-80` |
+| …or without the PIN? | **Yes, unconditionally, via `POST /api/tabs`** — QRA-02. | `app/api/tabs/route.ts:150-227` |
+| Does B join the same tab? | Yes; there is only one open tab per table. | `idx_tabs_one_open_per_table` |
+| Can B **see** A's order? | **Not through any screen.** Every list B's screens use is session-scoped (`fetchGuestOrdersBySession`, `fetchGuestActiveTableOrders`) and B holds none of A's ids. But `GET /api/guest/orders/{A's order id}?restaurantId&table_number=12` **does** return it, on the table-number branch alone — B just has no way to learn the id from the product. | `lib/guest-orders/validation.ts:43-45`; #279 |
+| Can B see A's **identity**? | Display name only. `tabs.members` is redacted to an opaque per-tab `member_key` on both reads (`/api/tabs/[tabId]/view` and `/api/tabs/[tabId]`). B sees `display_name`, never A's `session_id`. | `lib/tab-member-key.ts`; `/view` route |
+| …except | `GET /api/orders?tabId=` returns **raw `session_id` per order** to any token holder. QRA-05. | `app/api/orders/route.ts:689` |
+| Can B **edit** A's order? | **No** — `sessionOwnsRow` matches only ids B supplies against the row's two placer columns; B gets `404`. Unless B has harvested A's session id (QRA-05). | `edit/route.ts:139-146`, `:250-252` |
+| Can B **cancel** A's order? | **No customer cancel exists at all.** `grep -rn cancel app/api/guest/` returns nothing. The edit route refuses an empty order with *"An order needs at least one item. Ask staff to cancel it instead."* | measured; `EDIT_COPY.cannotEmpty` |
+| Can B **pay** A's order? | Not directly. B can mark the whole tab `ready_to_pay`, which is what summons the terminal. | `ready-to-pay/route.ts` |
+| Can B settle the whole tab? | B can *request* it. The charge is taken by staff on the terminal. | `app/api/terminal/tabs/[tabId]/settle/route.ts` |
+| What identifies A separately from B? | `orders.session_id` / `member_session_id`, and a `members[]` entry. Nothing else. | — |
+| What identifies them as one table session? | Two `customer_sessions` rows with the same `tab_id`, both stamped with the table's `current_session_version`. | `lib/session-token.ts:37-71` |
+
+## Event 4C — B orders Steak N$150
+
+The result is **one tab containing two order requests**, which become **two orders** at Accept.
+There is no merging and no per-member sub-tab.
+
+What each party sees, at `4861492`:
+
+| Viewer | Sees |
+|---|---|
+| **A** | browse strip: `tabs.total` (both orders, after Accept). `/tab`: **only A's own N$100**, labelled *"Full tab running total"* — QRA-12. `/my-orders`: only A's order. |
+| **B** | symmetric: `/tab` shows only B's N$150 under the same label. |
+| **Kitchen** | two separate *Waiting for Review* cards, then two orders. |
+| **Live Orders / KDS** | two orders, each with its own `order_number`. |
+| **Terminal** | one tab, with the settle route summing all non-settlement orders with `owesMoney()`. |
+| **Reporting** | two orders. |
+
+**The authoritative tab total is `tabs.total`**, maintained by the five writers listed in QRA-15 and
+authoritatively recomputed only at settlement (`settle/route.ts:410-417`). The customer-visible
+figures on `/tab` and `/receipt` are **not** it.
+
+---
+
+# OWNERSHIP SEMANTICS — what an order is owned by, from what the server enforces
+
+The brief asks this to be answered from enforcement, not naming. Enumerated, the server enforces
+**three different owners depending on the operation**, and they are not nested:
+
+| Operation | Enforced owner | Where |
+|---|---|---|
+| **Read one order** | the RESTAURANT plus *either* the TABLE *or* the SESSION. A closed/paid/completed/cancelled order needs only the restaurant. | `guestCanAccessOrder`, `lib/guest-orders/validation.ts:24-61` |
+| **List orders** | the SESSION, always. Fails closed with no session ids. | `fetchGuestOrdersBySession:168-170`; `fetchGuestActiveTableOrders:347-349` |
+| **Write (edit)** | the SESSION only. Table number is deliberately excluded. | `sessionOwnsRow`, `edit/route.ts:139-146` and its docblock |
+| **Add to the tab** | the TAB, via a `customer_sessions` token bound to it. Any member may add. | `orders/route.ts:96-107` |
+| **Mark ready to pay** | the TAB, same token. Any member may do it for everyone. | `ready-to-pay/route.ts:23` |
+| **Settle** | STAFF only, on the terminal. | `terminal/tabs/[tabId]/settle` |
+
+**So: an order is owned by the creating session for mutation, by the table for readability, and by
+the tab collectively for payment.** That is three different answers and the product language does
+not distinguish them.
+
+The consequence the brief anticipates is real and load-bearing for the redesign: a "My Orders"
+screen that showed *the table's* orders would be showing rows the viewer can read but cannot edit,
+and the customer would discover that only when a button 404s. The current My Orders avoids this by
+being session-scoped — it shows less than the customer can see, not more.
+
+## THE PERMISSIONS MATRIX
+
+Each cell states what the **server or database** actually checks. "nothing" means there is no check
+— UI absence is not recorded as a control.
+
+Read `A` = the creating session. `B` = another customer on the same table session. `S` = staff.
+`X` = a stale customer whose table session has been closed (`close_table_session` ran) but whose
+browser still holds its ids.
+
+### VIEW (one order, by id)
+
+| | Check | Result |
+|---|---|---|
+| **A** | `guestCanAccessOrder`: restaurant match **and** `ownsOrder(row, held ids)` | ✅ allowed |
+| **B** | restaurant match **and** `Number(order.table_number) === table` — **the table number alone**, which is printed on the table and carried in the QR URL | ✅ **allowed** — #279 |
+| **S** | RLS staff policy on `orders`/`order_requests` via `user_restaurant_ids()`, plus `requireStaffPermission` on the routes | ✅ allowed |
+| **X** | **nothing revokes it.** `guestCanAccessOrder` never consults `customer_sessions`, `session_version`, `tabs.status` or `is_closed` (except to *widen*: `is_closed === true` returns `true` immediately, `:30-32`) | ✅ **allowed**, indefinitely |
+
+### EDIT *(staging only — the route does not exist on production)*
+
+| | Check | Result |
+|---|---|---|
+| **A** | `sessionOwnsRow` (held ids × both placer columns) → `editRefusalReason` (status ∈ {pending, accepted}; payment_status ∈ {pending, cash_pending}; no `payment_checkout_url`; lock not held by another) → conditional UPDATE CAS'd on `edit_lock_token` + the same allowlists | ✅ intended — **but see QRA-01: the commit is refused unconditionally today** |
+| **B** | `sessionOwnsRow` fails → `404 Order not found` (deliberately not `403`, so the response cannot confirm the order exists) | ⛔ refused |
+| **B holding A's session id** | `sessionOwnsRow` **passes** — the id is a bearer value | ✅ **allowed** — QRA-05 |
+| **S** | no staff edit route for `orders` items. Pre-Accept, `PATCH /api/order-requests/[id]/review` rewrites `items_reviewed` with `requireStaffPermission` | ✅ pre-Accept only |
+| **X** | **nothing.** The route consults no token, no `session_version` and no `is_closed`; and the table-close route leaves an unpaid order at `status='pending'`, `payment_status='pending'` | ✅ **allowed** — QRA-16 |
+
+### CANCEL
+
+| | Check | Result |
+|---|---|---|
+| **A** | — | ⛔ **no customer cancel exists.** `grep -rn "cancel" app/api/guest/` → no matches. The edit route explicitly refuses to empty an order. |
+| **B** | — | ⛔ same |
+| **S** | `requireStaffPermission(ORDERS_UPDATE)` + `isValidStaffStatusTransition(*→cancelled)` + status CAS + audit row | ✅ allowed |
+| **X** | — | ⛔ same as A |
+
+### PAY / SETTLE
+
+| | Check | Result |
+|---|---|---|
+| **A** | `requireSessionToken` bound to the tab → `POST /api/tabs/[tabId]/ready-to-pay`. This is a *request*, not a charge. | ✅ allowed |
+| **B** | identical — **any member may mark the whole tab ready to pay, for everyone**, and it blocks further ordering and further joining | ✅ allowed |
+| **anyone with no credential** | QRA-02 mints the token | ✅ **allowed** |
+| **S** | terminal auth on `/api/terminal/tabs/[tabId]/settle`, which re-derives the amount | ✅ allowed |
+| **X** | `validateSessionToken` fails on `tabs.status !== 'open'` **and** on the session-version mismatch | ⛔ **refused** — this is the one row where the token guard does its job |
+
+**Read the matrix down the X column.** The session token is the only thing that expires, and it
+guards six routes. Everything else a stale customer might do — reading an order, listing their own
+orders, and (on staging) editing an unpaid one — is gated on bearer session ids that nothing
+revokes.
+
+---
+
+# 5. CUSTOMER EDITING AN ORDER
+
+**PRODUCTION (`9dcf401`): none of this exists.** No `edit` route, no `edit-lock.ts`, no
+`edit_lock_*` columns in main's migration set. On production the answer to all five sub-questions
+is *"impossible; there is no editing"*. Everything below is `4861492`.
+
+Order A: 2 Burgers + 2 Cokes, not yet preparing.
+
+## The flow
+
+1. **Entry.** `/menu/{rid}/my-orders` renders *"Change this order"* when `isEditableHere` says so
+   (`my-orders/page.tsx:25-33`, `:257-272`) and navigates to
+   `/menu/{rid}/order-confirmation/{orderId}`. That page mounts `OrderEditPanel` in
+   `OrderConfirmationView`'s `editSlot`.
+2. **Eligibility (client affordance).** `editRefusalReason` / `requestEditRefusalReason` run in the
+   browser on the guest row. **The client can never see a live lock**: `redactGuestOrderRow` strips
+   `edit_lock_token`, and `isEditLockActive` requires that token
+   (`lib/orders/edit-lock.ts:99-106`) — so `isEditLockHeldByOther` is always `false` client-side.
+   The button therefore shows even while another diner holds the lock. Harmless (the server
+   refuses), but it means the *"Someone else at your table is changing this order"* copy can only
+   ever be reached as a surprise.
+3. **Acquire.** `POST /api/guest/orders/{id}/edit` `{restaurantId, sessionIds}`.
+   `prepare()` resolves the restaurant, loads the row from `orders` then `order_requests`, and
+   checks `sessionOwnsRow`. Then `refusalFor`. Then a **CAS'd UPDATE**: set token/holder/expiry
+   `WHERE id AND restaurant_id AND edit_lock_token = <observed>` (or `IS NULL`)
+   `AND status IN (…) AND payment_status IN (…)`. Zero rows → `explainLostWrite` re-reads and
+   returns the *real* reason.
+4. **Lock owner / expiry.** `edit_lock_session_id` (QRA-01), `edit_lock_expires_at = now + 3 min`
+   (`EDIT_LOCK_TTL_MS`). **Nothing sweeps expired locks** — the migration says so explicitly:
+   *"Expiry is evaluated in the application against the row's own timestamp; nothing sweeps this
+   table."*
+5. **Session validation.** Only `sessionOwnsRow`. **No `x-session-token`, no `session_version`, no
+   tab-status check.**
+6. **Commit.** `PATCH` with `{lockToken, keep[], orderInstructions?}`. Re-checks the refusal gate,
+   requires the token to be live and equal, re-prices with `repriceKeptLines`, then a **second
+   CAS'd UPDATE** on `edit_lock_token = <caller's>` plus the same status/payment allowlists.
+7. **Price recalculation.** `repriceKeptLines` (`lib/orders/reprice-priced-lines.ts`) — re-sums from
+   the order's **own stored priced lines**, never the live menu. The reason is written down: a
+   survivor whose menu price moved must keep the quoted price, and a survivor that has since gone
+   `out_of_stock` must not cause `UnmatchedMenuItemError` to refuse an unrelated removal.
+8. **VAT recalculation.** `applyTaxToAmount` — the same primitive `calculateOrderPricing` uses, fed
+   `unitPrice × newQuantity`, so inclusive/exclusive handling cannot drift.
+9. **Inventory.** **Nothing.** No stock is returned when a line is removed or reduced.
+   `checkStockSufficiency` runs only at `POST /api/orders`; deduction happens on order completion
+   via `trg_order_completion_deducts_stock`. So for a QR order the *deduction* has not happened yet
+   at edit time and the edit correctly changes what will be deducted — **but only because the
+   deduction is late**, not because the edit accounts for it. For a `preparing` order it would be
+   wrong, and that case is closed by the status allowlist.
+10. **Realtime.** None from this write. The customer's own page refetches via `onEdited`; other
+    devices learn about it on their next 5-second poll. The staff dashboard's `orders` /
+    `order_requests` realtime subscriptions carry it.
+11. **Kitchen.** For `orders`, a total-changing edit sets `status = 'pending'` and
+    `requires_reacceptance = true`, pushing the order back to the dashboard's *New* tab. For
+    `order_requests`, it nulls any saved staff review and sets `requires_reacceptance`.
+
+## The five operations, answered individually
+
+### 5A — Reduce quantity (2 Burgers → 1) — **POSSIBLE**
+
+`decrement` (`order-edit-panel.tsx:178-188`) lowers the working quantity; at 1 a further press marks
+the line removed. `keep: [{index, quantity}]` is sent. Server:
+`repriceKeptLines:123-141` re-prices from `unitPriceOf(stored) × nextQuantity` through
+`applyTaxToAmount`. Total falls → `editRequiresReacceptance` true (integer-cent comparison) →
+`status: 'pending'`, `requires_reacceptance: true`, `total_before_edit` recorded.
+
+### 5B — Remove a line (drop the Cokes) — **POSSIBLE**
+
+Omit that index from `keep`. Refused only if `keep` would be empty
+(`repriceKeptLines:90-92` → `EDIT_COPY.cannotEmpty`, *"An order needs at least one item. Ask staff
+to cancel it instead."*).
+
+### 5C — Increase quantity (1 Burger → 2) — **IMPOSSIBLE**
+
+The exact restriction, `lib/orders/reprice-priced-lines.ts:117-121`:
+
+```ts
+if (nextQuantity > originalQuantity) {
+  throw new InvalidEditError(
+    `Quantity for line ${index} cannot be increased from ${originalQuantity} to ${nextQuantity}`)
+}
+```
+
+and the reason on `:114-116`: raising a quantity *"is how an edit would become a way to order more
+without the stock check, the quantity cap and the payment-method allowlist that POST /api/orders
+runs."* The UI has no increment control at all — `OrderEditPanel` exposes `decrement`, `remove` and
+`restore` only.
+
+### 5D — Add a new item (order has Burger, customer wants Fries) — **IMPOSSIBLE**
+
+Two independent restrictions:
+
+- The wire format cannot express it. `keep` is `{index, quantity}[]` addressing **stored line
+  indexes**, and `repriceKeptLines:99-101` throws for any index `< 0` or `>= lines.length`
+  (*"Line N is not part of this order"*). There is no menu-item id, no price, and no path by which
+  a new line could be introduced.
+- The pricing function is a strict reduction by construction — it iterates `keep` and pushes only
+  `lines[index]`, so its output is always a subset of its input.
+
+The docblock states the intent: *"an edit may never introduce a line, raise a quantity, or empty
+the order."*
+
+### 5E — Swap (Burger → Steak) — **IMPOSSIBLE**
+
+It decomposes into 5B (possible) and 5D (impossible). What a customer can actually do today is
+remove the Burger — which sends the order back for re-acceptance — and then place a **separate new
+order** for the Steak via *Order More*. That produces two kitchen tickets and two order numbers for
+one intended substitution. This is the single most important input to section 17's Model A / Model B
+question.
+
+### Notes-only edit — **POSSIBLE, and the only re-acceptance-exempt edit**
+
+`orderInstructions` is normalised (`normalizeOrderInstructions`) and written directly.
+`editRequiresReacceptance` compares totals in integer cents, so a notes-only change leaves the total
+untouched and the order stays where it is. This exemption is a **recorded human ruling**
+(`lib/orders/edit-lock.ts:209-230`) and the tempting simplification `return nextTotal > previousTotal`
+is explicitly rejected with a named test guarding it.
+
+---
+
+# 6. EDITING WITH MULTIPLE CUSTOMERS
+
+## Event 6A — competing editors
+
+A opens Order A. `POST …/edit` sets `edit_lock_token = T_A`, `edit_lock_expires_at = +3min`.
+
+B attempts the same. **B does not get as far as the lock**: `prepare()` runs `sessionOwnsRow` first
+(`edit/route.ts:250-252`) and B holds none of A's ids → `404 Order not found`. B's UI never offered
+the button either, because `isEditableHere` is computed from `heldSessionIds()`.
+
+**So on the same table, "competing editors" is not reachable through the product.** The
+`locked_by_other` path exists for a genuinely different case: **the same customer on two devices or
+two browser tabs**, which is now one identity for `tab_session_id` (the localStorage mirror, see
+`TAB_SESSION_ID_MIRROR_KEY`) but two for `flashtap_session_v1` only if storage was cleared.
+
+The two ways `locked_by_other` *is* reachable:
+
+1. **B has harvested A's session id** (QRA-05). Then `sessionOwnsRow` passes and the lock is the
+   only remaining control — and it is a real one: `isEditLockHeldByOther` refuses, and the commit
+   CAS on `edit_lock_token` refuses even if the read raced.
+2. **QRA-01** — the holder is refused their own lock. Today this is the *only* way an ordinary
+   customer sees that message, and it is wrong when they do.
+
+**Is the lock UX or real protection?** **Real.** Two independent mechanisms, both in the database:
+
+- acquire is `UPDATE … WHERE edit_lock_token = <observed>` (or `IS NULL`), so two acquires racing on
+  a free lock cannot both match;
+- commit is `UPDATE … WHERE edit_lock_token = <caller's own>`, so a stale holder matches zero rows.
+
+The route's own docblock states the principle correctly: *"nothing is decided by comparing values
+in this process, because two Workers isolates comparing the same stale read would both conclude they
+had won."* That is the right design and it is implemented.
+
+## Event 6B — B places a new order while A has unsaved changes open
+
+- **A's editor** is entirely local until Save. `OrderEditPanel` holds `WorkingLine[]` in React
+  state. Nothing polls it, nothing invalidates it. B's order changes nothing A is looking at.
+- **B's order** becomes a new `order_requests` row on the same tab.
+- **The tab total** does not move until staff Accept B's request; then `accept/route.ts:235-244`
+  re-sums **all** the tab's non-settlement orders.
+- **Kitchen** gets a second card.
+- **Realtime**: the staff dashboard sees it; A's screens do not subscribe to `orders`, so A learns
+  nothing until the 5-second poll on whichever screen A is on — and A is on the confirmation page,
+  which polls only its own order.
+
+**A presses Save.** `repriceKeptLines` operates on **A's order's own lines**, so B's order cannot
+affect the result. The authoritative total after Save is: A's order re-summed from its own priced
+lines, plus a `tabs.total` re-sum that includes B's order **only if B's request has been Accepted by
+then** (`edit/route.ts:511-531` sums `orders` on the tab; an un-Accepted request is not in `orders`).
+
+**So the tab total immediately after A's Save is correct with respect to `orders` and silently
+excludes every still-pending request.** That is consistent with the rest of the system — `tabs.total`
+only ever counts accepted orders — but it means the number is not "what the table will owe".
+
+## Event 6C — B settles while A has an unsaved edit
+
+**Can B begin payment?** B can `POST /api/tabs/[tabId]/ready-to-pay`. Nothing consults the edit
+lock. The tab moves to `ready_to_pay`.
+
+**What amount is committed?** *None, at this point.* `ready-to-pay` writes a status and a
+`payment_preference`; it does not compute or commit an amount. The amount is derived later, on the
+terminal, by `settle/route.ts:378-417`, from the tab's orders at that moment.
+
+**What happens when A presses Save afterward?** Two independent answers:
+
+- If A's order was still `pending`/`accepted` and `payment_status` still in
+  `{pending, cash_pending}`, **the edit is accepted.** The tab being `ready_to_pay` is not in the
+  edit gate. `EDITABLE_ORDER_STATUSES` and `EDITABLE_PAYMENT_STATUSES` are properties of the
+  **order**, and `tabs.status` is a property of the **tab**; nothing joins them.
+- The edit then re-sums `tabs.total` — but the terminal will re-derive from the orders anyway, so
+  the charge follows A's edit if the settle happens after it, and does not if it happens before.
+
+**This is a genuine INV-4 exposure and it is worth stating precisely.** The invariant says *once a
+payment amount is committed to a provider, the payable state that produced it must not silently
+change.* For the **tab** path the amount is committed at the terminal, in the same request that
+claims the orders (`settle/route.ts:286`–`:316` claims with `.in('payment_status', settleable)`), so
+the window is short and the claim is conditional. For the **hosted-checkout** path the amount is
+committed much earlier — at Accept — and *that* is closed, by `payment_in_flight`:
+`editRefusalReason:173-175` refuses any edit while `payment_checkout_url` is set, because *"that
+Finatic session was created for the OLD total, and the webhook is the sole confirmation QR payments
+have."*
+
+So INV-4 holds for hosted checkout by an explicit gate, and holds for the terminal by the
+conditional claim. **What is not covered is the interval between `ready_to_pay` and the terminal
+claim**: during it, the tab is frozen against new orders (`orders/route.ts:138-143`) and against new
+joins (`join/route.ts:62-71`) but **not against edits**. A customer can reduce their order while the
+waiter is walking over with the terminal, and the terminal will charge the reduced figure — correct
+in outcome, surprising in sequence, and undetectable to the staff member who read the total off the
+tab a moment earlier.
+
+**What B sees:** nothing about A's edit. The `/tab` screen B is on shows only B's own orders
+(QRA-12), so A's order was never on it.
+
+---
+
+# 7. KITCHEN RACE CONDITIONS
+
+## Event 7A — staff start the order while A is editing
+
+**Kitchen write.** `PATCH /api/orders/[orderId]/status {status:'preparing'}`:
+
+1. loads `id, restaurant_id, status, payment_status`;
+2. `requireStaffPermission(ORDERS_UPDATE)`;
+3. `isValidStaffStatusTransition('accepted','preparing')` → true;
+4. builds the patch, and — because `isEditableOrderStatus('preparing')` is false — adds
+   `edit_lock_token: null, edit_lock_session_id: null, edit_lock_expires_at: null`
+   (`status/route.ts:120-124`);
+5. `UPDATE … WHERE id AND restaurant_id AND status = 'accepted'` — a CAS on the status that was
+   read;
+6. zero rows → `409 "Order status changed; refresh and try again"`.
+
+**Realtime event.** The staff dashboard subscribes to `orders`. **The customer does not.** A's
+confirmation page learns about it on its next 5-second poll — but note the poll re-renders the page,
+and `OrderEditPanel` keeps its own `grant` and `lines` state across that re-render, so **A's editor
+stays open and looks live for up to three minutes after the kitchen took the order**.
+
+**Edit lock.** Nulled by step 4.
+
+**Save behaviour.** A's `PATCH` re-reads the row in `prepare()`, `refusalFor` now returns
+`preparation_started` (because `'preparing' ∈ KITCHEN_HAS_IT`), and the customer is told
+*"The kitchen has started this order, so it can't be changed now."* If the read raced and returned
+the stale row, the conditional UPDATE still matches zero rows — `edit_lock_token` is NULL and
+`status` is not in the allowlist — and `explainLostWrite` re-reads to produce the same message.
+
+**Can stale client state overwrite the kitchen transition?** **No.** VERIFIED, and by two
+independent conditions in the same `WHERE` clause: the token and the status allowlist. Removing
+either one alone still leaves the other. The staging probe
+`scripts/probe-order-edit-lock-race-staging.ts` scenario A asserts exactly this and was recorded
+green at `d3eba56`.
+
+## Event 7B — simultaneous fire
+
+The actual writes, side by side:
+
+| | Customer commit | Staff status |
+|---|---|---|
+| Table | `orders` | `orders` |
+| `WHERE` | `id`, `restaurant_id`, `edit_lock_token = T_A`, `status IN ('pending','accepted')`, `payment_status IN ('pending','cash_pending')` | `id`, `restaurant_id`, `status = <the value staff read>` |
+| Sets | items, subtotal, tax, total, `status:'pending'` if total moved, `requires_reacceptance`, `edit_lock_* = NULL`, `edit_history` | `status`, a timestamp, and `edit_lock_* = NULL` when leaving the editable set |
+| Transaction | none — a single statement | none — a single statement |
+| Row locking | none explicit; PostgreSQL's per-statement row lock only | same |
+| Conditional | **yes, two conditions** | **yes, one condition** |
+| Atomic | **each write is atomic in itself** | **same** |
+
+**Can both succeed?** No, in either order, and for different reasons:
+
+- **staff first** — the staff UPDATE nulls the token; the customer's `WHERE edit_lock_token = T_A`
+  matches zero rows. Refused.
+- **customer first** — the customer UPDATE sets `status = 'pending'` (whenever the total moved);
+  the staff `WHERE status = 'accepted'` then matches zero rows → `409`. If the total did **not**
+  move (notes only) the status is untouched and the staff transition succeeds — which is correct:
+  a note is not a re-acceptable change.
+
+**Does ordering matter?** Yes, and asymmetrically: staff-first refuses the customer *permanently*
+(preparing is terminal for editing); customer-first refuses staff *recoverably* (they re-Accept the
+new figure and then start it). That asymmetry is the ruling, and it is enforced by the transition
+table rather than by anything the edit feature added — `pending → preparing` was never a legal
+staff transition (`isValidStaffStatusTransition`), so after a total-changing edit staff get
+`400 "Invalid transition: pending → preparing"` and must Accept first. (That raw string is #275.)
+
+**Is the outcome atomic?** **Each individual write is; the sequence is not, and it does not need to
+be.** Both writers are single conditional statements, and every interleaving lands on exactly one of
+the two outcomes above. There is no third state — no partially-applied edit, and no order that is
+both edited and preparing. Scenario C of the staging probe asserts that forbidden pair impossible.
+
+**Where atomicity is genuinely absent, and it is not here.** Three places in the same flow have no
+transaction and no compensation, and they are the honest answer to the brief's *"if nothing makes
+the outcome atomic, say so"*:
+
+1. **Accept** — claim / `createOrder` / finalize are three round-trips. A worker death between them
+   strands the request in `accepting`, where it is invisible to staff, refused by every route, swept
+   by nothing, and still reads *"Waiting for confirmation"* to the customer. The route documents
+   this itself (`accept/route.ts:29-34`).
+2. **The `tabs.total` re-sum** after a customer edit (`edit/route.ts:511-531`) and after Accept
+   (`accept/route.ts:235-244`) runs **after** the authoritative write and discards its own error.
+3. **`tabs.members`** — three of four writers are read-modify-write (QRA-09).
+
+---
+
+# 8. ORDER MORE VS CHANGE ORDER
+
+## Today, with Order #1 already preparing
+
+A wants a Coke. Every path leads to the same place: *+ Order More* (`/tab:402-409`),
+*Order More Items* (`/my-orders:308-314`), or the Cart button on browse — all navigate to
+`/menu/{rid}/browse?table=N&tabId=…`. A adds the Coke and taps **Add to Tab**.
+
+**FlashTap creates a second, wholly independent submission.** Concretely:
+
+| Consumer | What it gets |
+|---|---|
+| **Customer** | a second row in My Orders; a second card on `/tab` under the same member group; a second toast |
+| **Other table members** | nothing directly — their `/tab` never showed A's orders anyway (QRA-12); the browse strip total moves once staff Accept |
+| **Kitchen** | a second *Waiting for Review* card, then a second order after Accept |
+| **KDS / Live Orders** | a second ticket, with its own `route_to` enrichment |
+| **Receipt** | a second line group; `/menu/{rid}/receipt` lists both |
+| **Tab** | one more row summed into `tabs.total` at Accept |
+| **VAT** | computed per order by `calculateOrderPricing`; two orders, two tax computations, summed only at settlement |
+| **Inventory** | a second `checkStockSufficiency` at submission and a second deduction at completion |
+| **Reporting** | two orders |
+| **Payment** | both settle together on the tab; no second payment |
+| **Order numbering** | **a second `order_number`**, allocated by `createOrder` per restaurant |
+
+So a customer who wanted "one more Coke with my burger" produces two order numbers, two tickets and
+two acceptance decisions. That is the current reality and it is what the redesign's *"+ Add
+something"* would change.
+
+## Repeat while Order #1 is still editable
+
+**Can the Coke be added to Order #1 today? No.**
+
+The exact technical restriction is **5D**: the edit wire format is
+`keep: {index, quantity}[]` over the order's own stored lines, and
+`repriceKeptLines:99-101` rejects any index outside `[0, lines.length)`. There is no field for a
+menu item id and no path from the edit route to `calculateOrderPricing`.
+
+The **domain** restriction sitting behind it is stated at `reprice-priced-lines.ts:114-116`: an
+addition must run the stock check, the per-line quantity cap and the payment-method allowlist that
+`POST /api/orders` performs, and the edit route performs none of them. Routing an addition through
+the edit path would bypass all three.
+
+So today: **"Change order" can only ever subtract. "Order more" can only ever create a new ticket.
+There is no operation in the system that adds an item to an existing order.**
+
+---
