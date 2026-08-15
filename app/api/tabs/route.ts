@@ -246,6 +246,16 @@ export async function POST(req: Request) {
         const suppliedPin = String(body.pin ?? body.tabPin ?? body.tab_pin ?? '').trim()
         const existingPin = String(existingTab.tab_pin ?? '').trim()
 
+        /**
+         * THREE distinct refusals, not two. Copy signed off by the human 2026-08-15; the wording
+         * is theirs and must not be reworded without them (anything a customer is told about a
+         * tab is money-adjacent).
+         *
+         * The codes exist so the client can act rather than parse prose. `TAB_PIN_REQUIRED` and
+         * `TAB_PIN_INCORRECT` both mean "show the PIN prompt"; they are separate so the prompt can
+         * open clean the first time and show an inline error on a retry. `TAB_ALREADY_OPEN` has no
+         * customer-side remedy, which is why its copy sends them to staff.
+         */
         if (!existingPin) {
           console.warn('[TABS] refusing to mint on the 23505 branch: existing tab has no PIN', {
             restaurantId: restaurantUuid,
@@ -255,7 +265,7 @@ export async function POST(req: Request) {
           })
           return NextResponse.json(
             {
-              error: 'This table already has an open tab. Ask staff to add you to it.',
+              error: 'This table already has an open tab. Ask a member of staff to add you to it.',
               code: 'TAB_ALREADY_OPEN',
               tabId: existingTab.id,
             },
@@ -263,13 +273,22 @@ export async function POST(req: Request) {
           )
         }
 
-        if (!suppliedPin || suppliedPin !== existingPin) {
+        if (!suppliedPin) {
           return NextResponse.json(
             {
-              error: suppliedPin
-                ? 'Incorrect PIN'
-                : 'This table already has an open tab. Enter the tab PIN to join it.',
+              error: 'This table already has an open tab. Enter the tab PIN to join.',
               code: 'TAB_PIN_REQUIRED',
+              tabId: existingTab.id,
+            },
+            { status: 403 },
+          )
+        }
+
+        if (suppliedPin !== existingPin) {
+          return NextResponse.json(
+            {
+              error: "That PIN doesn't match. Check with someone at your table.",
+              code: 'TAB_PIN_INCORRECT',
               tabId: existingTab.id,
             },
             { status: 403 },

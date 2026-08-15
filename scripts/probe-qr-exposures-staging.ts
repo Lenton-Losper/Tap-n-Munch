@@ -239,9 +239,9 @@ async function scenarioB(ctx: { tabId: string; tabPin: string; tableNumber: numb
   record({
     id: 'B1',
     title: 'create tab on an occupied table with no PIN',
-    observed: `status=${noPin.status} sessionToken=${mintedToken ? 'MINTED' : 'none'} joinedExisting=${noPin.body?.joinedExisting ?? '-'}`,
-    verdict: mintedToken ? 'EXPOSED' : 'CLOSED',
-    detail: noPin.body?.code ?? noPin.body?.error,
+    observed: `status=${noPin.status} code=${noPin.body?.code ?? '-'} sessionToken=${mintedToken ? 'MINTED' : 'none'} "${noPin.body?.error ?? ''}"`,
+    // The code matters as much as the refusal: the landing opens the PIN prompt on it.
+    verdict: mintedToken || noPin.body?.code !== 'TAB_PIN_REQUIRED' ? 'EXPOSED' : 'CLOSED',
   })
 
   // B2 -- the chain QRA-03: what that token reads. Only meaningful while B1 is EXPOSED.
@@ -293,8 +293,9 @@ async function scenarioB(ctx: { tabId: string; tabPin: string; tableNumber: numb
   record({
     id: 'B3',
     title: 'create tab on an occupied table with a WRONG PIN',
-    observed: `status=${wrongPin.status} sessionToken=${wrongPin.body?.sessionToken ? 'MINTED' : 'none'}`,
-    verdict: wrongPin.body?.sessionToken ? 'EXPOSED' : 'CLOSED',
+    observed: `status=${wrongPin.status} code=${wrongPin.body?.code ?? '-'} sessionToken=${wrongPin.body?.sessionToken ? 'MINTED' : 'none'} "${wrongPin.body?.error ?? ''}"`,
+    verdict:
+      wrongPin.body?.sessionToken || wrongPin.body?.code !== 'TAB_PIN_INCORRECT' ? 'EXPOSED' : 'CLOSED',
   })
 
   // B4 -- CONTROL: the CORRECT PIN is the sanctioned recovery and must still work.
