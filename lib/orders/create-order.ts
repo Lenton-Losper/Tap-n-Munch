@@ -20,6 +20,19 @@ export interface CreateOrderParams {
   idempotencyKey: string | null
   memberSessionId: string | null
   tabSettlementForTabId: string | null
+  /**
+   * The order_request this order is being created from, if any.
+   *
+   * Written by the INSERT below -- the same statement that creates the order -- so there is no
+   * window in which the order exists without its link back. That is the half of the
+   * relationship that CAN be made atomic; `order_requests.accepted_order_id` is a separate
+   * UPDATE in the Accept route and cannot be, which is why the two are asserted to agree
+   * rather than assumed to.
+   *
+   * Omitted (undefined) by every caller that is not the Accept route -- terminal/POS creates
+   * orders directly and has no request. NULL means "not from a request", never "link missing".
+   */
+  sourceRequestId?: string | null
   isClosed?: boolean
   /**
    * Pricing that calculateOrderPricing ALREADY produced server-side and that the customer has
@@ -114,6 +127,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       placed_at: new Date().toISOString(),
       idempotency_key: params.idempotencyKey,
       is_closed: params.isClosed ?? false,
+      source_request_id: params.sourceRequestId ?? null,
     })
     .select('id, restaurant_id, order_number, payment_status')
     .single()

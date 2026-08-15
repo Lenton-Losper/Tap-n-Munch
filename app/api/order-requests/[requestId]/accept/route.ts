@@ -140,6 +140,10 @@ export async function POST(
       channel: claimed.channel,
       customerName: claimed.customer_name,
       idempotencyKey: acceptIdempotencyKey,
+      // The reverse link, written BY the order's own INSERT. `accepted_order_id` below is the
+      // forward link and is a separate UPDATE, so it can lag or -- if this worker dies -- never
+      // land at all. This one cannot: an order created from a request always carries the request.
+      sourceRequestId: requestId,
     })
   } catch (err) {
     // Release the claim so the request can be retried (Accept again, or Decline) instead
