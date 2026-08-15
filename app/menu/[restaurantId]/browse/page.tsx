@@ -307,8 +307,8 @@ export default function MenuBrowsePage() {
    *
    * Plain `fetch`, deliberately NOT `fetchWithSession`: that helper treats any 410 as "your
    * dining session is over" and calls handleSessionExpired, which wipes the token, the tab id
-   * and the cart and hard-redirects to /session-ended. A cosmetic PIN chip must never be able to
-   * eject someone from their meal. Here a missing or rejected token means "no PIN to show", and
+   * and the cart and hard-redirects to /session-ended. A cosmetic PIN readout must never be able
+   * to eject someone from their meal. Here a missing or rejected token means "no PIN to show", and
    * nothing else — the state falls back to `creatorTabPin`.
    */
   useEffect(() => {
