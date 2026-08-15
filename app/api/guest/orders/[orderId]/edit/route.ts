@@ -301,7 +301,20 @@ export async function POST(req: Request, { params }: RouteParams) {
       .from(target.surface)
       .update({
         edit_lock_token: newToken,
-        edit_lock_session_id: parsed.sessionIds,
+        // THE PRIMARY ID, NOT THE LIST. `edit_lock_session_id` is `text`
+        // (20260813120000_order_editing_lock.sql), and isEditLockHeldByOther reads it back as a
+        // scalar. Writing the array put PostgREST's json_populate_record in the middle: a JSON
+        // array into a text column is stored as its JSON TEXT — literally `["a", "b"]` — which
+        // matches no id in normalizeSessionIds, so the holder failed its own holder check and
+        // every commit was refused 409 locked_by_other. Measured directly:
+        //   select pg_typeof(x.edit_lock_session_id), x.edit_lock_session_id
+        //     from json_populate_record(null::public.orders,
+        //       '{"edit_lock_session_id": ["a","b"]}'::json) x   ->  text | ["a", "b"]
+        // One id is sufficient because the READ side compares against every id the client holds:
+        // isEditLockHeldByOther asks `normalizeSessionIds(params.sessionIds).includes(holder)`,
+        // so recording any one of the caller's ids identifies them for as long as they still hold
+        // it. This is what the comment on parsed.sessionIds already said happened.
+        edit_lock_session_id: parsed.sessionIds[0] ?? null,
         edit_lock_expires_at: expiresAt,
       })
       .eq('id', target.row.id as string)
