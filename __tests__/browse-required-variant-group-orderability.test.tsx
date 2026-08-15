@@ -15,10 +15,18 @@
  *                      options:[{id:'250ml',name:'250ml',price_modifier:0}, ...] }]   <- NO `type`
  *   variants:       [{ size:'L', label:'Large', price:45 }, { size:'S', ... }]        <- legacy
  *
- * browse/page.tsx:280 rejects any group whose `type` is not 'price'|'text', so the required
- * group is DROPPED at :282 and the legacy `variants` fallback at :315-325 synthesises the Size
- * group instead. The two shapes carry DIFFERENT option labels ("Large"/"Small" vs
- * "250ml"/"350ml"/"500ml"), so whichever set renders names the code path unambiguously.
+ * normalizeVariantGroups (now lib/menu/variant-groups.ts) rejects any group whose `type` is not
+ * 'price'|'text', so the required group is DROPPED and the legacy `variants` fallback
+ * synthesises the Size group instead. The two shapes carry DIFFERENT option labels
+ * ("Large"/"Small" vs "250ml"/"350ml"/"500ml"), so whichever set renders names the code path
+ * unambiguously.
+ *
+ * WHAT CHANGED SINCE THIS WAS WRITTEN. Every item now opens ItemDetailModal -- a silent add
+ * left the customer with no confirmation, so they tapped again. The card's + button therefore
+ * opens the popup and the popup's Add to Cart is what reaches the cart. #200's question is
+ * unchanged and so are the answers below; only the number of taps between them moved, so these
+ * tests drive the real modal rather than mocking it away. That the LINE still comes out whole
+ * on the other side is the subject of __tests__/browse-every-item-opens-the-popup.test.tsx.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -38,7 +46,7 @@ jest.mock('next/link', () => ({
 }))
 
 jest.mock('@/components/menu/food-item-image', () => ({ FoodItemImage: () => null }))
-jest.mock('@/components/menu/item-detail-modal', () => ({ ItemDetailModal: () => null }))
+// ItemDetailModal is NOT mocked: it is now the only way a line reaches the cart from here.
 jest.mock('@/components/OrderStatusBanner', () => ({ __esModule: true, default: () => null }))
 jest.mock('@/components/menu/menu-order-status-tracker', () => ({
   MenuOrderStatusTracker: () => null,
@@ -187,13 +195,20 @@ function addButton(): HTMLButtonElement {
   return button
 }
 
-/** handleAddToCart sleeps 1000ms before addItem (browse/page.tsx:657). */
+/**
+ * The card's + opens the popup; the popup's Add to Cart is what calls addItem. No settle step:
+ * the 1000ms sleep that used to sit in the silent add went with the silent add.
+ */
 async function clickAddAndSettle() {
   await act(async () => {
     addButton().click()
   })
+  const confirm = Array.from(container.querySelectorAll('button')).find((el) =>
+    /add to cart/i.test(el.textContent || '')
+  )
+  if (!confirm) throw new Error('popup Add to Cart not rendered')
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 1100))
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
 }
 
@@ -243,7 +258,9 @@ describe('#200: are the five required-variant-group items orderable?', () => {
 
     await clickAddAndSettle()
     expect(addItem).toHaveBeenCalledTimes(1)
-    // THIS is the shape #200's lead described: a required group, and an empty selection.
-    expect(addItem.mock.calls[0][0].selected_variants).toEqual({})
+    // THIS is the shape #200's lead described: a required group, and an empty selection. The
+    // modal omits the key rather than writing `{}` where there is no group to resolve; either
+    // way the line leaves with no variant on it and `required: true` stopped nothing.
+    expect(addItem.mock.calls[0][0].selected_variants ?? {}).toEqual({})
   })
 })

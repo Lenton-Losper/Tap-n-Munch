@@ -33,26 +33,13 @@ import {
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
 import { menuBodyState } from '@/lib/menu/menu-body-state'
-
-type ItemVariant = {
-  size: string
-  label: string
-  price: number
-}
-
-type VariantGroup = {
-  name: string
-  required: boolean
-  type: 'text' | 'price'
-  options: Array<string | { label: string; price: number }>
-}
-
-type RawVariantGroup = {
-  name?: unknown
-  required?: unknown
-  type?: unknown
-  options?: unknown
-}
+import {
+  getDefaultGroupSelection,
+  getItemDisplayPrice,
+  getVariantGroups,
+  getVariantOptionLabel,
+  isRequiredVariantMissing,
+} from '@/lib/menu/variant-groups'
 
 type MenuCategory = {
   id: string
@@ -247,7 +234,6 @@ export default function MenuBrowsePage() {
   const [allMenuLoadedOnce, setAllMenuLoadedOnce] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
-  const [addingItemId, setAddingItemId] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Array<{ id: number; name: string; leaving: boolean }>>([])
   const [selectedVariantGroupsByItem, setSelectedVariantGroupsByItem] = useState<
     Record<string, Record<string, string>>
@@ -289,113 +275,16 @@ export default function MenuBrowsePage() {
     toastTimersRef.current.push(fadeTimer, removeTimer)
   }
 
-  const getItemVariants = (item: MenuItem): ItemVariant[] =>
-    Array.isArray((item as MenuItem & { variants?: ItemVariant[] }).variants)
-      ? ((item as MenuItem & { variants?: ItemVariant[] }).variants || []).filter(
-          (variant) =>
-            variant &&
-            typeof variant.size === 'string' &&
-            typeof variant.label === 'string' &&
-            Number.isFinite(Number(variant.price))
-        )
-      : []
-
-  const normalizeVariantGroups = (groups: unknown): VariantGroup[] => {
-    if (!Array.isArray(groups)) return []
-    return groups
-      .map((group) => {
-        const raw = (group || {}) as RawVariantGroup
-        const groupName = String(raw.name || '').trim()
-        const groupType = raw.type === 'price' ? 'price' : raw.type === 'text' ? 'text' : null
-        const rawOptions = Array.isArray(raw.options) ? raw.options : []
-        if (!groupName || !groupType || rawOptions.length === 0) return null
-
-        const options = rawOptions
-          .map((opt) => {
-            if (typeof opt === 'string') return opt
-            if (!opt || typeof opt !== 'object') return null
-            const optionLabel = String((opt as { label?: unknown; name?: unknown }).label || (opt as { name?: unknown }).name || '').trim()
-            if (!optionLabel) return null
-            if (groupType === 'text') return optionLabel
-            const priceValue = Number((opt as { price?: unknown }).price)
-            if (!Number.isFinite(priceValue)) return null
-            return { label: optionLabel, price: priceValue }
-          })
-          .filter(Boolean) as Array<string | { label: string; price: number }>
-
-        if (options.length === 0) return null
-        return {
-          name: groupName,
-          required: Boolean(raw.required),
-          type: groupType,
-          options,
-        } as VariantGroup
-      })
-      .filter(Boolean) as VariantGroup[]
-  }
-
-  const getVariantGroups = (item: MenuItem): VariantGroup[] => {
-    const itemWithVariants = item as MenuItem & { variantGroups?: unknown; variant_groups?: unknown }
-    const groups = normalizeVariantGroups(itemWithVariants.variantGroups)
-    if (groups.length > 0) return groups
-    const snakeCaseGroups = normalizeVariantGroups(itemWithVariants.variant_groups)
-    if (snakeCaseGroups.length > 0) return snakeCaseGroups
-
-    const legacyVariants = getItemVariants(item)
-    if (legacyVariants.length > 0) {
-      return [
-        {
-          name: 'Size',
-          required: true,
-          type: 'price',
-          options: legacyVariants.map((v) => ({ label: v.label, price: Number(v.price) })),
-        },
-      ]
-    }
-    return []
-  }
-
-  const getDefaultGroupSelection = (item: MenuItem) => {
-    const result = {} as Record<string, any>
-    for (const group of getVariantGroups(item)) {
-      const first = group.options[0]
-      if (typeof first === 'string') {
-        result[group.name] = first
-      } else if (first && typeof first === 'object') {
-        result[group.name] = String(first.label || '')
-      }
-    }
-    return result
-  }
-
-  const getSelectedVariantLabel = (option: string | { label: string; price: number }) =>
-    typeof option === 'string' ? option : String(option.label || '')
-
-  const getResolvedVariantSelection = (item: MenuItem) => ({
+  /**
+   * The selection this card is showing: the shared defaults, overridden by whatever the customer
+   * tapped on the card itself. Stays here rather than in lib/menu/variant-groups because it is
+   * the only part that depends on this page state -- the rules it wraps are shared with
+   * ItemDetailModal, which now originates a selection too.
+   */
+  const getResolvedVariantSelection = (item: MenuItem): Record<string, string> => ({
     ...getDefaultGroupSelection(item),
     ...(selectedVariantGroupsByItem[item.id] || {}),
   })
-
-  const getItemDisplayPrice = (item: MenuItem, selection: Record<string, string>) => {
-    const variantGroups = getVariantGroups(item)
-    for (const group of variantGroups) {
-      if (group.type !== 'price') continue
-      for (const option of group.options) {
-        if (typeof option === 'string') continue
-        if (String(option.label || '') === String(selection[group.name] || '')) {
-          return Number(option.price)
-        }
-      }
-    }
-    return item.base_price
-  }
-
-  const isRequiredVariantMissing = (item: MenuItem, selection: Record<string, string>) =>
-    getVariantGroups(item).some((group) => {
-      if (!group.required) return false
-      const selected = String(selection[group.name] || '').trim()
-      return !selected
-    })
 
   useEffect(() => {
     const loadData = async () => {
@@ -605,7 +494,7 @@ export default function MenuBrowsePage() {
             </p>
             <div className="flex flex-wrap gap-1.5">
               {group.options.map((option, optionIndex) => {
-                const optionLabel = getSelectedVariantLabel(option)
+                const optionLabel = getVariantOptionLabel(option)
                 const isSelected = resolvedSelection[group.name] === optionLabel
                 return (
                   <button
@@ -647,7 +536,6 @@ export default function MenuBrowsePage() {
       disabled={
         (!effectiveIsInTab && !isKiosk) ||
         item.status === 'out_of_stock' ||
-        addingItemId === item.id ||
         isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
         ['settled', 'closed', 'completed', 'cancelled'].includes(String(tabStatus ?? '').toLowerCase())
       }
@@ -657,11 +545,7 @@ export default function MenuBrowsePage() {
       style={{ backgroundColor: ACCENT }}
       aria-label={`Add ${item.name} to cart`}
     >
-      {addingItemId === item.id ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <Plus className="h-4 w-4" strokeWidth={2.5} />
-      )}
+      <Plus className="h-4 w-4" strokeWidth={2.5} />
     </button>
   )
 
@@ -729,7 +613,19 @@ export default function MenuBrowsePage() {
     }
   }, [groupedItems])
 
-  const handleAddToCart = async (item: MenuItem) => {
+  /**
+   * EVERY item opens the popup, including one with nothing to choose.
+   *
+   * An item with no options used to be added straight from the card. The add itself worked, but
+   * it was silent: nothing on screen confirmed it, so a customer who was not watching the cart
+   * badge tapped again, and again. A popup they have to dismiss is the confirmation -- and for a
+   * zero-option item it is simply the same component with nothing to configure, showing the item,
+   * its price, a quantity control and Add to Cart.
+   *
+   * The 1000ms artificial delay that used to sit in the silent path went with it. It existed to
+   * make a spinner visible; there is no spinner now, and nothing else was waiting on it.
+   */
+  const handleAddToCart = (item: MenuItem) => {
     if (!effectiveIsInTab && !isKiosk) return
     // #272. Nothing the checkout would refuse may enter a cart. Two paths reach this
     // function and only one was guarded: the inline Add button is disabled for
@@ -741,41 +637,7 @@ export default function MenuBrowsePage() {
     // after a menu edit, a cached payload can still contain an item that is no longer
     // visible, and that item must not be addable either.
     if (!isChargeableMenuStatus(item.status)) return
-    const hasInlineVariantGroups = getVariantGroups(item).length > 0
-    if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
-      setAddingItemId(item.id)
-      try {
-        const resolvedSelection = getResolvedVariantSelection(item)
-        const effectivePrice = getItemDisplayPrice(item, resolvedSelection)
-        const variantParts = Object.values(resolvedSelection).filter(Boolean)
-        const effectiveDisplayName =
-          variantParts.length > 0 ? `${item.name} - ${variantParts.join(' / ')}` : item.name
-        const selectedSizeName = resolvedSelection.Size || null
-
-        const cartItem = {
-          menu_item_id: item.id,
-          name: item.name,
-          display_name: effectiveDisplayName,
-          quantity: 1,
-          base_price: effectivePrice,
-          selected_size: selectedSizeName
-            ? { name: selectedSizeName, price_modifier: 0 }
-            : null,
-          selected_addons: [],
-          selected_variants: resolvedSelection,
-          special_instructions: '',
-          subtotal: effectivePrice,
-          image_url: item.image_url,
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        addItem(cartItem)
-        pushCartToast(effectiveDisplayName)
-      } finally {
-        setAddingItemId(null)
-      }
-    } else {
-      setSelectedItem(item as any)
-    }
+    setSelectedItem(item as any)
   }
 
   if (tabSessionRedirecting) {
@@ -1196,6 +1058,9 @@ export default function MenuBrowsePage() {
       {selectedItem && (
         <ItemDetailModal
           item={selectedItem as any}
+          // Whatever the customer already tapped on the card carries into the popup, so opening
+          // it never quietly resets a choice that is still visible behind it.
+          initialVariantSelection={getResolvedVariantSelection(selectedItem)}
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {

@@ -17,6 +17,13 @@ import {
   MIN_LINE_QUANTITY,
 } from '@/lib/orders/quantity-limits'
 import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
+import {
+  buildVariantDisplayName,
+  getDefaultGroupSelection,
+  getItemDisplayPrice,
+  getVariantGroups,
+  getVariantOptionLabel,
+} from '@/lib/menu/variant-groups'
 
 type MenuItemSize = { name: string; price_modifier: number }
 type MenuItemAddon = { name: string; price: number }
@@ -26,6 +33,12 @@ interface ItemDetailModalProps {
   restaurant: any
   /** The cart line being edited, or null/absent when adding a new one. */
   editingLine?: CartItem | null
+  /**
+   * Variant choices the customer already made OUTSIDE this modal -- the per-card chips on the
+   * browse page. Seeds the chooser so opening the popup never silently discards a choice the
+   * customer can still see behind it. Ignored when editing a line, which seeds from the line.
+   */
+  initialVariantSelection?: Record<string, string>
   onClose: () => void
   onAddToCart: (cartItem: CartItem) => void
 }
@@ -34,6 +47,7 @@ export function ItemDetailModal({
   item,
   restaurant,
   editingLine,
+  initialVariantSelection,
   onClose,
   onAddToCart,
 }: ItemDetailModalProps) {
@@ -76,6 +90,29 @@ export function ItemDetailModal({
   const editedVariants = editingLine?.selected_variants
 
   /*
+   * THE VARIANT CHOOSER IS FOR NEW LINES ONLY, AND THAT IS NOT AN OVERSIGHT.
+   *
+   * Every item now opens this modal, including the variant items that used to be added straight
+   * from the browse card. Those items had their selection resolved by the page and never reached
+   * here, so the modal rendering no variant control at all would have DROPPED it: no
+   * selected_variants, no "- Large" suffix, and a price reverting to the unresolved base. Hence
+   * the chooser below.
+   *
+   * It stays hidden while editing because a variant option REPLACES the base price rather than
+   * modifying it, so re-resolving an edited line is exactly the repricing #189 forbids -- see the
+   * docblock below, which records that turning a N$35 Large back into a N$20 Americano is what
+   * that rule exists to stop. How a variant CHANGED during an edit should be priced is #189 Q2
+   * and is not ruled, so this offers no way to change one; the line's own selection is
+   * round-tripped untouched, exactly as before.
+   */
+  const variantGroups = getVariantGroups(item)
+  const showVariantChooser = !editingLine && variantGroups.length > 0
+  const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>(() => ({
+    ...getDefaultGroupSelection(item),
+    ...(editingLine ? {} : initialVariantSelection || {}),
+  }))
+
+  /*
    * A LINE ALREADY IN THE CART IS A QUOTE, SO AN EDIT KEEPS THE PRICE IT WAS ADDED AT (#189).
    *
    * The cart page re-fetches the menu item to open this modal, so `item.base_price` is the
@@ -95,8 +132,13 @@ export function ItemDetailModal({
    * only because a line with no price of its own has nothing to preserve.
    */
   const storedBasePrice = Number(editingLine?.base_price)
-  const unitBasePrice =
-    editingLine && Number.isFinite(storedBasePrice) ? storedBasePrice : item.base_price
+  const unitBasePrice = editingLine
+    ? Number.isFinite(storedBasePrice)
+      ? storedBasePrice
+      : item.base_price
+    : // A NEW line prices from the chosen variant. With no variant groups this returns
+      // item.base_price unchanged, so nothing moves for an item that has none.
+      getItemDisplayPrice(item, selectedVariants)
 
   const calculatePrice = () => {
     let price = unitBasePrice
@@ -110,12 +152,23 @@ export function ItemDetailModal({
   }
 
   const handleAddToCart = () => {
+    /*
+     * The legacy `selected_size` shim, carried over from the quick-add path this replaced.
+     * A variant "Size" group is not an `item.sizes` entry, but the cart, the ticket and line
+     * identity all read selected_size, so a variant Size is mirrored into it at a zero
+     * modifier -- the price is already carried by base_price. A real `has_sizes` radio wins
+     * where an item somehow has both.
+     */
+    const variantSizeName = showVariantChooser ? selectedVariants.Size || null : null
+    const effectiveSelectedSize =
+      selectedSize ?? (variantSizeName ? { name: variantSizeName, price_modifier: 0 } : null)
+
     const cartItem: CartItem = {
       menu_item_id: item.id,
       name: item.name,
       quantity,
       base_price: unitBasePrice,
-      selected_size: selectedSize,
+      selected_size: effectiveSelectedSize,
       selected_addons: selectedAddons,
       special_instructions: specialInstructions,
       subtotal: calculatePrice(),
@@ -127,6 +180,12 @@ export function ItemDetailModal({
     }
     if (editedVariants) {
       cartItem.selected_variants = editedVariants
+    }
+    // A new variant line names and carries its own selection, exactly as the quick-add path
+    // did -- without this the customer's choice reaches neither the kitchen nor the cart row.
+    if (showVariantChooser) {
+      cartItem.selected_variants = selectedVariants
+      cartItem.display_name = buildVariantDisplayName(item.name, selectedVariants)
     }
     onAddToCart(cartItem)
   }
@@ -180,6 +239,47 @@ export function ItemDetailModal({
               <p className="text-sm font-sans text-muted-foreground leading-relaxed">{item.description}</p>
             )}
           </div>
+
+          {/* Variant groups (Size / Milk / …) — new lines only, see the docblock above */}
+          {showVariantChooser &&
+            variantGroups.map((group) => (
+              <div key={group.name}>
+                <Label className="text-base font-semibold mb-4 block font-sans text-foreground">
+                  {group.name}
+                </Label>
+                <RadioGroup
+                  value={selectedVariants[group.name] || ''}
+                  onValueChange={(value) =>
+                    setSelectedVariants((prev) => ({ ...prev, [group.name]: value }))
+                  }
+                >
+                  {group.options.map((option, optionIndex) => {
+                    const optionLabel = getVariantOptionLabel(option)
+                    const controlId = `variant-${group.name}-${optionIndex}`
+                    return (
+                      <div
+                        key={controlId}
+                        className="flex min-h-[44px] items-center space-x-3 border-b border-border py-3 last:border-b-0"
+                      >
+                        <RadioGroupItem value={optionLabel} id={controlId} />
+                        <Label
+                          htmlFor={controlId}
+                          className="flex-1 cursor-pointer flex items-center justify-between font-sans"
+                        >
+                          <span className="text-foreground">{optionLabel}</span>
+                          {group.type === 'price' && typeof option !== 'string' && (
+                            <span className="text-muted-foreground text-sm">
+                              {restaurant?.currency || 'N$'}
+                              {Number(option.price).toFixed(2)}
+                            </span>
+                          )}
+                        </Label>
+                      </div>
+                    )
+                  })}
+                </RadioGroup>
+              </div>
+            ))}
 
           {/* Size Selection */}
           {item.has_sizes && item.sizes.length > 0 && (
