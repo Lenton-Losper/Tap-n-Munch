@@ -1,4 +1,9 @@
-import { guestCanAccessOrder, parseOptionalInt, paymentRefOrFilter } from '@/lib/guest-orders/validation'
+import {
+  guestCanAccessOrder,
+  guestCanReceiveOrderDelivery,
+  parseOptionalInt,
+  paymentRefOrFilter,
+} from '@/lib/guest-orders/validation'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
 
 describe('guestCanAccessOrder', () => {
@@ -77,5 +82,72 @@ describe('paymentRefOrFilter', () => {
     expect(paymentRefOrFilter('TN123')).toBe(
       'paycloud_merchant_order_no.eq.TN123,payment_reference.eq.TN123',
     )
+  })
+})
+
+/**
+ * QRA-19. The delivery predicate is the read predicate with the terminal-state short-circuit
+ * removed. It exists because POST /api/guest/orders/[orderId]/receipt/email is not a read: it
+ * takes an attacker-chosen address and has the restaurant mail that customer's itemised receipt
+ * to it, and it forces receipt issuance (which allocates a document number) on the way.
+ *
+ * The pair of cases that matter are the first two: guestCanAccessOrder says YES to a paid order
+ * on restaurant scope alone, and guestCanReceiveOrderDelivery says NO to exactly the same call.
+ * If those two ever agree again, the exposure is back.
+ */
+describe('guestCanReceiveOrderDelivery', () => {
+  const paidOrder: GuestOrderRow = {
+    id: 'order-1',
+    restaurant_id: 'rest-a',
+    table_number: 5,
+    session_id: 'sess-abc',
+    member_session_id: 'sess-abc',
+    is_closed: false,
+    status: 'completed',
+    payment_status: 'paid',
+  } as GuestOrderRow
+
+  it('refuses a PAID order on restaurant scope alone, where the read helper allows it', () => {
+    const restaurantScopeOnly = { restaurantId: 'rest-a' }
+
+    // The read rule -- deliberate, and unchanged (#279 / the shareable receipt link).
+    expect(guestCanAccessOrder(paidOrder, restaurantScopeOnly)).toBe(true)
+    // The delivery rule.
+    expect(guestCanReceiveOrderDelivery(paidOrder, restaurantScopeOnly)).toBe(false)
+  })
+
+  it('allows the session that placed the order', () => {
+    expect(
+      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-a', sessionId: 'sess-abc' }),
+    ).toBe(true)
+  })
+
+  it('allows a session id matched against member_session_id, not only session_id', () => {
+    const order = { ...paidOrder, session_id: 'sess-other', member_session_id: 'sess-mine' }
+    expect(
+      guestCanReceiveOrderDelivery(order, { restaurantId: 'rest-a', sessionIds: ['sess-mine'] }),
+    ).toBe(true)
+  })
+
+  it('allows the table the order sits at', () => {
+    expect(
+      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-a', tableNumber: 5 }),
+    ).toBe(true)
+  })
+
+  it('refuses a different table', () => {
+    expect(
+      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-a', tableNumber: 6 }),
+    ).toBe(false)
+  })
+
+  it('refuses a different restaurant even with the right session id', () => {
+    expect(
+      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-b', sessionId: 'sess-abc' }),
+    ).toBe(false)
+  })
+
+  it('refuses when no restaurant is supplied at all', () => {
+    expect(guestCanReceiveOrderDelivery(paidOrder, { sessionId: 'sess-abc' })).toBe(false)
   })
 })

@@ -179,6 +179,32 @@ describe('acquiring the lock is a compare-and-set, not a claim of intent', () =>
     expect(writes[0].filters).toContainEqual(['edit_lock_token', 'stale-token'])
   })
 
+  /**
+   * QRA-01. `edit_lock_session_id` is a `text` column, and isEditLockHeldByOther reads it back
+   * as a scalar. The route once wrote `parsed.sessionIds` — an ARRAY — and PostgREST's
+   * json_populate_record stores a JSON array into a text column as its JSON TEXT, so the row
+   * came back holding `["a", "b"]`, which matches no id. The holder failed its own holder check
+   * and EVERY commit was refused 409 locked_by_other.
+   *
+   * This asserts the SHAPE of the value written, which is the thing no existing test could see:
+   * the Supabase mock does no type coercion, and every fixture supplies a scalar holder, so the
+   * suite pinned the rule in edit-lock.ts and never observed what the route actually writes.
+   *
+   * Two-sided: restore `edit_lock_session_id: parsed.sessionIds` in the acquire and this test
+   * fails on the toBe('string') line.
+   */
+  it('records a SCALAR holder, never the id array — a text column cannot hold a list', async () => {
+    const { status } = await call(POST, 'POST', { sessionIds: [SESSION, 'sess_second_id'] })
+
+    expect(status).toBe(200)
+    const holder = writes[0].patch.edit_lock_session_id
+    expect(Array.isArray(holder)).toBe(false)
+    expect(typeof holder).toBe('string')
+    // The PRIMARY id — the first the client sent. The read side matches it against every id the
+    // client holds, so one is enough to identify the holder.
+    expect(holder).toBe(SESSION)
+  })
+
   it('re-asserts the status and payment gates inside the write, not only in the read', async () => {
     await call(POST, 'POST', {})
 
