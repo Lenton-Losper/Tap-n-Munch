@@ -2785,3 +2785,351 @@ not already hold it — so this is not mass-exploitable. It is listed as a membe
 13.3 rather than as an independent break.
 
 ---
+
+## QRA-20 — a FAILED payment tells the customer their order "has been paid for"
+
+**Severity P2. VERIFIED at `4861492`** (staging only — the copy lives in the edit feature).
+
+`EDITABLE_PAYMENT_STATUSES = ['pending', 'cash_pending']` (`lib/orders/edit-lock.ts:41`) is an
+allowlist, which is the right shape. But the refusal it produces is a single bucket:
+
+```ts
+// lib/orders/edit-lock.ts:170-172
+if (!isEditablePaymentStatus(row.payment_status)) {
+  return 'payment_settled'
+}
+```
+
+and `payment_settled` renders as *"This order has been paid for, so it can't be changed."*
+(`EDIT_COPY.paymentSettled`).
+
+The payment statuses that reach that branch are everything outside the allowlist. From
+`lib/payments/payment-integrity.ts:201-208`, the ones that still **owe money** are
+`unpaid`, `failed` and `terminal_pending`. So:
+
+- an order whose card payment **failed** → *"This order has been paid for"*;
+- an order with a **live card attempt on the terminal** (`terminal_pending`) → the same sentence.
+
+Both are false, and both are said to a customer about money. Refusing the edit is correct in both
+cases — a live attempt must not be repriced, and a failed one is about to be retried — but
+`payment_settled` is the wrong reason code for either. `EDIT_COPY` already distinguishes
+`paymentInFlight` for the hosted-checkout case; the terminal case has no equivalent.
+
+This is the same family as #209 (*"tab/page.tsx tells the customer cash was withdrawn regardless of
+which method actually was"*) and is a **policy escalation, not an implementation choice** — the
+operating contract reserves anything changing what a customer is told about money to the human.
+
+---
+
+# STAGE 4
+
+---
+
+# 16. ACTUAL STATE MACHINES
+
+Reconstructed from the implementation. Where a state exists only because a writer produces it, it
+is listed even if no one intended it.
+
+## 16.1 Customer / table session
+
+There is no session state column. The state is a **conjunction**, and it is computed fresh on every
+call to `validateSessionToken`.
+
+```
+        (no ids)
+            │  TabProvider constructs → ensureTabSessionId()          [identity B exists]
+            ▼
+     IDENTIFIED-ONLY ─────────────────────────────────────────┐
+            │  landing table fetch → createFreshSession()      │  (blocked if a token exists)
+            ▼                                                  │
+     IDENTIFIED (A+B), NO TOKEN                                 │
+            │  POST /api/tabs | /api/tabs/join | /[tabId]/join  │
+            ▼                                                  │
+        TOKEN-BOUND  { tab_id, table_id, restaurant_id, session_version, active, expires_at }
+            │                                                  │
+   ┌────────┼───────────────┬──────────────────┬───────────────┤
+   │ 24h    │ tab leaves    │ close_table_     │ active=false  │
+   │ expiry │ status='open' │ session bumps    │ (by RPC)      │
+   ▼        ▼               ▼ current_session_version          │
+        INVALID ────────────────────────────────────────────────┘
+            │  the NEXT call to one of the six guarded routes returns 410
+            ▼
+   client: handleSessionExpired → /session-ended → clears token, tab id, table
+            │  (does NOT clear flashtap_session_v1, tab_session_id, or the mirror)
+            ▼
+     IDENTIFIED-ONLY, again — with the SAME ids as before
+```
+
+**Transitions that do NOT exist:** there is no path from INVALID back to TOKEN-BOUND for the same
+token, and no way for a customer to revoke their own identity (`clearSession()` removes A only, and
+`clearTabSessionId()` is called from exactly two places — the view-only branch and kiosk start).
+
+**The state nobody designed:** *IDENTIFIED-ONLY with stale ids*. It is the terminal state of every
+session, it is indistinguishable from a fresh browser to every unguarded route, and it is what
+QRA-16 exploits.
+
+## 16.2 Tab
+
+```
+                    POST /api/tabs (INSERT status='open')
+                              │
+                              ▼
+   ┌──────────────────────► OPEN ──────────────────────┐
+   │                     │    │                        │
+   │  (no route exists)  │    │ POST …/ready-to-pay    │ close_table_session
+   │                     │    ▼   (CAS: status<>rtp)   │  (status IN open|ready_to_pay|active)
+   │                READY_TO_PAY ──────────────────────┤
+   │                          │                        ▼
+   │                          │ terminal settle    SETTLED  (settled_at, settled_type)
+   │                          ▼
+   └───────────────────── (settled)
+```
+
+- **`READY_TO_PAY` is one-way for customers.** No route returns a tab to `open`. It blocks new
+  orders (`orders/route.ts:138-143`) and new joins (`[tabId]/join:62-71`).
+- **`'active'` appears in `close_table_session`'s `WHERE` and nowhere else** — a legacy value no
+  writer produces.
+- **`'closed'`** is handled by `tab-context.tsx:211-216` (zeroes the total and members) but is
+  written by nothing in this repo; `lib/tab-status.ts` and `shouldClearTabAfterSettlement` are the
+  vocabulary.
+- **`settled_type`**: `'manual_close'` from the RPC, and the terminal settle route's own values.
+
+## 16.3 Order
+
+**There is no separate kitchen state.** One `status` column, written by three vocabularies:
+
+| Writer | Vocabulary |
+|---|---|
+| dashboard (`PATCH /api/orders/[orderId]/status`) | `pending → accepted → preparing → ready → completed`, `* → cancelled` |
+| terminal (`/api/terminal/orders/[orderId]/status`) | `pending → confirmed → preparing …` |
+| customer edit (staging) | `accepted → pending` (only when the total moves) |
+| payment confirmation | `* → completed` (`markOrderPaidConfirmed` sets `status='completed'` directly, bypassing the transition table) |
+| table close | `* → completed` for **paid** orders only |
+
+```
+  order_requests:   waiting_review ──claim──► accepting ──finalize──► accepted ──► (orders row)
+                          │  ▲                    │
+                          │  └── release on error ┘        (a worker death here strands it)
+                          └── declined
+```
+
+```
+  orders:  pending ──► accepted ──► preparing ──► ready ──► completed
+             ▲            │                                     ▲
+             └── customer edit (total changed)                   │
+           ready_for_terminal ──► accepted                       │
+           any non-terminal ──► cancelled          markOrderPaidConfirmed ──┘  (from ANY status)
+```
+
+**`isValidStaffStatusTransition` has no `pending → preparing` edge**, which is what enforces
+re-acceptance after a total-changing customer edit — and produces the raw
+`400 "Invalid transition: pending → preparing"` string that is #275.
+
+**`markOrderPaidConfirmed` writes `status='completed'` from any status**, conditioned only on
+`payment_status IN {unpaid, pending}`. So `accepted → completed` and even
+`preparing → completed` are reachable, bypassing the transition table entirely. That is
+intentional (payment completes an order) but it means the transition table is not the whole
+grammar.
+
+**No CHECK constraint on `orders.status` or `orders.payment_status`** — both are free text.
+
+## 16.4 Payment
+
+```
+  order created (tab)      → 'pending'
+  order created (cash, no channel) → 'cash_pending'
+  pushed to terminal       → 'terminal_pending'   (+ terminal_pushed_at)
+  terminal/webhook success → 'paid'  (+ paid_at, payment_reference, status='completed')
+  terminal failure         → 'failed'
+  staff cancel             → 'cancelled'
+```
+
+Three overlapping sets govern it, and the distinctions are load-bearing:
+
+| Set | Members | Used for |
+|---|---|---|
+| `CLAIMABLE_PAYMENT_STATUSES` | `unpaid`, `pending` | what `markOrderPaidConfirmed` may claim |
+| `OWES_MONEY_PAYMENT_STATUSES` | `unpaid`, `pending`, `cash_pending`, `failed`, `terminal_pending` | how much is owed / may the table close |
+| `EDITABLE_PAYMENT_STATUSES` | `pending`, `cash_pending` | may the customer edit |
+
+`failed` and `terminal_pending` owe money but are neither claimable by the webhook nor editable by
+the customer — QRA-20.
+
+## 16.5 Edit lock
+
+```
+   FREE  (edit_lock_token IS NULL)
+     │  POST …/edit   UPDATE … WHERE edit_lock_token IS NULL AND status IN … AND payment_status IN …
+     ▼
+   HELD  (token, edit_lock_session_id, edit_lock_expires_at = now+3min)
+     ├── DELETE …/edit  WHERE edit_lock_token = mine        → FREE
+     ├── PATCH  …/edit  (commit)                            → FREE (the commit spends it)
+     ├── staff leave {pending,accepted}                     → FREE (nulled by the status route)
+     └── wall clock passes edit_lock_expires_at             → EXPIRED-BUT-PRESENT
+   EXPIRED-BUT-PRESENT  (token still set, expiry in the past)
+     └── POST …/edit by ANYONE who owns the row: CAS on the OBSERVED token re-claims it
+```
+
+- **Nothing sweeps expired locks** — stated in the migration. `EXPIRED-BUT-PRESENT` is a real,
+  persistent state: `isEditLockActive` is false, so it does not block, but the columns keep their
+  values until the next acquire or a staff status change.
+- **A commit is refused on an expired-but-present token** by an explicit check
+  (`edit/route.ts:381-389`) *and* would be refused by the CAS anyway if someone re-acquired.
+- **QRA-01 collapses HELD into an unusable state**: acquire writes a holder the reader cannot
+  match, so `HELD` behaves as `HELD-BY-OTHER` for its own holder.
+
+---
+
+## 16.6 THE CROSS-PRODUCT — reachable, money/security/workflow-sensitive combinations
+
+Labels, used strictly:
+**OBSERVED** — seen in real data or produced during this audit ·
+**PROVABLY REACHABLE** — a specific sequence gets there and every step was traced in code ·
+**THEORETICALLY REACHABLE** — the code permits it but at least one step is unverified ·
+**UNPROVEN**.
+
+### X-1 · Order editable **+** kitchen preparing — **NOT REACHABLE.** (attacked; held)
+
+The brief lists this first. It is the one combination the feature was built to make impossible, and
+it is impossible by two independent conditions in the same `WHERE` clause. Staff-first nulls the
+token; customer-first flips the status to `pending`, which has no `→ preparing` edge. The staging
+probe's scenario C asserts the pair forbidden. **PROVABLY UNREACHABLE**, and worth recording as an
+invariant that held.
+
+### X-2 · Tab `ready_to_pay` **+** order still editable — **PROVABLY REACHABLE**
+
+Sequence: A places an order (tab, `pending`/`pending`) → B (or A) taps *Ready to pay* →
+`tabs.status='ready_to_pay'` → A opens the editor.
+Every gate in `editRefusalReason` reads the **order**; none reads the **tab**. Grepped:
+`edit-lock.ts` contains no reference to `tabs`, `tab_id` or any tab status.
+**What breaks:** the waiter is walking to the table with a figure read off the tab, and the payable
+amount can change underneath them. The terminal re-derives, so nobody is *mischarged* — but the
+staff member's screen and the charge disagree, with no signal that an edit happened. Section 6C.
+
+### X-3 · Tab settled / table closed **+** unpaid order still editable — **PROVABLY REACHABLE**
+
+Sequence: A places an order → staff Accept → the party leaves without paying → staff close the
+table → A, on the bus, opens `/menu/{rid}/order-confirmation/{orderId}`.
+The close route leaves unpaid orders at `pending`/`pending` deliberately; the edit route filters
+neither `is_closed` nor anything session-related. **QRA-16.**
+**What breaks:** an order that is no longer at a table, on a tab that is `settled`, can be
+rewritten — and the write sets `requires_reacceptance` and pushes it back into the dashboard's
+*New* tab, resurfacing a dead order to staff.
+
+### X-4 · Expired customer session **+** accessible order — **PROVABLY REACHABLE**
+
+Same sequence, read side. `guestCanAccessOrder` consults no session state; and once
+`is_closed = true` it returns `true` on restaurant scope alone. **Access widens on closure.**
+
+### X-5 · Payment processing **+** mutable payable amount — **PROVABLY REACHABLE for the tab path,
+NOT REACHABLE for hosted checkout**
+
+Hosted checkout is closed by `payment_in_flight` (`payment_checkout_url` non-empty). The tab path
+has no equivalent: `terminal_pending` on an *order* does close editing (it is outside
+`EDITABLE_PAYMENT_STATUSES`), but `ready_to_pay` on the *tab* does not, and the terminal's own
+`terminal_pushed_at` is per-order. So during the interval between *Ready to pay* and the terminal
+claim, a customer may reduce an order.
+**What breaks:** as X-2. The *charge* is safe (integer-cent match against a re-derived sum); the
+*expectation* is not.
+
+### X-6 · Cancelled order **+** included in the customer-visible payable amount —
+**PROVABLY REACHABLE**
+
+`tabs.total` is not re-summed on cancellation (QRA-15), and the browse strip renders it.
+**What breaks:** the customer is shown money they do not owe until settlement corrects the cache.
+The terminal's own figures are correct — `owesMoney()` is applied at settle and at the closeability
+check.
+
+### X-7 · Successful payment **+** unresolved order mutation — **THEORETICALLY REACHABLE**
+
+Sequence: A holds the edit lock; staff settle on the terminal; A commits.
+The settle claim writes `payment_status='paid'` and `status='completed'`. A's commit then fails
+both allowlists (`completed` ∉ editable statuses, `paid` ∉ editable payment statuses) **and** the
+token CAS (the settle route does not null the lock, but the status/payment conditions already
+refuse). So the mutation is refused.
+**Unverified step:** whether any interleaving lets the commit's `SELECT` and `UPDATE` straddle the
+settle claim in a way that matters. It cannot — the `UPDATE` re-asserts both allowlists — but this
+has not been probed the way the staff/customer race was, so it is labelled THEORETICALLY rather than
+PROVABLY. The staging probe covers staff-status-vs-edit, not settle-vs-edit.
+
+### X-8 · Active edit lock **+** tab settlement — **PROVABLY REACHABLE, and it strands the lock**
+
+The settle route never nulls `edit_lock_*`. After settlement the order is `completed`/`paid`, so
+the lock can never be re-acquired or released by the customer (`DELETE` still works — it is
+conditioned on the token alone and does not run `refusalFor`). If the customer's browser is gone,
+`edit_lock_token` stays populated forever on a completed order. Harmless — every consumer checks
+the status first — but it is a permanently dirty column and the dashboard's *"Customer editing
+now"* indicator keys on it.
+
+### X-9 · Closed table **+** live customer session token — **NOT REACHABLE**
+
+`close_table_session` sets `active=false` **and** bumps the version, in the same transaction as the
+tab settle. `validateSessionToken` fails on three independent grounds. **Attacked; held.**
+
+### X-10 · Stale session **+** new table occupants — **PARTIALLY REACHABLE**, and the split matters
+
+| Action by the old party | Reachable? |
+|---|---|
+| read the new tab's total, status, member count | ✅ **no credential** (`/api/tabs/active`) |
+| read the new tab's member display names | ✅ **tab UUID only** (`/view`) |
+| rename a new member | ✅ **tab UUID only** (QRA-18) |
+| add an order to the new tab | ✅ **QRA-02** mints a valid token for it |
+| read a new occupant's order | ⚠️ only with that order's UUID (#279) |
+| edit a new occupant's order | ⛔ needs their session id |
+| use the OLD token | ⛔ version mismatch |
+
+So the boundary holds exactly where the token is checked and nowhere else.
+
+### X-11 · `order_requests` stuck in `accepting` **+** customer polling — **PROVABLY REACHABLE**
+
+Any worker death between the claim and the finalize. The row is then absent from the staff list,
+refused with 409 by accept/decline/review, swept by no cron, and `normalizeOrderStatusForDisplay`
+maps it to `waiting_review` — so **the customer is shown "Waiting for confirmation" forever** for an
+order that no staff member can see or act on. Documented in the route itself.
+
+### X-12 · Two tabs at one table — **NOT REACHABLE for `open`**, reachable for the pair
+(`settled` + `open`)
+
+`idx_tabs_one_open_per_table` is partial on `status='open'`, so exactly one open tab exists. A
+settled tab and a new open tab coexist by design. The failure mode that *was* reachable —
+a tab with `status='open'` **and** `settled_at` set, which permanently 409s every new scan — is
+guarded at `app/api/tabs/route.ts:161` (`.is('settled_at', null)`) and explicitly detected and
+reported with `TABLE_BLOCKED_BY_CLOSED_TAB`.
+
+### X-13 · Tab `open` **+** `restaurant_tables.status = 'available'` — **PROVABLY REACHABLE**
+
+`POST /api/tabs` sets `occupied`; only `close_table_session` sets `available`. Any path that settles
+a tab **without** the RPC (the terminal settle route) leaves the table `occupied`; conversely a
+`23505` recovery does not re-set `occupied` if it had drifted. This is #216/#177 territory and
+matters here only because the payment terminal's table list gates on that column.
+
+### X-14 · An order on a tab **+** `tab_id = NULL` at the same table — **PROVABLY REACHABLE**
+
+QRA-07: an order submitted without `tabId` lands with `tab_id = null` at a table that has an open
+tab. It appears in the kitchen and in Live Orders, is never summed into `tabs.total`, and is never
+claimed by `settle` (which filters `.eq('tab_id', tabId)`). **It is an unbillable order at a real
+table.** The table-close route will mark it `is_closed` and leave it unpaid.
+
+### X-15 · Edit committed **+** staff review saved — **NOT REACHABLE (resolved deliberately)**
+
+Accept reads `items_reviewed` first, so a stale review would silently discard the customer's edit.
+The edit route nulls all four `*_reviewed` columns and preserves the discarded review in
+`edit_history`, setting `requires_reacceptance`. **Attacked; held** — and the ruling behind it is
+recorded (money-facing: a re-review is recoverable, a wrong charge is not).
+
+### X-16 · Staff Accept **+** a customer edit in the same window — **NOT REACHABLE**
+
+The Accept claim (`WHERE status='waiting_review'`) and the edit commit
+(`WHERE status IN ('waiting_review')`) contend on the same column. Whichever lands first excludes
+the other: after the claim the status is `accepting`, so the edit matches zero rows and
+`explainLostWrite` reports `payment_in_flight` (which `requestEditRefusalReason` maps `accepting`
+to). **Attacked; held.**
+
+**But the adjacent combination IS reachable and is not covered:** staff open the review screen,
+read a total, the customer edits, staff press Accept. Accept re-reads via the claim's
+`.select('*')` and charges the **new** figure. Nothing tells the staff member the number changed
+between reading and pressing. `requires_reacceptance` is set on the row but the Accept route does
+not consult it. **PROVABLY REACHABLE**, and it is the one place a staff member can authorise an
+amount they never saw.
+
+---
