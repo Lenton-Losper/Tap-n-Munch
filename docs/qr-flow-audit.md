@@ -124,6 +124,10 @@ they are established so that nothing depends on reaching the end of the audit.
 | QRA-13 | P3 | VERIFIED | both | My Orders renders `sessionInfo.created`, a field `getSessionInfo()` has never returned — so it always reads "Session active since N/A". |
 | QRA-14 | P2 | VERIFIED (staging) | both / prod UNPROVEN | `close_table_session` — which settles tabs and evicts every diner — is EXECUTE-able by `anon` and never revoked. **Not exploitable**, because it is SECURITY INVOKER and `anon` has no UPDATE on `tabs`. An invariant attacked and held; recorded with what stops it. |
 | QRA-15 | P1 | VERIFIED | both | Nothing re-sums `tabs.total` when an order is cancelled, so the tab strip overstates what is owed until settlement corrects it. |
+| QRA-16 | P1 | VERIFIED | staging (edit) / both (requests) | Closing the table does not close editing: an unpaid order stays `pending/pending` and the edit route consults no token, no session version and no `is_closed`. Nothing closes `order_requests` at all. |
+| QRA-17 | **P1** | VERIFIED (staging catalogue) | both; prod publication UNPROVEN | **Every customer realtime subscription in the QR app is dead.** All seven target `tabs` / `restaurant_tables`, and neither is in the `supabase_realtime` publication — nothing has ever published them. |
+| QRA-18 | P1 | VERIFIED | **both, incl. production** | `PATCH /api/tabs/[tabId]/member` has no session token, **no restaurant scope at all**, a service-role client and a full-array overwrite of `tabs.members`. The tab UUID is handed out unauthenticated by `/api/tabs/active`. |
+| QRA-19 | P2 | VERIFIED | **both, incl. production** | `POST /api/guest/orders/[orderId]/receipt/email` will email a **paid** order's full receipt to any address on restaurant scope alone — no table, no session, no rate limit. |
 
 **Cross-reference to the tracker.** QRA-02 is #128 and #218; QRA-06's PIN half is #283; QRA-08 is
 #236; the `guestCanAccessOrder` table-number branch discussed in section 13 is #279. None of these
@@ -2102,5 +2106,682 @@ the edit path would bypass all three.
 
 So today: **"Change order" can only ever subtract. "Order more" can only ever create a new ticket.
 There is no operation in the system that adds an item to an existing order.**
+
+---
+
+## QRA-16 — closing the table does not close editing, and does not touch pending requests
+
+**Severity P1. VERIFIED at `4861492`** (the edit half is staging-only; the `order_requests` half is
+both refs). Invariants falsified: **INV-2**, **INV-6**.
+
+`POST /api/tables/[tableNumber]/close` (`requireStaffPermission(TABLES_MANAGE)`) does three things:
+
+1. `close_table_session(table_id, restaurant_id)` — settles the tabs, deactivates every linked
+   `customer_sessions` row, increments `current_session_version`. **One transaction.**
+2. Paid orders → `is_closed`, `table_closed`, `status='completed'`, `completed_at` stamped only
+   where null.
+3. **Unpaid orders → `is_closed`, `table_closed`, and nothing else.** The route says why, and it is
+   the right call: *"payment_status, paid_at, status and completed_at are deliberately left
+   untouched: an unpaid or cancelled order must not become revenue just because someone closed a
+   table."*
+
+So after a table close, an unpaid QR order sits at `status = 'pending'` (or `'accepted'`),
+`payment_status = 'pending'`, `is_closed = true`.
+
+**Every gate on the edit route is satisfied by that row:**
+
+- `loadTarget` (`edit/route.ts:109-127`) selects by `id` + `restaurant_id` and **never filters
+  `is_closed`** — grepped: the string does not appear in the file.
+- `editRefusalReason`: `status ∈ {pending, accepted}` ✅, `payment_status ∈ {pending, cash_pending}` ✅,
+  no `payment_checkout_url` ✅, lock free ✅ → **null, i.e. editable.**
+- `sessionOwnsRow` passes, because the customer's browser still holds the ids. **Nothing clears
+  them.** `/session-ended` removes `flashtap_session_token`, `flashtap_tab_id` and
+  `flashtap_table` — and leaves `flashtap_session_v1`, `tab_session_id` and
+  `flashtap_tab_session_id_mirror` in place.
+
+**So a customer whose table was closed can still edit an unpaid order, indefinitely.** The
+`customer_sessions` revocation and the `session_version` bump — the two mechanisms that exist
+precisely for this — are consulted by exactly six routes, and the edit route is not one of them.
+
+### And nothing closes `order_requests` at all
+
+`grep -c order_requests app/api/tables/[tableNumber]/close/route.ts` → **0**. Neither the terminal's
+table-close route, nor the settle route, nor either cron sweeper
+(`expire-hosted-pending-orders`, `auto-cancel-stale-pos-orders` — both operate on `orders`) touches
+`order_requests`.
+
+Consequences, both VERIFIED at both refs:
+
+- A `waiting_review` request survives table closure and **stays in the staff queue**
+  (`getWaitingOrderRequests` filters on `restaurant_id` + `status='waiting_review'` only). A new
+  party sits down and staff still see the previous party's un-actioned submission for that table.
+- Its placer can still edit it (staging), because `requestEditRefusalReason` looks only at
+  `status`.
+- Accepting it later creates a real order at that table, after the table was closed and the version
+  bumped.
+
+`guestCanAccessOrder` compounds it from the read side: `is_closed === true` **short-circuits to
+`true`** (`validation.ts:30-32`), so a closed order is readable by anyone holding the restaurant id
+and the order UUID — no table, no session. That is the deliberate "shareable receipt link" pattern,
+but it means table closure *widens* read access rather than narrowing it.
+
+---
+
+## QRA-17 — every customer realtime subscription in the QR app is dead
+
+**Severity P1. VERIFIED on staging by direct catalogue read; the code half is VERIFIED at both
+refs. Production publication state UNPROVEN — the exact query is given below.**
+Invariant: **INV-8** in its "authoritative state reaches the customer" sense.
+
+Read-only against the linked staging project:
+
+```sql
+select schemaname, tablename from pg_publication_tables where pubname='supabase_realtime';
+--  public | order_requests
+--  public | orders
+```
+
+**`public.tabs` and `public.restaurant_tables` are not in the publication.** The only migration that
+ever touches it, `20260726110000_enable_realtime_orders_order_requests.sql`, adds exactly `orders`
+and `order_requests`; `scripts/enable-orders-realtime.ts` adds `orders`. Grepped across every
+migration and script: **nothing has ever published `tabs`.**
+
+Now the subscriptions. Every `supabase.channel(...)` reachable from a QR customer, at `4861492`:
+
+| Site | Table subscribed | In publication? |
+|---|---|---|
+| `contexts/tab-context.tsx:255-263` | `tabs` (`id=eq`) | **no** |
+| `app/menu/[restaurantId]/v2/page.tsx:589-596` | `tabs` (`id=eq`) | **no** |
+| `app/menu/[restaurantId]/v2/page.tsx:602-609` | `restaurant_tables` (`id=eq`) | **no** |
+| `app/menu/[restaurantId]/v2/page.tsx:614-629` | `tabs` (`restaurant_id=eq`) | **no** |
+| `app/menu/[restaurantId]/receipt/page.tsx:271-287` | `tabs` (`id=eq`) | **no** |
+| `hooks/useTabSessionEndedRedirect.ts:66-80` | `tabs` (`id=eq`) | **no** |
+| `hooks/useSessionTokenGuard.ts:110-125` | `tabs` (`restaurant_id=eq`) | **no** (and the hook has no importer) |
+| `components/orders-dashboard.tsx:633` (staff) | `tabs` | **no** |
+
+**Seven customer subscriptions, zero of them can ever fire.** And the customer subscribes to
+neither of the two tables that *are* published: there is no `postgres_changes` subscription on
+`orders` or `order_requests` anywhere under `app/menu/`.
+
+A `postgres_changes` subscription to an unpublished table does not error. The channel reaches
+`SUBSCRIBED` and no event is ever delivered — which is why this has survived: every one of these
+call sites looks correct, has a cleanup, and does nothing.
+
+### What actually keeps the customer's screens current
+
+Polling and focus, exclusively:
+
+| Screen | Mechanism | Interval |
+|---|---|---|
+| `/v2` landing | `window` `focus` listener → `syncTabLandingState()` (`v2:631-636`), plus remount | on focus only |
+| `/browse` | nothing periodic for tab state; `MenuOrderStatusTracker` polls its own orders | — |
+| `/cart` | `useTabSessionEndedRedirect`'s mount-time `load()` | on mount |
+| `/my-orders` | `setInterval(loadOrders, GUEST_ORDER_POLL_MS)` | 5 s |
+| `/order-confirmation/[id]` | `setInterval(pollPaymentStatus, …)`, stops once `paid` | 5 s |
+| `/receipt` | `setInterval(validateAndLoad, …)` | 5 s |
+| `/tab` | **nothing.** One `load()` on mount and no interval | never |
+
+**`/tab` is the screen with the money on it and it never refreshes.** A customer sitting on it
+watches a total that was correct when the page loaded.
+
+### Production
+
+Publications are database state, not migration state, so `origin/main`'s code being identical does
+not settle it. The query is read-only and takes one round trip:
+
+```sql
+select tablename from pg_publication_tables where pubname='supabase_realtime';
+```
+
+Not run here because this checkout is linked to staging and re-linking mutates a checkout other
+agents share. Given that no migration or script has ever published `tabs` in any environment, the
+expectation is that production matches — but it is expectation, not measurement, and is labelled
+UNPROVEN accordingly.
+
+---
+
+## QRA-18 — `PATCH /api/tabs/[tabId]/member` is an unauthenticated, cross-tenant write
+
+**Severity P1. VERIFIED at BOTH refs, including production.** Invariants falsified: **INV-9**,
+**INV-1**.
+
+The entire route, `app/api/tabs/[tabId]/member/route.ts` (43 lines, quoted in full because its
+brevity is the finding):
+
+```ts
+export async function PATCH(req, { params }) {
+  const { tabId } = await params
+  const { sessionId, displayName } = await req.json()
+  if (!sessionId || !displayName?.trim()) return 400
+  const supabase = createServerSupabaseClient()          // service_role — RLS bypassed
+  const { data: tab } = await supabase.from('tabs').select('id, members').eq('id', tabId).single()
+  if (!tab) return 404
+  const updatedMembers = (tab.members || []).map((m) =>
+    m.session_id === sessionId ? { ...m, display_name: displayName.trim() } : m)
+  const { error } = await supabase.from('tabs').update({ members: updatedMembers }).eq('id', tabId)
+  …
+}
+```
+
+- **No `requireSessionToken`.** The client calls it through `fetchWithSession`
+  (`tab/page.tsx:210-220`), so a token is *sent* — and the route never looks at it.
+- **No restaurant scope.** Both statements filter on `id` alone. There is no
+  `.eq('restaurant_id', …)` anywhere in the file, and no restaurant is even accepted as input. It
+  is the only customer write in the system with no tenant boundary at all.
+- **Service-role client**, so RLS does not backstop the missing filter.
+- **Full-array overwrite** of `tabs.members` — a fifth read-modify-write site, and the only one
+  reachable with no credential.
+
+### Reachability
+
+The tab UUID is the only thing needed, and it is handed out unauthenticated:
+`GET /api/tabs/active?restaurantId=<public>&tableNumber=<printed>` returns `{tab:{id, …}}`
+(`app/api/tabs/active/route.ts:100-108`). So:
+
+```
+GET  /api/tabs/active?restaurantId=…&tableNumber=7      -> tab.id
+PATCH /api/tabs/{tab.id}/member   {"sessionId":"x","displayName":"…"}   -> 200
+```
+
+Two effects, both without any credential:
+
+1. **The members array is rewritten on every call**, even when no entry matches. Any concurrent
+   `add_tab_member` append (the atomic RPC on `/api/tabs/join`) is silently lost, because this
+   route writes the array it read. Repeated calls are a way to keep evicting joiners from the
+   member list.
+2. With a **harvested** `session_id` (QRA-05), the attacker sets that diner's `display_name` to an
+   arbitrary string, which renders on `/tab` (`groupedOrders`, `:353-388`) and on the customer
+   receipt view (`getOrderCustomerLabel`, `receipt/page.tsx:143-183`) for everyone at the table.
+
+React escapes the string, so this is defacement and attribution corruption rather than script
+injection. The absence of a restaurant scope is the part that makes it a tenancy defect rather than
+a nuisance: the same request works against any tab UUID in any restaurant on the platform.
+
+---
+
+# STAGE 3
+
+---
+
+# 9. PAYMENT SCENARIOS
+
+## The shape of QR payment, stated first because it changes every answer
+
+**A QR tab customer never pays through FlashTap.** There is no customer-initiated charge on the tab
+path. The customer's entire payment capability is `POST /api/tabs/[tabId]/ready-to-pay`, which sets
+`tabs.status = 'ready_to_pay'` and records a `payment_preference` of `cash | card | other`. The
+money is taken by staff on the terminal
+(`app/api/terminal/tabs/[tabId]/settle/route.ts`), or per-order at
+`app/api/terminal/orders/[orderId]/payment`.
+
+Hosted online checkout (Finatic) exists only on the **non-tab** path: `/order-secure` posts
+`paymentChannel: 'hosted'`, and the checkout session is created **at Accept**, never at submission
+(`accept/route.ts:254-282`). QR memory's standing note applies — *the webhook is the sole
+confirmation for hosted checkout*.
+
+## 9A — A settles everything
+
+**Customer UI** `/tab` → payment-preference selector → *Ready to pay*.
+**API** `POST /api/tabs/[tabId]/ready-to-pay` — `requireSessionToken` +
+`assertSessionMatchesResource(token → restaurant, tab)`, `payment_preference ∈ {cash,card,other}`
+validated against `restaurant_settings.payment_methods`, then
+`UPDATE tabs SET status='ready_to_pay', payment_preference, ready_to_pay_at
+ WHERE id AND restaurant_id AND status <> 'ready_to_pay'`.
+**Authoritative payable calculation** happens later and elsewhere:
+`settle/route.ts:225-238` sums `orders.total` for the requested ids and compares against the
+terminal's `amount` with `amountsMatch` (integer cents, #180).
+**Provider** the terminal talks to Finatic directly.
+**Database** the claim at `:283-316` flips `payment_status='paid'`, `status='completed'`,
+`payment_reference`, `paid_at`, `completed_at` — conditioned on the settleable status set.
+**Tab** `:410-417` recomputes `tabs.total` with `owesMoney()`; `:508-519` decides closeability the
+same way.
+**A's UI** `/tab` does not poll (QRA-17), so A sees nothing until navigation.
+**B's UI** the browse strip reads `tabs.total`, which after settlement is the *remaining* owed
+amount — so B's strip goes to `N$0.00` on B's next page load. B is never told a payment happened;
+B infers it from a zero.
+
+## 9B — A and B both tap Pay within a second
+
+Neither taps a charge. Both hit `ready-to-pay`, and the second one loses the CAS
+(`.neq('status','ready_to_pay')`) and receives
+`409 {alreadyReady: true, message: 'This tab has already been marked ready to pay.'}`. **No double
+liability is possible here because no liability is created here.**
+
+The real double-settle question is at the terminal, and the protection is the conditional claim:
+two settle requests for the same orders → the second's
+`.in('payment_status', settleableStatuses)` matches zero rows →
+`claimedIds.length !== orderIds.length` → `409 ALREADY_PAID` / `SETTLE_CONFLICT`, **before** any
+`payments` row is written (the claim is the first write). **INV-5 attacked and held.**
+
+## 9C — payment fails
+
+For a tab, "fails" happens on the terminal and is handled by
+`lib/payments/handle-terminal-payment-failed.ts`; the orders stay unpaid and the tab stays
+`ready_to_pay`. The customer sees nothing — `/tab` renders *"waiter notified"* and does not poll.
+**A cannot retry** (there is nothing to retry), and **nor can B**; only staff can. Note
+`ready-to-pay` is one-way for customers: no route sets a tab back to `open`, so a tab marked ready
+by mistake blocks all further ordering until staff act.
+
+## 9D — the browser disappears mid-payment
+
+Irrelevant on the tab path: the browser is not in the payment. On the hosted path the webhook
+reconciles (`app/api/webhooks/paycloud/route.ts`), and `markOrderPaidConfirmed` is idempotent.
+
+## 9E — provider succeeds, redirect fails
+
+Hosted path. The webhook is authoritative and the customer's return is decorative — the root
+`/order-confirmation` page reconstructs from `?tn=` via
+`GET /api/guest/orders/by-payment-ref`, and falls back to the latest order for the browser session
+within a 30-minute window (`RECEIPT_FALLBACK_WINDOW_MS`). **The webhook path never ACKs a payment it
+could not apply** (`unappliedClaims`, `webhooks/paycloud/route.ts:167-174`) precisely so Finatic
+keeps retrying.
+
+## 9F — redirect returns before the webhook
+
+**The database is authoritative and the redirect renders whatever it finds.** The confirmation page
+polls every 5 s until `payment_status === 'paid'`, so a redirect that lands first shows *pending*
+and converges. There is no client-side "assume paid".
+
+## 9G — payment versus a mutable order
+
+Covered in 6C. Summary: hosted checkout is protected by an explicit gate
+(`payment_in_flight` on `payment_checkout_url`); the terminal is protected by the conditional
+claim; **the `ready_to_pay` → terminal-claim window is not protected against a customer edit**, and
+the edit gate has no knowledge of `tabs.status`.
+
+## 9H — split and partial payment: **NONE OF IT EXISTS**
+
+Stated plainly, as the brief asks. Grepped at `4861492` across `app/`, `lib/`, `components/` for
+`splitPayment`, `split_payment`, `partialPayment`, `partial_amount`, `payEvenly`, `pay_only` and
+their variants: **no matches**.
+
+- **Paying only your own orders** — no. The settle route takes an `order_ids` array, so the
+  *terminal* can settle a subset; no customer surface can express one.
+- **Custom partial amount** — no. `amountsMatch(amount, expectedAmount)` refuses any amount that is
+  not the exact sum in integer cents.
+- **Split by item** — no.
+- **Equal split** — no.
+- **Split between payment methods** — no. One `payment_method` per settle call; a second call for
+  the remaining orders is possible from the terminal but is not a split, it is two settlements.
+
+`tab_settlement_for_tab_id` exists on `orders` and is threaded through `createOrder`, the Accept
+route and the reconcile route — but **no customer screen ever sends it**. Grepped: the only writers
+are server-side pass-throughs of a value the client never sets. It is a legacy of an earlier
+settlement model and is inert on the QR path.
+
+---
+
+# 10. CUSTOMER SESSION EVENTS
+
+| Event | Customer sees | Browser believes | Server believes | Validation performed | Consequence |
+|---|---|---|---|---|---|
+| **Refresh Menu** | full reload | ids + tab id + token | unchanged | view-only re-check; `fetchTabById`; PIN read | none |
+| **Refresh Cart** | cart survives (`localStorage`) | same | unchanged | `useTabSessionEndedRedirect` `load()` | none |
+| **Refresh My Orders** | list refetched | same | unchanged | none beyond session scope | none |
+| **Refresh confirmation** | order refetched | same | unchanged | `guestCanAccessOrder` | none |
+| **Refresh during edit** | **the editor is gone; the lock is not** | `grant` was React state | lock still held for up to 3 min | — | the customer must wait out their own lock, or press *Change this order* again and get `locked_by_other` |
+| **Browser Back** | ordinary; most navigations are `router.replace`, so Back from the confirmation page skips the cart | — | — | — | `/session-ended` actively defeats Back with `onpopstate` + `pushState` |
+| **Browser Forward** | ordinary | — | — | — | none |
+| **Duplicate tab** | works | **one identity** — `tab_session_id` is mirrored to `localStorage` and rehydrated (`readTabSessionId:29-36`) | one member | — | deliberate: *"two browser tabs on one device now share one member identity"* |
+| **Open the QR link in another tab** | same as above | same | same | — | none |
+| **Copy the QR URL to another person** | they get the landing for that table | their own fresh ids | a second member once they join | the PIN — **or QRA-02** | this is the intended sharing path and the PIN is its only control |
+| **Copy a `?tabId=` URL to another person** | `tab-context:129-136` **persists the URL's `tabId` unconditionally** | they now hold your tab id | nothing — no token is issued | none | they can read the tab via `/view` (total, member display names) with no credential |
+| **Close browser, return 10 min later** | rejoin card on the landing | ids + tab id survive `localStorage` | tab still `open` | `POST /api/session/validate` | resumes |
+| **Return an hour later** | same | same | same, unless staff closed the table | same | resumes, or `410` → `/session-ended` |
+| **Return after settlement** | `isTabSessionEndedStatus` → `endTabSession(true)` → notice + clear | cleared | tab `settled` | `fetchTabById` | correct |
+| **Scan tomorrow** | fresh landing | old ids **still present** unless `/session-ended` was reached | new tab | version mismatch on the token only | see section 11 |
+| **Stale `localStorage`** | rejoin card for a tab that no longer exists → `endTabSession(true)` | — | — | `fetchTabById` returns null | correct |
+| **Stale `session_id`** | **nothing detects it.** No route compares a session id against `customer_sessions` or a version | still "valid" | still matches the old rows | none | QRA-16 |
+| **Stale `session_version`** | only `validateSessionToken` sees it | — | mismatch | on the six guarded routes | correct where checked |
+| **Changed browser/device** | must rejoin with the PIN | nothing | nothing | PIN | correct |
+| **Storage unavailable** | `mintTabSessionId` still works (it is CSPRNG-based), but `sessionStorage.setItem` throws in some privacy modes | — | — | — | **UNPROVEN** — no try/catch around the storage writes in `ensureTabSessionId`; a throwing `setItem` would propagate out of `TabProvider`'s `useState` initialiser and blank the whole `/menu` tree. Needs a Safari private-mode device test. |
+
+---
+
+# 11. COMPLETE TABLE SESSION LIFECYCLE
+
+Walking the brief's sequence, then attacking the boundary.
+
+`Empty Table 12` → `A scans` (ids A_A/B_A minted; no server row) → `B scans` (ids A_B/B_B) →
+`A orders` (request #1, `session_id = B_A`) → `B orders` (request #2, `session_id = B_B`) →
+`kitchen Accepts both` (two `orders` rows; `tabs.total` re-summed twice) →
+`A orders another round` (request #3) → `tab paid` (terminal settle: orders → `paid`/`completed`,
+`tabs.total` → remaining owed) → `staff close the table`.
+
+**Close** runs `close_table_session(table_id, restaurant_id)` in one transaction:
+
+```
+UPDATE tabs SET status='settled', settled_at, settled_type='manual_close'
+  WHERE table_id AND restaurant_id AND status IN ('open','ready_to_pay','active');
+UPDATE customer_sessions SET active=false, expires_at=now()
+  WHERE tab_id IN (SELECT id FROM tabs WHERE table_id AND restaurant_id);
+UPDATE restaurant_tables SET current_session_version = current_session_version + 1,
+                             status='available' WHERE id;
+```
+
+then the route closes the orders (paid → completed; unpaid → `is_closed` only).
+
+**A still has My Orders open.** Nothing pushes anything: `/my-orders` has no realtime and its
+5-second poll is `fetchGuestOrdersBySession`, which filters `is_closed !== true` **client-side**
+(`my-orders:68`). So on the next tick A's list empties. A is not told why.
+
+**A refreshes.** Same. Empty list, no explanation.
+
+**A presses Back.** Ordinary history navigation. If A lands on `/browse` or `/cart`,
+`useTabSessionEndedRedirect`'s mount `load()` finds the tab `settled` and hard-redirects to
+`/session-ended`, which clears the token, `flashtap_tab_id` and `flashtap_table`. **It does not
+clear `flashtap_session_v1`, `tab_session_id` or the mirror.**
+
+**C and D sit down. C scans the same permanent QR.**
+
+`/v2?table=12` → no stored tab id (cleared) → `GET /api/tabs/active` → none within the 12-hour
+window → *Create Tab* → a **new** `tabs` row, a **new** `customer_sessions` row stamped with the
+**incremented** version.
+
+## How FlashTap separates A/B from C/D — and where it does not
+
+| Mechanism | Separates? | Why |
+|---|---|---|
+| **new `tabs` row** | ✅ | a new UUID; A's stored id points at a `settled` row and every screen that reads it ends the session |
+| **`customer_sessions.active=false`** | ✅ | A's token fails `validateSessionToken` |
+| **`current_session_version + 1`** | ✅ | even a resurrected token fails the version comparison |
+| **`orders.is_closed = true`** | ⚠️ | it stops the orders appearing in A's live lists — but it makes them **more** readable, because `guestCanAccessOrder` returns `true` on `is_closed` alone |
+| **the customer's session ids** | ❌ | **nothing clears or invalidates them.** They are not registered anywhere, so there is nothing to revoke |
+
+### Attacking the boundary with stale client state — what actually crosses
+
+Attempted, and reported honestly:
+
+- **Read C/D's orders with A's stale ids** — ❌ blocked. Every list is session-scoped and A's ids
+  match none of C/D's rows.
+- **Read C/D's orders by table number** — ✅ **crosses**, if A knows an order UUID.
+  `guestCanAccessOrder`'s table branch has no session, version or tab check
+  (`validation.ts:43-45`). A does not learn new UUIDs from any screen, so this is bounded by UUID
+  possession, not by the table session. **#279.**
+- **Read the new tab's total and member names** — ✅ **crosses, with no credential at all.**
+  `GET /api/tabs/active?restaurantId&tableNumber=12` → the new tab's id, total, status and member
+  count; then `GET /api/tabs/{id}/view` → member display names. Neither route authenticates.
+- **Order onto C/D's tab** — ✅ **crosses**, via QRA-02: `POST /api/tabs` on the now-occupied table
+  returns a fresh, valid session token for C/D's tab, stamped with the *current* version.
+- **Rename a member of C/D's tab** — ✅ **crosses**, via QRA-18, with only the tab UUID.
+- **Edit A's own unpaid order from before the close** — ✅ **crosses in time** rather than across
+  parties (QRA-16): the order is still `pending`/`pending` and the edit route consults nothing
+  that changed.
+
+**So the separation holds for everything the token guards, and holds for nothing else.**
+`current_session_version` is a good mechanism attached to six routes out of roughly twenty the
+customer can reach.
+
+---
+
+# 12. REALTIME EVENT MATRIX
+
+Given QRA-17, the honest matrix is short. **"Realtime" in the customer app means nothing today:**
+`tabs` and `restaurant_tables` are not published, and the customer subscribes to nothing else.
+
+| Event | Authoritative change | Published? | Subscribed by customer? | How the customer actually finds out |
+|---|---|---|---|---|
+| customer joins table | `tabs.members` append | ❌ | ❌ (7 dead channels) | **refresh / focus** |
+| order created | `order_requests` INSERT | ✅ | ❌ | own screen's 5 s poll |
+| second customer creates an order | `order_requests` INSERT | ✅ | ❌ | **never** — no screen shows another diner's orders |
+| order edited | `orders` / `order_requests` UPDATE | ✅ | ❌ | own screen's poll |
+| edit lock acquired | `edit_lock_token` UPDATE | ✅ | ❌ | **never** — the token is redacted out of every guest read, so the client cannot even compute "someone is editing" |
+| edit lock expires | *no row changes* | — | — | **nothing at all**: expiry is a timestamp comparison, so there is no event to publish. The holder's own countdown is the only signal |
+| edit lock released | `edit_lock_token → NULL` | ✅ | ❌ | never |
+| order accepted | `orders` INSERT + `order_requests` UPDATE | ✅ | ❌ | poll (5 s) on my-orders / confirmation |
+| preparation begins | `orders.status` UPDATE | ✅ | ❌ | poll |
+| order ready | `orders.status` UPDATE | ✅ | ❌ | poll |
+| order rejected / declined | `order_requests.status='declined'` | ✅ | ❌ | poll; my-orders opts in with `includeDeclined` |
+| new round added | as "order created" | ✅ | ❌ | own screen only |
+| payment initiated (`ready_to_pay`) | `tabs.status` UPDATE | ❌ | ❌ | **refresh only** |
+| payment succeeds | `orders` UPDATE + `tabs.total` UPDATE | orders ✅ / tabs ❌ | ❌ | poll for the order; **refresh** for the tab total |
+| payment fails | `orders` UPDATE | ✅ | ❌ | not surfaced to the customer at all |
+| tab settles | `tabs.status='settled'` | ❌ | ❌ | **refresh** — and then a hard redirect |
+| table session closes | `tabs` + `customer_sessions` + `restaurant_tables` | ❌ | ❌ | **refresh**, or a `410` on the next guarded call |
+
+### Everything that is stale until refresh — the explicit list the brief asks for
+
+1. **The tab total on `/browse`'s strip** — `tabs` unpublished; the strip is `useTab().tabTotal`,
+   loaded once per `(restaurantId, tabId)` because the subscribe effect is gated
+   `if (tabId && tabStatus) return` (`tab-context.tsx:245`).
+2. **Everything on `/tab`** — no poll, no working subscription. The screen with the money.
+3. **`/receipt`'s tab record** — the `tabs` channel is dead; the 5-second `validateAndLoad` covers
+   it because it re-fetches the tab as well.
+4. **The landing's "a tab is open here" card** — focus listener only.
+5. **The person count and member names** — same.
+6. **Tab settlement and table closure** — the customer keeps browsing a dead tab until they
+   navigate.
+7. **Another diner's order appearing** — never visible on any customer screen, by design.
+8. **An edit lock held by someone else** — structurally invisible to the client (the token is
+   redacted and `isEditLockActive` needs it).
+9. **Staff-side: the tab dashboard's own `tabs` channel is equally dead** — so staff do not see
+   `ready_to_pay` arrive in real time either.
+
+---
+
+# 13. SECURITY AND AUTHORIZATION
+
+The rule for this section: **UI absence is not authorization.** Where nothing on the server or in
+the database checks, the cell reads *NOTHING*.
+
+## 13.1 The capability table
+
+`RID` = restaurant UUID (public — in every menu URL, and a repo constant for Riviera).
+`TBL` = table number (public — printed on the table, in the QR URL).
+`TAB` = tab UUID. `OID` = order UUID. `SID` = a customer session id (bearer).
+`TOK` = a `customer_sessions` token.
+
+| Capability | Route | Server/DB enforcement | Sufficient to hold |
+|---|---|---|---|
+| read restaurant / menu | `GET /api/menu/[rid]/*` | none (public by design) | RID |
+| **join a table session** | `POST /api/tabs` | **NOTHING** on the `23505` branch — QRA-02 | **RID + TBL** |
+| join a table session (intended) | `POST /api/tabs/join` | plaintext compare against `tabs.tab_pin`; no attempt counter, no lockout, no rate limit | RID + TBL + a 4-digit PIN |
+| join by tab id | `POST /api/tabs/[tabId]/join` | PIN required unless `tab_pin IS NULL` (QRA-08); table number must match the tab; `status='open'` | TAB + TBL + PIN |
+| **read the tab (total, status, member count)** | `GET /api/tabs/active` | **NOTHING** | **RID + TBL** |
+| **read the tab detail + member display names** | `GET /api/tabs/[tabId]/view` | **NOTHING** — documented as deliberate | **TAB** |
+| read the tab detail (+ PIN on staging) | `GET /api/tabs/[tabId]` | `requireSessionToken` + token.tabId === tabId; PIN disclosed only on staging (QRA-04) | TOK |
+| **rename a tab member** | `PATCH /api/tabs/[tabId]/member` | **NOTHING. No token, no restaurant scope, service-role client** — QRA-18 | **TAB** |
+| read table members (identities) | — | `redactTabMembers` substitutes an opaque per-tab `member_key` on both read routes | — |
+| **read every member's raw `session_id`** | `GET /api/orders?tabId=` | `requireSessionToken` + tab binding — but the payload includes `session_id` (QRA-05) | TOK |
+| read own orders | `GET /api/guest/orders/by-session` | non-empty session-id list; `.in()` on both placer columns; fails closed | SID |
+| read table orders | `GET /api/guest/orders/active-table` | same, plus table + restaurant; **`countOnly=1` bypasses the session requirement** and counts every open order at the table | RID + TBL (count only) |
+| **read one specific order** | `GET /api/guest/orders/[orderId]` | `guestCanAccessOrder`: restaurant **and** (`table_number` match **or** `ownsOrder`) | **OID + RID + TBL** — #279 |
+| read a paid/closed order | same | restaurant scope **alone** (`is_closed`/`paid`/`completed`/`cancelled` short-circuit to `true`) | **OID + RID** |
+| read orders by payment reference | `GET /api/guest/orders/by-payment-ref` | three doors: `paymentRefOrFilter` charset validation, mandatory restaurant scope, per-row `guestCanAccessOrder` | ref + RID |
+| **email a paid order's receipt anywhere** | `POST /api/guest/orders/[orderId]/receipt/email` | `guestCanAccessOrder` — which for a paid order is restaurant scope alone. No rate limit, no dedup, no date bound (#244) | **OID + RID** — QRA-19 |
+| read a paid order's receipt | `GET /api/guest/orders/[orderId]/receipt` | same | OID + RID |
+| **create an order on an occupied table** | `POST /api/orders` **without** `tabId` | view-only check, quantity cap, stock check, payment allowlist, and *"an open tab must exist at this table"* — **but no credential** (QRA-07) | **RID + TBL** |
+| create an order **on a tab** | `POST /api/orders` with `tabId` | `requireSessionToken` + `assertSessionMatchesResource` + `tabs.status='open'` | TOK |
+| **edit an order** | `POST/PATCH/DELETE /api/guest/orders/[orderId]/edit` | `sessionOwnsRow` (bearer SID × both columns) → refusal gate → **two conditional UPDATEs**. No token, no version, no `is_closed` | **OID + RID + SID** |
+| acquire / release the edit lock | same | as above; CAS on the observed token | same |
+| cancel an order | — | **no customer route exists** | — |
+| read payment state | `GET /api/guest/orders/[orderId]` | as "read one order" | — |
+| **begin payment (mark ready to pay)** | `POST /api/tabs/[tabId]/ready-to-pay` | `requireSessionToken` + resource binding + preference allowlist + status CAS | TOK (and QRA-02 mints one) |
+| settle a tab | `POST /api/terminal/tabs/[tabId]/settle` | terminal auth, cash-authorization token, pre-write status validation, integer-cent amount match, atomic claim | staff terminal |
+| access an old order URL | `GET /api/guest/orders/[orderId]` | nothing time-bounded; `is_closed` **widens** access | OID + RID |
+| access an old table/session | — | `validateSessionToken` (version + tab status + `active` + expiry) — **on six routes only** | — |
+| access the PIN | `GET /api/tabs/[tabId]` (staging) | `requireSessionToken` bound to the tab — and QRA-02 mints one without the PIN | TOK |
+| reset the PIN | `POST /api/tabs/[tabId]/reset-pin` | terminal auth (staff) | staff |
+
+## 13.2 The two suspects, re-verified independently at `4861492`
+
+**Suspect 1 — "`guestCanAccessOrder` admits an open order on `table_number` alone." CONFIRMED.**
+
+```ts
+// lib/guest-orders/validation.ts:40-45
+const table = params.tableNumber
+…
+if (table != null && Number.isFinite(table) && Number(order.table_number) === table) {
+  return true
+}
+```
+
+The restaurant binding above it is mandatory (`:24-28`), so it is not cross-tenant. But
+`table_number` is a small integer printed on furniture. This is **#279**, and the issue records the
+reason it survives: the confirmation screen's live traffic depended on it until the `sessionIds`
+consolidation landed, and a canary measurement on the deployed worker confirmed the session branch
+now carries traffic on its own. **A named test pins the current behaviour** —
+`__tests__/owns-order-both-columns.test.ts`, *"STILL admits an open order on table_number alone —
+recorded, not endorsed"*. That is a recorded decision, so narrowing it is an escalation, not an
+implementation choice.
+
+**Suspect 2 — "`ownsOrder` makes knowing a session id the whole authorisation for editing."
+CONFIRMED, and the code says so itself.**
+
+```ts
+// lib/guest-orders/validation.ts:84-87 (docblock)
+// NOT a credential check. A session id is a bearer value the client supplies, so this answers
+// "does the caller know an id this row was placed under", nothing stronger.
+```
+
+The edit route uses its own copy of the predicate (`sessionOwnsRow`, `edit/route.ts:139-146`),
+deliberately excluding the table branch — the right call, and it is the *only* customer write with a
+per-order owner check at all. What makes it load-bearing rather than adequate is that the id is
+**disclosed to other tab members** by `GET /api/orders?tabId=` (QRA-05) and is not revoked by
+anything (QRA-16). #277 hardened the *generation* of these ids to a CSPRNG; nothing has hardened
+their *handling*.
+
+## 13.3 The rest of the class — every place possession of an identifier is sufficient
+
+The brief asks for the class, not the two examples. Ten sites, each VERIFIED:
+
+1. **`POST /api/tabs` → a session token.** RID + TBL. **QRA-02.** The most serious, because the
+   token is the system's only real credential.
+2. **`GET /api/tabs/active` → the tab UUID, total, status, member count.** RID + TBL. Unauthenticated
+   by design; the design note says it exposes nothing the landing does not already render to a
+   scanner. True — and it also converts "physically at the table" into "anywhere on the internet",
+   and it is what makes (3) and (4) reachable.
+3. **`GET /api/tabs/[tabId]/view` → the tab row and member display names.** TAB. Unauthenticated
+   deliberately, with a written rationale (`loadTab` runs before a token may exist).
+4. **`PATCH /api/tabs/[tabId]/member` → a write.** TAB. **QRA-18.** No rationale, no scope, no check.
+5. **`POST /api/orders` without `tabId` → an order at an occupied table.** RID + TBL. **QRA-07.**
+6. **`GET /api/guest/orders/[orderId]` → a full open order row.** OID + RID + TBL. **#279.**
+7. **`GET /api/guest/orders/[orderId]/receipt` and `…/receipt/email` → a paid order's receipt,
+   emailed anywhere.** OID + RID. **QRA-19.**
+8. **`GET /api/guest/orders/by-payment-ref` → a paid order row.** ref + RID. Bounded by three
+   deliberate doors and a CSPRNG reference; listed for completeness, not as a defect.
+9. **The edit surface → a write.** SID. Bearer, unrevoked.
+10. **`?tabId=` in any `/menu/*` URL → the browser adopts that tab id unconditionally**
+    (`tab-context.tsx:129-136` persists it to `localStorage` in a `useLayoutEffect` before any
+    validation). A pasted link re-points a stranger's device at your tab. It grants no write — no
+    token is issued — but it is client state accepted from a URL with no check.
+
+## 13.4 What authorization actually rests on, summarised
+
+| Mechanism | Used by | Revocable? |
+|---|---|---|
+| **server-created binding** (`customer_sessions` token) | 6 routes | ✅ — `active`, `expires_at`, tab status, session version |
+| **bearer session id** (`ownsOrder` / `sessionOwnsRow`) | every guest read, and the entire edit surface | ❌ — not stored anywhere as a credential, so nothing can revoke it |
+| **table number** | `guestCanAccessOrder`'s open-order branch | ❌ — it is printed on the table |
+| **restaurant id** | every guest route's tenant scope, and *alone* for paid/closed orders | ❌ — public |
+| **opaque UUID possession** | tab id, order id | ❌ |
+| **RLS** | staff paths on `orders`, `order_requests`, `tabs`, `restaurants`, `users`, `customer_sessions` | n/a — **every customer route uses the service-role client, so RLS protects the customer surface not at all** |
+| **service-role validation** | the API routes themselves; this is the real boundary | n/a |
+| **RPC validation** | `add_tab_member` (DEFINER, not granted to anon) | n/a |
+| **signed token** | **none.** Nothing in the customer path is signed or MAC'd | — |
+| **cookies** | **none.** Every customer identifier travels in a query string, a JSON body, or `x-session-token` | — |
+
+**The single structural observation of this section:** every customer route builds a
+`createServerSupabaseClient()` (service role). Row-level security therefore contributes **nothing**
+to customer authorization — it is entirely a staff-side control. Every guarantee on the QR surface
+is a hand-written `if` in a route handler, and section 13.1 is the complete list of those `if`s.
+
+---
+
+# 14. FAILURE AND ABUSE SCENARIOS
+
+| Scenario | Expected invariant | Actual behaviour | Existing protection | Failure mode | Evidence |
+|---|---|---|---|---|---|
+| double-click Place Order | INV-7 | second POST carries the same `x-idempotency-key`; `23505` on the partial-unique index → the existing id is returned | `flashtap_cart_idem_{rid}_{tbl}` in `sessionStorage`; `order_requests_idempotency_key_idx`, `orders_idempotency_key_unique` | none | VERIFIED |
+| two Place Order requests simultaneously | INV-7 | one insert wins, the other 23505s and re-fetches | same | the re-fetch on `order_requests` is `.eq('idempotency_key', k).single()` **with no restaurant scope** — harmless with UUID keys, but the scope is missing | VERIFIED |
+| slow request | INV-7 | no timeout on the client fetch | idempotency key retained on failure | none | VERIFIED |
+| request succeeds, browser times out | INV-7 | key not cleared (`clearCartIdempotencyKey` runs only on success) → retry returns the same order | idempotency | none | VERIFIED |
+| **browser retries after a success, with a CHANGED cart** | INV-7 | the same key is reused, so the server returns the FIRST order and the new items are silently dropped | idempotency key is scoped to `(restaurant, table)`, **not to cart contents** | **customer believes they ordered something they did not.** Requires the first response to have been lost | INFERRED from `lib/idempotency.ts` + `orders/route.ts:337-352` |
+| duplicate browser tabs | INV-1 | one identity — `tab_session_id` is mirrored to `localStorage` and rehydrated | `TAB_SESSION_ID_MIRROR_KEY` | none; deliberate | VERIFIED |
+| duplicate edit Save | INV-2 | the first commit spends the lock (`edit_lock_token → NULL`); the second matches zero rows → `explainLostWrite` → `lock_lost` | CAS on the token | none | VERIFIED |
+| edit succeeds but the browser thinks it failed and retries | INV-2 | as above — refused, and the panel closes with *"That took too long…"*, which is the wrong sentence for a successful edit | CAS | **a successful edit can be reported to the customer as a failure** | INFERRED |
+| two editors | INV-2 | unreachable through the product (`sessionOwnsRow` 404s a non-owner); reachable with a harvested SID, and then the lock holds | ownership + lock CAS | — | VERIFIED |
+| stale order status | INV-8 | every screen polls at 5 s except `/tab`, which never refreshes | polling | `/tab` is indefinitely stale | VERIFIED (QRA-17) |
+| stale tab total | INV-8 | `tabs.total` is a cache; no cancellation re-sums it; `/tab` computes a different, session-scoped number | none | QRA-12, QRA-15 | VERIFIED |
+| manipulated request payload | INV-8/INV-10 | prices, tax and totals are recomputed server-side by `calculateOrderPricing`; client `subtotal`/`total` are not even read on the request path | server repricing | `customer_name`, `displayName`, `session_id`, `member_session_id` are accepted verbatim | VERIFIED |
+| old `session_id` reused | INV-6 | works forever — nothing registers or revokes a session id | none | QRA-16 | VERIFIED |
+| old `session_version` reused | INV-6 | `validateSessionToken` rejects it — on six routes | version comparison | everything else ignores it | VERIFIED |
+| old order URL reused | INV-6 | a closed order becomes **more** readable (`is_closed` short-circuits `guestCanAccessOrder`) | none | deliberate receipt-link pattern | VERIFIED |
+| table closed during checkout | INV-4 | the tab moves to `settled`; `validateSessionToken` fails; the customer is redirected on their next guarded call or navigation | token invalidation | an unpaid order survives and stays editable (QRA-16) | VERIFIED |
+| kitchen transition during edit | INV-3 | staff win; both the token null and the status allowlist refuse the customer | two conditions in one `WHERE` | none | VERIFIED (probe scenario A) |
+| order cancelled while viewed | INV-8 | the customer's poll picks up `status='cancelled'`; `my-orders` filters `is_closed !== true` so the card vanishes | polling | no explanation is shown; `tabs.total` is not re-summed | VERIFIED |
+| payment initiated twice | INV-5 | second `ready-to-pay` loses the CAS → 409 `alreadyReady` | `.neq('status','ready_to_pay')` | none | VERIFIED |
+| provider callback delivered twice | INV-5 | terminal settle: second claim matches zero rows → 409 before any `payments` write | conditional claim + pre-write validation | none | VERIFIED |
+| **webhook delivered twice** | INV-5 | explicit duplicate check (`every(r => payment_status==='paid')` → ACK), then `markOrderPaidConfirmed`'s conditional claim returns `already_paid` | two independent layers | none | VERIFIED |
+| payment succeeds after the table state changed | INV-5 | `markOrderPaidConfirmed` claims on `payment_status IN CLAIMABLE` regardless of tab or table state, then re-sums `tabs.total` with `owesMoney()` | conditional claim | a payment can land on an order whose table was closed; correct, and the money is recorded | VERIFIED |
+| restaurant loses connectivity | — | staff dashboard reconnects; `orders`/`order_requests` are published so its subscriptions do resume | realtime on the published tables | — | VERIFIED |
+| customer loses connectivity | INV-7 | polls fail silently (`my-orders`' `loadOrders` has no catch — an exception leaves `loading` true forever) | none | if the FIRST load throws, `setLoading(false)` never runs and `my-orders` shows a **permanent spinner** — `loadOrders` has no `try/catch` and is invoked as `void loadOrders()` | VERIFIED |
+| **unauthenticated tab takeover** | INV-9 | `POST /api/tabs` on any occupied table returns a session token | none | QRA-02 / QRA-03 | VERIFIED (code) |
+| **unauthenticated member rewrite** | INV-1 | `PATCH /api/tabs/[tabId]/member` succeeds with the tab UUID alone, cross-tenant | none | QRA-18 | VERIFIED |
+| **receipt exfiltration** | INV-9 | a paid order's receipt is issued and emailed to an arbitrary address on restaurant scope alone | `guestCanAccessOrder`, which does not gate a paid order | QRA-19 | VERIFIED |
+| PIN brute force | INV-9 | 9000 candidates, unthrottled | none — `CacheKeys.rateLimit` has no consumer | #283; and QRA-02 makes it unnecessary | VERIFIED |
+| `ready_to_pay` denial of service | INV-9 | any token holder freezes the table: no new orders, no new joins, no customer undo | status CAS (prevents repeats, not the first) | QRA-03 | VERIFIED |
+| **stranded `accepting` request** | INV-3 | a worker death between claim and finalize leaves a row invisible to staff, refused by every route, swept by nothing, and reading *"Waiting for confirmation"* to the customer | the route detects and reports the release failure loudly | no recovery path exists | VERIFIED — documented in `accept/route.ts:29-34` |
+
+## 14.1 The two places a customer is told something false
+
+Worth separating out, because both are copy consequences of a mechanism rather than mechanism
+failures:
+
+1. **QRA-01** — *"Someone else at your table is changing this order"* when nobody is, followed by
+   the editor closing and the edit being discarded, followed by a three-minute lock the customer
+   cannot clear.
+2. **A successful edit reported as a failure** — if the commit's response is lost, the retry gets
+   `lock_lost` and the panel renders *"That took too long, so nothing was saved."* The edit **was**
+   saved. The panel has no way to distinguish a lost response from a lost lock, because the server
+   cannot either: the token is gone in both cases.
+
+---
+
+## QRA-19 — a paid order's receipt can be issued and emailed anywhere, on restaurant scope alone
+
+**Severity P2. VERIFIED at BOTH refs, including production.** Invariant: **INV-9**.
+
+`app/api/guest/orders/[orderId]/receipt/email/route.ts` — the whole gate is:
+
+```ts
+:45-50  .from('orders').select('id, restaurant_id, table_number, session_id, is_closed, status, payment_status')
+        .eq('id', orderId).eq('restaurant_id', restaurantId).maybeSingle()
+:60     if (!guestCanAccessOrder(guestOrder, { restaurantId, tableNumber, sessionId })) return 404
+:64-66  if (payment_status !== 'paid') return 400
+:70     receipt = await issueReceiptForOrder(orderId)
+:76     const result = await sendReceiptEmail(receipt, email)
+```
+
+`guestCanAccessOrder` returns `true` for a `paid` order **before it ever looks at `tableNumber` or
+`sessionId`** (`validation.ts:34-38`). So the effective requirement is:
+
+- the order UUID,
+- the restaurant UUID (matched **raw**, not through `resolveRestaurantUuid`, so it must be the UUID
+  and not a slug — which is what every menu URL carries anyway),
+- any syntactically valid email address.
+
+Nothing else. No table number, no session id, no token, and — per **#244** — *"no date bound, no
+rate limit and no dedup."*
+
+Three consequences, in order:
+
+1. **Exfiltration.** The restaurant emails a customer's itemised receipt — items, quantities,
+   prices, VAT, table, order number — to an address the caller chose.
+2. **A write side effect on an unauthenticated route.** `issueReceiptForOrder` is not a read: for an
+   order with no receipt yet it **allocates a document number** via the
+   `generate_document_number` RPC and inserts a `receipt_documents` row. It short-circuits on an
+   existing row (`issueReceipt.ts:207-216`), so it cannot be made to burn numbers repeatedly — but
+   it can force the *first* issuance of a receipt for an arbitrary paid order, at a moment of the
+   caller's choosing. Receipt snapshots are built at issuance, so that stamps the current outlet,
+   VAT and numbering context onto an older sale.
+3. **Deliverability abuse.** Unthrottled outbound mail from the restaurant's sending identity, to
+   arbitrary recipients.
+
+The sibling `GET …/receipt` has the identical gate and returns the receipt body directly.
+
+The bound on all of this is the order UUID, which the product does not disclose to anyone who does
+not already hold it — so this is not mass-exploitable. It is listed as a member of the class in
+13.3 rather than as an independent break.
 
 ---
