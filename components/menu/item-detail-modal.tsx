@@ -206,11 +206,33 @@ export function ItemDetailModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-2 sm:items-center sm:p-4">
-      <div className="max-h-[95vh] w-full max-w-2xl overflow-y-auto border border-border bg-card sm:max-h-[90vh]">
-        {/* Header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card p-4">
-          <h2 className="text-lg font-serif font-bold text-foreground sm:text-xl">Customize Item</h2>
-          <Button variant="ghost" size="icon" onClick={onClose} className="h-11 w-11">
+      {/* Named by the item's own heading below, which is now the only title this dialog has.
+          Three tests used to detect "is the modal open?" by searching the tree for the literal
+          string "Customize Item"; that made a copy edit able to silently blind them — the
+          negative assertion in cart-per-item-instructions would have kept passing while
+          checking nothing. They key on this role instead, which is what the modal IS rather
+          than what it happens to say. */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`item-detail-title-${item.id}`}
+        className="max-h-[95vh] w-full max-w-2xl overflow-y-auto border border-border bg-card sm:max-h-[90vh]"
+      >
+        {/* Header — the close control only.
+
+            THERE IS NO TITLE HERE ANY MORE. It read "Customize Item", which was true enough while
+            only configurable items opened this modal. Every item opens it now, so a bottle of
+            water was being announced as something to customize. The replacement is not a better
+            title: the item's own name is already the first thing in the body below, and a header
+            repeating it would say the same thing twice in the space a phone can least spare. */}
+        <div className="sticky top-0 z-10 flex items-center justify-end border-b border-border bg-card p-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close"
+            className="h-11 w-11"
+          >
             <X className="w-5 h-5 stroke-[1.5]" />
           </Button>
         </div>
@@ -234,7 +256,12 @@ export function ItemDetailModal({
 
           {/* Item Name & Description */}
           <div>
-            <h3 className="mb-2 break-words font-serif text-xl font-bold text-foreground sm:text-2xl">{item.name}</h3>
+            <h3
+              id={`item-detail-title-${item.id}`}
+              className="mb-2 break-words font-serif text-xl font-bold text-foreground sm:text-2xl"
+            >
+              {item.name}
+            </h3>
             {item.description && (
               <p className="text-sm font-sans text-muted-foreground leading-relaxed">{item.description}</p>
             )}

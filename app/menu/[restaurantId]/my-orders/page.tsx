@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
 import {
-  EDIT_COPY_PENDING,
+  EDIT_COPY,
   editRefusalReason,
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
@@ -266,7 +266,7 @@ export default function MyOrdersPage() {
                           )
                         }}
                       >
-                        {EDIT_COPY_PENDING.editCta}
+                        {EDIT_COPY.editCta}
                       </Button>
                     </div>
                   )}

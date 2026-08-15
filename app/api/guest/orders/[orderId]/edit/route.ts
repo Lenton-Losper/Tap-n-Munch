@@ -34,7 +34,7 @@ import {
   EDITABLE_ORDER_STATUSES,
   EDITABLE_PAYMENT_STATUSES,
   EDITABLE_REQUEST_STATUSES,
-  EDIT_COPY_PENDING,
+  EDIT_COPY,
   appendEditHistory,
   editLockExpiryFrom,
   editRefusalReason,
@@ -83,13 +83,13 @@ const REFUSAL_HTTP: Record<EditRefusalReason, number> = {
 }
 
 const REFUSAL_COPY: Record<EditRefusalReason, string> = {
-  preparation_started: EDIT_COPY_PENDING.preparationStarted,
-  payment_settled: EDIT_COPY_PENDING.paymentSettled,
-  payment_in_flight: EDIT_COPY_PENDING.paymentInFlight,
-  locked_by_other: EDIT_COPY_PENDING.lockedByOther,
-  not_editable_status: EDIT_COPY_PENDING.notEditable,
-  request_accepted: EDIT_COPY_PENDING.requestAccepted,
-  request_declined: EDIT_COPY_PENDING.requestDeclined,
+  preparation_started: EDIT_COPY.preparationStarted,
+  payment_settled: EDIT_COPY.paymentSettled,
+  payment_in_flight: EDIT_COPY.paymentInFlight,
+  locked_by_other: EDIT_COPY.lockedByOther,
+  not_editable_status: EDIT_COPY.notEditable,
+  request_accepted: EDIT_COPY.requestAccepted,
+  request_declined: EDIT_COPY.requestDeclined,
 }
 
 function refuse(reason: EditRefusalReason) {
@@ -273,7 +273,7 @@ async function explainLostWrite(
   // explanation: the token moved. Either it expired and someone re-acquired, or staff nulled
   // it and then moved the order back into an editable state.
   return NextResponse.json(
-    { error: EDIT_COPY_PENDING.lockExpired, reason: 'lock_lost', editable: false },
+    { error: EDIT_COPY.lockExpired, reason: 'lock_lost', editable: false },
     { status: 409 },
   )
 }
@@ -383,7 +383,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       String(target.row.edit_lock_token ?? '') !== parsed.lockToken
     ) {
       return NextResponse.json(
-        { error: EDIT_COPY_PENDING.lockExpired, reason: 'lock_lost', editable: false },
+        { error: EDIT_COPY.lockExpired, reason: 'lock_lost', editable: false },
         { status: 409 },
       )
     }
@@ -403,7 +403,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       } catch (err) {
         if (err instanceof InvalidEditError) {
           const message = /at least one item/i.test(err.message)
-            ? EDIT_COPY_PENDING.cannotEmpty
+            ? EDIT_COPY.cannotEmpty
             : err.message
           return NextResponse.json({ error: message, reason: 'invalid_edit' }, { status: 400 })
         }
@@ -540,8 +540,8 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       requiresReacceptance: Boolean(updated.requires_reacceptance),
       status: updated.status,
       message: totalChanged
-        ? EDIT_COPY_PENDING.committedTotalChanged
-        : EDIT_COPY_PENDING.committedNoTotalChange,
+        ? EDIT_COPY.committedTotalChanged
+        : EDIT_COPY.committedNoTotalChange,
     })
   } catch (err) {
     console.error('[guest/orders/:id/edit] PATCH failed:', err)

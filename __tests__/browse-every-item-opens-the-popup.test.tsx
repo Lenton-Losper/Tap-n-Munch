@@ -207,9 +207,17 @@ function tapCard(itemName: string) {
   )
 }
 
-/** True once ItemDetailModal is on screen. Its header is the only "Customize Item" in the tree. */
+/**
+ * True once ItemDetailModal is on screen.
+ *
+ * Keyed on the dialog ROLE, not on any string it renders. This used to search for the literal
+ * "Customize Item" in its header — which was fine until that header was removed (every item
+ * opens this modal now, and a bottle of water is not something to customize). A detector that
+ * depends on copy turns every copy edit into a silent test failure, or worse, a silently
+ * passing one.
+ */
 function popupIsOpen(): boolean {
-  return (container.textContent || '').includes('Customize Item')
+  return Boolean(container.querySelector('[role="dialog"]'))
 }
 
 /** The popup's own Add to Cart button, which is the only one that reaches the cart now. */

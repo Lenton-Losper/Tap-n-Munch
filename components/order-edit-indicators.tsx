@@ -17,7 +17,7 @@
 
 import { Badge } from '@/components/ui/badge'
 import { Pencil } from 'lucide-react'
-import { EDIT_COPY_PENDING, isEditLockActive } from '@/lib/orders/edit-lock'
+import { EDIT_COPY, isEditLockActive } from '@/lib/orders/edit-lock'
 
 type EditableRow = Record<string, unknown>
 
@@ -34,17 +34,17 @@ export function OrderEditBadges({ order, nowMs }: { order: EditableRow; nowMs: n
       {editing && (
         <Badge className="border-0 bg-amber-500 text-white">
           <Pencil className="mr-1 h-3 w-3" />
-          {EDIT_COPY_PENDING.staffEditInProgress}
+          {EDIT_COPY.staffEditInProgress}
         </Badge>
       )}
       {wasEdited && !editing && (
         <Badge variant="outline" className="border-amber-500 text-amber-700">
-          {EDIT_COPY_PENDING.staffWasEdited}
+          {EDIT_COPY.staffWasEdited}
         </Badge>
       )}
       {needsReacceptance && (
         <Badge className="border-0 bg-red-600 text-white">
-          {EDIT_COPY_PENDING.staffNeedsReacceptance}
+          {EDIT_COPY.staffNeedsReacceptance}
         </Badge>
       )}
     </>

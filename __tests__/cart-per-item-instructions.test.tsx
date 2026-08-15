@@ -155,7 +155,10 @@ describe('cart: per-item instructions (#130)', () => {
     // Reopening a variant drink in the modal drops selected_variants and reprices it,
     // so "just press Edit" is not a workaround.
     const html = renderCart([quickAddedDrink])
-    expect(html).not.toMatch(/Customize Item/)
+    // Was `not.toMatch(/Customize Item/)`. That header has been removed, so the old assertion
+    // would have passed against a cart that DID render the modal — a negative check that can no
+    // longer fail is worse than no check. The dialog role is what actually marks it open.
+    expect(html).not.toMatch(/role="dialog"/)
   })
 
   it('says the order-level box applies to the whole order', () => {

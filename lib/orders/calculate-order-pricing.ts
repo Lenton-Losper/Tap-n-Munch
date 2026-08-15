@@ -49,8 +49,8 @@ export type OrderPricingResult = {
  * (`verify-restaurant-tables-rls-{staging,production}.ts`), so rewording the refusal would have
  * silently changed what they assert: one treats the phrase as proof an order was BLOCKED, the
  * other as proof it was not. Both would have kept passing while checking nothing. Callers and
- * probes now match on the code, so copy can be rewritten freely afterwards — which is the point,
- * because the copy below is a placeholder.
+ * probes now match on the code, so copy can be rewritten freely afterwards — which is what let
+ * the placeholders below be replaced with signed-off copy without touching a single probe.
  */
 export type UnmatchedMenuItemCode =
   | 'MENU_ITEM_MISSING_ID'
@@ -92,29 +92,31 @@ function cartLineName(item: Record<string, unknown>): string {
 }
 
 /**
- * PENDING COPY — #273. Two placeholder refusals, modelled on the out-of-stock message they sit
- * beside (`checkStockSufficiency`: "<names> is out of stock and cannot be ordered right now."),
- * so a customer meeting either one hears the same voice and the same list punctuation.
+ * #273. The two refusals for an item that cannot be priced, modelled on the out-of-stock message
+ * they sit beside (`checkStockSufficiency`: "<names> is out of stock and cannot be ordered right
+ * now."), so a customer meeting either one hears the same voice and the same list punctuation.
  *
  * The distinction they exist to draw: an item the restaurant has WITHDRAWN is not an item that
  * has run out. The reader of the old message took a deliberate deactivation for a stock problem,
  * which is what #273 was filed about. So these deliberately avoid "right now" and "try again" —
  * nothing here is coming back in five minutes.
  *
- * Not final. Replace both, plus the 17 in EDIT_COPY_PENDING, in one pass.
+ * Signed off by the human 2026-08-15. Both keep their singular/plural pair: these name a LIST of
+ * items, and "1 item are no longer on the menu" is exactly the sort of seam a customer reads as
+ * the restaurant not knowing what it sold them.
  */
-function pendingCopyNotOrderable(names: string[]): string {
+function copyNotOrderable(names: string[]): string {
   const list = listNames(names)
   return names.length === 1
-    ? `PENDING COPY — ${list} is no longer on the menu. Please remove it from your order.`
-    : `PENDING COPY — ${list} are no longer on the menu. Please remove them from your order.`
+    ? `${list} is no longer on the menu. Please remove it from your order.`
+    : `${list} are no longer on the menu. Please remove them from your order.`
 }
 
-function pendingCopyNotFound(names: string[]): string {
+function copyNotFound(names: string[]): string {
   const list = listNames(names)
   return names.length === 1
-    ? `PENDING COPY — We could not find ${list} on this restaurant's menu. Please remove it from your order.`
-    : `PENDING COPY — We could not find ${list} on this restaurant's menu. Please remove them from your order.`
+    ? `We couldn't find ${list} on this menu. Please remove it from your order.`
+    : `We couldn't find ${list} on this menu. Please remove them from your order.`
 }
 
 function extractQuantity(item: Record<string, unknown>): number {
@@ -287,14 +289,14 @@ export async function calculateOrderPricing(
   }
   if (notOrderable.length > 0) {
     throw new UnmatchedMenuItemError(
-      pendingCopyNotOrderable(notOrderable.map((line) => line.name)),
+      copyNotOrderable(notOrderable.map((line) => line.name)),
       'MENU_ITEM_NOT_ORDERABLE',
       notOrderable,
     )
   }
   if (notFound.length > 0) {
     throw new UnmatchedMenuItemError(
-      pendingCopyNotFound(notFound.map((line) => line.name)),
+      copyNotFound(notFound.map((line) => line.name)),
       'MENU_ITEM_NOT_FOUND',
       notFound,
     )

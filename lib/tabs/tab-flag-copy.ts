@@ -1,7 +1,5 @@
 /**
- * PENDING COPY — the staff-only unpaid-tab-elsewhere flag (#211 follow-up).
- *
- * Placeholder, marked so it cannot ship unnoticed. Copy is the human's.
+ * The staff-only unpaid-tab-elsewhere flag (#211 follow-up). Signed off by the human 2026-08-15.
  *
  * STAFF-ONLY, and that is a ruling rather than an implementation detail: nothing in the customer
  * app reads this string or the column behind it. It is a prompt for the floor, not an accusation
@@ -16,5 +14,5 @@
  */
 export const TAB_FLAG_COPY = {
   /** Rendered on an order card whose tab was opened while another tab was still unpaid. */
-  unpaidTabElsewhere: 'PENDING COPY — Unpaid tab at table {table} ({total})',
+  unpaidTabElsewhere: 'Unpaid tab — Table {table} ({total})',
 } as const

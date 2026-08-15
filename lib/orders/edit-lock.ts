@@ -270,51 +270,55 @@ export function appendEditHistory(
 }
 
 /**
- * PENDING COPY — every customer-facing and staff-facing string this feature introduces.
- * Placeholders written to be intelligible if they ship, not to be shipped. Listed in the
- * handoff so they can be replaced in one pass; nothing else in the feature holds copy.
+ * Every customer-facing and staff-facing string this feature introduces. Signed off by the human
+ * 2026-08-15, so no PENDING COPY marker and no "PENDING" in the name: nothing here is a
+ * placeholder any more. Nothing else in the feature holds copy.
+ *
+ * `{seconds}` and `{total}` are substituted at the render site by plain `.replace()`
+ * (components/order-edit-panel.tsx), so they must stay literal in the strings below.
+ *
+ * A KEY WITH NO CALL SITE WAS DELETED RATHER THAN GIVEN COPY. `staffReviewInvalidated`
+ * ("Your review was replaced by a customer change") was defined here and rendered by nothing —
+ * `git grep` found only this file. It is gone: a string that cannot render is a lie waiting to
+ * happen, because the next reader takes its presence as evidence the case is handled. If a saved
+ * staff review really can be invalidated by a later customer edit, add the key back together
+ * with the call site that shows it. `discarded_staff_review` on EditHistoryEntry above is the
+ * signal that case exists in the data; it has no UI.
  */
-export const EDIT_COPY_PENDING = {
+export const EDIT_COPY = {
   /** Customer: the button that opens the editor. */
-  editCta: 'PENDING COPY — Change this order',
+  editCta: 'Change this order',
   /** Customer: shown while the lock is held, with the remaining time. */
-  lockHeld: 'PENDING COPY — You have {seconds}s to finish changing this order',
+  lockHeld: '{seconds}s left to make changes',
   /** Customer: refusal, status has moved to preparing or beyond. */
-  preparationStarted:
-    'PENDING COPY — The kitchen has already started this order, so it can no longer be changed.',
+  preparationStarted: "The kitchen has started this order, so it can't be changed now.",
   /** Customer: refusal, another phone at the table is editing. */
   lockedByOther:
-    'PENDING COPY — Someone else at your table is changing this order right now. Try again in a moment.',
+    'Someone else at your table is changing this order. Try again in a moment.',
   /** Customer: refusal, the order is paid or the payment is settled. */
-  paymentSettled:
-    'PENDING COPY — This order has already been paid for, so it can no longer be changed.',
+  paymentSettled: "This order has been paid for, so it can't be changed.",
   /** Customer: refusal, a card checkout session is open for the old amount. */
-  paymentInFlight:
-    'PENDING COPY — Payment is being set up for this order, so it can no longer be changed.',
+  paymentInFlight: "Payment is being set up for this order, so it can't be changed.",
   /** Customer: refusal, the lock expired before they committed. */
   lockExpired:
-    'PENDING COPY — Your changes took too long and were not saved. Open the order again to change it.',
+    'That took too long, so nothing was saved. Open the order again to change it.',
   /** Customer: the edit landed and the total moved. */
   committedTotalChanged:
-    'PENDING COPY — Your changes were sent to the restaurant. They will confirm the new total of {total}.',
+    "Sent to the restaurant. They'll confirm the new total of {total}.",
   /** Customer: the edit landed with no change to the total. */
-  committedNoTotalChange: 'PENDING COPY — Your changes were sent to the restaurant.',
+  committedNoTotalChange: 'Sent to the restaurant.',
   /** Customer: an edit that would empty the order. */
-  cannotEmpty:
-    'PENDING COPY — An order needs at least one item. Ask staff to cancel it instead.',
+  cannotEmpty: 'An order needs at least one item. Ask staff to cancel it instead.',
   /** Customer: the request was accepted while they were editing; it is a real order now. */
-  requestAccepted:
-    'PENDING COPY — The restaurant just accepted this order. Reopen it to make changes.',
+  requestAccepted: 'The restaurant just accepted this order. Open it again to make changes.',
   /** Customer: the request was declined. */
-  requestDeclined: 'PENDING COPY — This order was declined by the restaurant.',
+  requestDeclined: 'The restaurant declined this order.',
   /** Customer: the edit is closed for a status nobody expected. Deliberately vague. */
-  notEditable: 'PENDING COPY — This order can no longer be changed.',
+  notEditable: "This order can't be changed.",
   /** Staff dashboard: a customer has the lock open right now. */
-  staffEditInProgress: 'PENDING COPY — Customer is changing this order',
+  staffEditInProgress: 'Customer editing now',
   /** Staff dashboard: the order was edited by the customer. */
-  staffWasEdited: 'PENDING COPY — Customer changed this order',
+  staffWasEdited: 'Customer edited',
   /** Staff dashboard: the total moved and the order is back for re-acceptance. */
-  staffNeedsReacceptance: 'PENDING COPY — Re-accept: the total changed',
-  /** Staff dashboard: a saved review was invalidated by a later customer edit. */
-  staffReviewInvalidated: 'PENDING COPY — Your review was replaced by a customer change',
+  staffNeedsReacceptance: 'Total changed — re-accept',
 } as const

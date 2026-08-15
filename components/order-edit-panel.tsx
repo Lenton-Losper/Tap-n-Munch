@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Minus, Pencil, XCircle } from 'lucide-react'
 import {
-  EDIT_COPY_PENDING,
+  EDIT_COPY,
   editRefusalReason,
   normalizeSessionIds,
   requestEditRefusalReason,
@@ -144,7 +144,7 @@ export function OrderEditPanel({
       if (remaining === 0) {
         setGrant(null)
         grantRef.current = null
-        setError(EDIT_COPY_PENDING.lockExpired)
+        setError(EDIT_COPY.lockExpired)
       }
     }
     tick()
@@ -277,7 +277,7 @@ export function OrderEditPanel({
           disabled={busy || sessionIds.length === 0}
         >
           <Pencil className="mr-2 h-4 w-4" />
-          {EDIT_COPY_PENDING.editCta}
+          {EDIT_COPY.editCta}
         </Button>
       </div>
     )
@@ -286,7 +286,7 @@ export function OrderEditPanel({
   return (
     <div className="space-y-4 rounded-lg border border-[#E5E7EB] bg-white p-4">
       <p className="text-sm font-semibold text-[#111827]">
-        {EDIT_COPY_PENDING.lockHeld.replace('{seconds}', String(secondsLeft))}
+        {EDIT_COPY.lockHeld.replace('{seconds}', String(secondsLeft))}
       </p>
 
       {error && (
@@ -350,7 +350,7 @@ export function OrderEditPanel({
       </label>
 
       {kept.length === 0 && (
-        <p className="text-sm text-[#991B1B]">{EDIT_COPY_PENDING.cannotEmpty}</p>
+        <p className="text-sm text-[#991B1B]">{EDIT_COPY.cannotEmpty}</p>
       )}
 
       <div className="flex gap-2">
