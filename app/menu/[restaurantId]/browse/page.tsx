@@ -836,38 +836,17 @@ export default function MenuBrowsePage() {
             )}
           </div>
 
-          {/* THE TAB PIN — persistently, to every member of the tab rather than only whoever
-              created it, and inside the sticky header so it is on screen wherever the customer
-              has scrolled to. Static text, not a control: there is nothing to tap, it exists to
-              be read out to the next person joining the table.
+          {/* NO PIN HERE. It renders once, in the tab strip immediately below this header.
 
-              WHY ITS OWN LINE AND NOT A CHIP IN THE ACTION ROW ABOVE. That was the intended
-              placement; it does not fit, and this is measured rather than estimated. The action
-              row is `shrink-0`, so every pixel it takes comes out of the left block. At a 360px
-              viewport, rendered against this branch:
+              A line was briefly added here as well and removed on sight: it answered a question
+              the strip already answers two rows down, and the strip answers it better. There the
+              PIN sits beside the running total and the person count, which is the context a
+              customer reads it in — "this table, these people, this number" — rather than as a
+              free-floating figure under the restaurant name. Anything wanting to surface the PIN
+              should change the strip, not add a second reading of it.
 
-                                     action row   left text column   name        Table N
-                today                 151px        69px              truncated   fits (69/69)
-                + a 50px PIN chip     207px        12.8px            gone        truncated
-
-              The row is already at capacity — the note on the My Orders button below records a
-              third control pushing the name to "S…", and 69px against the 80px the name wants is
-              exactly that. A fourth control does not shave the left block, it deletes it, and
-              takes the table number with it. Even at 390px the column is 42.8px and both
-              truncate. The narrowest useful chip (no label under 640px, 4 digits, minimum
-              padding) still measures 50.2px, so there is no version of this that fits.
-
-              A full-width line costs zero horizontal space and ~26px of sticky height. */}
-          {!isViewOnly && effectiveIsInTab && tabPinRequired && tabPin && (
-            <div className="-mx-4 mt-2 border-t border-border px-4 pt-1.5">
-              <div className="flex items-center gap-1.5 font-sans text-xs">
-                <span className="text-muted-foreground">PIN</span>
-                <span className="font-bold tabular-nums tracking-widest text-foreground">
-                  {tabPin}
-                </span>
-              </div>
-            </div>
-          )}
+              Pinned by the "renders the PIN exactly once" case in
+              __tests__/browse-tab-pin-visible-to-joined-member.test.tsx. */}
         </div>
       </header>
 
