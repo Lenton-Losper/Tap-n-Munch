@@ -54,8 +54,19 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
     subtotal: row.subtotal != null ? Number(row.subtotal) : undefined,
     tax: row.tax != null ? Number(row.tax) : undefined,
     table_number: row.table_number != null ? Number(row.table_number) : undefined,
+    /**
+     * #295: `total` and `tax` are carried through. This narrowed to
+     * `{quantity, name, subtotal}` and threw the charged figure away, so the only number
+     * OrderSummary could render was the ex-VAT base.
+     */
     items: Array.isArray(row.items)
-      ? (row.items as Array<{ quantity: number; name: string; subtotal: number }>)
+      ? (row.items as Array<{
+          quantity: number
+          name: string
+          subtotal: number
+          total?: number
+          tax?: number
+        }>)
       : [],
   }
 }
