@@ -50,3 +50,61 @@ npx tsx scripts/safe-supabase-linked.ts <expected-project-ref> db query --linked
 ### TypeScript scripts
 
 Import and call `runSafeSupabaseLinked` from `scripts/lib/safe-supabase-linked.ts` instead of shelling out to raw `supabase db query --linked`.
+
+# Contributing -- git worktrees on Windows
+
+## Never run `git worktree remove` directly. Use the wrapper.
+
+    powershell -File scripts/worktree-teardown.ps1 -Path ../i220 [-Force]
+
+`git worktree remove` **descends into an NTFS junction instead of unlinking it** and recursively
+deletes the contents of the target. Measured on this repo, git 2.51.2.windows.1: a junction target
+went from 7 entries to 0, the command exited **0**, and nothing in its output mentioned
+`node_modules`.
+
+On 2026-08-11 that destroyed roughly 530 packages in the shared install -- `jest`, `next`,
+`eslint`, `react` -- while other agents were running tests against it.
+
+**The deletion is not the real cost; it is recoverable.** The cost is the window before anyone
+notices, during which every `jest` / `tsc` / `eslint` result is unreliable, and any *baseline*
+measured in it is silently wrong. A corrupted baseline makes a real regression look like a wash,
+or a clean branch look broken.
+
+## Why the junction exists, and why it must stay
+
+A fresh worktree has no `node_modules`. Without one, `npx tsc --noEmit` does **not** fail --
+`npx` silently downloads and runs `tsc@2.0.4`, which exits 0 on essentially any input. That is a
+false green on the most load-bearing gate there is.
+
+So the setup is:
+
+    cmd /c mklink /J "<worktree>
+ode_modules" "<repo>
+ode_modules"
+    node node_modules/typescript/bin/tsc --version    # must print 5.9.3 before you trust a gate
+
+The junction is the fix for a worse problem. **Removing the practice is not the answer -- the
+ordering is.**
+
+## If you tear one down by hand anyway
+
+1. Drop the link **link-only**: `cmd /c rmdir "<worktree>
+ode_modules"`.
+   Never `Remove-Item -Recurse` and never `rm -rf` -- both follow the junction, which is the
+   defect wearing different clothes.
+2. `git worktree remove <worktree>`
+3. `git worktree prune`
+
+## If it has already happened
+
+`npm ci`, then **re-run the entire gate** on the restored toolchain. Do not report a result
+measured in the damaged window; re-measure it.
+
+## Confirming the hazard on your own git version
+
+Do not take this file's word for it:
+
+    powershell -File scripts/worktree-teardown.ps1 -Path <throwaway> -Force -SimulateUnsafeRemoval
+
+That skips the unlink on purpose and reports the damage. Point it at a throwaway worktree
+junctioned to a throwaway directory -- never at the real `node_modules`.
