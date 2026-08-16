@@ -30,6 +30,7 @@ import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
 import { CART_COPY } from '@/lib/cart/cart-copy'
 import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
+import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -160,6 +161,21 @@ export default function CartPage() {
     const s = q.toString()
     return s ? `?${s}` : ''
   }, [tableNumber, effectiveTabId, isKiosk, kioskCustomerName])
+
+  /**
+   * Where Place Order goes on the tab path (spec section 16).
+   *
+   * `tabId` is deliberately NOT carried: My Orders reads the tab through TabProvider, and
+   * `tab-context` adopts any `?tabId=` in the URL into localStorage without validating it
+   * (audit section 18, tab-context.tsx). Passing one where the destination does not need one
+   * widens that surface for no benefit.
+   */
+  const myOrdersPlacedQuery = useMemo(() => {
+    const q = new URLSearchParams()
+    if (tableNumber > 0) q.set('table', String(tableNumber))
+    q.set(ORDER_PLACED_PARAM, '1')
+    return `?${q.toString()}`
+  }, [tableNumber])
 
   const handleEdit = async (index: number) => {
     const cartItem = items[index]
@@ -327,11 +343,21 @@ export default function CartPage() {
         if (tableNumber > 0) sessionStorage.setItem('flashtap_return_table', String(tableNumber))
       }
       clearCart()
-      toast({
-        title: 'Request sent!',
-        description: 'Waiting for the restaurant to confirm — keep ordering or settle when ready.',
-      })
-      router.replace(`/menu/${restaurantId}/browse${menuQuery}`)
+      /**
+       * Redesign spec section 16: Place Order lands on MY ORDERS, not back on the menu.
+       *
+       * The menu was the wrong destination for the same reason the confirmation page is the
+       * wrong destination on the other path -- the customer's question the instant after
+       * ordering is "did that work, and what is happening with it", and only My Orders answers
+       * it. Landing on the menu answered it with a toast, which is the weakest possible carrier:
+       * #207 is the live instance of a toast being dropped outright.
+       *
+       * The banner is raised by the DESTINATION from `?placed=1`, not fired from here, so it
+       * survives the navigation rather than racing it.
+       */
+      router.replace(
+        `/menu/${restaurantId}/my-orders${myOrdersPlacedQuery}`
+      )
     } catch (err: any) {
       toast({
         title: 'Could not add to tab',
