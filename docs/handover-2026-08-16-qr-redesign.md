@@ -1106,6 +1106,111 @@ Filed, not built, per the standing instruction:
 - **#243** — the hosted-pending ordering block has never fired. Making a dormant ordering block
   start firing is a behaviour change, and the issue says so itself.
 
+## #209 — the withdrawn-method toast named cash whatever was withdrawn
+
+The toast hardcoded *"Cash payments are no longer available. Please select Card."* in a branch not
+gated on cash. A customer whose **card** was disabled mid-tab was told cash was gone and instructed
+to pick card — the method just turned off — then had their preference cleared and was returned to
+the selector with that wrong guidance.
+
+**Option A needed no API change.** The issue's rule was *"A if the API returns enough to
+distinguish, else B"*. A is free and not from the response: the client already knows what it sent.
+`paymentPreference` is the value posted at `:283`.
+
+**A correction to the issue.** It says the same applies to `'other'`. It does not — the route
+guards `paymentPreference !== 'other'` (`ready-to-pay/route.ts:80`), so the 403 fires for cash or
+card only. The old string was correct for one of **two** triggers, not one of three.
+
+It no longer names a replacement. *"Please select Card"* was a guess this module cannot make
+correctly — nothing here knows which remaining methods are enabled — and the handler already calls
+`refresh()`, so the selector is the thing that can tell the truth.
+
+Not marked `PENDING COPY`: the marker renders verbatim to customers, #204 Q1 ruled these strings
+ship as written, and this is a mechanical parameterisation of them. Putting the marker on a live
+payment instruction would be a regression, not caution.
+
+## #267 — `git worktree remove` eats the shared node_modules
+
+**Reproduced first**, because the incident was 2026-08-11 and a git update might have fixed it. It
+had not. On `git 2.51.2.windows.1`, against a **throwaway** junction target:
+
+    fake target entries BEFORE: 7
+    git worktree remove --force  ->  exit 0, no mention of node_modules
+    fake target entries AFTER:  0
+
+`scripts/worktree-teardown.ps1` owns the ordering: drop the junction **link-only**
+(`cmd /c rmdir`), then remove, then **re-count the target and fail loudly if it shrank**. That
+third step is the only one that catches somebody forgetting, which is the case that will occur.
+
+It ships `-SimulateUnsafeRemoval`, a documented self-test that skips the unlink so anyone can
+confirm the hazard on their own git version instead of trusting a docblock — and that is also the
+negative half of the probe:
+
+    safe path                target 7 -> 7, worktree gone, exit 0
+    -SimulateUnsafeRemoval   git worktree remove exit 0 (silent), target 7 -> 0,
+                             script exit 1 with the repair procedure
+
+**A correction to the issue:** it says to document this *"alongside the existing junction
+guidance"* in `CONTRIBUTING.md`. There was none — that file was 52 lines about database safety and
+said nothing about worktrees. So the practice that creates the hazard was never written down
+either, which is worse than the issue assumes. Both halves are there now, including why the
+junction must stay: without it `npx tsc --noEmit` runs `tsc@2.0.4` and exits 0 on anything.
+
+## #196 — its one open question, settled for staging
+
+*"Whether any environment ever hands the guest API a non-string order id."* The issue argued item 1
+is type-only from the column type, the migration and the TS type — three declarations, none of
+which is the wire.
+
+`scripts/probe-196-guest-order-id-type.ts` reads the wire, on **raw text** rather than the parsed
+object: `JSON.parse` distinguishes `"id": 7` from `"id": "7"`, but only the bytes show whether the
+server **quoted** it, and quoting is the question. Calibrated against a synthetic quoted and
+unquoted body first, per #169's rule, and it refuses to report if the controls fail.
+
+    controls: quoted -> string, unquoted -> NON-string
+    observed 18 live 200 responses
+    non-string ids: 0
+
+Non-vacuous by construction — it exits 1 with `INCONCLUSIVE-AS-FAIL` on zero readable responses,
+because "0 non-string ids" out of 0 observations proves nothing.
+
+Settles staging today. Does **not** settle production, and cannot settle *"no environment ever"*.
+Nothing depends on the answer: the fix on `fix/four-one-line-defects` is correct either way, and
+that branch is still unmerged — not my call.
+
+## On extending the A–Q simulation
+
+The brief asks for new checks covering what was fixed, and that **every new check must be able to
+FAIL**. Applying that honestly, **none of this session's five customer-facing fixes is observable
+through the API surface the simulation drives**:
+
+- **#220, #224** — render and `localStorage` state on a client path. The simulation makes HTTP
+  requests; it cannot see a toast, a banner or a cleared browser key.
+- **#206** — reaching those toasts needs a server error a customer can trigger. Manufacturing one
+  on staging means breaking a route.
+- **#209** — reaching that toast needs a payment method disabled on a live restaurant *while a
+  customer holds an open tab mid-settle*. That means mutating `restaurant_settings` on the shared
+  staging restaurant, and a crash mid-run would leave it misconfigured for every other agent. The
+  trigger is CODE-proven instead (`ready-to-pay/route.ts:80` gates on
+  `!allowedMethods.includes(paymentPreference)`), and that is stated rather than dressed up.
+- **#267** — not a web path at all.
+
+So no checks were added to the simulation, and it stays at **28**. Two live instruments were built
+instead, both of which can fail and both of which calibrate themselves first:
+`scripts/calibrate-schema-probes-staging.ts` (#169) and `scripts/probe-196-guest-order-id-type.ts`
+(#196). Adding a check that passes without exercising the fix would be worse than adding nothing,
+which is the same reasoning that produced `INCONCLUSIVE-AS-FAIL` for #249.
+
+## The simulation harness caught itself
+
+The abort-summary fix shipped earlier in this session then fired for real. A later run hit a
+transient `fetch failed` on its first request and printed:
+
+    ABORTED AFTER 0 CHECKS -- 0 FAILS among those; the rest NEVER RAN. This is not a pass.
+
+Under the old wording that run would have read `0 checked, 0 FAILS`. It was re-run and passed
+28/28.
+
 ## Instruments that lied in THIS session — add to the list
 
 - **A background watcher polled the wrong hostname.** `lentonlosper.workers.dev` does not exist;
@@ -1129,6 +1234,45 @@ Filed, not built, per the standing instruction:
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
+
+## FINAL STATE — continuation session, every number re-measured at the end
+
+    origin/main                   3c6eec9605ab5b9ac1887d2d0cefbfbc20338fa0   UNTOUCHED
+    production https://flashtap.app/api/version          3c6eec9...  cache-busted
+    production https://riviera.flashtap.app/api/version  3c6eec9...  cache-busted
+                                  -- identical to origin/main. Nothing reached production.
+    origin/cloudflare-staging     859f3a5
+    staging deployed              27f0350 at time of check; 859f3a5 was still rolling out
+    unpushed, all local branches  ZERO (positional form: rev-list --count <b> --not --remotes=origin)
+    working trees i169/i220/qrd-stage/qrd-docs   all clean
+    A-Q simulation                28 checks, 0 FAILS, sentinel present, against the deployed worker
+    migrations                    NONE. `git diff --name-only f833753 origin/cloudflare-staging`
+                                  returns 21 files and not one under supabase/migrations.
+
+**On the drift number.** The earlier session's `136 local / 136 applied` is NOT re-measured here
+and should not be read as if it were. What I verified is narrower and sufficient for this run: no
+commit in it touches `supabase/migrations`, so it cannot have changed the drift either way.
+
+**A note on the production URL.** I first checked `flashtap.llosperofficial.workers.dev` and got a
+404, then resolved the real routes from `wrangler.production.toml` (`flashtap.app`,
+`www.flashtap.app`, `riviera.flashtap.app`). Same class of mistake as the staging watcher that
+polled a hostname that does not exist. **Resolve every host from config, never from memory** — a
+404 is the lucky version of that error; the watcher's version returned empty and looked like a slow
+deploy for thirteen minutes.
+
+## Branches from the continuation session, all pushed
+
+    fix/224-outage-banner-during-search          promote/257-guest-orders-validation-test
+    fix/220-view-menu-keeps-the-tab              fix/169-calibrated-schema-probe
+    fix/206-customer-safe-error                  fix/209-payment-method-withdrawn-copy
+    fix/267-worktree-teardown-guard              probe/196-guest-order-id-type
+    fix/sim-seed-collision-and-abort-summary
+
+All merged into `cloudflare-staging` except **`promote/257-...`**, which is cut from `3c6eec9` and
+is deliberately left for the human — it targets `main`.
+
+Verified rather than assumed: every `fix/*` branch from both sessions was checked with
+`git merge-base --is-ancestor <branch> origin/cloudflare-staging`. All 17 returned YES.
 
 ## Branches, all pushed
 
