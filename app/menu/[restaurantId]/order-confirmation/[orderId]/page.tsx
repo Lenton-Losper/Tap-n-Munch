@@ -12,6 +12,7 @@ import {
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
+import { perOrderReadyToPayAllowed } from '@/lib/tabs/ready-to-pay-placement'
 import { getCurrentSession } from '@/lib/session'
 import { readTabSessionId, heldSessionIds } from '@/lib/tab-storage'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
@@ -215,7 +216,14 @@ export default function OrderConfirmationPage() {
     terminalNotifiedLocal ||
     order.customer_ready_to_pay === true ||
     order.status === 'ready_for_terminal'
-  const showTerminalPayCta = isCardTerminal && paymentPending
+  /**
+   * Spec section 30: on a TAB, settlement lives on the Tab and this per-order control is the
+   * second of two competing "call the waiter" mechanisms writing to two different tables
+   * (audit D8). Off a tab it is the customer's only way to ask, so it stays.
+   * The rule is in lib/tabs/ready-to-pay-placement.ts; this site does not restate it.
+   */
+  const perOrderSettlementAllowed = perOrderReadyToPayAllowed(orderRow)
+  const showTerminalPayCta = isCardTerminal && paymentPending && perOrderSettlementAllowed
 
   return (
     <OrderConfirmationView
@@ -250,7 +258,11 @@ export default function OrderConfirmationPage() {
           )
         ) : undefined
       }
-      cashReadySlot={showReadyToPayCashButton(order) ? <ReadyToPayCashButton orderId={order.id} /> : undefined}
+      cashReadySlot={
+        showReadyToPayCashButton(order) && perOrderSettlementAllowed ? (
+          <ReadyToPayCashButton orderId={order.id} />
+        ) : undefined
+      }
       cashNotifiedSlot={
         showReadyToPayCashNotified(order) ? (
           <InfoBanner variant="notify">Staff has been notified. They will be with you shortly.</InfoBanner>
