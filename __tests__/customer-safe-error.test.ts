@@ -42,6 +42,15 @@ const SAFE: Array<[string, string]> = [
     'stock, several items',
     'Flat White and Cappuccino are out of stock and cannot be ordered right now. Please remove them and try again.',
   ],
+  // --- tab routes ---------------------------------------------------------------------------
+  ['payment in flight', 'Payment is currently being processed for this table.'],
+  [
+    'recovery link spent',
+    'This recovery link has expired or already been used. Ask staff to generate a new one.',
+  ],
+  ['tab unavailable', 'This tab is not available right now.'],
+  ['wrong pin', 'Incorrect PIN'],
+  ['pin needed', 'PIN required to join this tab'],
 ]
 
 /** Written for an operator, a log, or nobody. Must never reach a customer. */
@@ -110,6 +119,21 @@ describe('#206 the allowlist is anchored', () => {
       expect(entry.pattern.source.startsWith('^')).toBe(true)
       expect(entry.pattern.source.endsWith('$')).toBe(true)
     }
+  })
+
+  it('every allowlist entry is exercised by the SAFE census', () => {
+    // Five tab-route patterns were added with no positive test, so a typo in any of them would
+    // have failed silently -- the census would still be green and the sentence would still be
+    // suppressed. This asserts the census covers the allowlist, not merely overlaps it.
+    const covered = new Set<string>()
+    for (const [, message] of SAFE) {
+      const hit = CUSTOMER_SAFE_MESSAGES.find((e) => e.pattern.test(message))
+      if (hit) covered.add(hit.pattern.source)
+    }
+    const uncovered = CUSTOMER_SAFE_MESSAGES.filter((e) => !covered.has(e.pattern.source)).map(
+      (e) => e.pattern.source
+    )
+    expect(uncovered).toEqual([])
   })
 
   it('a safe sentence buried inside a database error is still denied', () => {
