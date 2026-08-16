@@ -59,6 +59,166 @@ function record(step: string, open: boolean, detail: string) {
   console.log(`  ${open ? 'ATTACK-SUCCEEDS' : 'REFUSED       '}  ${step}  ${detail}`)
 }
 
+/**
+ * THE TAB-LESS CHAIN (#305) — the same takeover through a different field.
+ *
+ * #302 closed the tab path. On a row with no `tab_id` both of its defences miss, for reasons that
+ * are each individually correct:
+ *
+ *   - the #262 opaque-key substitution is keyed by `tab_id`, so it cannot run here and
+ *     `member_session_id` goes out RAW;
+ *   - the token requirement is scoped to `if (tabId)`, mirroring POST /api/orders, because
+ *     widening it would refuse solo diners who never had a tab — the #302 regression again.
+ *
+ * So the raw id is both DISCLOSED and SUFFICIENT. This phase proves it, and carries its own
+ * positive controls: a solo diner must still read their own id and still edit their own order.
+ * Without those, "every attack refused" is indistinguishable from "tab-less ordering is dead".
+ */
+async function tablessChain() {
+  console.log('\n=== tab-less path (#305) ===')
+
+  const tn = 9200 + Math.floor(Math.random() * 390)
+  const { data: tbl } = await db
+    .from('restaurant_tables')
+    .insert({ restaurant_id: RID, table_number: tn, active: true, is_view_only: false, is_kiosk: false, status: 'available' })
+    .select('id')
+    .single()
+
+  const owner = `probe-nt-owner-${randomUUID()}`
+  const attacker = `probe-nt-attacker-${randomUUID()}`
+
+  const { data: mi } = await db
+    .from('menu_items')
+    .select('id, name, base_price')
+    .eq('restaurant_id', RID)
+    .eq('status', 'available')
+    .eq('track_inventory', false)
+    .not('category_id', 'is', null)
+    .limit(1)
+    .single()
+
+  const money = inc(Number(mi!.base_price))
+  const { data: ord } = await db
+    .from('orders')
+    .insert({
+      restaurant_id: RID,
+      tab_id: null, // <- the whole point
+      table_id: tbl!.id,
+      table_number: tn,
+      session_id: owner,
+      member_session_id: owner,
+      channel: 'table',
+      status: 'accepted',
+      payment_status: 'pending',
+      items: [
+        {
+          name: mi!.name, displayName: mi!.name, menuItemId: mi!.id, quantity: 1,
+          unitPrice: money.total, basePrice: money.total, subtotal: money.subtotal,
+          tax: money.tax, total: money.total, taxRatePercentage: 15, taxInclusive: true,
+          selectedVariants: {}, size: null, addons: [], specialInstructions: '',
+        },
+      ],
+      subtotal: money.subtotal,
+      tax: money.tax,
+      total: money.total,
+      placed_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
+
+  const readAs = (sid: string) =>
+    api(`/api/guest/orders/${ord!.id}?restaurantId=${RID}&table_number=${tn}&session_id=${encodeURIComponent(sid)}`)
+  const rowOf = (res: Res) => (Array.isArray(res.json?.orders) ? res.json.orders[0] ?? {} : {})
+
+  try {
+    // T0 — POSITIVE CONTROL. The owner still reads their own id. Redacting it for everybody
+    // would break the surfaces that pair a name to a line, so the scrub must be ownership-scoped.
+    const ownRead = await readAs(owner)
+    const ownerKeepsId = String(rowOf(ownRead).member_session_id ?? '') === owner
+    console.log(`  ${ownerKeepsId ? 'OK            ' : 'BROKEN        '}  step T0 OWNER still sees own member_session_id  HTTP ${ownRead.status}`)
+    if (!ownerKeepsId) {
+      console.log('  *** T0 must PASS. Blanket redaction is a regression, not a fix. ***')
+      process.exitCode = 1
+    }
+
+    // T1 — POSITIVE CONTROL. A solo diner edits their own tab-less order, with NO token, because
+    // they may never have had a tab to be issued one for.
+    const ownerLock = await api(`/api/guest/orders/${ord!.id}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ restaurantId: RID, sessionIds: [owner] }),
+    })
+    let soloCanEdit = ownerLock.status === 200
+    if (soloCanEdit) {
+      const ownerPatch = await api(`/api/guest/orders/${ord!.id}/edit`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          restaurantId: RID, sessionIds: [owner],
+          lockToken: ownerLock.json.lockToken, orderInstructions: 'solo control',
+        }),
+      })
+      soloCanEdit = ownerPatch.status === 200
+      console.log(`  ${soloCanEdit ? 'OK            ' : 'BROKEN        '}  step T1 SOLO diner can edit own order  lock=${ownerLock.status} patch=${ownerPatch.status}`)
+    } else {
+      console.log(`  BROKEN          step T1 SOLO diner can edit own order  lock=${ownerLock.status}`)
+    }
+    if (!soloCanEdit) {
+      console.log('  *** T1 must PASS. Refusing the solo diner is a lockout, not a fix. ***')
+      process.exitCode = 1
+    }
+
+    // T2 — can a foreign caller at the same table OBTAIN the raw owner id?
+    const foreign = await readAs(attacker)
+    const row = rowOf(foreign)
+    const leakedMsid = String(row.member_session_id ?? '').trim()
+    const leakedSid = String(row.session_id ?? '').trim()
+    const gotRawId = leakedMsid === owner || leakedSid === owner
+    record(
+      'step T2 OBTAIN the raw owner id     ',
+      gotRawId,
+      `HTTP ${foreign.status}, member_session_id=${leakedMsid === owner ? 'RAW OWNER ID' : JSON.stringify(leakedMsid || null)}, session_id=${leakedSid === owner ? 'RAW OWNER ID' : JSON.stringify(leakedSid || null)}`,
+    )
+
+    // Whatever leaked is what they use. If nothing did, they still try their own id -- T3/T4 must
+    // refuse that too, or the fix is only hiding the credential rather than removing the power.
+    const credential = gotRawId ? owner : attacker
+
+    // T3 — the edit lock, with no token, because the tab-less path does not require one.
+    const lock = await api(`/api/guest/orders/${ord!.id}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ restaurantId: RID, sessionIds: [credential] }),
+    })
+    record('step T3 ACQUIRE the edit lock       ', lock.status === 200, `HTTP ${lock.status}`)
+
+    // T4 — rewrite the solo diner's order.
+    if (lock.status === 200) {
+      const swap = await api(`/api/guest/orders/${ord!.id}/edit`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          restaurantId: RID, sessionIds: [credential], lockToken: lock.json.lockToken,
+          keep: [],
+          add: [
+            {
+              menuItemId: mi!.id, name: mi!.name, displayName: mi!.name, quantity: 1,
+              basePrice: mi!.base_price, subtotal: mi!.base_price,
+              selectedVariants: {}, size: null, addons: [], specialInstructions: '',
+            },
+          ],
+        }),
+      })
+      const { data: after } = await db.from('orders').select('items, total').eq('id', ord!.id).single()
+      const lines = Array.isArray(after?.items) ? (after!.items as unknown[]).length : 0
+      record('step T4 REPLACE the solo lines      ', swap.status === 200, `HTTP ${swap.status}, order now ${lines} line(s), total ${after?.total}`)
+    } else {
+      record('step T4 REPLACE the solo lines      ', false, 'not attempted - no lock')
+    }
+  } finally {
+    await db.from('payments').delete().eq('order_id', ord!.id)
+    await db.from('orders').delete().eq('id', ord!.id)
+    await db.from('restaurant_tables').delete().eq('id', tbl!.id)
+    console.log('  cleaned (tab-less)')
+  }
+}
+
 async function main() {
   console.log(`=== #302 chain against ${BASE} ===`)
   const version = await api('/api/version?cb=' + Math.floor(Math.random() * 1e9))
@@ -286,6 +446,8 @@ async function main() {
     await db.from('restaurant_tables').delete().eq('id', tbl!.id)
     console.log('\ncleaned')
   }
+
+  await tablessChain()
 
   const open = results.filter((r) => r.open)
   console.log(`\n${open.length} of ${results.length} attack steps still open`)
