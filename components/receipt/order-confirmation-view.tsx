@@ -15,6 +15,7 @@ import { StatusBadge } from './status-badge'
 import { PaymentBadge } from './payment-badge'
 import { InfoBanner } from './info-banner'
 import { OrderSummary } from './order-summary'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import {
   formatReceiptDate,
   mapOrderStatusToBadge,
@@ -26,7 +27,8 @@ import {
 import { cn } from '@/lib/utils'
 
 export type OrderConfirmationViewProps = {
-  orderNumber: number
+  /** `null` until staff Accept allocates one. Never coerce a missing number to 0. */
+  orderNumber: number | null
   tableNumber?: number
   createdAt: string
   orderStatus: OrderStatusKey
@@ -107,10 +109,30 @@ export function OrderConfirmationView({
             <h1 className="text-2xl sm:text-3xl font-serif font-bold text-[#111827]">
               Order Placed!
             </h1>
-            <p className="mt-2 text-lg text-[#111827]">
-              Order{' '}
-              <span className="font-bold text-[#16A34A]">#{orderNumber}</span>
-            </p>
+            {/*
+              #296: NO INVENTED NUMBER.
+              An order_request has no `order_number` at all -- the column does not exist on that
+              table. A number is allocated when staff Accept. This used to render
+              `Number(row.order_number || 0)`, so every submitted-but-unaccepted request said
+              "Order #0": a number that is not secondary, not real, and not the customer's.
+
+              The decision is REUSED, not re-invented: `order_number != null ? #n : notYetNumbered`
+              is exactly what the Tab screen does at tab/page.tsx, with the same copy constant.
+              Before acceptance the submission is identified by its status, its items and its
+              time, all of which this screen already shows.
+
+              Demoted to the muted metadata line: a real number is worth showing and is not the
+              headline.
+            */}
+            {orderNumber != null ? (
+              <p className="mt-2 text-sm text-[#6B7280]">
+                Order <span className="font-semibold text-[#111827]">#{orderNumber}</span>
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-[#6B7280]">
+                {QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered}
+              </p>
+            )}
             <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-[#6B7280]">
               {tableNumber != null && tableNumber > 0 ? (
                 <>

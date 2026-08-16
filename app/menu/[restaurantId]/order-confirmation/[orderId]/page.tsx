@@ -23,7 +23,8 @@ import { OrderEditPanel } from '@/components/order-edit-panel'
 
 type Order = {
   id: string
-  order_number: number
+  /** `null` on an order_request: that table has no order_number column at all. */
+  order_number: number | null
   status: OrderStatusKey
   placed_at: string
   payment_method: string
@@ -40,7 +41,7 @@ type Order = {
 function mapGuestRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: String(row.id || ''),
-    order_number: Number(row.order_number || 0),
+    order_number: row.order_number != null ? Number(row.order_number) : null,
     status: String(row.status || 'pending') as OrderStatusKey,
     placed_at: String(row.placed_at || row.created_at || ''),
     payment_method: String(row.payment_method || ''),
