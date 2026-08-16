@@ -1227,6 +1227,94 @@ Under the old wording that run would have read `0 checked, 0 FAILS`. It was re-r
   match — the edit then aborted having written nothing, which was the good outcome. Build such
   escapes from `chr(92)` when they must survive, and write long content with an editor instead.
 
+# CLICK TEST 2026-08-16 — three defects a real phone found and 28/28 did not
+
+Table 120, staging, real device. All three are fixed on `cloudflare-staging` only; `origin/main`
+and production remain at `3c6eec9`.
+
+Filed as **#291** (swap), **#292** (Tab screen blanking), **#293** (ex-VAT line prices).
+
+## The headline lesson: the harness was not lying, the spec did not ask
+
+**Events A–Q never contained a swap.** So the simulation never drove remove-then-add, and 28/28
+stayed green for as long as swapping was completely impossible — including on the run immediately
+before the click test. That is a gap in the specification, not a defect in the instrument, and no
+amount of re-running would have closed it.
+
+Two of the three were invisible to the simulation for structural reasons, and it is worth being
+precise about which:
+
+| | Could A–Q have caught it? |
+|---|---|
+| **#291** swap | **Yes, and it now does** — `D-swap` drives the real route. The event simply did not exist. |
+| **#293** line prices | **Yes, and it now does** — the figure is computed server-side, so `B-money` observes it. |
+| **#292** screen blanking | **No.** A React loading state on a client render path. The simulation makes HTTP requests; no check it could contain would fail if this regressed. |
+
+## #291 — swapping an item was impossible
+
+Remove the only line, add another: the panel showed the removal struck through **and** the
+addition listed, then refused with *"An order needs at least one item"* and greyed Save out. The
+one mutation the section-22 overrule was written to allow was the one that could not be performed.
+
+**Both sides carried the same assumption**, which is the trap: the client counted only `kept`, and
+`repriceKeptLines` threw on an empty `keep`. Fixing only the client moves the refusal to a 400 the
+customer cannot read.
+
+`lib/orders/edit-emptiness.ts` now owns it — **an edit is empty when kept lines AND pending
+additions are both zero** — imported by the Save button, the warning line and the route. Same
+shape as `canOpenItemSheet`. `repriceKeptLines` reduces and re-sums; it no longer decides
+emptiness, and its test asserting the throw was **rewritten, not deleted**.
+
+Re-acceptance is not special-cased: `D-swap-review` asserts it equals `newPrice > oldPrice`.
+
+**The proof, on the deployed worker, both directions:**
+
+    against 859f3a5 (no fix)   FAILS  D-swap  swap REFUSED 400 "An order needs at least one item"
+    against 955c027 (fixed)    PASSES D-swap  "item-1" -> "item-2", 1 line, total 20 at menu price
+
+## #292 — the Tab screen blanked every 5 seconds
+
+**Neither suspected cause.** `useTabSessionEndedRedirect` is imported by browse and cart only and
+never by this page, so Table 120's version bump 2→3 was a red herring. And a failing shared-tab
+read cannot loop: its catch ends in `window.location.replace('/session-ended')`, a one-way trip
+off the screen.
+
+The cause was one boolean serving two states: `load()` set `loading`, the interval called it every
+5000 ms, and `showTabLoading` returns a full-screen spinner early. A first load has nothing to
+show; a refresh already has data and must replace it in place. `my-orders` never had this.
+
+**A second, worse defect found while fixing it.** The catch evicted on *any* failure, including on
+a background poll — and `handleSessionExpired` clears the session token, tab id, table and cart.
+One dropped request out of a tick every 5 seconds would have thrown away a working customer's
+route back to their own bill, and a joiner who never knew the PIN could not return. Refresh
+failures now keep the screen; a first load that cannot read the tab, and a genuinely settled tab,
+still evict.
+
+## #293 — line prices were ex-VAT while the total was inclusive
+
+*"Beef Burger x1 — NAD82.61"* above *"NAD95.00 awaiting confirmation"*, with N$95 on the menu.
+`toLines` read `item.subtotal`. `total` is the charged amount for **both** tax modes, so reading
+`subtotal` was wrong regardless of the rate.
+
+**The field was renamed, not just repointed**, and the rename did the auditing: `tsc` enumerated
+the render sites as TS2339 at `tab/page.tsx:456` and `:499` and nowhere else — a compiler
+enumerating consumers rather than a grep agreeing with itself. **My Orders is clean**, checked:
+it does not import the grouping and shows no per-line price at all.
+
+The existing grouping test passed throughout because its fixture items had `subtotal` and no
+`total`, so the two figures coincided.
+
+## Instruments
+
+- **`tsc` is blind to the simulation.** `scripts/simulate-qr-redesign-events-staging.ts` carries
+  `@ts-nocheck`. Verified deliberately: appending an identifier defined nowhere still gives
+  **exit 0**. A helper first written as `round2` was undefined and would have aborted the run at
+  runtime behind a green compile. Never read a `tsc` pass as covering that file.
+- **The simulation's own cleanup never deleted `payments`**, and filtered `payment_events` on
+  `order_id` when the column is `order_ids` (a uuid ARRAY). PostgREST returns success for both, so
+  cleanup reported a clean run while deleting nothing — which is why 20 fixture tables, 19 open
+  tabs and 3 probe menu items were sitting in the live staging menu. Fixed.
+
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
