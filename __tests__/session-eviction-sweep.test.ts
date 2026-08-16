@@ -25,7 +25,14 @@
 import fs from 'fs'
 import path from 'path'
 
-const read = (...p: string[]) => fs.readFileSync(path.join(process.cwd(), ...p), 'utf8')
+/**
+ * Normalised to LF. This repo checks out CRLF on Windows and every assertion below anchors on a
+ * bare newline. The #292 test was written in a worktree that happened to hold LF: it passed there
+ * and FAILED on a fresh checkout of the same commit, which is a test reporting on the checkout
+ * rather than on the code.
+ */
+const read = (...p: string[]) =>
+  fs.readFileSync(path.join(process.cwd(), ...p), 'utf8').replace(/\r\n/g, '\n')
 
 const CONFIRM = read('app', 'menu', '[restaurantId]', 'order-confirmation', '[orderId]', 'page.tsx')
 const RECEIPT = read('app', 'menu', '[restaurantId]', 'receipt', 'page.tsx')
