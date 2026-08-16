@@ -130,8 +130,15 @@ export async function GET(
      * edit), `redactGuestOrderRow` exists to strip it from guest reads, and the surest way not
      * to leak it from a NEW route is never to fetch it.
      */
-    const ORDER_LINE_COLUMNS = `id, status, order_number, items, member_session_id, session_id, placed_at, created_at, ${TAB_TOTAL_ORDER_COLUMNS}`
-    const REQUEST_LINE_COLUMNS = `id, member_session_id, session_id, created_at, ${TAB_PENDING_REQUEST_COLUMNS}`
+    // `created_at` is NOT selected: neither table has it. The first version of this route asked
+    // for it, both queries errored, and the route answered 200 with `members: []` and
+    // `totals: null` -- which the screen renders as "nothing on the table tab yet". A broken
+    // read presented as an empty table is the exact failure this piece exists to remove, so the
+    // column list is now the measured one and the error path below no longer looks like empty.
+    // Measured against staging: orders and order_requests both carry `placed_at`, neither
+    // carries `created_at`.
+    const ORDER_LINE_COLUMNS = `id, status, order_number, items, member_session_id, session_id, placed_at, ${TAB_TOTAL_ORDER_COLUMNS}`
+    const REQUEST_LINE_COLUMNS = `id, member_session_id, session_id, placed_at, ${TAB_PENDING_REQUEST_COLUMNS}`
 
     const [{ data: orderRows, error: ordersError }, { data: requestRows, error: requestsError }] =
       await Promise.all([
@@ -150,8 +157,27 @@ export async function GET(
     if (ordersError) console.error('[TABS] shared tab order query failed', ordersError)
     if (requestsError) console.error('[TABS] shared tab request query failed', requestsError)
 
-    const orders = ordersError ? [] : (orderRows ?? [])
-    const requests = requestsError ? [] : (requestRows ?? [])
+    /**
+     * A FAILED READ IS NOT AN EMPTY TABLE, and the difference is the whole point of this route.
+     *
+     * Returning `members: []` on a query error makes the screen say the table has ordered
+     * nothing. `fetchSharedTab` treats a non-array `members` as a failure, so `null` here is what
+     * makes the client show "we couldn't load your table's orders" instead of a false empty
+     * state. Found the hard way: a `created_at` column that does not exist made both queries
+     * error, and the response was indistinguishable from a genuinely empty tab.
+     */
+    if (ordersError || requestsError) {
+      return NextResponse.json({
+        tab_id: normalizedTabId,
+        tab_status: String(tabRow.status ?? ''),
+        members: null,
+        unattributed: null,
+        totals: { payable: null, pending: null },
+      })
+    }
+
+    const orders = orderRows ?? []
+    const requests = requestRows ?? []
 
     /** Derive the member key on the way out. The raw id never reaches buildTabOrderGroups. */
     const mapMemberKey = async (rows: Record<string, unknown>[]) => {
@@ -186,10 +212,8 @@ export async function GET(
       tab_status: String(tabRow.status ?? ''),
       members: groups.members,
       unattributed: groups.unattributed.orders.length > 0 ? groups.unattributed : null,
-      totals: {
-        payable: ordersError ? null : figures.payable,
-        pending: requestsError ? null : figures.pending,
-      },
+      // Both errors are handled above by returning early, so these are plain figures here.
+      totals: { payable: figures.payable, pending: figures.pending },
     })
   } catch (err) {
     console.error('[TABS] shared tab orders error', err)
