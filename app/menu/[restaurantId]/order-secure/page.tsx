@@ -12,6 +12,7 @@ import { ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
+import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -142,7 +143,7 @@ export default function OrderSecurePage() {
       console.error('Order failure:', error)
       toast({
         title: 'Order failed',
-        description: error.message || 'Failed to place order. Please try again.',
+        description: customerSafeError(error, 'Failed to place order. Please try again.'),
         variant: 'destructive',
       })
       setSubmitting(false)

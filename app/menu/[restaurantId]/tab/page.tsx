@@ -24,6 +24,7 @@ import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { cn } from '@/lib/utils'
+import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 
 type TabOrder = {
   id: string
@@ -317,7 +318,7 @@ export default function TabSummaryPage() {
       console.error('[TAB PAGE] ready to pay failed', err)
       toast({
         title: 'Could not notify waiter',
-        description: err instanceof Error ? err.message : 'Please try again.',
+        description: customerSafeError(err, 'Please try again.'),
         variant: 'destructive',
       })
     } finally {
@@ -407,7 +408,7 @@ export default function TabSummaryPage() {
                         void updateMemberName(newName.trim()).catch((err) => {
                           toast({
                             title: 'Could not update name',
-                            description: err instanceof Error ? err.message : 'Please try again.',
+                            description: customerSafeError(err, 'Please try again.'),
                             variant: 'destructive',
                           })
                         })
