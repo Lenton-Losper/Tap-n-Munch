@@ -25,6 +25,7 @@ import {
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { useRouter } from 'next/navigation'
 import {
   EDIT_PICK_PARAM,
@@ -46,6 +47,8 @@ type WorkingLine = {
   originalQuantity: number
   name: string
   removed: boolean
+  /** The stored line, so the row can render its size / variants / add-ons (#298). */
+  raw: Record<string, unknown>
 }
 
 function lineName(item: Record<string, unknown>): string {
@@ -62,6 +65,14 @@ function toWorkingLines(items: Array<Record<string, unknown>>): WorkingLine[] {
       originalQuantity: safeQuantity,
       name: lineName(item),
       removed: false,
+      /**
+       * The stored line itself, kept so the row can show what was CONFIGURED (#298).
+       *
+       * Not flattened here: `lineConfigurationSummary` owns reading the two possible shapes, and
+       * a second copy of that logic in this component is exactly the drift #295 spent a sweep
+       * undoing.
+       */
+      raw: item,
     }
   })
 }
@@ -443,6 +454,12 @@ export function OrderEditPanel({
           >
             <span className="flex-1">
               {line.quantity}× {line.name}
+              {/* #298: this is the screen the two indistinguishable Beef Burgers were on. */}
+              {lineConfigurationSummary(line.raw) ? (
+                <span className="block text-xs text-[#6B7280]">
+                  {lineConfigurationSummary(line.raw)}
+                </span>
+              ) : null}
             </span>
             {line.removed ? (
               <Button type="button" size="sm" variant="ghost" onClick={() => restore(line.index)}>
@@ -506,6 +523,11 @@ export function OrderEditPanel({
             >
               <span className="flex-1">
                 + {String(addition.displayName ?? addition.name ?? 'Item')}
+                {lineConfigurationSummary(addition) ? (
+                  <span className="block text-xs text-[#6B7280]">
+                    {lineConfigurationSummary(addition)}
+                  </span>
+                ) : null}
               </span>
               <Button
                 type="button"

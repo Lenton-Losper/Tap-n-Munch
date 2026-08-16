@@ -31,6 +31,7 @@ import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
 import { CART_COPY } from '@/lib/cart/cart-copy'
 import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
@@ -43,6 +44,15 @@ function buildPaymentFields(choice: PaymentChoice) {
   if (choice === 'card_manual') return { paymentMethod: 'card' as const, paymentChannel: 'card_manual' as const }
   if (choice === 'other') return { paymentMethod: 'other' as const, paymentChannel: 'other' as const }
   return { paymentMethod: 'card' as const, paymentChannel: 'hosted' as const }
+}
+
+/**
+ * The cart already renders "Size:" and "Add-ons:" in its own signed-off style, so it must not
+ * print them twice. This asks the shared rule for the configuration of a line stripped of the
+ * two things the cart draws itself, leaving the variants it was silently dropping.
+ */
+function variantSelectionText(item: { selected_variants?: unknown }): string {
+  return lineConfigurationSummary({ selected_variants: item.selected_variants })
 }
 
 export default function CartPage() {
@@ -581,6 +591,17 @@ export default function CartPage() {
                         Add-ons: {item.selected_addons.map(a => a.name).join(', ')}
                       </p>
                     )}
+                    {/*
+                      #298: the cart was the ONLY surface drawing size and add-ons, and it still
+                      dropped variant selections. No label is invented -- the existing "Size:" and
+                      "Add-ons:" wording is signed off and untouched, and a variant value reads as
+                      itself ("Oat", not "Milk: Oat").
+                    */}
+                    {variantSelectionText(item) ? (
+                      <p className="break-words font-sans text-sm text-muted-foreground">
+                        {variantSelectionText(item)}
+                      </p>
+                    ) : null}
                     <CartItemNote
                       index={index}
                       itemLabel={item.display_name || item.name}

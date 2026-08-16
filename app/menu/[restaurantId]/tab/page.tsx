@@ -486,6 +486,9 @@ export default function TabSummaryPage() {
                         <p key={`${order.id}-${lineIndex}`}>
                           {line.name} ×{line.quantity} — {currency}
                           {line.total.toFixed(2)}
+                          {line.configuration ? (
+                            <span className="block text-xs">{line.configuration}</span>
+                          ) : null}
                         </p>
                       ))}
                     </div>

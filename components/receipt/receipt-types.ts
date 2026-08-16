@@ -55,6 +55,17 @@ export type ReceiptLineItem = {
   total?: number
   /** Tax on this line, used only to reconstruct `total` for older rows. */
   tax?: number
+  /**
+   * What the customer configured (#298). Optional and untyped-ish on purpose: these are read
+   * straight off a stored line, and `lineConfigurationSummary` owns interpreting them.
+   *
+   * Without these the confirmation screen renders only the item NAME, so two lines of the same
+   * item in different configurations -- 95 + Extra patty vs 95 + Cheese -- look like the same
+   * burger charged two different prices. That is #297.
+   */
+  size?: unknown
+  addons?: unknown
+  selectedVariants?: unknown
 }
 
 /**

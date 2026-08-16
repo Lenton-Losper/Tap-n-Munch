@@ -34,6 +34,7 @@
  *     disagree with the figure the Ready-to-Pay button decides on.
  */
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 
 /** One line of food, as another diner at the same table is allowed to see it. */
 export type TabGroupLine = {
@@ -54,6 +55,14 @@ export type TabGroupLine = {
    * of me guessing which ones I found.
    */
   total: number
+  /**
+   * What the customer configured, already flattened to one string (#298).
+   *
+   * Flattened SERVER-side on purpose. This payload is what another diner at the same table is
+   * allowed to see, so shipping the raw addon objects would widen it for no gain -- the client
+   * only ever renders the words. Empty string when nothing was configured.
+   */
+  configuration: string
 }
 
 /**
@@ -149,6 +158,7 @@ function toLines(items: unknown): TabGroupLine[] {
       name: str(item.display_name) || str(item.name) || 'Item',
       quantity: num(item.quantity) || 1,
       total: lineChargedAmount(item),
+      configuration: lineConfigurationSummary(item),
     }
   })
 }

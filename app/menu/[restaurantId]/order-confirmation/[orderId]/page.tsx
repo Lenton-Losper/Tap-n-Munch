@@ -67,6 +67,10 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
           subtotal: number
           total?: number
           tax?: number
+          // #298: carried through so the screen can tell two same-named lines apart.
+          size?: unknown
+          addons?: unknown
+          selectedVariants?: unknown
         }>)
       : [],
   }
