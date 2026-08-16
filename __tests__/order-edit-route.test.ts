@@ -15,6 +15,26 @@ jest.mock('@/lib/supabase/restaurants', () => ({
   resolveRestaurantUuid: async (id: string) => `uuid-${id}`,
 }))
 
+/**
+ * The addition path's two external calls, mocked so this file stays about the ROUTE's decision.
+ * What the additions themselves must satisfy — the quantity cap, the stock refusal shape, the
+ * live-menu pricing — is pinned against the real modules in
+ * __tests__/edit-additions-carry-the-sale-guards.test.ts.
+ */
+let stockResult: { ok: boolean; reason?: string; unavailable: Array<{ itemName: string; stockItemName: string }> }
+jest.mock('@/lib/orders/check-stock-sufficiency', () => ({
+  checkStockSufficiency: async () => stockResult,
+}))
+jest.mock('@/lib/orders/calculate-order-pricing', () => ({
+  calculateOrderPricing: async () => ({
+    items: [{ name: 'Coke', quantity: 1, unitPrice: 20, subtotal: 17.39, tax: 2.61, total: 20 }],
+    subtotal: 17.39,
+    tax: 2.61,
+    total: 20,
+    warnings: [],
+  }),
+}))
+
 type WriteCall = {
   table: string
   patch: Record<string, unknown>
@@ -154,6 +174,8 @@ beforeEach(() => {
   orderReadSequence = null
   writes = []
   writeResult = { id: 'order-1', status: 'accepted', total: 225, requires_reacceptance: false }
+  // Stock passes unless a test says otherwise. Reset per test so a refusal cannot leak forward.
+  stockResult = { ok: true, unavailable: [] }
 })
 
 describe('acquiring the lock is a compare-and-set, not a claim of intent', () => {
@@ -309,15 +331,71 @@ describe('what a committed edit writes', () => {
     orderRow = baseOrder(liveLock('my-token'))
   })
 
-  it('sends a total-changing edit back to review with the new figure', async () => {
+  /**
+   * REVERSED 2026-08-16. Before that date this asserted that a removal goes back to `pending`
+   * with `requires_reacceptance: true`.
+   *
+   * The human's brief: *"An edit that raises the total still requires staff re-acceptance — that
+   * ruling stands. An edit that only removes items, lowers quantities or changes notes does
+   * not."* See the block comment in __tests__/order-edit-lock.test.ts for the full quotation of
+   * both rulings.
+   *
+   * The second half of this test is the part that must not be weakened: `total_before_edit` is
+   * still written on a FALL. Staff are no longer GATED on a reduction, but they are still told
+   * the figure moved and by how much — which is the safety property the reversed ruling was
+   * protecting, kept by a different mechanism.
+   */
+  it('does NOT send a REDUCTION back to review, but still records that the total moved', async () => {
     // Drop the Coke: 225 -> 200.
     await call(PATCH, 'PATCH', { lockToken: 'my-token', keep: [{ index: 0, quantity: 2 }] })
 
     const { patch } = writes[0]
     expect(patch.total).toBe(200)
+    expect(patch).not.toHaveProperty('status')
+    expect(patch.requires_reacceptance).toBe(false)
+    // The record, which is now the only thing that reaches staff on a reduction.
+    expect(patch.total_before_edit).toBe(225)
+  })
+
+  /**
+   * The other half of the 2026-08-16 ruling, and the case that did not exist before it: an edit
+   * may now ADD, and an addition raises the total, so it DOES go back for re-acceptance.
+   *
+   * The pricer and the stock check are mocked at the top of this file so the assertion is about
+   * the route's decision, not about pricing — what the additions themselves must satisfy is
+   * pinned in __tests__/edit-additions-carry-the-sale-guards.test.ts against the real guards.
+   */
+  it('sends an ADDITION back to review, because it raises the total', async () => {
+    await call(PATCH, 'PATCH', {
+      lockToken: 'my-token',
+      add: [{ menuItemId: 'm-coke', quantity: 1 }],
+    })
+
+    const { patch } = writes[0]
+    expect(patch.total).toBe(245) // 225 + the mocked 20
     expect(patch.status).toBe('pending')
     expect(patch.requires_reacceptance).toBe(true)
     expect(patch.total_before_edit).toBe(225)
+  })
+
+  it('refuses an addition the stock check rejects, with the creation path’s status code', async () => {
+    stockResult = {
+      ok: false,
+      reason: 'Coke is out of stock and cannot be ordered right now',
+      unavailable: [{ itemName: 'Coke', stockItemName: 'Coke 300ml' }],
+    }
+
+    const { status, body } = await call(PATCH, 'PATCH', {
+      lockToken: 'my-token',
+      add: [{ menuItemId: 'm-coke', quantity: 1 }],
+    })
+
+    // 409 is what POST /api/orders answers. A customer meeting the same refusal by two routes
+    // must not get two different status codes.
+    expect(status).toBe(409)
+    expect(body.reason).toBe('out_of_stock')
+    // And nothing was written: a refused addition must not half-apply the reduction beside it.
+    expect(writes).toHaveLength(0)
   })
 
   it('does NOT send a notes-only edit back to review', async () => {

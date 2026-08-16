@@ -201,6 +201,16 @@ export function acquireOrderEditLock(params: {
  * `keep` names stored line indexes and the quantity remaining on each — never prices. The
  * server re-sums from its own priced lines, so nothing the customer's browser believes about
  * money reaches the order.
+ *
+ * `add` (2026-08-16) carries NEW items, in the same shape `POST /api/orders` accepts — and, in
+ * the same spirit, carries no authoritative price either. Whatever the client puts in
+ * `basePrice`/`subtotal`/`total` is discarded: the server prices additions against the live menu
+ * through `calculateOrderPricing`, after the quantity cap and the stock check. See
+ * lib/orders/apply-edit-additions.ts.
+ *
+ * The two are independent. A pure reduction sends `keep` alone; adding one more of an existing
+ * line sends `add` alone (a RAISED `keep` quantity is refused by the server by construction, and
+ * that refusal is deliberate).
  */
 export function commitOrderEdit(params: {
   orderId: string
@@ -208,6 +218,7 @@ export function commitOrderEdit(params: {
   sessionIds: string[]
   lockToken: string
   keep?: Array<{ index: number; quantity: number }>
+  add?: Array<Record<string, unknown>>
   orderInstructions?: string | null
 }): Promise<EditCommitResult> {
   return editRequest<EditCommitResult>(params.orderId, 'PATCH', {
@@ -215,6 +226,7 @@ export function commitOrderEdit(params: {
     sessionIds: params.sessionIds,
     lockToken: params.lockToken,
     ...(params.keep ? { keep: params.keep } : {}),
+    ...(params.add && params.add.length > 0 ? { add: params.add } : {}),
     ...(params.orderInstructions !== undefined
       ? { orderInstructions: params.orderInstructions }
       : {}),
