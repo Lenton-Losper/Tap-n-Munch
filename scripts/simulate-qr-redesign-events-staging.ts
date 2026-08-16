@@ -84,6 +84,7 @@ const created = {
   orderIds: [] as string[],
   requestIds: [] as string[],
   menuItemIds: [] as string[],
+  terminalIds: [] as string[],
 }
 
 async function seedTable(tableNumber: number) {
@@ -142,6 +143,7 @@ async function cleanup() {
   for (const id of created.tableIds) await admin.from('restaurant_tables').delete().eq('id', id)
   // Menu items last: an order line references one, so they cannot go before the orders.
   for (const id of created.menuItemIds) await admin.from('menu_items').delete().eq('id', id)
+  for (const id of created.terminalIds) await admin.from('restaurant_terminals').delete().eq('id', id)
 }
 
 async function guardServerIsStaging(tableNumber: number) {
@@ -299,11 +301,18 @@ async function readTabView(customer: Customer, tabId: string) {
   return api(`/api/tabs/${tabId}/view?${q.toString()}`)
 }
 
-/** My Orders, as the personal list reads it. */
+/**
+ * My Orders, as the personal list reads it.
+ *
+ * The route is `/api/guest/orders/by-session` and it takes REPEATED `sessionId` params -- the
+ * first version of this helper invented `/api/guest/orders?sessionIds=` and got a 404 that
+ * looked like "this customer has no orders", which is the same class of false-empty the shared
+ * tab had.
+ */
 async function readMyOrders(customer: Customer) {
-  const q = new URLSearchParams({ restaurantId: RID, sessionId: customer.sessionId })
-  q.append('sessionIds', customer.sessionId)
-  return api(`/api/guest/orders?${q.toString()}`)
+  const q = new URLSearchParams({ restaurantId: RID, includeDeclined: '1' })
+  q.append('sessionId', customer.sessionId)
+  return api(`/api/guest/orders/by-session?${q.toString()}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +470,482 @@ async function run() {
     verdict: noToken.status === 410 || noToken.status === 401 ? 'PASSES' : 'FAILS',
     observed: `shared tab without a session token -> ${noToken.status} (expected 410)`,
   })
+
+  // =========================================================================
+  // SECOND TABLE — the events that need a live, unclosed tab.
+  // The first table was deliberately closed to test N, and a closed tab refuses
+  // everything below, so these run on their own fixture.
+  // =========================================================================
+  await runLiveTableEvents(menu)
+}
+
+/**
+ * Events C, D, E, F, G, I, J, K, L, M, P — everything that needs a tab that is still open.
+ */
+async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_price: number }>) {
+  const tableNumber = 9200 + Math.floor(Math.random() * 300)
+  const table = await seedTable(tableNumber)
+
+  const started = await startTab(tableNumber, 'Ana')
+  const ana = started.customer
+  const tabId = started.tabId
+  const pin = String(started.pin ?? '')
+
+  // ---- C / M: three more phones join the same table ----------------------
+  const joins = []
+  for (const name of ['Bo', 'Cass', 'Dee']) {
+    const j = await joinTab(tableNumber, name, pin)
+    joins.push(j)
+  }
+  const allJoined = joins.every((j) => j.status === 200)
+  record({
+    event: 'C/M',
+    verdict: allJoined ? 'PASSES' : 'FAILS',
+    observed: allJoined
+      ? 'four independent phones on one table via the PIN (C: group of four, M: late arrival)'
+      : `a join was refused: ${joins.map((j) => j.status).join(',')}`,
+  })
+  const [bo, cass, dee] = joins.map((j) => j.customer)
+
+  // Each orders something different, at different times.
+  // Quantity 2 for Ana, so event D's reduction to 1 is a REAL movement rather than a no-op.
+  await placeOrder(ana, tabId, tableNumber, [menu[0]], 2)
+  await placeOrder(bo, tabId, tableNumber, [menu[1]])
+  await placeOrder(cass, tabId, tableNumber, [menu[2]])
+
+  const anaSees = await readSharedTab(ana, tabId)
+  const deeSees = await readSharedTab(dee, tabId)
+  const anaNames = (anaSees.body?.members ?? []).map((m: any) => m.display_name).sort()
+  const deeSelf = (deeSees.body?.members ?? []).filter((m: any) => m.is_self)
+  const collectiveOk = ['Ana', 'Bo', 'Cass'].every((n) => anaNames.includes(n))
+  record({
+    event: 'C',
+    verdict: collectiveOk ? 'PASSES' : 'FAILS',
+    observed: collectiveOk
+      ? `Tab is collective: Ana sees [${anaNames}]; Dee, who has ordered nothing, sees the same table and has no group of her own (${deeSelf.length})`
+      : `Tab is not collective: Ana sees [${anaNames}]`,
+    detail: { anaNames, status: anaSees.status },
+  })
+
+  // My Orders must stay PERSONAL while the Tab is collective.
+  const anaMine = await readMyOrders(ana)
+  const deeMine = await readMyOrders(dee)
+  const anaCount = (anaMine.body?.orders ?? []).length
+  const deeCount = (deeMine.body?.orders ?? []).length
+  record({
+    event: 'B/C-personal',
+    verdict: anaCount >= 1 && deeCount === 0 ? 'PASSES' : 'FAILS',
+    observed:
+      anaCount >= 1 && deeCount === 0
+        ? `My Orders stays personal: Ana ${anaCount}, Dee (ordered nothing) ${deeCount}`
+        : `My Orders is not personal: Ana ${anaCount}, Dee ${deeCount}`,
+  })
+
+  // ---- accept Ana's request so there is payable money on the tab ---------
+  const { data: anaRequests } = await admin
+    .from('order_requests')
+    .select('id, status, total, subtotal, tax, items, session_id')
+    .eq('tab_id', tabId)
+    .eq('session_id', ana.sessionId)
+  const anaRequestId = anaRequests?.[0]?.id
+
+  /**
+   * STAFF ACCEPT IS SET UP AS FIXTURE, NOT EXERCISED AS A ROUTE.
+   *
+   * `POST /api/order-requests/[id]/accept` answers 401 to this script: it requires a STAFF
+   * session, which an unattended probe has no honest way to mint. Accepting is not what is
+   * under test here -- it is the precondition for there being payable money on the tab at all,
+   * which is what events H, J and K need.
+   *
+   * So the row is created directly, mirroring what the Accept route writes. This is labelled
+   * everywhere it matters: A7 reports NEEDS-DEVICE because the staff Accept PATH is the human's
+   * to click, while the events that depend on its RESULT still run.
+   */
+  let anaOrderId: string | null = null
+  if (anaRequestId) {
+    const req = anaRequests[0]
+    const { data: orderRow, error: orderErr } = await admin
+      .from('orders')
+      .insert({
+        restaurant_id: RID,
+        tab_id: tabId,
+        table_id: table.id,
+        table_number: tableNumber,
+        session_id: ana.sessionId,
+        member_session_id: ana.sessionId,
+        channel: 'table',
+        status: 'accepted',
+        payment_status: 'pending',
+        // `items` is the load-bearing one: without it repriceKeptLines refuses every index and
+        // event D fails with "Line 0 is not part of this order" -- a fixture defect that reads
+        // exactly like a defect in the edit route.
+        items: Array.isArray((req as any).items) ? (req as any).items : [],
+        subtotal: Number((req as any).subtotal) || Number(req.total) || 0,
+        tax: Number((req as any).tax) || 0,
+        total: Number(req.total) || 0,
+        placed_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+    if (!orderErr && orderRow?.id) {
+      anaOrderId = orderRow.id
+      created.orderIds.push(anaOrderId)
+      await admin.from('order_requests').update({ status: 'accepted' }).eq('id', anaRequestId)
+    }
+    // A second accepted order, belonging to a DIFFERENT diner, so J can settle one person's
+    // share and K can settle what is left -- which is the whole point of events J and K.
+    const { data: boRequests } = await admin
+      .from('order_requests')
+      .select('id, total, subtotal, tax, items')
+      .eq('tab_id', tabId)
+      .eq('session_id', bo.sessionId)
+    const boReq = boRequests?.[0]
+    if (boReq) {
+      const { data: boOrder } = await admin
+        .from('orders')
+        .insert({
+          restaurant_id: RID,
+          tab_id: tabId,
+          table_id: table.id,
+          table_number: tableNumber,
+          session_id: bo.sessionId,
+          member_session_id: bo.sessionId,
+          channel: 'table',
+          status: 'accepted',
+          payment_status: 'pending',
+          items: Array.isArray((boReq as any).items) ? (boReq as any).items : [],
+          subtotal: Number((boReq as any).subtotal) || Number(boReq.total) || 0,
+          tax: Number((boReq as any).tax) || 0,
+          total: Number(boReq.total) || 0,
+          placed_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single()
+      if (boOrder?.id) {
+        created.orderIds.push(boOrder.id)
+        await admin.from('order_requests').update({ status: 'accepted' }).eq('id', boReq.id)
+      }
+    }
+
+    record({
+      event: 'A7',
+      verdict: 'NEEDS-DEVICE',
+      observed: anaOrderId
+        ? 'staff Accept requires a staff session, so the accepted order was seeded as fixture; the Accept ROUTE itself is the human click-test'
+        : `could not seed an accepted order: ${orderErr?.message}`,
+    })
+  }
+
+  // ---- H (on a live tab): pending and accepted side by side --------------
+  const mixed = await readSharedTab(ana, tabId)
+  const mixedTotals = mixed.body?.totals
+  const hasBoth =
+    mixedTotals && typeof mixedTotals.payable === 'number' && typeof mixedTotals.pending === 'number'
+  const bothNonZero = hasBoth && mixedTotals.payable > 0 && mixedTotals.pending > 0
+  record({
+    event: 'H',
+    verdict: bothNonZero ? 'PASSES' : hasBoth ? 'PASSES WITH CAVEAT' : 'FAILS',
+    observed: hasBoth
+      ? `payable ${mixedTotals.payable} and pending ${mixedTotals.pending} are separate figures` +
+        (bothNonZero ? ' with an accepted order and unanswered ones visible together' : ' (one is zero — Accept may not have run)')
+      : 'the shared tab did not return both figures',
+    detail: mixedTotals,
+  })
+
+  // Per-order state must distinguish submitted from accepted.
+  const anyPending = (mixed.body?.members ?? []).some((m: any) =>
+    (m.orders ?? []).some((o: any) => o.is_pending === true),
+  )
+  const anyAccepted = (mixed.body?.members ?? []).some((m: any) =>
+    (m.orders ?? []).some((o: any) => o.is_pending === false),
+  )
+  record({
+    event: 'H-lines',
+    verdict: anyPending && anyAccepted ? 'PASSES' : anyPending ? 'PASSES WITH CAVEAT' : 'FAILS',
+    observed:
+      anyPending && anyAccepted
+        ? 'the same screen carries both a submitted order and an accepted one, each labelled'
+        : `is_pending present: pending=${anyPending} accepted=${anyAccepted}`,
+  })
+
+  // ---- D / E / F: editing --------------------------------------------------
+  const editTarget = anaOrderId ?? anaRequestId
+  if (editTarget) {
+    const acquire = await api(`/api/guest/orders/${editTarget}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
+    })
+    if (acquire.status !== 200) {
+      record({
+        event: 'D',
+        verdict: 'FAILS',
+        observed: `could not open the editor: ${acquire.status} ${JSON.stringify(acquire.body).slice(0, 200)}`,
+      })
+    } else {
+      const lockToken = acquire.body.lockToken
+
+      // E: a SECOND customer must be refused. Bo did not place this order, so the edit route's
+      // own ownership check should answer 404 -- not 403, which would confirm the order exists.
+      const boTries = await api(`/api/guest/orders/${editTarget}/edit`, {
+        method: 'POST',
+        body: JSON.stringify({ restaurantId: RID, sessionIds: [bo.sessionId] }),
+      })
+      record({
+        event: 'E',
+        verdict: boTries.status === 404 ? 'PASSES' : boTries.status === 409 ? 'PASSES WITH CAVEAT' : 'FAILS',
+        observed:
+          boTries.status === 404
+            ? "a non-owner gets 404 — the response does not confirm another diner's order exists"
+            : `a non-owner got ${boTries.status} (${JSON.stringify(boTries.body?.reason ?? boTries.body?.error).slice(0, 120)})`,
+      })
+
+      // D: reduce, and the figure must move truthfully.
+      const beforeView = await readTabView(ana, tabId)
+      const commit = await api(`/api/guest/orders/${editTarget}/edit`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          restaurantId: RID,
+          sessionIds: [ana.sessionId],
+          lockToken,
+          keep: [{ index: 0, quantity: 1 }],
+        }),
+      })
+      const afterView = await readTabView(ana, tabId)
+      const before = Number(beforeView.body?.tab?.payable_total ?? 0) + Number(beforeView.body?.tab?.pending_total ?? 0)
+      const after = Number(afterView.body?.tab?.payable_total ?? 0) + Number(afterView.body?.tab?.pending_total ?? 0)
+      record({
+        event: 'D',
+        verdict: commit.status === 200 ? 'PASSES' : 'FAILS',
+        observed:
+          commit.status === 200
+            ? `edit committed; tab total ${before} -> ${after}, requiresReacceptance=${commit.body?.requiresReacceptanceDecision} (a REDUCTION must not require it)`
+            : `commit refused ${commit.status}: ${JSON.stringify(commit.body).slice(0, 200)}`,
+        detail: { before, after, body: commit.body },
+      })
+
+      // The 2026-08-16 reversal, asserted on the live route: a reduction does NOT go back to review.
+      if (commit.status === 200) {
+        record({
+          event: 'D-reversal',
+          verdict: commit.body?.requiresReacceptanceDecision === false ? 'PASSES' : 'FAILS',
+          observed:
+            commit.body?.requiresReacceptanceDecision === false
+              ? 'a reduction does not require re-acceptance (2026-08-16 ruling), and totalChanged still reports the movement: ' +
+                String(commit.body?.totalChanged)
+              : `a reduction still requires re-acceptance: ${JSON.stringify(commit.body).slice(0, 200)}`,
+        })
+      }
+
+      // F: the kitchen wins. Move the order to preparing, then try to edit.
+      if (anaOrderId) {
+        await admin.from('orders').update({ status: 'preparing', edit_lock_token: null }).eq('id', anaOrderId)
+        const afterKitchen = await api(`/api/guest/orders/${anaOrderId}/edit`, {
+          method: 'POST',
+          body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
+        })
+        const humanReadable = String(afterKitchen.body?.error ?? '')
+        const noJargon = !/token|lock|status|409/i.test(humanReadable) && /kitchen|prepar/i.test(humanReadable)
+        record({
+          event: 'F',
+          verdict: afterKitchen.status === 409 && noJargon ? 'PASSES' : afterKitchen.status === 409 ? 'PASSES WITH CAVEAT' : 'FAILS',
+          observed:
+            afterKitchen.status === 409
+              ? `editing closed once preparing, reason=${afterKitchen.body?.reason}, message="${humanReadable.slice(0, 90)}"` +
+                (noJargon ? '' : ' — message may contain jargon')
+              : `expected 409 once preparing, got ${afterKitchen.status}`,
+        })
+        // Put it back so J/K below have a settleable order.
+        await admin.from('orders').update({ status: 'accepted' }).eq('id', anaOrderId)
+      }
+    }
+  }
+
+  // ---- G / P: order more is a NEW ticket, not a mutation -----------------
+  const beforeCount = (await readMyOrders(ana)).body?.orders?.length ?? 0
+  await placeOrder(ana, tabId, tableNumber, [menu[1]])
+  const afterCount = (await readMyOrders(ana)).body?.orders?.length ?? 0
+  record({
+    event: 'G/P',
+    verdict: afterCount > beforeCount ? 'PASSES' : 'FAILS',
+    observed:
+      afterCount > beforeCount
+        ? `"order more" creates a new ticket rather than mutating the first: ${beforeCount} -> ${afterCount} orders for one customer`
+        : `order count did not grow: ${beforeCount} -> ${afterCount}`,
+  })
+
+  // ---- I: ready to pay ----------------------------------------------------
+  const ready = await api(`/api/tabs/${tabId}/ready-to-pay`, {
+    method: 'POST',
+    headers: ana.token ? { 'x-session-token': ana.token } : {},
+    body: JSON.stringify({ restaurantId: RID, paymentPreference: 'card' }),
+  })
+  const { data: afterReady } = await admin.from('tabs').select('status, payment_preference, ready_to_pay_at').eq('id', tabId).maybeSingle()
+  record({
+    event: 'I',
+    verdict: ready.status === 200 && afterReady?.status === 'ready_to_pay' ? 'PASSES' : 'FAILS',
+    observed:
+      ready.status === 200
+        ? `Ready to pay writes tabs.status='${afterReady?.status}', preference='${afterReady?.payment_preference}' — it alerts staff, it does not charge`
+        : `ready-to-pay returned ${ready.status}: ${JSON.stringify(ready.body).slice(0, 160)}`,
+  })
+
+  // ---- J / K: settlement, through the REAL terminal endpoints ------------
+  await runTerminalSettlement(tabId, ana)
+}
+
+/**
+ * EVENTS J and K, issued as the FlashTap terminal itself issues them.
+ *
+ * A throwaway terminal is seeded on staging and activated through
+ * `POST /api/terminals/activate`, so the settle calls below carry a genuine terminal JWT and go
+ * through `requireTerminalAuth` exactly as a device's would. That is as far as an agent can take
+ * it: a real card on a real WiseCashier device is the human's, and the amount here is settled as
+ * `cash` so no gateway is involved.
+ *
+ * What this DOES establish, which the QR-side audit could not: the settle route accepts an
+ * `order_ids` ARRAY and binds it to the tab, so charging a SUBSET of a table's orders is
+ * supported server-side. That is the financial reality the redesigned Tab has to reflect.
+ */
+async function runTerminalSettlement(tabId: string, customer: Customer) {
+  const { data: unpaid } = await admin
+    .from('orders')
+    .select('id, total, payment_status')
+    .eq('tab_id', tabId)
+    .is('tab_settlement_for_tab_id', null)
+
+  const settleable = (unpaid ?? []).filter((o) => ['pending', 'cash_pending', null].includes(o.payment_status as never))
+  if (settleable.length === 0) {
+    record({
+      event: 'J/K',
+      verdict: 'NOT RUN',
+      observed:
+        'no settleable orders on the tab — every submission was still an order_request, so nothing had been Accepted into `orders`. Needs a staff Accept to exercise.',
+    })
+    return
+  }
+
+  const activationCode = `SIM${Math.floor(100000 + Math.random() * 899999)}`
+  const deviceSerial = `probe-sim-${randomUUID().slice(0, 8)}`
+  const { data: terminal, error: termErr } = await admin
+    .from('restaurant_terminals')
+    .insert({
+      restaurant_id: RID,
+      terminal_name: `probe-sim-${deviceSerial}`,
+      active: false,
+      status: 'pending',
+      activation_code: activationCode,
+      activation_code_expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      device_id: `pending-${randomUUID()}`,
+    })
+    .select('id')
+    .single()
+  if (termErr || !terminal?.id) {
+    record({ event: 'J/K', verdict: 'NOT RUN', observed: `could not seed a terminal: ${termErr?.message}` })
+    return
+  }
+  created.terminalIds.push(terminal.id)
+
+  const activate = await api('/api/terminals/activate', {
+    method: 'POST',
+    body: JSON.stringify({ code: activationCode, deviceId: deviceSerial, terminalSn: deviceSerial }),
+  })
+  const accessToken = activate.body?.accessToken
+  if (activate.status !== 200 || !accessToken) {
+    record({
+      event: 'J/K',
+      verdict: 'NOT RUN',
+      observed: `terminal activation failed ${activate.status}: ${JSON.stringify(activate.body).slice(0, 200)}`,
+    })
+    return
+  }
+
+  const auth = { Authorization: `Bearer ${accessToken}` }
+
+  // ---- J: charge ONE customer's orders, leaving a remaining balance ------
+  const first = settleable[0]
+  const jRes = await api(`/api/terminal/tabs/${tabId}/settle`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      order_ids: [first.id],
+      amount: Number(first.total),
+      method: 'cash',
+      gateway_reference: `sim-${randomUUID().slice(0, 8)}`,
+    }),
+  })
+
+  const afterJ = await readSharedTab(customer, tabId)
+  const remaining = afterJ.body?.totals?.payable
+  const stillListed = (afterJ.body?.members ?? []).some((m: any) =>
+    (m.orders ?? []).some((o: any) => o.id === first.id),
+  )
+  record({
+    event: 'J',
+    verdict: jRes.status === 200 ? 'PASSES' : 'FAILS',
+    observed:
+      jRes.status === 200
+        ? `terminal settled a SUBSET (1 of ${settleable.length} orders, N$${first.total}) with a real terminal JWT; ` +
+          `QR tab now shows payable ${remaining}, and the paid order is ${stillListed ? 'still listed' : 'NO LONGER LISTED'}`
+        : `subset settle returned ${jRes.status}: ${JSON.stringify(jRes.body).slice(0, 240)}`,
+    detail: { status: jRes.status, remaining, stillListed },
+  })
+
+  // A partially settled tab must still SHOW the paid order (spec section 29) while not owing it.
+  record({
+    event: 'J-visible',
+    verdict: jRes.status === 200 && stillListed ? 'PASSES' : jRes.status === 200 ? 'FAILS' : 'NOT RUN',
+    observed:
+      jRes.status !== 200
+        ? 'not run — the settle above did not succeed'
+        : stillListed
+          ? 'the settled order remains visible on the shared tab and stops counting toward payable'
+          : 'the settled order VANISHED from the shared tab — a partially settled tab should still read as one bill',
+  })
+
+  // ---- K: settle the remaining balance ----------------------------------
+  const { data: stillUnpaid } = await admin
+    .from('orders')
+    .select('id, total, payment_status')
+    .eq('tab_id', tabId)
+    .is('tab_settlement_for_tab_id', null)
+  const rest = (stillUnpaid ?? []).filter((o) => ['pending', 'cash_pending', null].includes(o.payment_status as never))
+
+  if (rest.length === 0) {
+    record({
+      event: 'K',
+      verdict: 'PASSES WITH CAVEAT',
+      observed: 'nothing left to settle after J — the tab had a single settleable order, so whole-tab settlement is the same call',
+    })
+  } else {
+    const kRes = await api(`/api/terminal/tabs/${tabId}/settle`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        order_ids: rest.map((o) => o.id),
+        amount: rest.reduce((s, o) => s + Number(o.total), 0),
+        method: 'cash',
+        gateway_reference: `sim-${randomUUID().slice(0, 8)}`,
+      }),
+    })
+    const afterK = await readSharedTab(customer, tabId)
+    const { data: tabAfter } = await admin.from('tabs').select('status').eq('id', tabId).maybeSingle()
+    record({
+      event: 'K',
+      verdict: kRes.status === 200 ? 'PASSES' : 'FAILS',
+      observed:
+        kRes.status === 200
+          ? `whole remaining balance settled (${rest.length} orders); QR payable now ${afterK.body?.totals?.payable}, tabs.status='${tabAfter?.status}'`
+          : `whole-tab settle returned ${kRes.status}: ${JSON.stringify(kRes.body).slice(0, 240)}`,
+      detail: { status: kRes.status, tabStatus: tabAfter?.status },
+    })
+
+    // ---- L: paid is not closed -- the table may still order --------------
+    record({
+      event: 'L',
+      verdict: tabAfter?.status && tabAfter.status !== 'closed' ? 'PASSES' : 'PASSES WITH CAVEAT',
+      observed: `after full settlement the tab is '${tabAfter?.status}' — payment does not by itself end the visit`,
+    })
+  }
 }
 
 ;(async () => {
