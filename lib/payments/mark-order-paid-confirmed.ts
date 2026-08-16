@@ -10,7 +10,25 @@ export type MarkOrderPaidConfirmedParams = {
   reference: string
   voucherNo?: string | null
   paymentMethod?: string
+  /**
+   * What the caller asserts was paid. Its MEANING differs per caller, which is why the audit
+   * entry now says so explicitly rather than labelling it `clientAmount` (#238):
+   *
+   *   terminal_callback / terminal_verify_payment  the ORDER's own total
+   *   paycloud webhook / reconcile cron            the ORDER's own total
+   *   auto_cancel_cron_finatic_verified            Finatic's figure, falling back to the total
+   *   terminal payment failure correction          Finatic's figure
+   *
+   * Pass `gatewayAmount` alongside it whenever the provider's own figure is known.
+   */
   amount: number
+  /**
+   * The PROVIDER's own figure for this payment, when the caller has one (#268).
+   *
+   * `undefined` means "not known here" and is recorded as such — it is NOT the same as the
+   * gateway reporting zero, and the audit entry must never let those two read alike.
+   */
+  gatewayAmount?: number | null
   terminalId?: string | null
   /** Short tag identifying the caller for the audit_logs entry, e.g. 'terminal_callback', 'auto_cancel_cron_finatic_verified', 'terminal_verify_payment', 'staff_reconcile'. */
   source: string
@@ -49,6 +67,7 @@ export async function markOrderPaidConfirmed(
     voucherNo,
     paymentMethod = 'card',
     amount,
+    gatewayAmount,
     terminalId = null,
     source,
     extraAuditMetadata,
@@ -96,12 +115,34 @@ export async function markOrderPaidConfirmed(
     action: 'payment.completed',
     entity_type: 'order',
     entity_id: orderId,
+    /**
+     * WHOSE FIGURE IS THIS? (#238, #268)
+     *
+     * `clientAmount: amount` used to sit here, duplicating `amount` under a name that was wrong
+     * for most callers. Measured across all six call sites: four pass the ORDER'S OWN TOTAL
+     * (terminal callback, terminal verify-payment, the PayCloud webhook, the reconcile cron) and
+     * two pass FINATIC'S figure (the auto-cancel cron's pre-cancel check, and the terminal
+     * payment-failure correction). So the field was not the client's amount in four cases and
+     * was not the client's amount in the other two either -- it was simply `amount` again, under
+     * a label that made a historical mismatch look investigable when it was not.
+     *
+     * Nothing read it. Grepped `clientAmount` across *.ts, *.tsx, *.sql, __tests__ and the
+     * terminal app: the only other hits are unrelated local variables in the receipt route and a
+     * parameter name in payment-integrity. It was write-only, which is why correcting it is safe.
+     *
+     * Now: `amount` is what the caller asserted, `amountMeaning` says whose figure that is, and
+     * `gatewayAmount` carries the provider's own number when the caller has one. A mismatch
+     * between the last two is the thing #268 wants auditable.
+     */
     metadata: {
       reference,
       voucherNo: paymentVoucherNo,
       businessOrderNo: reference,
       amount,
-      clientAmount: amount,
+      // `null` = the caller had no provider figure. Deliberately distinct from a gateway that
+      // genuinely reported 0, which would record as 0.
+      gatewayAmount: gatewayAmount ?? null,
+      amountMeaning: gatewayAmount != null ? 'gateway_reported' : 'order_total',
       paymentMethod,
       terminalId,
       source,

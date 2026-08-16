@@ -163,6 +163,9 @@ export async function autoCancelStalePosOrders(
           reference: merchantOrderNo,
           voucherNo: finaticResult.transactionId || merchantOrderNo,
           amount: finaticResult.amount ?? Number(order.total),
+          // #268: record Finatic's own figure separately, so a later mismatch is investigable
+          // rather than being folded into a field that also carries the order total.
+          gatewayAmount: finaticResult.amount ?? null,
           source: 'auto_cancel_cron_finatic_verified',
           extraAuditMetadata: {
             correctionReason:
