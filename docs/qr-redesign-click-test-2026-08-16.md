@@ -168,6 +168,10 @@ Still in the editor:
 
 On the terminal, open this table.
 
+- [ ] **First, look at the order rows' headlines.** They should now show **names**, not "Guest".
+      Every row said "Guest" until tonight — the terminal renders `member_name` and nothing ever
+      sent it (#288). This is a server fix, so **the existing APK picks it up**; if you still see
+      "Guest" on every row, that is the one thing here worth telling me about.
 - [ ] Tick **only Lenton's orders** using the checkboxes on the order rows.
 - [ ] Charge them.
 - [ ] **Back on both phones, open Tab.** The table total has dropped by exactly Lenton's amount,
@@ -175,6 +179,11 @@ On the terminal, open this table.
       vanished. A partially settled tab still reads as one bill.
 
 ---
+
+> **Known, filed, not fixed (#287):** after this first partial settle the table's **"ready to
+> pay" chip disappears from the terminal**, even though three people are still waiting to pay.
+> Every option that restores it needs a terminal change, so it is a ruling for you rather than a
+> fix I could make tonight. Expect it; it is not a regression from this run.
 
 ## 11 — Pay the rest, and keep ordering
 
