@@ -11,10 +11,11 @@ import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/ses
 import { getSessionToken } from '@/lib/fetch-with-session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
-import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
+// MenuOrderStatusTracker is no longer rendered here (spec section 8). The component file is kept
+// -- see the note at its former render site for why deleting it would be a different change.
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, ArrowLeft, Receipt, ListChecks, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
+import { Search, ArrowLeft, Users, ListChecks, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -24,7 +25,8 @@ import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
-import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
+import { buildBrowseTabStrip } from '@/lib/tabs/browse-tab-strip'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
@@ -104,10 +106,8 @@ export default function MenuBrowsePage() {
    * had just ordered N$132 that they owed NAD0.00 — every QR submission is an order_request
    * until staff Accept, and payable counts orders only.
    */
-  const stripPendingSuffix =
-    (Number(tabPending) || 0) > 0
-      ? ` ${TAB_FIGURES_COPY.tabPendingSuffix.replace('{pending}', `${currency}${(Number(tabPending) || 0).toFixed(2)}`)}`
-      : ''
+  // Built in lib/tabs/browse-tab-strip.ts. See the note at the render site for why it is not
+  // assembled here: one arm of the old inline ternary dropped the pending figure entirely.
 
   // Authoritative view-only check: looked up from the real restaurant_tables row for this
   // table_number, never trusted from a URL flag. Until it resolves, isViewOnly stays false
@@ -243,6 +243,18 @@ export default function MenuBrowsePage() {
   const tabPin = fetchedTabPin ?? creatorTabPin
 
   const [tabPinRequired, setTabPinRequired] = useState(true)
+
+  /** Spec section 9. One call, so no branch can render an amount without its pending note. */
+  const tabStrip = buildBrowseTabStrip({
+    tabStatus,
+    currency,
+    total: Number(tabTotal) || 0,
+    pending: Number(tabPending) || 0,
+    memberCount: tabMembers.length,
+    tabPin,
+    tabPinRequired,
+  })
+
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -828,11 +840,27 @@ export default function MenuBrowsePage() {
                 receipt, no order to track), so the whole block is hidden there. */}
             {!isViewOnly && (
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-              {tableNumber > 0 && (
-                <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}${tabId || tabIdParam ? `&tabId=${encodeURIComponent(tabId || tabIdParam)}` : ''}`}>
-                  <Button variant="outline" size="sm" aria-label="Receipt" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
-                    <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
-                    <span className="hidden sm:inline">Receipt</span>
+              {/* TAB — the shared table bill.
+                  This slot used to hold **Receipt**. Spec sections 33 and 37: Receipt was a
+                  primary navigation concept offered before anything receipt-like existed —
+                  `/menu/[id]/receipt` is a running-bill screen, not a paid receipt, so the label
+                  described neither what it opened nor when it was useful. The route is NOT
+                  removed; it is still linked from the landing, `/menu`, the gateway-return
+                  confirmation and ActiveOrderBanner. It is demoted out of the browse header.
+
+                  What replaces it is the destination the redesign actually needs a header entry
+                  for (spec section 7): the Tab was previously reachable ONLY by tapping the strip
+                  below, which is not a control a first-time customer knows is a control. */}
+              {effectiveIsInTab && (
+                <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={QR_REDESIGN_PENDING_COPY.navTab}
+                    className="h-11 border-border px-3 font-sans text-xs sm:text-sm"
+                  >
+                    <Users className="w-4 h-4 stroke-[1.5] sm:mr-1.5" />
+                    <span className="hidden sm:inline">{QR_REDESIGN_PENDING_COPY.navTab}</span>
                   </Button>
                 </Link>
               )}
@@ -902,40 +930,54 @@ export default function MenuBrowsePage() {
         </div>
       </header>
 
+      {/* THE TAB STRIP — a lightweight entry point, not a summary of the whole bill.
+
+          Spec section 9. It used to be one dense sentence carrying status, money, people, the
+          PIN and "Tap to settle →". Two rows now: the money leads, and the PIN and people are
+          demoted beneath it. It says VIEW rather than settle, because section 30 puts the
+          settlement action on the Tab itself and leaves this as navigation.
+
+          The string is built by lib/tabs/browse-tab-strip.ts rather than inline, and that is
+          where the real fix is: the old three-way ternary appended the pending figure to its two
+          template-string arms and NOT to the JSX arm — the arm taken whenever the tab has a PIN.
+          A customer on a PIN-protected tab who had just ordered therefore saw payable alone, with
+          nothing naming what the restaurant had not yet confirmed. Building the money line once,
+          before anything branches on the PIN, is what stops that recurring. */}
       {effectiveIsInTab && (
         <div className="border-b border-border bg-foreground text-background">
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
-            <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
-              {tabStatus === 'ready_to_pay'
-                ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)}${stripPendingSuffix} — waiter notified`
-                : tabStatus === 'closed'
-                  ? `Tab closed • ${currency}${(0).toFixed(2)} • 0 people`
-                  : tabPin && tabPinRequired ? (
-                      <>
-                        Tab open • {currency}
-                        {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
-                        {tabMembers.length === 1 ? 'person' : 'people'} • PIN:{' '}
-                        <span className="font-bold text-emerald-400">{tabPin}</span> — Tap to settle →
-                      </>
-                    ) : (
-                      `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)}${stripPendingSuffix} • ${
-                        tabMembers.length
-                      } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`
-                    )}
+            <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm">
+                  <span className="font-semibold">{tabStrip.headline}</span>
+                  {tabStrip.amount ? <span> · {tabStrip.amount}</span> : null}
+                  {tabStrip.pendingNote ? (
+                    <span className="text-background/70"> {tabStrip.pendingNote}</span>
+                  ) : null}
+                </p>
+                {tabStrip.meta ? (
+                  <p className="truncate text-xs text-background/70">{tabStrip.meta}</p>
+                ) : null}
+              </div>
+              <span className="shrink-0 text-xs font-semibold">{tabStrip.cta}</span>
             </div>
           </Link>
         </div>
       )}
 
-      <MenuOrderStatusTracker
-        restaurantId={restaurantId}
-        tableNumber={tableNumber}
-        currency={currency}
-        tabId={effectiveTabId || undefined}
-        isKiosk={isKiosk}
-        customerName={isKiosk ? orderingCtx.customerName : undefined}
-        sessionId={isKiosk ? kioskSessionId ?? undefined : getCurrentSession() ?? undefined}
-      />
+      {/* NO ORDER TRACKER HERE. Spec section 8.
+
+          <MenuOrderStatusTracker /> rendered a SIX-STEP progress bar per active order, above the
+          food. With four people at one table across several rounds that is the whole first
+          screen, and the customer scrolls past their own order history to reach the menu — which
+          is the one thing this screen exists for. Order tracking now lives on My Orders, which is
+          also where Place Order lands (piece 2).
+
+          THE COMPONENT FILE IS DELIBERATELY NOT DELETED. Nothing else renders it, but eight
+          suites `jest.mock` it by path, and it carries ReadyToPayCardButton — one of the two
+          competing "call the waiter" affordances (audit D8). Deleting it would fold a settlement
+          decision into a layout change. It is removed from this screen only; the consolidation
+          is piece 7. */}
 
       <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">
         {/* Search */}
