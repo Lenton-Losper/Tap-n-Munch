@@ -925,12 +925,44 @@ evidence, in a commit message. So the suite now also scans the shipped source, a
 re-run turns 2 red by name. Same shape as the credential-logging guard, and for the same reason:
 it is the only thing that can see this.
 
+## #246 — the partial-menu-failure banner vanished exactly when it mattered most
+
+The render site required `filteredGroupedEntries.length > 0`, so when some categories failed to
+load **and** the customer then searched for something not in the part that *had* loaded, the
+banner disappeared — leaving them looking at **"No items found"**, an affirmative claim about the
+restaurant's menu, with no hint it was incomplete. The item they were searching for may well have
+been in the category that failed.
+
+**It does not overrule the recorded decision beside it,** and that is the whole reason it works.
+`menu-body-state.ts` rules that *"while searching, a stale notice must not displace the 'no
+results' wording"*. That stands, and now has its own test. These are **two different seams**:
+`menuBodyState` decides what the **body** says (still "No items found"); the banner is a strip
+**above** it, and whether it appears is a question the body-state rule never answered. They now
+coexist.
+
+## #216 — NOT fixed, but the audit found the mechanism the issue does not name
+
+Measured on staging: **0 of 11** live tabs are invisible to the terminal, so the state is not
+currently present. But `app/api/tabs/route.ts:350` is
+
+    await supabase.from('restaurant_tables').update({ status: 'occupied' }).eq('id', tableRow.id)
+
+with **the result discarded** — no error checked, nothing logged, route returns success. If that
+one write fails, the tab is live while its table stays `available`, and the terminal's
+`.eq('status','occupied')` filter hides the table, the money on it, and any way to settle it.
+Nothing reports it. Same family as #195.
+
+I did not change it: the robust fix is dropping the `occupied` filter from the terminal query —
+defensible, because the query already joins `tabs!inner` filtered to live tabs, so the filter is
+purely narrowing — but it changes what staff see on the payment terminal, which is auto-H1 and
+needs your ruling. Recorded in full on the issue.
+
 ---
 
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
-    origin/cloudflare-staging     641d891
+    origin/cloudflare-staging     ea53857
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
@@ -945,6 +977,7 @@ it is the only thing that can see this.
     fix/browse-debug-logging            fix/275-staff-transition-copy
     fix/283-tab-pin-csprng              fix/288-terminal-member-name
     fix/238-audit-records-whose-figure  fix/232-report-unresolved-owes-money
+    fix/246-partial-banner-during-search
 
 ## Everything the spec asked for that the domain could NOT truthfully support
 
