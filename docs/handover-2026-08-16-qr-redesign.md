@@ -1315,6 +1315,87 @@ The existing grouping test passed throughout because its fixture items had `subt
   cleanup reported a clean run while deleting nothing — which is why 20 fixture tables, 19 open
   tabs and 3 probe menu items were sitting in the live staging menu. Fixed.
 
+# FOR THE RECORD — a browser was installed the whole time and went unused
+
+**Playwright 1.61.1**, `playwright.config.ts` with `baseURL` already pointed at the staging
+worker, three specs in `tests/e2e/`, and Chromium downloaded — present throughout the overnight
+build, the continuation session, and the morning's fixes.
+
+Every proof written in that time was an API fetch, `tsc`, `jest`, or a source scan. **Four
+`PROOF CEILING: UNIT` lines were written while it sat unused**, including one on #292 saying:
+
+> Confirming the flash is gone needs the same instrument that found it: a browser on the screen.
+
+I named the missing instrument and did not check whether the repo had it. It did.
+
+**Four customer-facing defects were found by a human on a phone** — #292 the Tab screen blanking,
+#294 the session eviction, #295 the confirmation line price, #291 the swap being unusable — and
+all four are browser-visible. All four are now driven by `tests/e2e/repro-known-defects.spec.ts`,
+each proven to fail against the SHA that predates its fix.
+
+## THE RULE GOING FORWARD
+
+**Before writing a proof ceiling, check what is actually installed.** A ceiling is a statement
+about this repo's tooling, not about the shape of the defect. "The simulation cannot see this"
+is not "this cannot be seen".
+
+Two notes that framed Playwright as unusable — *"tests the deployed worker, not your branch"* and
+*"browser QA needs a host dev server"* — are about pointing it at a **local** build. Staging is a
+public URL and the config was already aimed at it. Neither note was re-read before being acted on.
+
+## What the browser suite covers
+
+| Click-test section | Check | Instrument |
+|---|---|---|
+| 2 | tapping a card opens the same sheet as the `+` button | browser |
+| 5 | two contexts, both phones render both diners; Edit drawn once per phone | browser |
+| 7b | an item picked in picker mode does NOT enter the cart | browser only, by construction |
+| — | #291 #292 #294 #295 reproductions | browser |
+
+**Deliberately not duplicated:** the shared tab returning both members, the two-figure split,
+`is_self`, the token guard, the swap committing, re-acceptance following the total. Those are
+simulation checks against the real routes. Two instruments answering one question is two chances
+to disagree.
+
+**Cannot cover:** copy wording, one-handed layout, whether a flow feels right, real QR scanning,
+the physical terminal (#287), the printer.
+
+## Running it
+
+    set -a; . ./.env.test; set +a
+    npx playwright test tests/e2e/repro-known-defects.spec.ts tests/e2e/click-test-script.spec.ts
+
+7 checks, **73s** against deployed staging. Fixtures seed in table range 9200-9599 with `probe-`
+session ids and tear down in `afterEach`, including the `payments` rows the simulation's cleanup
+used to miss.
+
+To run against a pre-fix build: check the SHA out into a worktree, write a **staging-only**
+`.env.local`, `next build && next start -p 3112`, then
+`E2E_BASE_URL=http://localhost:3112 npx playwright test ...`.
+
+## Harness defects the first runs exposed — all mine, none the app's
+
+- **No `customer_sessions` row.** Every token-guarded route answered 410 and the screens showed
+  "your dining session has ended". Four apparent product defects were one missing row.
+- **Fixture menu items had no `category_id`** — in the database, on no screen, because browse
+  groups by category.
+- **Clicking before React hydrates is swallowed silently.** No error, no navigation. It read as
+  the edit lock being refused when the lock had never been requested.
+- **`pkill -f "next dev"` does not work here.** `next start` died `EADDRINUSE` and every
+  "pre-fix" result for an hour came from a **stale dev server started before the staging
+  `.env.local` existed**. `curl` returned 200 throughout. I verified the port answered, not that
+  it answered from the build I meant.
+- **The staging guard was one-sided.** It checked the production ref was absent, which a build
+  with **no** env inlined also passes. Absence of the wrong answer is not presence of the right
+  one.
+
+## The safety fact worth keeping
+
+`.env.local` in this repo points at **production** (`ihlmmpmolnpchzgwyhgh`). A browser harness
+that trusts whatever env it finds will drive an automated browser against the live database. The
+fixture library refuses any project ref but staging, and the pre-fix worktree gets its own
+staging-only `.env.local` written from `.env.test`.
+
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
