@@ -199,7 +199,29 @@ export async function redactTabMembers(
  */
 export async function redactGuestOrderMemberIds<T extends Record<string, unknown>>(
   rows: T[],
+  /**
+   * The session ids the CALLER holds. Rows they do not own have `session_id` stripped (#302).
+   *
+   * `member_session_id` has been substituted with an opaque per-tab key since #262, but
+   * `session_id` was passed through untouched -- so `GET /api/guest/orders/<id>` handed another
+   * diner's raw session id to anyone who could read the row. That value was the edit route's
+   * credential, which turned "can see your order" into "can rewrite your order". Measured.
+   *
+   * Scoped to rows the caller does NOT own rather than stripped outright, because the customer's
+   * own screens read it: `receipt/page.tsx:180` falls back to `order.session_id` to put a member
+   * name on their own line. Blanket removal would replace real names with "Guest" on a screen
+   * that is behaving correctly.
+   *
+   * Defaults to `[]`, so a caller that forgets to pass its ids gets the SAFE behaviour -- every
+   * row redacted -- rather than the leaky one.
+   */
+  callerSessionIds: string[] = [],
 ): Promise<T[]> {
+  const held = new Set(
+    (Array.isArray(callerSessionIds) ? callerSessionIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean),
+  )
   if (!Array.isArray(rows) || rows.length === 0) return rows
 
   const derivers = new Map<string, (sessionId: string) => Promise<string>>()
@@ -210,8 +232,15 @@ export async function redactGuestOrderMemberIds<T extends Record<string, unknown
     const sessionId =
       String(row?.member_session_id ?? '').trim() || String(row?.session_id ?? '').trim()
 
+    // Strip the raw session id from any row the caller does not own, whatever else happens below.
+    const ownsRow = [row?.member_session_id, row?.session_id]
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean)
+      .some((v) => held.has(v))
+    const scrubbed = (ownsRow ? row : { ...row, session_id: null }) as T
+
     if (!tabId || !sessionId) {
-      out.push(row)
+      out.push(scrubbed)
       continue
     }
 
@@ -221,7 +250,7 @@ export async function redactGuestOrderMemberIds<T extends Record<string, unknown
       derivers.set(tabId, derive)
     }
 
-    out.push({ ...row, member_session_id: await derive(sessionId) })
+    out.push({ ...scrubbed, member_session_id: await derive(sessionId) } as T)
   }
 
   return out

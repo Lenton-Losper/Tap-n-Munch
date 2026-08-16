@@ -106,7 +106,8 @@ export async function fetchGuestOrderById(
       return { order: null, denied: true }
     }
     // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
-    const [redacted] = await redactGuestOrderMemberIds([order])
+    // #302: the caller's own ids, so their OWN row keeps session_id and nobody else's does.
+    const [redacted] = await redactGuestOrderMemberIds([order], [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean))
     return { order: redacted, denied: false }
   }
 
@@ -303,11 +304,14 @@ export async function fetchGuestOrdersBySession(params: {
   // cart writes ONE value into BOTH columns, the raw value still leaves in session_id on every
   // path, including by-payment-ref where a PAID order is admitted on restaurant scope alone.
   //
-  // Redacting session_id as well was considered and RULED AGAINST: the client matches ownership
-  // on the real value via heldSessionIds (see ownsOrder), so substituting it would break the
-  // customer's own screens. Filed as a design question instead.
+  // Redacting session_id was RULED AGAINST once, on the grounds that the client matches
+  // ownership on the real value via heldSessionIds (see ownsOrder), so substituting it would
+  // break the customer's own screens. #302 resolved that: the strip is scoped to rows the caller
+  // does NOT own, and `ownsOrder` only ever matches rows they DO own -- so the reason the ruling
+  // was made is preserved exactly while the cross-diner disclosure is closed.
   const orders = await redactGuestOrderMemberIds(
     (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean),
   )
   const pendingRows = (pending ?? []).map((row) =>
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
@@ -446,6 +450,7 @@ export async function fetchGuestActiveTableOrders(params: {
   // the #262 half does and does not cover.
   const orders = await redactGuestOrderMemberIds(
     (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean),
   )
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
@@ -546,5 +551,7 @@ export async function fetchGuestOrdersByPaymentRef(params: {
     (data ?? [])
       .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
       .filter((order) => guestCanAccessOrder(order, accessParams)),
+    // This signature carries `sessionId` only -- there is no `sessionIds` array on it.
+    [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
   )
 }
