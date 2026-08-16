@@ -93,6 +93,19 @@ before tonight.
 - [ ] The headline shows the table total; unconfirmed money is named beneath it rather than
       folded in.
 
+**Stay on the Tab screen and do nothing for thirty seconds.** Two defects lived here and both
+were found by sitting still, not by clicking.
+
+- [ ] **The screen does not blank.** It refreshes in place. Until 2026-08-16 the whole page was
+      replaced by a spinner every 5 seconds, losing your scroll position and any tap in progress
+      (#292). Watch the clock, not the content.
+- [ ] **Every line price is the price on the menu.** Compare a line against the menu item you
+      ordered — they must match to the cent. Until 2026-08-16 lines were shown ex-VAT, so a N$95
+      burger read *"NAD82.61"* under a *"NAD95.00"* heading (#293).
+- [ ] **The lines add up to the figure printed directly beneath them.** If they do not, stop and
+      say so — that is the mixed-basis defect returning, and it is a money figure on a customer's
+      screen.
+
 ---
 
 ## 6 — Four people (optional, but this is the case the redesign is for)
@@ -140,6 +153,37 @@ Still in the editor:
       for re-acceptance.
 - [ ] Now repeat, but press **Cancel** instead of Save. Reopen the editor — the abandoned picks
       are **gone**, and the editor does not reopen itself.
+
+### 7c — Swapping an item (the case that was impossible until 2026-08-16)
+
+**This step exists because Events A–Q did not.** The spec never asked for a swap, so the
+simulation never drove one, and 28/28 stayed green while swapping was completely impossible
+(#291). It was found on a phone. Drive it every time.
+
+Start from an order with **exactly one line** — that is the case that broke; a swap on a two-line
+order takes a different path through the emptiness check and would have passed throughout.
+
+- [ ] Open the editor on the one-line order.
+- [ ] **Remove the only line.** The panel shows it struck through and warns that an order needs at
+      least one item. **Save is disabled at this point, and that is correct** — right now the edit
+      really would empty the order.
+- [ ] Press **[PENDING COPY] + Add something** and pick a different item.
+- [ ] You are returned to the order. The removal is still struck through **and** the addition is
+      listed beneath it.
+- [ ] **The warning is gone and Save is enabled.** This is the whole step. Before the fix the
+      warning stayed, Save stayed grey, and the swap could not be completed at all.
+- [ ] Press **Save**. It commits. The order now has **one** line — the new item — and the old one
+      is gone entirely, not kept at zero quantity.
+- [ ] Check the total. It is the **menu** price of the new item, whatever the old one cost.
+- [ ] **Re-acceptance follows the total, and nothing else.** Swap *up* in price and the order goes
+      back for staff re-acceptance. Swap *down* and it does not. A swap is not special-cased, so
+      if a cheaper swap asks for re-acceptance, that is a defect.
+
+Then the negative half, which is the guard this fix must not have removed:
+
+- [ ] Open the editor on a one-line order again. Remove the only line and **add nothing**.
+- [ ] Save stays disabled and the warning stays. An edit that really would leave the order empty
+      is still refused, and the customer is still told to ask staff to cancel instead.
 
 ---
 
