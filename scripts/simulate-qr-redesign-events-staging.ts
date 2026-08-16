@@ -736,6 +736,78 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
         })
       }
 
+      // ---- D-add: the NEW capability. An edit may now ADD an item. ---------
+      // Ruled 2026-08-16, overruling spec section 22. This is the half that did not exist, and
+      // the half the audit warned about: the four sale controls all lived on POST /api/orders.
+      if (anaOrderId) {
+        const reAcquire = await api(`/api/guest/orders/${anaOrderId}/edit`, {
+          method: 'POST',
+          body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
+        })
+        if (reAcquire.status !== 200) {
+          record({
+            event: 'D-add',
+            verdict: 'FAILS',
+            observed: `could not reopen the editor to add: ${reAcquire.status} ${JSON.stringify(reAcquire.body).slice(0, 160)}`,
+          })
+        } else {
+          const beforeAdd = Number(
+            (await readTabView(ana, tabId)).body?.tab?.payable_total ?? 0,
+          )
+          const addCommit = await api(`/api/guest/orders/${anaOrderId}/edit`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              restaurantId: RID,
+              sessionIds: [ana.sessionId],
+              lockToken: reAcquire.body.lockToken,
+              add: [
+                {
+                  menuItemId: menu[2].id,
+                  name: menu[2].name,
+                  displayName: menu[2].name,
+                  quantity: 1,
+                  // A deliberately absurd client price, to prove the server discards it.
+                  basePrice: 0.01,
+                  subtotal: 0.01,
+                  selectedVariants: {},
+                  size: null,
+                  addons: [],
+                  specialInstructions: '',
+                },
+              ],
+            }),
+          })
+          const afterAdd = Number((await readTabView(ana, tabId)).body?.tab?.payable_total ?? 0)
+          const rose = afterAdd > beforeAdd
+          const pricedAtMenu = Math.abs(afterAdd - beforeAdd - Number(menu[2].base_price)) < 0.01
+          record({
+            event: 'D-add',
+            verdict: addCommit.status === 200 && rose && pricedAtMenu ? 'PASSES' : addCommit.status === 200 ? 'PASSES WITH CAVEAT' : 'FAILS',
+            observed:
+              addCommit.status === 200
+                ? `an item was ADDED to an existing order: payable ${beforeAdd} -> ${afterAdd} ` +
+                  `(menu price ${menu[2].base_price}; client sent 0.01 and it was ${pricedAtMenu ? 'DISCARDED' : 'NOT discarded'}), ` +
+                  `requiresReacceptance=${addCommit.body?.requiresReacceptanceDecision}`
+                : `add refused ${addCommit.status}: ${JSON.stringify(addCommit.body).slice(0, 200)}`,
+            detail: { beforeAdd, afterAdd, body: addCommit.body },
+          })
+
+          // The other half of the ruling: a RISE does require re-acceptance.
+          if (addCommit.status === 200) {
+            record({
+              event: 'D-add-review',
+              verdict: addCommit.body?.requiresReacceptanceDecision === true ? 'PASSES' : 'FAILS',
+              observed:
+                addCommit.body?.requiresReacceptanceDecision === true
+                  ? 'an addition raises the total and DOES go back for staff re-acceptance (2026-08-16 ruling, second half)'
+                  : `an addition did NOT require re-acceptance: ${JSON.stringify(addCommit.body).slice(0, 200)}`,
+            })
+            // Put it back so F and the settlement below are not blocked by `pending`.
+            await admin.from('orders').update({ status: 'accepted' }).eq('id', anaOrderId)
+          }
+        }
+      }
+
       // F: the kitchen wins. Move the order to preparing, then try to edit.
       if (anaOrderId) {
         await admin.from('orders').update({ status: 'preparing', edit_lock_token: null }).eq('id', anaOrderId)
