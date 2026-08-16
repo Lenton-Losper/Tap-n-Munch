@@ -902,12 +902,35 @@ helper first — onto the **sole confirmation path for QR hosted checkout**. Not
 unattended at the end of a long session. This commit gives it the field to write into. Both
 issues carry a comment saying so.
 
+## #232 — FIXED, and the probe corrected my own claim about the proof
+
+`unresolvedOrders` on the staff report read `o.status !== 'cancelled' && o.payment_status !== 'paid'` —
+the **sixth** site of a question this codebase has answered five times. `payment_status =
+'cancelled'` is a value it writes and is deliberately absent from `OWES_MONEY_PAYMENT_STATUSES`,
+so an order whose *payment* was cancelled appeared as *"stranded/pending, surfaced same-day"* —
+money nobody owes, presented as money to chase.
+
+**Measured impact on staging: none.** 14 non-cancelled orders, `payment_status` only ever `paid`
+or `pending`, so the predicates agree exactly today. That is a freshly-cleaned sample and is not
+evidence of absence; the defect is latent.
+
+**The part worth reading.** The test first said *"that the report calls `owesMoney` is covered by
+reading and by tsc."* A two-sided probe reverting the call site measured what actually noticed:
+
+    jest  -> 10 passed    the suite binds to the RULE, so it cannot see the call site
+    tsc   -> exit 0       the inline version is perfectly valid TypeScript
+
+**Nothing caught it.** Writing "covered by tsc" would have been a false statement about my own
+evidence, in a commit message. So the suite now also scans the shipped source, and the same probe
+re-run turns 2 red by name. Same shape as the credential-logging guard, and for the same reason:
+it is the only thing that can see this.
+
 ---
 
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
-    origin/cloudflare-staging     1220bad
+    origin/cloudflare-staging     641d891
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
@@ -921,7 +944,7 @@ issues carry a comment saying so.
     fix/286-unpaid-tab-flag-figures     fix/173-ready-order-told-preparing
     fix/browse-debug-logging            fix/275-staff-transition-copy
     fix/283-tab-pin-csprng              fix/288-terminal-member-name
-    fix/238-audit-records-whose-figure
+    fix/238-audit-records-whose-figure  fix/232-report-unresolved-owes-money
 
 ## Everything the spec asked for that the domain could NOT truthfully support
 
