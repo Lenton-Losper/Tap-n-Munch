@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
 import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
@@ -354,6 +355,11 @@ export default function MyOrdersPage() {
                       {order.items?.slice(0, 3).map((item: any, idx: number) => (
                         <p key={idx} className="text-sm text-foreground font-sans">
                           {item.quantity}× {item.name}
+                          {lineConfigurationSummary(item) ? (
+                            <span className="block text-xs text-muted-foreground">
+                              {lineConfigurationSummary(item)}
+                            </span>
+                          ) : null}
                         </p>
                       ))}
                       {order.items?.length > 3 && (

@@ -6,6 +6,7 @@ import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { chargedLineAmount } from '@/components/receipt/receipt-types'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
@@ -534,6 +535,11 @@ export default function ReceiptPage() {
                       <div key={idx} className="flex justify-between text-sm font-sans">
                         <span className="text-muted-foreground">
                           {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
+                          {lineConfigurationSummary(item) ? (
+                            <span className="block text-xs">
+                              {lineConfigurationSummary(item)}
+                            </span>
+                          ) : null}
                         </span>
                         <span className="font-semibold text-foreground">
                           {/*
