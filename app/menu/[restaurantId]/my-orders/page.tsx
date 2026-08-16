@@ -19,6 +19,12 @@ import {
   editRefusalReason,
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
+import {
+  ORDER_PLACED_BANNER_MS,
+  ORDER_PLACED_PARAM,
+  QR_REDESIGN_PENDING_COPY,
+  shouldShowOrderPlacedBanner,
+} from '@/lib/customer-copy/qr-redesign-copy'
 
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
@@ -60,6 +66,31 @@ export default function MyOrdersPage() {
   const { tabPending } = useTab()
   const { currency } = useRestaurant()
   const pendingAmount = Number(tabPending) || 0
+
+  /**
+   * The post-order banner (spec section 16). Raised from `?placed=1` rather than fired as a
+   * toast from the cart, so it cannot be lost to the navigation that carries the customer here.
+   *
+   * The parameter is stripped from the URL as soon as it is read. Otherwise a refresh, a Back,
+   * or a shared link re-announces an order that was placed some time ago -- the same class of
+   * problem as the confirmation page this replaces, where returning to a URL re-entered a flow
+   * the customer had already finished (spec Event Q).
+   */
+  const [showPlacedBanner, setShowPlacedBanner] = useState(false)
+  useEffect(() => {
+    if (!shouldShowOrderPlacedBanner(searchParams.get(ORDER_PLACED_PARAM))) return
+    setShowPlacedBanner(true)
+
+    const url = new URL(window.location.href)
+    url.searchParams.delete(ORDER_PLACED_PARAM)
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+
+    const timer = window.setTimeout(() => setShowPlacedBanner(false), ORDER_PLACED_BANNER_MS)
+    return () => window.clearTimeout(timer)
+    // Deliberately mount-only: the parameter is removed above, so re-running on a searchParams
+    // change would never see it again and would only risk cancelling a live banner.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!sessionId) {
@@ -164,6 +195,16 @@ export default function MyOrdersPage() {
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto p-6">
+        {showPlacedBanner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mb-4 flex items-center gap-3 border border-emerald-600/30 bg-emerald-50 px-4 py-3 font-sans text-sm font-semibold text-emerald-900"
+          >
+            <span aria-hidden>✓</span>
+            <span>{QR_REDESIGN_PENDING_COPY.orderPlacedBanner}</span>
+          </div>
+        )}
         {/* Header */}
         <div className="bg-card border border-border p-6 mb-6">
           <div className="flex items-center justify-between mb-6">
