@@ -957,12 +957,32 @@ defensible, because the query already joins `tabs!inner` filtered to live tabs, 
 purely narrowing — but it changes what staff see on the payment terminal, which is auto-H1 and
 needs your ruling. Recorded in full on the issue.
 
+## #249 + #248 — one function answering the same question two different ways
+
+**#249's premise is narrower and worse than its title.** It says *"the two guest list queries
+disagree"*. It is **one function disagreeing with itself**: inside `fetchGuestActiveTableOrders`,
+`countOnly: true` counted `orders` alone while the row path thirty lines below returned
+`requestRows + orders` and reported `count: merged.length`. `fetchGuestOrdersBySession` — the
+other query — was already correct.
+
+**Not academic.** The landing calls it with `countOnly` and, on a zero, calls
+`clearActiveOrderBannerState()`. A customer whose only live item was an unaccepted request had
+the one thing telling them about it thrown away.
+
+**They could not be fixed separately.** Making the count include requests without fixing #248
+would have carried *that* defect into the count path — and the same landing screen counts
+hosted-checkout orders older than ten minutes to decide whether to fire
+`/api/orders/expire-pending`, so a stray `waiting_review` request could have triggered it. One
+predicate and one query helper, shared by both paths, so they cannot drift apart again.
+
+Two two-sided probes, one per defect, each caught independently: 2 red and 3 red by name.
+
 ---
 
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
-    origin/cloudflare-staging     ea53857
+    origin/cloudflare-staging     f833753
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
@@ -978,6 +998,7 @@ needs your ruling. Recorded in full on the issue.
     fix/283-tab-pin-csprng              fix/288-terminal-member-name
     fix/238-audit-records-whose-figure  fix/232-report-unresolved-owes-money
     fix/246-partial-banner-during-search
+    fix/249-248-active-table-count-and-filters
 
 ## Everything the spec asked for that the domain could NOT truthfully support
 
