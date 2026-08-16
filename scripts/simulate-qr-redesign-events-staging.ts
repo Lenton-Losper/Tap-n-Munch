@@ -454,6 +454,56 @@ async function run() {
     })
   }
 
+  // ---- #249 / #248: the active-table count must match its own row path -----
+  // Added after fixing both on 2026-08-16. The unit tests bind to the query; this is the only
+  // thing that exercises the deployed route, which is what the landing screen actually calls.
+  {
+    const q = (extra: Record<string, string> = {}) => {
+      const p = new URLSearchParams({ restaurantId: RID, table_number: String(tableNumber), ...extra })
+      p.append('session_id', lenton.sessionId)
+      return p.toString()
+    }
+    const rows = await api(`/api/guest/orders/active-table?${q()}`)
+    const counted = await api(`/api/guest/orders/active-table?${q({ countOnly: '1' })}`)
+    const rowLen = (rows.body?.orders ?? []).length
+    const agree = counted.body?.count === rowLen
+    /**
+     * `count === rows` would pass VACUOUSLY at 0 = 0, proving nothing. The defect was that a
+     * live order_request counted as zero, so the check only means something when there IS one --
+     * and it must be a REQUEST, because an order alone was always counted correctly.
+     */
+    const requestPresent = (rows.body?.orders ?? []).some(
+      (o: any) => o.surface === 'order_requests',
+    )
+    record({
+      event: '#249',
+      verdict: agree && requestPresent ? 'PASSES' : 'FAILS',
+      observed:
+        agree && requestPresent
+          ? `active-table count matches its row path (${counted.body?.count} = ${rowLen}) AND a live order_request is among the rows -- the case that used to count as zero`
+          : !requestPresent
+            ? `INCONCLUSIVE-AS-FAIL: no order_request among the ${rowLen} rows, so count=${counted.body?.count} proves nothing`
+            : `count ${counted.body?.count} disagrees with rows ${rowLen}`,
+      detail: { count: counted.body?.count, rowLen, requestPresent, status: rows.status },
+    })
+
+    // #248: a payment-shaped question must not return a request, which has no payment channel.
+    const filtered = await api(
+      `/api/guest/orders/active-table?${q({ payment_status: 'pending', payment_channel: 'hosted' })}`,
+    )
+    const leakedRequest = (filtered.body?.orders ?? []).some(
+      (o: any) => o.surface === 'order_requests',
+    )
+    record({
+      event: '#248',
+      verdict: leakedRequest ? 'FAILS' : 'PASSES',
+      observed: leakedRequest
+        ? 'a hosted-pending lookup returned an order_request, which has no payment channel'
+        : 'a hosted-pending lookup returns no order_requests',
+      detail: { returned: (filtered.body?.orders ?? []).length },
+    })
+  }
+
   // ---- Q: the shared read survives being asked twice ----------------------
   const q1 = await readSharedTab(lenton, tabId)
   const q2 = await readSharedTab(lenton, tabId)
