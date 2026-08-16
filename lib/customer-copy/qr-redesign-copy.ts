@@ -48,6 +48,32 @@ export const QR_REDESIGN_PENDING_COPY = {
    * New destination — the Tab was previously reachable only by tapping the strip.
    */
   navTab: 'PENDING COPY — Tab',
+
+  /**
+   * Renders: the Tab, when the shared-order read FAILED.
+   * There is deliberately no fallback to this device's own orders, so this string is what the
+   * customer gets instead. It must not imply the table has no orders.
+   */
+  tabOrdersUnavailable:
+    "PENDING COPY — We couldn't load your table's orders just now. The total above is still correct.",
+
+  /** Renders: the Tab, when the table genuinely has no orders yet. */
+  tabEmpty: 'PENDING COPY — Nothing on the table tab yet',
+
+  /** Renders: the Tab, per order, before staff have accepted it and allocated a number. */
+  tabOrderNotYetNumbered: 'PENDING COPY — New order',
+
+  /** Renders: the Tab, per order, on a submitted-but-unanswered order. */
+  tabOrderAwaitingConfirmation: 'PENDING COPY — Waiting for the restaurant',
+
+  /** Renders: the Tab, the per-person figure that is actually owed. */
+  tabMemberPayable: 'PENDING COPY — Owed:',
+
+  /**
+   * Renders: the Tab, heading of the block for orders on this tab whose member could not be
+   * resolved. It must NOT invent an owner, and it must not read as an error the customer caused.
+   */
+  tabUnattributedHeading: 'PENDING COPY — Also on this table',
 } as const
 
 /**

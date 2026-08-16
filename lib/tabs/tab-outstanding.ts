@@ -77,7 +77,12 @@ export const TAB_PENDING_REQUEST_STATUSES = ['waiting_review'] as const
 /** Statuses explicitly NOT pending, listed so the exclusion is a decision and not a side effect. */
 export const TAB_NOT_PENDING_REQUEST_STATUSES = ['accepting', 'accepted', 'declined'] as const
 
-function isSettlementArtefact(row: TabOrderRow): boolean {
+/**
+ * EXPORTED so the shared-tab order list (lib/tabs/tab-order-groups.ts) can exclude exactly what
+ * the totals exclude. A private second copy over there would let the list and the figure disagree
+ * about what counts as a diner's food -- the #278 class applied to money.
+ */
+export function isSettlementArtefact(row: TabOrderRow): boolean {
   return Boolean(String(row.tab_settlement_for_tab_id ?? '').trim())
 }
 
