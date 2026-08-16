@@ -40,8 +40,20 @@ export type TabGroupLine = {
   /** Menu item name as stored on the order. */
   name: string
   quantity: number
-  /** Line total, as stored. Never recomputed here. */
-  subtotal: number
+  /**
+   * What this line COSTS THE CUSTOMER, tax included (#293).
+   *
+   * Was `subtotal`, and read `item.subtotal` -- the ex-VAT base. A customer saw
+   * "Beef Burger x1 - NAD82.61" with "NAD95.00 awaiting confirmation" printed directly beneath
+   * it and N$95 on the menu. 82.61 is a figure nobody is ever charged, and the lines did not sum
+   * to the total under them.
+   *
+   * RENAMED, not just repointed. `subtotal` means the ex-tax base everywhere else in this
+   * codebase, so a field called `subtotal` holding an inclusive figure would be the next
+   * person's trap. The rename is also what makes the compiler enumerate the render sites instead
+   * of me guessing which ones I found.
+   */
+  total: number
 }
 
 /**
@@ -95,6 +107,10 @@ export type TabOrderGroups = {
 
 type RawOrderRow = Record<string, unknown>
 
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
 function num(value: unknown): number {
   const n = Number(value)
   return Number.isFinite(n) ? n : 0
@@ -102,6 +118,26 @@ function num(value: unknown): number {
 
 function str(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+/**
+ * The charged amount for one stored line.
+ *
+ * `total` is the charged figure for BOTH tax modes -- for an inclusive rate the tax is already
+ * inside it, and for an exclusive rate it is subtotal + tax. `subtotal` is the ex-tax base in
+ * both, which is why reading it was wrong regardless of the rate.
+ *
+ * The fallbacks exist for rows priced before `total` was persisted per line: reconstruct it from
+ * subtotal + tax, and only if there is no tax either fall back to the subtotal itself. Falling
+ * straight back to `subtotal` would have reintroduced the defect for exactly the oldest orders.
+ */
+function lineChargedAmount(item: Record<string, unknown>): number {
+  const total = num(item.total)
+  if (total > 0) return total
+  const subtotal = num(item.subtotal)
+  const tax = num(item.tax)
+  if (subtotal > 0) return round2(subtotal + tax)
+  return 0
 }
 
 /** The lines of an order, from whichever items array applies. Names and quantities only. */
@@ -112,7 +148,7 @@ function toLines(items: unknown): TabGroupLine[] {
     return {
       name: str(item.display_name) || str(item.name) || 'Item',
       quantity: num(item.quantity) || 1,
-      subtotal: num(item.subtotal),
+      total: lineChargedAmount(item),
     }
   })
 }
