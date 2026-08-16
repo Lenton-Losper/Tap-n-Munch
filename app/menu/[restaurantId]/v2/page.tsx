@@ -676,9 +676,29 @@ export function MenuLandingPageV2Content({
   const browseWithTab = (tid: string) =>
     `${browseBase}${browseBase.includes('?') ? '&' : '?'}tabId=${encodeURIComponent(tid)}`
 
+  /**
+   * VIEW MENU DOES NOT DESTROY THE CUSTOMER'S TAB (#220).
+   *
+   * This used to call `clearTab()`, and the archaeology explains why rather than excusing it:
+   * the function was originally `handleOrderSeparately` (98e98b9), the handler behind an
+   * "Order Separately" button. For THAT button clearing was right -- the customer was choosing
+   * not to join the shared tab. `82baa3e` renamed it to `handleViewMenu` and the `clearTab()`
+   * came along unchanged, so a button that now means "just let me look at the menu" was still
+   * behaving like one that means "I am not joining this tab".
+   *
+   * WHAT IT COST. `clearTab()` is `persistTabId(null)`, which calls `clearTabSession()` -- so it
+   * wipes the browser's whole tab session, not a render flag. A customer with an open unpaid tab
+   * who tapped View Menu lost their link to their own orders and their bill, and had to rejoin by
+   * PIN. A JOINER who never knew the PIN could not get back at all.
+   *
+   * And on one of the four buttons this handler serves it directly contradicted the screen's own
+   * words: the tab-elsewhere card renders `TAB_ELSEWHERE_COPY.staysOpen(table)` -- "your Table N
+   * tab stays open" -- while the button beside it forgot that tab.
+   *
+   * Browsing is not leaving. The tab stays; the browse screen's own strip is then a way back to
+   * it rather than something the customer has to re-earn.
+   */
   const handleViewMenu = () => {
-    console.log('[V2] view menu without joining tab')
-    clearTab()
     router.push(browseBase)
   }
 
