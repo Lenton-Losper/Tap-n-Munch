@@ -46,6 +46,7 @@ import {
   type EditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { InvalidEditError, repriceKeptLines, type LineKeepInstruction } from '@/lib/orders/reprice-priced-lines'
+import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { normalizeOrderInstructions } from '@/lib/orders/instruction-limits'
 import { applyEditAdditions } from '@/lib/orders/apply-edit-additions'
@@ -439,6 +440,29 @@ export async function PATCH(req: Request, { params }: RouteParams) {
         }
         throw err
       }
+    }
+
+    /**
+     * EMPTINESS, decided once (#291).
+     *
+     * Checked HERE -- after the reduction, before the additions are applied -- because these are
+     * the same two numbers the edit panel's Save button uses, and the whole point is that one
+     * predicate answers the question for both. `repriceKeptLines` used to throw on an empty
+     * `keep`, which made every SWAP (remove the only line, add another) impossible: the panel
+     * greyed Save out, and a client that got past that met a 400 the customer cannot read.
+     *
+     * Zero kept with one addition is a swap. Zero and zero is an empty order.
+     */
+    if (
+      editLeavesOrderEmpty({
+        keptLineCount: next.items.length,
+        additionCount: parsed.add?.length ?? 0,
+      })
+    ) {
+      return NextResponse.json(
+        { error: EDIT_COPY.cannotEmpty, reason: 'invalid_edit' },
+        { status: 400 },
+      )
     }
 
     /**

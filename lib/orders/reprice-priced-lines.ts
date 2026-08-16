@@ -78,8 +78,18 @@ function unitPriceOf(line: StoredPricedLine): number {
 
 /**
  * Apply keep-instructions to the stored lines and re-sum. Throws InvalidEditError on anything
- * that is not a strict reduction of what is already there — an edit may never introduce a
- * line, raise a quantity, or empty the order.
+ * that is not a strict reduction of what is already there — this function may never introduce a
+ * line or raise a quantity.
+ *
+ * IT NO LONGER DECIDES EMPTINESS (#291). It used to throw on an empty `keep`, which was right
+ * when an edit could only reduce. Since spec section 22 was overruled on 2026-08-16 an edit may
+ * also ADD lines, and additions are applied afterwards by `applyEditAdditions` — which this
+ * function cannot see. So from in here every SWAP (remove the only line, add another) looked
+ * like an attempt to empty the order, and swapping was impossible.
+ *
+ * Emptiness is a property of the committed result, so it moved to `editLeavesOrderEmpty` in
+ * `lib/orders/edit-emptiness.ts`, which the route and the edit panel both call. An empty `keep`
+ * here now yields an empty, zero-valued result and the caller decides whether that is legal.
  */
 export function repriceKeptLines(
   storedItems: unknown,
@@ -87,8 +97,10 @@ export function repriceKeptLines(
 ): RepricedResult {
   const lines = (Array.isArray(storedItems) ? storedItems : []) as StoredPricedLine[]
 
-  if (!Array.isArray(keep) || keep.length === 0) {
-    throw new InvalidEditError('An order must keep at least one item')
+  // An empty keep is a valid REDUCTION to nothing. Whether nothing is a legal end state depends
+  // on the additions, which this function is not given -- see the docblock and #291.
+  if (!Array.isArray(keep)) {
+    throw new InvalidEditError('keep must be a list of line instructions')
   }
 
   const seen = new Set<number>()
