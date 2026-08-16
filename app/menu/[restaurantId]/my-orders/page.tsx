@@ -15,6 +15,11 @@ import { useTab } from '@/contexts/tab-context'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import {
+  customerOrderState,
+  customerStateNeedsAttention,
+  customerStatusLabel,
+} from '@/lib/orders/customer-status'
+import {
   EDIT_COPY,
   editRefusalReason,
   requestEditRefusalReason,
@@ -148,25 +153,47 @@ export default function MyOrdersPage() {
     }
   }
 
-  // An unlisted status fell through to `pending` ("🎉 New"), which reads as further along than
-  // the order is. Both order_requests states are spelled out for that reason -- a declined
-  // request labelled "New" would be worse than the disappearance it replaces.
-  const getStatusConfig = (status: string) => {
-    const configs: any = {
-      waiting_review: { emoji: '⏳', label: 'Waiting for confirmation' },
-      declined: { emoji: '🚫', label: 'Declined' },
-      pending: { emoji: '🎉', label: 'New' },
-      accepted: { emoji: '👨‍🍳', label: 'Accepted' },
-      preparing: { emoji: '🔥', label: 'Preparing' },
-      ready: { emoji: '✅', label: 'Ready' },
-      completed: { emoji: '✨', label: 'Completed' },
-    }
-    return configs[status] || configs.pending
-  }
+  /**
+   * ONE VOCABULARY, and it lives in lib/orders/customer-status.ts.
+   *
+   * What was here was a private seven-entry map ending
+   * `return configs[status] || configs.pending`, where `configs.pending` is `{🎉, 'New'}`. So
+   * EVERY status the map did not know rendered as a brand new order — a `ready_for_terminal`
+   * order, a `cancelled` one, anything added later. Spec section 34 removes the NEW badge;
+   * removing it without replacing the fallback would only move the lie somewhere less visible.
+   *
+   * There were four more copies of this vocabulary in the product (the six-step tracker,
+   * `mapOrderStatusToBadge`, the confirmation view, and this). Nothing is restated here.
+   */
+  const statusLabel = (order: any) => customerStatusLabel(order?.status, order?.payment_status)
+  const statusNeedsAttention = (order: any) =>
+    customerStateNeedsAttention(
+      customerOrderState({ status: order?.status, paymentStatus: order?.payment_status }),
+    )
 
   const isDeclined = (order: any) => order?.status === 'declined'
 
   /**
+   * REMOVED FROM THE SCREEN 2026-08-16 (spec section 18), and the function deleted with it.
+   *
+   * It rendered as **"Total Spent"** and it was not what anyone had spent: it summed this
+   * session's orders whether or not they had been paid for, and whether or not the restaurant
+   * had even accepted them. A customer three minutes into a meal was shown a "Total Spent" of
+   * N$288 against N$0 actually taken.
+   *
+   * It was also the last customer-facing money figure derived on the device, which is the
+   * standing rule this project settled in the other direction: every figure a customer sees
+   * comes from the server. The two questions it was ambiguously answering both have server-side
+   * homes now — what the TABLE owes is `payable_total`, what it has committed to is
+   * `pending_total`, and both are on the Tab where the shared bill belongs.
+   *
+   * Nothing replaced it. Spec section 18: "Do not display analytics merely because the data
+   * exists. A restaurant customer does not need a dashboard of their meal."
+   *
+   * The old docblock is kept below so the reasoning that led here is not lost:
+   *
+   * ---
+   *
    * NOT THE TAB TOTAL, and deliberately left as-is pending a ruling.
    *
    * This sums THIS SESSION'S OWN orders. It is neither of the two tab figures defined in
@@ -181,12 +208,6 @@ export default function MyOrdersPage() {
    * A declined request was never accepted, so its total is not money the customer spent.
    * Leaving it in this sum would have made the fix above state something untrue about money.
    */
-  const getTotalSpent = () => {
-    return orders
-      .filter((order) => !isDeclined(order))
-      .reduce((sum, order) => sum + (order.total || 0), 0)
-  }
-
   function getTimeAgo(date: Date): string {
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
     if (seconds < 60) return 'Just now'
@@ -238,34 +259,29 @@ export default function MyOrdersPage() {
           </div>
 
           <h1 className="text-3xl font-serif font-bold text-foreground mb-2">My Orders</h1>
-          <p className="text-muted-foreground font-sans text-sm">
-            Table {sessionInfo.table} • Session active since{' '}
-            {sessionInfo.created
-              ? new Date(sessionInfo.created).toLocaleTimeString()
-              : 'N/A'}
-          </p>
+          {/* "Session active since N/A" is gone. `sessionInfo.created` is unset for every
+              customer who reached this screen through the tab flow, so the line rendered the
+              literal string "N/A" as a matter of course (QRA-13) — and a session start time was
+              never something a diner needed. The table number stays; it is how they know they
+              are looking at the right table. */}
+          <p className="text-muted-foreground font-sans text-sm">Table {sessionInfo.table}</p>
 
-          {orders.length > 0 && (
-            <div className="mt-6 pt-6 border-t border-border space-y-3">
-              <div className="flex justify-between items-center font-sans">
-                <span className="text-muted-foreground">Total Orders</span>
-                <span className="font-bold text-foreground">{orders.length}</span>
-              </div>
-              <div className="flex justify-between items-center font-sans">
-                <span className="text-muted-foreground">Total Spent</span>
-                <span className="text-2xl font-bold text-foreground">
-                  N${getTotalSpent().toFixed(2)}
-                </span>
-              </div>
-              {pendingAmount > 0 && (
-                <p className="text-xs font-sans text-amber-600 pt-1">
-                  {TAB_FIGURES_COPY.myOrdersPendingNotice.replace(
-                    '{pending}',
-                    `${currency}${pendingAmount.toFixed(2)}`,
-                  )}
-                </p>
+          {/* NO DASHBOARD. Spec section 18.
+              "Total Orders" and "Total Spent" used to sit here. Total Spent counted orders that
+              had not been paid for and requests the restaurant had not accepted, so a customer
+              three minutes into a meal was shown a spend of N$288 against N$0 actually taken.
+              It was also the last customer-facing money figure derived on the device.
+
+              What survives is the one figure that is actionable and server-derived: the amount
+              the table has committed to that the restaurant has not yet confirmed. It is read
+              from the tab view, not summed here. */}
+          {pendingAmount > 0 && (
+            <p className="mt-4 text-xs font-sans text-amber-600">
+              {TAB_FIGURES_COPY.myOrdersPendingNotice.replace(
+                '{pending}',
+                `${currency}${pendingAmount.toFixed(2)}`,
               )}
-            </div>
+            </p>
           )}
         </div>
 
@@ -287,7 +303,6 @@ export default function MyOrdersPage() {
         ) : (
           <div className="space-y-4">
             {orders.map((order) => {
-              const statusConfig = getStatusConfig(order.status)
               const placedAt = order.placed_at?.toDate
                 ? order.placed_at.toDate()
                 : order.placed_at
@@ -315,8 +330,17 @@ export default function MyOrdersPage() {
                       <p className="text-xl font-bold text-foreground font-sans">
                         N${order.total?.toFixed(2)}
                       </p>
-                      <span className="inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide bg-muted text-foreground mt-2">
-                        {statusConfig.emoji} {statusConfig.label}
+                      {/* One vocabulary, from lib/orders/customer-status.ts. A state that
+                          expects something of the customer is styled apart from one that does
+                          not -- "Needs you" must not look like "Being prepared". */}
+                      <span
+                        className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${
+                          statusNeedsAttention(order)
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'bg-muted text-foreground'
+                        }`}
+                      >
+                        {statusLabel(order)}
                       </span>
                     </div>
                   </div>
