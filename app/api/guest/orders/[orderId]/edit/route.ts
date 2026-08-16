@@ -47,6 +47,7 @@ import {
 } from '@/lib/orders/edit-lock'
 import { InvalidEditError, repriceKeptLines, type LineKeepInstruction } from '@/lib/orders/reprice-priced-lines'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
+import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { normalizeOrderInstructions } from '@/lib/orders/instruction-limits'
 import { applyEditAdditions } from '@/lib/orders/apply-edit-additions'
@@ -266,6 +267,43 @@ async function prepare(
   // order exists at an id the caller cannot otherwise see.
   if (!sessionOwnsRow(target.row, parsed.sessionIds)) {
     return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+  }
+
+  /**
+   * AUTHENTICATION, not just ownership (#302).
+   *
+   * `sessionOwnsRow` compares strings the CALLER supplied against strings stored on the row. It
+   * answers "does this caller claim to be the creator", and a claim is not a credential: the id
+   * is not revocable, never expires, ignores the tab's state and ignores the table's session
+   * version. It also leaked -- `GET /api/guest/orders/<id>` returned another diner's `session_id`
+   * verbatim, so one diner could obtain the exact value this check accepts and rewrite another
+   * diner's order. Measured end to end before this change.
+   *
+   * Piece 6 made this route able to CREATE A SALE. `POST /api/orders` has always required a
+   * server-issued session token for exactly that power. This closes the gap by reusing the same
+   * pair rather than inventing a second mechanism -- `validateSessionToken` already gives all
+   * four properties the ownership check lacks (revocation via `active`, expiry via `expires_at`,
+   * closure via `tabs.status`, and table reset via `current_session_version`).
+   *
+   * SCOPED TO TAB ORDERS, mirroring the creation path exactly. `POST /api/orders` requires the
+   * token only inside `if (normalizedTabId)`, because a customer who ordered without a tab was
+   * never issued one. Demanding a token here for a tab-less order would refuse a legitimate
+   * customer the creation path admits -- a lockout, not a fix. `session_id` is written for
+   * tab-less orders too (`orders/route.ts:319`), so those keep the ownership check alone and are
+   * unchanged by this commit.
+   *
+   * Ownership still decides WHICH order: the token proves who you are and that your session is
+   * live; `sessionOwnsRow` above proves the order is yours. Creator-only mutation is preserved.
+   */
+  const tabId = String((target.row as Record<string, unknown>).tab_id ?? '').trim()
+  if (tabId) {
+    const guard = await requireSessionToken(req)
+    if (guard.error) return guard.error
+    const mismatch = assertSessionMatchesResource(guard, {
+      restaurantId: restaurantUuid,
+      tabId,
+    })
+    if (mismatch) return mismatch
   }
 
   return { supabase, restaurantUuid, target }
