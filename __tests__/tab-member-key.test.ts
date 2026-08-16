@@ -235,12 +235,48 @@ describe('tab member key derivation (#262)', () => {
       expect(order.member_session_id).toBe(member.member_key)
     })
 
-    it('leaves an order with no tab alone — there is no per-tab key to derive', async () => {
+    /**
+     * This case used to assert only `toBe(SESSION)`, unconditionally, because when it was written
+     * `redactGuestOrderMemberIds` had no idea who was asking. Its REASON — stated in the title,
+     * "there is no per-tab key to derive" — is about DERIVATION, and that reason still holds and
+     * is still asserted below: the owner gets the raw value back, unsubstituted.
+     *
+     * What changed is disclosure, not derivation. #305: on a tab-less row that raw value was
+     * handed to any caller who could read the row, and it is a working edit credential there,
+     * because the token guard is scoped to `if (tabId)`. So the row is left alone for its OWNER
+     * and withheld from everybody else.
+     */
+    it('leaves a tab-less order alone for its owner — there is no per-tab key to derive', async () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
+      const [order] = await loadModule().redactGuestOrderMemberIds(
+        [{ id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION }],
+        [SESSION],
+      )
+      expect(order.member_session_id).toBe(SESSION)
+      expect(order.session_id).toBe(SESSION)
+    })
+
+    it('withholds a tab-less order’s raw ids from a caller who does not own it (#305)', async () => {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
+      const [order] = await loadModule().redactGuestOrderMemberIds(
+        [{ id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION }],
+        ['somebody-else'],
+      )
+      // Both, because the edit route authorises on EITHER column.
+      expect(order.member_session_id).toBeNull()
+      expect(order.session_id).toBeNull()
+      expect(JSON.stringify(order)).not.toContain(SESSION)
+      expect(order.id).toBe('o1') // the row itself still travels; only the credential is removed
+    })
+
+    it('defaults to withholding when the caller passes no ids at all', async () => {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
+      // The safe default is the whole reason the parameter is optional rather than required: a
+      // call site that forgets gets the redacted behaviour, not the leaky one.
       const [order] = await loadModule().redactGuestOrderMemberIds([
         { id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION },
       ])
-      expect(order.member_session_id).toBe(SESSION)
+      expect(order.member_session_id).toBeNull()
     })
 
     it('gives a member row with no session_id no key, rather than colliding them all', async () => {
