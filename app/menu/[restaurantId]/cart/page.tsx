@@ -31,6 +31,7 @@ import { isKioskMode, getKioskName, kioskSuccessPath } from '@/lib/kiosk'
 import { CART_COPY } from '@/lib/cart/cart-copy'
 import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
+import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -361,7 +362,7 @@ export default function CartPage() {
     } catch (err: any) {
       toast({
         title: 'Could not add to tab',
-        description: err?.message || 'Please try again.',
+        description: customerSafeError(err, 'Please try again.'),
         variant: 'destructive',
       })
     } finally {
@@ -457,7 +458,7 @@ export default function CartPage() {
     } catch (err: unknown) {
       toast({
         title: 'Order failed',
-        description: err instanceof Error ? err.message : 'Please try again.',
+        description: customerSafeError(err, 'Please try again.'),
         variant: 'destructive',
       })
     } finally {
