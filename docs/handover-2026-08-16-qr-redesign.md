@@ -449,3 +449,35 @@ in the thing under test:** the seeded accepted order was inserted without `items
 failed *"Line 0 is not part of this order"*, which looks like the edit route refusing a valid
 index), and My Orders was read from an invented endpoint whose 404 read as *"this customer has
 no orders"*.
+
+---
+
+# THE TERMINAL — NO CODE CHANGE NEEDED. Test on the existing APK.
+
+**Answering the lead-time question first, because TMS needs it:** the redesign requires **no
+terminal change**. Do not build a staging APK. Everything shipped tonight is web-side — one new
+read-only endpoint and customer screens — and nothing the terminal writes or reads changed shape.
+
+**And section 29 of the spec was right, while the audit's sentence was scoped.** The audit says
+*"split and partial payment: NONE OF IT EXISTS"*. That is true of the **customer** surface and
+false of the terminal's. Read at `feat/terminal-reconciled` / `72142ce`:
+
+| | |
+|---|---|
+| `TableDetailScreen.tsx:70` | `const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())` |
+| `TableDetailScreen.tsx:182, 647` | `toggleOrderSelection(item)` — **a checkbox on every claimable order row** |
+| `TableDetailScreen.tsx:602-604` | `handleSettleSelected → runSettle(Array.from(selectedIds))` — **charge one person's orders** |
+| `TableDetailScreen.tsx:606-610` | `handleSettleEntireTab → runSettle(unpaidIds)` — **settle the remaining balance** |
+| `api.ts:610-628` | `settleTab(tabId, orderIds, amount, …)` → `order_ids: orderIds` |
+| `app/api/terminal/tabs/[tabId]/settle/route.ts` | takes the `order_ids` array and **binds it to the tab**, never trusting cross-tab ids |
+
+So Event J — *"I'll pay mine"* — is a real, shipped capability on both the device and the server.
+The only place it did not exist was the customer's phone, which had no way to see a partially
+settled tab at all. That is what piece 5 fixed, and the simulation verified it end to end with a
+genuine terminal JWT.
+
+**One consequence of piece 6 worth knowing before the click-test:** an edit that ADDS an item
+raises the total, which sends the order back to `pending`. A `pending` order is not in the
+terminal's settleable set until staff Accept it again. That is the existing transition table
+doing its job, not new terminal behaviour — but if you add an item and then immediately try to
+settle on the terminal, the order will not be there until you re-accept it.
