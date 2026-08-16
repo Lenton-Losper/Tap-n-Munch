@@ -87,22 +87,45 @@ const created = {
   terminalIds: [] as string[],
 }
 
+/**
+ * Seed a scratch table, surviving debris from an earlier run.
+ *
+ * A previous run that aborted before `cleanup()` leaves its `restaurant_tables` row behind, and
+ * the next run then dies on `restaurant_tables_restaurant_id_table_number_key` -- which is how
+ * this run lost 18 of its 28 checks while still printing a reassuring summary. The collision is
+ * an artefact of the harness, not a finding about the app, so it retries on a fresh number
+ * rather than reusing the stale row: reusing it would inherit whatever state the aborted run
+ * left on it, and a simulation that quietly starts from unknown state is worse than one that
+ * stops.
+ */
 async function seedTable(tableNumber: number) {
-  const { data, error } = await admin
-    .from('restaurant_tables')
-    .insert({
-      restaurant_id: RID,
-      table_number: tableNumber,
-      active: true,
-      is_view_only: false,
-      is_kiosk: false,
-      status: 'available',
-    })
-    .select('id, table_number')
-    .single()
-  if (error) throw new Error(`seedTable(${tableNumber}) failed: ${error.message}`)
-  created.tableIds.push(data.id)
-  return data
+  let candidate = tableNumber
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const { data, error } = await admin
+      .from('restaurant_tables')
+      .insert({
+        restaurant_id: RID,
+        table_number: candidate,
+        active: true,
+        is_view_only: false,
+        is_kiosk: false,
+        status: 'available',
+      })
+      .select('id, table_number')
+      .single()
+    if (!error) {
+      created.tableIds.push(data.id)
+      if (candidate !== tableNumber) {
+        console.log(`  (table ${tableNumber} was occupied by earlier debris; using ${candidate})`)
+      }
+      return data
+    }
+    if (error.code !== '23505') {
+      throw new Error(`seedTable(${candidate}) failed: ${error.message}`)
+    }
+    candidate = 9000 + Math.floor(Math.random() * 990)
+  }
+  throw new Error(`seedTable: 8 consecutive collisions starting at ${tableNumber}`)
 }
 
 async function cleanup() {
@@ -1084,7 +1107,15 @@ async function runTerminalSettlement(tabId: string, customer: Customer) {
   console.log('\n--- RESULTS ---')
   for (const r of results) console.log(`${r.verdict.padEnd(20)} ${r.event.padEnd(6)} ${r.observed}`)
   const fails = results.filter((r) => r.verdict === 'FAILS')
-  console.log(`\n${results.length} checked, ${fails.length} FAILS`)
+  // Never print a clean-looking tally after an abort. `process.exit(1)` and the withheld
+  // QR_EVENTS_SIM_DONE sentinel were always correct, but a human -- or a background watcher
+  // running `tail` -- reads this line, and "10 checked, 0 FAILS" after the run died at check
+  // 11 is the summary telling a true number in a way that means the opposite of how it reads.
+  console.log(
+    failed
+      ? `\nABORTED AFTER ${results.length} CHECKS -- ${fails.length} FAILS among those; the rest NEVER RAN. This is not a pass.`
+      : `\n${results.length} checked, ${fails.length} FAILS`
+  )
   if (!failed && fails.length === 0) console.log('QR_EVENTS_SIM_DONE')
   process.exit(failed || fails.length > 0 ? 1 : 0)
 })()
