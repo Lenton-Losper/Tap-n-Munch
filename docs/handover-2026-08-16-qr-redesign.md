@@ -872,16 +872,42 @@ stops destroying the record), split the concepts properly when an APK is next bu
   the pricer never *selects* `variant_groups`, so it does not ignore a price it can see. Whether
   anyone is undercharged depends on whether a priced option has no legacy twin. **Measure before
   building a fix.**
-- **#268 and #238 are the same eight lines** — `mark-order-paid-confirmed.ts:99-108` writes the
-  order's own total as both `amount` and `clientAmount`, and never records `gatewayAmount`. One
-  change closes both.
+## #238 — FIXED. And #268 turns out to be blocked on a port, not on effort.
+
+`markOrderPaidConfirmed` wrote `amount` and `clientAmount: amount` into the `payment.completed`
+audit entry — the same value twice, under two names. **Measured across all six call sites, it is
+worse than the issue says:** four pass the order's own total (terminal callback, terminal
+verify-payment, the PayCloud webhook, the reconcile cron) and two pass Finatic's figure (the
+auto-cancel cron's pre-cancel check, the terminal payment-failure correction). So `clientAmount`
+was nobody's client amount — it was `amount` again, under a label that made a historical mismatch
+look investigable when nothing had been recorded to investigate.
+
+Safe to correct because it was **write-only**: grepped across `*.ts`, `*.tsx`, `*.sql`,
+`__tests__` and the terminal app; nothing read it.
+
+Now `amount` is what the caller asserted, `amountMeaning` says whose figure that is, and a new
+optional `gatewayAmount` carries the provider's own number. `?? null`, **not** `|| null` —
+*"Finatic said N$0"* and *"this path never asked Finatic"* are different facts, and there is a
+test for exactly that collapse.
+
+**#268 stays open, and I established why it cannot be closed on staging tonight.** Its subject is
+the webhook's valid-signature path, and `extractWebhookGatewayAmount` **exists on `origin/main`
+and not on `cloudflare-staging`**:
+
+    git grep -q "extractWebhookGatewayAmount" origin/main               -> exit 0  present
+    git grep -q "extractWebhookGatewayAmount" origin/cloudflare-staging -> exit 1  absent
+
+The webhook's claim helper has no amount in scope at all, so closing #268 means porting that
+helper first — onto the **sole confirmation path for QR hosted checkout**. Not a change to make
+unattended at the end of a long session. This commit gives it the field to write into. Both
+issues carry a comment saying so.
 
 ---
 
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
-    origin/cloudflare-staging     a26484a
+    origin/cloudflare-staging     1220bad
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
@@ -895,6 +921,7 @@ stops destroying the record), split the concepts properly when an APK is next bu
     fix/286-unpaid-tab-flag-figures     fix/173-ready-order-told-preparing
     fix/browse-debug-logging            fix/275-staff-transition-copy
     fix/283-tab-pin-csprng              fix/288-terminal-member-name
+    fix/238-audit-records-whose-figure
 
 ## Everything the spec asked for that the domain could NOT truthfully support
 
