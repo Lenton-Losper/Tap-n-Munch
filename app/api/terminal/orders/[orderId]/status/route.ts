@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
+import { staffStatusRefusal } from '@/lib/orders/staff-status-refusal'
 
 export const dynamic = 'force-dynamic'
 
@@ -93,10 +94,17 @@ export async function PATCH(
     const currentStatus = String(order.status || '')
 
     if (!isValidTransition(currentStatus, newStatus)) {
-      return NextResponse.json(
-        { error: `Invalid transition: ${currentStatus} → ${newStatus}` },
-        { status: 400 }
-      )
+      /**
+       * #275, terminal side. The device renders `error` verbatim, so this string is what a staff
+       * member reads on the terminal -- and it was two database identifiers and an arrow.
+       *
+       * SAFE TO CHANGE WITHOUT AN APK: grepped C:\RN\FlashTapTerminal/src for "Invalid
+       * transition" and "Invalid status" and there are no matches, so nothing on the device keys
+       * on the prose. The `code` is emitted so that anything which wants to react in future has
+       * something stable to react to.
+       */
+      const refusal = staffStatusRefusal(currentStatus, newStatus)
+      return NextResponse.json({ error: refusal.message, code: refusal.code }, { status: 400 })
     }
 
     // Cancel with a Finatic attempt already initiated: same verify-before-cancel as

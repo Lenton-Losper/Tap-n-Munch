@@ -8,6 +8,10 @@ import {
 } from '@/lib/orders/status-transitions'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
 import { isEditableOrderStatus } from '@/lib/orders/edit-lock'
+import {
+  staffStatusRefusal,
+  staffUnknownStatusRefusal,
+} from '@/lib/orders/staff-status-refusal'
 
 export const dynamic = 'force-dynamic'
 
@@ -70,13 +74,14 @@ export async function PATCH(
   if (status) {
     const nextStatus = String(status).trim()
     if (!STAFF_SETTABLE_STATUSES.has(nextStatus)) {
-      return NextResponse.json({ error: `Invalid status: ${nextStatus}` }, { status: 400 })
+      const refusal = staffUnknownStatusRefusal(nextStatus)
+      return NextResponse.json({ error: refusal.message, code: refusal.code }, { status: 400 })
     }
     if (!isValidStaffStatusTransition(expectedCurrentStatus, nextStatus)) {
-      return NextResponse.json(
-        { error: `Invalid transition: ${expectedCurrentStatus} → ${nextStatus}` },
-        { status: 400 },
-      )
+      // #275: the dashboard toasts `data?.error` verbatim, so this string IS the staff-facing
+      // copy. It used to be two database identifiers and an arrow.
+      const refusal = staffStatusRefusal(expectedCurrentStatus, nextStatus)
+      return NextResponse.json({ error: refusal.message, code: refusal.code }, { status: 400 })
     }
   }
 
