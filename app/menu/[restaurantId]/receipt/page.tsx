@@ -5,6 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
@@ -201,6 +202,8 @@ export default function ReceiptPage() {
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<OrderRecord[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [redirecting, setRedirecting] = useState(false)
 
   const tableNum = Number(tableNumber) || 0
@@ -219,9 +222,16 @@ export default function ReceiptPage() {
 
     let cancelled = false
 
-    const validateAndLoad = async () => {
+    /**
+     * #294 / same class as #292: a poll REFRESHES, it does not reload the screen.
+     *
+     * This screen polls every GUEST_ORDER_POLL_MS, and `setLoading(true)` on every tick drove
+     * `showReceiptLoading`, which returns a full-screen spinner -- so the receipt blanked every
+     * 5 seconds exactly as the Tab screen did. Found by the #294 sweep, not by a click test.
+     */
+    const validateAndLoad = async (isRefresh = false) => {
       try {
-        setLoading(true)
+        if (!isRefresh) setLoading(true)
         const tab = await fetchTabById(storedTabId, restaurantId)
         if (cancelled) return
 
@@ -255,16 +265,25 @@ export default function ReceiptPage() {
         setLoading(false)
       } catch (error) {
         if (cancelled) return
+        /**
+         * A FAILED REQUEST IS NOT AN ENDED SESSION (#294, same class as #292).
+         *
+         * `fetchTabById` THROWS on any non-ok response and returns null only on a clean 200 with
+         * no tab -- so a genuinely gone tab is already handled above by `!tab || settled`. What
+         * reaches here is a 500, a network drop or a parse failure, and treating those as "your
+         * dining session has ended" wipes the token, the tab id, the table and the cart for a
+         * customer whose session is perfectly fine.
+         */
         console.error('[RECEIPT] validate/load error', error)
-        setRedirecting(true)
-        handleSessionExpired(restaurantId)
+        setLoadError(true)
+        setLoading(false)
       }
     }
 
     void validateAndLoad()
 
     const ordersPoll = window.setInterval(() => {
-      void validateAndLoad()
+      void validateAndLoad(true)
     }, GUEST_ORDER_POLL_MS)
 
     /**
@@ -278,7 +297,7 @@ export default function ReceiptPage() {
       cancelled = true
       window.clearInterval(ordersPoll)
     }
-  }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum])
+  }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum, reloadKey])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   /**
@@ -333,6 +352,34 @@ export default function ReceiptPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+      </div>
+    )
+  }
+
+  /**
+   * #294: a failed load is shown AS a failed load. The customer keeps their token, their tab and
+   * their cart, and can simply try again.
+   */
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-4">
+        <div className="mx-auto max-w-md text-center">
+          <h1 className="font-serif text-xl font-bold text-foreground">
+            {QR_REDESIGN_PENDING_COPY.loadFailedTitle}
+          </h1>
+          <p className="mt-2 font-sans text-sm text-muted-foreground">
+            {QR_REDESIGN_PENDING_COPY.loadFailedBody}
+          </p>
+          <Button
+            className="mt-6"
+            onClick={() => {
+              setLoadError(false)
+              setReloadKey((key) => key + 1)
+            }}
+          >
+            {QR_REDESIGN_PENDING_COPY.loadFailedRetry}
+          </Button>
+        </div>
       </div>
     )
   }

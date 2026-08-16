@@ -127,7 +127,21 @@ export default function OrderConfirmationPage() {
         if (cancelled) return
 
         if (!row) {
-          router.push(`/menu/${restaurantId}`)
+          /**
+           * A MISSING ORDER IS NOT AN ENDED SESSION (#294).
+           *
+           * This used to `router.push('/menu/<id>')`. The landing then validates the stored
+           * token, and if the tab has since been settled or the table's session version moved,
+           * `/api/session/validate` answers 410 and the landing calls `handleSessionExpired` --
+           * which wipes the token, the tab id, the table and the cart and lands the customer on
+           * "Your dining session has ended".
+           *
+           * So a 404 on ONE order read evicted the customer from a tab that was still open. The
+           * route out of their own bill was destroyed, and a joiner who never knew the PIN could
+           * not get back at all. `fetchGuestOrderById` returns null only on a 404; every other
+           * failure throws and is handled below.
+           */
+          setLoading(false)
           return
         }
 

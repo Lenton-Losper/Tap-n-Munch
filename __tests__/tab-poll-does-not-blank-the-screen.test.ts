@@ -15,7 +15,14 @@ import fs from 'fs'
 import path from 'path'
 
 const PAGE = path.join(process.cwd(), 'app', 'menu', '[restaurantId]', 'tab', 'page.tsx')
-const source = fs.readFileSync(PAGE, 'utf8')
+/**
+ * NORMALISED. Git checks this repo out with CRLF on Windows, and every assertion below
+ * anchors on 
+. Written in a worktree that happened to hold LF, this file passed there and
+ * FAILED on a fresh checkout of the same commit -- a test that reports on the checkout
+ * rather than on the code.
+ */
+const source = fs.readFileSync(PAGE, 'utf8').replace(/\r\n/g, '\n')
 
 /** Brace-match a block so an assertion cannot be satisfied by code elsewhere in the file. */
 function blockAfter(marker: string): string {

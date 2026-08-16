@@ -21,6 +21,18 @@
  */
 export const QR_REDESIGN_PENDING_COPY = {
   /**
+   * Renders: the tab receipt screen and the order-confirmation screen, when a load FAILS.
+   *
+   * #294. These screens used to answer a failed request with "Your dining session has ended",
+   * wiping the token, tab id, table and cart. A request that failed is not a session that ended,
+   * so they now say so and offer a retry -- which needs words that did not exist before.
+   */
+  loadFailedTitle: 'PENDING COPY - We could not load this just now',
+  loadFailedBody:
+    'PENDING COPY - Your tab is still open. This is a problem on our side, not with your order.',
+  loadFailedRetry: 'PENDING COPY - Try again',
+
+  /**
    * Renders: My Orders, as a temporary banner immediately after Place Order.
    * Replaces the toast the cart used to raise on its way back to the menu.
    */
