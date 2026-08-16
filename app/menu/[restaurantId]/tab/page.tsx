@@ -112,9 +112,22 @@ export default function TabSummaryPage() {
     if (!storedTabId) return
 
     let cancelled = false
-    const load = async () => {
+    /**
+     * `isRefresh` is the whole fix for #292.
+     *
+     * A FIRST load has nothing on screen and the spinner is right. A REFRESH already has the tab,
+     * the figures and the pay button rendered, and must replace them in place. One boolean served
+     * both, so every poll tick set `loading` -- and `showTabLoading` returns a full-screen spinner
+     * early at the bottom of this component. The result was the entire Tab screen blanking every
+     * 5 seconds, losing scroll position and any in-progress tap. On a phone that reads as the page
+     * reloading itself, and it makes the screen unusable.
+     *
+     * The sibling polling screen never had this: `my-orders/page.tsx` has no setLoading in its
+     * poll. This brings /tab into line rather than inventing a new pattern.
+     */
+    const load = async (isRefresh = false) => {
       try {
-        setLoading(true)
+        if (!isRefresh) setLoading(true)
         const tab = await fetchTabById(storedTabId, restaurantId)
         if (cancelled) return
 
@@ -152,10 +165,29 @@ export default function TabSummaryPage() {
         )
         setLoading(false)
       } catch {
-        if (!cancelled) {
-          setRedirecting(true)
-          handleSessionExpired(restaurantId)
+        if (cancelled) return
+        /**
+         * A BACKGROUND POLL MUST NOT EVICT THE CUSTOMER (#292, found while fixing the blanking).
+         *
+         * `handleSessionExpired` clears the session token, the tab id, the table and the cart and
+         * then `window.location.replace`s to /session-ended. On a FIRST load that is defensible:
+         * nothing is on screen and the tab could not be read at all.
+         *
+         * On a REFRESH it is not. The customer is looking at a working tab; a single transient
+         * failure -- a tunnel, a lift, one dropped request out of a tick every 5 seconds -- would
+         * have thrown away their session and their route back to their own bill. A joiner who
+         * never knew the PIN could not return at all, which is exactly the cost #220 was about.
+         *
+         * A genuinely ended session is still caught, and above this: the `!tab || status ===
+         * 'settled'` branch inside the try evicts on real state rather than on a failed fetch.
+         */
+        if (isRefresh) {
+          console.warn('[TAB] refresh failed; keeping the tab on screen and retrying next tick')
+          setLoading(false)
+          return
         }
+        setRedirecting(true)
+        handleSessionExpired(restaurantId)
       }
     }
     /**
@@ -171,7 +203,7 @@ export default function TabSummaryPage() {
      * the headline figure and the lines under it cannot drift apart.
      */
     void load()
-    const interval = window.setInterval(() => void load(), GUEST_ORDER_POLL_MS)
+    const interval = window.setInterval(() => void load(true), GUEST_ORDER_POLL_MS)
     return () => {
       cancelled = true
       window.clearInterval(interval)
