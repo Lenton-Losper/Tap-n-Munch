@@ -979,6 +979,149 @@ Two two-sided probes, one per defect, each caught independently: 2 red and 3 red
 
 ---
 
+# CONTINUATION SESSION — the close-audit, #257, and four more fixes
+
+Everything below is on `cloudflare-staging` only. `origin/main` and production are untouched at
+`3c6eec9`.
+
+## The close-audit — COMPLETE. `docs/close-audit-2026-08-16.md`
+
+Four buckets: **A** shipped and live, **B** fixed on a branch but not live, **C** genuinely open
+with the decisive line quoted at `origin/main`, **D** cannot be judged from `main` at all.
+
+**Nothing was added to bucket A in this pass.** Every one of the ~29 mechanical candidates was
+verified and none turned out to be already live. That is the honest result and it is worth saying
+plainly rather than dressing up: the mechanical grep produced candidates, and reading the file at
+the ref killed all of them.
+
+Two corrections are recorded in the audit itself. **#234** — I read
+`lib/payments/reconcile-orphan-payments.ts` (the cron, which is fine) and nearly declared it
+fixed; the defect is in the *staff* route. **#278** — its commit message says *"carrying the
+ownsOrder consolidation"* and `ownsOrder` **is** on main, but `heldSessionIds`, the half the issue
+is actually about, exists in no file there. A commit message that is *partly* true is the hardest
+kind to audit.
+
+## #257 — SETTLED. Promotion is all that is needed.
+
+Answered empirically rather than by comparing blobs. In a detached worktree at `origin/main`:
+
+    BASELINE  main's own test file            4 failed, 9 passed, 13 total   EXIT 1
+    SWAPPED   staging's file (blob 546d50f)   15 passed, 15 total            EXIT 0
+              ...against MAIN'S OWN validation.ts
+
+So main's `guestCanAccessOrder` already implements the contract staging's test asserts — the test
+was the stale half, not the code. Checked for the base-conditional trap: staging's file imports
+only symbols main exports, and does not touch `redactGuestOrderRow`.
+
+`promote/257-guest-orders-validation-test` is cut from `3c6eec9`, one file, **pushed and not
+merged**. Merging it takes main's known-failing baseline from 7 suites / 17 tests to 6 / 13 — the
+same as staging, so both branches would finally share one baseline.
+
+## #224 — a total menu outage no longer hides behind "No items found"
+
+Merged `d300dc3`. The recorded decision in `menu-body-state.ts` was **not** overruled: the old
+assertion (*"a banner is absent for a TOTAL failure — that is the body's job"*) was **rewritten,
+not deleted**, because the body's job changed. A companion test asserts the two never both speak.
+
+## #220 — "View Menu" no longer destroys the customer's tab
+
+Merged `134d575`. **The archaeology is the finding.** `handleViewMenu` was born as
+`handleOrderSeparately` (`98e98b9`), where `clearTab()` was correct — the customer was declining
+to join. `82baa3e` renamed it and carried the call across unchanged, so a button meaning *"let me
+look at the menu"* still behaved like one meaning *"I am not joining this tab"*. There is no
+recorded decision defending the clear for View Menu; the decision was made for a different button.
+
+Worse than the title says: `clearTab()` reaches `clearTabSession()`, so it wiped the browser's
+link to the tab. A joiner who never knew the PIN could not get back at all. And on the
+tab-elsewhere card it contradicted the screen's own words — `TAB_ELSEWHERE_COPY.staysOpen(n)`
+renders *"Your Table N tab stays open"* seven lines above the button that forgot it.
+
+Clearing survives at the three sites that genuinely END a session, and a test asserts that, so the
+fix cannot be "improved" into deleting tab-clearing everywhere.
+
+## #169 — the existence probe that reported absent tables as present
+
+Merged `a716087`. Audit result: **the broken idiom is not currently used as an existence probe
+anywhere.** All 57 `head:true, count:'exact'` sites count rows in tables known to exist, which is
+correct usage. Nothing to fix — said plainly rather than dressed up as a diff.
+
+What shipped instead is the issue's own third follow-up: `lib/supabase/schema-probe.ts`, which
+makes the correct form the path of least resistance and turns *"calibrate against a known-absent
+control"* into `calibrateSchemaProbes()` — something you run, not something you remember.
+
+**Three states, not two.** `present:false, absent:false` is a real outcome; reading a permission
+error as "absent" is the same instrument lying in the other direction.
+
+**Live control on staging, read-only:**
+
+    control table  ABSENT (fake):  code=PGRST205
+    SAME absent table, two forms:
+      head:true count:exact -> error=null count=null
+      probeTable (no head)  -> code=PGRST205 absent=true
+
+New fact: **the defect reproduces on staging too.** The issue's evidence was production-only.
+
+Recorded but NOT changed: three `restaurant_roles` scripts probe with a loop variable and do
+`count ?? 0`, so a missing table would be snapshotted as *a table with zero rows* and the
+pre/post comparison would agree. Production/migration tooling, out of scope for this run.
+
+## #206 — customer toasts stop rendering raw server error text
+
+**Ruling taken: default-deny**, recorded because the issue offered it as a suggestion. A denylist
+is safe only for the strings someone remembered to ban, and #206 exists because a route can return
+`updateError.message` straight from Supabase.
+
+Step 1 of the issue — the enumeration — is done and lives in the census test. 17 customer-written
+sentences survive verbatim; everything else becomes the caller's fallback. **No route is touched.**
+
+The probe is the part worth keeping: reverting ONE call site left the 33-test census **green**
+and `tsc` at **exit 0**; only the source scan caught it. That is why there are two test files.
+
+A gap in my own first commit, closed by the second: the five tab-route patterns went in with no
+positive test, so a typo in any of them would have failed silently — census green, sentence
+suppressed, customer shown the generic fallback for a message meant to reach them.
+
+## The A–Q simulation harness was lying, and is fixed
+
+Two defects, found because the harness lied to me:
+
+1. `seedTable` died on `restaurant_tables_..._table_number_key`. A run that aborts before
+   `cleanup()` leaves its scratch table behind and the NEXT run dies on it — which is how one run
+   lost 18 of its 28 checks to debris from an earlier run that had itself died on a bad `tsx`
+   entry point. It now retries on a fresh number and says so. It deliberately does **not** reuse
+   the stale row: that would inherit whatever state the aborted run left on it.
+
+2. The summary printed **"10 checked, 0 FAILS"** after aborting at check 11. The exit code and the
+   withheld `QR_EVENTS_SIM_DONE` sentinel were always correct — but the line a human reads, and
+   the line a background watcher `tail`s, stated a true number in a way that means the opposite of
+   how it reads. It now says `ABORTED AFTER n CHECKS ... This is not a pass.`
+
+## Issues I did NOT build, because they turn on a ruling
+
+Filed, not built, per the standing instruction:
+
+- **#179** — widening `parseTableLandingPath` to admit `/table/%205` is new behaviour on the QR
+  entry path. The issue already spells out the three questions. Note its "unify the two guards"
+  suggestion is now moot: the second guard's page was deleted by #118.
+- **#243** — the hosted-pending ordering block has never fired. Making a dormant ordering block
+  start firing is a behaviour change, and the issue says so itself.
+
+## Instruments that lied in THIS session — add to the list
+
+- **A background watcher polled the wrong hostname.** `lentonlosper.workers.dev` does not exist;
+  the worker is `llosperofficial.workers.dev`. Every poll returned empty, the loop ran to
+  exhaustion, and the wrapper still exited 0. **Always resolve the host from `wrangler.toml` or
+  `.env.test`, never from memory.**
+- **`node node_modules/.bin/tsx` is a shell script.** Running it under `node` on Windows is a
+  syntax error. Use `node node_modules/tsx/dist/cli.mjs`.
+- **...and that entry point does not inject `.env.test`.** The `.bin` shim does. Bypassing it
+  means `set -a; . ./.env.test; set +a` first, or the script dies claiming the secrets are missing
+  when they are simply not loaded.
+- **Escape sequences in a heredoc'd Python string collapse before Python sees them.** A backslash-n
+  intended as two characters arrived as a real newline and silently broke an `assert ... in s`
+  match — the edit then aborted having written nothing, which was the good outcome. Build such
+  escapes from `chr(92)` when they must survive, and write long content with an editor instead.
+
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
