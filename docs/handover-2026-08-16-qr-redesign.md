@@ -522,3 +522,118 @@ clears the storage, so it cannot loop.
   green.
 - **PROOF CEILING: UNIT.** The round trip crosses two routes and a storage boundary, which the
   API-level simulation cannot drive. Step 7b of the click-test is what settles it.
+
+---
+
+# THE GITHUB ISSUE WORK
+
+## Close-audit — PARTIAL, and honestly labelled
+
+133 issues are open. I ran the first pass mechanically (`git log --grep` across every open number
+against `origin/main`), which produced ~35 candidates, and then verified candidates by
+**Archaeological proof** — reading the file at `origin/main` — because `git log --grep` is where
+this audit starts and never where it ends.
+
+**Production was re-measured at the moment of use:** a cache-busted `https://flashtap.app/api/version`
+returned `3c6eec9605ab5b9ac1887d2d0cefbfbc20338fa0`, byte-equal to `git rev-parse origin/main`.
+
+### A. SHIPPED AND LIVE — closed, each with its evidence on the issue
+
+| | Evidence read at `origin/main` |
+|---|---|
+| **#242** PostgREST `.or()` injection in the webhook resolver | the `.or()` is gone; two `.eq()` queries unioned in JS at `resolve-order-by-merchant-order.ts:66,88`, with the reasoning and a 13-payload measurement in the docblock. `ea80e72` ancestor ✅ |
+| **#240** no test covers the POS repricing control | `__tests__/create-order-reprices-terminal-leg.test.ts`, 207 lines, present. `e05a59e` ancestor ✅ |
+| **#188** `.wrangler/` untracked but not gitignored | `.gitignore` carries `.wrangler/`; `eslint.config.mjs:10` carries `'.wrangler/**'`. `36a078f` ancestor ✅ |
+| **#211** open tab + scanning another table dead-ends the landing | `v2/page.tsx` distinguishes same-table from different-table and offers `Start a new tab at Table {n}` with *"your Table 3 tab stays open"*. `f7f28fc` ancestor ✅ |
+
+### B. FIXED ON A BRANCH, NOT LIVE
+
+| | |
+|---|---|
+| **#257** main's `guest-orders-validation` carries four permanently-red tests | **Settled by blob identity, not by reading**: `origin/main:__tests__/guest-orders-validation.test.ts` is `d8e1824…` (131 lines) and `origin/cloudflare-staging:…` is `546d50f…` (153 lines). Staging carries the repaired test; main does not. Promoting it closes the issue. |
+
+Everything shipped tonight is also list B by definition — nine redesign pieces plus #286 and the
+credential-logging fix, all on `cloudflare-staging`, none on `main`.
+
+### C. EXPECTED TO CLOSE AND COULD NOT
+
+**#285** — *an accepted `order_request` with a NULL `accepted_order_id` is unlinkable*. The issue
+itself says the population is **zero on both environments** and that what is unverified is whether
+**production's** `order_requests_accepted_has_order` CHECK exists, because the constraint arrived
+inside a `CREATE TABLE IF NOT EXISTS` and would have been silently skipped if the table already
+existed.
+
+Settling it needs a read of production's `pg_constraint`, which is not reachable from here — and
+the recorded alternative (*probe behaviour with live controls*) means **writing to production**,
+which is forbidden and correctly so. So this is a **"should not be done"** ceiling rather than an
+obtainable one: nobody should go and get it the way I would have had to. It stays open.
+
+### D. TERMINAL LINE — cannot be judged from `main` at all
+
+`origin/feat/terminal-reconciled` ships to devices by APK and `main` contains no terminal app.
+"Reachable from `origin/main`" is meaningless for **#230, #231, #148, #136, #137, #181–#184,
+#161–#164, #90, #25**. None of them was assessed, and none should be closed on a `main` read.
+
+### THE HONEST GAP
+
+This is a **partial** audit. I verified six issues to CODE standard out of 133 open. The
+mechanical first pass covering all 133 is done and its candidate list is reproducible in one
+command; what is missing is the file-reading verification for the ~29 remaining candidates. I
+would rather hand you six issues settled with evidence than thirty settled by commit message —
+commit messages lie in both directions, and #188 nearly went into the wrong list from a shell
+quoting bug that printed a clean, confident, wrong answer.
+
+## Issues FIXED tonight
+
+### #286 — the unpaid-tab badge showed the cache, and could not show pending
+
+**The issue's premise is partly wrong, and that is worth recording.** It describes
+`orders-dashboard.tsx:600-610` as *"the tabs panel"*. There is no tabs panel showing per-table
+totals — that code feeds the **unpaid-tab-elsewhere badge**, the staff-only flag rendered on an
+order card whose customer left another tab open. Right line numbers, wrong description.
+
+The finding underneath is real and sharper than filed: the badge rendered `tabs.total`, the cache
+the human demoted to display-only on 2026-08-15. A staff member was being shown a money figure,
+to prompt them to go and speak to a customer, taken from the one column the product has ruled
+must not be rendered as what is owed.
+
+**What I measured, and what I did not.** Read-only against staging, 6 open/ready tabs:
+
+    cache AGREES with computed payable                 6
+    cache DISAGREES                                    0
+    tabs with pending money the badge could not show   2
+
+The cache-disagreement half is **not demonstrable on staging today** — six tabs on a project
+cleaned earlier tonight, and absence there is not evidence of absence. The 13-gross/6-outstanding
+split is a **production** measurement from 2026-08-15 recorded in `tab-outstanding.ts`, inherited
+here, not re-measured. The half I did measure is the one that fires today: 2 of 6.
+
+Fixed by using `computeTabFigures` — the same function every customer surface uses — and showing
+both figures. **The terminal Tables screen half of #286 is deliberately NOT done**: its
+`unpaidTotal` is already payable computed with the same `owesMoney` predicate, so the decide half
+is right; the display half needs an APK, and adding a `pendingTotal` the terminal cannot render
+would be an unread field. **#286 stays open for that half.**
+
+### The customer app printed the session token to the browser console
+
+Found while reading the browse screen, filed by nobody. Three `console.log` calls printed
+credentials in plain text on every mount on a customer's phone:
+
+    session-ended/page.tsx:9   localStorage token: <flashtap_session_token>
+    session-ended/page.tsx:10  localStorage tab:   <flashtap_tab_id>
+    v2/page.tsx:185            token at mount:     <flashtap_session_token>
+
+**Two of these are live on PRODUCTION** — verified by reading the files at `origin/main`.
+
+**Why I did not wake you.** It does not widen the attack surface: anything that can read the
+console on that device can read `localStorage` on it too, and the token is already there. I
+grepped for anything shipping console output off-device — Sentry, LogRocket, Datadog, Bugsnag,
+console hooking — and there is none. So it is bad hygiene, not an exposure, and it did not meet
+the one bar you set. **If a crash-reporting SDK is ever added it stops being merely untidy**,
+which is why the fix ships with a guard that scans shipped source and refuses credential-shaped
+values as arguments to a console call anywhere under `app/menu`.
+
+Also removed: a debug effect logging the full payload of three named menu items on every
+customer's browser on every menu load, left over from investigating #229.
+
+**Promoting the two production instances is your call** — nothing went to `main` tonight.
