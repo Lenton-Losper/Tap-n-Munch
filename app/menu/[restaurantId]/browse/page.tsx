@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
@@ -35,6 +35,7 @@ import {
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
 import { menuBodyState } from '@/lib/menu/menu-body-state'
+import { canOpenItemSheet } from '@/lib/menu/item-sheet-availability'
 import {
   getDefaultGroupSelection,
   getItemDisplayPrice,
@@ -573,7 +574,9 @@ export default function MenuBrowsePage() {
                   <button
                     key={`${item.id}-${group.name}-${optionLabel}-${optionIndex}`}
                     type="button"
-                    onClick={() =>
+                    onClick={(event) => {
+                      // The card opens the item sheet; a chip must change the selection only.
+                      event.stopPropagation()
                       setSelectedVariantGroupsByItem((prev) => ({
                         ...prev,
                         [item.id]: {
@@ -582,7 +585,7 @@ export default function MenuBrowsePage() {
                           [group.name]: optionLabel,
                         },
                       }))
-                    }
+                    }}
                     className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
                       isSelected
                         ? 'border-black bg-black text-white'
@@ -602,16 +605,29 @@ export default function MenuBrowsePage() {
     )
   }
 
+  /**
+   * The single availability rule, shared by the `+` button and the tappable card.
+   * Two entry points that each compute their own version of this drift apart -- see
+   * lib/menu/item-sheet-availability.ts for the incident that shape produced (#272).
+   */
+  const itemSheetAvailable = (item: MenuItem) =>
+    canOpenItemSheet({
+      isInTab: effectiveIsInTab,
+      isKiosk,
+      itemStatus: item.status,
+      requiredVariantMissing: isRequiredVariantMissing(item, getResolvedVariantSelection(item)),
+      tabStatus,
+    })
+
   const renderAddButton = (item: MenuItem, compact = false) => (
     <button
       type="button"
-      onClick={() => handleAddToCart(item)}
-      disabled={
-        (!effectiveIsInTab && !isKiosk) ||
-        item.status === 'out_of_stock' ||
-        isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
-        ['settled', 'closed', 'completed', 'cancelled'].includes(String(tabStatus ?? '').toLowerCase())
-      }
+      onClick={(event) => {
+        // The card is tappable too; without this the card's handler fires as well.
+        event.stopPropagation()
+        handleAddToCart(item)
+      }}
+      disabled={!itemSheetAvailable(item)}
       className={`flex shrink-0 items-center justify-center rounded-full font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-40 ${
         compact ? 'h-8 w-8' : 'h-9 w-9'
       }`}
@@ -622,13 +638,38 @@ export default function MenuBrowsePage() {
     </button>
   )
 
+  /**
+   * Props that make a whole card open the item sheet.
+   *
+   * Spec section 11: every item uses the same interaction, and the customer should not have to
+   * find a 9x9 target to reach it. When the item is unavailable the card carries no handler and
+   * no button role at all, so it is inert rather than a control that silently does nothing.
+   */
+  const cardOpensSheetProps = (item: MenuItem) => {
+    if (!itemSheetAvailable(item)) return {}
+    return {
+      role: 'button' as const,
+      tabIndex: 0,
+      onClick: () => handleAddToCart(item),
+      onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        handleAddToCart(item)
+      },
+      'aria-label': `Open ${item.name}`,
+    }
+  }
+
   const renderMenuItemCard = (item: MenuItem) => {
     const resolvedSelection = getResolvedVariantSelection(item)
     const displayPrice = getItemDisplayPrice(item, resolvedSelection)
     return (
       <article
         key={item.id}
-        className="flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm"
+        {...cardOpensSheetProps(item)}
+        className={`flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm ${
+          itemSheetAvailable(item) ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+        }`}
       >
         <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gray-100">
           <FoodItemImage
@@ -977,7 +1018,10 @@ export default function MenuBrowsePage() {
                 return (
                   <article
                     key={`popular-${item.id}`}
-                    className="relative w-40 shrink-0 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm sm:w-44"
+                    {...cardOpensSheetProps(item)}
+                    className={`relative w-40 shrink-0 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm sm:w-44 ${
+                      itemSheetAvailable(item) ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+                    }`}
                   >
                     <div className="relative aspect-square w-full overflow-hidden bg-gray-100">
                       <span
