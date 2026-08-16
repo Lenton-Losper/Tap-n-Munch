@@ -12,8 +12,11 @@ import {
   resolveStoredTabId,
   type TabRow,
 } from '@/lib/tab-session'
-import { persistTabSession } from '@/lib/tab-storage'
+import { persistTabSession, readTabSessionId } from '@/lib/tab-storage'
 import { getCurrentSession } from '@/lib/session'
+import { fetchSharedTab, type SharedTabResponse } from '@/lib/tabs/shared-tab-client'
+import { customerStatusLabel } from '@/lib/orders/customer-status'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -61,6 +64,17 @@ export default function TabSummaryPage() {
   const { currency, permissions, refresh } = useRestaurant()
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<TabOrder[]>([])
+  /**
+   * THE SHARED TAB — every diner's orders, from the server (spec sections 24-26).
+   *
+   * `undefined` = not read yet · `null` = the read FAILED · a value = the table's orders.
+   *
+   * Those three are deliberately distinct and there is deliberately NO FALLBACK to `orders`
+   * below, which is session-scoped. Falling back would put one diner's food under a heading that
+   * says "the whole table", which is the defect this piece exists to fix, and it would do it
+   * exactly when the shared read was broken -- silently.
+   */
+  const [sharedTab, setSharedTab] = useState<SharedTabResponse | null | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [redirecting, setRedirecting] = useState(false)
   const [readyToPayLoading, setReadyToPayLoading] = useState(false)
@@ -108,8 +122,26 @@ export default function TabSummaryPage() {
         setTabRecord(tab)
         persistTabSession(storedTabId, tableNumVal)
 
-        const rows = await fetchOrdersForTab(storedTabId, restaurantId, getCurrentSession())
+        /**
+         * Two reads, in parallel, answering two different questions.
+         *
+         * `fetchSharedTab` is the TABLE'S orders, token-guarded, grouped by the server. It is
+         * what the list renders.
+         *
+         * `fetchOrdersForTab` is THIS SESSION'S orders and is kept only because the edit
+         * affordance and anything else that acts on an order must work from rows this browser
+         * owns. It no longer feeds the list.
+         */
+        const [shared, rows] = await Promise.all([
+          fetchSharedTab({
+            tabId: storedTabId,
+            restaurantId,
+            sessionIds: [getCurrentSession() || '', readTabSessionId() || ''].filter(Boolean),
+          }),
+          fetchOrdersForTab(storedTabId, restaurantId, getCurrentSession()),
+        ])
         if (cancelled) return
+        setSharedTab(shared)
         setOrders(
           (rows || []).map((d: any) => ({ id: String(d.id), ...(d as Omit<TabOrder, 'id'>) }))
         )
@@ -146,77 +178,22 @@ export default function TabSummaryPage() {
     [orders]
   )
 
-  const groupedOrders = useMemo((): MemberGroup[] => {
-    const tabOrders = ordersForDisplay
-    const members = tabMembers.length > 0 ? tabMembers : []
-
-    const buildGroup = (memberSid: string, label: string, isCurrentUser: boolean): MemberGroup => {
-      const memberOrders = tabOrders.filter((o) => {
-        const orderSid = String(o.member_session_id || o.session_id || '').trim()
-        return orderSid === memberSid
-      })
-      const group: MemberGroup = { memberKey: memberSid, label, isCurrentUser, items: [], subtotal: 0 }
-      for (const order of memberOrders) {
-        group.subtotal += Number(order.total) || 0
-        const orderItems = Array.isArray(order.items) ? order.items : []
-        for (const item of orderItems) {
-          const name = String(item.display_name || item.name || 'Item')
-          const quantity = Number(item.quantity) || 1
-          const subtotal = Number(item.subtotal) || 0
-          group.items.push(`${name} ×${quantity} — ${currency}${subtotal.toFixed(2)}`)
-        }
-      }
-      return group
-    }
-
-    if (members.length === 0) {
-      const bySid = new Map<string, MemberGroup>()
-      for (const order of tabOrders) {
-        const memberSid =
-          String(order.member_session_id || order.session_id || 'unknown').trim() || 'unknown'
-        let group = bySid.get(memberSid)
-        if (!group) {
-          group = {
-            memberKey: memberSid,
-            label: 'Guest',
-            // #262: `memberSid` is now the server-derived member_key (the orders route stamps
-            // it onto member_session_id), so this compares key to key. `sessionId` stays in the
-            // test because an order with neither member_session_id nor a tab falls through the
-            // mapping untouched and still carries the raw id.
-            isCurrentUser: selfMemberKeys.includes(memberSid) || memberSid === sessionId,
-            items: [],
-            subtotal: 0,
-          }
-          bySid.set(memberSid, group)
-        }
-        group.subtotal += Number(order.total) || 0
-        const orderItems = Array.isArray(order.items) ? order.items : []
-        for (const item of orderItems) {
-          const name = String(item.display_name || item.name || 'Item')
-          const quantity = Number(item.quantity) || 1
-          const subtotal = Number(item.subtotal) || 0
-          group.items.push(`${name} ×${quantity} — ${currency}${subtotal.toFixed(2)}`)
-        }
-      }
-      return Array.from(bySid.values())
-    }
-
-    return members
-      .map((member) => {
-        // #262: `member_key`, never `session_id`. The array reaches this screen through
-        // GET /api/tabs/[tabId]/view, which substitutes an opaque per-tab key for the raw id,
-        // and lib/guest-orders/queries.ts stamps the SAME key onto `orders.member_session_id`,
-        // so buildGroup's comparison below is unchanged in meaning. The client cannot derive
-        // the key, which is why "is this me?" comes from the server as selfMemberKeys.
-        const memberSid = String(member.member_key || '').trim()
-        if (!memberSid) return null
-        const displayName = String(member.display_name || '').trim() || 'Guest'
-        const isCurrentUser = selfMemberKeys.includes(memberSid)
-        const label = displayName
-        return buildGroup(memberSid, label, isCurrentUser)
-      })
-      .filter((g): g is MemberGroup => Boolean(g && g.items.length > 0))
-  }, [ordersForDisplay, sessionId, selfMemberKeys, tabMembers, currency])
+  /**
+   * THE SHARED TAB, AS THE SERVER GROUPED IT.
+   *
+   * This used to be ~70 lines of client-side grouping over `ordersForDisplay` -- a list scoped
+   * to the ids THIS BROWSER holds. It grouped by member and printed member subtotals, which made
+   * it look like the whole table; it was one diner's food under a heading carrying the whole
+   * table's money. See lib/tabs/tab-order-groups.ts for why the grouping cannot be done on the
+   * client at all: a browser cannot derive another diner's `member_key`, and a customer-facing
+   * money figure may not be a client sum.
+   *
+   * `undefined` while loading, `null` when the read failed. Neither falls back to the
+   * session-scoped list.
+   */
+  const memberGroups = sharedTab?.members ?? null
+  const unattributed = sharedTab?.unattributed ?? null
+  const sharedTabFailed = sharedTab === null && !loading
 
   /**
    * THE TABLE'S OUTSTANDING TOTAL, from the server. Never a client sum.
@@ -398,16 +375,34 @@ export default function TabSummaryPage() {
           )}
         </div>
 
+        {/* THE READ FAILED. Said out loud rather than papered over with this device's own
+            orders -- see lib/tabs/shared-tab-client.ts. The money above still renders, because it
+            comes from a different read that is still working. */}
+        {sharedTabFailed && (
+          <div
+            role="status"
+            className="mb-6 rounded-lg border border-amber-400/50 bg-amber-50 px-4 py-3 text-sm font-sans text-amber-900"
+          >
+            {QR_REDESIGN_PENDING_COPY.tabOrdersUnavailable}
+          </div>
+        )}
+
+        {memberGroups && memberGroups.length === 0 && (
+          <div className="mb-6 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm font-sans text-muted-foreground">
+            {QR_REDESIGN_PENDING_COPY.tabEmpty}
+          </div>
+        )}
+
         <div className="space-y-4">
-          {groupedOrders.map((group) => (
-            <div key={group.memberKey} className="rounded-lg border border-border bg-card p-4">
+          {(memberGroups ?? []).map((group) => (
+            <div key={group.member_key} className="rounded-lg border border-border bg-card p-4">
               <h2 className="font-sans text-base font-semibold text-foreground">
-                {group.isCurrentUser ? `You — ${group.label}` : group.label}
-                {group.isCurrentUser && (
+                {group.is_self ? `You — ${group.display_name}` : group.display_name}
+                {group.is_self && (
                   <button
                     type="button"
                     onClick={() => {
-                      const newName = prompt('Enter your name:', group.label)
+                      const newName = prompt('Enter your name:', group.display_name)
                       if (newName?.trim()) {
                         void updateMemberName(newName.trim()).catch((err) => {
                           toast({
@@ -424,17 +419,88 @@ export default function TabSummaryPage() {
                   </button>
                 )}
               </h2>
-              <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                {group.items.map((line, lineIndex) => (
-                  <p key={`${group.memberKey}-${lineIndex}`}>{line}</p>
+              {/* ORDER BY ORDER, not one flat list of lines.
+                  Spec section 26 and Event H: a submitted order and an accepted one appear
+                  together and must not read as financially the same thing. Grouping the lines
+                  under their order is what makes room to say which is which. */}
+              <div className="mt-2 space-y-3">
+                {group.orders.map((order) => (
+                  <div key={order.id}>
+                    <div className="flex items-baseline justify-between gap-2 text-xs font-sans">
+                      <span className="text-muted-foreground">
+                        {order.order_number != null
+                          ? `Order #${order.order_number}`
+                          : QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered}
+                      </span>
+                      <span
+                        className={
+                          order.is_pending ? 'font-semibold text-amber-600' : 'text-muted-foreground'
+                        }
+                      >
+                        {order.is_pending
+                          ? QR_REDESIGN_PENDING_COPY.tabOrderAwaitingConfirmation
+                          : customerStatusLabel(order.status)}
+                      </span>
+                    </div>
+                    <div className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+                      {order.lines.map((line, lineIndex) => (
+                        <p key={`${order.id}-${lineIndex}`}>
+                          {line.name} ×{line.quantity} — {currency}
+                          {line.subtotal.toFixed(2)}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* BOTH FIGURES PER PERSON, both from the server. Never one number: a member
+                  subtotal that silently folded unconfirmed money into "what they owe" is the
+                  same lie as the table total that started this. */}
+              <div className="mt-3 space-y-0.5 text-sm">
+                <p className="font-semibold text-foreground">
+                  {QR_REDESIGN_PENDING_COPY.tabMemberPayable} {currency}
+                  {group.payable.toFixed(2)}
+                </p>
+                {group.pending > 0 && (
+                  <p className="text-xs font-sans text-amber-600">
+                    {TAB_FIGURES_COPY.tabPendingSuffix.replace(
+                      '{pending}',
+                      `${currency}${group.pending.toFixed(2)}`
+                    )}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* NEVER INFERRED. An order on this tab whose member could not be resolved is shown as
+              its own block and named as unattributed -- not folded into somebody's subtotal, and
+              not dropped, which would understate what the table has ordered. A non-empty block
+              here is a FINDING about the data, and the copy says so rather than inventing an
+              owner. */}
+          {unattributed && (
+            <div className="rounded-lg border border-dashed border-amber-400/60 bg-amber-50/40 p-4">
+              <h2 className="font-sans text-base font-semibold text-foreground">
+                {QR_REDESIGN_PENDING_COPY.tabUnattributedHeading}
+              </h2>
+              <div className="mt-2 space-y-3">
+                {unattributed.orders.map((order) => (
+                  <div key={order.id} className="space-y-0.5 text-sm text-muted-foreground">
+                    {order.lines.map((line, lineIndex) => (
+                      <p key={`${order.id}-${lineIndex}`}>
+                        {line.name} ×{line.quantity} — {currency}
+                        {line.subtotal.toFixed(2)}
+                      </p>
+                    ))}
+                  </div>
                 ))}
               </div>
               <p className="mt-3 text-sm font-semibold text-foreground">
-                Member subtotal: {currency}
-                {group.subtotal.toFixed(2)}
+                {QR_REDESIGN_PENDING_COPY.tabMemberPayable} {currency}
+                {unattributed.payable.toFixed(2)}
               </p>
             </div>
-          ))}
+          )}
         </div>
 
         <div className="mt-8 rounded-md border border-dashed border-border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
