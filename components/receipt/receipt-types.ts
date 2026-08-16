@@ -39,7 +39,38 @@ export type ReceiptStatusBadge =
 export type ReceiptLineItem = {
   quantity: number
   name: string
+  /**
+   * The EX-TAX base for this line. Still here because the Subtotal row is a genuine ex-tax
+   * decomposition and must keep summing these.
+   */
   subtotal: number
+  /**
+   * What this line COSTS THE CUSTOMER, tax included (#295).
+   *
+   * Optional because rows priced before `total` was persisted per line do not carry it;
+   * `chargedLineAmount` reconstructs it. Never render `subtotal` as a line price: the order
+   * confirmation showed "1x Chicken burger NAD 21.74" above "TOTAL 25.00" with N$25 on the menu,
+   * which is a price the customer never pays.
+   */
+  total?: number
+  /** Tax on this line, used only to reconstruct `total` for older rows. */
+  tax?: number
+}
+
+/**
+ * The charged amount for one line, for display.
+ *
+ * `total` is the charged figure for BOTH tax modes -- an inclusive rate has the tax inside it, an
+ * exclusive rate is subtotal + tax -- so reading `subtotal` was wrong regardless of the rate.
+ * Falling straight back to `subtotal` would leave exactly the oldest orders wrong, so tax is
+ * added back first.
+ */
+export function chargedLineAmount(item: ReceiptLineItem): number {
+  const total = Number(item.total)
+  if (Number.isFinite(total) && total > 0) return total
+  const subtotal = Number(item.subtotal) || 0
+  const tax = Number(item.tax) || 0
+  return Math.round((subtotal + tax) * 100) / 100
 }
 
 export function formatReceiptDate(iso: string): string {

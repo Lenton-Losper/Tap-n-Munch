@@ -1,4 +1,4 @@
-import { formatCurrency, type ReceiptLineItem } from './receipt-types'
+import { chargedLineAmount, formatCurrency, type ReceiptLineItem } from './receipt-types'
 import { cn } from '@/lib/utils'
 
 export type OrderSummaryProps = {
@@ -34,7 +34,7 @@ export function OrderSummary({
             </span>
             <span className="flex-1 text-sm text-[#111827] truncate">{item.name}</span>
             <span className="text-sm font-medium text-[#111827] tabular-nums shrink-0">
-              {formatCurrency(item.subtotal, currency)}
+              {formatCurrency(chargedLineAmount(item), currency)}
             </span>
           </li>
         ))}

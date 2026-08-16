@@ -6,6 +6,7 @@ import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { chargedLineAmount } from '@/components/receipt/receipt-types'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
@@ -535,7 +536,11 @@ export default function ReceiptPage() {
                           {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
                         </span>
                         <span className="font-semibold text-foreground">
-                          {currency}{((item?.subtotal || 0)).toFixed(2)}
+                          {/*
+                            #295: the CHARGED figure, not the ex-VAT base. This showed
+                            "1x Chicken burger N$21.74" for an item the menu prices at N$25.
+                          */}
+                          {currency}{chargedLineAmount(item).toFixed(2)}
                         </span>
                       </div>
                     ))}
