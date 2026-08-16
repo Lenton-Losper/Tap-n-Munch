@@ -25,6 +25,12 @@ import { Badge } from '@/components/ui/badge'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
 import { TAB_FLAG_COPY } from '@/lib/tabs/tab-flag-copy'
+import {
+  TAB_PENDING_REQUEST_COLUMNS,
+  TAB_PENDING_REQUEST_STATUSES,
+  TAB_TOTAL_ORDER_COLUMNS,
+  computeTabFigures,
+} from '@/lib/tabs/tab-outstanding'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
@@ -447,7 +453,7 @@ export function OrdersDashboard() {
    * app reads this, and the flag is a prompt to ask, never a block on anything.
    */
   const [unpaidTabElsewhere, setUnpaidTabElsewhere] = useState<
-    Record<string, { table_number: number | null; total: number }>
+    Record<string, { table_number: number | null; payable: number; pending: number }>
   >({})
 
   const tabInfoScopeId = orderScope?.restaurantId ?? ''
@@ -596,18 +602,76 @@ export function OrdersDashboard() {
           .filter((id): id is string => Boolean(id)),
       )]
       if (linkedIds.length > 0) {
-        const { data: linkedRows } = await supabase
-          .from('tabs')
-          .select('id, status, table_number, total')
-          .eq('restaurant_id', restaurantUuid)
-          .in('id', linkedIds)
+        /**
+         * `tabs.total` is NOT read here any more (#286).
+         *
+         * It was, and it is the cache: five writers, two incompatible definitions, and nothing
+         * re-sums it when an order is cancelled (QRA-15). Measured on production 2026-08-15, of
+         * 20 tabs carrying orders the two definitions agreed on ONE -- 13 rows stored "gross
+         * ordered" and 6 stored "still outstanding", decided by whichever writer touched the row
+         * last. So this badge was telling a staff member "Table 7 has an unpaid tab of N$X" where
+         * X was, for most tables, undecidably one or the other.
+         *
+         * It now uses `computeTabFigures`, the same function every customer surface uses, over
+         * the same columns that module names. One definition, everywhere.
+         *
+         * TWO FIGURES, per the standing ruling: this badge DISPLAYS, so it shows both. It decides
+         * nothing -- it does not block ordering, accepting, preparing or settling; it is a prompt
+         * to ask.
+         */
+        const [{ data: linkedRows }, { data: linkedOrders }, { data: linkedRequests }] =
+          await Promise.all([
+            supabase
+              .from('tabs')
+              .select('id, status, table_number')
+              .eq('restaurant_id', restaurantUuid)
+              .in('id', linkedIds),
+            supabase
+              .from('orders')
+              .select(`tab_id, ${TAB_TOTAL_ORDER_COLUMNS}`)
+              .eq('restaurant_id', restaurantUuid)
+              .in('tab_id', linkedIds),
+            supabase
+              .from('order_requests')
+              .select(`tab_id, ${TAB_PENDING_REQUEST_COLUMNS}`)
+              .eq('restaurant_id', restaurantUuid)
+              .in('tab_id', linkedIds)
+              .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
+          ])
         if (cancelled) return
-        const stillUnpaid: Record<string, { table_number: number | null; total: number }> = {}
+
+        const ordersByTab = new Map<string, Record<string, unknown>[]>()
+        for (const row of linkedOrders || []) {
+          const key = String((row as Record<string, unknown>).tab_id ?? '')
+          if (!key) continue
+          const list = ordersByTab.get(key) ?? []
+          list.push(row as Record<string, unknown>)
+          ordersByTab.set(key, list)
+        }
+        const requestsByTab = new Map<string, Record<string, unknown>[]>()
+        for (const row of linkedRequests || []) {
+          const key = String((row as Record<string, unknown>).tab_id ?? '')
+          if (!key) continue
+          const list = requestsByTab.get(key) ?? []
+          list.push(row as Record<string, unknown>)
+          requestsByTab.set(key, list)
+        }
+
+        const stillUnpaid: Record<
+          string,
+          { table_number: number | null; payable: number; pending: number }
+        > = {}
         for (const row of linkedRows || []) {
           if (!['open', 'ready_to_pay'].includes(String(row.status || ''))) continue
-          stillUnpaid[String(row.id)] = {
+          const id = String(row.id)
+          const figures = computeTabFigures(
+            (ordersByTab.get(id) ?? []) as never,
+            (requestsByTab.get(id) ?? []) as never,
+          )
+          stillUnpaid[id] = {
             table_number: row.table_number != null ? Number(row.table_number) : null,
-            total: Number(row.total) || 0,
+            payable: figures.payable,
+            pending: figures.pending,
           }
         }
         setUnpaidTabElsewhere(stillUnpaid)
@@ -1954,7 +2018,10 @@ export function OrdersDashboard() {
                             .replace('{table}', String(linked.table_number ?? '?'))
                             .replace(
                               '{total}',
-                              `${restaurant?.currency || 'N$'}${linked.total.toFixed(2)}`,
+                              `${restaurant?.currency || 'N$'}${linked.payable.toFixed(2)}` +
+                                (linked.pending > 0
+                                  ? ` + ${restaurant?.currency || 'N$'}${linked.pending.toFixed(2)} ${TAB_FLAG_COPY.unpaidTabElsewherePendingSuffix}`
+                                  : ''),
                             )}
                         </Badge>
                       )
