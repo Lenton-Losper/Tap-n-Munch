@@ -143,7 +143,11 @@ async function cleanup() {
   }
   for (const id of orderIds) {
     await admin.from('receipt_documents').delete().eq('order_id', id)
-    await admin.from('payment_events').delete().eq('order_id', id)
+    // `payment_events` has NO `order_id`. The column is `order_ids`, a uuid ARRAY -- one event
+    // covers every order in a single settle. `.eq('order_id', id)` therefore matched nothing, and
+    // matched nothing SILENTLY: PostgREST returns success for a filter on a column that does not
+    // exist in the way you meant, so the cleanup reported a clean run while deleting zero rows.
+    await admin.from('payment_events').delete().contains('order_ids', [id])
   }
   for (const tabId of created.tabIds) {
     await admin.from('order_requests').delete().eq('tab_id', tabId)
@@ -156,11 +160,19 @@ async function cleanup() {
     await admin.from('order_requests').delete().eq('table_id', id)
     await admin.from('orders').delete().eq('table_id', id)
     const { data: tabs } = await admin.from('tabs').select('id').eq('table_id', id)
-    for (const t of tabs ?? []) await admin.from('customer_sessions').delete().eq('tab_id', t.id)
+    for (const t of tabs ?? []) {
+      await admin.from('customer_sessions').delete().eq('tab_id', t.id)
+      // `payments.tab_id` has an FK to `tabs`. It was never cleaned, so every settle this
+      // simulation performed left a row behind and the NEXT attempt to delete the tab died on
+      // `payments_tab_id_fkey`. 35 rows had accumulated before anyone tried.
+      await admin.from('payments').delete().eq('tab_id', t.id)
+    }
+    await admin.from('payments').delete().eq('table_id', id)
     await admin.from('tabs').delete().eq('table_id', id)
   }
   for (const id of created.tabIds) {
     await admin.from('customer_sessions').delete().eq('tab_id', id)
+    await admin.from('payments').delete().eq('tab_id', id)
     await admin.from('tabs').delete().eq('id', id)
   }
   for (const id of created.tableIds) await admin.from('restaurant_tables').delete().eq('id', id)
