@@ -123,9 +123,23 @@ On phone A, with an order the kitchen has **not** started, press **Change order*
 - [ ] While phone A has the editor open, try to reach the same order from phone B. Bob has no
       edit control on Lenton's order at all — if you force it, he gets a refusal, not a lock.
 
-> **Not built:** *"+ Add something"* opening the **menu** in picker mode and returning to the
-> pending edit. Adding one more of a line already on the order works; adding a **new** item from
-> the menu does not. See the handover for why it was split out.
+### 7b — "+ Add something" (the menu round trip)
+
+Still in the editor:
+
+- [ ] Press **[PENDING COPY] + Add something**. You land on the **menu**, with an amber banner
+      reading **[PENDING COPY] Choosing something to add to your order** and a
+      **[PENDING COPY] Back to my order** link.
+- [ ] Pick an item and add it. You are returned to the order, **the editor reopens by itself**,
+      and the item is listed under the lines with an **Undo** beside it.
+- [ ] **Check the Cart badge. It must not have changed.** The picked item went to the pending
+      edit, not to the cart — this is the whole point of picker mode, and it is the one thing
+      that would be silently wrong.
+- [ ] Go to the menu again and pick a second item. Both picks survive.
+- [ ] Press **Save**. The total rises by the two items' **menu** prices, and the order goes back
+      for re-acceptance.
+- [ ] Now repeat, but press **Cancel** instead of Save. Reopen the editor — the abandoned picks
+      are **gone**, and the editor does not reopen itself.
 
 ---
 

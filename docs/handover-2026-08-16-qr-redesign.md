@@ -481,3 +481,44 @@ raises the total, which sends the order back to `pending`. A `pending` order is 
 terminal's settleable set until staff Accept it again. That is the existing transition table
 doing its job, not new terminal behaviour — but if you add an item and then immediately try to
 settle on the terminal, the order will not be there until you re-accept it.
+
+---
+
+# CHECKPOINT 4 — piece 9: "+ Add something", the last unbuilt spec item
+
+    origin/cloudflare-staging     a159ba4
+    origin/main / production      3c6eec9   UNTOUCHED
+    staging DB drift              136/136 CLEAN — no piece in this run carries a migration
+    unpushed, all local branches  ZERO (positional form)
+
+`qrd/9-add-something-picker`. This was deliberately split out of piece 6 and is now built, so
+**the full mutation set the human ruled for is complete**: add items, remove items, change
+quantities in both directions, swap (remove + add), edit notes.
+
+**Why it needed its own piece.** The editor is React state inside `OrderEditPanel`; the menu is a
+different ROUTE. Going there unmounts the panel — which also releases the edit lock, deliberately,
+so a customer who wanders off does not hold an order hostage for three minutes. So the pending
+edit cannot live in component state across the round trip, and it must not live on the server
+either, because nothing may commit until Save. `sessionStorage`, keyed per order, is the only
+home with that exact lifetime.
+
+**The part that would have been silently wrong.** In picker mode the item does **not** enter the
+cart. Putting it there would let a customer press Place Order on something they meant as a change
+to an existing order — two kitchen tickets for one intention, which is precisely what the ruling
+avoids. The click-test asks you to watch the Cart badge for this reason.
+
+Only the fields the SERVER prices from are carried; the cart item's `subtotal` / `base_price` /
+`total` are dropped rather than passed through, so nothing suggests a client figure means
+anything on the way in.
+
+The editor reopens itself on return with **no extra query parameter** — a pending addition
+existing for that order *is* the signal an edit is in progress. Cancel clears the list, which
+clears the storage, so it cannot loop.
+
+- **Proof:** static + regression. `tsc` 5.9.3 exit 0; `eslint --max-warnings=0` exit 0. 15 new
+  tests, 152 green across 13 suites.
+- **Two-sided probe:** collapsing the per-order key to one shared key — which would make one
+  order's picks appear on another — turned exactly 3 red by name; restored, marker absent, 152
+  green.
+- **PROOF CEILING: UNIT.** The round trip crosses two routes and a storage boundary, which the
+  API-level simulation cannot drive. Step 7b of the click-test is what settles it.
