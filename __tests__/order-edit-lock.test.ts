@@ -306,8 +306,21 @@ describe('repricing a reduction: from the order’s own priced lines, never the 
     expect(() => repriceKeptLines(lines, [{ index: 0, quantity: 3 }])).toThrow(InvalidEditError)
   })
 
-  it('refuses to empty the order', () => {
-    expect(() => repriceKeptLines(lines, [])).toThrow(InvalidEditError)
+  it('#291: an empty keep REDUCES TO NOTHING and no longer refuses', () => {
+    // Rewritten, not deleted. The old assertion was `toThrow(InvalidEditError)` and it was
+    // correct while an edit could only reduce. Since section 22 was overruled an edit may also
+    // ADD, additions are applied afterwards by a function this one cannot see, and so from in
+    // here every SWAP looked like an attempt to empty the order. Emptiness moved to
+    // `editLeavesOrderEmpty`; this function's job is now purely to reduce and re-sum.
+    const result = repriceKeptLines(lines, [])
+    expect(result.items).toHaveLength(0)
+    expect(result.subtotal).toBe(0)
+    expect(result.tax).toBe(0)
+    expect(result.total).toBe(0)
+  })
+
+  it('still refuses a keep that is not a list at all', () => {
+    expect(() => repriceKeptLines(lines, null as never)).toThrow(InvalidEditError)
   })
 
   it('refuses a line index that is not part of the order', () => {

@@ -24,6 +24,7 @@ import {
   normalizeSessionIds,
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
+import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
 import { useRouter } from 'next/navigation'
 import {
   EDIT_PICK_PARAM,
@@ -316,6 +317,13 @@ export function OrderEditPanel({
   }
 
   const kept = lines.filter((line) => !line.removed)
+  // #291: emptiness is a property of the RESULT, so it counts additions too. Zero kept with one
+  // addition is a swap, not an empty order. Imported, not restated -- the route decides the same
+  // question with the same function.
+  const wouldBeEmpty = editLeavesOrderEmpty({
+    keptLineCount: kept.length,
+    additionCount: additions.length,
+  })
   const itemsChanged =
     lines.some((line) => line.removed || line.quantity !== line.originalQuantity) ||
     additions.length > 0
@@ -538,7 +546,7 @@ export function OrderEditPanel({
         />
       </label>
 
-      {kept.length === 0 && (
+      {wouldBeEmpty && (
         <p className="text-sm text-[#991B1B]">{EDIT_COPY.cannotEmpty}</p>
       )}
 
@@ -549,7 +557,7 @@ export function OrderEditPanel({
         <Button
           className="flex-1 bg-[#16A34A] font-semibold text-white hover:bg-green-700"
           onClick={() => void save()}
-          disabled={busy || kept.length === 0 || (!itemsChanged && !notesChanged)}
+          disabled={busy || wouldBeEmpty || (!itemsChanged && !notesChanged)}
         >
           Save changes
         </Button>

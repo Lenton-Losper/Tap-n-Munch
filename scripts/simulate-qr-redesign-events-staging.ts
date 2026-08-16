@@ -881,6 +881,156 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
         }
       }
 
+      /**
+       * ---- D-swap: REMOVE THE ONLY LINE AND ADD ANOTHER (#291) --------------
+       *
+       * The event Events A-Q never had. The spec did not ask for a swap, so the simulation never
+       * drove one, and 28/28 stayed green for as long as swapping was completely impossible --
+       * including on the run immediately before the click test that found it. The harness was not
+       * lying; it was answering the question it had been given. This is the question it was
+       * missing.
+       *
+       * It must be able to FAIL. Before the fix this exact call returned 400 with
+       * "An order needs at least one item", because the emptiness guard counted only kept lines.
+       */
+      {
+        const from = menu[0]
+        const to = menu[1]
+        // Defined here on purpose. This file carries `@ts-nocheck`, so tsc reports NOTHING about
+        // it -- a deliberately bogus identifier appended to this file still gives exit 0. An
+        // undefined helper would have surfaced only as a runtime abort mid-run.
+        const r2 = (n: number) => Math.round(n * 100) / 100
+        const inclusive = (p: number) => {
+          const total = r2(p)
+          const subtotal = r2(total / 1.15)
+          return { total, subtotal, tax: r2(total - subtotal) }
+        }
+        const fromMoney = inclusive(Number(from.base_price))
+        const { data: swapRow } = await admin
+          .from('orders')
+          .insert({
+            restaurant_id: RID,
+            tab_id: tabId,
+            table_id: table.id,
+            table_number: tableNumber,
+            session_id: ana.sessionId,
+            member_session_id: ana.sessionId,
+            channel: 'table',
+            status: 'accepted',
+            payment_status: 'pending',
+            items: [
+              {
+                name: from.name,
+                displayName: from.name,
+                menuItemId: from.id,
+                quantity: 1,
+                unitPrice: Number(from.base_price),
+                basePrice: Number(from.base_price),
+                subtotal: fromMoney.subtotal,
+                tax: fromMoney.tax,
+                total: fromMoney.total,
+                taxRatePercentage: 15,
+                taxInclusive: true,
+                selectedVariants: {},
+                size: null,
+                addons: [],
+                specialInstructions: '',
+              },
+            ],
+            subtotal: fromMoney.subtotal,
+            tax: fromMoney.tax,
+            total: fromMoney.total,
+            placed_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single()
+
+        if (!swapRow?.id) {
+          record({
+            event: 'D-swap',
+            verdict: 'FAILS',
+            observed: 'could not seed the one-line order the swap needs',
+          })
+        } else {
+          created.orderIds.push(swapRow.id)
+          const lock = await api(`/api/guest/orders/${swapRow.id}/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
+          })
+          if (lock.status !== 200) {
+            record({
+              event: 'D-swap',
+              verdict: 'FAILS',
+              observed: `could not open the editor for the swap: ${lock.status} ${JSON.stringify(lock.body).slice(0, 160)}`,
+            })
+          } else {
+            const swap = await api(`/api/guest/orders/${swapRow.id}/edit`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                restaurantId: RID,
+                sessionIds: [ana.sessionId],
+                lockToken: lock.body.lockToken,
+                // The whole point: an EMPTY keep alongside a non-empty add.
+                keep: [],
+                add: [
+                  {
+                    menuItemId: to.id,
+                    name: to.name,
+                    displayName: to.name,
+                    quantity: 1,
+                    basePrice: Number(to.base_price),
+                    subtotal: Number(to.base_price),
+                    selectedVariants: {},
+                    size: null,
+                    addons: [],
+                    specialInstructions: '',
+                  },
+                ],
+              }),
+            })
+
+            const { data: after } = await admin
+              .from('orders')
+              .select('items, total')
+              .eq('id', swapRow.id)
+              .single()
+            const lines = Array.isArray((after as any)?.items) ? (after as any).items : []
+            const names = lines.map((l: any) => String(l?.displayName ?? l?.name ?? ''))
+            const swapped =
+              swap.status === 200 &&
+              lines.length === 1 &&
+              names[0] === to.name &&
+              !names.includes(from.name)
+            const pricedAtMenu = Math.abs(Number((after as any)?.total ?? 0) - Number(to.base_price)) < 0.01
+
+            record({
+              event: 'D-swap',
+              verdict: swapped && pricedAtMenu ? 'PASSES' : 'FAILS',
+              observed: swapped
+                ? `swap committed: "${from.name}" -> "${to.name}", order now ${lines.length} line, ` +
+                  `total ${(after as any)?.total} (menu ${to.base_price}, ${pricedAtMenu ? 'repriced by the server' : 'NOT at the menu price'}), ` +
+                  `requiresReacceptance=${swap.body?.requiresReacceptanceDecision}`
+                : `swap REFUSED ${swap.status}: ${JSON.stringify(swap.body).slice(0, 220)} ` +
+                  `[lines now ${lines.length}: ${names.join(', ') || 'none'}]`,
+              detail: { status: swap.status, body: swap.body, lines: names },
+            })
+
+            // Re-acceptance must follow from the TOTAL, with no special case for a swap.
+            if (swap.status === 200) {
+              const rose = Number(to.base_price) > Number(from.base_price)
+              record({
+                event: 'D-swap-review',
+                verdict: swap.body?.requiresReacceptanceDecision === rose ? 'PASSES' : 'FAILS',
+                observed:
+                  `swap ${from.base_price} -> ${to.base_price} (${rose ? 'RISE' : 'fall or level'}), ` +
+                  `requiresReacceptance=${swap.body?.requiresReacceptanceDecision} ` +
+                  `(must equal ${rose}; the existing total rule decides, a swap is not special-cased)`,
+              })
+            }
+          }
+        }
+      }
+
       // F: the kitchen wins. Move the order to preparing, then try to edit.
       if (anaOrderId) {
         await admin.from('orders').update({ status: 'preparing', edit_lock_token: null }).eq('id', anaOrderId)
