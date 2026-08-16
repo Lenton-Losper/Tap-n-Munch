@@ -8,6 +8,7 @@ import {
   calendarDateRangeToUtcIso,
   DEFAULT_REPORT_TIMEZONE,
 } from '@/lib/reports/format-report-datetime'
+import { owesMoney } from '@/lib/payments/payment-integrity'
 
 export interface ReportOrder {
   order_number: number
@@ -163,9 +164,34 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     .map(([method, v]) => ({ method, orders: v.orders, gross: Math.round(v.gross * 100) / 100 }))
     .sort((a, b) => b.gross - a.gross)
 
-  const unresolvedOrders = (rawOrders ?? []).filter(
-    (o: any) => o.status !== 'cancelled' && o.payment_status !== 'paid',
-  ).length
+  /**
+   * WHAT IS STILL OWED — `owesMoney`, not a hand-rolled "not paid" (#232, and #139's
+   * consolidation).
+   *
+   * This read `o.status !== 'cancelled' && o.payment_status !== 'paid'`, which is the SIXTH site
+   * of a question this codebase has already answered five times. The reason it is wrong is
+   * written verbatim in `mark-order-paid-confirmed.ts`:
+   *
+   *   > Partitioned with owesMoney(), not `.neq('payment_status','paid')` -- "not paid" is also
+   *   > true of a CANCELLED order, so a cancelled order's money kept being carried in
+   *   > tabs.total (#104, the fifth site of the same question).
+   *
+   * `payment_status = 'cancelled'` is a value this codebase writes, and it is deliberately
+   * absent from `OWES_MONEY_PAYMENT_STATUSES`. An order whose PAYMENT was cancelled while the
+   * order itself was not therefore counted as "stranded/pending, surfaced same-day" on the staff
+   * report — money nobody owes, presented as money to chase.
+   *
+   * The `status !== 'cancelled'` half was redundant besides: the query above already applies
+   * `.neq('status', 'cancelled')`.
+   *
+   * MEASURED IMPACT ON STAGING TODAY: none. Read-only over the 14 non-cancelled orders present,
+   * `payment_status` is only ever `paid` (7) or `pending` (7), so the two predicates agree
+   * exactly and this changes no figure. That is a small, freshly-cleaned sample and is NOT
+   * evidence the divergence does not occur elsewhere — the defect is latent, and it fires the
+   * moment a cancelled payment sits on a live order. Stated rather than dressed up as a fix for
+   * something observed.
+   */
+  const unresolvedOrders = (rawOrders ?? []).filter((o: any) => owesMoney(o.payment_status)).length
 
   return {
     restaurant: {
