@@ -169,6 +169,42 @@ async function main() {
       process.exitCode = 1
     }
 
+    /**
+     * STEP 1b — THE POSITIVE CONTROL, and the check whose absence let a regression through.
+     *
+     * The first version of this chain proved only that the ATTACKER was refused. It went all
+     * green while the app's own client could no longer edit at all: `editRequest` in
+     * lib/guest-orders/client.ts sent no `x-session-token`, so requiring one locked out every
+     * legitimate customer on a tab. A security check that cannot tell "the attack is closed"
+     * from "the feature is dead" is not a security check.
+     */
+    const ownerLock = await api(`/api/guest/orders/${ord!.id}/edit`, {
+      method: 'POST',
+      headers: { 'x-session-token': victimTok },
+      body: JSON.stringify({ restaurantId: RID, sessionIds: [victim] }),
+    })
+    let ownerCanEdit = ownerLock.status === 200
+    if (ownerCanEdit) {
+      const ownerPatch = await api(`/api/guest/orders/${ord!.id}/edit`, {
+        method: 'PATCH',
+        headers: { 'x-session-token': victimTok },
+        body: JSON.stringify({
+          restaurantId: RID,
+          sessionIds: [victim],
+          lockToken: ownerLock.json.lockToken,
+          orderInstructions: 'owner control',
+        }),
+      })
+      ownerCanEdit = ownerPatch.status === 200
+      console.log(`  ${ownerCanEdit ? 'OK            ' : 'BROKEN        '}  step 1b OWNER can still edit  lock=${ownerLock.status} patch=${ownerPatch.status}`)
+    } else {
+      console.log(`  BROKEN          step 1b OWNER can still edit  lock=${ownerLock.status}`)
+    }
+    if (!ownerCanEdit) {
+      console.log('  *** step 1b must PASS. Refusing the owner is a lockout, not a fix. ***')
+      process.exitCode = 1
+    }
+
     // STEP 2 — can the attacker obtain a usable mutation credential?
     const read = await api(
       `/api/guest/orders/${ord!.id}?restaurantId=${RID}&table_number=${tn}&session_id=${encodeURIComponent(attacker)}`,

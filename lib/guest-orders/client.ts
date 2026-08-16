@@ -1,4 +1,5 @@
 import type { GuestOrderRow, GuestOrdersApiResponse } from './types'
+import { getSessionToken } from '@/lib/fetch-with-session'
 
 type FetchGuestOrderParams = {
   restaurantId: string
@@ -170,9 +171,27 @@ async function editRequest<T>(
   method: 'POST' | 'PATCH' | 'DELETE',
   body: Record<string, unknown>,
 ): Promise<T> {
+  /**
+   * The session token goes on every edit request (#302).
+   *
+   * The route now requires it for any order on a tab, because `sessionIds` in a body is a claim
+   * rather than a credential. The browser has held this token since the tab was joined; it was
+   * simply never sent here, which is the whole reason the edit path had no revocation, no expiry
+   * and no tab-state check.
+   *
+   * Sent by hand rather than through `fetchWithSession`, deliberately: that helper turns a 410
+   * into `handleSessionExpired`, which wipes the token, the tab id, the table and the cart. The
+   * editor already has a refusal surface -- `OrderEditRefused` carries the server's reason and
+   * the panel shows it -- so evicting the customer mid-edit would be a worse answer than telling
+   * them, and #294 was about exactly that reflex.
+   */
+  const token = getSessionToken()
   const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}/edit`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'x-session-token': token } : {}),
+    },
     body: JSON.stringify(body),
   })
   const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>

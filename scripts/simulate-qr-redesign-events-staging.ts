@@ -63,6 +63,20 @@ const record = (r: Result) => {
   console.log(`  ${r.verdict.padEnd(20)} ${r.event.padEnd(6)} ${r.observed}`)
 }
 
+/**
+ * #302: the edit route now requires the session token a real client holds. `apiAs` sends it, so
+ * the simulation exercises the route the way the app does rather than a shape no client uses.
+ */
+async function apiAs(customer: { token?: string | null }, path: string, init: RequestInit = {}) {
+  return api(path, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      ...(customer?.token ? { 'x-session-token': customer.token } : {}),
+    },
+  })
+}
+
 async function api(path: string, init: RequestInit = {}) {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
@@ -806,6 +820,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
   if (editTarget) {
     const acquire = await api(`/api/guest/orders/${editTarget}/edit`, {
       method: 'POST',
+      headers: ana.token ? { 'x-session-token': ana.token } : {},
       body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
     })
     if (acquire.status !== 200) {
@@ -821,6 +836,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       // own ownership check should answer 404 -- not 403, which would confirm the order exists.
       const boTries = await api(`/api/guest/orders/${editTarget}/edit`, {
         method: 'POST',
+        headers: bo.token ? { 'x-session-token': bo.token } : {},
         body: JSON.stringify({ restaurantId: RID, sessionIds: [bo.sessionId] }),
       })
       record({
@@ -836,6 +852,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       const beforeView = await readTabView(ana, tabId)
       const commit = await api(`/api/guest/orders/${editTarget}/edit`, {
         method: 'PATCH',
+        headers: ana.token ? { 'x-session-token': ana.token } : {},
         body: JSON.stringify({
           restaurantId: RID,
           sessionIds: [ana.sessionId],
@@ -875,6 +892,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       if (anaOrderId) {
         const reAcquire = await api(`/api/guest/orders/${anaOrderId}/edit`, {
           method: 'POST',
+          headers: ana.token ? { 'x-session-token': ana.token } : {},
           body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
         })
         if (reAcquire.status !== 200) {
@@ -889,6 +907,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
           )
           const addCommit = await api(`/api/guest/orders/${anaOrderId}/edit`, {
             method: 'PATCH',
+            headers: ana.token ? { 'x-session-token': ana.token } : {},
             body: JSON.stringify({
               restaurantId: RID,
               sessionIds: [ana.sessionId],
@@ -1015,6 +1034,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
           created.orderIds.push(swapRow.id)
           const lock = await api(`/api/guest/orders/${swapRow.id}/edit`, {
             method: 'POST',
+            headers: ana.token ? { 'x-session-token': ana.token } : {},
             body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
           })
           if (lock.status !== 200) {
@@ -1026,6 +1046,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
           } else {
             const swap = await api(`/api/guest/orders/${swapRow.id}/edit`, {
               method: 'PATCH',
+              headers: ana.token ? { 'x-session-token': ana.token } : {},
               body: JSON.stringify({
                 restaurantId: RID,
                 sessionIds: [ana.sessionId],
@@ -1096,6 +1117,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
         await admin.from('orders').update({ status: 'preparing', edit_lock_token: null }).eq('id', anaOrderId)
         const afterKitchen = await api(`/api/guest/orders/${anaOrderId}/edit`, {
           method: 'POST',
+          headers: ana.token ? { 'x-session-token': ana.token } : {},
           body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
         })
         const humanReadable = String(afterKitchen.body?.error ?? '')
