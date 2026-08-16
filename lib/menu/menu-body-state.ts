@@ -67,3 +67,34 @@ export function menuBodyState({
 
   return 'empty'
 }
+
+/**
+ * Whether to show the inline PARTIAL-failure banner (#246).
+ *
+ * A DIFFERENT SEAM FROM THE ONE ABOVE, and the distinction is the whole fix. `menuBodyState`
+ * decides what the BODY says, and it deliberately refuses to let a stale notice displace "No
+ * items found" while the customer is searching — that is a recorded decision and it stands. This
+ * decides whether an inline amber strip appears ABOVE the body, which is a separate question the
+ * body-state rule never answered.
+ *
+ * THE DEFECT. The render site read `menuNotice.tone === 'partial' && filteredGroupedEntries.length > 0`,
+ * so the banner vanished the moment a search matched nothing in the part of the menu that HAD
+ * loaded. That is the worst possible moment to hide it: the customer is searching for something,
+ * finding nothing, and the reason may be that the category it lives in failed to load. They were
+ * shown "No items found" — a claim about the restaurant's menu — with no hint that the menu on
+ * screen was incomplete.
+ *
+ * The two now coexist: the body still says "No items found", and the banner above it says part of
+ * the menu could not be loaded, with its retry.
+ *
+ * `bodyState !== 'failed'` is the only exclusion, and it is about duplication rather than
+ * suppression: when the body is already rendering the full-page failure block, that block carries
+ * the same title, description and retry, so the banner would be the same message twice.
+ */
+export function shouldShowPartialMenuNotice(input: {
+  notice: MenuNotice | null
+  bodyState: MenuBodyState
+}): boolean {
+  if (!input.notice || input.notice.tone !== 'partial') return false
+  return input.bodyState !== 'failed'
+}
