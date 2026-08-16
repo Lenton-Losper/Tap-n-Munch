@@ -736,3 +736,85 @@ status-change banner.
 instruction. Several change what a customer is told about money and are yours to rule on —
 `tabMemberPayable`, `tabOrdersUnavailable`, `tabOrderAwaitingConfirmation` and the whole status
 table especially.
+
+---
+
+# #275 — staff were shown "Invalid transition: pending → preparing"
+
+Fixed, and **it got more likely tonight, not less**, which is why it was worth doing now.
+
+The issue's own reproduction was: staff Accept → the customer **removes** a line → the order
+returns to `pending` for re-acceptance → staff press Start Preparing on a pre-refresh screen. As
+of your re-acceptance reversal a reduction **no longer** returns an order to `pending`, so that
+exact path is gone — but an edit that **adds** an item does, and adding is newly possible. The
+path survives with a different first step.
+
+Both routes now answer in the dashboard's own vocabulary — its badge for `pending` reads **New**,
+so "pending" was a word staff saw nowhere else — and every branch says what to *do*. "Invalid
+transition" told them only that something was wrong, which is the half they could already see.
+
+**The refusal itself is unchanged and was not relaxed.** `isValidStaffStatusTransition` still has
+no `pending → preparing` edge. The issue was deliberately filed separately so nobody "fixes" it by
+widening the table; that has been honoured.
+
+**The terminal route was changed too, and it needs no APK.** The device renders `error` verbatim,
+so the string is what staff read on the terminal. I grepped `C:\RN\FlashTapTerminal/src` for
+`Invalid transition` and `Invalid status` — no matches — so nothing on the device keys on the
+prose and the improvement lands without a rebuild. A stable `code` now travels with every
+refusal, so the next thing that wants to react has something better than a sentence to match on
+(#273's lesson).
+
+---
+
+# FINAL STATE
+
+    origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
+    origin/cloudflare-staging     b0ed0cc
+    staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
+    unpushed, all local branches  ZERO (positional form)
+    A–Q simulation                26 checks, 0 FAILS against the deployed worker
+
+## Branches, all pushed
+
+    qrd/1-item-sheet                    qrd/6-full-edit
+    qrd/2-my-orders-destination         qrd/7-my-orders-cleanup
+    qrd/3-menu-simplification           qrd/9-add-something-picker
+    qrd/5-shared-tab                    docs/qr-redesign-2026-08-16
+    fix/286-unpaid-tab-flag-figures     fix/173-ready-order-told-preparing
+    fix/browse-debug-logging            fix/275-staff-transition-copy
+
+## Everything the spec asked for that the domain could NOT truthfully support
+
+1. **Four customer status words (§19).** Six shipped. Four cannot carry `ready_for_terminal`,
+   `cancelled`, `declined` or a failed payment, and merging `accepted` into "being prepared" is
+   untrue *and* hides the boundary editing closes at. Recorded rather than faked.
+2. **A single truthful amount in the tab strip (§9).** There isn't one — payable and pending are
+   different questions. The strip shows both rather than picking one, which is what §9 itself
+   asks for when a single figure cannot represent the state.
+3. **Event O** (scanning a second table while a tab is open) has no API surface of its own; it is
+   a landing-screen decision and is your click-test.
+4. **#285** cannot be settled without a production write. Recorded as a "should not be done"
+   ceiling; nobody should go and get it.
+
+## What I built differently from the spec
+
+| | |
+|---|---|
+| Pieces 2 and 3 **swapped** | removing the tracker also removes a settlement affordance; landing on My Orders first means order visibility never drops at any point in the sequence |
+| Six status words, not four | see above |
+| Piece 6 **split**, picker deferred to piece 9 | a cross-screen round trip that must survive navigation; folding it in would have made piece 6 the big-bang commit you warned about |
+| Piece 2 moved **only the tab path** to My Orders | the non-tab path's confirmation screen carries the only Ready-to-Pay a tab-less customer has; it moved in piece 8 once settlement was consolidated |
+| Inline variant chips left on the menu card | removing them without resolving `isRequiredVariantMissing` would permanently disable every item with a required variant group |
+| Model A over the audit's recommended Model B | your ruling. The audit's objection was real, so three of the four sale guards were ported rather than reasoned around; the fourth does not apply to a tab |
+
+## New rulings I took, because none existed and the build could not wait
+
+1. **Mixed-vintage pricing on an edited order** — survivors keep the price stored at placement,
+   additions are priced today. The alternative moves the price of items the customer is *keeping*
+   and refuses a removal because an untouched survivor went out of stock.
+2. **The payment-method allowlist is not ported into the edit path** — an addition to a tab order
+   chooses no payment method, so there is nothing to check it against.
+3. **The shared-tab lines go behind the session token**, not onto the unauthenticated `view`
+   route, even though that route already had the data.
+4. **A failed shared-tab read shows a notice, never the session-scoped list** — a fallback there
+   would show one diner's food under a whole-table heading exactly when it was broken.
