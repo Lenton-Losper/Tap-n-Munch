@@ -453,7 +453,7 @@ export default function TabSummaryPage() {
                       {order.lines.map((line, lineIndex) => (
                         <p key={`${order.id}-${lineIndex}`}>
                           {line.name} ×{line.quantity} — {currency}
-                          {line.subtotal.toFixed(2)}
+                          {line.total.toFixed(2)}
                         </p>
                       ))}
                     </div>
@@ -496,7 +496,7 @@ export default function TabSummaryPage() {
                     {order.lines.map((line, lineIndex) => (
                       <p key={`${order.id}-${lineIndex}`}>
                         {line.name} ×{line.quantity} — {currency}
-                        {line.subtotal.toFixed(2)}
+                        {line.total.toFixed(2)}
                       </p>
                     ))}
                   </div>

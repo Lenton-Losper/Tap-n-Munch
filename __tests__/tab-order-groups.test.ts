@@ -189,3 +189,77 @@ describe('buildTabOrderGroups — what a diner may see about another diner', () 
     expect(bob.orders[0].order_number).toBeNull()
   })
 })
+
+/**
+ * #293 — the line figure is what the customer PAYS.
+ *
+ * The click test found "Beef Burger x1 - NAD82.61" with "NAD95.00 awaiting confirmation" printed
+ * directly beneath it, and N$95 on the menu. 82.61 is the ex-VAT base at the 15% inclusive rate;
+ * it is not a price anybody is ever charged.
+ *
+ * The fixture above never caught it because its items carry `subtotal` and no `total`, so the two
+ * figures coincide. These use the REAL stored shape, taken from a staging row:
+ *
+ *   { subtotal: 21.74, tax: 3.26, total: 25, taxInclusive: true, taxRatePercentage: 15 }
+ */
+describe('#293 line prices are tax-inclusive and sum to the order total', () => {
+  const REAL_BURGER = {
+    name: 'Beef Burger',
+    quantity: 1,
+    subtotal: 82.61,
+    tax: 12.39,
+    total: 95,
+    taxInclusive: true,
+    taxRatePercentage: 15,
+  }
+  const REAL_CHICKEN = {
+    name: 'Chicken burger',
+    quantity: 1,
+    subtotal: 21.74,
+    tax: 3.26,
+    total: 25,
+    taxInclusive: true,
+    taxRatePercentage: 15,
+  }
+
+  it('shows the inclusive figure, not the ex-VAT base', () => {
+    const groups = build({ orders: [order({ items: [REAL_BURGER], total: 95 })], requests: [] })
+    const line = groups.members.flatMap((g) => g.orders).flatMap((o) => o.lines)[0]
+    expect(line.total).toBe(95)
+    // The exact number a customer was shown. If this ever comes back, it comes back loudly.
+    expect(line.total).not.toBe(82.61)
+  })
+
+  it('the lines SUM to the total printed beneath them', () => {
+    const groups = build({
+      orders: [order({ items: [REAL_BURGER, REAL_CHICKEN], total: 120 })],
+      requests: [],
+    })
+    const orderOut = groups.members.flatMap((g) => g.orders)[0]
+    const sum = orderOut.lines.reduce((n, l) => n + l.total, 0)
+    expect(sum).toBe(120)
+    expect(sum).toBe(orderOut.total)
+  })
+
+  it('an exclusive-rate line also shows what is charged', () => {
+    // For an exclusive rate the customer pays subtotal + tax, which is `total` again. Reading
+    // `subtotal` was wrong for BOTH tax modes, not only the inclusive one.
+    const exclusive = { name: 'Water', quantity: 1, subtotal: 20, tax: 3, total: 23, taxInclusive: false }
+    const groups = build({ orders: [order({ items: [exclusive], total: 23 })], requests: [] })
+    expect(groups.members.flatMap((g) => g.orders)[0].lines[0].total).toBe(23)
+  })
+
+  it('an old row with no per-line total is reconstructed, not read as its ex-VAT base', () => {
+    // The fallback that matters: falling straight back to `subtotal` would have left exactly the
+    // oldest orders showing the wrong figure.
+    const legacy = { name: 'Old Item', quantity: 1, subtotal: 82.61, tax: 12.39 }
+    const groups = build({ orders: [order({ items: [legacy], total: 95 })], requests: [] })
+    expect(groups.members.flatMap((g) => g.orders)[0].lines[0].total).toBe(95)
+  })
+
+  it('a row with neither total nor tax falls back to the subtotal rather than to zero', () => {
+    const ancient = { name: 'Ancient', quantity: 1, subtotal: 40 }
+    const groups = build({ orders: [order({ items: [ancient], total: 40 })], requests: [] })
+    expect(groups.members.flatMap((g) => g.orders)[0].lines[0].total).toBe(40)
+  })
+})
