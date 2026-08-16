@@ -174,3 +174,171 @@ environment**, and a freshly-added worktree has neither `node_modules` nor `.env
 worktree's own root (Rule 10) after junctioning and copying `.env.test`, exporting the two vars
 from `.env.test` — and check the URL carries the staging ref `mdqjpxwczrhkxkbqatqa` before doing
 anything with the result.
+
+**`npx eslint . --max-warnings=0` is a BLOCKING gate on the staging deploy, and I was not running
+it.** Piece 2's deploy failed on `react-hooks/set-state-in-effect`; staging stayed on the previous
+SHA until it was fixed forward. Compounding it: `my-orders/page.tsx` carries `// @ts-nocheck`, so
+a clean `tsc --noEmit` says **nothing** about that file — eslint was the only local gate that
+could have caught it. Now run per piece before every push.
+
+**A `**` before a path closes a block comment.** `**/view is deliberately…` inside a docblock ends
+the comment at `**/`, and the compiler then reports twenty parse errors pointing at the code
+below it, not at the comment. Cost one confusing tsc run.
+
+---
+
+# CHECKPOINT 2 — pieces 3 and 5 shipped. The biggest real gap found and closed.
+
+    origin/cloudflare-staging     85a945c   (pieces 1, 2, 3, 5 + the piece-2 lint fix)
+    staging /api/version          cf7c1a4 confirmed live; 85a945c deploying at time of writing
+    origin/main / production      3c6eec9   UNTOUCHED
+    staging DB drift              136/136 CLEAN — no piece so far carries a migration
+
+## Piece 3 — menu simplification · `qrd/3-menu-simplification` · merged `cf7c1a4` · LIVE
+
+Spec sections 7, 8, 9, 33 and 37 on one screen. Trackers out of the menu; **Tab** replaces
+**Receipt** in the header; the strip demoted to two rows and stripped of its settle promise.
+
+**A live defect was found and fixed inside it.** The strip was a three-way ternary — one arm JSX,
+two template strings. The pending figure was appended to the two template-string arms and **not**
+to the JSX arm, which is the arm taken *whenever the tab has a PIN*. So on a PIN-protected tab —
+the ordinary case — a customer who had just ordered saw the payable figure with nothing naming
+what the restaurant had not yet confirmed. That is the exact "you owe NAD0.00 after ordering
+N$132" failure the two-figure ruling was written to prevent, still live in one branch of the code
+that was supposed to have fixed it. `lib/tabs/browse-tab-strip.ts` now builds the money line once,
+before anything branches on the PIN, so a caller cannot render an amount without its pending note.
+
+`browse-header-icons-are-distinct.test.tsx` was **updated, not deleted or weakened**. What it
+records is a decision about two adjacent icon-only buttons below the `sm` breakpoint, and that
+decision outlives the particular pair.
+
+## Piece 5 — the shared tab · `qrd/5-shared-tab` · merged `85a945c`
+
+**THE BIGGEST FINDING OF THE RUN.** `/menu/[id]/tab` already grouped by member and already showed
+a server-derived table total — and the list it grouped came from `fetchOrdersForTab`, which is
+scoped to the ids **this browser** holds. Lenton saw *"Lenton — Burger N$95"* under a heading
+reading **N$115**, and Bob's Sprite appeared nowhere. The grouping was real and the data behind it
+was one person's. That is worse than either half alone: the difference reads as a rounding error
+rather than as absence. **Events B5, C and H could not have passed before this.**
+
+### The decision most worth reviewing: a new route, not a wider one
+
+The obvious home was the tab `view` route. It already reads every order on the tab to compute the
+two figures and then throws the rows away — adding lines there would have cost nothing.
+
+It is the wrong home because **that route is deliberately UNAUTHENTICATED**, and its own docblock
+argues why: it returns a strict subset of what the published anon key already exposes. That
+argument holds for a total and a list of first names. It does **not** hold for what everybody at
+the table ate — the tab UUID travels in a `?tabId=` URL that `tab-context` adopts into
+localStorage without validating it. So the lines went behind the session token, on a new
+`GET /api/tabs/[tabId]/orders`, guarded by the same `requireSessionToken` +
+`assertSessionMatchesResource` pair as ready-to-pay.
+
+Rule 7 read in reverse: the cheap change was cheap *because* it reused a query, and what it would
+actually have changed is **who can read the answer**.
+
+### What it grants, and what it does not
+
+- **Reading only.** Nothing in the new route is consulted by any write path. `is_self` is a
+  rendering hint, never a permission. Section 25 holds: visibility is not edit ownership.
+- `edit_lock_token` is **not SELECTed at all** — the surest way not to leak a capability from a
+  new route is never to fetch it. `session_id` is dropped before grouping.
+- **Never infers a financial relationship.** An order whose member cannot be resolved goes to an
+  explicit `unattributed` block, named as such on screen. A key with no member row gets its own
+  group instead — that one *is* attributed, to someone who left the array or ordered before
+  joining, and calling it unattributed would lose the fact that those lines belong together.
+- **No fallback to the session-scoped list.** A failed read says so out loud. The money still
+  renders, because it comes from the separate `/view` read.
+
+## Status vocabulary — SIX words, not four. A deliberate spec deviation.
+
+Spec section 19 asked for four and asked that every backend state be enumerated first. It was, and
+four cannot carry it:
+
+| Backend state | Four-word model | What shipped |
+|---|---|---|
+| `waiting_review` / `pending` / `accepting` | Waiting for restaurant | **Waiting for the restaurant** |
+| `accepted` / `confirmed` | *merged into "being prepared"* | **Accepted** — kept separate |
+| `preparing` | Being prepared | **Being prepared** |
+| `ready` | Ready | **Ready** |
+| `ready_for_terminal` | *no home* | **Needs you** |
+| `cancelled` | *no home* | **Needs you** |
+| `declined` | *no home* | **Needs you** |
+| `payment_status = failed` | *no home* | **Needs you** |
+| `completed` + paid | Paid | **Paid** |
+| anything else | *fell through to "🎉 New"* | **unknown** — promises nothing |
+
+`accepted` is not merged into "being prepared" because staff taking an order is not the kitchen
+starting it — **and it is the boundary editing closes at**, so the two states differ in what the
+customer can still *do*, not only in what they are told.
+
+**The fallback is the other half of that module.** `my-orders` ended
+`configs[status] || configs.pending`, and `configs.pending` is `{🎉, 'New'}`. Every unmapped
+status rendered as a brand new order. Removing the NEW badge (section 34) without fixing the
+fallback would only move the lie.
+
+`paid` is checked before any kitchen status, because `markOrderPaidConfirmed` writes `completed`
+from any status. `completed` **without** a paid `payment_status` is deliberately NOT "Paid" —
+staff reconcile can complete an order with no payment (#234), and that is the one error in this
+table that costs somebody money.
+
+## THE RE-ACCEPTANCE REVERSAL — read this before reviewing piece 6
+
+The overnight brief rules: *"An edit that raises the total still requires staff re-acceptance —
+that ruling stands. An edit that only removes items, lowers quantities or changes notes does
+not."*
+
+That **reverses a ruling the same human made on 2026-08-13**, recorded in
+`docs/handover-2026-08-11-sprint.md`:
+
+> *"Re-acceptance: ANY total movement, and only NOTES are exempt. RULED by the human 2026-08-13.
+> … a removal changes what the kitchen makes and what the customer pays, so staff see it before
+> cooking. The tempting simplification `return nextTotal > previousTotal` in
+> `editRequiresReacceptance` was CONSIDERED AND REJECTED — there is a named test that fails if it
+> is ever substituted."*
+
+The new brief names the exact three cases, so this is a deliberate reversal by the person who made
+the original ruling, not an oversight. The operating contract's *"a recorded decision is a ruling
+already made"* exists to stop an **agent** overruling an absent human; this is the human
+overruling themselves, in writing, in the instruction I am executing.
+
+**It is being implemented, and the named test is being updated rather than deleted.** The safety
+property the original ruling protected is preserved by a different means: a reduction no longer
+*gates* on staff, but it is still recorded and still surfaced to them, so nobody cooks the old
+list. Flagged here because it is the single change in this run most worth a second look.
+
+## Verified myself rather than waiting — the four sale controls
+
+Measured at `85a945c`, and it matches the audit exactly:
+
+    checkStockSufficiency     app/api/orders/route.ts:187, app/api/terminal/orders/route.ts:100
+                              -> NOT in the edit path
+    validateOrderQuantities   app/api/orders/route.ts:58
+                              -> NOT in the edit path
+    repriceKeptLines          strict reduction BY CONSTRUCTION: an index outside the stored array
+                              is refused, and a raised quantity is refused with the reason written
+                              in the code (reprice-priced-lines.ts ~99 and ~114-116)
+    editRequiresReacceptance  edit-lock.ts:231 — `toCents(prev) !== toCents(next)`, ANY movement
+
+So the brief's *"expand the edit API"* is the audit's **Model A**, and the audit's stated
+prerequisites for it are real rather than theoretical: all four guards that protect the creation
+of a sale live on `POST /api/orders` and none of them is in the edit route. Piece 6 ports them
+rather than reasoning around them.
+
+## PENDING COPY — running list
+
+`git grep "PENDING COPY" -- lib/customer-copy/qr-redesign-copy.ts lib/orders/customer-status.ts`
+
+| Key | Renders |
+|---|---|
+| `orderPlacedBanner` | My Orders, banner immediately after Place Order |
+| `stripHeadlineOpen` / `stripHeadlineReadyToPay` / `stripHeadlineClosed` | browse tab strip, leading word |
+| `stripCta` | browse tab strip, trailing affordance — says View, not settle |
+| `navTab` | browse header, the Tab button |
+| `tabOrdersUnavailable` | Tab, when the shared read failed |
+| `tabEmpty` | Tab, when the table genuinely has no orders |
+| `tabOrderNotYetNumbered` | Tab, per order, before Accept allocates a number |
+| `tabOrderAwaitingConfirmation` | Tab, per order, submitted-and-unanswered |
+| `tabMemberPayable` | Tab, the per-person owed figure |
+| `tabUnattributedHeading` | Tab, the unattributed block |
+| `CUSTOMER_STATUS_COPY` × 7 | every customer status render site |
