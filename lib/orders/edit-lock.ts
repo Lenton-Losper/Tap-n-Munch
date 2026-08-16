@@ -207,28 +207,56 @@ export function requestEditRefusalReason(
 }
 
 /**
- * Whether an edit sends the order back to staff for re-acceptance.
+ * Whether an edit sends the order back to staff for RE-ACCEPTANCE.
  *
- * RULED, 2026-08-13, by the human, and this is a DECISION ALREADY MADE — do not "simplify" it
- * back. ANY movement in the total returns the order to review. **Only a notes-only edit is
- * exempt.** Removals are NOT exempt.
+ * ============================================================================================
+ * RULED 2026-08-16 — THIS REVERSES THE 2026-08-13 RULING. Both are the same human's, and the
+ * reversal is quoted in full below so nobody has to reconstruct it from a diff.
+ * ============================================================================================
  *
- * The reason, in the words of the ruling: a removal changes what the kitchen makes and what
- * the customer pays, so staff see it before cooking. An earlier draft of the ruling read
- * "removing items or changing notes only — no re-acceptance", which cannot hold alongside "an
- * edit changing the TOTAL requires staff re-acceptance" because a removal changes the total.
- * That was surfaced as a contradiction rather than resolved silently, and the exemption was
- * ruled down to notes.
+ * 2026-08-16, the overnight redesign brief, verbatim:
  *
- * So the tempting change here — `return nextTotal > previousTotal`, exempting removals on the
- * grounds that the total can only fall — is the one thing this function must not do. It was
- * considered and rejected. Escalate rather than implement it.
+ *   > "An edit that raises the total still requires staff re-acceptance — that ruling stands.
+ *   >  An edit that only removes items, lowers quantities or changes notes does not."
  *
- * Compared in integer cents, not with a float tolerance. `Math.abs(a - b) <= 0.01` is a
- * one-cent tolerance for some amounts and a zero tolerance for others purely by binary
- * representation (#180), and "did the total change" must not depend on that.
+ * 2026-08-13, what this function used to say, verbatim, and which the line above supersedes:
+ *
+ *   > "ANY movement in the total returns the order to review. Only a notes-only edit is exempt.
+ *   >  Removals are NOT exempt. … a removal changes what the kitchen makes and what the customer
+ *   >  pays, so staff see it before cooking. … the tempting change here — `return nextTotal >
+ *   >  previousTotal` — is the one thing this function must not do. It was considered and
+ *   >  rejected. Escalate rather than implement it."
+ *
+ * WHY THE OLD COMMENT WAS OBEYED AND THEN OVERRULED, AND WHY THAT IS NOT A CONTRADICTION. The
+ * operating contract's "a recorded decision is a ruling that has already been made" exists to
+ * stop an AGENT overruling an absent human. Here the human overruled themselves, in writing, in
+ * the instruction being executed, naming the exact three exempt cases. That is the person who
+ * made the decision changing it, which is the one thing that was always allowed to.
+ *
+ * WHAT THE OLD RULING WAS PROTECTING, AND HOW IT SURVIVES ANYWAY. Its concern was that staff
+ * would cook the old item list. Re-acceptance was the mechanism, not the goal. A reduction still
+ * writes `customer_edited_at`, bumps `customer_edit_count`, appends to `edit_history` and now
+ * sets `total_before_edit` on ANY movement including a fall — so the dashboard card can show
+ * that the order changed and by how much. What no longer happens is the order being pushed back
+ * to `pending` and requiring a second Accept before the kitchen may start.
+ *
+ * Compared in integer cents, not with a float tolerance. `Math.abs(a - b) <= 0.01` is a one-cent
+ * tolerance for some amounts and a zero tolerance for others purely by binary representation
+ * (#180), and "did the total rise" must not depend on that.
  */
 export function editRequiresReacceptance(previousTotal: number, nextTotal: number): boolean {
+  return toCents(nextTotal) > toCents(previousTotal)
+}
+
+/**
+ * Whether the total moved AT ALL, in either direction.
+ *
+ * Split out from `editRequiresReacceptance` when the two stopped being the same question
+ * (2026-08-16). A fall no longer gates on staff, but it is still a change to what the customer
+ * pays, so it must still be RECORDED — `total_before_edit` is written from this, not from the
+ * re-acceptance decision, or a reduction would leave staff no way to see the order moved.
+ */
+export function editChangedTheTotal(previousTotal: number, nextTotal: number): boolean {
   return toCents(previousTotal) !== toCents(nextTotal)
 }
 
@@ -288,8 +316,39 @@ export function appendEditHistory(
 export const EDIT_COPY = {
   /** Customer: the button that opens the editor. */
   editCta: 'Change this order',
-  /** Customer: shown while the lock is held, with the remaining time. */
+  /**
+   * SUPERSEDED 2026-08-16, no longer rendered anywhere. Kept exported so the string is findable
+   * rather than silently gone, and so the reason survives with it.
+   *
+   * Redesign spec section 21: this was the ONLY time figure on the editor, and it read as the
+   * deadline for changing the order. It is not. There are two different concepts and this is the
+   * lesser one:
+   *
+   *   the DEADLINE  event-driven — you may change the order until the restaurant starts
+   *                 preparing it. Could be seconds, could be twenty minutes. Nothing counts it
+   *                 down because nothing knows when it will happen.
+   *   the HOLD      timed — three minutes, so two phones at one table do not edit the same order
+   *                 at once. It is an implementation detail of concurrency, not a promise about
+   *                 the customer's food.
+   *
+   * A customer reading "164s left to make changes" believes the first and is being shown the
+   * second. Replaced by `editDeadline` (primary) and `holdSecondary` (secondary).
+   */
   lockHeld: '{seconds}s left to make changes',
+  /**
+   * PENDING COPY. Customer: the PRIMARY line in the editor — the rule that actually governs
+   * whether the order can still be changed.
+   */
+  editDeadline: 'PENDING COPY — You can change this order until the restaurant starts preparing it.',
+  /**
+   * PENDING COPY. Customer: SECONDARY, beneath the line above. The hold, stated as a hold.
+   * `{seconds}` is substituted at the render site by plain `.replace()`, so it must stay literal.
+   */
+  holdSecondary: 'PENDING COPY — Editing reserved for you · {seconds}s',
+  /** PENDING COPY. Customer: the control that opens the menu to add something to this edit. */
+  addSomething: 'PENDING COPY — + Add something',
+  /** PENDING COPY. Customer: one more of a line already on the order. */
+  addOneMore: 'PENDING COPY — Add one more',
   /** Customer: refusal, status has moved to preparing or beyond. */
   preparationStarted: "The kitchen has started this order, so it can't be changed now.",
   /** Customer: refusal, another phone at the table is editing. */

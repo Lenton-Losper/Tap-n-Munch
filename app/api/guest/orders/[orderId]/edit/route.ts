@@ -38,6 +38,7 @@ import {
   appendEditHistory,
   editLockExpiryFrom,
   editRefusalReason,
+  editChangedTheTotal,
   editRequiresReacceptance,
   isEditLockActive,
   normalizeSessionIds,
@@ -47,6 +48,7 @@ import {
 import { InvalidEditError, repriceKeptLines, type LineKeepInstruction } from '@/lib/orders/reprice-priced-lines'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { normalizeOrderInstructions } from '@/lib/orders/instruction-limits'
+import { applyEditAdditions } from '@/lib/orders/apply-edit-additions'
 
 export const dynamic = 'force-dynamic'
 
@@ -179,6 +181,12 @@ type ParsedBody = {
   sessionIds: string[]
   lockToken: string
   keep: LineKeepInstruction[] | null
+  /**
+   * Items to ADD, in the same client shape `POST /api/orders` accepts, so the pricer needs no
+   * adapter and nothing here re-implements a shape that already exists. Null when absent;
+   * an empty array is treated as absent.
+   */
+  add: Record<string, unknown>[] | null
   orderInstructions: string | null
   orderInstructionsProvided: boolean
 }
@@ -211,6 +219,14 @@ async function parseBody(req: Request): Promise<ParsedBody> {
           const e = (entry ?? {}) as Record<string, unknown>
           return { index: Number(e.index), quantity: Number(e.quantity) }
         })
+      : null,
+    /**
+     * Passed through UNVALIDATED and UNPRICED on purpose. Every check that decides whether these
+     * may be ordered, and what they cost, belongs to the guards in applyEditAdditions -- the same
+     * ones POST /api/orders runs. Coercing anything here would be a second, weaker copy of them.
+     */
+    add: Array.isArray(body.add)
+      ? (body.add as unknown[]).map((entry) => (entry ?? {}) as Record<string, unknown>)
       : null,
     orderInstructions: instructionsProvided
       ? normalizeOrderInstructions(String(body.orderInstructions ?? body.order_instructions ?? ''))
@@ -380,7 +396,8 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     if (!parsed.lockToken) {
       return NextResponse.json({ error: 'lockToken is required' }, { status: 400 })
     }
-    if (!parsed.keep && !parsed.orderInstructionsProvided) {
+    const hasAdditions = Array.isArray(parsed.add) && parsed.add.length > 0
+    if (!parsed.keep && !parsed.orderInstructionsProvided && !hasAdditions) {
       return NextResponse.json({ error: 'Nothing to change' }, { status: 400 })
     }
 
@@ -424,11 +441,55 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       }
     }
 
-    const itemsChanged = Boolean(parsed.keep)
+    /**
+     * ADDITIONS. Spec section 22 as overruled 2026-08-16: an edit may add items.
+     *
+     * Run AFTER the reduction, over the already-repriced kept lines, so the two halves cannot
+     * disagree about the base. Every guard `POST /api/orders` applies to a new sale is applied
+     * here — see lib/orders/apply-edit-additions.ts for which four, which three are ported, and
+     * why the fourth does not apply to a tab.
+     */
+    if (hasAdditions) {
+      const added = await applyEditAdditions({
+        supabase,
+        restaurantUuid,
+        kept: next,
+        additions: parsed.add ?? [],
+      })
+      if (!added.ok) {
+        const { refusal } = added
+        // Mapped by KIND, so a new refusal reason cannot silently become a 500. 409 for stock
+        // matches POST /api/orders exactly; a customer meeting the same refusal by two routes
+        // must not get two different status codes.
+        const status = refusal.kind === 'out_of_stock' ? 409 : 400
+        return NextResponse.json(
+          {
+            error: refusal.message,
+            reason: refusal.kind === 'out_of_stock' ? 'out_of_stock' : 'invalid_edit',
+            ...(refusal.kind === 'out_of_stock' ? { outOfStock: refusal.unavailable } : {}),
+            ...(refusal.kind === 'pricing' && refusal.code ? { code: refusal.code } : {}),
+          },
+          { status },
+        )
+      }
+      next = { items: added.items, subtotal: added.subtotal, tax: added.tax, total: added.total }
+    }
+
+    const itemsChanged = Boolean(parsed.keep) || hasAdditions
     const previousInstructions = String(target.row.order_instructions ?? '')
     const notesChanged =
       parsed.orderInstructionsProvided && (parsed.orderInstructions ?? '') !== previousInstructions
-    const totalChanged = editRequiresReacceptance(previousTotal, next.total)
+    /**
+     * TWO QUESTIONS, NOT ONE, since the 2026-08-16 reversal.
+     *
+     * `needsReacceptance` gates staff: only a RISE sends the order back to review.
+     * `totalMoved` gates the RECORD: any movement, including a fall, writes `total_before_edit`
+     * so the dashboard can show that the order changed and by how much. Deriving the second from
+     * the first would leave a reduction invisible to staff, which is the thing the ruling this
+     * replaces was protecting.
+     */
+    const needsReacceptance = editRequiresReacceptance(previousTotal, next.total)
+    const totalMoved = editChangedTheTotal(previousTotal, next.total)
 
     if (!itemsChanged && !notesChanged) {
       return NextResponse.json({ error: 'Nothing to change' }, { status: 400 })
@@ -458,7 +519,9 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       edit_lock_session_id: null,
       edit_lock_expires_at: null,
       ...(parsed.orderInstructionsProvided ? { order_instructions: parsed.orderInstructions } : {}),
-      ...(totalChanged ? { total_before_edit: previousTotal } : {}),
+      // ANY movement, not only a rise. A reduction no longer gates on staff, so this is the only
+      // thing that tells them the figure moved.
+      ...(totalMoved ? { total_before_edit: previousTotal } : {}),
     }
 
     const patch: Record<string, unknown> =
@@ -469,11 +532,11 @@ export async function PATCH(req: Request, { params }: RouteParams) {
             subtotal: next.subtotal,
             tax: next.tax,
             total: next.total,
-            requires_reacceptance: totalChanged,
+            requires_reacceptance: needsReacceptance,
             // Back to review with the new figure. `pending` is the dashboard's New tab and
             // the only status the existing pending -> accepted transition starts from, so
             // staff re-accept through the CAS-protected route they already use.
-            ...(totalChanged ? { status: 'pending' } : {}),
+            ...(needsReacceptance ? { status: 'pending' } : {}),
           }
         : {
             ...common,
@@ -521,7 +584,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     // Tab bookkeeping, same recomputation the Accept route does: sum the tab's non-settlement
     // orders. Best effort and after the fact — the edit itself has landed, and failing the
     // request now would tell the customer their change did not happen when it did.
-    if (target.surface === 'orders' && totalChanged && target.row.tab_id) {
+    if (target.surface === 'orders' && totalMoved && target.row.tab_id) {
       const tabId = String(target.row.tab_id)
       const { data: tabOrders, error: tabSumError } = await supabase
         .from('orders')
@@ -545,14 +608,15 @@ export async function PATCH(req: Request, { params }: RouteParams) {
 
     return NextResponse.json({
       success: true,
-      totalChanged,
+      totalChanged: totalMoved,
+      requiresReacceptanceDecision: needsReacceptance,
       previousTotal,
       total: next.total,
       subtotal: next.subtotal,
       tax: next.tax,
       requiresReacceptance: Boolean(updated.requires_reacceptance),
       status: updated.status,
-      message: totalChanged
+      message: totalMoved
         ? EDIT_COPY.committedTotalChanged
         : EDIT_COPY.committedNoTotalChange,
     })

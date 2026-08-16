@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Minus, Pencil, XCircle } from 'lucide-react'
+import { Minus, Pencil, Plus, XCircle } from 'lucide-react'
 import {
   EDIT_COPY,
   editRefusalReason,
@@ -172,6 +172,7 @@ export function OrderEditPanel({
     release()
     setGrant(null)
     setLines([])
+    setAdditions([])
     setError(null)
   }
 
@@ -199,8 +200,56 @@ export function OrderEditPanel({
     )
   }
 
+  /**
+   * ADDING ONE MORE OF A LINE ALREADY ON THE ORDER.
+   *
+   * Deliberately NOT expressed as a raised `keep` quantity. `repriceKeptLines` refuses a raise
+   * BY CONSTRUCTION, and that refusal is load-bearing: the reduction path re-sums from the
+   * order's own stored lines, so a raise there would multiply a stored price without ever
+   * touching the stock check, the quantity cap or the live menu.
+   *
+   * So a raise is sent as an ADDITION of the same menu item, which goes through
+   * applyEditAdditions and therefore through all three guards. The order ends up with two lines
+   * of the same item rather than one line of two — which is what the bill honestly shows: the
+   * first at the price quoted when it was ordered, the second at today's.
+   */
+  const [additions, setAdditions] = useState<Array<Record<string, unknown>>>([])
+
+  const addOneMore = (index: number) => {
+    const item = (Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [])[index]
+    // No menu item id means nothing can be priced against the live menu, so the control is not
+    // offered for that line at all (see the render below). Belt and braces here.
+    const menuItemId = String(item?.menuItemId ?? item?.menu_item_id ?? '').trim()
+    if (!menuItemId) return
+    setAdditions((prev) => [
+      ...prev,
+      {
+        menuItemId,
+        name: item?.name ?? item?.displayName ?? '',
+        displayName: item?.displayName ?? item?.name ?? '',
+        quantity: 1,
+        selectedVariants: item?.selectedVariants ?? {},
+        size: item?.size ?? null,
+        addons: item?.addons ?? [],
+        specialInstructions: item?.specialInstructions ?? '',
+      },
+    ])
+  }
+
+  const undoAddition = (position: number) => {
+    setAdditions((prev) => prev.filter((_, i) => i !== position))
+  }
+
+  /** Whether a line can be added to at all — no menu item id, no live pricing, no control. */
+  const lineHasMenuItemId = (index: number): boolean => {
+    const item = (Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [])[index]
+    return Boolean(String(item?.menuItemId ?? item?.menu_item_id ?? '').trim())
+  }
+
   const kept = lines.filter((line) => !line.removed)
-  const itemsChanged = lines.some((line) => line.removed || line.quantity !== line.originalQuantity)
+  const itemsChanged =
+    lines.some((line) => line.removed || line.quantity !== line.originalQuantity) ||
+    additions.length > 0
   const notesChanged = grant != null && notes.trim() !== String(grant.orderInstructions ?? '').trim()
 
   const save = async () => {
@@ -213,15 +262,20 @@ export function OrderEditPanel({
         restaurantId,
         sessionIds,
         lockToken: grant.lockToken,
-        ...(itemsChanged
+        // `keep` is sent whenever the SURVIVING lines changed. It is deliberately not sent for
+        // an additions-only edit: an unchanged `keep` would be a no-op the server still has to
+        // reprice, and omitting it keeps the reduction path untouched in that case.
+        ...(lines.some((line) => line.removed || line.quantity !== line.originalQuantity)
           ? { keep: kept.map((line) => ({ index: line.index, quantity: line.quantity })) }
           : {}),
+        ...(additions.length > 0 ? { add: additions } : {}),
         ...(notesChanged ? { orderInstructions: notes } : {}),
       })
       // The lock is spent by a successful commit, so there is nothing to release.
       grantRef.current = null
       setGrant(null)
       setLines([])
+    setAdditions([])
       setNotice(
         result.totalChanged
           ? result.message.replace('{total}', `${currency}${result.total.toFixed(2)}`)
@@ -285,8 +339,14 @@ export function OrderEditPanel({
 
   return (
     <div className="space-y-4 rounded-lg border border-[#E5E7EB] bg-white p-4">
-      <p className="text-sm font-semibold text-[#111827]">
-        {EDIT_COPY.lockHeld.replace('{seconds}', String(secondsLeft))}
+      {/* THE DEADLINE LEADS; THE HOLD IS A FOOTNOTE. Spec section 21.
+          This used to be one line — "164s left to make changes" — which is the HOLD wearing the
+          DEADLINE's words. The deadline is event-driven and uncounted (until the restaurant
+          starts preparing); the hold is a three-minute concurrency device. A customer reading a
+          countdown believes the first and is being shown the second. */}
+      <p className="text-sm font-semibold text-[#111827]">{EDIT_COPY.editDeadline}</p>
+      <p className="text-xs text-[#6B7280]">
+        {EDIT_COPY.holdSecondary.replace('{seconds}', String(secondsLeft))}
       </p>
 
       {error && (
@@ -312,6 +372,23 @@ export function OrderEditPanel({
               </Button>
             ) : (
               <div className="flex shrink-0 items-center gap-2">
+                {/* One more of this line. Sent as an ADDITION, never as a raised `keep`
+                    quantity — see the comment on addOneMore for why that distinction is
+                    load-bearing rather than stylistic. Offered only when the stored line
+                    carries a menu item id, because without one nothing can be priced against
+                    the live menu and the server would refuse. */}
+                {lineHasMenuItemId(line.index) && (
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    onClick={() => addOneMore(line.index)}
+                    aria-label={`${EDIT_COPY.addOneMore} — ${line.name}`}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="icon"
@@ -337,6 +414,34 @@ export function OrderEditPanel({
           </div>
         ))}
       </div>
+
+      {/* PENDING ADDITIONS. Nothing here has been sent: they exist only in this component's
+          state until Save, and they are priced by the SERVER at commit — no amount is shown
+          beside them, because the client does not know what they cost and a client-side figure
+          beside a real bill is exactly what this project has ruled against. */}
+      {additions.length > 0 && (
+        <div className="space-y-1 rounded-md border border-dashed border-[#E5E7EB] p-2">
+          {additions.map((addition, position) => (
+            <div
+              key={`addition-${position}`}
+              className="flex items-center justify-between gap-2 text-sm text-[#111827]"
+            >
+              <span className="flex-1">
+                + {String(addition.displayName ?? addition.name ?? 'Item')}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => undoAddition(position)}
+                aria-label={`Undo ${String(addition.displayName ?? addition.name ?? 'item')}`}
+              >
+                Undo
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <label className="block text-sm">
         <span className="mb-1 block font-medium text-[#374151]">Notes for the kitchen</span>

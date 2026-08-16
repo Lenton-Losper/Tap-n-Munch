@@ -16,6 +16,7 @@ import {
   EDIT_LOCK_TTL_MS,
   editLockExpiryFrom,
   editRefusalReason,
+  editChangedTheTotal,
   editRequiresReacceptance,
   isEditLockActive,
   isEditLockHeldByOther,
@@ -203,35 +204,72 @@ describe('the pre-Accept surface has its own vocabulary', () => {
   })
 })
 
-describe('re-acceptance is decided in cents, not by float tolerance', () => {
-  it('is required when the total moves', () => {
-    expect(editRequiresReacceptance(120.5, 95)).toBe(true)
+/**
+ * ============================================================================================
+ * THE RULING HERE WAS REVERSED ON 2026-08-16, AND SOMEBODY IS SAYING SO.
+ * ============================================================================================
+ *
+ * The version of this block before 2026-08-16 asserted that a REMOVAL requires re-acceptance,
+ * and its own comment read: *"If this ever passes as false, the ruling has been reversed without
+ * anyone saying so."* This is the saying-so.
+ *
+ * 2026-08-16, the human's overnight redesign brief, verbatim:
+ *
+ *   > "An edit that raises the total still requires staff re-acceptance — that ruling stands.
+ *   >  An edit that only removes items, lowers quantities or changes notes does not."
+ *
+ * It names the exact three exempt cases, so it is a deliberate reversal by the person who made
+ * the 2026-08-13 ruling — not an agent deciding a comment was wrong. The old assertion was
+ * REWRITTEN rather than deleted, so the reversal is visible in this file's history at the place
+ * the original decision was pinned.
+ *
+ * The safety property the old ruling protected — staff must not cook the previous item list —
+ * is now carried by `editChangedTheTotal` instead, which is what writes `total_before_edit`.
+ * That is asserted below, and it is the assertion that must not be weakened: without it a
+ * reduction becomes invisible to staff, which is the outcome the 2026-08-13 ruling existed to
+ * prevent and the 2026-08-16 ruling did not ask for.
+ */
+describe('re-acceptance gates STAFF, and only on a rise', () => {
+  it('is required when the total RISES — an addition', () => {
+    expect(editRequiresReacceptance(95, 120.5)).toBe(true)
   })
 
-  it('is not required when it does not', () => {
+  it('is NOT required when the total FALLS — a removal or a lowered quantity', () => {
+    // Reversed 2026-08-16. Before that date this asserted `true`.
+    expect(editRequiresReacceptance(225, 200)).toBe(false)
+  })
+
+  it('is not required when the total does not move — a notes-only edit', () => {
     expect(editRequiresReacceptance(120.5, 120.5)).toBe(false)
   })
 
-  /**
-   * RULED 2026-08-13: removals are NOT exempt. A removal changes what the kitchen makes and
-   * what the customer pays, so staff see it before cooking; only a notes-only edit is exempt.
-   *
-   * This test exists to fail if someone implements the rejected alternative
-   * (`nextTotal > previousTotal`, exempting a falling total) from the comment on
-   * editRequiresReacceptance. A comment alone did not seem like enough to stop that.
-   */
-  it('is required for a REMOVAL, which lowers the total — removals are not exempt', () => {
-    expect(editRequiresReacceptance(225, 200)).toBe(true)
-    // The rejected alternative would return false here. If this ever passes as false, the
-    // ruling has been reversed without anyone saying so.
-    expect(editRequiresReacceptance(225, 200)).not.toBe(200 > 225)
-  })
-
-  it('sees a one-cent change at an amount where a 0.01 float tolerance would not', () => {
-    // 28.5% of exact one-cent differences fail `Math.abs(a-b) <= 0.01` by binary
-    // representation alone (#180). A cent moving IS the total changing.
+  it('decides in cents, so a one-cent RISE is a rise', () => {
+    // 28.5% of exact one-cent differences fail `Math.abs(a-b) <= 0.01` by binary representation
+    // alone (#180). A cent moving up IS the total rising.
     expect(editRequiresReacceptance(0.29, 0.3)).toBe(true)
     expect(Math.abs(0.3 - 0.29) <= 0.01).toBe(false)
+  })
+})
+
+describe('editChangedTheTotal records EVERY movement, so a reduction still reaches staff', () => {
+  it('is true for a fall, where re-acceptance is now false', () => {
+    // The pair that carries the whole reversal: staff are not GATED on a reduction, but they are
+    // still TOLD about it. `total_before_edit` is written from this, never from the gate.
+    expect(editChangedTheTotal(225, 200)).toBe(true)
+    expect(editRequiresReacceptance(225, 200)).toBe(false)
+  })
+
+  it('is true for a rise as well', () => {
+    expect(editChangedTheTotal(95, 120.5)).toBe(true)
+  })
+
+  it('is false only when the figure genuinely did not move', () => {
+    expect(editChangedTheTotal(120.5, 120.5)).toBe(false)
+  })
+
+  it('sees a one-cent change in either direction, in cents', () => {
+    expect(editChangedTheTotal(0.29, 0.3)).toBe(true)
+    expect(editChangedTheTotal(0.3, 0.29)).toBe(true)
   })
 })
 
