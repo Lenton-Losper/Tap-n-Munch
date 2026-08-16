@@ -740,15 +740,9 @@ export default function MenuBrowsePage() {
     return name
   }
 
-  useEffect(() => {
-    const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
-    for (const item of allItems) {
-      const name = String(item?.name || '')
-      if (name === 'Tea' || name === 'Tea (Rooibos / Five Roses / Green Tea)' || name === 'Americano') {
-        console.log('[browse][variantGroups-debug] item=', name, item)
-      }
-    }
-  }, [groupedItems])
+  // A debug effect that logged the FULL payload of three named menu items on every customer's
+  // browser, on every menu load, went here. It was investigating #229's missing variant groups
+  // and outlived the investigation.
 
   /**
    * EVERY item opens the popup, including one with nothing to choose.
