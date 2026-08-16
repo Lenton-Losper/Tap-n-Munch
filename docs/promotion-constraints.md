@@ -47,10 +47,40 @@ attacker's side. A check that only asserts the attack fails cannot tell the two 
 
 ### Not covered by this pair
 
-The **tab-less** path is a separate, still-open hole — see **#305**. `session_id` is scrubbed
-there correctly, but the raw id reaches the client via `member_session_id`, and it still works as
-an edit credential because the token requirement is scoped to `if (tabId)`. Do not assume
-promoting #302 closes it.
+The **tab-less** path was a separate hole — **#305**, now fixed on staging. Do not assume
+promoting #302 closes it; see the ordering constraint below.
+
+---
+
+## #305 — tab-less `member_session_id` (ORDER, not pairing)
+
+**No split hazard: the fix is server-side only, and there is no client half.** But it **must not
+be promoted before #302**, because it builds directly on it.
+
+| commit | what it does |
+| --- | --- |
+| `d2b5cfd` | `lib/tab-member-key.ts` withholds raw `member_session_id` from non-owners on tab-less rows; probe extended with T0/T1/T2/T3/T4 |
+| `ce44ac2` | the guest-route order-id invariant test |
+| `74d1673` | tab-member-key tab-less unit cases |
+
+The one-line fix reads `ownsRow`, which is computed from the `callerSessionIds` parameter that
+**#302 added** (`5b99b81`) and that #302 made the four call sites in `lib/guest-orders/queries.ts`
+actually pass. Promote #305 onto a base without #302 and the parameter is not there.
+
+**Order: #302 (both halves) first, then #305.** Promoting them together is fine.
+
+### How to tell, after deploying
+
+Same probe, the tab-less phase, and again the positive controls are what distinguish a fix from a
+lockout:
+
+```
+OK       step T0 OWNER still sees own member_session_id
+OK       step T1 SOLO diner can edit own order            lock=200 patch=200
+REFUSED  step T2 OBTAIN the raw owner id
+```
+
+If T1 reports BROKEN, solo diners — customers with no tab at all — cannot edit their own orders.
 
 ---
 
