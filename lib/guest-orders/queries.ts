@@ -368,13 +368,65 @@ export async function fetchGuestActiveTableOrders(params: {
     return q
   }
 
+  /**
+   * A PAYMENT FILTER EXCLUDES order_requests ENTIRELY (#248).
+   *
+   * `order_requests` has no `payment_status` or `payment_channel` in the sense these filters
+   * mean — a request has not been accepted, so no payment has been arranged for it. The request
+   * query below therefore never applied them, which meant a caller asking a specifically
+   * payment-shaped question got requests back that could not possibly match it.
+   *
+   * The live instance: the landing counts hosted-checkout orders older than ten minutes to decide
+   * whether to fire `/api/orders/expire-pending` (v2/page.tsx). An unrelated `waiting_review`
+   * request satisfying neither `paymentStatus: 'pending'` nor `paymentChannel: 'hosted'` was
+   * being returned by that lookup anyway.
+   *
+   * So rather than pretending a request can match, they are excluded when the question is about
+   * payment at all. Stated as one predicate used by BOTH paths, so the count and the rows cannot
+   * disagree about it.
+   */
+  const paymentFiltered = Boolean(params.paymentStatus || params.paymentChannel)
+
+  /** Still-live requests for this session. Shared by the count path and the row path (#249). */
+  const liveRequestsQuery = () => {
+    let q = supabase
+      .from('order_requests')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .eq('table_number', params.tableNumber)
+      .in('status', [...LIVE_REQUEST_STATUSES])
+      .in('session_id', heldIds.length > 0 ? heldIds : [sessionId])
+    if (params.placedAfter) q = q.gte('placed_at', params.placedAfter)
+    if (params.placedBefore) q = q.lt('placed_at', params.placedBefore)
+    return q
+  }
+
   if (params.countOnly) {
-    // Single column, for the reason measured in fetchGuestOrdersBySession: counts return a
-    // number with no ids, so summing two would double-count every row both columns match —
-    // which on 2026-08-14 is every row (0 of 213 staging / 0 of 1000 production differ).
-    const { count, error } = await ordersQueryFor(heldIds.length > 0 ? 'session_id' : null)
+    /**
+     * COUNTS order_requests TOO (#249).
+     *
+     * This counted `orders` alone while the row path a few lines below returns
+     * `requestRows + orders` and reports `count: merged.length`. So the SAME function answered
+     * the same question two different ways depending on a boolean: a customer whose only live
+     * item was an unaccepted request counted as 0 by the count path and 1 by the row path.
+     *
+     * That is not academic. The landing calls this with `countOnly` and, on a zero, wipes the
+     * customer's active-order banner state (v2/page.tsx) — so a customer with a live request
+     * pending had the one thing telling them about it thrown away.
+     *
+     * Single column, for the reason measured in fetchGuestOrdersBySession: counts return a
+     * number with no ids, so summing two would double-count every row both columns match —
+     * which on 2026-08-14 is every row (0 of 213 staging / 0 of 1000 production differ).
+     */
+    const [{ count, error }, requestResult] = await Promise.all([
+      ordersQueryFor(heldIds.length > 0 ? 'session_id' : null),
+      paymentFiltered
+        ? Promise.resolve({ count: 0, error: null })
+        : liveRequestsQuery(),
+    ])
     if (error) throw error
-    return { orders: [], count: count ?? 0 }
+    if (requestResult.error) throw requestResult.error
+    return { orders: [], count: (count ?? 0) + (requestResult.count ?? 0) }
   }
 
   const [bySession, byMember] = await Promise.all([
@@ -398,26 +450,17 @@ export async function fetchGuestActiveTableOrders(params: {
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
   // is included for the same reason as in fetchGuestOrdersBySession -- see
-  // LIVE_REQUEST_STATUSES.
-  let requestQuery = supabase
-    .from('order_requests')
-    .select('*')
-    .eq('restaurant_id', restaurantUuid)
-    .eq('table_number', params.tableNumber)
-    .in('status', [...LIVE_REQUEST_STATUSES])
-    .in('session_id', heldIds.length > 0 ? heldIds : [sessionId])
-
-  if (params.placedAfter) {
-    requestQuery = requestQuery.gte('placed_at', params.placedAfter)
+  // LIVE_REQUEST_STATUSES. Skipped entirely when the caller asked a payment-shaped question
+  // (#248) -- see `paymentFiltered` above -- and built by the same helper the count path uses,
+  // so the two cannot drift apart again (#249).
+  let requests: unknown[] | null = []
+  if (!paymentFiltered) {
+    const { data, error: requestError } = await liveRequestsQuery().order('placed_at', {
+      ascending: false,
+    })
+    if (requestError) throw requestError
+    requests = data
   }
-  if (params.placedBefore) {
-    requestQuery = requestQuery.lt('placed_at', params.placedBefore)
-  }
-
-  const { data: requests, error: requestError } = await requestQuery.order('placed_at', {
-    ascending: false,
-  })
-  if (requestError) throw requestError
 
   const requestRows = (requests ?? []).map((row) => mapOrderRequestToGuestRow(row as Record<string, unknown>))
   const merged = [...requestRows, ...orders].sort((a, b) => {
