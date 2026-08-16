@@ -25,6 +25,29 @@ export const QR_REDESIGN_PENDING_COPY = {
    * Replaces the toast the cart used to raise on its way back to the menu.
    */
   orderPlacedBanner: 'PENDING COPY — Order sent to the restaurant',
+
+  /**
+   * Renders: the browse tab strip, leading word. Spec section 9 demotes the strip to a
+   * lightweight entry point, so the headline is a state word and nothing else.
+   */
+  stripHeadlineOpen: 'PENDING COPY — Table tab',
+  stripHeadlineReadyToPay: 'PENDING COPY — Ready to pay',
+  stripHeadlineClosed: 'PENDING COPY — Tab closed',
+
+  /**
+   * Renders: the browse tab strip, trailing affordance.
+   *
+   * It says VIEW, not settle. The old strip said "Tap to settle →" while navigating to a screen
+   * that shows the bill; spec section 30 puts the settlement action on the Tab and leaves the
+   * strip as navigation.
+   */
+  stripCta: 'PENDING COPY — View tab →',
+
+  /**
+   * Renders: the browse header, the button that opens the shared Tab.
+   * New destination — the Tab was previously reachable only by tapping the strip.
+   */
+  navTab: 'PENDING COPY — Tab',
 } as const
 
 /**

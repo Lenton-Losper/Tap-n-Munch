@@ -1,12 +1,19 @@
 /**
  * @jest-environment jsdom
  *
- * The browse header's right-hand row carries two outline buttons side by side: Receipt and
- * My Orders. Both labels are `hidden sm:inline`, so below the `sm` breakpoint — a 360px phone,
- * which is the entire QR use case — the ICON is the only thing telling them apart.
+ * The browse header's right-hand row carries two outline buttons side by side. Both labels are
+ * `hidden sm:inline`, so below the `sm` breakpoint — a 360px phone, which is the entire QR use
+ * case — the ICON is the only thing telling them apart.
  *
  * Both rendered lucide's <Receipt />. Two identical glyphs, two different destinations, no way
  * to tell which was which.
+ *
+ * THE PAIR CHANGED, THE RULE DID NOT (2026-08-16, redesign spec sections 7/33/37). The first
+ * button is now **Tab**, not Receipt: `/menu/[id]/receipt` is a running-bill screen rather than
+ * a paid receipt, so it was demoted out of the header, and the Tab — previously reachable only
+ * by tapping the strip — took the slot. This file was NOT deleted and its assertions were NOT
+ * weakened. What it records is a decision about two adjacent icon-only controls, and that
+ * decision outlives the particular pair; only the label it looks the buttons up by moved.
  *
  * The labels are not the fix: they collapse deliberately. The comment beside the button records
  * that a third labelled control pushed the left block past its truncation point, rendering the
@@ -55,13 +62,22 @@ jest.mock('@/contexts/cart-context', () => ({
     clearCart: jest.fn(),
   }),
 }))
+/**
+ * A customer WITH a tab, deliberately.
+ *
+ * The subject of this file is two adjacent icon-only buttons, and that pair only exists on a
+ * tab: the first slot is now **Tab**, which is gated on being in one because there is nothing to
+ * view otherwise. The fixture previously said `isInTab: false`, which was fine while the slot
+ * held Receipt (gated on `table > 0`) and is not fine now.
+ */
 jest.mock('@/contexts/tab-context', () => ({
   useTab: () => ({
-    isInTab: false,
-    tabId: '',
+    isInTab: true,
+    tabId: 'tab-1',
     tabTotal: 0,
-    tabMembers: [],
-    tabStatus: null,
+    tabPending: 0,
+    tabMembers: [{ session_id: 'sess-1', name: 'Lenton' }],
+    tabStatus: 'open',
     clearTab: jest.fn(),
   }),
 }))
@@ -90,6 +106,7 @@ jest.mock('@/lib/supabase/menu', () => ({ getSupabaseCategories: jest.fn() }))
 import BrowsePage from '@/app/menu/[restaurantId]/browse/page'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
 import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 
 let container: HTMLDivElement
 let root: Root
@@ -142,17 +159,17 @@ function iconGeometry(button: HTMLButtonElement): string {
     .join('|')
 }
 
-describe('browse header — Receipt and My Orders are tellable apart', () => {
+describe('browse header — Tab and My Orders are tellable apart', () => {
   it('renders a different icon in each button', async () => {
     await renderBrowse()
 
-    const receipt = iconGeometry(buttonLabelled('Receipt'))
+    const tab = iconGeometry(buttonLabelled(QR_REDESIGN_PENDING_COPY.navTab))
     const myOrders = iconGeometry(buttonLabelled(CUSTOMER_NAV_COPY.myOrders))
 
-    expect(receipt).not.toBe('')
+    expect(tab).not.toBe('')
     expect(myOrders).not.toBe('')
     // The defect verbatim: below `sm` these two are the whole of what the customer can see.
-    expect(myOrders).not.toBe(receipt)
+    expect(myOrders).not.toBe(tab)
   })
 
   it('gives both buttons an accessible name, since below `sm` they are icon-only', async () => {
@@ -160,7 +177,16 @@ describe('browse header — Receipt and My Orders are tellable apart', () => {
 
     // buttonLabelled throws if the name is missing; assert the pair explicitly so the reason
     // the names matter is on the record next to the icon assertion.
-    expect(buttonLabelled('Receipt')).toBeTruthy()
+    expect(buttonLabelled(QR_REDESIGN_PENDING_COPY.navTab)).toBeTruthy()
     expect(buttonLabelled(CUSTOMER_NAV_COPY.myOrders)).toBeTruthy()
+  })
+
+  it('no longer offers Receipt from the browse header', async () => {
+    await renderBrowse()
+
+    // Spec sections 33/37. The ROUTE survives and is still linked from the landing, /menu, the
+    // gateway-return confirmation and ActiveOrderBanner -- this asserts only that the header
+    // stopped presenting it as a primary destination.
+    expect(container.querySelector('button[aria-label="Receipt"]')).toBeNull()
   })
 })
