@@ -414,6 +414,54 @@ async function run() {
       detail: { lentonStatus: lentonSees.status, bobStatus: bobSees.status },
     })
 
+    /**
+     * B-money: the LINE FIGURES are what the customer pays (#293).
+     *
+     * The click test found "Beef Burger x1 - NAD82.61" printed above "NAD95.00", because the
+     * grouping read each line's ex-VAT `subtotal`. Two independent assertions, because either
+     * alone can pass while the screen is wrong:
+     *
+     *   1. every order's lines SUM to that order's own total -- catches the mixed basis;
+     *   2. at least one line equals a MENU price exactly -- catches the case where lines and
+     *      total are consistently wrong together, which assertion 1 would happily accept.
+     *
+     * It reports INCONCLUSIVE-AS-FAIL rather than passing on no data: "all 0 orders summed
+     * correctly" proves nothing.
+     */
+    {
+      const seen = (lentonSees.body?.members ?? []).flatMap((m: any) => m.orders ?? [])
+      const menuPrices = menu.map((m: any) => Number(m.base_price))
+      const mismatches: string[] = []
+      let linesChecked = 0
+      let matchedMenuPrice = false
+      for (const o of seen) {
+        const lines = Array.isArray(o?.lines) ? o.lines : []
+        if (!lines.length) continue
+        linesChecked += lines.length
+        const sum = Math.round(lines.reduce((n: number, l: any) => n + Number(l?.total ?? 0), 0) * 100) / 100
+        const target = Math.round(Number(o?.total ?? 0) * 100) / 100
+        if (Math.abs(sum - target) > 0.01) {
+          mismatches.push(`order ${o?.order_number ?? o?.id}: lines ${sum} vs total ${target}`)
+        }
+        for (const l of lines) {
+          if (menuPrices.some((p) => Math.abs(Number(l?.total ?? 0) - p) < 0.01)) matchedMenuPrice = true
+        }
+      }
+      const ok = linesChecked > 0 && mismatches.length === 0 && matchedMenuPrice
+      record({
+        event: 'B-money',
+        verdict: ok ? 'PASSES' : 'FAILS',
+        observed:
+          linesChecked === 0
+            ? 'INCONCLUSIVE-AS-FAIL: no order lines were returned, so "the lines add up" proves nothing'
+            : ok
+              ? `every line figure is tax-inclusive: ${linesChecked} lines across ${seen.length} orders sum to their own order totals, and at least one equals a menu price exactly`
+              : `line figures are not what is charged. ${mismatches.join('; ') || 'sums agree'}` +
+                `${matchedMenuPrice ? '' : ' | NO line equalled any menu price -- the ex-VAT basis (#293) looks like it is back'}`,
+        detail: { linesChecked, mismatches, matchedMenuPrice },
+      })
+    }
+
     // B6: no cross-customer edit affordance. `is_self` must be true for exactly one group each.
     const selfFor = (r: any) =>
       (r.body?.members ?? []).filter((m: any) => m.is_self).map((m: any) => m.display_name)
