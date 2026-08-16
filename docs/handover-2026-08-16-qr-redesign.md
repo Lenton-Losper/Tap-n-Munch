@@ -810,10 +810,78 @@ PayCloud webhook. **That half is yours to rule on.**
 
 ---
 
+# WHAT THE INVESTIGATIONS TURNED UP — including two things I then fixed
+
+Four read-only investigations ran alongside the build. Their findings, and what I did with them.
+
+## #288 — the terminal labels every order "Guest". FIXED, and it needed no APK.
+
+`TableDetailScreen.tsx:665` renders `{item.member_name || 'Guest'}` — and `member_name` **did not
+exist anywhere in the web app**. Verified two-sided, exit codes read from the command itself:
+
+    git grep -q "member_name"       -- '*.ts' '*.tsx' '*.sql'  -> exit 1  ABSENT
+    git grep -q "member_session_id" -- '*.ts'                  -> exit 0  control, search works
+
+So the fallback fired on every row, always. **This is not cosmetic**: the terminal ships a
+per-order multi-select and a "Settle Selected" button — the feature that answers *"I'll pay
+mine"* — and staff could not tell which orders were whose. As of tonight the customer's phone
+groups their tab by name and the staff terminal did not.
+
+Fixed server-side; **the device already reads `member_name` and already falls back to 'Guest'**,
+so the field simply starts arriving. The raw `session_id` / `member_session_id` are destructured
+off before the response spread — `ownsOrder` makes knowing one the whole authorisation, and there
+is no reason for one to be on a terminal screen.
+
+## #287 — the first partial settle wipes the ready-to-pay signal. FILED, NOT FIXED.
+
+`clearReadyToPayAndReopenTab` clears `payment_preference` / `ready_to_pay_at` **unconditionally**,
+with no "does this tab still owe money" guard. On a table of four who have all asked to pay,
+charging one diner wipes the signal for the other three, and the terminal's chip — which reads
+`tab.status === 'ready_to_pay'` — silently disappears.
+
+**I did not fix it, and the reason is a three-way tension worth your ruling:**
+
+- Restoring the chip means keeping `status = 'ready_to_pay'` — and `app/api/orders/route.ts:138`
+  **refuses new orders on a `ready_to_pay` tab**, which would stop the remaining diners ordering
+  anything more. That contradicts Event L and the helper's own documented intent.
+- Preserving only the flags and reopening the status changes **nothing observable**: every
+  consumer keys on `status`.
+- So **every option that restores the staff signal needs a terminal change**, which needs an APK,
+  which needs TMS lead time.
+
+Options and a recommendation are in #287. Short version: preserve the flags now (safe, additive,
+stops destroying the record), split the concepts properly when an APK is next built.
+
+## Findings I did NOT act on, recorded so nobody re-derives them
+
+- **`/tab` never fetches the PIN.** Browse reads it from the token-guarded route; the Tab screen
+  shows only `sessionStorage.flashtap_creator_tab_pin`, so **a joined member sees no PIN there**.
+  Spec §10 wants the PIN findable; today it is findable on the menu strip only. Not a regression —
+  it predates tonight — but it is the gap if you were expecting the Tab to carry it.
+- **`/order-confirmation` is the signed Finatic `return_url`** (`payments/paycloud.js:393-398,
+  560, 787`), so that route can be demoted but **never renamed**. Piece 2 and piece 8 both respect
+  this; anyone tempted to delete it should read that first.
+- **#252's number is stale.** It claims 39 commits main-not-staging; measured tonight by
+  `git cherry` / patch-id it is **23**, and the payment stack it names has landed on staging.
+- **#255 and #256 premises are now false as written** — staging has the stock files and the
+  gateway-amount constants they say it lacks.
+- **#179 has a recorded ruling against it** — fixed at `df99356`, then **reverted at `f74303e`**,
+  with the reasoning preserved as a test comment at `origin/main:__tests__/table-landing-routing.test.ts:133`.
+  Do not re-fix without overturning that.
+- **#200 and #117 are the same defect filed twice**, and the mechanism is narrower than the title:
+  the pricer never *selects* `variant_groups`, so it does not ignore a price it can see. Whether
+  anyone is undercharged depends on whether a priced option has no legacy twin. **Measure before
+  building a fix.**
+- **#268 and #238 are the same eight lines** — `mark-order-paid-confirmed.ts:99-108` writes the
+  order's own total as both `amount` and `clientAmount`, and never records `gatewayAmount`. One
+  change closes both.
+
+---
+
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
-    origin/cloudflare-staging     4f2ee41
+    origin/cloudflare-staging     a26484a
     staging DB migration drift    136 local / 136 applied — CLEAN. No piece tonight carries a migration.
     unpushed, all local branches  ZERO (positional form)
     A–Q simulation                26 checks, 0 FAILS against the deployed worker
@@ -826,7 +894,7 @@ PayCloud webhook. **That half is yours to rule on.**
     qrd/5-shared-tab                    docs/qr-redesign-2026-08-16
     fix/286-unpaid-tab-flag-figures     fix/173-ready-order-told-preparing
     fix/browse-debug-logging            fix/275-staff-transition-copy
-    fix/283-tab-pin-csprng
+    fix/283-tab-pin-csprng              fix/288-terminal-member-name
 
 ## Everything the spec asked for that the domain could NOT truthfully support
 
