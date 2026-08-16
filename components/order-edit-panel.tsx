@@ -24,6 +24,13 @@ import {
   normalizeSessionIds,
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
+import { useRouter } from 'next/navigation'
+import {
+  EDIT_PICK_PARAM,
+  clearPendingAdditions,
+  readPendingAdditions,
+  writePendingAdditions,
+} from '@/lib/orders/edit-pending-additions'
 import {
   OrderEditRefused,
   acquireOrderEditLock,
@@ -83,6 +90,7 @@ export function OrderEditPanel({
 }) {
   // Normalised once. Memoised on the JOINED value rather than the array identity, because a
   // parent that rebuilds the array each render would otherwise re-run every effect keyed to it.
+  const router = useRouter()
   const sessionIdsKey = normalizeSessionIds(sessionIdsProp).join('|')
   const sessionIds = useMemo(() => (sessionIdsKey ? sessionIdsKey.split('|') : []), [sessionIdsKey])
 
@@ -160,6 +168,8 @@ export function OrderEditPanel({
       const acquired = await acquireOrderEditLock({ orderId, restaurantId, sessionIds })
       setGrant(acquired)
       setLines(toWorkingLines(acquired.items))
+      // Deliberately NOT resetting `additions`: a reopen after the menu round trip must keep
+      // what the customer just picked.
       setNotes(String(acquired.orderInstructions ?? ''))
     } catch (err) {
       setError(err instanceof OrderEditRefused ? err.message : 'Could not open this order for editing')
@@ -167,6 +177,34 @@ export function OrderEditPanel({
       setBusy(false)
     }
   }
+
+  /**
+   * REOPEN AFTER THE MENU ROUND TRIP.
+   *
+   * No extra query parameter: a pending addition existing for this order IS the signal that an
+   * edit is in progress. Cancel clears the list, which clears the storage, so this cannot loop.
+   * The lock was released on unmount and is re-acquired here -- the holder renewing their own
+   * lock is explicitly allowed.
+   */
+  const reopenedRef = useRef(false)
+  useEffect(() => {
+    if (reopenedRef.current) return
+    if (grantRef.current) return
+    if (readPendingAdditions(orderId).length === 0) return
+    if (refusal) return
+    reopenedRef.current = true
+    /**
+     * Scheduled, not called inline. `open()` sets state synchronously, and
+     * `react-hooks/set-state-in-effect` is an error under the blocking lint gate. Deferring is
+     * also the better behaviour: the customer sees their order in its normal state for one
+     * frame and then the editor opens, rather than the screen assembling itself twice.
+     */
+    const timer = window.setTimeout(() => void open(), 0)
+    return () => window.clearTimeout(timer)
+    // Mount-only by construction: the ref makes a second run a no-op, and `open` is recreated
+    // every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId])
 
   const close = () => {
     release()
@@ -213,7 +251,38 @@ export function OrderEditPanel({
    * of the same item rather than one line of two — which is what the bill honestly shows: the
    * first at the price quoted when it was ordered, the second at today's.
    */
-  const [additions, setAdditions] = useState<Array<Record<string, unknown>>>([])
+  /**
+   * Seeded from sessionStorage, because "+ Add something" leaves this ROUTE and unmounts this
+   * component -- which also releases the edit lock, deliberately. See
+   * lib/orders/edit-pending-additions.ts for why the pending edit cannot live in component state
+   * across that round trip and must not live on the server either.
+   */
+  const [additions, setAdditions] = useState<Array<Record<string, unknown>>>(() =>
+    readPendingAdditions(orderId),
+  )
+
+  // Kept in sync both ways: every change to the list is written back, so a customer who goes to
+  // the menu a second time does not lose the first pick.
+  useEffect(() => {
+    writePendingAdditions(orderId, additions)
+  }, [orderId, additions])
+
+  /**
+   * Leave for the menu in picker mode. The lock is released on unmount as usual -- holding it
+   * while the customer browses would block the table for three minutes for no benefit, and the
+   * editor re-acquires on return.
+   */
+  const goPickSomething = () => {
+    // From the ORDER ROW, not from props: this component is mounted on two different screens and
+    // only the row knows which table and tab the order belongs to.
+    const tableNumber = Number(order?.table_number) || 0
+    const tabId = String(order?.tab_id ?? '').trim()
+    const query = new URLSearchParams()
+    if (tableNumber) query.set('table', String(tableNumber))
+    if (tabId) query.set('tabId', tabId)
+    query.set(EDIT_PICK_PARAM, orderId)
+    router.push(`/menu/${restaurantId}/browse?${query.toString()}`)
+  }
 
   const addOneMore = (index: number) => {
     const item = (Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [])[index]
@@ -272,6 +341,7 @@ export function OrderEditPanel({
         ...(notesChanged ? { orderInstructions: notes } : {}),
       })
       // The lock is spent by a successful commit, so there is nothing to release.
+      clearPendingAdditions(orderId)
       grantRef.current = null
       setGrant(null)
       setLines([])
@@ -442,6 +512,20 @@ export function OrderEditPanel({
           ))}
         </div>
       )}
+
+      {/* "+ ADD SOMETHING". Ruled 2026-08-16. Opens the MENU in picker mode and comes back to
+          this pending edit -- not to the cart, which would place a second order for what the
+          customer meant as a change to this one. Nothing commits until Save. */}
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full font-semibold"
+        onClick={goPickSomething}
+        disabled={busy}
+      >
+        <Plus className="mr-2 h-4 w-4" />
+        {EDIT_COPY.addSomething}
+      </Button>
 
       <label className="block text-sm">
         <span className="mb-1 block font-medium text-[#374151]">Notes for the kitchen</span>

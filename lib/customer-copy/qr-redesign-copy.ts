@@ -74,6 +74,15 @@ export const QR_REDESIGN_PENDING_COPY = {
    * resolved. It must NOT invent an owner, and it must not read as an error the customer caused.
    */
   tabUnattributedHeading: 'PENDING COPY — Also on this table',
+
+  /**
+   * Renders: the menu, when the customer arrived from the order editor via "+ Add something".
+   * The menu is otherwise identical, and the one thing that differs — where an added item goes —
+   * is invisible until it happens, so it has to be said.
+   */
+  pickerBanner: 'PENDING COPY — Choosing something to add to your order',
+  /** Renders: beside the banner above. A way back that does not require trusting the Back button. */
+  pickerBack: 'PENDING COPY — Back to my order',
 } as const
 
 /**

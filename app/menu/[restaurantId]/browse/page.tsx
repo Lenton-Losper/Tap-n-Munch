@@ -26,6 +26,11 @@ import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
 import { buildBrowseTabStrip } from '@/lib/tabs/browse-tab-strip'
+import {
+  EDIT_PICK_PARAM,
+  appendPendingAddition,
+  toPendingAddition,
+} from '@/lib/orders/edit-pending-additions'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
@@ -86,6 +91,12 @@ export default function MenuBrowsePage() {
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
   const kioskSessionId = isKiosk ? getCurrentSession() : null
+  /**
+   * PICKER MODE. Set when the customer arrived here from the ORDER EDITOR via "+ Add something".
+   * The menu behaves identically except at the moment of adding: the item goes to that order's
+   * pending edit instead of to the cart, and the customer is returned to it.
+   */
+  const pickForOrderId = searchParams.get(EDIT_PICK_PARAM)?.trim() || ''
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -930,6 +941,30 @@ export default function MenuBrowsePage() {
         </div>
       </header>
 
+      {/* PICKER MODE BANNER. The menu looks the same as always, and the ONE thing that differs
+          is what happens when you add something — which is invisible until it happens. So it is
+          said out loud, with a way out that does not require guessing that Back is safe. */}
+      {pickForOrderId && (
+        <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm font-sans text-amber-900">
+          <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
+            <span>{QR_REDESIGN_PENDING_COPY.pickerBanner}</span>
+            <button
+              type="button"
+              className="shrink-0 font-semibold underline"
+              onClick={() =>
+                router.replace(
+                  `/menu/${restaurantId}/order-confirmation/${pickForOrderId}${
+                    tableNumber > 0 ? `?table=${tableNumber}` : ''
+                  }`,
+                )
+              }
+            >
+              {QR_REDESIGN_PENDING_COPY.pickerBack}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* THE TAB STRIP — a lightweight entry point, not a summary of the whole bill.
 
           Spec section 9. It used to be one dense sentence carrying status, money, people, the
@@ -1241,6 +1276,26 @@ export default function MenuBrowsePage() {
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
             if (!effectiveIsInTab && !isKiosk) return
+            /**
+             * PICKER MODE. Ruled 2026-08-16: "+ Add something" inside the editor opens the menu
+             * and returns to the PENDING edit, not to the cart. Nothing commits until Save.
+             *
+             * So in picker mode the item does NOT enter the cart -- putting it there would let a
+             * customer Place Order on something they meant to add to an existing order, which is
+             * two kitchen tickets for one intention and exactly what the ruling avoids.
+             */
+            if (pickForOrderId) {
+              appendPendingAddition(pickForOrderId, toPendingAddition(cartItem as never))
+              setSelectedItem(null)
+              // BACK TO THE EDITOR, which lives on the per-order screen -- not to My Orders.
+              // The panel reopens itself because a pending addition exists for this order.
+              router.replace(
+                `/menu/${restaurantId}/order-confirmation/${pickForOrderId}${
+                  tableNumber > 0 ? `?table=${tableNumber}` : ''
+                }`,
+              )
+              return
+            }
             addItem(cartItem)
             pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)
