@@ -20,7 +20,7 @@
  */
 import {
   menuBodyState,
-  shouldShowPartialMenuNotice,
+  shouldShowMenuNoticeBanner,
   type MenuBodyState,
 } from '@/lib/menu/menu-body-state'
 import type { MenuNotice } from '@/lib/menu/load-menu-categories'
@@ -44,7 +44,7 @@ describe('the partial-failure banner', () => {
       loadedOnce: true,
       searchQuery: 'espresso',
     })
-    expect(shouldShowPartialMenuNotice({ notice: partial, bodyState })).toBe(true)
+    expect(shouldShowMenuNoticeBanner({ notice: partial, bodyState })).toBe(true)
   })
 
   it('shows alongside items, as it always did', () => {
@@ -56,26 +56,57 @@ describe('the partial-failure banner', () => {
       searchQuery: '',
     })
     expect(bodyState).toBe('items')
-    expect(shouldShowPartialMenuNotice({ notice: partial, bodyState })).toBe(true)
+    expect(shouldShowMenuNoticeBanner({ notice: partial, bodyState })).toBe(true)
   })
 
   it('is absent when nothing failed', () => {
-    expect(shouldShowPartialMenuNotice({ notice: null, bodyState: 'items' })).toBe(false)
+    expect(shouldShowMenuNoticeBanner({ notice: null, bodyState: 'items' })).toBe(false)
   })
 
-  it('is absent for a TOTAL failure — that is the body’s job, not a banner’s', () => {
-    expect(shouldShowPartialMenuNotice({ notice: total, bodyState: 'empty' })).toBe(false)
+  /**
+   * REVERSED BY #224, deliberately, and the old assertion is rewritten rather than deleted so the
+   * change is visible where the original expectation was pinned.
+   *
+   * It used to read: `is absent for a TOTAL failure — that is the body's job, not a banner's`.
+   * That is true when the body IS rendering the failure — and `menuBodyState` does not render it
+   * while a search is running, because of its own recorded decision. So during a search a total
+   * outage fell through to "No items found" with nothing saying the menu had not loaded.
+   */
+  it('#224: a TOTAL outage shows the banner while searching, because the body will not', () => {
+    const bodyState = menuBodyState({
+      hasEntries: false,
+      notice: total,
+      loading: false,
+      loadedOnce: true,
+      searchQuery: 'espresso',
+    })
+    // The body keeps its recorded wording...
+    expect(bodyState).toBe('empty')
+    // ...and the banner carries the truth the body is not allowed to.
+    expect(shouldShowMenuNoticeBanner({ notice: total, bodyState })).toBe(true)
+  })
+
+  it('a TOTAL outage does NOT duplicate the full-page block when not searching', () => {
+    const bodyState = menuBodyState({
+      hasEntries: false,
+      notice: total,
+      loading: false,
+      loadedOnce: true,
+      searchQuery: '',
+    })
+    expect(bodyState).toBe('failed')
+    expect(shouldShowMenuNoticeBanner({ notice: total, bodyState })).toBe(false)
   })
 
   it('does not duplicate the full-page failure block', () => {
     // When the body renders `failed` it already carries the same title, description and retry.
-    expect(shouldShowPartialMenuNotice({ notice: partial, bodyState: 'failed' })).toBe(false)
+    expect(shouldShowMenuNoticeBanner({ notice: partial, bodyState: 'failed' })).toBe(false)
   })
 
   it.each<MenuBodyState>(['items', 'loading', 'empty'])(
     'shows in the %s body state, where the body says nothing about the failure',
     (bodyState) => {
-      expect(shouldShowPartialMenuNotice({ notice: partial, bodyState })).toBe(true)
+      expect(shouldShowMenuNoticeBanner({ notice: partial, bodyState })).toBe(true)
     }
   )
 })

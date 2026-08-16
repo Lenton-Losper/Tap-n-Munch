@@ -41,7 +41,7 @@ import {
   menuLoadNotice,
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
-import { menuBodyState, shouldShowPartialMenuNotice } from '@/lib/menu/menu-body-state'
+import { menuBodyState, shouldShowMenuNoticeBanner } from '@/lib/menu/menu-body-state'
 import { canOpenItemSheet } from '@/lib/menu/item-sheet-availability'
 import {
   getDefaultGroupSelection,
@@ -1155,7 +1155,7 @@ export default function MenuBrowsePage() {
               not restate it. */}
           {/* `menuNotice &&` is here to NARROW the type for the JSX below, not to restate the
               rule — the rule checks null itself. Without it tsc cannot see through the call. */}
-          {menuNotice && shouldShowPartialMenuNotice({ notice: menuNotice, bodyState }) ? (
+          {menuNotice && shouldShowMenuNoticeBanner({ notice: menuNotice, bodyState }) ? (
             <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />

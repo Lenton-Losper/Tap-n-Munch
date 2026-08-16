@@ -69,7 +69,11 @@ export function menuBodyState({
 }
 
 /**
- * Whether to show the inline PARTIAL-failure banner (#246).
+ * Whether to show the inline menu-failure banner (#246, extended by #224).
+ *
+ * Named for the BANNER rather than for `partial`, because it stopped meaning "partial only" when
+ * #224 brought total outages in. A predicate whose name is narrower than its behaviour is how the
+ * next person introduces a bug in it.
  *
  * A DIFFERENT SEAM FROM THE ONE ABOVE, and the distinction is the whole fix. `menuBodyState`
  * decides what the BODY says, and it deliberately refuses to let a stale notice displace "No
@@ -91,10 +95,29 @@ export function menuBodyState({
  * suppression: when the body is already rendering the full-page failure block, that block carries
  * the same title, description and retry, so the banner would be the same message twice.
  */
-export function shouldShowPartialMenuNotice(input: {
+export function shouldShowMenuNoticeBanner(input: {
   notice: MenuNotice | null
   bodyState: MenuBodyState
 }): boolean {
-  if (!input.notice || input.notice.tone !== 'partial') return false
+  if (!input.notice) return false
+  /**
+   * TOTAL FAILURES SHOW HERE TOO, WHILE SEARCHING (#224).
+   *
+   * A total outage normally renders the full-page `failed` block, and this returns false for it
+   * because `bodyState === 'failed'` — that block already carries the same title, description and
+   * retry, so a banner would be the message twice.
+   *
+   * But `menuBodyState` deliberately does NOT return `failed` while a search is running: its
+   * recorded decision is *"while searching, a stale notice must not displace the 'no results'
+   * wording."* So during a search a total outage falls to `empty`, and the customer was shown a
+   * bare **"No items found"** — a claim about the restaurant's menu — when in fact NOTHING had
+   * loaded and there was nothing to search.
+   *
+   * That decision is not overruled here and `menuBodyState` is untouched. The body still says
+   * "No items found"; this puts the outage and its retry ABOVE it, which is the same two-seam
+   * split #246 established. Whether the BODY's own wording should change for a total outage is a
+   * separate question and is the human's — filed rather than built.
+   */
+  if (input.notice.tone !== 'partial' && input.notice.tone !== 'total') return false
   return input.bodyState !== 'failed'
 }
