@@ -1396,6 +1396,101 @@ that trusts whatever env it finds will drive an automated browser against the li
 fixture library refuses any project ref but staging, and the pre-fix worktree gets its own
 staging-only `.env.local` written from `.env.test`.
 
+# CLICK TEST ROUND 2 — the confirmation screen, and what a line is
+
+Filed **#296** (invented order number), **#297** (the two-burger finding), **#298** (`basePrice`
+null), **#299** (add-ons not rendered). #296 and #299 fixed; #297 and #298 are findings only.
+
+## #296 — "Order #0" was invented
+
+`order_requests` has **no `order_number` column at all**. A number is allocated when staff Accept,
+which is what creates the `orders` row. The page mapped `Number(row.order_number || 0)` and the
+view rendered `#{orderNumber}` unconditionally, so every submitted-but-unaccepted request showed
+**"Order #0"** in bold green under "Order Placed!".
+
+The decision was **reused, not re-invented**: `tab/page.tsx` already answers this with
+`order_number != null ? #n : tabOrderNotYetNumbered`, and the same predicate and the same copy
+constant are used on the confirmation screen. No wording drafted. A test asserts only one
+`NotYetNumbered` constant exists — a second, differently-worded answer is how two screens start
+disagreeing about one fact.
+
+## #297 — two Beef Burgers at N$130 and N$107 were two ADD-ON configurations
+
+Not the piece-6 mixed-vintage ruling. Both lines price at **today's** base of 95:
+
+    items           basePrice 95   unitPrice 130   addons [Extra patty +35]   → 130
+    items_customer  basePrice null unitPrice 107   addons [Cheese      +12]   → 107
+
+`edit_history` confirms it: `17:52:37 new_total 237` — that is 130 + 107, both lines on screen,
+which is the state that was reported. A second edit at `17:53:02` removed the 130 line.
+
+They are two lines rather than one at quantity 2 because `findMergeableLineIndex` (#133) merges
+only on identical item **and add-ons**. Different add-on sets are different configurations that
+happen to share a display name.
+
+## #299 — and the add-on was the one thing not drawn
+
+Census **by name**, not by what a type reaches — the distinction #293 got wrong and #295 had to
+correct:
+
+| Surface | size | add-ons | variants |
+|---|---|---|---|
+| order confirmation | ✗ | ✗ | ✗ |
+| shared tab | ✗ | ✗ | ✗ |
+| tab receipt | ✗ | ✗ | ✗ |
+| secure checkout | ✗ | ✗ | ✗ |
+| my orders | ✗ | ✗ | ✗ |
+| the order editor | ✗ | ✗ | ✗ |
+| the cart | ✓ | ✓ | **✗** |
+
+Six surfaces showed nothing; the cart was the only one showing anything and still dropped
+variants. **The editor is the screen the two indistinguishable burgers were actually on.**
+
+`lib/orders/line-configuration.ts` is the one rule and reads **both** stored shapes. No new
+wording: it returns the customer's own selections, empty when nothing was configured, and variant
+VALUES only — `{"Milk":"Oat"}` reads `Oat`, because the group is the question and the value is the
+answer.
+
+Two halves or the fix is inert: `TabGroupLine` carries `configuration` flattened **server-side**
+(that payload is what another diner may see), and the confirmation mapper stops narrowing
+`size`/`addons`/`selectedVariants` away.
+
+## #298 — `basePrice` null is deliberate, and one operator is what keeps it harmless
+
+`edit-pending-additions.ts:78` withholds client money from the edit payload on purpose, and the
+server's `PricedOrderLineItem` has **no `basePrice` field at all**. So cart-placed lines carry it
+and server-priced lines do not — structural, not a bug.
+
+Exactly **one** production reader on a stored line, `issueReceipt.ts:151`:
+
+    item.unitPrice ?? item.unit_price ?? item.price ?? item.basePrice ?? item.base_price
+
+`??` means null **falls through**, and `basePrice` is fourth behind `unitPrice`, which every
+server-priced line carries. No wrong number and no crash today — but that is a property of the
+operator and the ordering, not of anything validating the data.
+
+`Number(null)` is **0**, not `NaN`. So a future reader written `(item.basePrice || 0) * qty`
+produces a plausible figure rather than an obvious break. That is the shape to watch, and it is
+the same family as the incident recorded at `issueReceipt.ts:137`, where the old fallback chain
+never matched the cart's shape and **every receipt ever issued rendered `unit_price` and
+`line_total` as 0**.
+
+## Piece 2 was NOT defective — measured, not reasoned
+
+Driven in a browser: seeded tab, item in cart, pressed Place Order.
+
+    NAVIGATIONS AFTER SUBMIT:
+      /my-orders?table=9453&placed=1
+      /my-orders?table=9453
+
+The redirect fires. On a tab `inTabFlow` is true and only `handleAddToTab` renders;
+`handlePlaceOrder` sits behind `isKiosk && !inTabFlow` and cannot run. The confirmation screen was
+reached from **My Orders, which links to it** (`my-orders/page.tsx:318` and `:380`).
+
+`/order-confirmation` remains the signed Finatic `return_url` — `payments/paycloud.js:398`
+normalises to `{origin}/order-confirmation` and the top-level `app/order-confirmation/page.tsx`
+route is present. Demoted from the journey, never renamed or removed.
+
 # FINAL STATE
 
     origin/main / production      3c6eec9   UNTOUCHED, verified cache-busted at the end of the run
