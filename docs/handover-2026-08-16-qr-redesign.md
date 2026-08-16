@@ -342,3 +342,110 @@ rather than reasoning around them.
 | `tabMemberPayable` | Tab, the per-person owed figure |
 | `tabUnattributedHeading` | Tab, the unattributed block |
 | `CUSTOMER_STATUS_COPY` × 7 | every customer status render site |
+
+---
+
+# CHECKPOINT 3 — piece 6 shipped, and the A–Q simulation runs GREEN against staging
+
+    origin/cloudflare-staging     be461c7
+    staging /api/version          37f39a2 confirmed live (cache-busted); be461c7 is script-only
+    origin/main / production      3c6eec9   UNTOUCHED
+    simulation                    26 checks, 0 FAILS, against the DEPLOYED worker
+
+## Piece 6 — the full edit mutation set · `qrd/6-full-edit` · merged `ea063e6` + `04fdd1b`
+
+The audit's **Model A**, which the audit recommended against. The human chose it knowingly, and
+the audit's objection is what the piece had to answer: four guards protect the creation of a sale,
+all four live on `POST /api/orders`, and none was in the edit route.
+
+`lib/orders/apply-edit-additions.ts` ports **three of the four** — the per-line quantity cap, the
+stock sufficiency check, and pricing against the live menu — calling the same functions, in the
+same order, with the same fail-open on a stock READ error, so the same customer action cannot
+succeed by one route and fail by another. The fourth, the payment-method allowlist, is
+deliberately not ported: an addition to a tab order chooses no payment method, so there is
+nothing to check it against. Recorded rather than silently omitted.
+
+**A raised quantity is sent as an ADDITION, not as a raised `keep`.** `repriceKeptLines` refuses a
+raise by construction and that refusal is load-bearing — the reduction path re-sums from the
+order's own STORED lines, so a raise there would multiply a stored price without touching any of
+the three guards.
+
+### New rulings I took, since none existed and the build could not wait
+
+1. **Mixed-vintage pricing.** Survivors keep the price and tax rate stored at placement;
+   additions are priced at today's menu. Repricing the survivors was rejected for the reason
+   already written into `reprice-priced-lines.ts` — it moves the price of items the customer is
+   KEEPING, and it would refuse a removal because an *untouched* survivor had since gone out of
+   stock. Mixed vintage is also what a real bill does. **Cost:** one order's lines can disagree
+   about tax basis, which #250/#251 already describe; this adds a second way to reach it.
+2. **The payment-method allowlist is not ported** (above).
+3. **Piece 6 was split.** "+ Add something" opening the MENU in picker mode and returning to the
+   pending edit is a cross-screen round trip that must survive navigation. Folding it in would
+   have made this the big-bang commit the brief warns against. **Adding one more of a line
+   already on the order works now; adding a NEW item from the menu is not built.**
+
+## THE A–Q RESULTS TABLE
+
+Run: `npx tsx scripts/simulate-qr-redesign-events-staging.ts`, against
+`https://flashtap-staging.llosperofficial.workers.dev`, with real database state. Two guards,
+both fatal, both before the first write. Fixture in table range 9200–9599, session ids prefixed
+`probe-`, cleanup in a `finally` that discovers dependents.
+
+| Event | Verdict | What was observed |
+|---|---|---|
+| **A** solo customer | PASSES | tab started, order submitted as an `order_request` |
+| **A7** staff accepts | NEEDS-DEVICE | the Accept route requires a staff session a probe cannot honestly mint; the accepted order is seeded as fixture and the *route* is the human's click-test |
+| **B** couple sharing | **PASSES** | Lenton sees `[Bob, Lenton]`, Bob sees `[Bob, Lenton]` — each phone sees the whole table |
+| **B6** no cross-customer edit | **PASSES** | `is_self` marks exactly the viewing customer on each phone |
+| **B-sec** | PASSES | the shared-tab response carries no session id and no edit-lock token |
+| **C** group of four | **PASSES** | Ana sees `[Ana, Bo, Cass]`; Dee, who ordered nothing, sees the same table and has no group of her own |
+| **C** My Orders stays personal | PASSES | Ana 1 order, Dee 0 — collective Tab, personal My Orders |
+| **D** change before the kitchen | **PASSES** | reduction 498 → 403, `requiresReacceptance=false` |
+| **D-reversal** | **PASSES** | a reduction does not require re-acceptance and `totalChanged` still reports the movement |
+| **D-add** the new capability | **PASSES** | an item ADDED to an existing order: payable 115 → 193 at the menu price 78; the client deliberately sent `0.01` and it was **discarded** |
+| **D-add-review** | **PASSES** | an addition raises the total and **does** go back for re-acceptance |
+| **E** edit hold | **PASSES** | a non-owner gets **404**, not 403 — the response does not confirm another diner's order exists |
+| **F** kitchen wins | **PASSES** | 409 `preparation_started`, *"The kitchen has started this order, so it can't be changed now."* — no token/lock jargon |
+| **G/P** order more | PASSES | a new ticket, not a mutation: 2 → 3 orders for one customer |
+| **H** pending + accepted | **PASSES** | payable 210 and pending 288 as separate figures, both visible |
+| **H-lines** | PASSES | the same screen carries a submitted order and an accepted one, each labelled |
+| **I** ready to pay | PASSES | writes `tabs.status='ready_to_pay'` and a preference — it alerts staff, it does not charge |
+| **J** individual payment | **PASSES** | a terminal with a **genuine terminal JWT** settled a SUBSET (1 of 2 orders); the QR tab then showed remaining payable 20 |
+| **J-visible** | PASSES | the settled order stays visible on the shared tab and stops counting toward payable — spec §29's partially settled tab |
+| **K** whole-tab settlement | **PASSES** | the remainder settled; QR payable 0; `tabs.status` still `open` |
+| **L** order after payment | PASSES | after full settlement the tab is `open` — payment does not end the visit |
+| **M** late arrival | PASSES | covered by C/M: four phones joined by PIN at different times |
+| **N** old customer vs new occupants | **PASSES** | after `close_table_session`, the old session's shared-tab read is refused **410** |
+| **Q** refresh / return | PASSES | the repeat read is stable |
+| **AUTH** (added) | PASSES | the shared tab without a session token → 410 |
+
+**O** (customer scans another table) is **NOT RUN** — it is a landing-screen decision with no
+API surface of its own, so it is the human's click-test. Nothing in this run changed it.
+
+### What the simulation established that no amount of reading could
+
+**Event J is real.** The audit's *"split and partial payment: NONE OF IT EXISTS"* is true of the
+CUSTOMER surface and **false of the terminal's**: `app/api/terminal/tabs/[tabId]/settle/route.ts`
+takes an `order_ids` array and binds it to the tab, so charging one diner's share is supported
+server-side today. The human's ruling on this was correct and the audit's sentence was scoped to
+what it had read. A terminal was seeded, activated through `POST /api/terminals/activate`, and
+used its real JWT to settle a subset — and the redesigned QR tab reflected the remaining balance
+with the paid order still on screen.
+
+### The defect the simulation found, which no test would have
+
+`GET /api/tabs/[tabId]/orders` selected a `created_at` column that **does not exist** on either
+`orders` or `order_requests`. Both queries errored, and the route answered **200 with
+`members: []`** — which the Tab screen renders as *"Nothing on the table tab yet"*.
+
+A broken read presented as an empty table is exactly the failure the piece was built to remove,
+and the only evidence was a `console.error` inside a Worker. Fixed in `04fdd1b`: the column list
+is now the measured one, and on a query error the route returns `members: null`, which
+`fetchSharedTab` already treats as a failure — so the screen says *"we couldn't load your
+table's orders"* and the money, which comes from a different read, still renders.
+
+**Two fixture defects in the harness itself were also found, and both read exactly like defects
+in the thing under test:** the seeded accepted order was inserted without `items` (event D then
+failed *"Line 0 is not part of this order"*, which looks like the edit route refusing a valid
+index), and My Orders was read from an invented endpoint whose 404 read as *"this customer has
+no orders"*.
