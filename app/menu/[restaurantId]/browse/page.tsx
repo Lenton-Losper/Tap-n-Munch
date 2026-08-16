@@ -41,7 +41,7 @@ import {
   menuLoadNotice,
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
-import { menuBodyState } from '@/lib/menu/menu-body-state'
+import { menuBodyState, shouldShowPartialMenuNotice } from '@/lib/menu/menu-body-state'
 import { canOpenItemSheet } from '@/lib/menu/item-sheet-availability'
 import {
   getDefaultGroupSelection,
@@ -1148,7 +1148,14 @@ export default function MenuBrowsePage() {
             ) : null}
           </div>
 
-          {menuNotice && menuNotice.tone === 'partial' && filteredGroupedEntries.length > 0 ? (
+          {/* #246. This used to require `filteredGroupedEntries.length > 0`, so the banner
+              vanished the moment a search matched nothing in the part of the menu that HAD
+              loaded — leaving the customer with "No items found" and no hint that the menu on
+              screen was incomplete. The rule is in lib/menu/menu-body-state.ts; this site does
+              not restate it. */}
+          {/* `menuNotice &&` is here to NARROW the type for the JSX below, not to restate the
+              rule — the rule checks null itself. Without it tsc cannot see through the call. */}
+          {menuNotice && shouldShowPartialMenuNotice({ notice: menuNotice, bodyState }) ? (
             <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
