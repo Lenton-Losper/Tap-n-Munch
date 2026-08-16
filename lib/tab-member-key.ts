@@ -194,8 +194,10 @@ export async function redactTabMembers(
  * fallback the two screens already apply (`o.member_session_id || o.session_id`) and orders
  * placed before member_session_id existed still rely on it.
  *
- * Rows with no tab are left alone: without a tab id there is no per-tab key to derive, and such
- * a row is never joined against a members array.
+ * Rows with no tab cannot have a key derived for them -- the deriver is keyed by `tab_id` -- so on
+ * those rows `member_session_id` is WITHHELD from callers who do not own the row (#305) instead of
+ * being substituted. Withholding is safe there precisely because such a row is never joined
+ * against a members array: every consumer of the value is a members lookup that needs a tab.
  */
 export async function redactGuestOrderMemberIds<T extends Record<string, unknown>>(
   rows: T[],
@@ -240,7 +242,25 @@ export async function redactGuestOrderMemberIds<T extends Record<string, unknown
     const scrubbed = (ownsRow ? row : { ...row, session_id: null }) as T
 
     if (!tabId || !sessionId) {
-      out.push(scrubbed)
+      /**
+       * #305 — the tab-less row, and the door #302 left open.
+       *
+       * There is no `tab_id` to key the deriver with, so the #262 substitution cannot run and
+       * `member_session_id` would otherwise leave RAW. On the tab-less path that value is not
+       * merely identifying, it is a working credential: the edit route authorises on session id
+       * against `session_id` OR `member_session_id`, and it does not require a token here because
+       * the token guard is scoped to `if (tabId)` -- correctly, since widening it would refuse
+       * solo diners who never had a tab. Measured before the fix: foreign read -> raw id -> edit
+       * lock 200 -> lines replaced.
+       *
+       * So WITHHOLD it rather than substitute it, but only for callers who do not own the row.
+       * Nothing legitimate loses anything: every consumer is a members-array lookup that needs a
+       * tab, and each already handles the miss. `orders/history/route.ts:101` gates its join on
+       * `order.tab_id` outright; `getOrderCustomerLabel` falls through to `session_id` and then
+       * 'Guest'; `resolveOrderMemberName` returns null. The owner keeps the value, which is what
+       * their own receipt screen reads.
+       */
+      out.push(ownsRow ? scrubbed : ({ ...scrubbed, member_session_id: null } as T))
       continue
     }
 
