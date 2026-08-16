@@ -182,7 +182,7 @@ export function MenuLandingPageV2Content({
 
   useEffect(() => {
     console.log('[V2] page mounted, URL:', window.location.href)
-    console.log('[V2] token at mount:', localStorage.getItem('flashtap_session_token'))
+    // NO CREDENTIAL LOGGING -- see the session-ended screen for the reasoning.
   }, [])
 
   useEffect(() => {
