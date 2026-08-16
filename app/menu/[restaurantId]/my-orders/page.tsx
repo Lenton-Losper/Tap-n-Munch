@@ -76,10 +76,24 @@ export default function MyOrdersPage() {
    * problem as the confirmation page this replaces, where returning to a URL re-entered a flow
    * the customer had already finished (spec Event Q).
    */
-  const [showPlacedBanner, setShowPlacedBanner] = useState(false)
+  /**
+   * Decided in the INITIALISER, not in an effect.
+   *
+   * `react-hooks/set-state-in-effect` is an error under `eslint . --max-warnings=0`, which is a
+   * blocking gate on the staging deploy — and it is right here for a reason beyond lint: setting
+   * this from an effect body renders the screen once without the banner and again with it, so the
+   * customer's first paint after ordering is the one that does not confirm anything. Reading the
+   * parameter at first render means the banner is there in the first frame.
+   *
+   * The effect keeps only the two things that are genuinely effects: stripping the parameter from
+   * the URL, and the timer. `setShowPlacedBanner(false)` inside the timeout callback is not a
+   * synchronous set in an effect body and is not what the rule is about.
+   */
+  const [showPlacedBanner, setShowPlacedBanner] = useState(() =>
+    shouldShowOrderPlacedBanner(searchParams.get(ORDER_PLACED_PARAM))
+  )
   useEffect(() => {
-    if (!shouldShowOrderPlacedBanner(searchParams.get(ORDER_PLACED_PARAM))) return
-    setShowPlacedBanner(true)
+    if (!showPlacedBanner) return
 
     const url = new URL(window.location.href)
     url.searchParams.delete(ORDER_PLACED_PARAM)
@@ -87,8 +101,8 @@ export default function MyOrdersPage() {
 
     const timer = window.setTimeout(() => setShowPlacedBanner(false), ORDER_PLACED_BANNER_MS)
     return () => window.clearTimeout(timer)
-    // Deliberately mount-only: the parameter is removed above, so re-running on a searchParams
-    // change would never see it again and would only risk cancelling a live banner.
+    // Deliberately mount-only: the parameter is removed above, so re-running would never see it
+    // again and would only risk cancelling a live banner.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
