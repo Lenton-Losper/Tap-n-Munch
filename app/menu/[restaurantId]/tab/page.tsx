@@ -25,6 +25,10 @@ import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { cn } from '@/lib/utils'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
+import {
+  PAYMENT_METHOD_WITHDRAWN_TITLE,
+  paymentMethodWithdrawnCopy,
+} from '@/lib/customer-copy/payment-method-withdrawn'
 
 type TabOrder = {
   id: string
@@ -291,8 +295,10 @@ export default function TabSummaryPage() {
       if (res.status === 403 && data?.settingsVersion != null) {
         await refresh()
         toast({
-          title: 'Payment option unavailable',
-          description: 'Cash payments are no longer available. Please select Card.',
+          title: PAYMENT_METHOD_WITHDRAWN_TITLE,
+          // #209: names the method the CLIENT sent. The old string said "Cash ... select Card"
+          // in a branch that fires for card too.
+          description: paymentMethodWithdrawnCopy(paymentPreference),
           variant: 'destructive',
         })
         setPaymentPreference(null)
