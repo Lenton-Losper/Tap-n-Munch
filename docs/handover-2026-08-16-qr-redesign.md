@@ -637,3 +637,102 @@ Also removed: a debug effect logging the full payload of three named menu items 
 customer's browser on every menu load, left over from investigating #229.
 
 **Promoting the two production instances is your call** — nothing went to `main` tonight.
+
+### #173 — a READY order was told it was being prepared
+
+Confirmed live on **production** by reading `origin/main:components/OrderStatusBanner.tsx`. The
+file is byte-identical on main and staging (blob `04605af`), so it was live everywhere.
+
+```ts
+case 'ready':
+  message: oldStatus === 'accepted' ? `Order #N is being prepared.` : `Order #N is ready!`,
+  type:    oldStatus === 'accepted' ? 'info' : 'success',
+  icon:    oldStatus === 'accepted' ? '👨‍🍳' : '🍽️',
+```
+
+An order moving `accepted → ready` announced the **less advanced** state — message, severity and
+icon downgraded together. And that transition is not an edge case: it is what happens whenever
+the kitchen sets no explicit `preparing` step. The customer was told their food was being cooked
+at the moment the restaurant said it was done.
+
+The second half: the terminal writes `confirmed` where the dashboard writes `accepted`.
+`confirmed` had no case, fell to `default: return null`, and the customer heard **nothing**.
+
+One cause — a private status map, the fifth copy of the customer vocabulary in this product. It
+now switches on `customerOrderState`, so it cannot disagree with My Orders or the Tab, and it
+gains a `preparing` case it never had.
+
+**Deliberately not changed:** the arm that fires when an in-progress order *disappears* and infers
+completion from the disappearance. Routing its synthetic `'completed'` through the vocabulary
+would have changed it — `completed` without a paid `payment_status` maps to `ready` on purpose
+(#234) — so a vanished unpaid order would have started announcing *"is ready!"*. Its message is
+built locally now, preserving existing behaviour exactly.
+
+---
+
+# EVERY PENDING COPY STRING, AND WHERE IT RENDERS
+
+`git grep "PENDING COPY" -- '*.ts' '*.tsx'`
+
+## `lib/orders/customer-status.ts` — the status vocabulary (7)
+
+Renders on **every** customer status site: My Orders badges, the Tab's per-order line, the
+status-change banner.
+
+| Key | Placeholder | Backend states it covers |
+|---|---|---|
+| `waiting` | Waiting for the restaurant | `waiting_review`, `pending`, `accepting` |
+| `accepted` | Accepted | `accepted`, `confirmed` |
+| `preparing` | Being prepared | `preparing` |
+| `ready` | Ready | `ready`, and `completed` with no payment |
+| `paid` | Paid | `payment_status = 'paid'` |
+| `needs_you` | Needs you | `ready_for_terminal`, `cancelled`, `declined`, payment `failed` |
+| `unknown` | The restaurant is handling this | anything unmapped — **must promise nothing** |
+
+## `lib/customer-copy/qr-redesign-copy.ts` — the redesign's own strings (14)
+
+| Key | Placeholder | Renders |
+|---|---|---|
+| `orderPlacedBanner` | ✓ Order sent to the restaurant | My Orders, 6s banner after Place Order |
+| `stripHeadlineOpen` | Table tab | browse tab strip, leading word |
+| `stripHeadlineReadyToPay` | Ready to pay | same, when the tab is ready to pay |
+| `stripHeadlineClosed` | Tab closed | same, when the tab is closed/settled |
+| `stripCta` | View tab → | strip, trailing affordance — **says View, not settle** |
+| `navTab` | Tab | browse header button (replaced Receipt) |
+| `tabOrdersUnavailable` | We couldn't load your table's orders just now. The total above is still correct. | Tab, when the shared read fails — **must not imply the table is empty** |
+| `tabEmpty` | Nothing on the table tab yet | Tab, genuinely empty |
+| `tabOrderNotYetNumbered` | New order | Tab, per order, before Accept allocates a number |
+| `tabOrderAwaitingConfirmation` | Waiting for the restaurant | Tab, per order, submitted-unanswered |
+| `tabMemberPayable` | Owed: | Tab, the per-person figure |
+| `tabUnattributedHeading` | Also on this table | Tab, orders whose member could not be resolved |
+| `pickerBanner` | Choosing something to add to your order | the menu, in picker mode |
+| `pickerBack` | Back to my order | beside the picker banner |
+
+## `lib/orders/edit-lock.ts` — the editor (4 new)
+
+| Key | Placeholder | Renders |
+|---|---|---|
+| `editDeadline` | You can change this order until the restaurant starts preparing it. | editor, **primary** line |
+| `holdSecondary` | Editing reserved for you · {seconds}s | editor, **secondary**. `{seconds}` is substituted by `.replace()` and must stay literal |
+| `addSomething` | + Add something | editor, opens the menu in picker mode |
+| `addOneMore` | Add one more | editor, per line |
+
+> `EDIT_COPY.lockHeld` (*"{seconds}s left to make changes"*) is **superseded and no longer
+> rendered**. It is kept exported with the reason attached rather than deleted, because it is the
+> string spec §21 is about.
+
+## `lib/tabs/tab-flag-copy.ts` — staff (1 new)
+
+| Key | Placeholder | Renders |
+|---|---|---|
+| `unpaidTabElsewherePendingSuffix` | awaiting confirmation | staff order card, appended inside the unpaid-tab badge's `{total}` |
+
+## Pre-existing, untouched by this run
+
+17 in `lib/orders/edit-lock.ts` (the original edit-lock set), 2 in
+`lib/orders/calculate-order-pricing.ts`, 1 in `lib/tabs/tab-flag-copy.ts`.
+
+**Total new tonight: 26 strings.** Every one is a placeholder; none was drafted, per your standing
+instruction. Several change what a customer is told about money and are yours to rule on —
+`tabMemberPayable`, `tabOrdersUnavailable`, `tabOrderAwaitingConfirmation` and the whole status
+table especially.
