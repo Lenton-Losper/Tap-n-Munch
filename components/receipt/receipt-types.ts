@@ -1,3 +1,9 @@
+import {
+  customerOrderState,
+  CUSTOMER_STATUS_COPY,
+  type CustomerOrderState,
+} from '@/lib/orders/customer-status'
+
 /**
  * Every status the system actually writes and can show a customer. Established from the write
  * sites, not from what this type used to list -- `preparing` and `confirmed` are both written
@@ -101,63 +107,30 @@ export function formatCurrency(amount: number, currency = 'NAD'): string {
   return `${code} ${amount.toFixed(2)}`
 }
 
+/**
+ * #309. This WAS a second customer vocabulary -- nine cases and a default, all its own wording --
+ * and it contradicted the rest of the app on a real table: an order sitting `pending` after a
+ * customer edit forced re-acceptance read "NEW ORDER - Your order has been received and sent to
+ * the restaurant", while the staff dashboard read "TOTAL CHANGED - RE-ACCEPT". Spec section 34
+ * removed the NEW badge; A1 says that state reads the signed-off waiting word.
+ *
+ * Its `default` branch returned NEW ORDER too, which is the same defect
+ * lib/orders/customer-status.ts was built to kill: an unmapped status rendering as brand new.
+ *
+ * Now it DELEGATES. `customerOrderState` does the normalisation (including `confirmed` -> accepted,
+ * and the four states that collapse to needs_you) and `CUSTOMER_STATUS_COPY` supplies the word.
+ * No wording is defined here any more, which is the point: there is one vocabulary and this is
+ * not it.
+ *
+ * `description` is REMOVED rather than rewritten. Every one of the old sentences was copy nobody
+ * signed off, and inventing a replacement would repeat the mistake.
+ */
 export function mapOrderStatusToBadge(status: OrderStatusKey): {
-  label: ReceiptStatusBadge
-  description: string
+  label: string
+  state: CustomerOrderState
 } {
-  switch (status) {
-    case 'waiting_review':
-      return {
-        label: 'WAITING FOR CONFIRMATION',
-        description: 'Your order request has been sent. Waiting for the restaurant to confirm.',
-      }
-    case 'declined':
-      return {
-        label: 'DECLINED',
-        description: 'Sorry, the restaurant was unable to accept this order.',
-      }
-    case 'pending':
-      return {
-        label: 'NEW ORDER',
-        description: 'Your order has been received and sent to the restaurant.',
-      }
-    case 'accepted':
-    case 'confirmed':
-      return {
-        label: 'ACCEPTED',
-        description: 'The kitchen has accepted your order.',
-      }
-    case 'preparing':
-      return {
-        label: 'PREPARING',
-        description: 'Your order is being prepared.',
-      }
-    case 'ready':
-      return {
-        label: 'READY',
-        description: 'Your order is ready.',
-      }
-    case 'ready_for_terminal':
-      return {
-        label: 'READY',
-        description: 'Staff have been notified to bring the card machine to your table.',
-      }
-    case 'completed':
-      return {
-        label: 'COMPLETED',
-        description: 'Thank you for your order!',
-      }
-    case 'cancelled':
-      return {
-        label: 'CANCELLED',
-        description: 'This order has been cancelled.',
-      }
-    default:
-      return {
-        label: 'NEW ORDER',
-        description: 'Your order is being processed.',
-      }
-  }
+  const state = customerOrderState({ status })
+  return { label: CUSTOMER_STATUS_COPY[state], state }
 }
 
 export function normalizePaymentMethod(method: string): 'Card' | 'Cash' | 'Wallet' | 'Other' | string {

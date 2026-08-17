@@ -18,6 +18,7 @@ import {
   isBannerEligibleOrder,
   normalizeOrderStatusForDisplay,
 } from '@/lib/orders/active-order-visibility'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 
 const GREEN = '#27AE60'
 
@@ -330,7 +331,8 @@ function OrderStatusRow({
   const currentIndex = steps.findIndex((step) => !step.complete)
   const activeIndex = currentIndex === -1 ? steps.length - 1 : currentIndex
 
-  const orderNumber = currentOrder.order_number || currentOrder.id.slice(-6).toUpperCase()
+  // #308: never a UUID tail. One answer, in lib/orders/order-identity.ts.
+  const orderIdentity = orderIdentityLabel(currentOrder)
   const orderTotal = Number(currentOrder.total) || 0
   /**
    * Two readings of the same field, deliberately.
@@ -363,7 +365,7 @@ function OrderStatusRow({
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-black">
-              Order #{orderNumber}
+              {orderIdentity}
             </p>
             <p className="text-sm text-gray-600">
               Total: {currency}

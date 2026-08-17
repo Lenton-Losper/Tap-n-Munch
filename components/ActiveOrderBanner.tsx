@@ -16,6 +16,7 @@ import {
   isBannerEligibleOrder,
   normalizeOrderStatusForDisplay,
 } from '@/lib/orders/active-order-visibility'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 
 /**
  * PART 3: Active Order Banner
@@ -140,7 +141,8 @@ export function ActiveOrderBanner() {
     return null
   }
 
-  const orderNumber = currentOrder.order_number || currentOrder.id.slice(-6).toUpperCase()
+  // #308: never a UUID tail. One answer, in lib/orders/order-identity.ts.
+  const orderIdentity = orderIdentityLabel(currentOrder)
 
   const payChannel = String(currentOrder.payment_channel || '').toLowerCase()
 
@@ -239,7 +241,7 @@ export function ActiveOrderBanner() {
           <div className="flex items-center gap-3">
             <div>
               <p className="font-semibold text-sm">
-                Order #{orderNumber} {statusInfo.text}
+                {orderIdentity} {statusInfo.text}
               </p>
               <p className="text-xs opacity-90">
                 {currentOrder.total && `Total: N$${Number(currentOrder.total).toFixed(2)} • `}

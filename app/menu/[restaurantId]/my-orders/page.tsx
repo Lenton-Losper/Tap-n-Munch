@@ -31,6 +31,7 @@ import {
   QR_REDESIGN_PENDING_COPY,
   shouldShowOrderPlacedBanner,
 } from '@/lib/customer-copy/qr-redesign-copy'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
@@ -323,7 +324,7 @@ export default function MyOrdersPage() {
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <h3 className="font-sans font-bold text-foreground text-lg">
-                        Order #{order.order_number || order.id.slice(-6).toUpperCase()}
+                        {orderIdentityLabel(order)}
                       </h3>
                       <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
                     </div>
