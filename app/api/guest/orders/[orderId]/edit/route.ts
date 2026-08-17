@@ -38,6 +38,7 @@ import {
   appendEditHistory,
   editLockExpiryFrom,
   editRefusalReason,
+  editAlreadyCommitted,
   editChangedTheTotal,
   editRequiresReacceptance,
   isEditLockActive,
@@ -316,6 +317,8 @@ async function explainLostWrite(
   restaurantUuid: string,
   sessionIds: string[],
   nowMs: number,
+  /** The token the caller presented, so a lock spent by their OWN commit is told apart (#306). */
+  presentedToken = '',
 ) {
   const fresh = await loadTarget(supabase, orderId, restaurantUuid)
   if (!fresh) {
@@ -324,11 +327,41 @@ async function explainLostWrite(
   const reason = refusalFor(fresh, sessionIds, nowMs)
   if (reason) return refuse(reason)
 
+  // Before blaming the token: it may have been spent by the caller's OWN commit, which is what a
+  // retry after a lost response looks like from here (#306).
+  const committed = alreadySavedResponse(fresh, presentedToken, nowMs)
+  if (committed) return committed
+
   // The row is still editable but our conditional write matched nothing, which leaves one
   // explanation: the token moved. Either it expired and someone re-acquired, or staff nulled
   // it and then moved the order back into an editable state.
   return NextResponse.json(
     { error: EDIT_COPY.lockExpired, reason: 'lock_lost', editable: false },
+    { status: 409 },
+  )
+}
+
+/**
+ * The honest answer to a retry whose write already landed (#306), or null when it did not.
+ *
+ * Returns the CURRENT order alongside the message, because "your change was saved" with nothing
+ * to look at is only half the correction — the customer is retrying precisely because they cannot
+ * see what happened. Still a 409: this request did not apply anything, and the client's refusal
+ * path is what closes the editor.
+ */
+function alreadySavedResponse(target: LoadedTarget, presentedToken: string, nowMs: number) {
+  if (!editAlreadyCommitted(target.row, presentedToken, nowMs)) return null
+  const current = effectiveOf(target)
+  return NextResponse.json(
+    {
+      error: EDIT_COPY.alreadySaved,
+      reason: 'already_saved',
+      editable: false,
+      items: current.items,
+      subtotal: current.subtotal,
+      tax: current.tax,
+      total: current.total,
+    },
     { status: 409 },
   )
 }
@@ -451,6 +484,15 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       !isEditLockActive(target.row, nowMs) ||
       String(target.row.edit_lock_token ?? '') !== parsed.lockToken
     ) {
+      /**
+       * THIS is the branch a retry after a lost response actually reaches (#306), not
+       * `explainLostWrite` — the commit nulled the token, so the comparison above fails here
+       * before any write is attempted. Measured; assuming the other path would have left the
+       * lie in place.
+       */
+      const committed = alreadySavedResponse(target, parsed.lockToken, nowMs)
+      if (committed) return committed
+
       return NextResponse.json(
         { error: EDIT_COPY.lockExpired, reason: 'lock_lost', editable: false },
         { status: 409 },
@@ -640,7 +682,14 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       return NextResponse.json({ error: writeError.message }, { status: 500 })
     }
     if (!updated) {
-      return explainLostWrite(supabase, String(target.row.id), restaurantUuid, parsed.sessionIds, Date.now())
+      return explainLostWrite(
+        supabase,
+        String(target.row.id),
+        restaurantUuid,
+        parsed.sessionIds,
+        Date.now(),
+        parsed.lockToken,
+      )
     }
 
     // Tab bookkeeping, same recomputation the Accept route does: sum the tab's non-settlement
