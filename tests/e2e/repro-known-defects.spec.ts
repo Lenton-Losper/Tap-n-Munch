@@ -30,6 +30,18 @@ import {
   FIXTURE_RESTAURANT,
   type Fixture,
 } from './lib/fixture'
+import { EDIT_COPY } from '@/lib/orders/edit-lock'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+
+/**
+ * Selectors read the SHIPPED copy constants rather than a hard-coded phrase.
+ *
+ * The 2026-08-17 sign-off changed `addSomething` and `pickerBanner`, and the specs that had the
+ * old wording typed into a RegExp simply stopped matching -- a 2.6 minute timeout reported as a
+ * product failure. A selector bound to a constant cannot drift out of step with the string the
+ * app actually renders.
+ */
+const escapeRe = (s: string) => s.replace(/[^A-Za-z0-9 ]/g, (c) => '\\' + c)
 
 /**
  * These drive multi-page customer journeys against a deployed worker, so the 30s default in
@@ -215,13 +227,13 @@ test.describe('#291 an item can be swapped', () => {
      * the affordance. Driving "+ Add something" -> menu -> add -> back is both the honest
      * reproduction and click-test section 7b, so it is one flow covering two things.
      */
-    await page.getByRole('button', { name: /Add something/i }).first().click()
+    await page.getByRole('button', { name: new RegExp(escapeRe(EDIT_COPY.addSomething), 'i') }).first().click()
     await page.waitForURL(/\/browse/, { timeout: 20_000 })
     await waitForPaint(page)
 
     // Picker mode announces itself; if that banner is gone the customer is in the ordinary menu
     // and anything added would land in the CART instead of the pending edit.
-    await expect(page.getByText(/Choosing something to add to your order/i)).toBeVisible({
+    await expect(page.getByText(new RegExp(escapeRe(QR_REDESIGN_PENDING_COPY.pickerBanner), 'i'))).toBeVisible({
       timeout: 20_000,
     })
 

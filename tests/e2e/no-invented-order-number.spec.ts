@@ -17,6 +17,17 @@ import {
   FIXTURE_RESTAURANT,
   type Fixture,
 } from './lib/fixture'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+
+/**
+ * Selectors read the SHIPPED copy constants rather than a hard-coded phrase.
+ *
+ * The 2026-08-17 sign-off changed `addSomething` and `pickerBanner`, and the specs that had the
+ * old wording typed into a RegExp simply stopped matching -- a 2.6 minute timeout reported as a
+ * product failure. A selector bound to a constant cannot drift out of step with the string the
+ * app actually renders.
+ */
+const escapeRe = (s: string) => s.replace(/[^A-Za-z0-9 ]/g, (c) => '\\' + c)
 
 test.setTimeout(150_000)
 
@@ -54,5 +65,7 @@ test('an unnumbered submission never renders "#0"', async ({ page, baseURL }) =>
     /Order\s*#0\b/,
   )
   // And it says something instead of nothing, so the customer can still identify the submission.
-  expect(text).toMatch(/Order Placed|New order/i)
+  expect(text).toMatch(
+    new RegExp(`Order Placed|${escapeRe(QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered)}`, 'i'),
+  )
 })

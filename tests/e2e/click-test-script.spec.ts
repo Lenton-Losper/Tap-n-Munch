@@ -30,6 +30,18 @@ import {
   FIXTURE_RESTAURANT,
   type Fixture,
 } from './lib/fixture'
+import { EDIT_COPY } from '@/lib/orders/edit-lock'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+
+/**
+ * Selectors read the SHIPPED copy constants rather than a hard-coded phrase.
+ *
+ * The 2026-08-17 sign-off changed `addSomething` and `pickerBanner`, and the specs that had the
+ * old wording typed into a RegExp simply stopped matching -- a 2.6 minute timeout reported as a
+ * product failure. A selector bound to a constant cannot drift out of step with the string the
+ * app actually renders.
+ */
+const escapeRe = (s: string) => s.replace(/[^A-Za-z0-9 ]/g, (c) => '\\' + c)
 
 test.setTimeout(150_000)
 
@@ -136,10 +148,10 @@ test.describe('click-test 7b -- picker mode does not touch the cart', () => {
       }
     }, FIXTURE_RESTAURANT)
 
-    await page.getByRole('button', { name: /Add something/i }).first().click()
+    await page.getByRole('button', { name: new RegExp(escapeRe(EDIT_COPY.addSomething), 'i') }).first().click()
     await page.waitForURL(/\/browse/, { timeout: 20_000 })
     await waitForPaint(page)
-    await expect(page.getByText(/Choosing something to add to your order/i)).toBeVisible({
+    await expect(page.getByText(new RegExp(escapeRe(QR_REDESIGN_PENDING_COPY.pickerBanner), 'i'))).toBeVisible({
       timeout: 20_000,
     })
 
