@@ -56,35 +56,19 @@ import { execFileSync } from 'node:child_process'
  * about one line in the payments path. It needs an attended decision.
  */
 const KNOWN_ABSENT = new Set([
-  // SHRUNK 2026-08-17 after the reconciliation: six entries removed because they landed on
-  // cloudflare-staging (accce84..0c616a6) — #242's resolver and probe, #223's three commits, and
-  // the #266 CI pin. The baseline is a debt and it just got smaller, which is the only direction
-  // it is allowed to move.
+  // SHRUNK 2026-08-18 by the PROMOTED classifier (#310), from six entries to three.
   //
-  // These four remain, and all four are commits whose BEHAVIOUR is already on staging under a
-  // different patch-id — verified by reading the decisive line, not by trusting the patch:
+  // Both promotion entries are gone -- 1591d12 and b30b7e5 now classify PROMOTED on their own
+  // evidence rather than on my say-so, which is what #310 was for. d57c659 went too: the check
+  // reported it as reconciled since the baseline was taken.
+  //
+  // These three remain, and each is a commit whose BEHAVIOUR is on HEAD under a different
+  // patch-id while the whole patch is not -- verified by reading the decisive line, not by
+  // trusting the patch. They are NOT promotions, so the classifier correctly leaves them here:
   '56f70b8', // #254/?ref= — `paymentRefOrFilter` and `isWellFormedPaymentRef` are BYTE-IDENTICAL
              //              on both branches; only the test file differs
-  'd57c659', // #135 — MAX_INSTRUCTIONS_LENGTH is present on staging
   'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
   '9fcb147', // #262 member key — deriveTabMemberKey is present via a64a422
-
-  // GROWN 2026-08-17, and this is the one direction I said the baseline should not move -- so
-  // the reason is recorded rather than assumed. These two are PROMOTION commits: main gained
-  // cloudflare-staging's own content through a surgical port. Their patches cannot reverse-apply
-  // against staging because staging has since moved on in the same files, so patch-id reads them
-  // as drift while the behaviour is demonstrably present.
-  //
-  // VERIFIED before adding, not asserted: for every product file where the two branches differ,
-  // staging's version is the NEWER one. Main holds nothing staging lacks -- staging is a content
-  // superset. That is the opposite of the condition this check exists to catch.
-  //
-  // THE STRUCTURAL POINT, worth more than these two entries: every promotion will look like new
-  // drift to a main-vs-staging patch-id check, because promotion moves content in the direction
-  // the check calls a defect. A future version should treat a commit as PRESENT when every file
-  // it touches is identical-or-older on main than on staging. Until then, promotions land here.
-  '1591d12', // Deploy 3 - the order editor, ported FROM staging
-  'b30b7e5', // Deploy 4 - the customer redesign shell, ported FROM staging
 ])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
@@ -136,6 +120,56 @@ function describe(sha) {
 }
 
 /** PRESENT = its patch reverse-applies, so the change is already here under another patch-id. */
+/**
+ * PROMOTED (#310) — main holds content that HEAD gave it, which is not drift.
+ *
+ * A promotion moves content from `cloudflare-staging` onto `main`. That is the same direction this
+ * check calls a defect, so every promotion read as NEW DRIFT and the only way to clear the build
+ * was to GROW the baseline — the one direction the baseline must never move. It fired on the first
+ * two promotions after the check went live.
+ *
+ * THE INVARIANT, stated properly: **main being ahead is a defect only when main holds content
+ * HEAD LACKS.** A promotion is main holding content HEAD supplied. The patch check answers "is
+ * this patch present", and a promotion's patch is not reproducible against a HEAD that has since
+ * moved on in the same files — same content, different context. So this asks the question that
+ * actually matters, per file.
+ *
+ * For every file the commit touches:
+ *   - blobs identical                      -> HEAD is level. Fine.
+ *   - HEAD contains main's last commit for
+ *     that path (it is an ancestor of HEAD) -> HEAD has main's version and moved past it. Fine.
+ *   - otherwise                             -> main holds something HEAD does not. NOT promoted.
+ *
+ * That last branch is the `?ref=` / #242 class and it MUST stay loud: a genuinely-newer-on-main
+ * file is exactly what this check exists to catch, and a promotion classifier that softened it
+ * would be worse than no classifier. One such file is enough to disqualify the whole commit.
+ *
+ * Deleted-on-HEAD counts as NOT promoted: a file main has and HEAD does not is content HEAD lacks,
+ * whatever the reason.
+ */
+function promotedState(sha) {
+  const files = git(['show', '--name-only', '--format=', sha])
+    .split('\n')
+    .map((f) => f.trim())
+    .filter(Boolean)
+  if (files.length === 0) return false
+
+  for (const file of files) {
+    const mainBlob = tryGit(['rev-parse', `${BASE}:${file}`])
+    if (!mainBlob.ok) continue // not on BASE (a deletion); nothing of main's to lack
+    const headBlob = tryGit(['rev-parse', `${HEAD}:${file}`])
+    if (!headBlob.ok) return false // HEAD lacks the file outright
+    if (mainBlob.out.trim() === headBlob.out.trim()) continue // identical
+
+    // Differing. HEAD is only level-or-ahead if it CONTAINS main's last change to this path.
+    const mainCommitForPath = tryGit(['log', '-1', '--format=%H', BASE, '--', file]).out.trim()
+    if (!mainCommitForPath) return false
+    const contained = tryGit(['merge-base', '--is-ancestor', mainCommitForPath, HEAD]).ok
+    if (!contained) return false // main holds a change to this file that HEAD does not
+  }
+  return true
+}
+
 function contentState(sha) {
   if (!treeIsHeadRef || dirty) return 'UNKNOWN'
   const patch = git(['show', sha])
@@ -168,9 +202,17 @@ console.log('')
 const baseOnly = patchIdGap(BASE, HEAD).map(describe)
 const headOnly = patchIdGap(HEAD, BASE).map(describe)
 
-const classified = baseOnly.map((c) => ({ ...c, state: contentState(c.sha) }))
-const genuinelyMissing = classified.filter((c) => c.state === 'ABSENT' || c.state === 'DIVERGED' || c.state === 'UNKNOWN')
+// PROMOTED is evaluated FIRST: it answers a stronger question than the patch check and does
+// not depend on the working tree, so it holds even when the content pass has to skip.
+const classified = baseOnly.map((c) => ({
+  ...c,
+  state: promotedState(c.sha) ? 'PROMOTED' : contentState(c.sha),
+}))
+const promoted = classified.filter((c) => c.state === 'PROMOTED')
 const portedAlready = classified.filter((c) => c.state === 'PRESENT')
+const genuinelyMissing = classified.filter(
+  (c) => c.state === 'ABSENT' || c.state === 'DIVERGED' || c.state === 'UNKNOWN',
+)
 
 console.log(`--- ${HEAD} is ahead by ${headOnly.length} commit(s) (expected; this is what staging is for)`)
 for (const c of headOnly.slice(0, 5)) console.log(`      ${c.short}  ${c.date}  ${c.subject}`)
@@ -178,8 +220,22 @@ if (headOnly.length > 5) console.log(`      ... and ${headOnly.length - 5} more`
 
 console.log('')
 console.log(`--- ${BASE} is ahead by ${baseOnly.length} commit(s) by patch-id`)
+console.log(`      ${promoted.length} PROMOTED (main gained ${HEAD}'s own content; not drift)`)
 console.log(`      ${portedAlready.length} already present by content (ported under a different patch-id)`)
 console.log(`      ${genuinelyMissing.length} GENUINELY ABSENT`)
+
+/**
+ * Reported SEPARATELY from PRESENT, deliberately. They are different facts: PRESENT means the
+ * same fix exists here under another patch-id; PROMOTED means this content came FROM here. If a
+ * promotion only half-landed, the files that did not land fail the per-file test above and the
+ * commit drops out of this list into GENUINELY ABSENT, where it is loud. Collapsing the two
+ * would hide exactly that.
+ */
+if (promoted.length) {
+  console.log('')
+  console.log('    promoted from ' + HEAD + ', no action:')
+  for (const c of promoted) console.log(`      ${c.short}  ${c.date}  ${c.subject}`)
+}
 
 if (portedAlready.length) {
   console.log('')
