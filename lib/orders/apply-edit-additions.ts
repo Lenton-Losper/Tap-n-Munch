@@ -50,7 +50,11 @@
  * customer action succeeds or fails depending on which route they reached it through.
  */
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
-import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
+import {
+  validateOrderQuantities,
+  validateResultingQuantities,
+} from '@/lib/orders/quantity-limits'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
 import { roundToCents } from '@/lib/payments/payment-integrity'
 
@@ -99,6 +103,36 @@ export async function applyEditAdditions(
   const quantityCheck = validateOrderQuantities(additions)
   if (!quantityCheck.ok) {
     return { ok: false, refusal: { kind: 'quantity', message: quantityCheck.reason } }
+  }
+
+  /**
+   * GUARD 1b — the RESULTING quantity (#307). Ruled 2026-08-17.
+   *
+   * GUARD 1 caps each proposed line on its own, which is why an order already holding 12 accepted
+   * another 12: both calls were individually legal and nothing looked at the sum. Measured on
+   * staging, 2 + 20 = 22 against a ceiling of 20.
+   *
+   * This caps what the order would HOLD. It groups by `capIdentity`, which excludes price, so two
+   * price lots of the same burger share one ceiling instead of each getting a fresh one -- the
+   * ruling's point 5.
+   *
+   * GUARD 1 is NOT replaced by this. It stays as the hard per-line server ceiling for a single
+   * malformed line; a soft high-quantity confirmation, if one is ever added, sits below both.
+   */
+  const keptLines = Array.isArray(input.kept?.items) ? (input.kept.items as EditAdditionInput[]) : []
+  const resulting = validateResultingQuantities(keptLines, additions)
+  if (!resulting.ok) {
+    const { itemName, maximum, remaining } = resulting.refusal
+    return {
+      ok: false,
+      refusal: {
+        kind: 'quantity',
+        message: QR_REDESIGN_PENDING_COPY.quantityCapReached
+          .replace('{item}', itemName || 'this item')
+          .replace('{maximum}', String(maximum))
+          .replace('{remaining}', String(remaining)),
+      },
+    }
   }
 
   /**
