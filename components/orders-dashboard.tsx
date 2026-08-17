@@ -22,6 +22,15 @@ import {
 } from '@/lib/dashboard/order-realtime'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
+import { TAB_FLAG_COPY } from '@/lib/tabs/tab-flag-copy'
+import {
+  TAB_PENDING_REQUEST_COLUMNS,
+  TAB_PENDING_REQUEST_STATUSES,
+  TAB_TOTAL_ORDER_COLUMNS,
+  computeTabFigures,
+} from '@/lib/tabs/tab-outstanding'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
@@ -194,6 +203,7 @@ function OrderRequestCard({
   request,
   currency,
   timeAgoLabel,
+  nowMs,
   busy,
   onSaveReview,
   onAccept,
@@ -202,26 +212,33 @@ function OrderRequestCard({
   request: OrderRequest & Record<string, any>
   currency: string
   timeAgoLabel: string
+  /** The dashboard's shared clock, so a lock going stale re-renders without a row changing. */
+  nowMs: number
   busy: boolean
   onSaveReview: (requestId: string, items: Record<string, any>[]) => Promise<void>
   onAccept: (requestId: string) => void
   onDecline: (requestId: string) => void
 }) {
-  const originalItems = Array.isArray(request.items) ? request.items : []
-  const reviewedItems = Array.isArray(request.items_reviewed) ? request.items_reviewed : null
-  const isReviewed = reviewedItems != null
+  // Precedence imported, not restated. This card used to carry its own two-tier copy of
+  // "reviewed ?? original", which is now a THREE-tier rule because a customer can amend their
+  // own request (order editing). A third copy is how staff come to review one item list while
+  // Accept charges for another.
+  const effective = effectiveRequestPricing(request)
+  const isReviewed = effective.source === 'staff_reviewed'
+  const wasCustomerEdited = (Number(request.customer_edit_count) || 0) > 0
+  const effectiveItems = effective.items as Record<string, any>[]
 
   const [editing, setEditing] = useState(false)
-  const [workingItems, setWorkingItems] = useState<Record<string, any>[]>(reviewedItems ?? originalItems)
+  const [workingItems, setWorkingItems] = useState<Record<string, any>[]>(effectiveItems)
   const [saving, setSaving] = useState(false)
 
-  const displayItems = editing ? workingItems : reviewedItems ?? originalItems
-  const displaySubtotal = isReviewed ? request.subtotal_reviewed : request.subtotal
-  const displayTax = isReviewed ? request.tax_reviewed : request.tax
-  const displayTotal = isReviewed ? request.total_reviewed : request.total
+  const displayItems = editing ? workingItems : effectiveItems
+  const displaySubtotal = effective.subtotal
+  const displayTax = effective.tax
+  const displayTotal = effective.total
 
   const startEditing = () => {
-    setWorkingItems((reviewedItems ?? originalItems).map((item) => ({ ...item })))
+    setWorkingItems(effectiveItems.map((item) => ({ ...item })))
     setEditing(true)
   }
 
@@ -269,7 +286,15 @@ function OrderRequestCard({
               Edited
             </Badge>
           )}
+          {/* Distinct from the "Edited" badge above, which means STAFF edited it. This one
+              means the customer did, and staff have not necessarily seen the new list. */}
+          <span className="ml-2 inline-flex items-center gap-2 align-middle">
+            <OrderEditBadges order={request} nowMs={nowMs} />
+          </span>
           <p className="text-muted-foreground text-sm mt-1">Requested {timeAgoLabel}</p>
+          {wasCustomerEdited && (
+            <OrderEditTotalDelta order={{ ...request, total: displayTotal }} currency={currency} />
+          )}
         </div>
       </div>
 
@@ -318,7 +343,7 @@ function OrderRequestCard({
       </div>
 
       {request.order_instructions && (
-        <p className="text-sm text-muted-foreground italic mb-2">&quot;{request.order_instructions}&quot;</p>
+        <p className="text-sm text-muted-foreground italic mb-2 break-words">&quot;{request.order_instructions}&quot;</p>
       )}
 
       <div className="flex justify-between items-baseline mb-3 pt-2 border-t border-border">
@@ -421,8 +446,16 @@ export function OrdersDashboard() {
     if (!dashboardRestaurantId) setOrderScope(null)
   }
   const [tabInfoById, setTabInfoById] = useState<
-    Record<string, { status: string; payment_preference: string | null; members: any[] }>
+    Record<string, { status: string; payment_preference: string | null; members: any[]; linked_unpaid_tab_id: string | null }>
   >({})
+  /**
+   * Linked tabs that are STILL unpaid, by linked tab id. Staff-only: nothing in the customer
+   * app reads this, and the flag is a prompt to ask, never a block on anything.
+   */
+  const [unpaidTabElsewhere, setUnpaidTabElsewhere] = useState<
+    Record<string, { table_number: number | null; payable: number; pending: number }>
+  >({})
+
   const tabInfoScopeId = orderScope?.restaurantId ?? ''
   const [tabInfoScopeKey, setTabInfoScopeKey] = useState(tabInfoScopeId)
   if (tabInfoScopeKey !== tabInfoScopeId) {
@@ -533,7 +566,7 @@ export function OrdersDashboard() {
     const loadTabs = async () => {
       const { data, error } = await supabase
         .from('tabs')
-        .select('id, status, payment_preference, members')
+        .select('id, status, payment_preference, members, linked_unpaid_tab_id')
         .eq('restaurant_id', restaurantUuid)
         .in('id', tabIds)
 
@@ -543,14 +576,109 @@ export function OrdersDashboard() {
         return
       }
 
-      const next: Record<string, { status: string; payment_preference: string | null; members: any[] }> = {}
+      const next: Record<string, { status: string; payment_preference: string | null; members: any[]; linked_unpaid_tab_id: string | null }> = {}
       for (const row of data || []) {
         next[String(row.id)] = {
           status: String(row.status || ''),
           payment_preference: row.payment_preference ? String(row.payment_preference) : null,
           members: Array.isArray(row.members) ? row.members : [],
+          linked_unpaid_tab_id: row.linked_unpaid_tab_id ? String(row.linked_unpaid_tab_id) : null,
         }
       }
+      /**
+       * The unpaid-tab-elsewhere flag (#211 follow-up), resolved in a SECOND pass.
+       *
+       * A tab records the tab its customer already held when this one was created. The flag
+       * must show only while that other tab is STILL unpaid — that is how "clears on settle"
+       * is implemented without a write on the settle path: nothing clears the pointer, the
+       * render simply stops matching once the linked tab leaves open/ready_to_pay.
+       *
+       * Second query rather than a join because the linked tab is usually NOT one of the tabs
+       * already on screen — it belongs to a different table, which is the entire point.
+       */
+      const linkedIds = [...new Set(
+        Object.values(next)
+          .map((info) => info.linked_unpaid_tab_id)
+          .filter((id): id is string => Boolean(id)),
+      )]
+      if (linkedIds.length > 0) {
+        /**
+         * `tabs.total` is NOT read here any more (#286).
+         *
+         * It was, and it is the cache: five writers, two incompatible definitions, and nothing
+         * re-sums it when an order is cancelled (QRA-15). Measured on production 2026-08-15, of
+         * 20 tabs carrying orders the two definitions agreed on ONE -- 13 rows stored "gross
+         * ordered" and 6 stored "still outstanding", decided by whichever writer touched the row
+         * last. So this badge was telling a staff member "Table 7 has an unpaid tab of N$X" where
+         * X was, for most tables, undecidably one or the other.
+         *
+         * It now uses `computeTabFigures`, the same function every customer surface uses, over
+         * the same columns that module names. One definition, everywhere.
+         *
+         * TWO FIGURES, per the standing ruling: this badge DISPLAYS, so it shows both. It decides
+         * nothing -- it does not block ordering, accepting, preparing or settling; it is a prompt
+         * to ask.
+         */
+        const [{ data: linkedRows }, { data: linkedOrders }, { data: linkedRequests }] =
+          await Promise.all([
+            supabase
+              .from('tabs')
+              .select('id, status, table_number')
+              .eq('restaurant_id', restaurantUuid)
+              .in('id', linkedIds),
+            supabase
+              .from('orders')
+              .select(`tab_id, ${TAB_TOTAL_ORDER_COLUMNS}`)
+              .eq('restaurant_id', restaurantUuid)
+              .in('tab_id', linkedIds),
+            supabase
+              .from('order_requests')
+              .select(`tab_id, ${TAB_PENDING_REQUEST_COLUMNS}`)
+              .eq('restaurant_id', restaurantUuid)
+              .in('tab_id', linkedIds)
+              .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
+          ])
+        if (cancelled) return
+
+        const ordersByTab = new Map<string, Record<string, unknown>[]>()
+        for (const row of linkedOrders || []) {
+          const key = String((row as Record<string, unknown>).tab_id ?? '')
+          if (!key) continue
+          const list = ordersByTab.get(key) ?? []
+          list.push(row as Record<string, unknown>)
+          ordersByTab.set(key, list)
+        }
+        const requestsByTab = new Map<string, Record<string, unknown>[]>()
+        for (const row of linkedRequests || []) {
+          const key = String((row as Record<string, unknown>).tab_id ?? '')
+          if (!key) continue
+          const list = requestsByTab.get(key) ?? []
+          list.push(row as Record<string, unknown>)
+          requestsByTab.set(key, list)
+        }
+
+        const stillUnpaid: Record<
+          string,
+          { table_number: number | null; payable: number; pending: number }
+        > = {}
+        for (const row of linkedRows || []) {
+          if (!['open', 'ready_to_pay'].includes(String(row.status || ''))) continue
+          const id = String(row.id)
+          const figures = computeTabFigures(
+            (ordersByTab.get(id) ?? []) as never,
+            (requestsByTab.get(id) ?? []) as never,
+          )
+          stillUnpaid[id] = {
+            table_number: row.table_number != null ? Number(row.table_number) : null,
+            payable: figures.payable,
+            pending: figures.pending,
+          }
+        }
+        setUnpaidTabElsewhere(stillUnpaid)
+      } else {
+        setUnpaidTabElsewhere({})
+      }
+
       setTabInfoById(next)
     }
 
@@ -1714,6 +1842,7 @@ export function OrdersDashboard() {
                   request={request}
                   currency={restaurant?.currency || 'N$'}
                   timeAgoLabel={formatTimeAgo(request.placed_at)}
+                  nowMs={nowMs}
                   busy={requestActionKey?.startsWith(`${request.id}:`) ?? false}
                   onSaveReview={handleSaveRequestReview}
                   onAccept={handleAcceptRequest}
@@ -1874,6 +2003,29 @@ export function OrdersDashboard() {
                     {getStatusBadge(normalizedOrder.status as OrderStatus)}
                     {getPaymentChannelBadge(normalizedOrder)}
                     {getPaymentStatusBadge(normalizedOrder)}
+                    <OrderEditBadges order={normalizedOrder} nowMs={nowMs} />
+                    {/* Unpaid tab elsewhere (#211 follow-up). FLAG, never a block: staff are
+                        told, nothing is prevented, and the customer never sees it. Renders only
+                        while the LINKED tab is still unpaid, which is how it clears on settle
+                        without anything writing to the settle path. */}
+                    {(() => {
+                      const linkedId = tabIdOf(order) ? tabInfoById[tabIdOf(order)]?.linked_unpaid_tab_id : null
+                      const linked = linkedId ? unpaidTabElsewhere[linkedId] : null
+                      if (!linked) return null
+                      return (
+                        <Badge className="border-0 bg-amber-600 text-white">
+                          {TAB_FLAG_COPY.unpaidTabElsewhere
+                            .replace('{table}', String(linked.table_number ?? '?'))
+                            .replace(
+                              '{total}',
+                              `${restaurant?.currency || 'N$'}${linked.payable.toFixed(2)}` +
+                                (linked.pending > 0
+                                  ? ` + ${restaurant?.currency || 'N$'}${linked.pending.toFixed(2)} ${TAB_FLAG_COPY.unpaidTabElsewherePendingSuffix}`
+                                  : ''),
+                            )}
+                        </Badge>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />
@@ -1885,6 +2037,13 @@ export function OrdersDashboard() {
                   <span className="text-lg font-bold">
                     {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
+                  {/* What the total was before the customer changed it, and by how much. Sits
+                      beside the figure staff act on, not in a detail panel they would have to
+                      open to discover the number moved. */}
+                  <OrderEditTotalDelta
+                    order={normalizedOrder}
+                    currency={restaurant?.currency || 'N$'}
+                  />
                   {normalizedOrder.tab_status === 'ready_to_pay' && normalizedOrder.tab_payment_preference && (
                     <div className="flex items-center justify-end gap-1.5 mt-1">
                       <span className="text-sm">
@@ -1952,7 +2111,7 @@ export function OrdersDashboard() {
                           </span>
                         )}
                         {item?.special_instructions && (
-                          <div className="text-xs text-muted-foreground italic mt-1">
+                          <div className="text-xs text-muted-foreground italic mt-1 break-words">
                             &ldquo;{item.special_instructions}&rdquo;
                           </div>
                         )}
@@ -1969,7 +2128,9 @@ export function OrdersDashboard() {
                 {normalizedOrder.order_instructions && (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
                     <p className="text-sm text-yellow-900 font-medium">Order Instructions:</p>
-                    <p className="text-sm text-yellow-800">{normalizedOrder.order_instructions}</p>
+                    {/* Rows written before the client cap can be any length, and an unbroken
+                        run of characters would otherwise push the card sideways. */}
+                    <p className="text-sm text-yellow-800 break-words">{normalizedOrder.order_instructions}</p>
                   </div>
                 )}
 

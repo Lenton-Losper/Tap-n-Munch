@@ -10,6 +10,10 @@ import {
   owesMoney,
   secondsSincePush,
 } from '@/lib/payments/payment-integrity'
+import {
+  buildMemberNameLookup,
+  resolveOrderMemberName,
+} from '@/lib/tabs/resolve-order-member-names'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,6 +38,7 @@ export async function GET(req: Request) {
           status,
           total,
           payment_preference,
+          members,
           orders(
             id,
             order_number,
@@ -42,7 +47,9 @@ export async function GET(req: Request) {
             payment_status,
             terminal_pushed_at,
             items,
-            placed_at
+            placed_at,
+            member_session_id,
+            session_id
           )
         )
       `)
@@ -79,10 +86,26 @@ export async function GET(req: Request) {
       const tab = table.tabs?.[0] ?? null
       if (!tab) return { ...table, tab: null, canClose: false }
 
+      /**
+       * #288. The terminal renders `{item.member_name || 'Guest'}` and nothing ever sent
+       * `member_name`, so every order on every table read as "Guest" -- which makes the
+       * per-order "Settle Selected" flow unusable as intended, because staff cannot tell which
+       * orders are whose. Resolved here from `tabs.members[]`; an unmatched order gets `null`
+       * and the terminal's own fallback handles it. Never guessed.
+       */
+      const memberNames = buildMemberNameLookup(tab.members)
+
       const orders = (tab.orders ?? []).map((order: any) => {
         const projection = projections.get(String(order.id)) ?? null
+        // The raw ids are NOT spread out to the terminal: `...order` below would carry them,
+        // so they are stripped and replaced by the name. A session id is a credential
+        // (`ownsOrder` makes knowing one the whole authorisation) and staff have no use for it.
+        const { member_session_id: _m, session_id: _s, ...safeOrder } = order
+        void _m
+        void _s
         return {
-          ...order,
+          ...safeOrder,
+          member_name: resolveOrderMemberName(order, memberNames),
           // Distinct from orders.payment_status (paid/pending settlement flag).
           payment_status_derived: projection?.paymentStatus ?? null,
           refunded_amount: projection?.refundedAmount ?? 0,

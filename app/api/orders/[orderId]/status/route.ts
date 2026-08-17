@@ -7,6 +7,11 @@ import {
   STAFF_SETTABLE_STATUSES,
 } from '@/lib/orders/status-transitions'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
+import { isEditableOrderStatus } from '@/lib/orders/edit-lock'
+import {
+  staffStatusRefusal,
+  staffUnknownStatusRefusal,
+} from '@/lib/orders/staff-status-refusal'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,7 +41,7 @@ export async function PATCH(
 
   const { data: existingOrder, error: loadError } = await supabase
     .from('orders')
-    .select('id, restaurant_id, status')
+    .select('id, restaurant_id, status, payment_status')
     .eq('id', orderId)
     .maybeSingle()
 
@@ -60,17 +65,23 @@ export async function PATCH(
   // hardcoded from-status. Covers pending/ready_for_terminal → accepted, accepted →
   // preparing, etc., and Accept-vs-Cancel from any common non-terminal state.
   const expectedCurrentStatus = String(existingOrder.status || '')
+  // Same idea for payment_status, which until now was written last-write-win (see the claim
+  // block below). Kept as the raw value rather than a normalised string because the CAS has
+  // to match what is actually stored, including NULL.
+  const expectedCurrentPaymentStatus =
+    existingOrder.payment_status == null ? null : String(existingOrder.payment_status)
 
   if (status) {
     const nextStatus = String(status).trim()
     if (!STAFF_SETTABLE_STATUSES.has(nextStatus)) {
-      return NextResponse.json({ error: `Invalid status: ${nextStatus}` }, { status: 400 })
+      const refusal = staffUnknownStatusRefusal(nextStatus)
+      return NextResponse.json({ error: refusal.message, code: refusal.code }, { status: 400 })
     }
     if (!isValidStaffStatusTransition(expectedCurrentStatus, nextStatus)) {
-      return NextResponse.json(
-        { error: `Invalid transition: ${expectedCurrentStatus} → ${nextStatus}` },
-        { status: 400 },
-      )
+      // #275: the dashboard toasts `data?.error` verbatim, so this string IS the staff-facing
+      // copy. It used to be two database identifiers and an arrow.
+      const refusal = staffStatusRefusal(expectedCurrentStatus, nextStatus)
+      return NextResponse.json({ error: refusal.message, code: refusal.code }, { status: 400 })
     }
   }
 
@@ -81,7 +92,9 @@ export async function PATCH(
   ).trim()
   const cancellationReason = callerReason || 'staff_cancelled'
 
-  const patch: Record<string, string | boolean> = {}
+  // `null` is in the union because clearing the edit-lock columns is a write of null, not an
+  // omission — omitting them would leave a stale lock on an order the kitchen has taken.
+  const patch: Record<string, string | boolean | null> = {}
   if (status) {
     patch.status = status
     const timestampField = TIMESTAMP_FIELDS[status]
@@ -101,10 +114,21 @@ export async function PATCH(
     }
   }
 
+  // STAFF WINS over an open customer edit, and this is the whole mechanism. Moving an order
+  // out of the editable set nulls the edit-lock token, and the customer's commit is an UPDATE
+  // conditioned on that token (app/api/guest/orders/[orderId]/edit/route.ts) — so an edit
+  // already in flight matches zero rows and is refused with "the kitchen has started".
+  //
+  // Note the asymmetry, which is the ruling: nothing here CONSULTS the lock. A staff status
+  // change is never blocked, delayed, or made to wait for a customer. The dashboard shows an
+  // open edit so the staff member can choose to wait; the API does not choose for them.
+  if (status && !isEditableOrderStatus(status)) {
+    patch.edit_lock_token = null
+    patch.edit_lock_session_id = null
+    patch.edit_lock_expires_at = null
+  }
+
   // Atomic claim when changing kitchen workflow status (R-7 Accept-vs-Decline/Cancel).
-  // payment_status-only patches (e.g. Mark as Paid) do not use this status claim —
-  // that path is a separate concern (receipt issuance is already idempotent; terminal /
-  // webhook paid writes use their own guards).
   let updateQuery = supabase
     .from('orders')
     .update(patch)
@@ -113,6 +137,23 @@ export async function PATCH(
 
   if (status) {
     updateQuery = updateQuery.eq('status', expectedCurrentStatus)
+  }
+
+  // payment_status now takes the same conditional claim, closing the gap the comment that
+  // used to sit here described as "a separate concern". It was last-write-win: two devices
+  // reading `pending` and writing different values both succeeded, and a gateway write
+  // landing between one device's read and its write was silently overwritten.
+  //
+  // This does not make a repeated Mark-as-Paid fail. The claim matches on the value that was
+  // READ, so setting paid over paid still matches its own row; only a payment_status that
+  // moved to something DIFFERENT under the caller loses, which is exactly the case worth
+  // catching. `.eq` never matches NULL, so a null payment_status has to be claimed with
+  // `.is` — without that branch every order with no payment_status set would 409 forever.
+  if (paymentStatus) {
+    updateQuery =
+      expectedCurrentPaymentStatus === null
+        ? updateQuery.is('payment_status', null)
+        : updateQuery.eq('payment_status', expectedCurrentPaymentStatus)
   }
 
   const { data, error } = await updateQuery
@@ -127,6 +168,12 @@ export async function PATCH(
     if (status) {
       return NextResponse.json(
         { error: 'Order status changed; refresh and try again' },
+        { status: 409 },
+      )
+    }
+    if (paymentStatus) {
+      return NextResponse.json(
+        { error: 'Payment status changed; refresh and try again' },
         { status: 409 },
       )
     }

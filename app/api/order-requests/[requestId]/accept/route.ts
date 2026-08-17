@@ -4,6 +4,7 @@ import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-per
 import { PERMISSIONS } from '@/lib/permissions'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { createOrder } from '@/lib/orders/create-order'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 
@@ -88,16 +89,19 @@ export async function POST(
     )
   }
 
-  // The staff-reviewed figures if a review was saved, otherwise the customer's submission.
-  // Both are calculateOrderPricing output -- POST /api/orders prices the submission and PATCH
-  // .../review prices staff edits -- so nothing here is client-supplied, and these are exactly
-  // the numbers the customer's confirmation screen renders (total_reviewed ?? total, see
-  // lib/guest-orders/queries.ts mapOrderRequestToGuestRow) and that the Finatic checkout below
-  // charges.
-  const items = Array.isArray(claimed.items_reviewed) ? claimed.items_reviewed : claimed.items
-  const subtotal = claimed.subtotal_reviewed ?? claimed.subtotal
-  const tax = claimed.tax_reviewed ?? claimed.tax
-  const total = claimed.total_reviewed ?? claimed.total
+  // The staff-reviewed figures if a review was saved, else the customer's own amendment if
+  // they edited, else their original submission. All three tiers are calculateOrderPricing
+  // output or a strict reduction of it -- POST /api/orders prices the submission, PATCH
+  // .../review prices staff edits, and the customer edit route re-sums the already-priced
+  // lines -- so nothing here is client-supplied. These are exactly the numbers the customer's
+  // confirmation screen renders and that the Finatic checkout below charges, which is why the
+  // precedence is imported rather than restated: three copies of it is how the screen and the
+  // charge come to disagree.
+  const effective = effectiveRequestPricing(claimed)
+  const items = effective.items
+  const subtotal = effective.subtotal
+  const tax = effective.tax
+  const total = effective.total
 
   const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
 
@@ -136,6 +140,10 @@ export async function POST(
       channel: claimed.channel,
       customerName: claimed.customer_name,
       idempotencyKey: acceptIdempotencyKey,
+      // The reverse link, written BY the order's own INSERT. `accepted_order_id` below is the
+      // forward link and is a separate UPDATE, so it can lag or -- if this worker dies -- never
+      // land at all. This one cannot: an order created from a request always carries the request.
+      sourceRequestId: requestId,
     })
   } catch (err) {
     // Release the claim so the request can be retried (Accept again, or Decline) instead
