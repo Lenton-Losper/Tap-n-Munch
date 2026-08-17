@@ -26,6 +26,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
 import { mapOrderStatusToBadge, type OrderStatusKey } from '@/components/receipt/receipt-types'
 import { getReceiptStatusBadge } from '@/lib/orders/receipt-status'
+import { CUSTOMER_STATUS_COPY } from '@/lib/orders/customer-status'
 
 function renderConfirmation(orderStatus: OrderStatusKey, paymentStatus = 'pending') {
   return renderToStaticMarkup(
@@ -47,8 +48,8 @@ describe('customer-facing order status vocabulary (#131)', () => {
     it('says READY — not PREPARING — once the kitchen marks the order ready', () => {
       // The reported symptom: kitchen marks the coffee ready, customer still reads "PREPARING".
       const html = renderConfirmation('ready')
-      expect(html).toContain('READY')
-      expect(html).not.toContain('PREPARING')
+      expect(html).toContain(CUSTOMER_STATUS_COPY.ready)
+      expect(html).not.toContain(CUSTOMER_STATUS_COPY.preparing)
       expect(html).not.toContain('Your order is being prepared')
     })
 
@@ -56,37 +57,44 @@ describe('customer-facing order status vocabulary (#131)', () => {
       // `preparing` is written by BOTH the dashboard and the terminal, yet had no case at all,
       // so it fell through to the default and told the customer "NEW ORDER".
       const html = renderConfirmation('preparing')
-      expect(html).toContain('PREPARING')
-      expect(html).not.toContain('NEW ORDER')
+      expect(html).toContain(CUSTOMER_STATUS_COPY.preparing)
+      expect(html).not.toMatch(/NEW ORDER/i)
     })
 
     it('does not show a terminal-confirmed order as a brand new one', () => {
       // The terminal writes `confirmed` where the dashboard writes `accepted`.
       const html = renderConfirmation('confirmed')
-      expect(html).toContain('ACCEPTED')
-      expect(html).not.toContain('NEW ORDER')
+      expect(html).toContain(CUSTOMER_STATUS_COPY.accepted)
+      expect(html).not.toMatch(/NEW ORDER/i)
     })
   })
 
   describe('mapOrderStatusToBadge', () => {
     it('maps every status the system actually writes to a distinct, truthful badge', () => {
-      expect(mapOrderStatusToBadge('preparing').label).toBe('PREPARING')
-      expect(mapOrderStatusToBadge('ready').label).toBe('READY')
-      expect(mapOrderStatusToBadge('confirmed').label).toBe('ACCEPTED')
-      expect(mapOrderStatusToBadge('accepted').label).toBe('ACCEPTED')
-      expect(mapOrderStatusToBadge('ready_for_terminal').label).toBe('READY')
+      expect(mapOrderStatusToBadge('preparing').label).toBe(CUSTOMER_STATUS_COPY.preparing)
+      expect(mapOrderStatusToBadge('ready').label).toBe(CUSTOMER_STATUS_COPY.ready)
+      expect(mapOrderStatusToBadge('confirmed').label).toBe(CUSTOMER_STATUS_COPY.accepted)
+      expect(mapOrderStatusToBadge('accepted').label).toBe(CUSTOMER_STATUS_COPY.accepted)
+      expect(mapOrderStatusToBadge('ready_for_terminal').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
     })
 
+    /**
+     * #309: `description` is gone. The private sentences it held were unsigned copy, and the
+     * defect this asserted against - a READY order described as still being prepared - is now
+     * structurally impossible: the label comes from CUSTOMER_STATUS_COPY, keyed by a state
+     * `customerOrderState` derived. Asserted on the label instead, which is what renders.
+     */
     it('never tells a customer their ready order is still being prepared', () => {
-      expect(mapOrderStatusToBadge('ready').description).not.toMatch(/being prepared/i)
+      expect(mapOrderStatusToBadge('ready').label).not.toMatch(/being prepared/i)
+      expect(mapOrderStatusToBadge('ready').label).toBe(CUSTOMER_STATUS_COPY.ready)
     })
 
     it('keeps the statuses that were already correct', () => {
-      expect(mapOrderStatusToBadge('waiting_review').label).toBe('WAITING FOR CONFIRMATION')
-      expect(mapOrderStatusToBadge('declined').label).toBe('DECLINED')
-      expect(mapOrderStatusToBadge('pending').label).toBe('NEW ORDER')
-      expect(mapOrderStatusToBadge('completed').label).toBe('COMPLETED')
-      expect(mapOrderStatusToBadge('cancelled').label).toBe('CANCELLED')
+      expect(mapOrderStatusToBadge('waiting_review').label).toBe(CUSTOMER_STATUS_COPY.waiting)
+      expect(mapOrderStatusToBadge('declined').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
+      expect(mapOrderStatusToBadge('pending').label).toBe(CUSTOMER_STATUS_COPY.waiting)
+      expect(mapOrderStatusToBadge('completed').label).toBe(CUSTOMER_STATUS_COPY.ready)
+      expect(mapOrderStatusToBadge('cancelled').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
     })
   })
 

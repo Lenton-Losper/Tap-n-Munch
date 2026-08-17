@@ -28,6 +28,7 @@ import {
   resolveStoredTabId,
   type TabRow,
 } from '@/lib/tab-session'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -506,7 +507,7 @@ export default function ReceiptPage() {
                 <div className="flex justify-between items-start mb-4 pb-4 border-b border-border">
                   <div>
                     <h3 className="font-sans font-bold text-foreground text-lg">
-                      Order #{order.order_number || order.id?.slice(-6)?.toUpperCase() || 'N/A'} —{' '}
+                      {orderIdentityLabel(order)} —{' '}
                       {customerLabel}
                     </h3>
                     <p className="text-sm text-muted-foreground font-sans">

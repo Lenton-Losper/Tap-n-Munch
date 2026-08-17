@@ -152,7 +152,7 @@ export function OrderConfirmationView({
             </div>
           </div>
 
-          <StatusBadge label={statusBadge.label} description={statusBadge.description} />
+          <StatusBadge label={statusBadge.label} state={statusBadge.state} />
 
           {(showTerminalPayMessage || isTerminal) && !isCardManual && !isOtherChannel && (
             <InfoBanner className="mt-4" variant="info">
