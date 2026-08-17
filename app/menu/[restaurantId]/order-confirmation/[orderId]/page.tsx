@@ -12,15 +12,19 @@ import {
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
+import { perOrderReadyToPayAllowed } from '@/lib/tabs/ready-to-pay-placement'
 import { getCurrentSession } from '@/lib/session'
+import { readTabSessionId, heldSessionIds } from '@/lib/tab-storage'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
 import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { OrderEditPanel } from '@/components/order-edit-panel'
 
 type Order = {
   id: string
-  order_number: number
+  /** `null` on an order_request: that table has no order_number column at all. */
+  order_number: number | null
   status: OrderStatusKey
   placed_at: string
   payment_method: string
@@ -37,7 +41,7 @@ type Order = {
 function mapGuestRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: String(row.id || ''),
-    order_number: Number(row.order_number || 0),
+    order_number: row.order_number != null ? Number(row.order_number) : null,
     status: String(row.status || 'pending') as OrderStatusKey,
     placed_at: String(row.placed_at || row.created_at || ''),
     payment_method: String(row.payment_method || ''),
@@ -51,8 +55,23 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
     subtotal: row.subtotal != null ? Number(row.subtotal) : undefined,
     tax: row.tax != null ? Number(row.tax) : undefined,
     table_number: row.table_number != null ? Number(row.table_number) : undefined,
+    /**
+     * #295: `total` and `tax` are carried through. This narrowed to
+     * `{quantity, name, subtotal}` and threw the charged figure away, so the only number
+     * OrderSummary could render was the ex-VAT base.
+     */
     items: Array.isArray(row.items)
-      ? (row.items as Array<{ quantity: number; name: string; subtotal: number }>)
+      ? (row.items as Array<{
+          quantity: number
+          name: string
+          subtotal: number
+          total?: number
+          tax?: number
+          // #298: carried through so the screen can tell two same-named lines apart.
+          size?: unknown
+          addons?: unknown
+          selectedVariants?: unknown
+        }>)
       : [],
   }
 }
@@ -96,8 +115,13 @@ export default function OrderConfirmationPage() {
   const { currency: restaurantCurrency } = useRestaurant()
 
   const [order, setOrder] = useState<Order | null>(null)
+  // The raw guest row as well as the mapped one. The edit panel needs fields the Order type
+  // above deliberately does not carry (surface, payment_checkout_url, the lock state), and
+  // widening that type would push them through every prop of OrderConfirmationView.
+  const [orderRow, setOrderRow] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [terminalNotifiedLocal, setTerminalNotifiedLocal] = useState(false)
+  const [editReloadKey, setEditReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -108,17 +132,37 @@ export default function OrderConfirmationPage() {
         const row = await fetchGuestOrderById(orderId, {
           restaurantId,
           tableNumber: tableNumber > 0 ? tableNumber : undefined,
-          sessionId: getCurrentSession() || undefined,
+          // Every id this browser holds. This load previously matched only via the
+          // table_number branch of guestCanAccessOrder — the session comparison was wrong and
+          // masked. Verified on live staging traffic before this change: the session branch
+          // alone resolves the order with no table_number, so this is not the only thing
+          // holding the page up (see #279, which narrows that branch afterwards).
+          sessionIds: heldSessionIds(),
         })
 
         if (cancelled) return
 
         if (!row) {
-          router.push(`/menu/${restaurantId}`)
+          /**
+           * A MISSING ORDER IS NOT AN ENDED SESSION (#294).
+           *
+           * This used to `router.push('/menu/<id>')`. The landing then validates the stored
+           * token, and if the tab has since been settled or the table's session version moved,
+           * `/api/session/validate` answers 410 and the landing calls `handleSessionExpired` --
+           * which wipes the token, the tab id, the table and the cart and lands the customer on
+           * "Your dining session has ended".
+           *
+           * So a 404 on ONE order read evicted the customer from a tab that was still open. The
+           * route out of their own bill was destroyed, and a joiner who never knew the PIN could
+           * not get back at all. `fetchGuestOrderById` returns null only on a 404; every other
+           * failure throws and is handled below.
+           */
+          setLoading(false)
           return
         }
 
         setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
+        setOrderRow(row as Record<string, unknown>)
         setLoading(false)
       } catch (err) {
         console.error('Failed to load order:', err)
@@ -133,7 +177,7 @@ export default function OrderConfirmationPage() {
     return () => {
       cancelled = true
     }
-  }, [orderId, restaurantId, router, tableNumber])
+  }, [orderId, restaurantId, router, tableNumber, editReloadKey])
 
   useEffect(() => {
     if (!orderId || !order) return
@@ -145,10 +189,11 @@ export default function OrderConfirmationPage() {
       const row = await fetchGuestOrderById(orderId, {
         restaurantId,
         tableNumber: tableNumber > 0 ? tableNumber : order.table_number,
-        sessionId: getCurrentSession() || undefined,
+        sessionIds: heldSessionIds(),
       })
       if (cancelled || !row) return
       setOrder(mapGuestRowToOrder(row as Record<string, unknown>))
+      setOrderRow(row as Record<string, unknown>)
     }
 
     const interval = window.setInterval(() => {
@@ -201,7 +246,14 @@ export default function OrderConfirmationPage() {
     terminalNotifiedLocal ||
     order.customer_ready_to_pay === true ||
     order.status === 'ready_for_terminal'
-  const showTerminalPayCta = isCardTerminal && paymentPending
+  /**
+   * Spec section 30: on a TAB, settlement lives on the Tab and this per-order control is the
+   * second of two competing "call the waiter" mechanisms writing to two different tables
+   * (audit D8). Off a tab it is the customer's only way to ask, so it stays.
+   * The rule is in lib/tabs/ready-to-pay-placement.ts; this site does not restate it.
+   */
+  const perOrderSettlementAllowed = perOrderReadyToPayAllowed(orderRow)
+  const showTerminalPayCta = isCardTerminal && paymentPending && perOrderSettlementAllowed
 
   return (
     <OrderConfirmationView
@@ -236,10 +288,37 @@ export default function OrderConfirmationPage() {
           )
         ) : undefined
       }
-      cashReadySlot={showReadyToPayCashButton(order) ? <ReadyToPayCashButton orderId={order.id} /> : undefined}
+      cashReadySlot={
+        showReadyToPayCashButton(order) && perOrderSettlementAllowed ? (
+          <ReadyToPayCashButton orderId={order.id} />
+        ) : undefined
+      }
       cashNotifiedSlot={
         showReadyToPayCashNotified(order) ? (
           <InfoBanner variant="notify">Staff has been notified. They will be with you shortly.</InfoBanner>
+        ) : undefined
+      }
+      editSlot={
+        orderRow ? (
+          <OrderEditPanel
+            orderId={order.id}
+            restaurantId={restaurantId}
+            /**
+             * BOTH ids this BROWSER holds — and deliberately NOT the row's own session_id.
+             *
+             * The order carries whichever the placing screen held (the cart submits the
+             * tab-context one), so passing only getCurrentSession() sent the customer their own
+             * order as a 404. But echoing the row's id back would make the server's ownership
+             * check pass unconditionally, and `guestCanAccessOrder` releases an OPEN order on
+             * table_number alone — so a second diner at the same table could load this page for
+             * someone else's order and edit it. That is the hole redactGuestOrderRow exists to
+             * close, reopened from the other end.
+             */
+            sessionIds={[getCurrentSession(), readTabSessionId()]}
+            order={orderRow}
+            currency={currency === 'NAD' ? 'N$' : `${currency} `}
+            onEdited={() => setEditReloadKey((key) => key + 1)}
+          />
         ) : undefined
       }
       orderReadyBanner={

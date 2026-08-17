@@ -622,7 +622,8 @@ describe('the cart row itself (#126, end to end through the page)', () => {
       buttonMatching(/^\s*Edit/).dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(container.textContent).toContain('Customize Item')
+    // The modal is identified by its role, not by header copy: that header no longer exists.
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
     expect(container.querySelector('span.w-8')?.textContent).toBe('3')
     expect(
       container.querySelector('[role="radio"][aria-checked="true"]')?.getAttribute('value'),

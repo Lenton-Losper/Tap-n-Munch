@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { createTabMemberKeyDeriver, redactTabMembers } from '@/lib/tab-member-key'
+import {
+  TAB_PENDING_REQUEST_COLUMNS,
+  TAB_PENDING_REQUEST_STATUSES,
+  TAB_TOTAL_ORDER_COLUMNS,
+  computeTabFigures,
+} from '@/lib/tabs/tab-outstanding'
 
 export const dynamic = 'force-dynamic'
 
@@ -109,10 +115,53 @@ export async function GET(
       }
     }
 
+    /**
+     * THE AUTHORITATIVE TAB TOTAL, computed here rather than read off `tabs.total`.
+     *
+     * RULED 2026-08-15. `tabs.total` is a cache with five writers and two incompatible
+     * definitions (see lib/tabs/tab-outstanding.ts), so it is demoted to display-only and this
+     * is what every customer surface must render. Computed in ONE place, on the read every guest
+     * tab screen already makes, so there is no second round trip and no client sum anywhere.
+     *
+     * Failing the whole request on a sum error would blank a screen that renders fine without
+     * the figure, so the error is surfaced as a NULL rather than swallowed as a zero -- a zero
+     * is a number a customer would believe.
+     */
+    const [{ data: tabOrders, error: ordersError }, { data: tabRequests, error: requestsError }] =
+      await Promise.all([
+        supabase.from('orders').select(TAB_TOTAL_ORDER_COLUMNS).eq('tab_id', normalizedTabId),
+        supabase
+          .from('order_requests')
+          .select(TAB_PENDING_REQUEST_COLUMNS)
+          .eq('tab_id', normalizedTabId)
+          .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
+      ])
+
+    if (ordersError) console.error('[TABS] payable total query failed', ordersError)
+    if (requestsError) console.error('[TABS] pending total query failed', requestsError)
+
+    const figures = computeTabFigures(tabOrders, tabRequests)
+    const payableTotal = ordersError ? null : figures.payable
+    const pendingTotal = requestsError ? null : figures.pending
+
     return NextResponse.json({
       tab: {
         ...safeColumns,
         members: await redactTabMembers(normalizedTabId, row.members),
+        /**
+         * `total` above is the CACHE and is knowingly wrong on some rows. It stays in the
+         * response only because staff-facing callers still read it; no customer surface may.
+         *
+         * TWO FIGURES, never one. `payable_total` is what settlement charges and the only figure a
+         * decision may use; `pending_total` is money the customer has committed to that the
+         * restaurant has not answered yet. A screen that shows only payable tells a customer who
+         * has just ordered N$132 that they owe nothing, which is how this was found.
+         *
+         * NULL on either means the sum could not be taken. Render nothing rather than zero — a
+         * zero is a number a customer would act on.
+         */
+        payable_total: payableTotal,
+        pending_total: pendingTotal,
       },
       self_member_keys: selfMemberKeys,
     })

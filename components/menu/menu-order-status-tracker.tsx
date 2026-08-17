@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, ChefHat, Star } from 'lucide-react'
 import { useActiveOrders } from '@/hooks/useActiveOrders'
 import { getCurrentSession } from '@/lib/session'
-import { clearActiveOrderBannerState } from '@/lib/tab-storage'
+import { clearActiveOrderBannerState, heldSessionIds } from '@/lib/tab-storage'
 import { ReadyToPayTerminalButton, ReadyToPayTerminalNotified } from '@/components/ready-to-pay-terminal'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
@@ -145,14 +145,14 @@ function ReadyToPayCardButton({
 }
 
 /** Every session id this customer's orders could have been submitted with. See readTabSessionId. */
+/**
+ * Delegates to heldSessionIds rather than assembling the list again — this was a fourth copy of
+ * "which ids does this browser hold", and copies of that question are what produced three separate
+ * bugs on 2026-08-13. The explicit `sessionId` argument stays because callers may hold a tab
+ * session id this component was handed as a prop, which is not in browser storage.
+ */
 function collectSessionIds(sessionId?: string): string[] {
-  return [...new Set(
-    [
-      String(sessionId || '').trim(),
-      String(getCurrentSession() || '').trim(),
-      String(readTabSessionId() || '').trim(),
-    ].filter(Boolean),
-  )]
+  return [...new Set([String(sessionId || '').trim(), ...heldSessionIds()].filter(Boolean))]
 }
 
 function belongsToTable(order: Record<string, any>, tableNumber: number): boolean {
@@ -228,7 +228,7 @@ export function MenuOrderStatusTracker({
         const single = await fetchGuestOrderById(persistedOrderId, {
           restaurantId,
           tableNumber,
-          sessionId: sessionId || getCurrentSession() || undefined,
+          sessionIds: collectSessionIds(sessionId),
         })
         resolved = single ? [single as Record<string, any>] : []
       }

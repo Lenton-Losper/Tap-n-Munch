@@ -17,7 +17,7 @@ import { useCart } from '@/contexts/cart-context'
 import { useTab } from '@/contexts/tab-context'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { supabase } from '@/lib/supabase/client'
-import { fetchGuestActiveTableOrders } from '@/lib/guest-orders/client'
+import { fetchGuestActiveTableOrders, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
 import { fetchTabById, isTabSessionEndedStatus } from '@/lib/tab-session'
 import { isStoredTabAtAnotherTable } from '@/lib/tabs/landing-tab-actions'
@@ -108,6 +108,10 @@ export function MenuLandingPageV2Content({
   const tableNum =
     tableNumberOverride ??
     (tableNumberParam ? Number(tableNumberParam) : 0)
+  // #265. Present only on a recovery QR staff generated via POST /api/tabs/[tabId]/reset-pin --
+  // never typed or seen by staff. Redeeming it replaces the normal "enter PIN" prompt with an
+  // automatic re-mint, once the open tab for this table has loaded.
+  const pinResetToken = searchParams?.get('pinReset') || null
   
   const [restaurant, setRestaurant] = useState<any>(null)
   const [table, setTable] = useState<any>(null)
@@ -133,8 +137,31 @@ export function MenuLandingPageV2Content({
   // table" from "you have walked to a different one", and it offered "Rejoin your tab" for both.
   // The value costs nothing to carry: fetchTabById already selects table_number and threw it away.
   const [myStoredTab, setMyStoredTab] = useState<
-    { id: string; total: number; status: string; tableNumber: number | null } | null
+    {
+      id: string
+      total: number
+      status: string
+      tableNumber: number | null
+      /**
+       * Whether rejoining this tab needs the PIN. Carried because #262's containment made the
+       * gate UNCONDITIONAL: the rejoin path used to get in without a PIN and now cannot, so the
+       * landing has to know BEFORE it offers rejoin as an action. The value was already being
+       * fetched and thrown away.
+       */
+      pinRequired: boolean
+    } | null
   >(null)
+  /**
+   * Which tab the PIN entry is currently unlocking.
+   *
+   * 'scanned-table' joins the open tab at the table just scanned, by table number.
+   * 'stored-tab'    rejoins the tab this browser already holds, BY ID — which may be at another
+   *                 table, where joining by table number would silently join the wrong tab.
+   *
+   * Before this existed the PIN entry only ever meant the first, and the rejoin path skipped it
+   * entirely and dead-ended on "PIN required to join this tab" with no field on screen.
+   */
+  const [pinTarget, setPinTarget] = useState<'scanned-table' | 'stored-tab'>('scanned-table')
   const [storedTabChecked, setStoredTabChecked] = useState(false)
   const [tabLoading, setTabLoading] = useState(false)
   const [tabActionLoading, setTabActionLoading] = useState<'create' | 'join' | null>(null)
@@ -152,6 +179,11 @@ export function MenuLandingPageV2Content({
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, joinTabWithPin, clearTab } = useTab()
   const { currency } = useRestaurant()
+
+  useEffect(() => {
+    console.log('[V2] page mounted, URL:', window.location.href)
+    // NO CREDENTIAL LOGGING -- see the session-ended screen for the reasoning.
+  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -434,6 +466,8 @@ export function MenuLandingPageV2Content({
               total: Number(openTabRow.total) || 0,
               status: 'open',
               tableNumber: storedTabTable,
+              // Same default the server applies: a tab is PIN-gated unless it explicitly is not.
+              pinRequired: (tab?.pin_required ?? openTabRow?.pin_required) !== false,
             })
           } else {
             clearTabSession()
@@ -538,77 +572,40 @@ export function MenuLandingPageV2Content({
     }
   }, [syncTabLandingState, tableFetchDone])
 
+  /**
+   * POLLED AND FOCUS-DRIVEN, NOT SUBSCRIBED. RULED 2026-08-15.
+   *
+   * Three `postgres_changes` subscriptions used to live here -- the stored tab, this table's
+   * `restaurant_tables` row, and every tab in the restaurant. None of them ever fired: neither
+   * `public.tabs` nor `public.restaurant_tables` has ever been in the `supabase_realtime`
+   * publication, and a subscription to an unpublished table still reaches SUBSCRIBED and
+   * delivers nothing (QRA-17). Publishing them was ruled against -- the anon SELECT policy on
+   * `tabs` carries no restaurant scope and no table scope, so the only thing holding the line is
+   * a column grant whose interaction with Realtime is unverified.
+   *
+   * The focus listener is what was actually keeping this screen current, and it stays. A poll is
+   * added alongside it so a customer sitting on the landing sees a tab open at their table
+   * without having to leave and come back.
+   */
   useEffect(() => {
     if (!restaurantId || tableNum <= 0) return
 
-    const restaurantUuid = String(restaurant?.id || restaurantId || '')
-    const storedId = readStoredTabId()
-
-    const onTabChange = () => {
+    const refresh = () => {
       void syncTabLandingState()
     }
 
-    const channels: ReturnType<typeof supabase.channel>[] = []
-
-    if (storedId) {
-      channels.push(
-        supabase
-          .channel(`v2-stored-tab-${storedId}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedId}` },
-            onTabChange
-          )
-          .subscribe()
-      )
-    }
-
-    if (table?.id) {
-      channels.push(
-        supabase
-          .channel(`v2-table-row-${table.id}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'restaurant_tables', filter: `id=eq.${table.id}` },
-            onTabChange
-          )
-          .subscribe()
-      )
-    }
-
-    channels.push(
-      supabase
-        .channel(`v2-restaurant-tabs-${restaurantUuid}-${tableNum}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'tabs', filter: `restaurant_id=eq.${restaurantUuid}` },
-          (payload) => {
-            const row = (payload.new || payload.old) as Record<string, unknown> | null
-            if (!row) return
-            const rowTableNum = Number(row.table_number || 0)
-            const rowTableId = String(row.table_id || '')
-            if (rowTableNum === tableNum || (table?.id && rowTableId === String(table.id))) {
-              onTabChange()
-            }
-          }
-        )
-        .subscribe()
-    )
-
-    const onFocus = () => {
-      void syncTabLandingState()
-    }
+    const interval = window.setInterval(refresh, GUEST_ORDER_POLL_MS)
     if (typeof window !== 'undefined') {
-      window.addEventListener('focus', onFocus)
+      window.addEventListener('focus', refresh)
     }
 
     return () => {
-      channels.forEach((channel) => supabase.removeChannel(channel))
+      window.clearInterval(interval)
       if (typeof window !== 'undefined') {
-        window.removeEventListener('focus', onFocus)
+        window.removeEventListener('focus', refresh)
       }
     }
-  }, [restaurantId, restaurant?.id, tableNum, table?.id, syncTabLandingState, myStoredTab?.id])
+  }, [restaurantId, tableNum, syncTabLandingState])
 
   const canTrackHostedPending = Boolean(restaurantId && tableNum > 0)
   const hostedPendingKey = `${restaurantId}|${tableNum}`
@@ -760,22 +757,17 @@ export function MenuLandingPageV2Content({
        * genuine create race, and a tab older than the landing's 12-hour window (#218). So the
        * cases that produce this refusal are precisely the cases with no visible way forward.
        *
-       * Route it into the PIN prompt that already exists instead. The tab that refused us is the
-       * open tab AT THIS TABLE, and handleSubmitJoinPin on this branch joins unconditionally via
-       * joinTabWithPin — by table number — which is exactly that tab.
-       *
-       * NO setPinTarget HERE, and the difference from cloudflare-staging is deliberate. Staging
-       * carries #211's `pinTarget` state to choose between the scanned table and a stored tab at
-       * another table; that state does not exist on this branch, so the staging version of this
-       * block would throw a ReferenceError the moment a customer hit the refusal. `@ts-nocheck`
-       * at the top of this file means the compiler cannot see it either. When #211 is promoted,
-       * add `setPinTarget('scanned-table')` back — the target is the scanned table either way.
+       * Route it into the PIN prompt that already exists instead. `scanned-table` is the right
+       * target: the tab that refused us is the open tab AT THIS TABLE, which is what
+       * joinTabWithPin resolves by table number — see the note in handleSubmitJoinPin for why the
+       * stored-tab branch is not interchangeable.
        *
        * TAB_ALREADY_OPEN is deliberately not handled here: it means the open tab has no PIN, so
        * there is nothing to prompt for and its copy sends the customer to staff.
        */
       if (shouldPromptForTabPin(err)) {
         setTabActionError(null)
+        setPinTarget('scanned-table')
         setJoinPin('')
         setJoinPinError(err.message)
         setShowJoinPinEntry(true)
@@ -822,6 +814,7 @@ export function MenuLandingPageV2Content({
       void handleJoinWithoutPin()
       return
     }
+    setPinTarget('scanned-table')
     setJoinPin('')
     setJoinPinError(null)
     setShowJoinPinEntry(true)
@@ -836,6 +829,7 @@ export function MenuLandingPageV2Content({
       void handleJoinWithoutPin()
       return
     }
+    setPinTarget('scanned-table')
     setJoinPin('')
     setJoinPinError(null)
     setShowJoinPinEntry(true)
@@ -874,6 +868,21 @@ export function MenuLandingPageV2Content({
       setTabActionError('No open tab found to join.')
       return
     }
+    /**
+     * #262's containment made the PIN gate UNCONDITIONAL, so this path — which sends no PIN —
+     * can no longer succeed on a PIN-gated tab. It used to fail with the server's raw "PIN
+     * required to join this tab" while the only action on screen was the button that had just
+     * failed: the #211 shape, on a different surface.
+     *
+     * The PIN entry already existed here; the stored-tab branch simply short-circuited past it.
+     */
+    if (myStoredTab?.pinRequired) {
+      setPinTarget('stored-tab')
+      setJoinPin('')
+      setJoinPinError(null)
+      setShowJoinPinEntry(true)
+      return
+    }
     try {
       setTabActionLoading('join')
       setTabActionError(null)
@@ -888,6 +897,15 @@ export function MenuLandingPageV2Content({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
       console.error('[V2] rejoin tab failed:', err)
+      // Belt and braces. `pinRequired` above is read from a snapshot taken at landing; staff can
+      // set a PIN in between, and a refusal must never leave the screen with no way forward.
+      if (/pin required/i.test(message)) {
+        setPinTarget('stored-tab')
+        setJoinPin('')
+        setJoinPinError(null)
+        setShowJoinPinEntry(true)
+        return
+      }
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
@@ -908,12 +926,32 @@ export function MenuLandingPageV2Content({
       setTabActionLoading('join')
       setJoinPinError(null)
       persistDisplayName()
-      const joinedTabId = await joinTabWithPin({
-        restaurantId,
-        tableNumber: tableNum,
-        pin: joinPin.trim(),
-        displayName: displayName.trim() || undefined,
-      })
+      /**
+       * Which tab this PIN unlocks, and why the two branches are not interchangeable.
+       *
+       * `joinTabWithPin` resolves the open tab AT THE SCANNED TABLE by table number. For a
+       * stored tab that is a different tab whenever the customer has walked to another table —
+       * so rejoining through it would silently join the wrong tab, with the right PIN, and look
+       * like it worked. The stored-tab branch joins BY ID instead.
+       */
+      let joinedTabId: string
+      if (pinTarget === 'stored-tab' && myStoredTab?.id) {
+        await joinExistingTab({
+          restaurantId,
+          tabId: myStoredTab.id,
+          tableNumber: myStoredTab.tableNumber ?? tableNum,
+          displayName: displayName.trim() || undefined,
+          pin: joinPin.trim(),
+        })
+        joinedTabId = myStoredTab.id
+      } else {
+        joinedTabId = await joinTabWithPin({
+          restaurantId,
+          tableNumber: tableNum,
+          pin: joinPin.trim(),
+          displayName: displayName.trim() || undefined,
+        })
+      }
       setShowJoinPinEntry(false)
       setJoinPin('')
       router.push(browseWithTab(joinedTabId))
@@ -932,6 +970,44 @@ export function MenuLandingPageV2Content({
     }
     handleStartJoinTab()
   }
+
+  /**
+   * #265. Redeems a staff-issued PIN-reset token instead of prompting for a PIN the customer
+   * does not have. Reuses joinExistingTab (same route, same session/member bookkeeping) with
+   * `resetToken` set; on success the server has already minted a NEW tab_pin, so this shows
+   * it the same way tab creation does -- via `createdTabPin`, the "Your tab PIN is" screen --
+   * rather than inventing a second display path for the same fact.
+   */
+  const handleRedeemPinReset = async () => {
+    if (!requireDisplayName()) return
+    if (!restaurantId || !openTab?.id || !pinResetToken) return
+    try {
+      setTabActionLoading('join')
+      setTabActionError(null)
+      const result = await joinExistingTab({
+        restaurantId,
+        tabId: openTab.id,
+        tableNumber: tableNum,
+        displayName: displayName.trim() || undefined,
+        resetToken: pinResetToken,
+      })
+      if (result?.tabPin) {
+        setCreatedTabPin({ tabId: openTab.id, pin: result.tabPin })
+      } else {
+        // Token was consumed by another device, or already used -- fall back to the ordinary
+        // join flow rather than leaving the screen stuck.
+        router.push(browseWithTab(openTab.id))
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Could not reset the PIN. Ask staff for a new recovery link.'
+      console.error('[V2] pin reset redemption failed:', err)
+      setTabActionError(message)
+    } finally {
+      setTabActionLoading(null)
+    }
+  }
+
 
   // Loading state
   if (loading) {
@@ -1146,6 +1222,33 @@ export function MenuLandingPageV2Content({
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
                   Continue
+                </Button>
+              </div>
+            ) : pinResetToken && tableNum > 0 && storedTabChecked && !tabLoading && openTab ? (
+              // #265. Staff have started a PIN reset for this tab (POST /api/tabs/[tabId]/reset-pin)
+              // and displayed this exact URL as a QR for the recovering customer to scan. There is
+              // nothing to type here but a name -- the whole point is the customer does not have
+              // the PIN -- so this replaces the ordinary "enter PIN" prompt rather than sitting
+              // alongside it.
+              <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
+                <div>
+                  <p className="font-sans text-lg font-semibold text-white">Get your new tab PIN</p>
+                  <p className="font-sans text-sm text-white/80 mt-2">
+                    Staff have started a PIN reset for this table.
+                  </p>
+                </div>
+                {tabActionError ? (
+                  <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
+                    <p className="font-sans text-xs text-red-200/90">{tabActionError}</p>
+                  </div>
+                ) : null}
+                <Button
+                  size="lg"
+                  onClick={handleRedeemPinReset}
+                  disabled={tabActionLoading !== null}
+                  className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
+                >
+                  {tabActionLoading === 'join' ? 'Getting your PIN…' : 'Get My New PIN'}
                 </Button>
               </div>
             ) : showJoinPinEntry ? (

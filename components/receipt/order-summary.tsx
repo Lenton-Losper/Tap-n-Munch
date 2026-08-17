@@ -1,5 +1,6 @@
-import { formatCurrency, type ReceiptLineItem } from './receipt-types'
+import { chargedLineAmount, formatCurrency, type ReceiptLineItem } from './receipt-types'
 import { cn } from '@/lib/utils'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 
 export type OrderSummaryProps = {
   items: ReceiptLineItem[]
@@ -32,9 +33,17 @@ export function OrderSummary({
             <span className="flex h-7 min-w-[2rem] items-center justify-center rounded-md bg-green-50 text-xs font-bold text-green-700">
               {item.quantity}×
             </span>
-            <span className="flex-1 text-sm text-[#111827] truncate">{item.name}</span>
+            <span className="flex-1 min-w-0 text-sm text-[#111827]">
+              <span className="block truncate">{item.name}</span>
+              {/* #298: the configuration is what tells two same-named lines apart. */}
+              {lineConfigurationSummary(item) ? (
+                <span className="block truncate text-xs text-[#6B7280]">
+                  {lineConfigurationSummary(item)}
+                </span>
+              ) : null}
+            </span>
             <span className="text-sm font-medium text-[#111827] tabular-nums shrink-0">
-              {formatCurrency(item.subtotal, currency)}
+              {formatCurrency(chargedLineAmount(item), currency)}
             </span>
           </li>
         ))}

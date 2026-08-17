@@ -1,7 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { supabase } from '@/lib/supabase/client'
 import {
   fetchTabById,
   isTabSessionEndedStatus,
@@ -62,26 +61,14 @@ export function useTabSessionEndedRedirect({
 
     void load()
 
-    const channel = supabase
-      .channel(`tab-session-ended-${tabId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${tabId}` },
-        () => {
-          void fetchTabById(tabId, restaurantId)
-            .then((tab) => {
-              if (!cancelled) evaluateTab(tab)
-            })
-            .catch((error) => {
-              console.error('[TAB SESSION ENDED] realtime tab check failed', error)
-            })
-        }
-      )
-      .subscribe()
+    /**
+     * The `tabs` subscription here never fired: `public.tabs` has never been in the
+     * supabase_realtime publication (QRA-17). The mount-time `load()` above is what has always
+     * been doing this hook's work, and it runs on every navigation into browse or cart.
+     */
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
     }
   }, [enabled, restaurantId, tabId, tabStatus, evaluateTab])
 

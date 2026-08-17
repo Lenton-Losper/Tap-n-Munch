@@ -3,9 +3,17 @@ import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/querie
 import type { TaxRateOption } from '@/lib/tax-rates/format'
 import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
 import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
+import { listNames } from '@/lib/orders/list-names'
 
 type MenuItemPricingRow = {
   id: string
+  /**
+   * #273. Selected for the REFUSAL, not for pricing — nothing here computes with it. Without it
+   * the only identifier available when a line is rejected was the UUID, and a customer was shown
+   * "Menu item 7e70e5cf-… is not available for ordering": a database primary key they cannot act
+   * on, and which does not even say which of their lines is the problem.
+   */
+  name?: string | null
   base_price: number
   sizes: Array<{ name?: string; price_modifier?: number }>
   addons: Array<{ name?: string; price?: number }>
@@ -34,16 +42,81 @@ export type OrderPricingResult = {
   warnings: string[]
 }
 
+/**
+ * Why a line could not be priced. A CODE, not prose — #273.
+ *
+ * Two verification scripts substring-matched the old message text
+ * (`verify-restaurant-tables-rls-{staging,production}.ts`), so rewording the refusal would have
+ * silently changed what they assert: one treats the phrase as proof an order was BLOCKED, the
+ * other as proof it was not. Both would have kept passing while checking nothing. Callers and
+ * probes now match on the code, so copy can be rewritten freely afterwards — which is what let
+ * the placeholders below be replaced with signed-off copy without touching a single probe.
+ */
+export type UnmatchedMenuItemCode =
+  | 'MENU_ITEM_MISSING_ID'
+  | 'MENU_ITEM_NOT_FOUND'
+  | 'MENU_ITEM_NOT_ORDERABLE'
+
+export type UnmatchedMenuItemLine = {
+  menuItemId: string
+  /** The item's own name where the row was found; the cart's label otherwise. */
+  name: string
+}
+
 export class UnmatchedMenuItemError extends Error {
   readonly statusCode = 400
-  constructor(message: string) {
+  readonly code: UnmatchedMenuItemCode
+  /** Every offending line, so a client can highlight them all at once. */
+  readonly items: UnmatchedMenuItemLine[]
+
+  constructor(
+    message: string,
+    code: UnmatchedMenuItemCode = 'MENU_ITEM_NOT_FOUND',
+    items: UnmatchedMenuItemLine[] = [],
+  ) {
     super(message)
     this.name = 'UnmatchedMenuItemError'
+    this.code = code
+    this.items = items
   }
 }
 
 function extractMenuItemId(item: Record<string, unknown>): string {
   return String(item.menuItemId ?? item.menu_item_id ?? '').trim()
+}
+
+/** What the CART called this line. Last resort when the catalog row is gone entirely. */
+function cartLineName(item: Record<string, unknown>): string {
+  const raw = item.displayName ?? item.name
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : 'One of your items'
+}
+
+/**
+ * #273. The two refusals for an item that cannot be priced, modelled on the out-of-stock message
+ * they sit beside (`checkStockSufficiency`: "<names> is out of stock and cannot be ordered right
+ * now."), so a customer meeting either one hears the same voice and the same list punctuation.
+ *
+ * The distinction they exist to draw: an item the restaurant has WITHDRAWN is not an item that
+ * has run out. The reader of the old message took a deliberate deactivation for a stock problem,
+ * which is what #273 was filed about. So these deliberately avoid "right now" and "try again" —
+ * nothing here is coming back in five minutes.
+ *
+ * Signed off by the human 2026-08-15. Both keep their singular/plural pair: these name a LIST of
+ * items, and "1 item are no longer on the menu" is exactly the sort of seam a customer reads as
+ * the restaurant not knowing what it sold them.
+ */
+function copyNotOrderable(names: string[]): string {
+  const list = listNames(names)
+  return names.length === 1
+    ? `${list} is no longer on the menu. Please remove it from your order.`
+    : `${list} are no longer on the menu. Please remove them from your order.`
+}
+
+function copyNotFound(names: string[]): string {
+  const list = listNames(names)
+  return names.length === 1
+    ? `We couldn't find ${list} on this menu. Please remove it from your order.`
+    : `We couldn't find ${list} on this menu. Please remove them from your order.`
 }
 
 function extractQuantity(item: Record<string, unknown>): number {
@@ -158,7 +231,7 @@ export async function calculateOrderPricing(
     menuItemIds.length > 0
       ? supabase
           .from('menu_items')
-          .select('id, base_price, sizes, addons, tax_rate_id, status')
+          .select('id, name, base_price, sizes, addons, tax_rate_id, status')
           .eq('restaurant_id', restaurantId)
           .in('id', menuItemIds)
       : Promise.resolve({ data: [] as MenuItemPricingRow[], error: null }),
@@ -175,24 +248,66 @@ export async function calculateOrderPricing(
   const ratesById = new Map<string, TaxRateOption>(taxRates.map((rate) => [rate.id, rate]))
   const fallbackDefault = defaultTaxRate(taxRates)
 
-  const pricedItems: PricedOrderLineItem[] = rawItems.map((item) => {
+  // One validation pass over every line BEFORE pricing any of it, so a refusal names all the
+  // offending items at once. The previous version threw from inside the pricing map, which
+  // stopped at the first bad line and made the customer discover a bad cart one refusal at a
+  // time. checkStockSufficiency already collects all offenders for exactly this reason and says
+  // so in its own comment; this is the same courtesy on the sibling refusal (#273).
+  const missingId: UnmatchedMenuItemLine[] = []
+  const notFound: UnmatchedMenuItemLine[] = []
+  const notOrderable: UnmatchedMenuItemLine[] = []
+
+  for (const item of rawItems) {
     const menuItemId = extractMenuItemId(item)
     if (!menuItemId) {
-      throw new UnmatchedMenuItemError('Each line item needs a valid menuItemId')
+      missingId.push({ menuItemId: '', name: cartLineName(item) })
+      continue
     }
-
     const menuItem = menuItemsById.get(menuItemId)
     if (!menuItem) {
-      throw new UnmatchedMenuItemError(
-        `Menu item ${menuItemId} was not found for this restaurant`,
-      )
+      // No row, so no catalog name — fall back to whatever the cart called it, which is still
+      // vastly better than a UUID.
+      notFound.push({ menuItemId, name: cartLineName(item) })
+      continue
     }
     if (!isChargeableMenuStatus(menuItem.status)) {
-      throw new UnmatchedMenuItemError(
-        `Menu item ${menuItemId} is not available for ordering`,
-      )
+      notOrderable.push({
+        menuItemId,
+        name: String(menuItem.name || '').trim() || cartLineName(item),
+      })
     }
+  }
 
+  // Order matters: a malformed line is a client bug and a different conversation from an item
+  // the restaurant has withdrawn, and "no longer on the menu" is the one a customer can act on.
+  if (missingId.length > 0) {
+    throw new UnmatchedMenuItemError(
+      'Each line item needs a valid menuItemId',
+      'MENU_ITEM_MISSING_ID',
+      missingId,
+    )
+  }
+  if (notOrderable.length > 0) {
+    throw new UnmatchedMenuItemError(
+      copyNotOrderable(notOrderable.map((line) => line.name)),
+      'MENU_ITEM_NOT_ORDERABLE',
+      notOrderable,
+    )
+  }
+  if (notFound.length > 0) {
+    throw new UnmatchedMenuItemError(
+      copyNotFound(notFound.map((line) => line.name)),
+      'MENU_ITEM_NOT_FOUND',
+      notFound,
+    )
+  }
+
+  const pricedItems: PricedOrderLineItem[] = rawItems.map((item) => {
+    const menuItemId = extractMenuItemId(item)
+    // Re-read rather than carried through: the loop above established that every line resolves
+    // to a chargeable row, so this cannot miss. Non-null asserted because the Map's type cannot
+    // express what that loop proved — ESTABLISHED, not asserted to quiet the checker.
+    const menuItem = menuItemsById.get(menuItemId)!
     return priceCatalogLine(item, menuItem, ratesById, fallbackDefault, warnings)
   })
 

@@ -1,7 +1,8 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { guestCanAccessOrder, paymentRefOrFilter } from './validation'
+import { guestCanAccessOrder, paymentRefOrFilter, redactGuestOrderRow } from './validation'
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
+import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
 import type { GuestOrderRow } from './types'
 
@@ -37,10 +38,11 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
   // records having already fixed once. normalizeOrderStatusForDisplay owns this vocabulary and
   // says in terms that anything making a status VISIBLE must run through it.
   const status = normalizeOrderStatusForDisplay(String(row.status || 'waiting_review'))
-  const items = Array.isArray(row.items_reviewed) ? row.items_reviewed : row.items
-  const subtotal = row.subtotal_reviewed ?? row.subtotal
-  const tax = row.tax_reviewed ?? row.tax
-  const total = row.total_reviewed ?? row.total
+  // Precedence imported rather than restated. The Accept route charges from this same helper,
+  // and the customer's confirmation screen must never show a figure different from the one
+  // that gets charged — two copies of the rule is exactly how they come to disagree. Adds the
+  // customer's own amendment as a third tier (order editing, 20260813120000).
+  const { items, subtotal, tax, total } = effectiveRequestPricing(row)
 
   return {
     id: String(row.id),
@@ -61,6 +63,18 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
     tax,
     total,
     customer_ready_to_pay: false,
+    surface: 'order_requests',
+    // Edit state. This mapper builds an explicit object rather than spreading the row, so
+    // anything the customer's own screens need has to be named here — a pass-through-by-spread
+    // would be quietly wrong the other way, exposing decided_by and idempotency_key to a guest.
+    edit_lock_session_id: row.edit_lock_session_id ?? null,
+    edit_lock_expires_at: row.edit_lock_expires_at ?? null,
+    // Presence, not the token. The token is a capability: whoever holds it can commit an edit,
+    // so it is returned once to the session that acquired it and never again by a read path.
+    edit_lock_held: Boolean(String(row.edit_lock_token ?? '').trim()),
+    customer_edited_at: row.customer_edited_at ?? null,
+    customer_edit_count: Number(row.customer_edit_count) || 0,
+    total_before_edit: row.total_before_edit ?? null,
   } as GuestOrderRow
 }
 
@@ -69,6 +83,8 @@ export async function fetchGuestOrderById(
   params: {
     tableNumber?: number | null
     sessionId?: string | null
+    /** Every id the client holds; forwarded to guestCanAccessOrder -> ownsOrder. */
+    sessionIds?: Array<string | null | undefined>
     restaurantId?: string | null
   },
 ): Promise<{ order: GuestOrderRow | null; denied: boolean }> {
@@ -85,17 +101,13 @@ export async function fetchGuestOrderById(
   if (error) throw error
 
   if (data) {
-    const order = { id: String(data.id), ...data } as GuestOrderRow
+    const order = redactGuestOrderRow({ id: String(data.id), ...data }) as GuestOrderRow
     if (!guestCanAccessOrder(order, accessParams)) {
       return { order: null, denied: true }
     }
     // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
-    // #302/#305: the caller's own ids, so their OWN row keeps its raw values while every other
-    // row is stripped. Only `sessionId` exists on this signature.
-    const [redacted] = await redactGuestOrderMemberIds(
-      [order],
-      [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
-    )
+    // #302: the caller's own ids, so their OWN row keeps session_id and nobody else's does.
+    const [redacted] = await redactGuestOrderMemberIds([order], [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean))
     return { order: redacted, denied: false }
   }
 
@@ -106,7 +118,10 @@ export async function fetchGuestOrderById(
   if (requestError) throw requestError
   if (!request) return { order: null, denied: false }
 
-  const requestRow = { id: String(request.id), ...request } as GuestOrderRow
+  const requestRow = redactGuestOrderRow(
+    { id: String(request.id), ...request },
+    'order_requests',
+  ) as GuestOrderRow
   if (!guestCanAccessOrder(requestRow, accessParams)) {
     return { order: null, denied: true }
   }
@@ -155,17 +170,43 @@ export async function fetchGuestOrdersBySession(params: {
     return { orders: [], count: 0 }
   }
 
-  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-
-  query = query.eq('restaurant_id', restaurantUuid).in('session_id', sessionIds)
-
-  if (tabId) {
-    query = query.eq('tab_id', tabId)
+  /**
+   * One query per PLACER COLUMN, merged in JS — never a single `.or()`.
+   *
+   * An order records who placed it in `session_id` OR `member_session_id` (see ownsOrder in
+   * ./validation), so filtering one column is half an answer. The obvious one-query form is
+   * `.or('session_id.in.(…),member_session_id.in.(…)')`, and that is exactly the #242/#254 shape:
+   * the filter string is PARSED by PostgREST, the comma is its term separator, and these ids come
+   * from the client. Two parser-free `.in()` calls and a Map cost one extra round trip and
+   * reintroduce nothing.
+   */
+  const ordersQueryFor = (column: 'session_id' | 'member_session_id') => {
+    let q = supabase
+      .from('orders')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .in(column, sessionIds)
+    if (tabId) q = q.eq('tab_id', tabId)
+    if (params.excludeSettlement !== false) q = q.is('tab_settlement_for_tab_id', null)
+    return q
   }
 
-  if (params.excludeSettlement !== false) {
-    query = query.is('tab_settlement_for_tab_id', null)
-  }
+  /**
+   * `countOnly` stays SINGLE-COLUMN, deliberately, and this is the measurement that makes it safe
+   * rather than an assumption: on 2026-08-13, ZERO rows had a `member_session_id` differing from
+   * their `session_id` — 0 of 213 on staging, 0 of 1000 on production — because
+   * app/menu/[restaurantId]/cart/page.tsx:286 writes the one value into both columns.
+   *
+   * So the second query cannot add a row here today. It is omitted because counts CANNOT be
+   * merged the way rows can: `count` comes back as a number with no ids, so adding the two counts
+   * double-counts every row both columns match, which today is every row. A wrong count is worse
+   * than a narrow one — these callers ask "does this session have orders?" and drive the stale-tab
+   * cleanup that returns a customer to the menu.
+   *
+   * If that measurement ever stops holding, this needs ids rather than counts. Re-measure before
+   * assuming it still does.
+   */
+  const query = ordersQueryFor('session_id')
 
   // A QR submission lives in order_requests until staff Accept, so counting `orders` alone
   // reports 0 for a customer who has just ordered. Mirrors the fallback that
@@ -196,16 +237,20 @@ export async function fetchGuestOrdersBySession(params: {
     ? [...LIVE_REQUEST_STATUSES, 'declined']
     : [...LIVE_REQUEST_STATUSES]
 
-  let pendingQuery = supabase
-    .from('order_requests')
-    .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-    .eq('restaurant_id', restaurantUuid)
-    .in('session_id', sessionIds)
-    .in('status', requestStatuses)
-
-  if (tabId) {
-    pendingQuery = pendingQuery.eq('tab_id', tabId)
+  // Same both-columns treatment as orders above, same reason, same no- rule.
+  const requestsQueryFor = (column: 'session_id' | 'member_session_id') => {
+    let q = supabase
+      .from('order_requests')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .in(column, sessionIds)
+      .in('status', requestStatuses)
+    if (tabId) q = q.eq('tab_id', tabId)
+    return q
   }
+
+  // countOnly: single column, for the reason measured above.
+  const pendingQuery = requestsQueryFor('session_id')
 
   if (params.countOnly) {
     const [{ count, error }, { count: pendingCount, error: pendingError }] = await Promise.all([
@@ -217,24 +262,55 @@ export async function fetchGuestOrdersBySession(params: {
     return { orders: [], count: (count ?? 0) + (pendingCount ?? 0) }
   }
 
-  const [{ data, error }, { data: pending, error: pendingError }] = await Promise.all([
-    query.order('placed_at', { ascending: false }),
-    pendingQuery.order('placed_at', { ascending: false }),
+  // The row paths DO merge both placer columns — see ordersQueryFor / requestsQueryFor above.
+  const [bySession, byMember, reqBySession, reqByMember] = await Promise.all([
+    ordersQueryFor('session_id').order('placed_at', { ascending: false }),
+    ordersQueryFor('member_session_id').order('placed_at', { ascending: false }),
+    requestsQueryFor('session_id').order('placed_at', { ascending: false }),
+    requestsQueryFor('member_session_id').order('placed_at', { ascending: false }),
   ])
-  if (error) throw error
-  if (pendingError) throw pendingError
+  for (const result of [bySession, byMember, reqBySession, reqByMember]) {
+    if (result.error) throw result.error
+  }
 
-  // #262. `member_session_id` is the value the tab and receipt screens join against the members
-  // array, and the members array no longer carries raw session ids -- so this side has to travel
-  // through the same per-tab derivation or the pairing silently degrades to "Guest" for
-  // everybody. Read-time only: the stored column is untouched, and staff tooling, Accept and
-  // settle all still see the real id.
+  /** Merged by id, so a row that both columns match appears once rather than twice. */
+  const mergeById = (...sets: Array<unknown[] | null>) => {
+    const byId = new Map<string, Record<string, unknown>>()
+    for (const set of sets) {
+      for (const row of (set ?? []) as Record<string, unknown>[]) {
+        byId.set(String(row.id), row)
+      }
+    }
+    return [...byId.values()]
+  }
+
+  const data = mergeById(bySession.data, byMember.data)
+  const pending = mergeById(reqBySession.data, reqByMember.data)
+
+  // TWO read-time redactions, and neither replaces the other.
   //
-  // order_requests rows are not mapped because mapOrderRequestToGuestRow builds a fixed shape
-  // that has never included member_session_id.
+  //   redactGuestOrderRow       strips edit_lock_token -- a CAPABILITY: whoever holds it can
+  //                             commit an edit to the order.
+  //   redactGuestOrderMemberIds substitutes member_session_id with an opaque per-tab key (#262),
+  //                             because the tab and receipt screens join against the members
+  //                             array and that array no longer carries raw session ids. Read-time
+  //                             only: the stored column is untouched, and staff tooling, Accept
+  //                             and settle all still see the real id.
+  //
+  // WHAT THE #262 REDACTION DOES NOT COVER -- corrected here rather than inherited, because the
+  // comment this replaces claimed it stopped a reader getting "another diner's session id" and it
+  // does not. It rewrites member_session_id ONLY; session_id is never touched. It also skips any
+  // row with no tab_id -- measured on staging 2026-08-14, 104 of 213 orders (49%). And since the
+  // cart writes ONE value into BOTH columns, the raw value still leaves in session_id on every
+  // path, including by-payment-ref where a PAID order is admitted on restaurant scope alone.
+  //
+  // Redacting session_id was RULED AGAINST once, on the grounds that the client matches
+  // ownership on the real value via heldSessionIds (see ownsOrder), so substituting it would
+  // break the customer's own screens. #302 resolved that: the strip is scoped to rows the caller
+  // does NOT own, and `ownsOrder` only ever matches rows they DO own -- so the reason the ruling
+  // was made is preserved exactly while the cross-diner disclosure is closed.
   const orders = await redactGuestOrderMemberIds(
-    (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
-    // #302/#305. Every id the client holds — this signature carries both.
+    (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
     [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean),
   )
   const pendingRows = (pending ?? []).map((row) =>
@@ -254,6 +330,8 @@ export async function fetchGuestActiveTableOrders(params: {
   restaurantId: string
   tableNumber: number
   sessionId?: string | null
+  /** Every id the client holds. Matched against BOTH placer columns, like by-session. */
+  sessionIds?: Array<string | null | undefined>
   isClosed?: boolean
   paymentStatus?: string | null
   paymentChannel?: string | null
@@ -264,76 +342,130 @@ export async function fetchGuestActiveTableOrders(params: {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
   const sessionId = String(params.sessionId || '').trim()
+  const heldIds = [...new Set(
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '').trim()).filter(Boolean),
+  )]
 
   // Fail closed for open-table polling: require session scope so one guest never
   // sees another customer's open orders/requests at the same table.
-  if (!sessionId && !params.countOnly) {
+  if (heldIds.length === 0 && !params.countOnly) {
     return { orders: [], count: 0 }
   }
 
-  let query = supabase.from('orders').select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
-
-  query = query
-    .eq('restaurant_id', restaurantUuid)
-    .eq('table_number', params.tableNumber)
-    .eq('is_closed', params.isClosed ?? false)
-
-  if (sessionId) {
-    query = query.eq('session_id', sessionId)
+  /**
+   * One query per PLACER COLUMN, merged in JS — same rule and same reason as
+   * fetchGuestOrdersBySession: an order records its placer in session_id OR member_session_id,
+   * and building a single `.or()` from client-supplied ids is the #242/#254 injection shape.
+   */
+  const ordersQueryFor = (column: 'session_id' | 'member_session_id' | null) => {
+    let q = supabase
+      .from('orders')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .eq('table_number', params.tableNumber)
+      .eq('is_closed', params.isClosed ?? false)
+    if (column && heldIds.length > 0) q = q.in(column, heldIds)
+    if (params.paymentStatus) q = q.eq('payment_status', params.paymentStatus)
+    if (params.paymentChannel) q = q.eq('payment_channel', params.paymentChannel)
+    if (params.placedAfter) q = q.gte('placed_at', params.placedAfter)
+    if (params.placedBefore) q = q.lt('placed_at', params.placedBefore)
+    return q
   }
 
-  if (params.paymentStatus) {
-    query = query.eq('payment_status', params.paymentStatus)
-  }
-  if (params.paymentChannel) {
-    query = query.eq('payment_channel', params.paymentChannel)
-  }
-  if (params.placedAfter) {
-    query = query.gte('placed_at', params.placedAfter)
-  }
-  if (params.placedBefore) {
-    query = query.lt('placed_at', params.placedBefore)
+  /**
+   * A PAYMENT FILTER EXCLUDES order_requests ENTIRELY (#248).
+   *
+   * `order_requests` has no `payment_status` or `payment_channel` in the sense these filters
+   * mean — a request has not been accepted, so no payment has been arranged for it. The request
+   * query below therefore never applied them, which meant a caller asking a specifically
+   * payment-shaped question got requests back that could not possibly match it.
+   *
+   * The live instance: the landing counts hosted-checkout orders older than ten minutes to decide
+   * whether to fire `/api/orders/expire-pending` (v2/page.tsx). An unrelated `waiting_review`
+   * request satisfying neither `paymentStatus: 'pending'` nor `paymentChannel: 'hosted'` was
+   * being returned by that lookup anyway.
+   *
+   * So rather than pretending a request can match, they are excluded when the question is about
+   * payment at all. Stated as one predicate used by BOTH paths, so the count and the rows cannot
+   * disagree about it.
+   */
+  const paymentFiltered = Boolean(params.paymentStatus || params.paymentChannel)
+
+  /** Still-live requests for this session. Shared by the count path and the row path (#249). */
+  const liveRequestsQuery = () => {
+    let q = supabase
+      .from('order_requests')
+      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .eq('restaurant_id', restaurantUuid)
+      .eq('table_number', params.tableNumber)
+      .in('status', [...LIVE_REQUEST_STATUSES])
+      .in('session_id', heldIds.length > 0 ? heldIds : [sessionId])
+    if (params.placedAfter) q = q.gte('placed_at', params.placedAfter)
+    if (params.placedBefore) q = q.lt('placed_at', params.placedBefore)
+    return q
   }
 
   if (params.countOnly) {
-    const { count, error } = await query
+    /**
+     * COUNTS order_requests TOO (#249).
+     *
+     * This counted `orders` alone while the row path a few lines below returns
+     * `requestRows + orders` and reports `count: merged.length`. So the SAME function answered
+     * the same question two different ways depending on a boolean: a customer whose only live
+     * item was an unaccepted request counted as 0 by the count path and 1 by the row path.
+     *
+     * That is not academic. The landing calls this with `countOnly` and, on a zero, wipes the
+     * customer's active-order banner state (v2/page.tsx) — so a customer with a live request
+     * pending had the one thing telling them about it thrown away.
+     *
+     * Single column, for the reason measured in fetchGuestOrdersBySession: counts return a
+     * number with no ids, so summing two would double-count every row both columns match —
+     * which on 2026-08-14 is every row (0 of 213 staging / 0 of 1000 production differ).
+     */
+    const [{ count, error }, requestResult] = await Promise.all([
+      ordersQueryFor(heldIds.length > 0 ? 'session_id' : null),
+      paymentFiltered
+        ? Promise.resolve({ count: 0, error: null })
+        : liveRequestsQuery(),
+    ])
     if (error) throw error
-    return { orders: [], count: count ?? 0 }
+    if (requestResult.error) throw requestResult.error
+    return { orders: [], count: (count ?? 0) + (requestResult.count ?? 0) }
   }
 
-  const { data, error } = await query.order('placed_at', { ascending: false })
-  if (error) throw error
+  const [bySession, byMember] = await Promise.all([
+    ordersQueryFor('session_id').order('placed_at', { ascending: false }),
+    ordersQueryFor('member_session_id').order('placed_at', { ascending: false }),
+  ])
+  if (bySession.error) throw bySession.error
+  if (byMember.error) throw byMember.error
 
-  // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
+  const dedupe = new Map<string, Record<string, unknown>>()
+  for (const row of [...(bySession.data ?? []), ...(byMember.data ?? [])]) {
+    dedupe.set(String((row as Record<string, unknown>).id), row as Record<string, unknown>)
+  }
+  const data = [...dedupe.values()]
+
+  // BOTH redactions, in the order fetchGuestOrdersBySession uses -- see the note there for what
+  // the #262 half does and does not cover.
   const orders = await redactGuestOrderMemberIds(
-    (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
-    // #302/#305. A table read returns EVERY diner's order, so this is where the ownership
-    // scoping does the most work.
-    [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
+    (data ?? []).map((row) => redactGuestOrderRow({ id: String(row.id), ...row })) as GuestOrderRow[],
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean),
   )
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
   // is included for the same reason as in fetchGuestOrdersBySession -- see
-  // LIVE_REQUEST_STATUSES.
-  let requestQuery = supabase
-    .from('order_requests')
-    .select('*')
-    .eq('restaurant_id', restaurantUuid)
-    .eq('table_number', params.tableNumber)
-    .in('status', [...LIVE_REQUEST_STATUSES])
-    .eq('session_id', sessionId)
-
-  if (params.placedAfter) {
-    requestQuery = requestQuery.gte('placed_at', params.placedAfter)
+  // LIVE_REQUEST_STATUSES. Skipped entirely when the caller asked a payment-shaped question
+  // (#248) -- see `paymentFiltered` above -- and built by the same helper the count path uses,
+  // so the two cannot drift apart again (#249).
+  let requests: unknown[] | null = []
+  if (!paymentFiltered) {
+    const { data, error: requestError } = await liveRequestsQuery().order('placed_at', {
+      ascending: false,
+    })
+    if (requestError) throw requestError
+    requests = data
   }
-  if (params.placedBefore) {
-    requestQuery = requestQuery.lt('placed_at', params.placedBefore)
-  }
-
-  const { data: requests, error: requestError } = await requestQuery.order('placed_at', {
-    ascending: false,
-  })
-  if (requestError) throw requestError
 
   const requestRows = (requests ?? []).map((row) => mapOrderRequestToGuestRow(row as Record<string, unknown>))
   const merged = [...requestRows, ...orders].sort((a, b) => {
@@ -348,16 +480,18 @@ export async function fetchGuestActiveTableOrders(params: {
 /**
  * Guest lookup of the orders behind a payment reference.
  *
- * THREE INDEPENDENT DOORS, and this function is the only place all three are shut (#122).
- * Production carried the first, staging carried the other two, and neither branch had the set --
- * so the union is written here rather than either side being promoted over the other.
+ * THREE INDEPENDENT DOORS, and this function is the only place all three are shut (#122, #254).
+ * This branch already carried doors 2 and 3 from wave-2's #122; door 1 landed on `main` only,
+ * which is what #254 is — the reproduction environment ran the injectable filter for three days
+ * after production stopped doing so.
  *
  *   1. VALIDATED FILTER. `paymentRefOrFilter` returns null for anything that is not a
  *      well-formed reference, and this fails CLOSED on null. The `.or()` string is PARSED by
  *      PostgREST, so a comma in the caller's input adds OR terms -- "exact equality, never
- *      parsed" is true of SQL and false here. `?ref=zzz,total.gte.0` returned 15 full order
- *      rows across ALL restaurants, unauthenticated, without knowing any reference.
- *      Reproduced read-only on staging 2026-08-08.
+ *      parsed" is true of SQL and false here, and this docblock used to assert it.
+ *      `?ref=zzz,total.gte.0` returned 15 full order rows across ALL restaurants,
+ *      unauthenticated, without knowing any reference. Reproduced read-only on staging
+ *      2026-08-08; re-measured against THIS branch's code on staging 2026-08-11.
  *
  *   2. REQUIRED restaurantId. Without it the query spans every tenant, so a reference that IS
  *      known -- printed on a receipt, carried on a gateway return URL -- reads any restaurant's
@@ -406,14 +540,18 @@ export async function fetchGuestOrdersByPaymentRef(params: {
     sessionId: params.sessionId ?? null,
   }
 
-  // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262). It
-  // matters more here than anywhere else: DOOR 3 lets a PAID order through on restaurant scope
-  // alone, so without this a known payment reference reads back another diner's session id.
+  // BOTH redactions -- see the note in fetchGuestOrdersBySession.
+  //
+  // This path matters most and is ALSO where the #262 comment overstated itself. DOOR 3 admits a
+  // PAID order on restaurant scope alone, so a known payment reference reads back a full row. The
+  // member_session_id substitution below helps; it does NOT stop session_id leaving, because that
+  // column is never rewritten. Stripping edit_lock_token here is what stops the same reference
+  // handing over an edit capability.
   return redactGuestOrderMemberIds(
     (data ?? [])
-      .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
+      .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
       .filter((order) => guestCanAccessOrder(order, accessParams)),
-    // #302/#305, and DOOR 3 above is why: a PAID order is reachable on restaurant scope alone.
+    // This signature carries `sessionId` only -- there is no `sessionIds` array on it.
     [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
   )
 }

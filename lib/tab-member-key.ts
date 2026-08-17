@@ -194,29 +194,28 @@ export async function redactTabMembers(
  * fallback the two screens already apply (`o.member_session_id || o.session_id`) and orders
  * placed before member_session_id existed still rely on it.
  *
- * Rows with no tab are left alone: without a tab id there is no per-tab key to derive, and such
- * a row is never joined against a members array.
+ * Rows with no tab cannot have a key derived for them -- the deriver is keyed by `tab_id` -- so on
+ * those rows `member_session_id` is WITHHELD from callers who do not own the row (#305) instead of
+ * being substituted. Withholding is safe there precisely because such a row is never joined
+ * against a members array: every consumer of the value is a members lookup that needs a tab.
  */
 export async function redactGuestOrderMemberIds<T extends Record<string, unknown>>(
   rows: T[],
   /**
-   * The session ids the CALLER holds. Rows they do not own have their raw ids stripped.
+   * The session ids the CALLER holds. Rows they do not own have `session_id` stripped (#302).
    *
-   * #302 — `member_session_id` has carried an opaque per-tab key since #262, but `session_id` was
-   * passed through untouched, so `GET /api/guest/orders/<id>` handed another diner's raw session
-   * id to anyone who could read the row. Measured on production before this fix: a foreign
-   * session received it with HTTP 200 and the row present.
-   *
-   * #305 — and on a row with NO tab the derivation below cannot run at all, so
-   * `member_session_id` left raw as well. Both fields, both cases.
+   * `member_session_id` has been substituted with an opaque per-tab key since #262, but
+   * `session_id` was passed through untouched -- so `GET /api/guest/orders/<id>` handed another
+   * diner's raw session id to anyone who could read the row. That value was the edit route's
+   * credential, which turned "can see your order" into "can rewrite your order". Measured.
    *
    * Scoped to rows the caller does NOT own rather than stripped outright, because the customer's
-   * own screens read it: `receipt/page.tsx` falls back to `order.session_id` to put a member name
-   * on their own line. Blanket removal would replace real names with "Guest" on a screen that is
-   * behaving correctly.
+   * own screens read it: `receipt/page.tsx:180` falls back to `order.session_id` to put a member
+   * name on their own line. Blanket removal would replace real names with "Guest" on a screen
+   * that is behaving correctly.
    *
-   * Defaults to `[]`, so a caller that forgets to pass its ids gets the SAFE behaviour — every row
-   * redacted — rather than the leaky one.
+   * Defaults to `[]`, so a caller that forgets to pass its ids gets the SAFE behaviour -- every
+   * row redacted -- rather than the leaky one.
    */
   callerSessionIds: string[] = [],
 ): Promise<T[]> {
@@ -244,14 +243,21 @@ export async function redactGuestOrderMemberIds<T extends Record<string, unknown
 
     if (!tabId || !sessionId) {
       /**
-       * #305 — the tab-less row. There is no `tab_id` to key the deriver with, so the #262
-       * substitution cannot run and `member_session_id` would otherwise leave RAW. WITHHOLD it
-       * rather than substitute it, and only from callers who do not own the row.
+       * #305 — the tab-less row, and the door #302 left open.
        *
+       * There is no `tab_id` to key the deriver with, so the #262 substitution cannot run and
+       * `member_session_id` would otherwise leave RAW. On the tab-less path that value is not
+       * merely identifying, it is a working credential: the edit route authorises on session id
+       * against `session_id` OR `member_session_id`, and it does not require a token here because
+       * the token guard is scoped to `if (tabId)` -- correctly, since widening it would refuse
+       * solo diners who never had a tab. Measured before the fix: foreign read -> raw id -> edit
+       * lock 200 -> lines replaced.
+       *
+       * So WITHHOLD it rather than substitute it, but only for callers who do not own the row.
        * Nothing legitimate loses anything: every consumer is a members-array lookup that needs a
-       * tab, and each already handles the miss — `orders/history/route.ts` gates its join on
-       * `order.tab_id` outright, `getOrderCustomerLabel` falls through to `session_id` and then
-       * 'Guest', `resolveOrderMemberName` returns null. The owner keeps the value, which is what
+       * tab, and each already handles the miss. `orders/history/route.ts:101` gates its join on
+       * `order.tab_id` outright; `getOrderCustomerLabel` falls through to `session_id` and then
+       * 'Guest'; `resolveOrderMemberName` returns null. The owner keeps the value, which is what
        * their own receipt screen reads.
        */
       out.push(ownsRow ? scrubbed : ({ ...scrubbed, member_session_id: null } as T))

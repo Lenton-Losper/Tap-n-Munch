@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { listNames } from '@/lib/orders/list-names'
 
 /**
  * Refuse an order at PLACEMENT when a tracked item's stock has run out.
@@ -35,13 +36,6 @@ export type StockSufficiencyResult =
       stockItemName: string
       balance: number
     }
-
-/** "X", "X and Y", "X, Y and Z" -- read out to a customer, so no trailing comma or "1 more". */
-function listNames(names: string[]): string {
-  if (names.length === 1) return names[0]
-  if (names.length === 2) return `${names[0]} and ${names[1]}`
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
-}
 
 type LineItem = Record<string, unknown>
 

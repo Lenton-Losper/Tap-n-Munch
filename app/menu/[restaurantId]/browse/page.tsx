@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
@@ -8,20 +8,30 @@ import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 import { useCart } from '@/contexts/cart-context'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { getOrCreateSession, getCurrentSession, getSessionInfo } from '@/lib/session'
+import { getSessionToken } from '@/lib/fetch-with-session'
 import { restoreSessionFromTable } from '@/lib/session-recovery'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
-import { MenuOrderStatusTracker } from '@/components/menu/menu-order-status-tracker'
+// MenuOrderStatusTracker is no longer rendered here (spec section 8). The component file is kept
+// -- see the note at its former render site for why deleting it would be a different change.
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, ArrowLeft, Receipt, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
+import { Search, ArrowLeft, Users, ListChecks, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { FoodItemImage } from '@/components/menu/food-item-image'
 import { useTab } from '@/contexts/tab-context'
 import { useTabSessionEndedRedirect } from '@/hooks/useTabSessionEndedRedirect'
 import { readStoredTabId } from '@/lib/tab-storage'
+import { buildBrowseTabStrip } from '@/lib/tabs/browse-tab-strip'
+import {
+  EDIT_PICK_PARAM,
+  appendPendingAddition,
+  toPendingAddition,
+} from '@/lib/orders/edit-pending-additions'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { fetchTabById } from '@/lib/tab-session'
 import { getOrderingContext, isKioskChannel } from '@/lib/ordering/channel'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
@@ -31,27 +41,15 @@ import {
   menuLoadNotice,
   type MenuLoadFailure,
 } from '@/lib/menu/load-menu-categories'
-import { menuBodyState } from '@/lib/menu/menu-body-state'
-
-type ItemVariant = {
-  size: string
-  label: string
-  price: number
-}
-
-type VariantGroup = {
-  name: string
-  required: boolean
-  type: 'text' | 'price'
-  options: Array<string | { label: string; price: number }>
-}
-
-type RawVariantGroup = {
-  name?: unknown
-  required?: unknown
-  type?: unknown
-  options?: unknown
-}
+import { menuBodyState, shouldShowMenuNoticeBanner } from '@/lib/menu/menu-body-state'
+import { canOpenItemSheet } from '@/lib/menu/item-sheet-availability'
+import {
+  getDefaultGroupSelection,
+  getItemDisplayPrice,
+  getVariantGroups,
+  getVariantOptionLabel,
+  isRequiredVariantMissing,
+} from '@/lib/menu/variant-groups'
 
 type MenuCategory = {
   id: string
@@ -93,6 +91,12 @@ export default function MenuBrowsePage() {
   const tableNumber = Number(searchParams?.get('table') || searchParams?.get('tableNumber') || '1')
   const tabIdParam = searchParams.get('tabId')?.trim() || ''
   const kioskSessionId = isKiosk ? getCurrentSession() : null
+  /**
+   * PICKER MODE. Set when the customer arrived here from the ORDER EDITOR via "+ Add something".
+   * The menu behaves identically except at the moment of adding: the item goes to that order's
+   * pending edit instead of to the cart, and the customer is returned to it.
+   */
+  const pickForOrderId = searchParams.get(EDIT_PICK_PARAM)?.trim() || ''
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -105,8 +109,16 @@ export default function MenuBrowsePage() {
   useClearCartOnTableChange(restaurantId, tableNumber)
 
   const { items: cartItems, getItemCount, addItem, clearCart } = useCart()
-  const { isInTab, tabId, tabTotal, tabMembers, tabStatus, clearTab } = useTab()
+  const { isInTab, tabId, tabTotal, tabPending, tabMembers, tabStatus, clearTab } = useTab()
   const { restaurant, currency } = useRestaurant()
+  /**
+   * The strip DISPLAYS, so it shows both figures: `tabTotal` is payable + pending, and the
+   * pending part is named whenever it exists. Showing payable alone is what told a customer who
+   * had just ordered N$132 that they owed NAD0.00 — every QR submission is an order_request
+   * until staff Accept, and payable counts orders only.
+   */
+  // Built in lib/tabs/browse-tab-strip.ts. See the note at the render site for why it is not
+  // assembled here: one arm of the old inline ternary dropped the pending figure entirely.
 
   // Authoritative view-only check: looked up from the real restaurant_tables row for this
   // table_number, never trusted from a URL flag. Until it resolves, isViewOnly stays false
@@ -179,7 +191,16 @@ export default function MenuBrowsePage() {
     return `?table=${tableNumber}`
   }, [tableNumber, tabIdParam, tabId])
 
-  const myOrdersHref = useMemo(() => {
+  /**
+ * THE CART. This was called `myOrdersHref` and the button above it read "My Orders", but it has
+ * always pointed at /cart — and nothing in the app navigated to /menu/[id]/my-orders at all, so
+ * the order list was unreachable except by typing the URL. A customer who had just placed an
+ * order tapped "My Orders", landed on an emptied cart, and was told "Your cart is empty".
+ *
+ * The destination was right and the label was wrong: the cart is where an order is submitted, so
+ * the button is the Cart. A separate My Orders entry sits beside it.
+ */
+  const cartHref = useMemo(() => {
     const params = new URLSearchParams()
     if (tableNumber > 0) params.set('table', String(tableNumber))
     if (tabId || tabIdParam) params.set('tabId', tabId || tabIdParam)
@@ -193,8 +214,28 @@ export default function MenuBrowsePage() {
     return `/menu/${restaurantId}/cart?${params.toString()}`
   }, [restaurantId, tableNumber, tabId, tabIdParam, restaurant?.name, currency, isKiosk, orderingCtx.customerName])
 
+  /** The order list — the page `cartHref` was mislabelled as. Carries the table so the list can
+   * scope itself, and nothing else: it reads orders by session, not by tab. */
+  const myOrdersHref = useMemo(() => {
+    const params = new URLSearchParams()
+    if (tableNumber > 0) params.set('table', String(tableNumber))
+    return `/menu/${restaurantId}/my-orders${params.toString() ? `?${params.toString()}` : ''}`
+  }, [restaurantId, tableNumber])
+
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
 
+  /**
+   * The creator's own device remembering its own PIN, written once at creation.
+   *
+   * This is NOT a check of anything — it is sessionStorage, which the client wrote itself — so
+   * it can only ever show the PIN to the one person who created the tab, and it dies when the
+   * browser tab closes. Everyone who JOINED the tab had no way to see the PIN they had just
+   * typed, which is most of why #265 (staff-driven PIN recovery) exists at all.
+   *
+   * Demoted to a pre-fetch fallback below. Kept rather than deleted because it costs nothing and
+   * is not a disclosure: it is this device showing this device's own PIN, exactly as today. It
+   * is never treated as proof of membership — `fetchedTabPin` is the real source.
+   */
   const creatorTabPin = useMemo(() => {
     if (typeof window === 'undefined') return null
     const activeTabId = tabIdParam || tabId || readStoredTabId() || ''
@@ -204,7 +245,27 @@ export default function MenuBrowsePage() {
     if (storedTabId === activeTabId && pin) return pin
     return null
   }, [tabIdParam, tabId])
+
+  /** The PIN as returned by the session-token-guarded read. Null until it resolves, and on any
+   *  failure — so the display falls back to `creatorTabPin` rather than to nothing. */
+  const [fetchedTabPin, setFetchedTabPin] = useState<string | null>(null)
+
+  /** What the header and the tab strip actually render. */
+  const tabPin = fetchedTabPin ?? creatorTabPin
+
   const [tabPinRequired, setTabPinRequired] = useState(true)
+
+  /** Spec section 9. One call, so no branch can render an amount without its pending note. */
+  const tabStrip = buildBrowseTabStrip({
+    tabStatus,
+    currency,
+    total: Number(tabTotal) || 0,
+    pending: Number(tabPending) || 0,
+    memberCount: tabMembers.length,
+    tabPin,
+    tabPinRequired,
+  })
+
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
   const [selectedMenuCategory, setSelectedMenuCategory] = useState<MenuCategory | null>(null)
@@ -229,7 +290,6 @@ export default function MenuBrowsePage() {
   const [allMenuLoadedOnce, setAllMenuLoadedOnce] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
-  const [addingItemId, setAddingItemId] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Array<{ id: number; name: string; leaving: boolean }>>([])
   const [selectedVariantGroupsByItem, setSelectedVariantGroupsByItem] = useState<
     Record<string, Record<string, string>>
@@ -257,6 +317,47 @@ export default function MenuBrowsePage() {
     }
   }, [effectiveIsInTab, effectiveTabId, restaurantId])
 
+  /**
+   * The tab PIN, for EVERY member of the tab rather than only its creator.
+   *
+   * GET /api/tabs/[tabId] is the session-token-guarded read (the same guard that lets this
+   * customer add orders to the tab), and it returns `tab_pin` only to a holder of a token for
+   * THIS tab. See that route for why that is a downgrade of a credential the caller already
+   * holds and not new exposure — and for why the PIN is deliberately NOT on the unauthenticated
+   * /view read that `fetchTabById` above uses.
+   *
+   * Plain `fetch`, deliberately NOT `fetchWithSession`: that helper treats any 410 as "your
+   * dining session is over" and calls handleSessionExpired, which wipes the token, the tab id
+   * and the cart and hard-redirects to /session-ended. A cosmetic PIN readout must never be able
+   * to eject someone from their meal. Here a missing or rejected token means "no PIN to show", and
+   * nothing else — the state falls back to `creatorTabPin`.
+   */
+  useEffect(() => {
+    if (!effectiveIsInTab || !effectiveTabId) return
+
+    const token = getSessionToken()
+    if (!token) return
+
+    let cancelled = false
+    void fetch(`/api/tabs/${encodeURIComponent(effectiveTabId)}`, {
+      headers: { 'x-session-token': token },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return
+        const pin = data?.tab?.tab_pin
+        setFetchedTabPin(pin ? String(pin) : null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setFetchedTabPin(null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveIsInTab, effectiveTabId])
+
   const pushCartToast = (name: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000)
     const safeName = String(name || 'Item')
@@ -271,113 +372,16 @@ export default function MenuBrowsePage() {
     toastTimersRef.current.push(fadeTimer, removeTimer)
   }
 
-  const getItemVariants = (item: MenuItem): ItemVariant[] =>
-    Array.isArray((item as MenuItem & { variants?: ItemVariant[] }).variants)
-      ? ((item as MenuItem & { variants?: ItemVariant[] }).variants || []).filter(
-          (variant) =>
-            variant &&
-            typeof variant.size === 'string' &&
-            typeof variant.label === 'string' &&
-            Number.isFinite(Number(variant.price))
-        )
-      : []
-
-  const normalizeVariantGroups = (groups: unknown): VariantGroup[] => {
-    if (!Array.isArray(groups)) return []
-    return groups
-      .map((group) => {
-        const raw = (group || {}) as RawVariantGroup
-        const groupName = String(raw.name || '').trim()
-        const groupType = raw.type === 'price' ? 'price' : raw.type === 'text' ? 'text' : null
-        const rawOptions = Array.isArray(raw.options) ? raw.options : []
-        if (!groupName || !groupType || rawOptions.length === 0) return null
-
-        const options = rawOptions
-          .map((opt) => {
-            if (typeof opt === 'string') return opt
-            if (!opt || typeof opt !== 'object') return null
-            const optionLabel = String((opt as { label?: unknown; name?: unknown }).label || (opt as { name?: unknown }).name || '').trim()
-            if (!optionLabel) return null
-            if (groupType === 'text') return optionLabel
-            const priceValue = Number((opt as { price?: unknown }).price)
-            if (!Number.isFinite(priceValue)) return null
-            return { label: optionLabel, price: priceValue }
-          })
-          .filter(Boolean) as Array<string | { label: string; price: number }>
-
-        if (options.length === 0) return null
-        return {
-          name: groupName,
-          required: Boolean(raw.required),
-          type: groupType,
-          options,
-        } as VariantGroup
-      })
-      .filter(Boolean) as VariantGroup[]
-  }
-
-  const getVariantGroups = (item: MenuItem): VariantGroup[] => {
-    const itemWithVariants = item as MenuItem & { variantGroups?: unknown; variant_groups?: unknown }
-    const groups = normalizeVariantGroups(itemWithVariants.variantGroups)
-    if (groups.length > 0) return groups
-    const snakeCaseGroups = normalizeVariantGroups(itemWithVariants.variant_groups)
-    if (snakeCaseGroups.length > 0) return snakeCaseGroups
-
-    const legacyVariants = getItemVariants(item)
-    if (legacyVariants.length > 0) {
-      return [
-        {
-          name: 'Size',
-          required: true,
-          type: 'price',
-          options: legacyVariants.map((v) => ({ label: v.label, price: Number(v.price) })),
-        },
-      ]
-    }
-    return []
-  }
-
-  const getDefaultGroupSelection = (item: MenuItem) => {
-    const result = {} as Record<string, any>
-    for (const group of getVariantGroups(item)) {
-      const first = group.options[0]
-      if (typeof first === 'string') {
-        result[group.name] = first
-      } else if (first && typeof first === 'object') {
-        result[group.name] = String(first.label || '')
-      }
-    }
-    return result
-  }
-
-  const getSelectedVariantLabel = (option: string | { label: string; price: number }) =>
-    typeof option === 'string' ? option : String(option.label || '')
-
-  const getResolvedVariantSelection = (item: MenuItem) => ({
+  /**
+   * The selection this card is showing: the shared defaults, overridden by whatever the customer
+   * tapped on the card itself. Stays here rather than in lib/menu/variant-groups because it is
+   * the only part that depends on this page state -- the rules it wraps are shared with
+   * ItemDetailModal, which now originates a selection too.
+   */
+  const getResolvedVariantSelection = (item: MenuItem): Record<string, string> => ({
     ...getDefaultGroupSelection(item),
     ...(selectedVariantGroupsByItem[item.id] || {}),
   })
-
-  const getItemDisplayPrice = (item: MenuItem, selection: Record<string, string>) => {
-    const variantGroups = getVariantGroups(item)
-    for (const group of variantGroups) {
-      if (group.type !== 'price') continue
-      for (const option of group.options) {
-        if (typeof option === 'string') continue
-        if (String(option.label || '') === String(selection[group.name] || '')) {
-          return Number(option.price)
-        }
-      }
-    }
-    return item.base_price
-  }
-
-  const isRequiredVariantMissing = (item: MenuItem, selection: Record<string, string>) =>
-    getVariantGroups(item).some((group) => {
-      if (!group.required) return false
-      const selected = String(selection[group.name] || '').trim()
-      return !selected
-    })
 
   useEffect(() => {
     const loadData = async () => {
@@ -587,13 +591,15 @@ export default function MenuBrowsePage() {
             </p>
             <div className="flex flex-wrap gap-1.5">
               {group.options.map((option, optionIndex) => {
-                const optionLabel = getSelectedVariantLabel(option)
+                const optionLabel = getVariantOptionLabel(option)
                 const isSelected = resolvedSelection[group.name] === optionLabel
                 return (
                   <button
                     key={`${item.id}-${group.name}-${optionLabel}-${optionIndex}`}
                     type="button"
-                    onClick={() =>
+                    onClick={(event) => {
+                      // The card opens the item sheet; a chip must change the selection only.
+                      event.stopPropagation()
                       setSelectedVariantGroupsByItem((prev) => ({
                         ...prev,
                         [item.id]: {
@@ -602,7 +608,7 @@ export default function MenuBrowsePage() {
                           [group.name]: optionLabel,
                         },
                       }))
-                    }
+                    }}
                     className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
                       isSelected
                         ? 'border-black bg-black text-white'
@@ -622,30 +628,60 @@ export default function MenuBrowsePage() {
     )
   }
 
+  /**
+   * The single availability rule, shared by the `+` button and the tappable card.
+   * Two entry points that each compute their own version of this drift apart -- see
+   * lib/menu/item-sheet-availability.ts for the incident that shape produced (#272).
+   */
+  const itemSheetAvailable = (item: MenuItem) =>
+    canOpenItemSheet({
+      isInTab: effectiveIsInTab,
+      isKiosk,
+      itemStatus: item.status,
+      requiredVariantMissing: isRequiredVariantMissing(item, getResolvedVariantSelection(item)),
+      tabStatus,
+    })
+
   const renderAddButton = (item: MenuItem, compact = false) => (
     <button
       type="button"
-      onClick={() => handleAddToCart(item)}
-      disabled={
-        (!effectiveIsInTab && !isKiosk) ||
-        item.status === 'out_of_stock' ||
-        addingItemId === item.id ||
-        isRequiredVariantMissing(item, getResolvedVariantSelection(item)) ||
-        ['settled', 'closed', 'completed', 'cancelled'].includes(String(tabStatus ?? '').toLowerCase())
-      }
+      onClick={(event) => {
+        // The card is tappable too; without this the card's handler fires as well.
+        event.stopPropagation()
+        handleAddToCart(item)
+      }}
+      disabled={!itemSheetAvailable(item)}
       className={`flex shrink-0 items-center justify-center rounded-full font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-40 ${
         compact ? 'h-8 w-8' : 'h-9 w-9'
       }`}
       style={{ backgroundColor: ACCENT }}
       aria-label={`Add ${item.name} to cart`}
     >
-      {addingItemId === item.id ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <Plus className="h-4 w-4" strokeWidth={2.5} />
-      )}
+      <Plus className="h-4 w-4" strokeWidth={2.5} />
     </button>
   )
+
+  /**
+   * Props that make a whole card open the item sheet.
+   *
+   * Spec section 11: every item uses the same interaction, and the customer should not have to
+   * find a 9x9 target to reach it. When the item is unavailable the card carries no handler and
+   * no button role at all, so it is inert rather than a control that silently does nothing.
+   */
+  const cardOpensSheetProps = (item: MenuItem) => {
+    if (!itemSheetAvailable(item)) return {}
+    return {
+      role: 'button' as const,
+      tabIndex: 0,
+      onClick: () => handleAddToCart(item),
+      onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        handleAddToCart(item)
+      },
+      'aria-label': `Open ${item.name}`,
+    }
+  }
 
   const renderMenuItemCard = (item: MenuItem) => {
     const resolvedSelection = getResolvedVariantSelection(item)
@@ -653,7 +689,10 @@ export default function MenuBrowsePage() {
     return (
       <article
         key={item.id}
-        className="flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm"
+        {...cardOpensSheetProps(item)}
+        className={`flex gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm ${
+          itemSheetAvailable(item) ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+        }`}
       >
         <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gray-100">
           <FoodItemImage
@@ -701,17 +740,23 @@ export default function MenuBrowsePage() {
     return name
   }
 
-  useEffect(() => {
-    const allItems = Object.values(groupedItems).flatMap((entry) => entry.items || [])
-    for (const item of allItems) {
-      const name = String(item?.name || '')
-      if (name === 'Tea' || name === 'Tea (Rooibos / Five Roses / Green Tea)' || name === 'Americano') {
-        console.log('[browse][variantGroups-debug] item=', name, item)
-      }
-    }
-  }, [groupedItems])
+  // A debug effect that logged the FULL payload of three named menu items on every customer's
+  // browser, on every menu load, went here. It was investigating #229's missing variant groups
+  // and outlived the investigation.
 
-  const handleAddToCart = async (item: MenuItem) => {
+  /**
+   * EVERY item opens the popup, including one with nothing to choose.
+   *
+   * An item with no options used to be added straight from the card. The add itself worked, but
+   * it was silent: nothing on screen confirmed it, so a customer who was not watching the cart
+   * badge tapped again, and again. A popup they have to dismiss is the confirmation -- and for a
+   * zero-option item it is simply the same component with nothing to configure, showing the item,
+   * its price, a quantity control and Add to Cart.
+   *
+   * The 1000ms artificial delay that used to sit in the silent path went with it. It existed to
+   * make a spinner visible; there is no spinner now, and nothing else was waiting on it.
+   */
+  const handleAddToCart = (item: MenuItem) => {
     if (!effectiveIsInTab && !isKiosk) return
     // #272. Nothing the checkout would refuse may enter a cart. Two paths reach this
     // function and only one was guarded: the inline Add button is disabled for
@@ -723,41 +768,7 @@ export default function MenuBrowsePage() {
     // after a menu edit, a cached payload can still contain an item that is no longer
     // visible, and that item must not be addable either.
     if (!isChargeableMenuStatus(item.status)) return
-    const hasInlineVariantGroups = getVariantGroups(item).length > 0
-    if ((!item.has_sizes && !item.has_addons) || (hasInlineVariantGroups && !item.has_addons)) {
-      setAddingItemId(item.id)
-      try {
-        const resolvedSelection = getResolvedVariantSelection(item)
-        const effectivePrice = getItemDisplayPrice(item, resolvedSelection)
-        const variantParts = Object.values(resolvedSelection).filter(Boolean)
-        const effectiveDisplayName =
-          variantParts.length > 0 ? `${item.name} - ${variantParts.join(' / ')}` : item.name
-        const selectedSizeName = resolvedSelection.Size || null
-
-        const cartItem = {
-          menu_item_id: item.id,
-          name: item.name,
-          display_name: effectiveDisplayName,
-          quantity: 1,
-          base_price: effectivePrice,
-          selected_size: selectedSizeName
-            ? { name: selectedSizeName, price_modifier: 0 }
-            : null,
-          selected_addons: [],
-          selected_variants: resolvedSelection,
-          special_instructions: '',
-          subtotal: effectivePrice,
-          image_url: item.image_url,
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        addItem(cartItem)
-        pushCartToast(effectiveDisplayName)
-      } finally {
-        setAddingItemId(null)
-      }
-    } else {
-      setSelectedItem(item as any)
-    }
+    setSelectedItem(item as any)
   }
 
   if (tabSessionRedirecting) {
@@ -788,7 +799,7 @@ export default function MenuBrowsePage() {
         <div className="mx-auto max-w-4xl px-4 py-3 sm:py-4">
           <div className="flex items-center justify-between gap-2">
             {/* Left: Back + Restaurant Info */}
-            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               <Button
                 variant="ghost"
                 size="icon"
@@ -834,21 +845,58 @@ export default function MenuBrowsePage() {
                 receipt, no order to track), so the whole block is hidden there. */}
             {!isViewOnly && (
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-              {tableNumber > 0 && (
-                <Link href={`/menu/${restaurantId}/receipt?table=${tableNumber}${tabId || tabIdParam ? `&tabId=${encodeURIComponent(tabId || tabIdParam)}` : ''}`}>
-                  <Button variant="outline" size="sm" className="h-11 border-border px-3 font-sans text-xs sm:text-sm">
-                    <Receipt className="w-4 h-4 mr-1.5 stroke-[1.5]" />
-                    <span className="hidden sm:inline">Receipt</span>
+              {/* TAB — the shared table bill.
+                  This slot used to hold **Receipt**. Spec sections 33 and 37: Receipt was a
+                  primary navigation concept offered before anything receipt-like existed —
+                  `/menu/[id]/receipt` is a running-bill screen, not a paid receipt, so the label
+                  described neither what it opened nor when it was useful. The route is NOT
+                  removed; it is still linked from the landing, `/menu`, the gateway-return
+                  confirmation and ActiveOrderBanner. It is demoted out of the browse header.
+
+                  What replaces it is the destination the redesign actually needs a header entry
+                  for (spec section 7): the Tab was previously reachable ONLY by tapping the strip
+                  below, which is not a control a first-time customer knows is a control. */}
+              {effectiveIsInTab && (
+                <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={QR_REDESIGN_PENDING_COPY.navTab}
+                    className="h-11 border-border px-3 font-sans text-xs sm:text-sm"
+                  >
+                    <Users className="w-4 h-4 stroke-[1.5] sm:mr-1.5" />
+                    <span className="hidden sm:inline">{QR_REDESIGN_PENDING_COPY.navTab}</span>
                   </Button>
                 </Link>
               )}
+              {/* My Orders — the order list. Separate from the Cart button beside it, because
+                  they are different places: this one is the record of what has been ordered, that
+                  one is what has not been submitted yet. */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => router.push(myOrdersHref)}
+                aria-label={CUSTOMER_NAV_COPY.myOrders}
+                className="h-11 cursor-pointer rounded-full px-4 font-sans text-xs font-semibold sm:text-sm"
+              >
+                {/* Not Receipt — that is the button beside this one. Below `sm` both labels are
+                    hidden and the icon is the only thing distinguishing them, so they must not
+                    share a glyph. ListChecks has no bounding rectangle, which reads clearly
+                    apart from Receipt's outlined shape at 16px. */}
+                <ListChecks className="h-4 w-4 stroke-[1.5] sm:mr-1.5" />
+                {/* Label collapses on small screens, exactly as the Receipt button beside it
+                    already does. Adding a third control pushed the left block past its
+                    truncation point — the restaurant name rendered as "S…" and the table as
+                    "T…", which is worse than an unlabelled icon. */}
+                <span className="hidden sm:inline">{CUSTOMER_NAV_COPY.myOrders}</span>
+              </Button>
               <Button
                 size="sm"
                 disabled={myOrdersLoading}
                 onClick={() => {
                   if (myOrdersLoading) return
                   setMyOrdersLoading(true)
-                  router.push(myOrdersHref)
+                  router.push(cartHref)
                 }}
                 className="relative h-11 cursor-pointer rounded-full bg-black px-4 font-sans text-xs font-semibold text-white hover:bg-black/90 disabled:opacity-70 disabled:cursor-not-allowed sm:text-sm"
               >
@@ -858,7 +906,7 @@ export default function MenuBrowsePage() {
                     Loading...
                   </>
                 ) : (
-                  'My Orders'
+                  CUSTOMER_NAV_COPY.cart
                 )}
                 {!myOrdersLoading && getItemCount() > 0 ? (
                   <span
@@ -872,43 +920,93 @@ export default function MenuBrowsePage() {
             </div>
             )}
           </div>
+
+          {/* NO PIN HERE. It renders once, in the tab strip immediately below this header.
+
+              A line was briefly added here as well and removed on sight: it answered a question
+              the strip already answers two rows down, and the strip answers it better. There the
+              PIN sits beside the running total and the person count, which is the context a
+              customer reads it in — "this table, these people, this number" — rather than as a
+              free-floating figure under the restaurant name. Anything wanting to surface the PIN
+              should change the strip, not add a second reading of it.
+
+              Pinned by the "renders the PIN exactly once" case in
+              __tests__/browse-tab-pin-visible-to-joined-member.test.tsx. */}
         </div>
       </header>
 
+      {/* PICKER MODE BANNER. The menu looks the same as always, and the ONE thing that differs
+          is what happens when you add something — which is invisible until it happens. So it is
+          said out loud, with a way out that does not require guessing that Back is safe. */}
+      {pickForOrderId && (
+        <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm font-sans text-amber-900">
+          <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
+            <span>{QR_REDESIGN_PENDING_COPY.pickerBanner}</span>
+            <button
+              type="button"
+              className="shrink-0 font-semibold underline"
+              onClick={() =>
+                router.replace(
+                  `/menu/${restaurantId}/order-confirmation/${pickForOrderId}${
+                    tableNumber > 0 ? `?table=${tableNumber}` : ''
+                  }`,
+                )
+              }
+            >
+              {QR_REDESIGN_PENDING_COPY.pickerBack}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* THE TAB STRIP — a lightweight entry point, not a summary of the whole bill.
+
+          Spec section 9. It used to be one dense sentence carrying status, money, people, the
+          PIN and "Tap to settle →". Two rows now: the money leads, and the PIN and people are
+          demoted beneath it. It says VIEW rather than settle, because section 30 puts the
+          settlement action on the Tab itself and leaves this as navigation.
+
+          The string is built by lib/tabs/browse-tab-strip.ts rather than inline, and that is
+          where the real fix is: the old three-way ternary appended the pending figure to its two
+          template-string arms and NOT to the JSX arm — the arm taken whenever the tab has a PIN.
+          A customer on a PIN-protected tab who had just ordered therefore saw payable alone, with
+          nothing naming what the restaurant had not yet confirmed. Building the money line once,
+          before anything branches on the PIN, is what stops that recurring. */}
       {effectiveIsInTab && (
         <div className="border-b border-border bg-foreground text-background">
           <Link href={`/menu/${restaurantId}/tab${browseQuery}`}>
-            <div className="mx-auto max-w-4xl px-4 py-2 text-center text-sm sm:text-left">
-              {tabStatus === 'ready_to_pay'
-                ? `Ready to pay • ${currency}${(Number(tabTotal) || 0).toFixed(2)} — waiter notified`
-                : tabStatus === 'closed'
-                  ? `Tab closed • ${currency}${(0).toFixed(2)} • 0 people`
-                  : creatorTabPin && tabPinRequired ? (
-                      <>
-                        Tab open • {currency}
-                        {(Number(tabTotal) || 0).toFixed(2)} • {tabMembers.length}{' '}
-                        {tabMembers.length === 1 ? 'person' : 'people'} • PIN:{' '}
-                        <span className="font-bold text-emerald-400">{creatorTabPin}</span> — Tap to settle →
-                      </>
-                    ) : (
-                      `Tab open • ${currency}${(Number(tabTotal) || 0).toFixed(2)} • ${
-                        tabMembers.length
-                      } ${tabMembers.length === 1 ? 'person' : 'people'} — Tap to settle →`
-                    )}
+            <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm">
+                  <span className="font-semibold">{tabStrip.headline}</span>
+                  {tabStrip.amount ? <span> · {tabStrip.amount}</span> : null}
+                  {tabStrip.pendingNote ? (
+                    <span className="text-background/70"> {tabStrip.pendingNote}</span>
+                  ) : null}
+                </p>
+                {tabStrip.meta ? (
+                  <p className="truncate text-xs text-background/70">{tabStrip.meta}</p>
+                ) : null}
+              </div>
+              <span className="shrink-0 text-xs font-semibold">{tabStrip.cta}</span>
             </div>
           </Link>
         </div>
       )}
 
-      <MenuOrderStatusTracker
-        restaurantId={restaurantId}
-        tableNumber={tableNumber}
-        currency={currency}
-        tabId={effectiveTabId || undefined}
-        isKiosk={isKiosk}
-        customerName={isKiosk ? orderingCtx.customerName : undefined}
-        sessionId={isKiosk ? kioskSessionId ?? undefined : getCurrentSession() ?? undefined}
-      />
+      {/* NO ORDER TRACKER HERE. Spec section 8.
+
+          <MenuOrderStatusTracker /> rendered a SIX-STEP progress bar per active order, above the
+          food. With four people at one table across several rounds that is the whole first
+          screen, and the customer scrolls past their own order history to reach the menu — which
+          is the one thing this screen exists for. Order tracking now lives on My Orders, which is
+          also where Place Order lands (piece 2).
+
+          THE COMPONENT FILE IS DELIBERATELY NOT DELETED. Nothing else renders it, but eight
+          suites `jest.mock` it by path, and it carries ReadyToPayCardButton — one of the two
+          competing "call the waiter" affordances (audit D8). Deleting it would fold a settlement
+          decision into a layout change. It is removed from this screen only; the consolidation
+          is piece 7. */}
 
       <div className="mx-auto max-w-4xl px-4 pt-4 pb-28 sm:pb-32">
         {/* Search */}
@@ -991,7 +1089,10 @@ export default function MenuBrowsePage() {
                 return (
                   <article
                     key={`popular-${item.id}`}
-                    className="relative w-40 shrink-0 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm sm:w-44"
+                    {...cardOpensSheetProps(item)}
+                    className={`relative w-40 shrink-0 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm sm:w-44 ${
+                      itemSheetAvailable(item) ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+                    }`}
                   >
                     <div className="relative aspect-square w-full overflow-hidden bg-gray-100">
                       <span
@@ -1047,7 +1148,14 @@ export default function MenuBrowsePage() {
             ) : null}
           </div>
 
-          {menuNotice && menuNotice.tone === 'partial' && filteredGroupedEntries.length > 0 ? (
+          {/* #246. This used to require `filteredGroupedEntries.length > 0`, so the banner
+              vanished the moment a search matched nothing in the part of the menu that HAD
+              loaded — leaving the customer with "No items found" and no hint that the menu on
+              screen was incomplete. The rule is in lib/menu/menu-body-state.ts; this site does
+              not restate it. */}
+          {/* `menuNotice &&` is here to NARROW the type for the JSX below, not to restate the
+              rule — the rule checks null itself. Without it tsc cannot see through the call. */}
+          {menuNotice && shouldShowMenuNoticeBanner({ notice: menuNotice, bodyState }) ? (
             <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
@@ -1162,10 +1270,33 @@ export default function MenuBrowsePage() {
       {selectedItem && (
         <ItemDetailModal
           item={selectedItem as any}
+          // Whatever the customer already tapped on the card carries into the popup, so opening
+          // it never quietly resets a choice that is still visible behind it.
+          initialVariantSelection={getResolvedVariantSelection(selectedItem)}
           restaurant={restaurant ? { ...restaurant, currency } : { currency }}
           onClose={() => setSelectedItem(null)}
           onAddToCart={(cartItem) => {
             if (!effectiveIsInTab && !isKiosk) return
+            /**
+             * PICKER MODE. Ruled 2026-08-16: "+ Add something" inside the editor opens the menu
+             * and returns to the PENDING edit, not to the cart. Nothing commits until Save.
+             *
+             * So in picker mode the item does NOT enter the cart -- putting it there would let a
+             * customer Place Order on something they meant to add to an existing order, which is
+             * two kitchen tickets for one intention and exactly what the ruling avoids.
+             */
+            if (pickForOrderId) {
+              appendPendingAddition(pickForOrderId, toPendingAddition(cartItem as never))
+              setSelectedItem(null)
+              // BACK TO THE EDITOR, which lives on the per-order screen -- not to My Orders.
+              // The panel reopens itself because a pending addition exists for this order.
+              router.replace(
+                `/menu/${restaurantId}/order-confirmation/${pickForOrderId}${
+                  tableNumber > 0 ? `?table=${tableNumber}` : ''
+                }`,
+              )
+              return
+            }
             addItem(cartItem)
             pushCartToast(cartItem.display_name || cartItem.name)
             setSelectedItem(null)

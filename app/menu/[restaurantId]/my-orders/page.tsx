@@ -6,11 +6,46 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
 import { readTabSessionId } from '@/lib/tab-storage'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
+import { useTab } from '@/contexts/tab-context'
+import { useRestaurant } from '@/contexts/restaurant-context'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
+import {
+  customerOrderState,
+  customerStateNeedsAttention,
+  customerStatusLabel,
+} from '@/lib/orders/customer-status'
+import {
+  EDIT_COPY,
+  editRefusalReason,
+  requestEditRefusalReason,
+} from '@/lib/orders/edit-lock'
+import {
+  ORDER_PLACED_BANNER_MS,
+  ORDER_PLACED_PARAM,
+  QR_REDESIGN_PENDING_COPY,
+  shouldShowOrderPlacedBanner,
+} from '@/lib/customer-copy/qr-redesign-copy'
+
+/**
+ * Whether to offer the edit button on a list card. The row here comes from the guest API,
+ * which states which table it came from (`surface`), so the two status vocabularies are not
+ * guessed at. Ownership is judged on the ids this BROWSER holds, never the row's own.
+ */
+function isEditableHere(order: any, sessionIds: string[]): boolean {
+  // The BROWSER's ids, never the row's own. Echoing the row's id back would make ownership
+  // trivially true, and guestCanAccessOrder releases an OPEN order on table_number alone -- so a
+  // second diner at the same table would be offered an edit button on somebody else's order.
+  const params = { sessionIds, nowMs: Date.now() }
+  return order?.surface === 'order_requests'
+    ? requestEditRefusalReason(order, params) == null
+    : editRefusalReason(order, params) == null
+}
 
 export default function MyOrdersPage() {
   const params = useParams()
@@ -21,7 +56,61 @@ export default function MyOrdersPage() {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const sessionId = getCurrentSession()
+  // Every id this browser holds. The order carries whichever the placing screen used, and the
+  // cart submits the tab-context one, so a single id both empties this list and 404s the edit.
+  const editSessionIds = [sessionId, readTabSessionId()].filter(Boolean) as string[]
   const sessionInfo = getSessionInfo()
+  /**
+   * The pending figure comes from the SERVER (useTab -> /api/tabs/[tabId]/view), not from a sum
+   * over the rows on this screen. Two reasons: it is the same number every other surface shows,
+   * so they cannot disagree; and summing `orders` here would be a client-derived money figure,
+   * which is the thing that made /tab wrong.
+   *
+   * It is the TAB's pending, not this session's — a customer looking at My Orders is being told
+   * what the restaurant has not yet confirmed for their table, which is what the copy says.
+   */
+  const { tabPending } = useTab()
+  const { currency } = useRestaurant()
+  const pendingAmount = Number(tabPending) || 0
+
+  /**
+   * The post-order banner (spec section 16). Raised from `?placed=1` rather than fired as a
+   * toast from the cart, so it cannot be lost to the navigation that carries the customer here.
+   *
+   * The parameter is stripped from the URL as soon as it is read. Otherwise a refresh, a Back,
+   * or a shared link re-announces an order that was placed some time ago -- the same class of
+   * problem as the confirmation page this replaces, where returning to a URL re-entered a flow
+   * the customer had already finished (spec Event Q).
+   */
+  /**
+   * Decided in the INITIALISER, not in an effect.
+   *
+   * `react-hooks/set-state-in-effect` is an error under `eslint . --max-warnings=0`, which is a
+   * blocking gate on the staging deploy — and it is right here for a reason beyond lint: setting
+   * this from an effect body renders the screen once without the banner and again with it, so the
+   * customer's first paint after ordering is the one that does not confirm anything. Reading the
+   * parameter at first render means the banner is there in the first frame.
+   *
+   * The effect keeps only the two things that are genuinely effects: stripping the parameter from
+   * the URL, and the timer. `setShowPlacedBanner(false)` inside the timeout callback is not a
+   * synchronous set in an effect body and is not what the rule is about.
+   */
+  const [showPlacedBanner, setShowPlacedBanner] = useState(() =>
+    shouldShowOrderPlacedBanner(searchParams.get(ORDER_PLACED_PARAM))
+  )
+  useEffect(() => {
+    if (!showPlacedBanner) return
+
+    const url = new URL(window.location.href)
+    url.searchParams.delete(ORDER_PLACED_PARAM)
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+
+    const timer = window.setTimeout(() => setShowPlacedBanner(false), ORDER_PLACED_BANNER_MS)
+    return () => window.clearTimeout(timer)
+    // Deliberately mount-only: the parameter is removed above, so re-running would never see it
+    // again and would only risk cancelling a live banner.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!sessionId) {
@@ -65,32 +154,61 @@ export default function MyOrdersPage() {
     }
   }
 
-  // An unlisted status fell through to `pending` ("🎉 New"), which reads as further along than
-  // the order is. Both order_requests states are spelled out for that reason -- a declined
-  // request labelled "New" would be worse than the disappearance it replaces.
-  const getStatusConfig = (status: string) => {
-    const configs: any = {
-      waiting_review: { emoji: '⏳', label: 'Waiting for confirmation' },
-      declined: { emoji: '🚫', label: 'Declined' },
-      pending: { emoji: '🎉', label: 'New' },
-      accepted: { emoji: '👨‍🍳', label: 'Accepted' },
-      preparing: { emoji: '🔥', label: 'Preparing' },
-      ready: { emoji: '✅', label: 'Ready' },
-      completed: { emoji: '✨', label: 'Completed' },
-    }
-    return configs[status] || configs.pending
-  }
+  /**
+   * ONE VOCABULARY, and it lives in lib/orders/customer-status.ts.
+   *
+   * What was here was a private seven-entry map ending
+   * `return configs[status] || configs.pending`, where `configs.pending` is `{🎉, 'New'}`. So
+   * EVERY status the map did not know rendered as a brand new order — a `ready_for_terminal`
+   * order, a `cancelled` one, anything added later. Spec section 34 removes the NEW badge;
+   * removing it without replacing the fallback would only move the lie somewhere less visible.
+   *
+   * There were four more copies of this vocabulary in the product (the six-step tracker,
+   * `mapOrderStatusToBadge`, the confirmation view, and this). Nothing is restated here.
+   */
+  const statusLabel = (order: any) => customerStatusLabel(order?.status, order?.payment_status)
+  const statusNeedsAttention = (order: any) =>
+    customerStateNeedsAttention(
+      customerOrderState({ status: order?.status, paymentStatus: order?.payment_status }),
+    )
 
   const isDeclined = (order: any) => order?.status === 'declined'
 
-  // A declined request was never accepted, so its total is not money the customer spent.
-  // Leaving it in this sum would have made the fix above state something untrue about money.
-  const getTotalSpent = () => {
-    return orders
-      .filter((order) => !isDeclined(order))
-      .reduce((sum, order) => sum + (order.total || 0), 0)
-  }
-
+  /**
+   * REMOVED FROM THE SCREEN 2026-08-16 (spec section 18), and the function deleted with it.
+   *
+   * It rendered as **"Total Spent"** and it was not what anyone had spent: it summed this
+   * session's orders whether or not they had been paid for, and whether or not the restaurant
+   * had even accepted them. A customer three minutes into a meal was shown a "Total Spent" of
+   * N$288 against N$0 actually taken.
+   *
+   * It was also the last customer-facing money figure derived on the device, which is the
+   * standing rule this project settled in the other direction: every figure a customer sees
+   * comes from the server. The two questions it was ambiguously answering both have server-side
+   * homes now — what the TABLE owes is `payable_total`, what it has committed to is
+   * `pending_total`, and both are on the Tab where the shared bill belongs.
+   *
+   * Nothing replaced it. Spec section 18: "Do not display analytics merely because the data
+   * exists. A restaurant customer does not need a dashboard of their meal."
+   *
+   * The old docblock is kept below so the reasoning that led here is not lost:
+   *
+   * ---
+   *
+   * NOT THE TAB TOTAL, and deliberately left as-is pending a ruling.
+   *
+   * This sums THIS SESSION'S OWN orders. It is neither of the two tab figures defined in
+   * lib/tabs/tab-outstanding.ts -- not what the table owes, and not what the table has ordered --
+   * so it must never be used to answer either, and no tab screen may import it.
+   *
+   * It is also the last customer-facing money figure derived on the device. Two things are
+   * unresolved and both are product questions: whether "Total Spent" should count orders that
+   * have not been paid for (it currently does), and whether a per-session figure should come
+   * from a server read like the tab total now does. Raised rather than answered here.
+   *
+   * A declined request was never accepted, so its total is not money the customer spent.
+   * Leaving it in this sum would have made the fix above state something untrue about money.
+   */
   function getTimeAgo(date: Date): string {
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
     if (seconds < 60) return 'Just now'
@@ -113,6 +231,16 @@ export default function MyOrdersPage() {
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto p-6">
+        {showPlacedBanner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mb-4 flex items-center gap-3 border border-emerald-600/30 bg-emerald-50 px-4 py-3 font-sans text-sm font-semibold text-emerald-900"
+          >
+            <span aria-hidden>✓</span>
+            <span>{QR_REDESIGN_PENDING_COPY.orderPlacedBanner}</span>
+          </div>
+        )}
         {/* Header */}
         <div className="bg-card border border-border p-6 mb-6">
           <div className="flex items-center justify-between mb-6">
@@ -132,26 +260,29 @@ export default function MyOrdersPage() {
           </div>
 
           <h1 className="text-3xl font-serif font-bold text-foreground mb-2">My Orders</h1>
-          <p className="text-muted-foreground font-sans text-sm">
-            Table {sessionInfo.table} • Session active since{' '}
-            {sessionInfo.created
-              ? new Date(sessionInfo.created).toLocaleTimeString()
-              : 'N/A'}
-          </p>
+          {/* "Session active since N/A" is gone. `sessionInfo.created` is unset for every
+              customer who reached this screen through the tab flow, so the line rendered the
+              literal string "N/A" as a matter of course (QRA-13) — and a session start time was
+              never something a diner needed. The table number stays; it is how they know they
+              are looking at the right table. */}
+          <p className="text-muted-foreground font-sans text-sm">Table {sessionInfo.table}</p>
 
-          {orders.length > 0 && (
-            <div className="mt-6 pt-6 border-t border-border space-y-3">
-              <div className="flex justify-between items-center font-sans">
-                <span className="text-muted-foreground">Total Orders</span>
-                <span className="font-bold text-foreground">{orders.length}</span>
-              </div>
-              <div className="flex justify-between items-center font-sans">
-                <span className="text-muted-foreground">Total Spent</span>
-                <span className="text-2xl font-bold text-foreground">
-                  N${getTotalSpent().toFixed(2)}
-                </span>
-              </div>
-            </div>
+          {/* NO DASHBOARD. Spec section 18.
+              "Total Orders" and "Total Spent" used to sit here. Total Spent counted orders that
+              had not been paid for and requests the restaurant had not accepted, so a customer
+              three minutes into a meal was shown a spend of N$288 against N$0 actually taken.
+              It was also the last customer-facing money figure derived on the device.
+
+              What survives is the one figure that is actionable and server-derived: the amount
+              the table has committed to that the restaurant has not yet confirmed. It is read
+              from the tab view, not summed here. */}
+          {pendingAmount > 0 && (
+            <p className="mt-4 text-xs font-sans text-amber-600">
+              {TAB_FIGURES_COPY.myOrdersPendingNotice.replace(
+                '{pending}',
+                `${currency}${pendingAmount.toFixed(2)}`,
+              )}
+            </p>
           )}
         </div>
 
@@ -173,7 +304,6 @@ export default function MyOrdersPage() {
         ) : (
           <div className="space-y-4">
             {orders.map((order) => {
-              const statusConfig = getStatusConfig(order.status)
               const placedAt = order.placed_at?.toDate
                 ? order.placed_at.toDate()
                 : order.placed_at
@@ -201,8 +331,17 @@ export default function MyOrdersPage() {
                       <p className="text-xl font-bold text-foreground font-sans">
                         N${order.total?.toFixed(2)}
                       </p>
-                      <span className="inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide bg-muted text-foreground mt-2">
-                        {statusConfig.emoji} {statusConfig.label}
+                      {/* One vocabulary, from lib/orders/customer-status.ts. A state that
+                          expects something of the customer is styled apart from one that does
+                          not -- "Needs you" must not look like "Being prepared". */}
+                      <span
+                        className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${
+                          statusNeedsAttention(order)
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'bg-muted text-foreground'
+                        }`}
+                      >
+                        {statusLabel(order)}
                       </span>
                     </div>
                   </div>
@@ -216,6 +355,11 @@ export default function MyOrdersPage() {
                       {order.items?.slice(0, 3).map((item: any, idx: number) => (
                         <p key={idx} className="text-sm text-foreground font-sans">
                           {item.quantity}× {item.name}
+                          {lineConfigurationSummary(item) ? (
+                            <span className="block text-xs text-muted-foreground">
+                              {lineConfigurationSummary(item)}
+                            </span>
+                          ) : null}
                         </p>
                       ))}
                       {order.items?.length > 3 && (
@@ -225,6 +369,28 @@ export default function MyOrdersPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* Edit entry point. Routes to the per-order confirmation screen, which is
+                      where the editor lives — one place a customer can change an order from,
+                      rather than a second editor embedded in a list card. The button appears
+                      only while the order is still open to editing; the server refuses
+                      regardless, so this only avoids offering a dead control. */}
+                  {isEditableHere(order, editSessionIds) && (
+                    <div className="mt-4">
+                      <Button
+                        variant="outline"
+                        className="w-full font-sans font-semibold"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          router.push(
+                            `/menu/${restaurantId}/order-confirmation/${order.id}${tableNumber ? `?table=${tableNumber}` : ''}`,
+                          )
+                        }}
+                      >
+                        {EDIT_COPY.editCta}
+                      </Button>
+                    </div>
+                  )}
 
                   {/* Payment Status.
                       Suppressed for a declined request: it never became an order, so its

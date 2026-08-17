@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import { fetchActiveTabForTable } from '@/lib/tab-session'
 import {
   clearCustomerSessionState,
@@ -106,27 +105,16 @@ export function useSessionTokenGuard({
 
     void validate()
 
-    const channel = supabase
-      .channel(`session-token-guard-${restaurantId}-${tableNumber}-${tableId || 'no-table'}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `restaurant_id=eq.${restaurantId}` },
-        (payload: any) => {
-          if (cancelled || invalidatedRef.current) return
-          const row = (payload.new || payload.old) as Record<string, unknown> | null
-          if (!row) return
-          if (Number(row.table_number || 0) !== tableNumber) return
-          if (tableId && String(row.table_id || '') !== String(tableId)) {
-            // Still allow table_number match when table_id differs
-          }
-          evaluateTabRow(row, trackedTokenRef.current)
-        }
-      )
-      .subscribe()
+    /**
+     * The `tabs` subscription here never fired: `public.tabs` has never been in the
+     * supabase_realtime publication (QRA-17). NOTE this hook has no importer at all -- the file
+     * is kept only because __tests__/tabs-anon-select-omits-members.test.ts reads it by path as
+     * one of the client `tabs` readers, so deleting it breaks a test no import graph reveals.
+     * Its validate-on-mount path above is unchanged.
+     */
 
     return () => {
       cancelled = true
-      supabase.removeChannel(channel)
     }
   }, [
     shouldValidate,

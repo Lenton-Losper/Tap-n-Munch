@@ -10,7 +10,7 @@ import {
   ReadyToPayTerminalButton,
   ReadyToPayTerminalNotified,
 } from '@/components/ready-to-pay-terminal'
-import { clearActiveOrderBannerState } from '@/lib/tab-storage'
+import { clearActiveOrderBannerState, heldSessionIds } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import {
   isBannerEligibleOrder,
@@ -81,7 +81,7 @@ export function ActiveOrderBanner() {
       const data = await fetchGuestOrderById(orderId, {
         restaurantId,
         tableNumber,
-        sessionId: getCurrentSession() || undefined,
+        sessionIds: heldSessionIds(),
       })
       if (cancelled) return
       if (!data) {

@@ -6,6 +6,7 @@ import {
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
+import { customerOrderState } from '@/lib/orders/customer-status'
 
 interface Notification {
   id: string
@@ -57,14 +58,42 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
     }
   }, [])
 
+  /**
+   * WHAT A STATUS CHANGE TELLS THE CUSTOMER (#173).
+   *
+   * TWO DEFECTS, both live on production, both from the same cause — a private status map:
+   *
+   *   1. A READY ORDER WAS TOLD IT WAS BEING PREPARED. The `ready` arm read
+   *
+   *        oldStatus === 'accepted' ? `Order #N is being prepared.` : `Order #N is ready!`
+   *
+   *      so an order moving accepted -> ready — which is what happens whenever the kitchen does
+   *      not set an explicit `preparing` step — announced the LESS advanced state. The customer
+   *      was told their food was being cooked at the moment the restaurant said it was done, and
+   *      the icon and severity were downgraded to match.
+   *
+   *   2. A TERMINAL-CONFIRMED ORDER NOTIFIED NOTHING. The terminal writes `confirmed` where the
+   *      dashboard writes `accepted`. `confirmed` was not a case, so it fell through to
+   *      `default: null` and the customer heard nothing at all.
+   *
+   * `customerOrderState` normalises (`confirmed` -> `accepted`, `accepting` -> `waiting_review`)
+   * and answers in the six customer states, so this site cannot disagree with My Orders or the
+   * Tab about what an order is doing. It also brings `preparing` — which this switch never had a
+   * case for — and `paid`, which beats any kitchen status.
+   *
+   * `oldStatus` is no longer consulted, and that is the fix rather than a tidy-up: what to tell
+   * someone depends on where the order IS, not on where it was, and reading the previous state is
+   * exactly what produced defect 1.
+   */
   const getStatusNotification = (
     newStatus: string,
     orderNumber: number,
-    oldStatus: string
+    _oldStatus: string,
+    paymentStatus?: string
   ): Notification | null => {
     const id = `${orderNumber}-${newStatus}-${Date.now()}`
 
-    switch (newStatus) {
+    switch (customerOrderState({ status: newStatus, paymentStatus })) {
       case 'accepted':
         return {
           id,
@@ -72,30 +101,39 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           type: 'success',
           icon: '✅',
         }
+      case 'preparing':
+        return {
+          id,
+          message: `Order #${orderNumber} is being prepared.`,
+          type: 'info',
+          icon: '👨‍🍳',
+        }
       case 'ready':
         return {
           id,
-          message:
-            oldStatus === 'accepted'
-              ? `Order #${orderNumber} is being prepared.`
-              : `Order #${orderNumber} is ready!`,
-          type: oldStatus === 'accepted' ? 'info' : 'success',
-          icon: oldStatus === 'accepted' ? '👨‍🍳' : '🍽️',
+          message: `Order #${orderNumber} is ready!`,
+          type: 'success',
+          icon: '🍽️',
         }
-      case 'completed':
+      case 'paid':
         return {
           id,
           message: `Order #${orderNumber} completed. Enjoy your meal!`,
           type: 'success',
           icon: '🎉',
         }
-      case 'declined':
+      case 'needs_you':
         return {
           id,
-          message: `Order #${orderNumber} was declined. Please speak to a staff member.`,
+          message: `Order #${orderNumber} needs your attention. Please speak to a staff member.`,
           type: 'warning',
           icon: '⚠️',
         }
+      /**
+       * `waiting` and `unknown` say nothing, deliberately. A banner exists to announce that
+       * something changed for the better; "still waiting" is not news, and an unknown status is
+       * not something to make a claim about.
+       */
       default:
         return null
     }
@@ -119,7 +157,10 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
         if (prev) {
           if (newStatus !== prev.status) {
-            const notification = getStatusNotification(newStatus, orderNum, prev.status)
+            // `newPay` is passed so a settled order says "paid" rather than whatever the kitchen
+            // status happens to be: markOrderPaidConfirmed writes `completed` from ANY status,
+            // and the terminal can settle an order the kitchen is still working on.
+            const notification = getStatusNotification(newStatus, orderNum, prev.status, newPay)
             if (notification) {
               addNotification(notification)
               if ('vibrate' in navigator) {
@@ -151,8 +192,25 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
         if (currentIds.has(id)) continue
         const wasInProgress = ['accepted', 'preparing', 'ready', 'pending'].includes(prev.status)
         if (wasInProgress && prev.status !== 'completed') {
-          const notification = getStatusNotification('completed', prev.order_number, prev.status)
-          if (notification) addNotification(notification)
+          /**
+           * DELIBERATELY NOT ROUTED THROUGH `getStatusNotification`.
+           *
+           * This arm fires when an in-progress order DISAPPEARS from the customer's list, and it
+           * infers completion from the disappearance. That inference predates #173 and is out of
+           * its scope — but feeding a synthetic `'completed'` through the status vocabulary would
+           * change it: `completed` without a paid payment_status maps to `ready`, deliberately
+           * (#234 — reconcile can complete an order with no payment), so a vanished unpaid order
+           * would start announcing "is ready!".
+           *
+           * Keeping the message here preserves the existing behaviour exactly, and keeps #173's
+           * change to the defect it is about.
+           */
+          addNotification({
+            id: `${prev.order_number}-vanished-${Date.now()}`,
+            message: `Order #${prev.order_number} completed. Enjoy your meal!`,
+            type: 'success',
+            icon: '🎉',
+          })
         }
         prevById.delete(id)
       }

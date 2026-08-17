@@ -11,7 +11,9 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
+import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -142,7 +144,7 @@ export default function OrderSecurePage() {
       console.error('Order failure:', error)
       toast({
         title: 'Order failed',
-        description: error.message || 'Failed to place order. Please try again.',
+        description: customerSafeError(error, 'Failed to place order. Please try again.'),
         variant: 'destructive',
       })
       setSubmitting(false)
@@ -180,6 +182,11 @@ export default function OrderSecurePage() {
                 <span className="text-foreground">
                   <span className="text-muted-foreground mr-2">{item.quantity}x</span>
                   {item.display_name || item.name}
+                  {lineConfigurationSummary(item) ? (
+                    <span className="block text-xs text-muted-foreground">
+                      {lineConfigurationSummary(item)}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="text-foreground">
                   {currency}

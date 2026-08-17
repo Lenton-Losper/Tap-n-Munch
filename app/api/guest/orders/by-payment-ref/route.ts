@@ -9,19 +9,10 @@ export const dynamic = 'force-dynamic'
  * gateway redirects back with ?tn=<merchant_order_no>.
  *
  * Same access contract as the sibling guest routes (app/api/guest/orders/[orderId]/receipt):
- * restaurantId is REQUIRED, and each row is gated through guestCanAccessOrder — an open order
+ * restaurantId is required, and each row is gated through guestCanAccessOrder — an open order
  * needs the table or session that placed it, a paid/closed one is reachable on restaurant scope
- * alone (the shareable receipt-link pattern).
- *
- * This route has no authentication of its own: middleware guards /admin/* only. Everything
- * standing between an anonymous caller and another restaurant's order data is in
- * fetchGuestOrdersByPaymentRef, which is where the three doors are documented.
- *
- * The legitimate caller always has the restaurant: the gateway return URL carries `rid` and
- * `table` (payments/paycloud.js -> paycloudCheckoutReturnUrlWithTn), which is why requiring it
- * costs no real flow. All three spellings are accepted because the return URL and the in-app
- * callers disagree about which to send, and a 400 on a working flow would be a regression
- * dressed as a fix.
+ * alone (the shareable receipt-link pattern). The gateway return URL carries rid and table
+ * (payments/paycloud.js -> paycloudCheckoutReturnUrlWithTn), so the legitimate caller has both.
  */
 export async function GET(request: Request) {
   try {

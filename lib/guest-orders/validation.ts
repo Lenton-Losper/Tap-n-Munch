@@ -88,33 +88,6 @@ export function guestCanAccessOrder(
  * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
  * ruling already made, so this adds a stricter sibling rather than editing it.
  */
-/**
- * The access question for actions that SEND the order somewhere, rather than answering the
- * caller who already holds its id.
- *
- * WHY THIS IS NOT `guestCanAccessOrder` (QRA-19). That helper short-circuits to `true` on
- * `is_closed`, `payment_status = 'paid'`, `status = 'completed'` and `status = 'cancelled'` —
- * the shareable-receipt-link pattern, and a deliberate decision. It is defensible for a READ,
- * where the caller already possesses the order UUID and learns nothing they could not learn by
- * opening the link they were given.
- *
- * It is not defensible for `POST /api/guest/orders/[orderId]/receipt/email`, which is a
- * different kind of act: it takes an attacker-chosen address and has the restaurant send that
- * customer's itemised receipt to it. Under the read rule the whole gate for a PAID order was
- * restaurant scope alone — and the restaurant uuid is in every menu URL. It also has a write
- * side effect: `issueReceiptForOrder` allocates a document number and inserts a
- * `receipt_documents` row for an order that had none, stamping today's numbering context onto
- * an older sale.
- *
- * So delivery requires what a READ of an OPEN order requires: the restaurant, plus either the
- * table the order sits at or a session id it was placed under. Concretely, the same predicate
- * with the terminal-state short-circuit removed.
- *
- * `guestCanAccessOrder` is deliberately left exactly as it is. Narrowing its table branch is
- * #279, it is sequenced behind a measurement, and `__tests__/owns-order-both-columns.test.ts`
- * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
- * ruling already made, so this adds a stricter sibling rather than editing it.
- */
 export function guestCanReceiveOrderDelivery(
   order: GuestOrderRow,
   params: {
@@ -138,31 +111,6 @@ export function guestCanReceiveOrderDelivery(
   return ownsOrder(order, [params.sessionId, ...(params.sessionIds ?? [])])
 }
 
-/**
- * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
- *
- * Two facts make this necessary, and both cost a bug on 2026-08-13 alone:
- *
- * 1. The app mints TWO session ids and nothing syncs them —
- *      lib/session.ts     flashtap_session_v1  localStorage  `sess_<uuid>`
- *      lib/tab-storage.ts tab_session_id       mirrored      `session_<ts>_<rand>`
- *    An order carries whichever the placing screen held, and the cart submits the TAB one. So
- *    the answer depends on EVERY id the client holds, never one. Use heldSessionIds() to build
- *    the list; do not assemble it per call site.
- *
- * 2. An order records the placer in TWO columns, `session_id` and `member_session_id`. Checking
- *    one was the third bug: guest queries had a sessionIds parameter for (1) but still compared
- *    a single column, My Orders showed an empty list, and the edit route answered 404 to the
- *    customer's own order.
- *
- * The rule is therefore: EVERY id, against BOTH columns. Any caller that restates it instead of
- * importing it is the fourth bug waiting to happen.
- *
- * NOT a credential check. A session id is a bearer value the client supplies, so this answers
- * "does the caller know an id this row was placed under", nothing stronger. What makes that
- * acceptable is that the ids are unguessable — see the note on `session_<ts>_<rand>` in the
- * issue filed alongside this, because that one is Math.random and weaker than it looks.
- */
 /**
  * THE ownership predicate. "Is this the customer's own order?" — asked in exactly one place.
  *
@@ -222,6 +170,20 @@ export function ownsOrder(
  * module builds one at import time, which turns any hermetic suite importing it into
  * `Tests: 0 total` — a suite that fails to LOAD looks like a failing test and is not one.
  */
+export function redactGuestOrderRow(
+  row: Record<string, unknown>,
+  /**
+   * Which table the row came from, stated rather than inferred. The customer's edit panel has
+   * to pick between two status vocabularies, and every way of guessing from the row's own
+   * contents is wrong for some row — `order_number` is 0 for a request AND for an order whose
+   * number has not been allocated, and a request carries a payment_method like an order does.
+   */
+  surface: 'orders' | 'order_requests' = 'orders',
+): Record<string, unknown> {
+  const { edit_lock_token: token, ...rest } = row
+  return { ...rest, surface, edit_lock_held: Boolean(String(token ?? '').trim()) }
+}
+
 /**
  * Payment references and merchant order numbers as this system issues them.
  *
@@ -247,8 +209,8 @@ export function isWellFormedPaymentRef(ref: string): boolean {
  *
  * The comma is PostgREST's term separator, so a reference containing one adds OR terms. The
  * filter string is PARSED by PostgREST — "exact equality, never parsed" is true of SQL and false
- * here. `/api/guest/orders/by-payment-ref` has no authentication (middleware guards `/admin/*`
- * only), and on `main` its `restaurantId` is optional, so:
+ * here. `/api/guest/orders/by-payment-ref` has no authentication of its own (middleware guards
+ * `/admin/*` only), and when the incident was found the restaurant scope was optional too, so:
  *
  *     GET /api/guest/orders/by-payment-ref?ref=zzz,total.gte.0
  *
@@ -256,7 +218,14 @@ export function isWellFormedPaymentRef(ref: string): boolean {
  * restaurants, with no credential and without knowing any reference.
  *
  * Reproduced read-only on staging 2026-08-08: benign unguessable ref -> 0 rows; the injected ref
- * above -> 15 rows, which was that restaurant's entire order table.
+ * above -> 15 rows, which was that restaurant's entire order table. Re-measured on staging
+ * 2026-08-11 against this branch's code, still read-only: benign -> 0 rows,
+ * `<benign>,id.not.is.null` -> 213 rows across 2 restaurants before the fix, 0 after.
+ *
+ * On THIS branch the restaurant scope and the per-row `guestCanAccessOrder` gate are already
+ * present (wave-2's #122), so the widening is bounded by them -- but neither stops the filter
+ * being widened WITHIN a tenant, and a paid/closed row is reachable on restaurant scope alone.
+ * The three doors close different holes; see fetchGuestOrdersByPaymentRef.
  *
  * This also made the CSPRNG hardening of payment references moot for this endpoint. There is no
  * need to guess a reference you can bypass.

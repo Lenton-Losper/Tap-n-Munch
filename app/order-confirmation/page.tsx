@@ -14,7 +14,6 @@ import {
   fetchGuestOrdersBySession,
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
-import { parseOptionalInt } from '@/lib/guest-orders/validation'
 
 type OrderDoc = {
   id: string
@@ -244,23 +243,34 @@ function applyReceiptPaymentState(
   }
 }
 
+/**
+ * The binding the by-payment-ref lookup is authorized against. An OPEN order is only returned
+ * to the table or session that placed it, so both are sent: the gateway return URL carries
+ * `table` (payments/paycloud.js -> paycloudCheckoutReturnUrlWithTn), and the session id survives
+ * the redirect in localStorage even when a new tab drops sessionStorage.
+ */
+function parseReturnTableNumber(searchParams: URLSearchParams): number | null {
+  const raw = searchParams.get('table')?.trim() || searchParams.get('table_number')?.trim() || ''
+  if (!raw) return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
 async function resolveOrdersByTn(
   tn: string,
-  restaurantIdHint: string | null
+  restaurantIdHint: string | null,
+  binding: { tableNumber: number | null; sessionId: string | null }
 ): Promise<{ rows: OrderDoc[]; restaurantId: string | null }> {
   if (!tn.trim()) return { rows: [], restaurantId: restaurantIdHint }
 
-  // #122: the lookup is scoped to one restaurant now, so no hint means no query rather than a
-  // cross-tenant one. Returning empty lets the caller fall through to its session-based path.
   const rid = restaurantIdHint?.trim() || null
   if (!rid) return { rows: [], restaurantId: null }
+
   const data = await fetchGuestOrdersByPaymentRef({
     paymentRef: tn,
     restaurantId: rid,
-    tableNumber: parseOptionalInt(
-      typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('table') : null,
-    ),
-    sessionId: getSessionIdForReceiptFallback(),
+    tableNumber: binding.tableNumber,
+    sessionId: binding.sessionId,
   })
   if (data && data.length > 0) {
     const mapped = data.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
@@ -309,47 +319,27 @@ function OrderConfirmationContent() {
         if (orderRef) {
           const urlCancel = inferCancelledFromSearchParams(searchParams)
 
-          // #122: restaurant scope is required. table/session are passed so an order that is
-          // still OPEN (the pending-payment case this screen exists for) survives the per-row
-          // guestCanAccessOrder gate, which only lets a paid or closed order through on
-          // restaurant scope alone.
-          const sbRows = hint
-            ? await fetchGuestOrdersByPaymentRef({
-                paymentRef: orderRef,
-                restaurantId: hint,
-                tableNumber: parseOptionalInt(searchParams.get('table')),
-                sessionId: getSessionIdForReceiptFallback(),
-              })
-            : []
-          if (cancelled) return
-
-          if (sbRows && sbRows.length > 0) {
-            setDataSource('guest-api')
-            const docs = sbRows.map((r) => mapSupabaseRowToOrderDoc(r as Record<string, unknown>))
-            const combined = combinePaymentStatusFromRows(sbRows)
-            const merged = applyReceiptPaymentState(docs, combined, urlCancel)
-            const firstRow = sbRows[0] as { restaurant_id?: string | null }
-            setResolvedRestaurantId(String(firstRow.restaurant_id || hint || ''))
-            setReceipt(merged)
-            setNotFound(false)
-            setNotFoundReason(null)
-            if (merged.payment_status === 'paid') setPaymentConfirmed(true)
-            if (!cancelled) setLoading(false)
-            return
-          }
-
-          const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(orderRef, hint)
+          // One lookup, not two. This used to call by-payment-ref twice -- once with no
+          // restaurant at all, then again via resolveOrdersByTn with the hint -- and only the
+          // first path set dataSource, which is what arms the payment-confirmation poll below.
+          // Now that the reference alone is not an access credential, the unscoped call could
+          // only ever return nothing, so it is gone and the surviving path arms the poll.
+          const { rows, restaurantId: ridFromFetch } = await resolveOrdersByTn(orderRef, hint, {
+            tableNumber: parseReturnTableNumber(searchParams),
+            sessionId: getSessionIdForReceiptFallback(),
+          })
           if (cancelled) return
 
           if (rows.length === 0) {
             setNotFound(true)
-            setNotFoundReason('tn-miss')
+            setNotFoundReason(hint?.trim() ? 'tn-miss' : 'no-context')
             setReceipt(null)
             setResolvedRestaurantId(hint)
             if (!cancelled) setLoading(false)
             return
           }
 
+          setDataSource('guest-api')
           const combinedFs = combinePaymentStatusFromRows(rows)
           const mergedFs = applyReceiptPaymentState(rows, combinedFs, urlCancel)
           setResolvedRestaurantId(ridFromFetch || hint)
@@ -424,15 +414,19 @@ function OrderConfirmationContent() {
     const ps = String(receipt?.payment_status || '').toLowerCase()
     if (ps === 'paid' || ps === 'cancelled' || ps === 'failed') return
 
+    // The poll re-reads the same authorized lookup as the initial load, so it needs the same
+    // restaurant + table/session binding. dataSource === 'guest-api' already implies the load
+    // resolved a restaurant, so this is never empty in practice.
+    const pollRestaurantId = (resolvedRestaurantId || restaurantIdParam || '').trim()
+    if (!pollRestaurantId) return
+
     let cancelled = false
     const tick = async () => {
       if (cancelled) return
-      const pollRid = resolvedRestaurantId || restaurantIdParam
-      if (!pollRid) return
       const data = await fetchGuestOrdersByPaymentRef({
         paymentRef: orderRef,
-        restaurantId: pollRid,
-        tableNumber: parseOptionalInt(searchParams.get('table')),
+        restaurantId: pollRestaurantId,
+        tableNumber: parseReturnTableNumber(searchParams),
         sessionId: getSessionIdForReceiptFallback(),
       })
       if (!data?.length) return
@@ -449,7 +443,15 @@ function OrderConfirmationContent() {
       cancelled = true
       clearInterval(id)
     }
-  }, [orderRef, dataSource, receipt?.payment_status, isPaymentConfirmed, searchParams, resolvedRestaurantId, restaurantIdParam])
+  }, [
+    orderRef,
+    dataSource,
+    receipt?.payment_status,
+    isPaymentConfirmed,
+    searchParams,
+    resolvedRestaurantId,
+    restaurantIdParam,
+  ])
 
   const currency = restaurant?.currency || 'N$'
 

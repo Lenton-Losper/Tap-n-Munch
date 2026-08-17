@@ -642,7 +642,14 @@ export async function POST(req: Request) {
     return NextResponse.json(successPayload)
   } catch (error) {
     if (error instanceof UnmatchedMenuItemError) {
-      return NextResponse.json({ error: error.message }, { status: 400 })
+      // Same shape the out-of-stock refusal already returns (`outOfStock: [...]`, :194): a
+      // sentence for the customer plus the offending lines, so a client can highlight all of
+      // them at once instead of making the customer discover a bad cart one refusal at a time.
+      // `code` is what probes and clients should branch on — the sentence is placeholder copy.
+      return NextResponse.json(
+        { error: error.message, code: error.code, unavailableItems: error.items },
+        { status: 400 },
+      )
     }
     console.error('[ORDERS] Unexpected error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -5,6 +5,13 @@ import { QrCode } from 'lucide-react'
 
 export default function SessionEndedPage() {
   useEffect(() => {
+    // NO CREDENTIAL LOGGING. `flashtap_session_token` is the bearer credential guarding the
+    // tab reads, the member rename and ready-to-pay; printing it to the console put it in a
+    // second place on the device, in plain text, for anything that reads console output.
+    // See __tests__/customer-screens-do-not-log-credentials.test.ts.
+  }, [])
+
+  useEffect(() => {
     // Clear everything when this page loads
     sessionStorage.removeItem('flashtap_session_token')
     localStorage.removeItem('flashtap_session_token')

@@ -3,16 +3,17 @@
 
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import {
   clearTabSession,
   persistTabSession,
   readStoredTabId,
   readStoredTableNumber,
   SESSION_TOKEN_STORAGE_KEY,
+  ensureTabSessionId,
 } from '@/lib/tab-storage'
 import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
+import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { TabActionRefused } from '@/lib/tabs/tab-action-refused'
 // The OTHER session id. lib/session.ts owns `flashtap_session_v1` in localStorage; this context
@@ -20,8 +21,9 @@ import { TabActionRefused } from '@/lib/tabs/tab-action-refused'
 // placing screen held, so both have to be offered when asking which member row is the caller's.
 import { getCurrentSession } from '@/lib/session'
 
-const TAB_SESSION_KEY = 'tab_session_id'
-const LEGACY_TAB_SESSION_KEY = 'flashtap_tab_session_id'
+// The keys and the mint now live in lib/tab-storage.ts, which is also where non-context callers
+// read them from. Two copies of "which id is this customer" is how the two halves come to disagree
+// about who placed an order — see TAB_SESSION_ID_MIRROR_KEY there for the bug that was.
 
 /**
  * #262: `session_id` is GONE and must not come back.
@@ -45,7 +47,12 @@ type TabContextType = {
   sessionId: string
   isInTab: boolean
   canAddToTab: boolean
+  /** payable + pending. Display sites render this and must also name `tabPending` when non-zero. */
   tabTotal: number
+  /** Accepted and unpaid. The ONLY figure a decision (pay, settle, gate) may use. */
+  tabPayable: number
+  /** Submitted, not yet answered by the restaurant. Display only. */
+  tabPending: number
   tabMembers: TabMember[]
   /** The caller's own member_key(s); the client cannot derive them. See TabMember. */
   selfMemberKeys: string[]
@@ -65,7 +72,13 @@ type TabContextType = {
     tabId: string
     tableNumber?: string | number
     displayName?: string
-  }) => Promise<void>
+    /** The tab PIN. Required since #262 made the gate unconditional; rejoining by tab id had
+     * no way to supply one, which is what dead-ended the landing. */
+    pin?: string
+    /** #265. A staff-issued PIN-recovery token. When present and valid, the server mints a
+     * NEW tab_pin and returns it — the return value's `tabPin` field. */
+    resetToken?: string
+  }) => Promise<{ tabPin?: string }>
   joinTabWithPin: (params: {
     restaurantId: string
     tableNumber: string | number
@@ -77,21 +90,6 @@ type TabContextType = {
 }
 
 const TabContext = createContext<TabContextType | undefined>(undefined)
-
-function ensureTabSessionId() {
-  if (typeof window === 'undefined') return ''
-  const existing = sessionStorage.getItem(TAB_SESSION_KEY)?.trim()
-  if (existing) return existing
-  const legacy = sessionStorage.getItem(LEGACY_TAB_SESSION_KEY)?.trim()
-  if (legacy) {
-    sessionStorage.setItem(TAB_SESSION_KEY, legacy)
-    sessionStorage.removeItem(LEGACY_TAB_SESSION_KEY)
-    return legacy
-  }
-  const generated = `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
-  sessionStorage.setItem(TAB_SESSION_KEY, generated)
-  return generated
-}
 
 function getRestaurantIdFromPath(pathname: string) {
   const match = pathname.match(/^\/menu\/([^/]+)/)
@@ -115,7 +113,14 @@ export function TabProvider({
     return readStoredTabId()
   })
   const [sessionId, setSessionId] = useState(() => ensureTabSessionId())
-  const [tabTotal, setTabTotal] = useState(0)
+  /**
+   * TWO FIGURES, never one (RULED 2026-08-15). `tabPayable` is accepted-and-unpaid — what
+   * settlement charges, and the only one a decision may use. `tabPending` is submitted and
+   * unanswered; display only. `tabTotal` is their sum and exists so a display site cannot show
+   * one and silently omit the other.
+   */
+  const [tabPayable, setTabPayable] = useState(0)
+  const [tabPending, setTabPending] = useState(0)
   const [tabMembers, setTabMembers] = useState<TabMember[]>([])
   /**
    * The caller's own `member_key`s, as derived by the server for each session id this context
@@ -186,7 +191,8 @@ export function TabProvider({
 
     if (!data) {
       setTabId(null)
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setSelfMemberKeys([])
       setTabStatus(null)
@@ -207,7 +213,8 @@ export function TabProvider({
           settled_type: data.settled_type,
         })
         setTabId(null)
-        setTabTotal(0)
+        setTabPayable(0)
+      setTabPending(0)
         setTabMembers([])
         setSelfMemberKeys([])
         setTabStatus(null)
@@ -217,12 +224,28 @@ export function TabProvider({
       }
 
       if (status === 'closed') {
-        setTabTotal(0)
+        setTabPayable(0)
+      setTabPending(0)
         setTabMembers([])
         setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
         return
       }
-    setTabTotal(Number(data.total) || 0)
+    /**
+     * THE AUTHORITATIVE FIGURE, not `data.total`.
+     *
+     * `tabs.total` is a display-only cache with two live definitions (see
+     * lib/tabs/tab-outstanding.ts); `outstanding_total` is computed server-side on this same
+     * read and is what the customer owes now. A non-finite value means the server could not sum
+     * it -- leave the previous figure standing rather than render a zero, because a zero is a
+     * number a customer would act on.
+     */
+    const row = data as { payable_total?: unknown; pending_total?: unknown }
+    const payable = Number(row.payable_total)
+    const pending = Number(row.pending_total)
+    if (Number.isFinite(payable)) setTabPayable(payable)
+    else console.error('[TAB CONTEXT] no payable figure in the view response', { tabId })
+    if (Number.isFinite(pending)) setTabPending(pending)
+    else console.error('[TAB CONTEXT] no pending figure in the view response', { tabId })
     setSettlementType(data.settlement_type ? String(data.settlement_type) : null)
     setTabMembers(Array.isArray(data.members) ? (data.members as TabMember[]) : [])
   }
@@ -232,14 +255,17 @@ export function TabProvider({
   if ((pathname || '') !== pathnameKey) {
     setPathnameKey(pathname || '')
     if (!isMenuRoute) {
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setTabStatus(null)
       setSettlementType(null)
     }
   }
 
-  const contextTabTotal = isMenuRoute ? tabTotal : 0
+  const contextTabPayable = isMenuRoute ? tabPayable : 0
+  const contextTabPending = isMenuRoute ? tabPending : 0
+  const contextTabTotal = contextTabPayable + contextTabPending
   const contextTabMembers = isMenuRoute ? tabMembers : []
   const contextSelfMemberKeys = isMenuRoute ? selfMemberKeys : []
   const contextTabStatus = isMenuRoute ? tabStatus : null
@@ -248,40 +274,50 @@ export function TabProvider({
   const canAddToTab =
     Boolean(tabId) && isActiveTabStatus(contextTabStatus) && contextTabStatus === 'open'
 
+  /**
+   * POLLED, NOT SUBSCRIBED. RULED 2026-08-15.
+   *
+   * This used to hold a `postgres_changes` subscription on `tabs`. It never fired: `public.tabs`
+   * has never been in the `supabase_realtime` publication -- confirmed on staging from
+   * pg_publication_tables, which contains `orders` and `order_requests` and nothing else, and no
+   * migration or script in this repository has ever added it. A subscription to an unpublished
+   * table still reaches SUBSCRIBED and silently delivers nothing, which is why seven of these
+   * survived across the customer app (QRA-17).
+   *
+   * Publishing `tabs` was considered and RULED AGAINST: the anon SELECT policy on that table is
+   * `status = ANY('open','ready_to_pay','settled')` with NO restaurant scope and NO table scope,
+   * so the only thing preventing a platform-wide read is a column GRANT -- and whether Realtime
+   * honours column privileges on a change payload is unverified. That is an unaudited read path
+   * on the table that was leaking session ids three days ago.
+   *
+   * So the tab total, status and members refresh on a timer, at the same cadence the four other
+   * customer screens already poll at. The point is that the code now claims exactly what it
+   * delivers.
+   */
   useEffect(() => {
     if (!restaurantId || !tabId) return
-    if (tabId && tabStatus) return // already initialised, skip
 
     let active = true
-    const run = async () => {
-      await loadTab()
+    const run = () => {
       if (!active) return
+      void loadTab()
     }
-    void run()
-
-    const channel = supabase
-      .channel(`tab-${restaurantId}-${tabId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${tabId}` },
-        () => {
-          void loadTab()
-        }
-      )
-      .subscribe()
+    run()
+    const interval = window.setInterval(run, GUEST_ORDER_POLL_MS)
 
     return () => {
       active = false
-      supabase.removeChannel(channel)
+      window.clearInterval(interval)
     }
-    // tabStatus guard prevents double-init; loadTab is recreated each render and would churn subscriptions.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once per restaurantId/tabId pair
+    // loadTab is recreated every render; depending on it would restart the interval each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one poll per restaurantId/tabId pair
   }, [restaurantId, tabId])
 
   const persistTabId = (nextTabId: string | null, tableNum?: string | number | null) => {
     setTabId(nextTabId)
     if (!nextTabId) {
-      setTabTotal(0)
+      setTabPayable(0)
+      setTabPending(0)
       setTabMembers([])
       setSelfMemberKeys([])
       setTabStatus(null)
@@ -365,13 +401,17 @@ export function TabProvider({
     tabId: targetTabId,
     tableNumber: tableNum,
     displayName,
+    pin,
+    resetToken,
   }: {
     restaurantId: string
     tabId: string
     tableNumber?: string | number
     displayName?: string
+    pin?: string
+    resetToken?: string
   }) => {
-    console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum })
+    console.log('[TAB CONTEXT] joinExistingTab', { rid, targetTabId, tableNum, hasResetToken: Boolean(resetToken) })
     const sid = sessionId || ensureTabSessionId()
     const storedDisplayName =
       typeof window !== 'undefined' ? sessionStorage.getItem('flashtap_display_name') || '' : ''
@@ -385,6 +425,9 @@ export function TabProvider({
         sessionId: sid,
         tableNumber: tableNum,
         displayName: resolvedDisplayName,
+        // #262 made the PIN gate unconditional, so rejoining a PIN-gated tab BY ID needs one.
+        ...(pin ? { pin } : {}),
+        ...(resetToken ? { resetToken } : {}),
       }),
     })
 
@@ -404,7 +447,15 @@ export function TabProvider({
       localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, data.sessionToken)
     }
 
+    // #265. Present only when this request redeemed a PIN-reset token. Stored under the same
+    // key tab creation uses, so every downstream reader (browse:195, tab:74) needs no changes.
+    if (data?.tabPin && typeof window !== 'undefined') {
+      sessionStorage.setItem('flashtap_creator_tab_pin', String(data.tabPin))
+    }
+
     persistTabId(targetTabId, tableNum ?? data?.tableNumber)
+
+    return { tabPin: data?.tabPin ? String(data.tabPin) : undefined }
   }
 
   const createNewTab = async ({
@@ -434,6 +485,18 @@ export function TabProvider({
         sessionId: sid,
         displayName,
         customer_name: customerName || null,
+        /**
+         * #211 follow-up: the tab this browser already held when it started a NEW one, which
+         * after #211's landing fix is a legitimate thing to do — scan another table and start
+         * fresh while an unpaid tab is still open elsewhere.
+         *
+         * Recorded AT CREATION because this is the only moment both ids are known in one place.
+         * The server validates it (same restaurant, still unpaid, different table) and stores
+         * null otherwise, so this is a hint, not an assertion. If the browser has no stored tab
+         * — cleared storage, a fresh device — there is nothing to send and no link is made. That
+         * is the accepted limit of the feature, not a bug in it.
+         */
+        linkedUnpaidTabId: readStoredTabId() || null,
       }),
     })
 
@@ -507,6 +570,8 @@ export function TabProvider({
     isInTab: Boolean(tabId),
     canAddToTab,
     tabTotal: contextTabTotal,
+    tabPayable: contextTabPayable,
+    tabPending: contextTabPending,
     tabMembers: contextTabMembers,
     selfMemberKeys: contextSelfMemberKeys,
     settlementType: contextSettlementType,

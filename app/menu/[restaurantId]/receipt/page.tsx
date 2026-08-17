@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { Button } from '@/components/ui/button'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
+import { chargedLineAmount } from '@/components/receipt/receipt-types'
 import { ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { getSessionInfo, getCurrentSession } from '@/lib/session'
@@ -18,6 +20,7 @@ import { useTab } from '@/contexts/tab-context'
 import { persistTabSession, readStoredTableNumber } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { getReceiptStatusBadge } from '@/lib/orders/receipt-status'
+import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import {
   fetchOrdersForTab,
   fetchTabById,
@@ -201,6 +204,8 @@ export default function ReceiptPage() {
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<OrderRecord[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [redirecting, setRedirecting] = useState(false)
 
   const tableNum = Number(tableNumber) || 0
@@ -219,9 +224,16 @@ export default function ReceiptPage() {
 
     let cancelled = false
 
-    const validateAndLoad = async () => {
+    /**
+     * #294 / same class as #292: a poll REFRESHES, it does not reload the screen.
+     *
+     * This screen polls every GUEST_ORDER_POLL_MS, and `setLoading(true)` on every tick drove
+     * `showReceiptLoading`, which returns a full-screen spinner -- so the receipt blanked every
+     * 5 seconds exactly as the Tab screen did. Found by the #294 sweep, not by a click test.
+     */
+    const validateAndLoad = async (isRefresh = false) => {
       try {
-        setLoading(true)
+        if (!isRefresh) setLoading(true)
         const tab = await fetchTabById(storedTabId, restaurantId)
         if (cancelled) return
 
@@ -255,49 +267,61 @@ export default function ReceiptPage() {
         setLoading(false)
       } catch (error) {
         if (cancelled) return
+        /**
+         * A FAILED REQUEST IS NOT AN ENDED SESSION (#294, same class as #292).
+         *
+         * `fetchTabById` THROWS on any non-ok response and returns null only on a clean 200 with
+         * no tab -- so a genuinely gone tab is already handled above by `!tab || settled`. What
+         * reaches here is a 500, a network drop or a parse failure, and treating those as "your
+         * dining session has ended" wipes the token, the tab id, the table and the cart for a
+         * customer whose session is perfectly fine.
+         */
         console.error('[RECEIPT] validate/load error', error)
-        setRedirecting(true)
-        handleSessionExpired(restaurantId)
+        setLoadError(true)
+        setLoading(false)
       }
     }
 
     void validateAndLoad()
 
     const ordersPoll = window.setInterval(() => {
-      void validateAndLoad()
+      void validateAndLoad(true)
     }, GUEST_ORDER_POLL_MS)
 
-    const channel = supabase
-      .channel(`receipt-tab-${storedTabId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabs', filter: `id=eq.${storedTabId}` },
-        () => {
-          void fetchTabById(storedTabId, restaurantId).then((tab) => {
-            if (!tab || String(tab.status || '').toLowerCase() === 'settled' || !isActiveTabStatus(tab.status)) {
-              handleSessionExpired(restaurantId)
-              return
-            }
-            setTabRecord(tab)
-          })
-          void validateAndLoad()
-          void refreshTab()
-        }
-      )
-      .subscribe()
+    /**
+     * The `tabs` subscription that used to sit here never fired -- `public.tabs` has never been
+     * in the supabase_realtime publication (QRA-17). The 5s `ordersPoll` above already re-runs
+     * validateAndLoad, which re-fetches the tab and redirects on settlement, so removing it
+     * costs nothing and stops the code claiming liveness it never had.
+     */
 
     return () => {
       cancelled = true
       window.clearInterval(ordersPoll)
-      supabase.removeChannel(channel)
     }
-  }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum])
+  }, [restaurantId, tableNumber, storedTabId, router, refreshTab, canLoadReceipt, tableNum, reloadKey])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const tabGrandTotal = useMemo(
-    () => orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0),
-    [orders]
-  )
+  /**
+   * THE TABLE'S OUTSTANDING TOTAL, from the server. Never a client sum.
+   *
+   * This was `orders.reduce(...)` over `fetchOrdersForTab`, which is session-scoped by
+   * construction -- so a screen labelled "Tab Total" was showing one device's share (#119 /
+   * QRA-12). `null` renders an em dash rather than a number nobody can vouch for.
+   */
+  /** DISPLAY surface: shows both figures, never one. */
+  const tabPayableTotal = useMemo(() => {
+    const n = Number(tabRecord?.payable_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.payable_total])
+  const tabPendingTotal = useMemo(() => {
+    const n = Number(tabRecord?.pending_total)
+    return Number.isFinite(n) ? n : null
+  }, [tabRecord?.pending_total])
+  const tabOutstandingTotal =
+    tabPayableTotal == null && tabPendingTotal == null
+      ? null
+      : (tabPayableTotal ?? 0) + (tabPendingTotal ?? 0)
 
   const memberNameMap = useMemo(() => buildMemberNameMap(tabRecord), [tabRecord])
 
@@ -330,6 +354,34 @@ export default function ReceiptPage() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
+      </div>
+    )
+  }
+
+  /**
+   * #294: a failed load is shown AS a failed load. The customer keeps their token, their tab and
+   * their cart, and can simply try again.
+   */
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-4">
+        <div className="mx-auto max-w-md text-center">
+          <h1 className="font-serif text-xl font-bold text-foreground">
+            {QR_REDESIGN_PENDING_COPY.loadFailedTitle}
+          </h1>
+          <p className="mt-2 font-sans text-sm text-muted-foreground">
+            {QR_REDESIGN_PENDING_COPY.loadFailedBody}
+          </p>
+          <Button
+            className="mt-6"
+            onClick={() => {
+              setLoadError(false)
+              setReloadKey((key) => key + 1)
+            }}
+          >
+            {QR_REDESIGN_PENDING_COPY.loadFailedRetry}
+          </Button>
+        </div>
       </div>
     )
   }
@@ -424,7 +476,15 @@ export default function ReceiptPage() {
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
               <span className="text-lg font-semibold text-foreground">Tab Total</span>
               <span className="text-2xl font-bold text-foreground">
-                {currency}{tabGrandTotal.toFixed(2)}
+                {tabOutstandingTotal == null ? '—' : `${currency}${tabOutstandingTotal.toFixed(2)}`}
+                {(tabPendingTotal ?? 0) > 0 && (
+                  <span className="block text-xs font-normal text-amber-600">
+                    {TAB_FIGURES_COPY.tabPendingSuffix.replace(
+                      '{pending}',
+                      `${currency}${(tabPendingTotal ?? 0).toFixed(2)}`,
+                    )}
+                  </span>
+                )}
               </span>
             </div>
           </div>
@@ -475,9 +535,18 @@ export default function ReceiptPage() {
                       <div key={idx} className="flex justify-between text-sm font-sans">
                         <span className="text-muted-foreground">
                           {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
+                          {lineConfigurationSummary(item) ? (
+                            <span className="block text-xs">
+                              {lineConfigurationSummary(item)}
+                            </span>
+                          ) : null}
                         </span>
                         <span className="font-semibold text-foreground">
-                          {currency}{((item?.subtotal || 0)).toFixed(2)}
+                          {/*
+                            #295: the CHARGED figure, not the ex-VAT base. This showed
+                            "1x Chicken burger N$21.74" for an item the menu prices at N$25.
+                          */}
+                          {currency}{chargedLineAmount(item).toFixed(2)}
                         </span>
                       </div>
                     ))}
