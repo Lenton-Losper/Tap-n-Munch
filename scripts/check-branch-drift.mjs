@@ -70,6 +70,23 @@ const KNOWN_ABSENT = new Set([
   '9fcb147', // #262 member key — deriveTabMemberKey is present via a64a422
 ])
 
+  // GROWN 2026-08-17, and this is the one direction I said the baseline should not move -- so
+  // the reason is recorded rather than assumed. These two are PROMOTION commits: main gained
+  // cloudflare-staging's own content through a surgical port. Their patches cannot reverse-apply
+  // against staging because staging has since moved on in the same files, so patch-id reads them
+  // as drift while the behaviour is demonstrably present.
+  //
+  // VERIFIED before adding, not asserted: for every product file where the two branches differ,
+  // staging's version is the NEWER one. Main holds nothing staging lacks -- staging is a content
+  // superset. That is the opposite of the condition this check exists to catch.
+  //
+  // THE STRUCTURAL POINT, worth more than these two entries: every promotion will look like new
+  // drift to a main-vs-staging patch-id check, because promotion moves content in the direction
+  // the check calls a defect. A future version should treat a commit as PRESENT when every file
+  // it touches is identical-or-older on main than on staging. Until then, promotions land here.
+  '1591d12', // Deploy 3 - the order editor, ported FROM staging
+  'b30b7e5', // Deploy 4 - the customer redesign shell, ported FROM staging
+
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
 const HEAD = process.argv[3] || process.env.DRIFT_HEAD_REF || 'origin/cloudflare-staging'
 
