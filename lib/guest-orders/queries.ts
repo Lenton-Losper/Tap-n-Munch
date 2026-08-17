@@ -90,12 +90,7 @@ export async function fetchGuestOrderById(
       return { order: null, denied: true }
     }
     // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
-    // #302/#305: the caller's own ids, so their OWN row keeps its raw values while every other
-    // row is stripped. Only `sessionId` exists on this signature.
-    const [redacted] = await redactGuestOrderMemberIds(
-      [order],
-      [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
-    )
+    const [redacted] = await redactGuestOrderMemberIds([order])
     return { order: redacted, denied: false }
   }
 
@@ -234,8 +229,6 @@ export async function fetchGuestOrdersBySession(params: {
   // that has never included member_session_id.
   const orders = await redactGuestOrderMemberIds(
     (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
-    // #302/#305. Every id the client holds — this signature carries both.
-    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean),
   )
   const pendingRows = (pending ?? []).map((row) =>
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
@@ -307,9 +300,6 @@ export async function fetchGuestActiveTableOrders(params: {
   // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
   const orders = await redactGuestOrderMemberIds(
     (data ?? []).map((row) => ({ id: String(row.id), ...row })) as GuestOrderRow[],
-    // #302/#305. A table read returns EVERY diner's order, so this is where the ownership
-    // scoping does the most work.
-    [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
   )
 
   // Also surface still-live order_requests for this session (Order Request model). `accepting`
@@ -413,7 +403,5 @@ export async function fetchGuestOrdersByPaymentRef(params: {
     (data ?? [])
       .map((row) => ({ id: String(row.id), ...row }) as GuestOrderRow)
       .filter((order) => guestCanAccessOrder(order, accessParams)),
-    // #302/#305, and DOOR 3 above is why: a PAID order is reachable on restaurant scope alone.
-    [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
   )
 }

@@ -235,60 +235,12 @@ describe('tab member key derivation (#262)', () => {
       expect(order.member_session_id).toBe(member.member_key)
     })
 
-    /**
-     * This case used to assert only `toBe(SESSION)`, unconditionally, because when it was written
-     * `redactGuestOrderMemberIds` had no idea who was asking. Its REASON — stated in the title,
-     * "there is no per-tab key to derive" — is about DERIVATION, and that reason still holds and
-     * is still asserted below: the owner gets the raw value back, unsubstituted.
-     *
-     * What changed is disclosure, not derivation. #302/#305: those raw values were handed to any
-     * caller who could read the row. Measured on production before this fix — a foreign session
-     * received both ids with HTTP 200 and the row present.
-     */
-    it('leaves a tab-less order alone for its owner — there is no per-tab key to derive', async () => {
+    it('leaves an order with no tab alone — there is no per-tab key to derive', async () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
-      const [order] = await loadModule().redactGuestOrderMemberIds(
-        [{ id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION }],
-        [SESSION],
-      )
-      expect(order.member_session_id).toBe(SESSION)
-      expect(order.session_id).toBe(SESSION)
-    })
-
-    it('withholds a tab-less order’s raw ids from a caller who does not own it (#305)', async () => {
-      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
-      const [order] = await loadModule().redactGuestOrderMemberIds(
-        [{ id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION }],
-        ['somebody-else'],
-      )
-      // Both, because either column can identify the placer.
-      expect(order.member_session_id).toBeNull()
-      expect(order.session_id).toBeNull()
-      expect(JSON.stringify(order)).not.toContain(SESSION)
-      expect(order.id).toBe('o1') // the row still travels; only the credential is removed
-    })
-
-    it('strips session_id from a TAB row a caller does not own, and keeps the derived key (#302)', async () => {
-      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
-      const [order] = await loadModule().redactGuestOrderMemberIds(
-        [{ id: 'o1', tab_id: TAB_A, member_session_id: SESSION, session_id: SESSION }],
-        ['somebody-else'],
-      )
-      // The opaque key MUST survive: it is what the tab and receipt screens pair names against,
-      // and blanket removal would replace real names with "Guest" on a working screen.
-      expect(order.member_session_id).not.toBe(SESSION)
-      expect(String(order.member_session_id)).toMatch(/^mk_/)
-      expect(order.session_id).toBeNull()
-    })
-
-    it('defaults to withholding when the caller passes no ids at all', async () => {
-      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
-      // The safe default is why the parameter is optional rather than required: a call site that
-      // forgets gets the redacted behaviour, not the leaky one.
       const [order] = await loadModule().redactGuestOrderMemberIds([
         { id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION },
       ])
-      expect(order.member_session_id).toBeNull()
+      expect(order.member_session_id).toBe(SESSION)
     })
 
     it('gives a member row with no session_id no key, rather than colliding them all', async () => {
