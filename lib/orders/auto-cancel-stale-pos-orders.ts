@@ -279,7 +279,24 @@ export async function autoCancelStalePosOrders(
           restaurantId: orderRestaurantId,
           reference: merchantOrderNo,
           voucherNo: finaticResult.transactionId || merchantOrderNo,
+          /**
+           * BOTH RULINGS, and they compose. Ruled 2026-08-17 after measuring.
+           *
+           * #223 — `amount: gatewayAmount`, never `?? Number(order.total)`. This line is only
+           * reached when `amountAgrees`, so the gateway figure already equals the order total
+           * within GATEWAY_AMOUNT_TOLERANCE_CENTS (zero); the fallback was only ever reachable in
+           * the case that now quarantines. So #223 costs #268 nothing here.
+           *
+           * #268 — keep `gatewayAmount` as a FIRST-CLASS argument, not just audit metadata.
+           * `markOrderPaidConfirmed` derives `amountMeaning: gatewayAmount != null ?
+           * 'gateway_reported' : 'order_total'` from it. Dropping the argument COMPILES, because
+           * the parameter is optional, and silently writes `amountMeaning: 'order_total'` for a
+           * figure that came from the gateway — a false statement about provenance in the payment
+           * audit trail, invisible to tsc and to every existing test. The #306 class, in the
+           * ledger.
+           */
           amount: gatewayAmount,
+          gatewayAmount,
           source: 'auto_cancel_cron_finatic_verified',
           extraAuditMetadata: {
             correctionReason:

@@ -255,6 +255,9 @@ export async function handleTerminalPaymentFailed(
           // Non-null and exactly equal to orderTotal by the guard above — the previous
           // `?? params.orderTotal` fallback was the null-skips-verification path (#190).
           amount: gatewayAmount,
+          // #268: this caller's `amount` IS the gateway's figure; saying so explicitly stops the
+          // audit entry claiming it is the order total.
+          gatewayAmount,
           paymentMethod,
           terminalId,
           source: correctionSource,
