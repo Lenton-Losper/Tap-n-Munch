@@ -46,6 +46,7 @@ import {
   type EditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { decideReacceptance } from '@/lib/orders/reacceptance'
+import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
 import { InvalidEditError, repriceKeptLines, type LineKeepInstruction } from '@/lib/orders/reprice-priced-lines'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
 import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
@@ -732,6 +733,38 @@ export async function PATCH(req: Request, { params }: RouteParams) {
           console.error('[guest/orders/:id/edit] tab total update failed:', tabUpdateError)
         }
       }
+
+      /**
+       * READY TO PAY IS NOW STALE. Clear it.
+       *
+       * MEASURED 2026-08-18: `tabs.status = 'ready_to_pay'` is written by
+       * POST /api/tabs/[tabId]/ready-to-pay and read by 24 files, the terminal's table list and
+       * the orders dashboard among them. Nothing cleared it on an edit, and the order editor
+       * gates on the ORDER's status and payment_status, never on the tab's -- so a customer could
+       * press Ready to Pay, edit an order, and leave staff looking at a tab still queued for
+       * settlement AT THE OLD FIGURE. Section 15's gap, confirmed by measurement.
+       *
+       * Ready to Pay is a notification flag, not a payment lock -- there is no in-flight marker on
+       * `tabs` at all -- so the ruling's "merely a flag, clear it" branch applies. The customer
+       * presses it again once they have finished; the tab strip surfaces the button as soon as the
+       * status is back to `open`, so this needs no new copy.
+       *
+       * ON `totalMoved`, NOT on any edit. The flag is a statement about an AMOUNT. A note-only
+       * change, or a substitution that lands on the same figure, leaves the sum staff are about to
+       * take correct, and dropping a table out of the settlement queue for those would be a worse
+       * outcome than leaving it. Content that changed without moving the total is what
+       * re-acceptance is for, and that fires independently.
+       *
+       * `clearReadyToPayAndReopenTab` rather than one UPDATE, and the reason is its own docblock:
+       * flipping a tab to `open` can hit idx_tabs_one_open_per_table when another tab is already
+       * open at that table, and a fused statement would then fail WITHOUT clearing the flags --
+       * parking a stale ready-to-pay on the queue permanently. Its settled_at guard also stops
+       * this resurrecting a closed tab. Best effort, like the re-sum above: the edit has landed.
+       */
+      await clearReadyToPayAndReopenTab(supabase, {
+        tabId,
+        logPrefix: '[guest/orders/:id/edit]',
+      })
     }
 
     return NextResponse.json({

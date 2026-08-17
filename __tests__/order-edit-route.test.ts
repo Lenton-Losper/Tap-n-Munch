@@ -16,6 +16,23 @@ jest.mock('@/lib/supabase/restaurants', () => ({
 }))
 
 /**
+ * An order ON A TAB carries a second gate: `requireSessionToken`, which reads an `x-session-token`
+ * header and validates it against the tab. That is #262's territory, pinned elsewhere, and a test
+ * about what an edit WRITES should not have to forge a real token to reach the write. Only the
+ * token's validation is mocked -- `assertSessionMatchesResource`, which binds the token to this
+ * restaurant and tab, still runs for real against the value below.
+ */
+const TAB_ID = 'tab-1'
+jest.mock('@/lib/session-token', () => ({
+  validateSessionToken: async () => ({
+    valid: true,
+    tabId: 'tab-1',
+    tableId: 'table-1',
+    restaurantId: 'uuid-rest-1',
+  }),
+}))
+
+/**
  * The addition path's two external calls, mocked so this file stays about the ROUTE's decision.
  * What the additions themselves must satisfy — the quantity cap, the stock refusal shape, the
  * live-menu pricing — is pinned against the real modules in
@@ -176,7 +193,9 @@ async function call(
 ) {
   const req = new Request('http://localhost/api/guest/orders/order-1/edit', {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    // The tab gate only fires for an order with a tab_id, so sending this always is harmless for
+    // the table-order tests and is what lets the tab ones reach the write.
+    headers: { 'Content-Type': 'application/json', 'x-session-token': 'tab-session-token' },
     body: JSON.stringify({ restaurantId: 'rest-1', sessionIds: [SESSION], ...body }),
   })
   const res = await handler(req, { params: Promise.resolve({ orderId: 'order-1' }) })
@@ -458,6 +477,42 @@ describe('what a committed edit writes', () => {
 
     const history = writes[0].patch.edit_history as Array<Record<string, unknown>>
     expect(history[history.length - 1].reacceptance_reason).toBe('total_rose')
+  })
+
+  /**
+   * SECTION 15 — READY TO PAY GOES STALE UNDER AN EDIT.
+   *
+   * `tabs.status = 'ready_to_pay'` is read by 24 files including the terminal's table list. The
+   * editor gates on the ORDER's status, never the tab's, so before 2026-08-18 a customer could
+   * press Ready to Pay, edit, and leave staff queued to settle AT THE OLD FIGURE.
+   *
+   * Asserted through the writes rather than a return value because clearing is best-effort by
+   * design — it cannot fail the customer's request, so a green response proves nothing about it.
+   */
+  it('takes the tab OFF the ready-to-pay queue when the total moves', async () => {
+    orderRow = baseOrder({ ...liveLock('my-token'), tab_id: TAB_ID })
+
+    await call(PATCH, 'PATCH', { lockToken: 'my-token', keep: [{ index: 0, quantity: 2 }] })
+    const tabWrites = writes.filter((w) => w.table === 'tabs')
+    // The flags and the status are SEPARATE statements on purpose: flipping to `open` can hit
+    // idx_tabs_one_open_per_table, and a fused write would then leave the flags set forever.
+    expect(tabWrites.some((w) => w.patch.ready_to_pay_at === null && w.patch.payment_preference === null)).toBe(true)
+
+    const reopen = tabWrites.find((w) => w.patch.status === 'open')
+    expect(reopen).toBeDefined()
+    // The resurrection guard, in the statement rather than in JS, so a concurrent close cannot
+    // slip through the window and re-arm the one-open-tab index.
+    expect(reopen!.filters).toContainEqual(['is:settled_at', null])
+  })
+
+  it('leaves the queue alone when the total did NOT move', async () => {
+    // The positive control. Without it the assertion above passes for a route that clears the
+    // flag on every edit, which would drop tables out of the settlement queue for a typo fix.
+    orderRow = baseOrder({ ...liveLock('my-token'), tab_id: TAB_ID })
+
+    await call(PATCH, 'PATCH', { lockToken: 'my-token', orderInstructions: 'extra napkins' })
+
+    expect(writes.filter((w) => w.table === 'tabs')).toHaveLength(0)
   })
 
   it('does NOT send a notes-only edit back to review', async () => {
