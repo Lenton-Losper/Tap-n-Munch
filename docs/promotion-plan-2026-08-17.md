@@ -5,6 +5,34 @@
 **Read section 0 before anything else. The band list in the brief does not survive measurement,
 and the reason matters more than the plan.**
 
+> ## CORRECTION — 2026-08-17, after the reconciliation was attempted
+>
+> **Sections 1 and 4 below overstate what staging is missing, and the error is mine.** I measured
+> the 23 main-only commits by **patch-id** and reported them as absent. Patch-id difference is not
+> absence: a fix PORTED to the other branch under a different patch-id looks identical to one that
+> was never applied.
+>
+> Re-measured by **content** — reverse-applying each patch against staging's tree, then reading the
+> decisive line:
+>
+> | claimed missing | actually |
+> | --- | --- |
+> | `56f70b8` the `?ref=` disclosure fix | **PRESENT.** `paymentRefOrFilter` / `isWellFormedPaymentRef` are **byte-identical** on both branches. Ported by `6167f5d`. |
+> | `f7ee138` #122 cross-tenant union | **PRESENT.** `by-payment-ref/route.ts` differs **only in comment text**; both require `restaurantId`. |
+> | `d57c659` #135 instruction-limits | **PRESENT.** `MAX_INSTRUCTIONS_LENGTH` is on staging. |
+> | `9fcb147` #262 member key | **PRESENT.** `deriveTabMemberKey` is on staging via `a64a422`. |
+>
+> **13 of the 23 were already there.** The genuinely absent set is small, and one of it is real:
+> **#242's webhook resolver** (`ea80e72` — staging really did still carry the vulnerable
+> PostgREST `.or()`), **#223's amount gates** (`3e98059`, `07b4737`, `c0bee8b`), and the **#266 CI
+> key pin** (`97e4fe1`).
+>
+> What section 4 gets right is the conclusion, not the premise: 206 files changed on both sides, so
+> the promotion is surgical ports and not a merge. That still holds.
+>
+> Left visible rather than edited away. `scripts/check-branch-drift.mjs` now performs this content
+> pass automatically, for exactly this reason.
+
 ---
 
 ## 0. THE HEADLINE, MEASURED
@@ -123,10 +151,14 @@ Eight. These apply **separately, before** any deploy that needs them:
 
 ### The 23 main-only commits
 
-Several are security and payments fixes that staging does **not** have: the `?ref=` order
+~~Several are security and payments fixes that staging does **not** have: the `?ref=` order
 disclosure (`56f70b8`), the cross-tenant union (`f7ee138`), the #242 webhook resolver
 (`ea80e72`), the #223 amount gates (`3e98059`, `07b4737`), the #269 deploy gate, the #266 CI key
-pin. Full list in Appendix B.
+pin.~~
+
+**WRONG — see the CORRECTION at the top.** Measured by content, 13 of the 23 are already on
+staging. Genuinely absent: **#242's webhook resolver** (`ea80e72`), **#223's amount gates**
+(`3e98059`, `07b4737`, `c0bee8b`), the **#266 CI key pin** (`97e4fe1`). Full list in Appendix B.
 
 ---
 
@@ -280,8 +312,12 @@ in `090f508`, and a header object in `ffd8d11`. No customer-visible copy changes
 **Yes — 23 commits, and 206 files were changed on both sides since the merge-base.** Measured by
 file content, not graph.
 
-Staging lacks: the `?ref=` order-disclosure fix, the cross-tenant union fix, the #242 webhook
-resolver, the #223 amount gates, the #269 production deploy gate, the #266 CI key pin.
+~~Staging lacks: the `?ref=` order-disclosure fix, the cross-tenant union fix, the #242 webhook
+resolver, the #223 amount gates, the #269 production deploy gate, the #266 CI key pin.~~
+
+**WRONG — see the CORRECTION at the top.** The `?ref=` guard is byte-identical on both branches and
+#122's route differs only in comments. Staging genuinely lacked **#242's webhook resolver** (the
+vulnerable `.or()` was still live there), **#223's amount gates**, and the **#266 CI key pin**.
 
 **This is why the plan is surgical ports, not a merge.** A merge of `cloudflare-staging` into
 `main` puts 206 files in play and every conflict is a chance to resolve in staging's favour and
