@@ -71,10 +71,10 @@ type LoadedTarget = {
  * types itself.
  */
 const ORDER_COLUMNS =
-  'id, restaurant_id, tab_id, session_id, member_session_id, status, payment_status, payment_checkout_url, items, subtotal, tax, total, order_instructions, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, edit_history, total_before_edit'
+  'id, restaurant_id, tab_id, session_id, member_session_id, status, payment_status, payment_checkout_url, items, subtotal, tax, total, order_instructions, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, customer_edited_at, edit_history, total_before_edit'
 
 const REQUEST_COLUMNS =
-  'id, restaurant_id, tab_id, session_id, member_session_id, status, order_instructions, items, subtotal, tax, total, items_customer, subtotal_customer, tax_customer, total_customer, items_reviewed, subtotal_reviewed, tax_reviewed, total_reviewed, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, edit_history, total_before_edit'
+  'id, restaurant_id, tab_id, session_id, member_session_id, status, order_instructions, items, subtotal, tax, total, items_customer, subtotal_customer, tax_customer, total_customer, items_reviewed, subtotal_reviewed, tax_reviewed, total_reviewed, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, customer_edited_at, edit_history, total_before_edit'
 
 /** HTTP status per refusal. 409 for "somebody else moved it", 403 for "not yours to edit". */
 const REFUSAL_HTTP: Record<EditRefusalReason, number> = {

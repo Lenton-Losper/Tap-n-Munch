@@ -6,7 +6,22 @@
  * a NEW false statement in the opposite direction — telling somebody their unsaved work landed.
  * Those are the ones worth pinning here, because each is a one-line mistake away.
  */
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { editAlreadyCommitted, EDIT_LOCK_TTL_MS } from '@/lib/orders/edit-lock'
+
+/**
+ * The columns the discriminator READS. Every one must be in the route's select lists, or it sees
+ * `undefined`, conservatively returns false, and the fix is inert — which is exactly what
+ * happened: `customer_edited_at` was written by the route and never selected by it, so the first
+ * deploy of #306 typechecked, passed every unit test below, and changed nothing for a customer.
+ * Only the staging probe caught it. This is the cheap guard that would have caught it sooner.
+ */
+const COLUMNS_THE_DISCRIMINATOR_READS = [
+  'edit_lock_token',
+  'customer_edit_count',
+  'customer_edited_at',
+]
 
 const NOW = Date.parse('2026-08-17T12:00:00.000Z')
 const ago = (ms: number) => new Date(NOW - ms).toISOString()
@@ -17,6 +32,27 @@ const committedRow = {
   customer_edit_count: 1,
   customer_edited_at: ago(5_000),
 }
+
+describe('the edit route selects what the discriminator reads', () => {
+  const source = readFileSync(
+    join(process.cwd(), 'app', 'api', 'guest', 'orders', '[orderId]', 'edit', 'route.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n')
+
+  const listFor = (name: string) => {
+    const m = source.match(new RegExp(`const ${name}\\s*=\\s*\\n?\\s*'([^']*)'`))
+    expect(m).not.toBeNull() // a renamed constant must fail loudly, not silently pass
+    return (m![1] ?? '').split(',').map((c) => c.trim())
+  }
+
+  it.each(['ORDER_COLUMNS', 'REQUEST_COLUMNS'])('%s selects every column it reads', (name) => {
+    const columns = listFor(name)
+    expect(columns.length).toBeGreaterThan(5)
+    for (const needed of COLUMNS_THE_DISCRIMINATOR_READS) {
+      expect(columns).toContain(needed)
+    }
+  })
+})
 
 describe('editAlreadyCommitted', () => {
   it('says yes when the caller’s own commit spent the lock', () => {
