@@ -618,10 +618,22 @@ jobs:
           else
             echo "WARNING: STAGING_CRON_SECRET not set — expire-pending will reject all callers until configured"
           fi
+          # #266: this was set out of band, so the Worker was not reproducible from the repo.
+          # Unlike CRON_SECRET above, a missing value here does NOT surface as a broken feature:
+          # createServerSupabaseClient() falls back to the anon key (lib/supabase/server.ts), so
+          # every server route would silently run as `anon` under RLS instead of service_role.
+          # A warning nobody reads is how this drifted in the first place — fail the job. This
+          # step runs BEFORE `wrangler deploy`, so failing here blocks the deploy outright.
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "ERROR: STAGING_SUPABASE_SERVICE_ROLE_KEY is empty — server routes would silently fall back to the anon key."
+            exit 1
+          fi
+          echo "$SUPABASE_SERVICE_ROLE_KEY" | npx wrangler@3.99.0 secret put SUPABASE_SERVICE_ROLE_KEY
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CRON_SECRET: ${{ secrets.STAGING_CRON_SECRET }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
       - name: Deploy to Cloudflare Workers
         run: npx wrangler@3.99.0 deploy --var GIT_COMMIT_SHA:${{ github.sha }} --var NEXT_PUBLIC_COMMIT_SHA:${{ github.sha }}
         env:

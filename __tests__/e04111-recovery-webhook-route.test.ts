@@ -133,7 +133,11 @@ describe('webhook must not ACK a payment it could not apply', () => {
     verifyWebhook.mockReturnValue({ ok: true, mode: 'rsa' })
     markOrderPaidConfirmed.mockResolvedValue({ claimed: false, reason: 'claim_conflict' })
 
-    const res = await POST(makeReq({ merchant_order_no: 'FT17857583233613303', trans_status: 2 }))
+    // #223: amount must agree with orderRow.total (42.5) to pass the gateway amount gate and
+    // reach the claim logic this test is actually about.
+    const res = await POST(
+      makeReq({ merchant_order_no: 'FT17857583233613303', trans_status: 2, amount: 42.5 }),
+    )
     console.log('VALID_SIG_CLAIM_CONFLICT', res.status)
     expect(res.status).toBe(503)
   })

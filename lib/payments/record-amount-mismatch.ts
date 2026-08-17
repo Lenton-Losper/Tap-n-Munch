@@ -11,13 +11,24 @@ type Supabase = ReturnType<typeof createServerSupabaseClient>
  *                          it with a 400.
  * 'terminal_verify_payment' POST /api/terminal/orders/[orderId]/verify-payment. Finatic has
  *                          said the order was PAID, for a figure that disagrees.
+ * 'paycloud_webhook'       #223. POST /api/webhooks/paycloud, either the signature-valid path
+ *                          (payload claims paid) or the signature-fallback path (independent
+ *                          Finatic order.query). Both charged the customer before this fires.
+ * 'reconcile_orphan_payments' #223. lib/payments/reconcile-orphan-payments.ts, matching a
+ *                          payment_events 'sale' row against the orders it names.
  *
  * The third amountsMatch call site, tabs/[tabId]/settle, is deliberately absent: it compares
  * BEFORE taking the money (see the "Verify the attribution before taking the money" comment
  * immediately below its guard), so its 400 refuses a payment that never happened. Nothing was
- * charged and there is nothing to reconcile.
+ * charged and there is nothing to reconcile. app/api/payments/receipt/route.ts is the same
+ * shape -- it validates a client-submitted amount before creating the PayCloud checkout, not
+ * after a gateway confirmation -- so it is absent for the same reason.
  */
-export type AmountMismatchSource = 'terminal_callback' | 'terminal_verify_payment'
+export type AmountMismatchSource =
+  | 'terminal_callback'
+  | 'terminal_verify_payment'
+  | 'paycloud_webhook'
+  | 'reconcile_orphan_payments'
 
 export type RecordAmountMismatchParams = {
   restaurantId: string
