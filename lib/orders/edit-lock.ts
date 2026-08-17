@@ -378,19 +378,19 @@ export const EDIT_COPY = {
    */
   lockHeld: '{seconds}s left to make changes',
   /**
-   * PENDING COPY. Customer: the PRIMARY line in the editor — the rule that actually governs
+   * SIGNED OFF 2026-08-17. Customer: the PRIMARY line in the editor — the rule that actually governs
    * whether the order can still be changed.
    */
-  editDeadline: 'PENDING COPY — You can change this order until the restaurant starts preparing it.',
+  editDeadline: 'You can change this order until the restaurant starts preparing it.',
   /**
-   * PENDING COPY. Customer: SECONDARY, beneath the line above. The hold, stated as a hold.
+   * SIGNED OFF 2026-08-17. Customer: SECONDARY, beneath the line above. The hold, stated as a hold.
    * `{seconds}` is substituted at the render site by plain `.replace()`, so it must stay literal.
    */
-  holdSecondary: 'PENDING COPY — Editing reserved for you · {seconds}s',
-  /** PENDING COPY. Customer: the control that opens the menu to add something to this edit. */
-  addSomething: 'PENDING COPY — + Add something',
-  /** PENDING COPY. Customer: one more of a line already on the order. */
-  addOneMore: 'PENDING COPY — Add one more',
+  holdSecondary: 'Editing held for you · {seconds}s, so no one else can change it at the same time.',
+  /** SIGNED OFF 2026-08-17. Customer: the control that opens the menu to add something to this edit. */
+  addSomething: 'Add from menu',
+  /** SIGNED OFF 2026-08-17. Customer: one more of a line already on the order. */
+  addOneMore: 'Add one more',
   /** Customer: refusal, status has moved to preparing or beyond. */
   preparationStarted: "The kitchen has started this order, so it can't be changed now.",
   /** Customer: refusal, another phone at the table is editing. */
@@ -404,13 +404,13 @@ export const EDIT_COPY = {
   lockExpired:
     'That took too long, so nothing was saved. Open the order again to change it.',
   /**
-   * PENDING COPY. Customer: their change DID land and they are retrying after a lost response —
+   * SIGNED OFF 2026-08-17. Customer: their change DID land and they are retrying after a lost response —
    * a dropped request on mobile data is the ordinary way to reach this. It must not reuse
    * `lockExpired`: telling someone nothing was saved when it was is what made them re-apply the
    * change and pay for it twice (#306). Shown with the current order beside it.
    */
   alreadySaved:
-    'PENDING COPY — Your change was saved. This is the order as it stands now.',
+    'Your changes were already saved. This is your current order.',
   /** Customer: the edit landed and the total moved. */
   committedTotalChanged:
     "Sent to the restaurant. They'll confirm the new total of {total}.",

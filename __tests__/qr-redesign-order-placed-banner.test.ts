@@ -34,10 +34,14 @@ describe('shouldShowOrderPlacedBanner', () => {
 })
 
 describe('the copy the banner renders', () => {
-  it('is still a placeholder, so the morning report can find it', () => {
-    // If this fails because the human has signed the wording off, delete the assertion and the
-    // entry in the PENDING COPY list -- do not weaken it to keep the suite green.
-    expect(QR_REDESIGN_PENDING_COPY.orderPlacedBanner).toMatch(/^PENDING COPY — /)
+  /**
+   * The wording was signed off 2026-08-17. The original assertion said "if this fails because the
+   * human has signed the wording off, delete the assertion -- do not weaken it to keep the suite
+   * green." Inverted instead of deleted, which is neither: the placeholder must not return.
+   */
+  it('carries no placeholder marker, now that the wording is signed off', () => {
+    expect(QR_REDESIGN_PENDING_COPY.orderPlacedBanner).not.toMatch(/PENDING COPY/)
+    expect(QR_REDESIGN_PENDING_COPY.orderPlacedBanner.trim().length).toBeGreaterThan(0)
   })
 })
 

@@ -16,7 +16,7 @@ export const TAB_FLAG_COPY = {
   /** Rendered on an order card whose tab was opened while another tab was still unpaid. */
   unpaidTabElsewhere: 'Unpaid tab — Table {table} ({total})',
   /**
-   * PENDING COPY. Appended inside `{total}` when the other table also has money the restaurant
+   * SIGNED OFF 2026-08-17. Appended inside `{total}` when the other table also has money the restaurant
    * has not answered yet (#286).
    *
    * The figure before it is PAYABLE — what settlement would charge. This one is submitted and
@@ -24,5 +24,5 @@ export const TAB_FLAG_COPY = {
    * staff member who reads only the payable figure could walk to a table believing it owes N$95
    * when the diners have also ordered N$132 the kitchen has not been given yet.
    */
-  unpaidTabElsewherePendingSuffix: 'PENDING COPY — awaiting confirmation',
+  unpaidTabElsewherePendingSuffix: '+ more not yet accepted',
 } as const

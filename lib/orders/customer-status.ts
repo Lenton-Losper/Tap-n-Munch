@@ -63,13 +63,13 @@ export type CustomerOrderState = (typeof CUSTOMER_ORDER_STATES)[number]
  * `git grep "PENDING COPY" -- lib/orders/customer-status.ts`
  */
 export const CUSTOMER_STATUS_COPY: Record<CustomerOrderState, string> = {
-  waiting: 'PENDING COPY — Waiting for the restaurant',
-  accepted: 'PENDING COPY — Accepted',
-  preparing: 'PENDING COPY — Being prepared',
-  ready: 'PENDING COPY — Ready',
-  paid: 'PENDING COPY — Paid',
-  needs_you: 'PENDING COPY — Needs you',
-  unknown: 'PENDING COPY — The restaurant is handling this',
+  waiting: 'Waiting for restaurant',
+  accepted: 'Accepted',
+  preparing: 'Being prepared',
+  ready: 'Ready',
+  paid: 'Paid',
+  needs_you: 'See staff',
+  unknown: 'Order update',
 }
 
 const WAITING = new Set(['waiting_review', 'pending'])

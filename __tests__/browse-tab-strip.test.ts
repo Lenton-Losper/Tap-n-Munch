@@ -8,9 +8,9 @@
  * payable figure with nothing naming the amount awaiting confirmation. Every other case here is
  * ordinary coverage; that one is the regression.
  *
- * These assert STRUCTURE and the presence of the figures, not wording. The strings are
- * PENDING COPY and will change; the rule that an amount never appears without its pending note
- * must not.
+ * These assert STRUCTURE and the presence of the figures, not wording. The strings were signed
+ * off 2026-08-17 and may still change; the rule that an amount never appears without its pending
+ * note must not.
  */
 import { buildBrowseTabStrip } from '@/lib/tabs/browse-tab-strip'
 import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
@@ -111,8 +111,8 @@ describe('buildBrowseTabStrip — the strip navigates, it does not settle', () =
   it('offers a view affordance rather than a settle one in every live state', () => {
     for (const tabStatus of ['open', 'ready_to_pay', 'closed']) {
       const strip = buildBrowseTabStrip({ ...base, tabStatus })
-      // Spec section 30: settlement belongs on the Tab. Wording is PENDING COPY; that the
-      // strip stopped promising to settle is the assertion.
+      // Spec section 30: settlement belongs on the Tab. Wording is signed off; that the strip
+      // stopped promising to settle is the assertion, and it holds whatever the wording says.
       expect(strip.cta.toLowerCase()).not.toContain('settle')
     }
   })

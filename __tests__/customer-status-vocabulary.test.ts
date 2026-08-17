@@ -113,9 +113,16 @@ describe('customerOrderState — the fallback', () => {
 })
 
 describe('the copy', () => {
-  it('is a placeholder for every state, so the morning report can find them all', () => {
+  /**
+   * INVERTED 2026-08-17, when the human signed the seven words off. It used to assert the marker
+   * was PRESENT so the morning report could find them. Kept rather than deleted, and pointed the
+   * other way: a placeholder must never come back into a shipped surface. These render on every
+   * customer screen, so a marker here reaches production faster than anything else in the app.
+   */
+  it('carries no placeholder marker, now that the wording is signed off', () => {
     for (const state of CUSTOMER_ORDER_STATES) {
-      expect(CUSTOMER_STATUS_COPY[state]).toMatch(/^PENDING COPY — /)
+      expect(CUSTOMER_STATUS_COPY[state]).not.toMatch(/PENDING COPY/)
+      expect(CUSTOMER_STATUS_COPY[state].trim().length).toBeGreaterThan(0)
     }
   })
 

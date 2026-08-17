@@ -27,24 +27,24 @@ export const QR_REDESIGN_PENDING_COPY = {
    * wiping the token, tab id, table and cart. A request that failed is not a session that ended,
    * so they now say so and offer a retry -- which needs words that did not exist before.
    */
-  loadFailedTitle: 'PENDING COPY - We could not load this just now',
+  loadFailedTitle: "Couldn't load this",
   loadFailedBody:
-    'PENDING COPY - Your tab is still open. This is a problem on our side, not with your order.',
-  loadFailedRetry: 'PENDING COPY - Try again',
+    "Your tab is still open. We couldn't load this right now, but nothing has been lost.",
+  loadFailedRetry: 'Try again',
 
   /**
    * Renders: My Orders, as a temporary banner immediately after Place Order.
    * Replaces the toast the cart used to raise on its way back to the menu.
    */
-  orderPlacedBanner: 'PENDING COPY — Order sent to the restaurant',
+  orderPlacedBanner: 'Order sent to restaurant',
 
   /**
    * Renders: the browse tab strip, leading word. Spec section 9 demotes the strip to a
    * lightweight entry point, so the headline is a state word and nothing else.
    */
-  stripHeadlineOpen: 'PENDING COPY — Table tab',
-  stripHeadlineReadyToPay: 'PENDING COPY — Ready to pay',
-  stripHeadlineClosed: 'PENDING COPY — Tab closed',
+  stripHeadlineOpen: 'Tab open',
+  stripHeadlineReadyToPay: 'Ready for payment',
+  stripHeadlineClosed: 'Tab closed',
 
   /**
    * Renders: the browse tab strip, trailing affordance.
@@ -53,13 +53,13 @@ export const QR_REDESIGN_PENDING_COPY = {
    * that shows the bill; spec section 30 puts the settlement action on the Tab and leaves the
    * strip as navigation.
    */
-  stripCta: 'PENDING COPY — View tab →',
+  stripCta: 'View tab',
 
   /**
    * Renders: the browse header, the button that opens the shared Tab.
    * New destination — the Tab was previously reachable only by tapping the strip.
    */
-  navTab: 'PENDING COPY — Tab',
+  navTab: 'Tab',
 
   /**
    * Renders: the Tab, when the shared-order read FAILED.
@@ -67,34 +67,34 @@ export const QR_REDESIGN_PENDING_COPY = {
    * customer gets instead. It must not imply the table has no orders.
    */
   tabOrdersUnavailable:
-    "PENDING COPY — We couldn't load your table's orders just now. The total above is still correct.",
+    "Order details couldn't load. The total above is still correct.",
 
   /** Renders: the Tab, when the table genuinely has no orders yet. */
-  tabEmpty: 'PENDING COPY — Nothing on the table tab yet',
+  tabEmpty: 'No orders yet',
 
   /** Renders: the Tab, per order, before staff have accepted it and allocated a number. */
-  tabOrderNotYetNumbered: 'PENDING COPY — New order',
+  tabOrderNotYetNumbered: 'Not numbered yet',
 
   /** Renders: the Tab, per order, on a submitted-but-unanswered order. */
-  tabOrderAwaitingConfirmation: 'PENDING COPY — Waiting for the restaurant',
+  tabOrderAwaitingConfirmation: 'Waiting for restaurant',
 
   /** Renders: the Tab, the per-person figure that is actually owed. */
-  tabMemberPayable: 'PENDING COPY — Owed:',
+  tabMemberPayable: 'Owed now',
 
   /**
    * Renders: the Tab, heading of the block for orders on this tab whose member could not be
    * resolved. It must NOT invent an owner, and it must not read as an error the customer caused.
    */
-  tabUnattributedHeading: 'PENDING COPY — Also on this table',
+  tabUnattributedHeading: 'Not matched to anyone',
 
   /**
    * Renders: the menu, when the customer arrived from the order editor via "+ Add something".
    * The menu is otherwise identical, and the one thing that differs — where an added item goes —
    * is invisible until it happens, so it has to be said.
    */
-  pickerBanner: 'PENDING COPY — Choosing something to add to your order',
+  pickerBanner: 'Choose something to add to this order',
   /** Renders: beside the banner above. A way back that does not require trusting the Back button. */
-  pickerBack: 'PENDING COPY — Back to my order',
+  pickerBack: 'Back to order',
 } as const
 
 /**

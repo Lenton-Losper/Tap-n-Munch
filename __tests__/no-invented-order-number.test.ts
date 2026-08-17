@@ -93,8 +93,11 @@ describe('#296 it is the SAME decision the Tab screen already made', () => {
     expect(codeOnly(TAB)).toContain('QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered')
   })
 
-  it('and both read the one copy constant, which is still PENDING COPY', () => {
-    expect(COPY).toMatch(/tabOrderNotYetNumbered: 'PENDING COPY/)
+  it('and both read the one copy constant, whose wording is now signed off', () => {
+    // Was `toMatch(/tabOrderNotYetNumbered: 'PENDING COPY/)`. Signed off 2026-08-17; what still
+    // matters is that ONE constant exists and neither render site inlines its own string.
+    expect(COPY).toMatch(/tabOrderNotYetNumbered:\s*['"]/)
+    expect(COPY).not.toMatch(/tabOrderNotYetNumbered:\s*['"]PENDING COPY/)
   })
 
   it('no second not-yet-numbered string was invented', () => {
