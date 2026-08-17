@@ -373,8 +373,33 @@ export function OrderEditPanel({
       onEdited()
     } catch (err) {
       if (err instanceof OrderEditRefused) {
+        /**
+         * `already_saved` is a refusal by status code only (#306). The customer's change LANDED —
+         * they are here because the response was lost, on mobile data, and they pressed Save
+         * again. Showing it through `setError` would tell them in red that their change was
+         * saved, beside a stale order, which is only marginally better than the lie it replaced.
+         *
+         * So it takes the SUCCESS path: same cleanup, a notice rather than an error, and
+         * `onEdited()` so the screen behind shows the order as it now stands — which is exactly
+         * what the message claims is on display.
+         */
+        if (err.reason === 'already_saved') {
+          clearPendingAdditions(orderId)
+          grantRef.current = null
+          setGrant(null)
+          setLines([])
+          setAdditions([])
+          const savedTotal = Number(err.details?.total)
+          setNotice(
+            Number.isFinite(savedTotal)
+              ? `${err.message} ${currency}${savedTotal.toFixed(2)}`
+              : err.message,
+          )
+          onEdited()
+          return
+        }
         setError(err.message)
-        // Every refusal on commit means the lock is gone: the kitchen took the order, the
+        // Every other refusal on commit means the lock is gone: the kitchen took the order, the
         // token expired, or somebody else holds it. Closing the editor stops the customer
         // pressing Save into a wall.
         grantRef.current = null
