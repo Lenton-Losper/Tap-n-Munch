@@ -24,5 +24,5 @@ export const TAB_FLAG_COPY = {
    * staff member who reads only the payable figure could walk to a table believing it owes N$95
    * when the diners have also ordered N$132 the kitchen has not been given yet.
    */
-  unpaidTabElsewherePendingSuffix: '+ more not yet accepted',
+  unpaidTabElsewherePendingSuffix: 'not yet accepted',
 } as const
