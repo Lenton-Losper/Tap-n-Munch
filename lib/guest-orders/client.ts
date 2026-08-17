@@ -158,11 +158,23 @@ export type EditCommitResult = {
 export class OrderEditRefused extends Error {
   readonly reason: string
   readonly httpStatus: number
-  constructor(message: string, reason: string, httpStatus: number) {
+  /**
+   * The rest of the server's body. Not every refusal carries one, but `already_saved` (#306)
+   * returns the CURRENT order alongside the message, and without this the caller would have the
+   * sentence "your change was saved" and nothing to show beside it.
+   */
+  readonly details: Record<string, unknown>
+  constructor(
+    message: string,
+    reason: string,
+    httpStatus: number,
+    details: Record<string, unknown> = {},
+  ) {
     super(message)
     this.name = 'OrderEditRefused'
     this.reason = reason
     this.httpStatus = httpStatus
+    this.details = details
   }
 }
 
@@ -200,6 +212,7 @@ async function editRequest<T>(
       String(parsed.error || `Edit request failed (${res.status})`),
       String(parsed.reason || 'unknown'),
       res.status,
+      parsed,
     )
   }
   return parsed as T
