@@ -68,7 +68,6 @@ const KNOWN_ABSENT = new Set([
   'd57c659', // #135 — MAX_INSTRUCTIONS_LENGTH is present on staging
   'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
   '9fcb147', // #262 member key — deriveTabMemberKey is present via a64a422
-])
 
   // GROWN 2026-08-17, and this is the one direction I said the baseline should not move -- so
   // the reason is recorded rather than assumed. These two are PROMOTION commits: main gained
@@ -86,6 +85,7 @@ const KNOWN_ABSENT = new Set([
   // it touches is identical-or-older on main than on staging. Until then, promotions land here.
   '1591d12', // Deploy 3 - the order editor, ported FROM staging
   'b30b7e5', // Deploy 4 - the customer redesign shell, ported FROM staging
+])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
 const HEAD = process.argv[3] || process.env.DRIFT_HEAD_REF || 'origin/cloudflare-staging'
