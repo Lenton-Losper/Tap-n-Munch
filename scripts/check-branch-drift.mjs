@@ -165,7 +165,37 @@ function promotedState(sha) {
     const mainCommitForPath = tryGit(['log', '-1', '--format=%H', BASE, '--', file]).out.trim()
     if (!mainCommitForPath) return false
     const contained = tryGit(['merge-base', '--is-ancestor', mainCommitForPath, HEAD]).ok
-    if (!contained) return false // main holds a change to this file that HEAD does not
+    if (contained) continue
+
+    /**
+     * LAST RESORT, and the reason this function needed a third test at all.
+     *
+     * FIXED 2026-08-18, the day after #310 shipped, because #310 was wrong in a way that only
+     * showed up once ordinary work resumed. The two tests above compare HEAD's CURRENT blob. A
+     * promotion satisfies them the moment it lands -- and stops satisfying them as soon as anyone
+     * edits one of the promoted files on HEAD again. The commit then flips back to ABSENT, and
+     * the gate goes red on work that is strictly AHEAD of main.
+     *
+     * That is the worst possible failure for a gate: it fires on normal activity, so it gets
+     * ignored, and then it is not a gate. It reproduced within two commits of #310 landing --
+     * editing lib/orders/logical-item-identity.ts un-promoted #307.
+     *
+     * The stable question is not "does HEAD hold main's blob NOW" but "did HEAD EVER hold it".
+     * A promotion means main took content that came FROM here, so that content is somewhere in
+     * this branch's history for the path, whatever has happened to the file since.
+     *
+     * Deliberately scoped to commits that touched this path, so it stays bounded, and it can only
+     * ever ACCEPT -- a commit main genuinely holds alone has a blob HEAD has never contained, at
+     * any point, and still fails. The three real gaps below stay loud.
+     */
+    const headHistory = tryGit(['rev-list', HEAD, '--', file])
+    if (!headHistory.ok) return false
+    const everHeld = headHistory.out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((sha) => tryGit(['rev-parse', `${sha}:${file}`]).out.trim() === mainBlob.out.trim())
+    if (!everHeld) return false // main holds a change to this file that HEAD has never had
   }
   return true
 }

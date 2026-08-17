@@ -241,10 +241,9 @@ describe('tab member key derivation (#262)', () => {
      * "there is no per-tab key to derive" — is about DERIVATION, and that reason still holds and
      * is still asserted below: the owner gets the raw value back, unsubstituted.
      *
-     * What changed is disclosure, not derivation. #305: on a tab-less row that raw value was
-     * handed to any caller who could read the row, and it is a working edit credential there,
-     * because the token guard is scoped to `if (tabId)`. So the row is left alone for its OWNER
-     * and withheld from everybody else.
+     * What changed is disclosure, not derivation. #302/#305: those raw values were handed to any
+     * caller who could read the row. Measured on production before this fix — a foreign session
+     * received both ids with HTTP 200 and the row present.
      */
     it('leaves a tab-less order alone for its owner — there is no per-tab key to derive', async () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
@@ -262,17 +261,30 @@ describe('tab member key derivation (#262)', () => {
         [{ id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION }],
         ['somebody-else'],
       )
-      // Both, because the edit route authorises on EITHER column.
+      // Both, because either column can identify the placer.
       expect(order.member_session_id).toBeNull()
       expect(order.session_id).toBeNull()
       expect(JSON.stringify(order)).not.toContain(SESSION)
-      expect(order.id).toBe('o1') // the row itself still travels; only the credential is removed
+      expect(order.id).toBe('o1') // the row still travels; only the credential is removed
+    })
+
+    it('strips session_id from a TAB row a caller does not own, and keeps the derived key (#302)', async () => {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
+      const [order] = await loadModule().redactGuestOrderMemberIds(
+        [{ id: 'o1', tab_id: TAB_A, member_session_id: SESSION, session_id: SESSION }],
+        ['somebody-else'],
+      )
+      // The opaque key MUST survive: it is what the tab and receipt screens pair names against,
+      // and blanket removal would replace real names with "Guest" on a working screen.
+      expect(order.member_session_id).not.toBe(SESSION)
+      expect(String(order.member_session_id)).toMatch(/^mk_/)
+      expect(order.session_id).toBeNull()
     })
 
     it('defaults to withholding when the caller passes no ids at all', async () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = SECRET
-      // The safe default is the whole reason the parameter is optional rather than required: a
-      // call site that forgets gets the redacted behaviour, not the leaky one.
+      // The safe default is why the parameter is optional rather than required: a call site that
+      // forgets gets the redacted behaviour, not the leaky one.
       const [order] = await loadModule().redactGuestOrderMemberIds([
         { id: 'o1', tab_id: null, member_session_id: SESSION, session_id: SESSION },
       ])
