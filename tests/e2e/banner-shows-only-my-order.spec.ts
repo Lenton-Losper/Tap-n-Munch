@@ -51,9 +51,17 @@ test.afterEach(async () => {
   fixture = {}
 })
 
-/** What the banner prints: `Order #{order_number || id.slice(-6).toUpperCase()}`. */
-function bannerLabelFor(order: { order_number?: number | null; id: string }): string {
-  return order.order_number ? String(order.order_number) : order.id.slice(-6).toUpperCase()
+/**
+ * The banner prints `orderIdentityLabel(order)` since #308: `Order #<n>` when a number was
+ * allocated, and the signed-off not-yet-numbered phrase when none was.
+ *
+ * This used to compute `id.slice(-6).toUpperCase()`, which is the derivation #308 REMOVED - the
+ * spec had the defect written into its own expectation, so it broke the moment the defect was
+ * fixed. The fixture now allocates a real number, which is what a banner-visibility test needs
+ * anyway: a stable identifier to assert on.
+ */
+function bannerLabelFor(order: { order_number: number }): string {
+  return String(order.order_number)
 }
 
 test.describe('the Active Order Banner shows only the caller’s own order', () => {
@@ -66,14 +74,17 @@ test.describe('the Active Order Banner shows only the caller’s own order', () 
 
     // Phone A owns the seeded order. Phone B is a different diner at the same table, with a
     // session that owns nothing.
-    const { data: ownOrder, error } = await db
+    // Allocate a real order number. seedTableWithOrder leaves it null, and since #308 an
+    // unnumbered order deliberately shows no identifier at all - which would leave this test's
+    // positive control with nothing to look for.
+    const allocated = 900000 + Math.floor(Math.random() * 99999)
+    const { error: numErr } = await db
       .from('orders')
-      .select('id, order_number, table_number, status')
+      .update({ order_number: allocated })
       .eq('id', f.orderId)
-      .single()
-    if (error) throw new Error(`read seeded order: ${error.message}`)
+    if (numErr) throw new Error(`allocate order_number: ${numErr.message}`)
 
-    const label = bannerLabelFor(ownOrder as { order_number?: number | null; id: string })
+    const label = bannerLabelFor({ order_number: allocated })
     const strangerSessionId = `probe-e2e-stranger-${randomUUID()}`
 
     const ctxA = await browser.newContext()
