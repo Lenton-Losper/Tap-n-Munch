@@ -68,7 +68,11 @@ const KNOWN_ABSENT = new Set([
   '56f70b8', // #254/?ref= — `paymentRefOrFilter` and `isWellFormedPaymentRef` are BYTE-IDENTICAL
              //              on both branches; only the test file differs
   'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
-  '9fcb147', // #262 member key — deriveTabMemberKey is present via a64a422
+  // 9fcb147 (#262 member key) REMOVED 2026-08-18. It was here because the only difference was
+  // __tests__/tab-member-key.test.ts, which staging held as a strict SUBSET of main's. Porting
+  // main's file reconciled the commit outright, so it no longer needs an exemption. The check
+  // reported it as stale itself, which is the mechanism working: an entry that stops being
+  // needed says so rather than sitting here forever.
 ])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
