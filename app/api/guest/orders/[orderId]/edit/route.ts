@@ -40,12 +40,12 @@ import {
   editRefusalReason,
   editAlreadyCommitted,
   editChangedTheTotal,
-  editRequiresReacceptance,
   isEditLockActive,
   normalizeSessionIds,
   requestEditRefusalReason,
   type EditRefusalReason,
 } from '@/lib/orders/edit-lock'
+import { decideReacceptance } from '@/lib/orders/reacceptance'
 import { InvalidEditError, repriceKeptLines, type LineKeepInstruction } from '@/lib/orders/reprice-priced-lines'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
 import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
@@ -586,13 +586,27 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     /**
      * TWO QUESTIONS, NOT ONE, since the 2026-08-16 reversal.
      *
-     * `needsReacceptance` gates staff: only a RISE sends the order back to review.
-     * `totalMoved` gates the RECORD: any movement, including a fall, writes `total_before_edit`
-     * so the dashboard can show that the order changed and by how much. Deriving the second from
-     * the first would leave a reduction invisible to staff, which is the thing the ruling this
-     * replaces was protecting.
+     * `reacceptance` gates staff. `totalMoved` gates the RECORD: any movement, including a fall,
+     * writes `total_before_edit` so the dashboard can show that the order changed and by how much.
+     * Deriving the second from the first would leave a reduction invisible to staff, which is the
+     * thing the ruling this replaces was protecting.
+     *
+     * WIDENED 2026-08-18. The staff gate used to be `nextTotal > previousTotal` alone, so an
+     * equal-price substitution -- Burger+Cheese for Burger+Bacon -- reached the kitchen with no
+     * human ever seeing it change. `decideReacceptance` OR's that rise with INTRODUCED CONTENT:
+     * any logical item whose quantity is higher than staff accepted. The reduction exemption is
+     * untouched, and so is the note-only one, because the content key deliberately excludes
+     * `specialInstructions`. See `lib/orders/reacceptance.ts` for both rulings in full.
+     *
+     * `effective.items` is what staff accepted; `next.items` is what the order will hold.
      */
-    const needsReacceptance = editRequiresReacceptance(previousTotal, next.total)
+    const reacceptance = decideReacceptance({
+      previousTotal,
+      nextTotal: next.total,
+      acceptedLines: effective.items,
+      proposedLines: next.items,
+    })
+    const needsReacceptance = reacceptance.required
     const totalMoved = editChangedTheTotal(previousTotal, next.total)
 
     if (!itemsChanged && !notesChanged) {
@@ -610,6 +624,9 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       previous_items: effective.items,
       notes_changed: notesChanged,
       items_changed: itemsChanged,
+      // WHICH clause sent this back to staff, recorded so a later reader can tell an equal-price
+      // swap from a price rise without re-deriving it from two line lists.
+      reacceptance_reason: reacceptance.reason,
       ...(staffReviewDiscarded ? { discarded_staff_review: target.row.items_reviewed } : {}),
     })
 

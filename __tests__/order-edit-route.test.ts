@@ -25,14 +25,22 @@ let stockResult: { ok: boolean; reason?: string; unavailable: Array<{ itemName: 
 jest.mock('@/lib/orders/check-stock-sufficiency', () => ({
   checkStockSufficiency: async () => stockResult,
 }))
+/**
+ * Mutable so a test can price an addition at exactly what a removal took away. That is the only
+ * way to reach an EQUAL-TOTAL edit, which is the case the 2026-08-18 re-acceptance widening exists
+ * for: with a fixed price every addition also raises the total, and the rise clause would answer
+ * every question before the content clause was ever consulted.
+ */
+const DEFAULT_PRICED = {
+  items: [{ menuItemId: 'm-coke', name: 'Coke', quantity: 1, unitPrice: 20, subtotal: 17.39, tax: 2.61, total: 20 }],
+  subtotal: 17.39,
+  tax: 2.61,
+  total: 20,
+  warnings: [] as string[],
+}
+let pricedResult: typeof DEFAULT_PRICED
 jest.mock('@/lib/orders/calculate-order-pricing', () => ({
-  calculateOrderPricing: async () => ({
-    items: [{ name: 'Coke', quantity: 1, unitPrice: 20, subtotal: 17.39, tax: 2.61, total: 20 }],
-    subtotal: 17.39,
-    tax: 2.61,
-    total: 20,
-    warnings: [],
-  }),
+  calculateOrderPricing: async () => pricedResult,
 }))
 
 type WriteCall = {
@@ -116,9 +124,16 @@ jest.mock('@/lib/supabase/server', () => ({
 }))
 
 const SESSION = 'sess_owner'
+/**
+ * `menuItemId` is present on every line because it is present on every real one: a line reaches
+ * storage only through `calculateOrderPricing`, which refuses the whole request with "Each line
+ * item needs a valid menuItemId". The fixture used to omit it, which was fine while the route
+ * only ever compared totals — and stopped being fine on 2026-08-18, when re-acceptance started
+ * comparing line IDENTITY and an unidentifiable line began (correctly) forcing a staff look.
+ */
 const LINES = [
-  { name: 'Burger', quantity: 2, unitPrice: 100, subtotal: 173.91, tax: 26.09, total: 200, taxRatePercentage: 15, taxInclusive: true },
-  { name: 'Coke', quantity: 1, unitPrice: 25, subtotal: 21.74, tax: 3.26, total: 25, taxRatePercentage: 15, taxInclusive: true },
+  { menuItemId: 'm-burger', name: 'Burger', quantity: 2, unitPrice: 100, subtotal: 173.91, tax: 26.09, total: 200, taxRatePercentage: 15, taxInclusive: true },
+  { menuItemId: 'm-coke', name: 'Coke', quantity: 1, unitPrice: 25, subtotal: 21.74, tax: 3.26, total: 25, taxRatePercentage: 15, taxInclusive: true },
 ]
 
 function baseOrder(overrides: Record<string, unknown> = {}) {
@@ -176,6 +191,8 @@ beforeEach(() => {
   writeResult = { id: 'order-1', status: 'accepted', total: 225, requires_reacceptance: false }
   // Stock passes unless a test says otherwise. Reset per test so a refusal cannot leak forward.
   stockResult = { ok: true, unavailable: [] }
+  // Same reasoning: reset per test so a bespoke price cannot leak into the next one.
+  pricedResult = { ...DEFAULT_PRICED, items: [...DEFAULT_PRICED.items] }
 })
 
 describe('acquiring the lock is a compare-and-set, not a claim of intent', () => {
@@ -396,6 +413,51 @@ describe('what a committed edit writes', () => {
     expect(body.reason).toBe('out_of_stock')
     // And nothing was written: a refused addition must not half-apply the reduction beside it.
     expect(writes).toHaveLength(0)
+  })
+
+  /**
+   * THE CASE THE 2026-08-18 WIDENING EXISTS FOR, asserted at the ROUTE and not only in the pure
+   * predicate.
+   *
+   * Drop the Coke (N$25) and add a Water priced at exactly N$25. The total is unchanged, so the
+   * rise clause says nothing — and until this ruling the kitchen was told to make a different
+   * drink with no human ever seeing the substitution. `introduced_content` is what catches it.
+   */
+  it('sends an EQUAL-PRICE SWAP back to review, though the total did not move', async () => {
+    pricedResult = {
+      items: [{ menuItemId: 'm-water', name: 'Water', quantity: 1, unitPrice: 25, subtotal: 21.74, tax: 3.26, total: 25 }],
+      subtotal: 21.74,
+      tax: 3.26,
+      total: 25,
+      warnings: [],
+    }
+
+    await call(PATCH, 'PATCH', {
+      lockToken: 'my-token',
+      keep: [{ index: 0, quantity: 2 }], // drop the Coke
+      add: [{ menuItemId: 'm-water', quantity: 1 }],
+    })
+
+    const { patch } = writes[0]
+    expect(patch.total).toBe(225) // 200 + 25 — EXACTLY what it was
+    expect(patch).not.toHaveProperty('total_before_edit') // the figure genuinely did not move
+    expect(patch.status).toBe('pending')
+    expect(patch.requires_reacceptance).toBe(true)
+
+    const history = patch.edit_history as Array<Record<string, unknown>>
+    expect(history[history.length - 1].reacceptance_reason).toBe('introduced_content')
+  })
+
+  it('records WHICH clause fired, so a rise is distinguishable from a swap', async () => {
+    // The positive control for the assertion above: the same field, the other value. Without
+    // this, `reacceptance_reason` could be hard-coded to 'introduced_content' and both pass.
+    await call(PATCH, 'PATCH', {
+      lockToken: 'my-token',
+      add: [{ menuItemId: 'm-coke', quantity: 1 }],
+    })
+
+    const history = writes[0].patch.edit_history as Array<Record<string, unknown>>
+    expect(history[history.length - 1].reacceptance_reason).toBe('total_rose')
   })
 
   it('does NOT send a notes-only edit back to review', async () => {
