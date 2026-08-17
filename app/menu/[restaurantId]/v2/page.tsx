@@ -154,11 +154,6 @@ export function MenuLandingPageV2Content({
   const { currency } = useRestaurant()
 
   useEffect(() => {
-    console.log('[V2] page mounted, URL:', window.location.href)
-    console.log('[V2] token at mount:', localStorage.getItem('flashtap_session_token'))
-  }, [])
-
-  useEffect(() => {
     if (typeof window === 'undefined') return
     if (sessionStorage.getItem('flashtap_session_expired') === 'true') {
       window.location.replace(

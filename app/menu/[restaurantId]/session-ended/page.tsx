@@ -5,12 +5,6 @@ import { QrCode } from 'lucide-react'
 
 export default function SessionEndedPage() {
   useEffect(() => {
-    console.log('[SESSION-ENDED] page mounted, URL:', window.location.href)
-    console.log('[SESSION-ENDED] localStorage token:', localStorage.getItem('flashtap_session_token'))
-    console.log('[SESSION-ENDED] localStorage tab:', localStorage.getItem('flashtap_tab_id'))
-  }, [])
-
-  useEffect(() => {
     // Clear everything when this page loads
     sessionStorage.removeItem('flashtap_session_token')
     localStorage.removeItem('flashtap_session_token')
