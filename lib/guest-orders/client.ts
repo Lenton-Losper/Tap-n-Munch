@@ -1,9 +1,12 @@
 import type { GuestOrderRow, GuestOrdersApiResponse } from './types'
+import { getSessionToken } from '@/lib/fetch-with-session'
 
 type FetchGuestOrderParams = {
   restaurantId: string
   tableNumber?: number
   sessionId?: string
+  /** Every id the browser holds. Build it with heldSessionIds(); see ownsOrder for why. */
+  sessionIds?: Array<string | null | undefined>
 }
 
 async function parseGuestOrdersResponse(res: Response): Promise<GuestOrdersApiResponse> {
@@ -22,8 +25,11 @@ export async function fetchGuestOrderById(
   if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
     qs.set('table_number', String(params.tableNumber))
   }
-  if (params.sessionId?.trim()) {
-    qs.set('session_id', params.sessionId.trim())
+  // Repeated params, never comma-joined: a session id containing a comma could otherwise be
+  // split into two bogus ids server-side. Same shape by-session already uses.
+  for (const sid of [...new Set([params.sessionId, ...(params.sessionIds ?? [])]
+    .map((v) => String(v ?? '').trim()).filter(Boolean))]) {
+    qs.append('session_id', sid)
   }
   const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}?${qs.toString()}`)
   if (res.status === 404) return null
@@ -64,6 +70,8 @@ export async function fetchGuestActiveTableOrders(params: {
   restaurantId: string
   tableNumber: number
   sessionId?: string
+  /** Every id the browser holds; build it with heldSessionIds(). See ownsOrder. */
+  sessionIds?: Array<string | null | undefined>
   paymentStatus?: string
   paymentChannel?: string
   placedAfter?: string
@@ -74,7 +82,11 @@ export async function fetchGuestActiveTableOrders(params: {
     restaurantId: params.restaurantId,
     table_number: String(params.tableNumber),
   })
-  if (params.sessionId?.trim()) qs.set('session_id', params.sessionId.trim())
+  // Repeated params, never comma-joined — an id containing a comma must not split into two.
+  for (const sid of [...new Set([params.sessionId, ...(params.sessionIds ?? [])]
+    .map((v) => String(v ?? '').trim()).filter(Boolean))]) {
+    qs.append('session_id', sid)
+  }
   if (params.paymentStatus) qs.set('payment_status', params.paymentStatus)
   if (params.paymentChannel) qs.set('payment_channel', params.paymentChannel)
   if (params.placedAfter) qs.set('placed_after', params.placedAfter)
@@ -86,16 +98,10 @@ export async function fetchGuestActiveTableOrders(params: {
 }
 
 /**
- * `restaurantId` is REQUIRED, because the route now requires it (#122): without a restaurant
- * the lookup spans every tenant, so a reference that is merely KNOWN -- printed on a receipt,
- * carried on a gateway return URL -- reads any restaurant's order.
- *
- * `tableNumber` and `sessionId` are optional but matter more than they look. The server gates
- * each row through guestCanAccessOrder, which lets a PAID or closed order through on restaurant
- * scope alone but requires the table or the session for one that is still OPEN. The confirmation
- * screen polls while a payment is pending -- i.e. exactly when the order is open and unpaid --
- * so omitting both makes the poll return nothing until the payment lands, and the customer
- * watches an empty screen. Pass them wherever the caller has them.
+ * restaurantId is required, and the table/session binding is sent alongside it: the server gates
+ * every row through guestCanAccessOrder, so an OPEN order only comes back to the table or session
+ * that placed it. The gateway return URL carries both rid and table, so the confirmation screen
+ * has them without asking the customer for anything.
  */
 export async function fetchGuestOrdersByPaymentRef(params: {
   paymentRef: string
@@ -103,10 +109,11 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   tableNumber?: number | null
   sessionId?: string | null
 }): Promise<GuestOrderRow[]> {
-  const restaurantId = params.restaurantId?.trim() || ''
-  if (!restaurantId) return []
-
-  const qs = new URLSearchParams({ ref: params.paymentRef.trim(), restaurantId })
+  if (!params.restaurantId.trim()) return []
+  const qs = new URLSearchParams({
+    ref: params.paymentRef.trim(),
+    restaurantId: params.restaurantId.trim(),
+  })
   if (params.tableNumber != null && Number.isFinite(params.tableNumber)) {
     qs.set('table_number', String(params.tableNumber))
   }
@@ -118,3 +125,162 @@ export async function fetchGuestOrdersByPaymentRef(params: {
 }
 
 export const GUEST_ORDER_POLL_MS = 5000
+
+// ---------------------------------------------------------------------------
+// Order editing (before preparation starts)
+// ---------------------------------------------------------------------------
+
+export type EditLockGrant = {
+  lockToken: string
+  expiresAt: string
+  surface: 'orders' | 'order_requests'
+  items: Array<Record<string, unknown>>
+  subtotal: number
+  tax: number
+  total: number
+  orderInstructions: string | null
+}
+
+export type EditCommitResult = {
+  totalChanged: boolean
+  previousTotal: number
+  total: number
+  requiresReacceptance: boolean
+  status?: string | null
+  message: string
+}
+
+/**
+ * A refusal the customer can be shown, carrying the server's own reason code. The reason
+ * matters more than the status: 409 covers "the kitchen started", "someone else is editing"
+ * and "your lock expired", and those are three different things to say.
+ */
+export class OrderEditRefused extends Error {
+  readonly reason: string
+  readonly httpStatus: number
+  /**
+   * The rest of the server's body. Not every refusal carries one, but `already_saved` (#306)
+   * returns the CURRENT order alongside the message, and without this the caller would have the
+   * sentence "your change was saved" and nothing to show beside it.
+   */
+  readonly details: Record<string, unknown>
+  constructor(
+    message: string,
+    reason: string,
+    httpStatus: number,
+    details: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'OrderEditRefused'
+    this.reason = reason
+    this.httpStatus = httpStatus
+    this.details = details
+  }
+}
+
+async function editRequest<T>(
+  orderId: string,
+  method: 'POST' | 'PATCH' | 'DELETE',
+  body: Record<string, unknown>,
+): Promise<T> {
+  /**
+   * The session token goes on every edit request (#302).
+   *
+   * The route now requires it for any order on a tab, because `sessionIds` in a body is a claim
+   * rather than a credential. The browser has held this token since the tab was joined; it was
+   * simply never sent here, which is the whole reason the edit path had no revocation, no expiry
+   * and no tab-state check.
+   *
+   * Sent by hand rather than through `fetchWithSession`, deliberately: that helper turns a 410
+   * into `handleSessionExpired`, which wipes the token, the tab id, the table and the cart. The
+   * editor already has a refusal surface -- `OrderEditRefused` carries the server's reason and
+   * the panel shows it -- so evicting the customer mid-edit would be a worse answer than telling
+   * them, and #294 was about exactly that reflex.
+   */
+  const token = getSessionToken()
+  const res = await fetch(`/api/guest/orders/${encodeURIComponent(orderId)}/edit`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'x-session-token': token } : {}),
+    },
+    body: JSON.stringify(body),
+  })
+  const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (!res.ok) {
+    throw new OrderEditRefused(
+      String(parsed.error || `Edit request failed (${res.status})`),
+      String(parsed.reason || 'unknown'),
+      res.status,
+      parsed,
+    )
+  }
+  return parsed as T
+}
+
+export function acquireOrderEditLock(params: {
+  orderId: string
+  restaurantId: string
+  sessionIds: string[]
+}): Promise<EditLockGrant> {
+  return editRequest<EditLockGrant>(params.orderId, 'POST', {
+    restaurantId: params.restaurantId,
+    sessionIds: params.sessionIds,
+  })
+}
+
+/**
+ * `keep` names stored line indexes and the quantity remaining on each — never prices. The
+ * server re-sums from its own priced lines, so nothing the customer's browser believes about
+ * money reaches the order.
+ *
+ * `add` (2026-08-16) carries NEW items, in the same shape `POST /api/orders` accepts — and, in
+ * the same spirit, carries no authoritative price either. Whatever the client puts in
+ * `basePrice`/`subtotal`/`total` is discarded: the server prices additions against the live menu
+ * through `calculateOrderPricing`, after the quantity cap and the stock check. See
+ * lib/orders/apply-edit-additions.ts.
+ *
+ * The two are independent. A pure reduction sends `keep` alone; adding one more of an existing
+ * line sends `add` alone (a RAISED `keep` quantity is refused by the server by construction, and
+ * that refusal is deliberate).
+ */
+export function commitOrderEdit(params: {
+  orderId: string
+  restaurantId: string
+  sessionIds: string[]
+  lockToken: string
+  keep?: Array<{ index: number; quantity: number }>
+  add?: Array<Record<string, unknown>>
+  orderInstructions?: string | null
+}): Promise<EditCommitResult> {
+  return editRequest<EditCommitResult>(params.orderId, 'PATCH', {
+    restaurantId: params.restaurantId,
+    sessionIds: params.sessionIds,
+    lockToken: params.lockToken,
+    ...(params.keep ? { keep: params.keep } : {}),
+    ...(params.add && params.add.length > 0 ? { add: params.add } : {}),
+    ...(params.orderInstructions !== undefined
+      ? { orderInstructions: params.orderInstructions }
+      : {}),
+  })
+}
+
+export async function releaseOrderEditLock(params: {
+  orderId: string
+  restaurantId: string
+  sessionIds: string[]
+  lockToken: string
+}): Promise<void> {
+  // Best effort by design. The lock expires on its own after EDIT_LOCK_TTL_MS, so a release
+  // that never lands costs the customer a wait and nothing else — throwing here would turn
+  // closing an editor into an error the customer has to understand.
+  try {
+    await editRequest(params.orderId, 'DELETE', {
+      restaurantId: params.restaurantId,
+      sessionIds: params.sessionIds,
+      lockToken: params.lockToken,
+    })
+  } catch {
+    /* expired or already taken; nothing to report */
+  }
+}
