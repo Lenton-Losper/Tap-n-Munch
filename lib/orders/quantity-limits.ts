@@ -15,6 +15,13 @@
  * person standing in front of them.
  */
 
+import {
+  capIdentity,
+  lineQuantity,
+  quantityOfLogicalItem,
+  type ComparableLine,
+} from './logical-item-identity'
+
 export const MIN_LINE_QUANTITY = 1
 export const MAX_LINE_QUANTITY = 20
 
@@ -77,4 +84,85 @@ export function validateOrderQuantities(
 export function clampLineQuantity(value: number): number {
   if (!Number.isFinite(value)) return MIN_LINE_QUANTITY
   return Math.min(MAX_LINE_QUANTITY, Math.max(MIN_LINE_QUANTITY, Math.floor(value)))
+}
+
+/**
+ * THE RESULTING-QUANTITY CAP (#307). Ruled 2026-08-17.
+ *
+ * `validateLineQuantity` caps ONE line. That is not the ceiling the customer experiences: the
+ * additions path appends lots, so an order already holding 12 accepted another 12 and the customer
+ * walked away with 24 under a cap of 20. Each call was individually legal; nothing looked at the
+ * sum. Measured on staging: 2 + 20 = 22 against MAX_LINE_QUANTITY 20.
+ *
+ * So the cap is applied to the RESULTING logical-item quantity -- everything already on the order
+ * plus everything proposed -- and the identity it groups by deliberately EXCLUDES price, because
+ * two price lots must not each get a fresh ceiling (`lib/orders/logical-item-identity.ts`).
+ *
+ * This does NOT replace the per-line check. That stays as the hard server ceiling for a single
+ * malformed line; this is the additional one that closes the sum.
+ */
+export type ResultingQuantityRefusal = {
+  itemName: string
+  /** What the order would hold if this were allowed. */
+  resulting: number
+  /** What it already holds. */
+  existing: number
+  /** The ceiling. */
+  maximum: number
+  /** How many more the customer may add. Never negative. */
+  remaining: number
+}
+
+export type ResultingQuantityResult =
+  | { ok: true }
+  | { ok: false; refusal: ResultingQuantityRefusal }
+
+/**
+ * @param existingLines lines already stored on the order
+ * @param additions     lines the customer is proposing to add
+ *
+ * Returns the FIRST logical item that would exceed the ceiling, so the customer is shown one clear
+ * message rather than a list.
+ */
+export function validateResultingQuantities(
+  existingLines: readonly ComparableLine[],
+  additions: readonly ComparableLine[],
+): ResultingQuantityResult {
+  const proposed = Array.isArray(additions) ? additions : []
+  const existing = Array.isArray(existingLines) ? existingLines : []
+
+  // Sum the proposed lots per identity FIRST: two additions of the same item in one Save must be
+  // counted together, or the sum is split across calls again in miniature.
+  const proposedByIdentity = new Map<string, { qty: number; sample: ComparableLine }>()
+  for (const line of proposed) {
+    if (!line || typeof line !== 'object') continue
+    const id = capIdentity(line)
+    const entry = proposedByIdentity.get(id) ?? { qty: 0, sample: line }
+    entry.qty += lineQuantity(line)
+    proposedByIdentity.set(id, entry)
+  }
+
+  for (const [identity, { qty, sample }] of proposedByIdentity) {
+    const already = quantityOfLogicalItem(existing, identity)
+    const resulting = already + qty
+    if (resulting > MAX_LINE_QUANTITY) {
+      const name = String(
+        (sample as { displayName?: unknown; name?: unknown }).displayName ??
+          (sample as { name?: unknown }).name ??
+          '',
+      ).trim()
+      return {
+        ok: false,
+        refusal: {
+          itemName: name,
+          resulting,
+          existing: already,
+          maximum: MAX_LINE_QUANTITY,
+          remaining: Math.max(0, MAX_LINE_QUANTITY - already),
+        },
+      }
+    }
+  }
+
+  return { ok: true }
 }

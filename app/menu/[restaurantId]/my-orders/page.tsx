@@ -32,6 +32,7 @@ import {
   shouldShowOrderPlacedBanner,
 } from '@/lib/customer-copy/qr-redesign-copy'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { aggregateOrderLines } from '@/lib/orders/aggregate-order-lines'
 
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
@@ -352,20 +353,47 @@ export default function MyOrdersPage() {
                     <p className="text-sm text-muted-foreground font-sans mb-2">
                       {order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}:
                     </p>
+                    {/*
+                      #307: LOTS ARE AGGREGATED FOR DISPLAY, never for storage.
+
+                      Additions append, so ordering one more Pork Star produced a second identical
+                      row with no total and no explanation -- the #297/#299 complaint, guaranteed by
+                      the per-line addition model. `aggregateOrderLines` merges lots ONLY when the
+                      server proves item, configuration AND authoritative unit price are identical,
+                      and it SUMS the stored figures rather than recomputing quantity x price.
+
+                      When the prices DIFFER the group keeps one row per price, each with its own
+                      figure. Hiding that behind a single averaged line is the one thing the ruling
+                      forbids outright.
+                    */}
                     <div className="space-y-1">
-                      {order.items?.slice(0, 3).map((item: any, idx: number) => (
-                        <p key={idx} className="text-sm text-foreground font-sans">
-                          {item.quantity}× {item.name}
-                          {lineConfigurationSummary(item) ? (
-                            <span className="block text-xs text-muted-foreground">
-                              {lineConfigurationSummary(item)}
+                      {aggregateOrderLines(order.items ?? []).slice(0, 3).map((group, idx: number) => (
+                        <div key={idx}>
+                          <p className="text-sm text-foreground font-sans">
+                            {group.quantity}× {String((group.sample as any).displayName || (group.sample as any).name || 'Item')}
+                            {lineConfigurationSummary(group.sample as any) ? (
+                              <span className="block text-xs text-muted-foreground">
+                                {lineConfigurationSummary(group.sample as any)}
+                              </span>
+                            ) : null}
+                          </p>
+                          {group.hasMixedPrices && (
+                            <span className="block pl-4 text-xs text-muted-foreground">
+                              {group.rows.map((row, ri) => (
+                                <span key={ri} className="block">
+                                  {row.quantity}× {currency}
+                                  {(row.unitPrice ?? 0).toFixed(2)} — {currency}
+                                  {row.total.toFixed(2)}
+                                </span>
+                              ))}
                             </span>
-                          ) : null}
-                        </p>
+                          )}
+                        </div>
                       ))}
-                      {order.items?.length > 3 && (
+                      {aggregateOrderLines(order.items ?? []).length > 3 && (
                         <p className="text-sm text-muted-foreground font-sans italic">
-                          +{order.items.length - 3} more item{order.items.length - 3 !== 1 ? 's' : ''}
+                          +{aggregateOrderLines(order.items ?? []).length - 3} more item
+                          {aggregateOrderLines(order.items ?? []).length - 3 !== 1 ? 's' : ''}
                         </p>
                       )}
                     </div>

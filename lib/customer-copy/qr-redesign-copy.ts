@@ -94,6 +94,16 @@ export const QR_REDESIGN_PENDING_COPY = {
    */
   pickerBanner: 'Choose something to add to this order',
   /** Renders: beside the banner above. A way back that does not require trusting the Back button. */
+  /**
+   * PENDING COPY. Customer: refused because the RESULTING quantity of one logical item would
+   * exceed the ceiling (#307). It must state BOTH the maximum and how many more they may add,
+   * per the ruling - a refusal that only says no leaves the customer guessing at the number.
+   *
+   * {item} {maximum} {remaining} are substituted at the render site by plain .replace() and must
+   * stay literal. {remaining} can be 0, and the wording has to read correctly when it is.
+   */
+  quantityCapReached:
+    'PENDING COPY — You can have up to {maximum} of {item}. You can add {remaining} more.',
   pickerBack: 'Back to order',
 } as const
 
