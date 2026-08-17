@@ -106,6 +106,48 @@ export function isEditLockActive(row: EditLockRow, nowMs: number): boolean {
 }
 
 /**
+ * Was the lock the caller is presenting SPENT BY A COMMIT, rather than lost to an expiry? (#306)
+ *
+ * The two were indistinguishable to the customer and to the server: both arrived as `lock_lost`
+ * and both were answered *"That took too long, so nothing was saved"* — a lie in the first case.
+ * A customer who believed it re-applied the change and was charged twice, with a fresh staff
+ * review each time, because an addition raises the total.
+ *
+ * THE DISCRIMINATOR IS THE TOKEN ITSELF, not a timestamp alone. A commit NULLS
+ * `edit_lock_token`; an expiry leaves the token on the row and simply lets
+ * `edit_lock_expires_at` pass. A token still present therefore means nobody consumed it, and
+ * that check comes first.
+ *
+ * The recency bound is `EDIT_LOCK_TTL_MS`, and it is not arbitrary: the token being presented was
+ * issued at most one TTL ago, or it would have expired on its own. A customer edit older than
+ * that cannot be the one that consumed THIS token, so claiming it would be a second false
+ * statement in the opposite direction — telling someone their unsaved work landed.
+ *
+ * Deliberately conservative: every uncertain case returns false and the customer is told the lock
+ * expired, which is the existing behaviour. This narrows a lie; it does not invent a promise.
+ */
+export function editAlreadyCommitted(
+  row: {
+    edit_lock_token?: unknown
+    customer_edit_count?: unknown
+    customer_edited_at?: unknown
+  },
+  presentedToken: string,
+  nowMs: number,
+): boolean {
+  if (!String(presentedToken ?? '').trim()) return false
+  // A token still on the row was not consumed — an expiry or another holder, not a commit.
+  if (String(row?.edit_lock_token ?? '').trim()) return false
+  if ((Number(row?.customer_edit_count) || 0) < 1) return false
+
+  const editedAtMs = Date.parse(String(row?.customer_edited_at ?? ''))
+  if (!Number.isFinite(editedAtMs)) return false
+
+  const age = nowMs - editedAtMs
+  return age >= 0 && age <= EDIT_LOCK_TTL_MS
+}
+
+/**
  * True when someone ELSE holds a live lock. A customer re-acquiring their own lock is a
  * renewal, not a conflict — reloading the page mid-edit must not lock them out of their own
  * order for three minutes.
@@ -361,6 +403,14 @@ export const EDIT_COPY = {
   /** Customer: refusal, the lock expired before they committed. */
   lockExpired:
     'That took too long, so nothing was saved. Open the order again to change it.',
+  /**
+   * PENDING COPY. Customer: their change DID land and they are retrying after a lost response —
+   * a dropped request on mobile data is the ordinary way to reach this. It must not reuse
+   * `lockExpired`: telling someone nothing was saved when it was is what made them re-apply the
+   * change and pay for it twice (#306). Shown with the current order beside it.
+   */
+  alreadySaved:
+    'PENDING COPY — Your change was saved. This is the order as it stands now.',
   /** Customer: the edit landed and the total moved. */
   committedTotalChanged:
     "Sent to the restaurant. They'll confirm the new total of {total}.",
