@@ -56,16 +56,18 @@ import { execFileSync } from 'node:child_process'
  * about one line in the payments path. It needs an attended decision.
  */
 const KNOWN_ABSENT = new Set([
-  '56f70b8', // #254/?ref= — the guard itself is byte-identical on both; the test file differs
-  'd57c659', // #135 instruction-limits — MAX_INSTRUCTIONS_LENGTH is present on staging
-  'f7ee138', // #122 cross-tenant union — by-payment-ref code is identical; only comments differ
-  '97e4fe1', // #266 CI key pin
-  '9fcb147', // #262 member key — deriveTabMemberKey is present on staging via a64a422
-  'ea80e72', // #242 webhook resolver — GENUINELY absent: staging still had the vulnerable .or()
-  '3f52149', // #242 probe typecheck
-  '07b4737', // #223 stale-POS cron — CONFLICTS in the payments path, needs a ruling
-  '3e98059', // #223 amount gate
-  'c0bee8b', // #223 exploiter test
+  // SHRUNK 2026-08-17 after the reconciliation: six entries removed because they landed on
+  // cloudflare-staging (accce84..0c616a6) — #242's resolver and probe, #223's three commits, and
+  // the #266 CI pin. The baseline is a debt and it just got smaller, which is the only direction
+  // it is allowed to move.
+  //
+  // These four remain, and all four are commits whose BEHAVIOUR is already on staging under a
+  // different patch-id — verified by reading the decisive line, not by trusting the patch:
+  '56f70b8', // #254/?ref= — `paymentRefOrFilter` and `isWellFormedPaymentRef` are BYTE-IDENTICAL
+             //              on both branches; only the test file differs
+  'd57c659', // #135 — MAX_INSTRUCTIONS_LENGTH is present on staging
+  'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
+  '9fcb147', // #262 member key — deriveTabMemberKey is present via a64a422
 ])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
