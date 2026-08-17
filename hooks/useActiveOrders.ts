@@ -108,8 +108,26 @@ export function useActiveOrders(
           .filter((order) => {
             const tn = Number(order.table_number)
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
+            /**
+             * FAIL CLOSED. Absent means not-mine. Ruled 2026-08-17.
+             *
+             * This was `if (orderSession && orderSession !== scopedSessionId)`, and that shape
+             * fails OPEN the moment the field is redacted: `fetchGuestActiveTableOrders` is a
+             * TABLE-WIDE read, so it returns every diner's order, and #302/#305 now strip
+             * `session_id` from rows this caller does not own. An empty `orderSession` made the
+             * whole condition falsy, the guard was skipped, and a stranger's order — number, items
+             * and total — passed into `setActiveOrder`. Shipped and rolled back within the hour.
+             *
+             * The banner is a PERSONAL surface: it answers "where is MY food". "I could not
+             * establish this is yours" must resolve to not showing it, never to showing it. A
+             * legitimately-unowned-but-visible row belongs on the shared Tab, which has its own
+             * authorisation, not here.
+             *
+             * Safe because `scopedSessionId` is guaranteed non-empty — the effect above returns
+             * early, fail-closed, when there is no session scope. So '' can never match it.
+             */
             const orderSession = String(order.session_id || '').trim()
-            if (orderSession && orderSession !== scopedSessionId) return false
+            if (orderSession !== scopedSessionId) return false
             const placedMs = orderPlacedAtMs(order)
             if (!placedMs || placedMs < placedCutoff) return false
             return isActiveOrderStatus(order.status)
