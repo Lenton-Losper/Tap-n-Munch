@@ -89,3 +89,58 @@ If T1 reports BROKEN, solo diners — customers with no tab at all — cannot ed
 An entry belongs here when **half of a change, deployed alone, is worse than none of it**. State
 the two commits, name the branch that carries only one half, and give the one check that tells a
 split deploy from a whole one.
+
+---
+
+## STANDING RULE — `main` being ahead of `cloudflare-staging` is a DEFECT, not a state
+
+Staging fell **23 commits behind main** and nobody saw it. Looking would not have helped: the one
+number on offer overstated the gap 2.4x — 250 commits by `rev-list`, 106 by patch-id — so the
+figure carried no information. Inside that gap was a **live PostgREST `.or()` injection** in the
+payment webhook resolver (#242) that main had fixed and staging had not, which means the QR
+redesign was built and verified for two weeks on a base weaker than the one customers run.
+
+**Staging ahead of main is normal.** That is what staging is for. **Main ahead of staging is a
+defect**, and it is the dangerous direction: it is a production security fix that a merge can
+silently revert, and nothing in the repo was watching for it.
+
+### The check
+
+`scripts/check-branch-drift.mjs`, wired **blocking** into `build-verification` in
+`.github/workflows/staging.yml`. `deploy` needs that job, so a failure blocks the staging deploy.
+
+    node scripts/check-branch-drift.mjs [baseRef] [headRef]     # defaults: origin/main, origin/cloudflare-staging
+
+    exit 0  no NEW drift
+    exit 1  commits on main that staging lacks and the baseline does not cover
+    exit 2  could not run (missing refs, shallow clone) — never a silent pass
+
+**It measures twice, and the second measurement is what makes it survivable.** `git cherry` gives
+candidates by patch-id; each candidate's patch is then reverse-applied against the tree, so a fix
+PORTED under a different patch-id is reported PRESENT rather than missing. Of the 23 measured on
+2026-08-17, **13 were already present by content**. A check that cried wolf on thirteen ported
+commits would have `continue-on-error: true` bolted onto it within a week — which is exactly what
+happened to the migration drift check three steps above it in the same file.
+
+**It is baselined, so it can be blocking from day one.** The ten genuinely-absent commits as of
+2026-08-17 are listed in `KNOWN_ABSENT` inside the script, printed loudly on every run, and the
+check fails only on drift that is NEW. Stale baseline entries are reported so the list cannot rot.
+**The baseline is a debt, not a licence. It should only ever shrink.**
+
+### The nuance that must not be lost
+
+The check is per **commit**, not per **behaviour**. A commit reads ABSENT when its whole patch is
+not present — its key guard may already have been ported while a test file alongside it was not.
+Four of the ten on 2026-08-17 were exactly that: the `?ref=` guard is byte-identical on both
+branches, and #122's route code differs only in comments. **Read the decisive line before
+concluding a fix is missing.**
+
+### The one that needs a human
+
+`07b4737` (#223, the stale-POS cron) does not cherry-pick cleanly. The conflict is one hunk in
+`lib/orders/auto-cancel-stale-pos-orders.ts` where two rulings collide:
+
+    staging (#268)  amount: finaticResult.amount ?? Number(order.total)   + gatewayAmount recorded separately
+    main    (#223)  amount: gatewayAmount                                 quarantine, never fall back to the order total
+
+That is a payments decision, not a merge. It is not resolved unattended.
