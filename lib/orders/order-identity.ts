@@ -1,4 +1,5 @@
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { isDeadOrder } from '@/lib/orders/customer-status'
 
 /**
  * How a customer surface names an order. ONE answer, because five surfaces gave five (#308).
@@ -24,20 +25,45 @@ import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
  * Deliberately NOT a fallback chain. There is no third thing to try: either a number was allocated
  * or it was not.
  */
-export function orderIdentityLabel(order: { order_number?: unknown } | null | undefined): string {
+export type IdentifiableOrder = {
+  order_number?: unknown
+  /** Read so a DEAD order is not told a number is still coming. See below. */
+  status?: unknown
+  payment_status?: unknown
+} | null | undefined
+
+export function orderIdentityLabel(order: IdentifiableOrder): string {
   const raw = order?.order_number
   // `0` is not a legal order number here (allocation starts at 1), and an empty string is the
   // shape a mapped request row leaves behind. Both mean "none allocated", same as null.
   const hasNumber =
     raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) && Number(raw) > 0
-  return hasNumber ? `Order #${Number(raw)}` : QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered
+  if (hasNumber) return `Order #${Number(raw)}`
+
+  /**
+   * THE THIRD ANSWER, added 2026-08-18 after a production click test.
+   *
+   * "Not numbered yet" says: submitted, awaiting acceptance, no number allocated YET. On a
+   * DECLINED order that is a promise that cannot be kept -- three of them were found on a real
+   * customer session, each headed "Not numbered yet", ten hours after being refused. The string
+   * was right and the condition rendering it was wrong.
+   *
+   * This is the THIRD time a number-rendering branch has been wrong (#296 invented "Order #0",
+   * #308 invented one from the UUID tail), and the reason the answer lives in this function
+   * rather than at each site: two of the eight call sites still inlined the constant and are
+   * routed through here by the same change.
+   */
+  if (isDeadOrder({ status: order?.status, paymentStatus: order?.payment_status })) {
+    return QR_REDESIGN_PENDING_COPY.orderNeverNumbered
+  }
+  return QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered
 }
 
 /**
  * The bare identifier, for surfaces that supply their own "Order" prefix or compose it into a
  * longer sentence. Same rule, same single source.
  */
-export function orderNumberOrNotYet(order: { order_number?: unknown } | null | undefined): string {
+export function orderNumberOrNotYet(order: IdentifiableOrder): string {
   const label = orderIdentityLabel(order)
   return label.startsWith('Order #') ? label.slice('Order '.length) : label
 }

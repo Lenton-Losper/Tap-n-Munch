@@ -25,6 +25,7 @@ import {
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { MAX_LINE_QUANTITY } from '@/lib/orders/quantity-limits'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { useRouter } from 'next/navigation'
@@ -476,6 +477,21 @@ export function OrderEditPanel({
               {lineConfigurationSummary(row.raw) ? (
                 <span className="block text-xs text-[#6B7280]">
                   {lineConfigurationSummary(row.raw)}
+                </span>
+              ) : null}
+              {/*
+                SECTION 19. Once the separate pending-additions list was removed (it double-counted
+                against the row's own number), a row showed one figure and a customer could not
+                tell which part of "3x" was already ordered and which was about to be. This says
+                so, and carries no money: the client does not know what an addition costs and the
+                server prices it at commit.
+              */}
+              {row.quantity > row.originalQuantity ? (
+                <span className="block text-xs text-[#6B7280]">
+                  {QR_REDESIGN_PENDING_COPY.editorPendingAddition.replace(
+                    '{n}',
+                    String(row.quantity - row.originalQuantity),
+                  )}
                 </span>
               ) : null}
             </span>

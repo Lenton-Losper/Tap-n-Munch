@@ -16,6 +16,7 @@ import { PaymentBadge } from './payment-badge'
 import { InfoBanner } from './info-banner'
 import { OrderSummary } from './order-summary'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 import {
   formatReceiptDate,
   mapOrderStatusToBadge,
@@ -130,7 +131,10 @@ export function OrderConfirmationView({
               </p>
             ) : (
               <p className="mt-2 text-sm text-[#6B7280]">
-                {QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered}
+                {/* Routed through the shared function 2026-08-18: this branch is reachable with a
+                    DECLINED order, because fetchGuestOrderById applies no status filter, and it
+                    told the customer a number was still coming. */}
+                {orderIdentityLabel({ order_number: orderNumber, status: orderStatus, payment_status: paymentStatus })}
               </p>
             )}
             <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-[#6B7280]">

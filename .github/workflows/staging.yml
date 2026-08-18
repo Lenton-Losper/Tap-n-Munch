@@ -683,3 +683,19 @@ jobs:
         run: npm run test:e2e
         env:
           E2E_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
+          # ADDED 2026-08-18. Every spec that seeds its own fixture calls `assertStagingDb()` in
+          # tests/e2e/lib/fixture.ts, which throws `missing env SUPABASE_URL` before the browser
+          # opens. That helper landed on 2026-08-16 with the browser suite and this step's env was
+          # never extended, so EIGHT specs have failed on every push since — banner-shows-only-my-order,
+          # browse-header-fits, click-test-script, editor-desired-quantities,
+          # line-configuration-is-visible, no-invented-order-number, order-identity-and-status and
+          # repro-known-defects. All eight died in `beforeAll` with the same message.
+          #
+          # The deploy job runs BEFORE this one, so the red never blocked anything: the worker
+          # shipped and the gate failed afterwards. Two days of that.
+          #
+          # Same secret names the neighbouring staging steps use. STAGING_*, never the unprefixed
+          # pair — those are PRODUCTION, and the fixture writes.
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}

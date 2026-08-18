@@ -70,7 +70,15 @@ describe('#296 the view shows a number only when one exists', () => {
   it('branches on null and falls back to the not-yet-numbered copy', () => {
     const code = codeOnly(VIEW)
     expect(code).toMatch(/orderNumber != null \?/)
-    expect(code).toContain('QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered')
+    /**
+     * STRENGTHENED 2026-08-18. This used to require the constant INLINE here, which is the weaker
+     * form of the same rule -- and it is what let the branch be wrong a third time: on a DECLINED
+     * order the site said "Not numbered yet", a promise that cannot be kept, because an inlined
+     * constant cannot know the order's state. Every site now calls the shared function, which can.
+     * A convention cannot be enforced; a function can (#308).
+     */
+    expect(code).toContain('orderIdentityLabel(')
+    expect(code).not.toContain('QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered')
   })
 
   it('the number is secondary when shown, not the headline', () => {
@@ -89,8 +97,10 @@ describe('#296 it is the SAME decision the Tab screen already made', () => {
   it('the Tab screen still uses that predicate and that constant', () => {
     // If the Tab screen ever changes its mind, this test is where the two screens are shown to
     // have been deliberately kept in step -- rather than one drifting quietly.
-    expect(codeOnly(TAB)).toMatch(/order\.order_number != null/)
-    expect(codeOnly(TAB)).toContain('QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered')
+    // Same strengthening: the Tab screen calls the function too, so the two screens are kept in
+    // step by shared CODE rather than by two copies of one decision.
+    expect(codeOnly(TAB)).toContain('orderIdentityLabel(')
+    expect(codeOnly(TAB)).not.toContain('QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered')
   })
 
   it('and both read the one copy constant, whose wording is now signed off', () => {
@@ -103,7 +113,10 @@ describe('#296 it is the SAME decision the Tab screen already made', () => {
   it('no second not-yet-numbered string was invented', () => {
     // The instruction was to reuse the existing decision. A new constant would be the second
     // answer to one question.
-    const matches = COPY.match(/NotYetNumbered/g) ?? []
-    expect(matches.length).toBe(1)
+    // Counts DECLARATIONS, not mentions. The old form matched every occurrence including those
+    // inside docblocks, so documenting a sibling constant by name broke it — a test that fails
+    // when you explain yourself.
+    const declarations = COPY.match(/^\s*\w*NotYetNumbered\s*:/gm) ?? []
+    expect(declarations.length).toBe(1)
   })
 })
