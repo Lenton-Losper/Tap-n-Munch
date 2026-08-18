@@ -219,7 +219,29 @@ export function OrderingPointCard({
             <p className="text-sm text-gray-400">No location set</p>
           )}
         </div>
-        <DropdownMenu>
+        {/*
+          `modal={false}` IS THE FIX, and it is not a style preference. MEASURED on the deployed
+          build 2026-08-18, immediately after Clear table completed:
+
+              bodyInlinePointerEvents  : "none"
+              openDialogs              : 0
+              triggerDisabled          : false
+              triggerAriaExpanded      : "false"
+              triggerPointerEvents     : "none"
+
+          So the menu's own state was clean and the action had succeeded — `pointer-events: none`
+          was stranded on <body> with no dialog left to own it. The trigger inherited it, which is
+          why EVERY table card went dead at once and why only a reload recovered.
+
+          A modal DropdownMenu and a modal Dialog both lock body pointer events. Opening the
+          Dialog from a DropdownMenuItem tears the menu down in the same tick, so the menu's
+          restore never runs and the Dialog's restore puts back a value the menu had already
+          replaced. Taking the menu out of modal mode leaves exactly one owner of that lock.
+
+          NOT fixed by resetting React state: aria-expanded was already false. Nothing in this
+          component was holding the menu open.
+        */}
+        <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="shrink-0" aria-label="More actions">
               <MoreHorizontal className="h-4 w-4" />

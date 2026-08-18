@@ -6,6 +6,7 @@ import {
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
+import { checkTaxRateChosen, taxRateBelongsToRestaurant } from '@/lib/menu-items/require-tax-rate'
 import {
   validateMenuItemDraft,
   type ExistingMenuItem,
@@ -127,7 +128,9 @@ async function fetchExistingMenuItems(
 ): Promise<ExistingMenuItem[]> {
   const { data, error } = await supabase
     .from('menu_items')
-    .select('id, name, subcategory_id, category_id')
+    // `tax_rate_id` is read for the 2026-08-18 rule: an EDIT must not LEAVE an item without
+    // a rate, so the handler has to know whether the row already has one.
+    .select('id, name, subcategory_id, category_id, tax_rate_id')
     .eq('restaurant_id', restaurantId)
 
   if (error) throw error
@@ -137,7 +140,10 @@ async function fetchExistingMenuItems(
     name: String(row.name ?? ''),
     subCategoryId: (row.subcategory_id as string | null) ?? null,
     categoryId: (row.category_id as string | null) ?? null,
-  }))
+    // Carried alongside rather than added to the shared ExistingMenuItem type: only this route
+    // needs it, and widening a type five callers share to serve one is how they drift.
+    taxRateId: (row.tax_rate_id as string | null) ?? null,
+  })) as Array<ExistingMenuItem & { taxRateId: string | null }>
 }
 
 /** Ingredients are saved via saveRecipeAction, not this route — only parse if ever sent. */
@@ -155,6 +161,45 @@ function parseIngredientRowsFromBody(
       unitId: String(record.unitId ?? record.unit_id ?? ''),
     }
   })
+}
+
+/**
+ * A MENU ITEM CANNOT BE SAVED WITHOUT AN EXPLICITLY CHOSEN TAX RATE. Ruled 2026-08-18 after a
+ * paid production receipt showed 12.12 VAT on 290.00 — one line carried no rate at all and fell
+ * back to a deliberately zero-rated default that nobody had chosen for it.
+ *
+ * SERVER-SIDE AND AUTHORITATIVE. The form's own check is convenience; this route is reachable
+ * without the form, and a disabled button is not a rule.
+ *
+ * The rate must also BELONG to this restaurant — 'a rate was chosen' and 'a rate this tenant
+ * owns' are different questions, and a foreign id would be stored and then silently fall back at
+ * pricing time, which is the same silence by another route.
+ */
+async function refuseWithoutTaxRate(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  restaurantId: string,
+  incoming: unknown,
+  existing: string | null,
+): Promise<NextResponse | null> {
+  const chosen = checkTaxRateChosen(incoming, existing)
+  if (!chosen.ok) {
+    return NextResponse.json({ error: chosen.message, field: chosen.field }, { status: 400 })
+  }
+  const rateId = typeof incoming === 'string' ? incoming.trim() : ''
+  if (!rateId) return null // unchanged on an edit; the existing value already passed
+
+  const { data: rates } = await supabase
+    .from('tax_rates')
+    .select('id')
+    .eq('restaurant_id', restaurantId)
+  const owned = (rates ?? []).map((r) => String(r.id))
+  if (!taxRateBelongsToRestaurant(rateId, owned)) {
+    return NextResponse.json(
+      { error: 'That tax rate does not belong to this restaurant.', field: 'tax_rate_id' },
+      { status: 400 },
+    )
+  }
+  return null
 }
 
 function validationErrorResponse(blockingErrors: string[]) {
@@ -211,6 +256,10 @@ export async function POST(request: Request) {
     if (blockingErrors.length > 0) {
       return validationErrorResponse(blockingErrors)
     }
+
+      // CREATE: there is no existing row, so an explicit rate is simply required.
+      const taxRefusal = await refuseWithoutTaxRate(supabase, restaurantId, body.tax_rate_id, null)
+      if (taxRefusal) return taxRefusal
 
     const payload = buildMenuItemDbPayload({
       ...body,
@@ -308,6 +357,19 @@ export async function PATCH(request: Request) {
     if (blockingErrors.length > 0) {
       return validationErrorResponse(blockingErrors)
     }
+
+      /**
+       * EDIT: the item must not be LEFT without a rate. Omitting the field keeps whatever is
+       * already there — but if that is null, the save is refused until someone picks. Editing a
+       * legacy item therefore forces the choice, without ever assigning a rate on its behalf.
+       */
+      const taxRefusal = await refuseWithoutTaxRate(
+      supabase,
+      restaurantId,
+      body.tax_rate_id,
+      (existingItem as { taxRateId?: string | null } | undefined)?.taxRateId ?? null,
+      )
+      if (taxRefusal) return taxRefusal
 
     const payload = buildMenuItemDbPayload({
       ...body,
