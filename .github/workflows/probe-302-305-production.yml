@@ -80,3 +80,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # Context for the incoming-order SOUND ALERT: which realtime insert(s) a customer order
+      # actually produces, and an upper bound on concurrent dashboards. Read-only.
+      - name: Probe dashboard sound context (no writes)
+        run: npx tsx scripts/probe-dashboard-sound-context-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
