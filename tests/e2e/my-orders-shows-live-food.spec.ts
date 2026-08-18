@@ -35,6 +35,7 @@ let db: SupabaseClient
 let fixture: Partial<Fixture> = {}
 /** Extra rows this spec creates beyond the shared fixture, torn down alongside it. */
 let extraRequestIds: string[] = []
+let extraOrderIds: string[] = []
 
 test.beforeAll(async ({ baseURL }) => {
   db = assertStagingDb()
@@ -43,7 +44,9 @@ test.beforeAll(async ({ baseURL }) => {
 
 test.afterEach(async () => {
   for (const id of extraRequestIds) await db.from('order_requests').delete().eq('id', id)
+  for (const id of extraOrderIds) await db.from('orders').delete().eq('id', id)
   extraRequestIds = []
+  extraOrderIds = []
   await teardown(db, fixture)
   fixture = {}
 })
@@ -89,6 +92,73 @@ async function seedAgedDecline(f: Fixture, hoursAgo: number, itemName: string) {
     .single()
   if (error) throw new Error(`seedAgedDecline: ${error.message}`)
   extraRequestIds.push(data.id)
+  return data.id
+}
+
+/**
+ * A row in an arbitrary raw status, ON THE TABLE THAT CAN LEGALLY HOLD IT.
+ *
+ * MEASURED on staging 2026-08-18, because the first version of this helper put everything on
+ * `order_requests` and two of the four were rejected by `order_requests_status_check`:
+ *
+ *   order_requests   waiting_review, accepting, accepted, declined
+ *   orders           pending, preparing, ready, ready_for_terminal, completed, cancelled
+ *
+ * So a REQUEST can be declined but never cancelled, and only an ORDER reaches the terminal. A
+ * test that seeded them all in one place was asserting against rows the database would not
+ * accept — the failure looked like a defect and was a fixture error.
+ */
+const REQUEST_STATUSES = new Set(['waiting_review', 'accepting', 'accepted', 'declined'])
+
+async function seedRowWithStatus(
+  f: Fixture,
+  status: string,
+  itemName: string,
+  paymentStatus = 'pending',
+) {
+  const items = [
+    {
+      menuItemId: f.menuItemIds[0],
+      name: itemName,
+      displayName: itemName,
+      quantity: 1,
+      unitPrice: 25,
+      subtotal: 21.74,
+      tax: 3.26,
+      total: 25,
+    },
+  ]
+  const common = {
+    restaurant_id: FIXTURE_RESTAURANT,
+    tab_id: f.tabId,
+    table_id: f.tableId,
+    table_number: f.tableNumber,
+    session_id: f.sessionId,
+    member_session_id: f.sessionId,
+    channel: 'table',
+    status,
+    items,
+    subtotal: 21.74,
+    tax: 3.26,
+    total: 25,
+    payment_method: 'cash',
+    placed_at: new Date().toISOString(),
+  }
+
+  if (REQUEST_STATUSES.has(status)) {
+    const { data, error } = await db.from('order_requests').insert(common).select('id').single()
+    if (error) throw new Error(`seedRowWithStatus(order_requests, ${status}): ${error.message}`)
+    extraRequestIds.push(data.id)
+    return data.id
+  }
+
+  const { data, error } = await db
+    .from('orders')
+    .insert({ ...common, payment_status: paymentStatus })
+    .select('id')
+    .single()
+  if (error) throw new Error(`seedRowWithStatus(orders, ${status}): ${error.message}`)
+  extraOrderIds.push(data.id)
   return data.id
 }
 
@@ -277,5 +347,82 @@ test.describe('My Orders — the live list', () => {
     await expect(card, '[control] a card must be on screen to be read').toBeVisible()
     await expect(card.getByText(/^Payment:/i), 'payment belongs on the Tab').toHaveCount(0)
     await expect(card.getByText(/⏳\s*Pending/i), 'PENDING reads as a problem').toHaveCount(0)
+  })
+})
+
+/**
+ * THE SPLIT OF 2026-08-18, on a real screen.
+ *
+ * `needs_you` said "See staff" for a refusal, a cancellation, an order at the terminal and a
+ * failed card alike. Each now has its own word, and this reads them off the rendered page rather
+ * than off the map — a unit test proves `customerOrderState` returns four values; only a browser
+ * proves four different words reach the customer.
+ */
+test.describe('My Orders — the four states that replaced “See staff”', () => {
+  const CASES: Array<[string, keyof typeof CUSTOMER_STATUS_COPY]> = [
+    ['declined', 'declined'],
+    ['cancelled', 'cancelled'],
+    ['ready_for_terminal', 'awaiting_payment'],
+  ]
+
+  for (const [rawStatus, stateKey] of CASES) {
+    test(`a ${rawStatus} order reads “${CUSTOMER_STATUS_COPY[stateKey]}”`, async ({ page, baseURL }) => {
+      const f = await seedTableWithOrder(db)
+      fixture = f
+      const name = `state-${rawStatus}-${randomUUID().slice(0, 6)}`
+      await seedRowWithStatus(f, rawStatus, name)
+
+      await openMyOrders(page, baseURL!, f)
+      await assertLiveOrderVisible(page, f, f.itemName)
+
+      const card = page
+        .locator('[data-testid="my-orders-card"]')
+        .filter({ hasText: new RegExp(name, 'i') })
+      await expect(card, `[control] the ${rawStatus} card must be on screen to be read`).toHaveCount(1)
+
+      await expect(card).toContainText(CUSTOMER_STATUS_COPY[stateKey])
+
+      // ...and NOT any of the other three. A mismapping that sent two states to one word would
+      // pass the assertion above and fail here.
+      for (const other of ['declined', 'cancelled', 'awaiting_payment', 'payment_failed'] as const) {
+        if (other === stateKey) continue
+        await expect(
+          card,
+          `a ${rawStatus} order must not also read “${CUSTOMER_STATUS_COPY[other]}”`,
+        ).not.toContainText(CUSTOMER_STATUS_COPY[other])
+      }
+
+      // The retired word must be gone from the screen entirely.
+      await expect(card).not.toContainText(/see staff/i)
+    })
+  }
+
+  /**
+   * THE BADGE IS NOT A CONTROL. The filled rounded box is why "See staff" read as tappable, so
+   * this asserts the treatment, not just the word: no background fill, and it announces itself as
+   * a status to assistive tech.
+   */
+  test('the status badge is styled as a status, not a button', async ({ page, baseURL }) => {
+    const f = await seedTableWithOrder(db)
+    fixture = f
+    const name = `style-${randomUUID().slice(0, 6)}`
+    await seedRowWithStatus(f, 'declined', name)
+
+    await openMyOrders(page, baseURL!, f)
+    await assertLiveOrderVisible(page, f, f.itemName)
+
+    const badge = page
+      .locator('[data-testid="my-orders-card"]')
+      .filter({ hasText: new RegExp(name, 'i') })
+      .getByRole('status')
+    await expect(badge, '[control] the badge must exist to be measured').toHaveCount(1)
+    await expect(badge).toContainText(CUSTOMER_STATUS_COPY.declined)
+
+    const bg = await badge.evaluate((el) => getComputedStyle(el).backgroundColor)
+    expect(
+      bg,
+      `a status badge must not be a filled box — that is button styling, and it is why ` +
+        `"See staff" read as tappable. Computed background: ${bg}`,
+    ).toMatch(/^(rgba\(0, 0, 0, 0\)|transparent)$/)
   })
 })

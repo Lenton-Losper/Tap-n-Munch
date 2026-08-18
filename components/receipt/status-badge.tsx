@@ -17,7 +17,18 @@ const STYLES: Record<CustomerOrderState, { wrap: string; icon: string; label: st
   preparing: { wrap: 'bg-sky-50 border-sky-100', icon: 'text-sky-600', label: 'text-sky-800' },
   ready: { wrap: 'bg-emerald-50 border-emerald-100', icon: 'text-emerald-600', label: 'text-emerald-800' },
   paid: { wrap: 'bg-green-50 border-green-100', icon: 'text-green-600', label: 'text-green-800' },
-  needs_you: { wrap: 'bg-red-50 border-red-100', icon: 'text-red-600', label: 'text-red-800' },
+  /**
+   * THE FOUR THAT REPLACED `needs_you`, and they are not one colour.
+   *
+   * A refusal, a cancellation, an order waiting at the terminal and a failed card were all red
+   * because they were all one state. Only the last is a PROBLEM the customer must act on; the
+   * middle two are neutral facts about an order that is over, and `awaiting_payment` is a
+   * perfectly normal step. Colouring them alike is how the badge came to read as an alarm.
+   */
+  declined: { wrap: 'bg-stone-50 border-stone-200', icon: 'text-stone-500', label: 'text-stone-700' },
+  cancelled: { wrap: 'bg-stone-50 border-stone-200', icon: 'text-stone-500', label: 'text-stone-700' },
+  awaiting_payment: { wrap: 'bg-amber-50 border-amber-100', icon: 'text-amber-600', label: 'text-amber-800' },
+  payment_failed: { wrap: 'bg-red-50 border-red-100', icon: 'text-red-600', label: 'text-red-800' },
   unknown: { wrap: 'bg-slate-50 border-slate-200', icon: 'text-slate-500', label: 'text-slate-700' },
 }
 

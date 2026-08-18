@@ -122,10 +122,36 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
           type: 'success',
           icon: '🎉',
         }
-      case 'needs_you':
+      /**
+       * THE FOUR THAT REPLACED `needs_you`. It announced "needs your attention. Please speak to a
+       * staff member" for all of them — which is the app refusing to say what happened when it
+       * knows. Each now says its own thing, and only the payment failure asks anything of anyone.
+       */
+      case 'declined':
         return {
           id,
-          message: `Order #${orderNumber} needs your attention. Please speak to a staff member.`,
+          message: `Order #${orderNumber} was not accepted by the restaurant.`,
+          type: 'warning',
+          icon: '🚫',
+        }
+      case 'cancelled':
+        return {
+          id,
+          message: `Order #${orderNumber} was cancelled.`,
+          type: 'warning',
+          icon: '🚫',
+        }
+      /**
+       * Deliberately SILENT, like `waiting`. An order sitting at the terminal is a normal step
+       * the customer did not initiate and cannot speed up; a banner for it is noise, and this
+       * component exists to announce that something changed for the better.
+       */
+      case 'awaiting_payment':
+        return null
+      case 'payment_failed':
+        return {
+          id,
+          message: `Order #${orderNumber}: the payment did not go through. Please speak to a staff member.`,
           type: 'warning',
           icon: '⚠️',
         }

@@ -53,23 +53,63 @@ describe('customerOrderState — the kitchen states', () => {
   })
 })
 
-describe('customerOrderState — the states four words cannot carry', () => {
-  it.each(['ready_for_terminal', 'cancelled', 'declined'])(
-    'gives %s a state of its own rather than hiding it',
-    (status) => {
-      expect(customerOrderState({ status })).toBe('needs_you')
-    }
-  )
-
-  it('treats a failed payment as needing the customer, whatever the kitchen says', () => {
-    expect(customerOrderState({ status: 'preparing', paymentStatus: 'failed' })).toBe('needs_you')
+/**
+ * THE SPLIT OF 2026-08-18. `needs_you` ("See staff") collapsed a refusal, a cancellation, an
+ * order at the terminal and a failed card into one sentence — the app declining to say what
+ * happened when it knows. It is gone; these four replaced it.
+ *
+ * EACH ASSERTED SEPARATELY, and that is the point of the table: a mapping that sent two of them
+ * to the same state would pass a test written as "is one of the four".
+ */
+describe('customerOrderState — the four states that replaced needs_you', () => {
+  it.each([
+    ['declined', 'declined'],
+    ['cancelled', 'cancelled'],
+    ['ready_for_terminal', 'awaiting_payment'],
+    ['failed', 'payment_failed'],
+  ])('maps %s to its own state, %s', (status, expected) => {
+    expect(customerOrderState({ status })).toBe(expected)
   })
 
-  it('flags exactly the states that expect something of the customer', () => {
-    expect(customerStateNeedsAttention('needs_you')).toBe(true)
-    for (const state of CUSTOMER_ORDER_STATES.filter((s) => s !== 'needs_you')) {
+  it('does NOT merge declined and cancelled — they are different conversations with staff', () => {
+    expect(customerOrderState({ status: 'declined' })).not.toBe(
+      customerOrderState({ status: 'cancelled' }),
+    )
+    expect(CUSTOMER_STATUS_COPY.declined).not.toBe(CUSTOMER_STATUS_COPY.cancelled)
+  })
+
+  it('treats a failed PAYMENT as a payment failure, whatever the kitchen says', () => {
+    expect(customerOrderState({ status: 'preparing', paymentStatus: 'failed' })).toBe(
+      'payment_failed',
+    )
+  })
+
+  /**
+   * ONLY the payment failure asks anything of the customer. The other three are STATEMENTS about
+   * what happened to the order — treating them as demands is what made the badge read as a
+   * control the customer was supposed to operate.
+   */
+  it('flags exactly the state that expects something of the customer', () => {
+    expect(customerStateNeedsAttention('payment_failed')).toBe(true)
+    for (const state of CUSTOMER_ORDER_STATES.filter((s) => s !== 'payment_failed')) {
       expect(customerStateNeedsAttention(state)).toBe(false)
     }
+  })
+
+  it('is ten words, each distinct — a duplicate would re-merge two states by the back door', () => {
+    const words = Object.values(CUSTOMER_STATUS_COPY)
+    expect(CUSTOMER_ORDER_STATES).toHaveLength(10)
+    expect(new Set(words).size).toBe(words.length)
+    expect(words).not.toContain('See staff')
+  })
+
+  /**
+   * "Waiting for payment", NOT "Ready to pay". The tab strip already says "Ready for payment" for
+   * a different fact — the TABLE asking to settle, versus one ORDER waiting at the terminal.
+   */
+  it('does not reuse the tab strip’s phrasing for a different fact', () => {
+    expect(CUSTOMER_STATUS_COPY.awaiting_payment).toBe('Waiting for payment')
+    expect(CUSTOMER_STATUS_COPY.awaiting_payment).not.toMatch(/ready/i)
   })
 })
 
