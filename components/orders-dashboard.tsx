@@ -23,6 +23,11 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import {
+  STALE_REQUEST_THRESHOLD_MS,
+  isRequestOverdue,
+  requestWaitingMinutes,
+} from '@/lib/orders/customer-status'
 import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
 import { TAB_FLAG_COPY } from '@/lib/tabs/tab-flag-copy'
 import {
@@ -291,7 +296,23 @@ function OrderRequestCard({
           <span className="ml-2 inline-flex items-center gap-2 align-middle">
             <OrderEditBadges order={request} nowMs={nowMs} />
           </span>
-          <p className="text-muted-foreground text-sm mt-1">Requested {timeAgoLabel}</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            Requested {timeAgoLabel}
+            {/*
+              OVERDUE. Staff-facing and factual: it states the wait in minutes rather than telling
+              anyone off. The number is the point — "waiting 41 min" is actionable in a way that a
+              coloured dot is not.
+
+              Beside the age the card already shows, because that is where someone triaging looks.
+              The ranking is what makes an overdue request findable; this is what makes it legible
+              once found.
+            */}
+            {isRequestOverdue(request.placed_at, nowMs) && (
+              <span data-testid="request-overdue" className="ml-2 font-semibold text-amber-700">
+                · waiting {requestWaitingMinutes(request.placed_at, nowMs)} min — no answer yet
+              </span>
+            )}
+          </p>
           {wasCustomerEdited && (
             <OrderEditTotalDelta order={{ ...request, total: displayTotal }} currency={currency} />
           )}
@@ -891,6 +912,40 @@ export function OrdersDashboard() {
 
     void fetchCompleted()
   }, [activeTab, dashboardRestaurantId])
+
+  /**
+   * OVERDUE REQUESTS RANK FIRST. Not merely flagged — a flag nobody scrolls to is the same defect
+   * in a different colour.
+   *
+   * Production had a submission open for 477 HOURS. Every writer of `order_requests.status` is a
+   * human action and the cron sweeps `orders` only, so nothing aged it, nothing ranked it, and
+   * nothing told anyone. It sat wherever the fetch order happened to put it, indistinguishable
+   * from one placed thirty seconds ago.
+   *
+   * Within each group the OLDEST comes first, so the queue reads worst-first rather than
+   * newest-first. Ties fall back to id so the order cannot flicker between renders on equal
+   * timestamps.
+   *
+   * READ-ONLY. This sorts and labels; it writes nothing and changes no request's status.
+   */
+  const rankedOrderRequests = useMemo(() => {
+    const at = (r: OrderRequest) => {
+      const t = Date.parse(String(r.placed_at ?? ''))
+      return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY
+    }
+    return [...orderRequests].sort((a, b) => {
+      const ao = isRequestOverdue(a.placed_at, nowMs)
+      const bo = isRequestOverdue(b.placed_at, nowMs)
+      if (ao !== bo) return ao ? -1 : 1
+      const d = at(a) - at(b)
+      return d !== 0 ? d : String(a.id).localeCompare(String(b.id))
+    })
+  }, [orderRequests, nowMs])
+
+  const overdueRequestCount = useMemo(
+    () => orderRequests.filter((r) => isRequestOverdue(r.placed_at, nowMs)).length,
+    [orderRequests, nowMs],
+  )
 
   const stationScope = useMemo(
     () => ({
@@ -1836,7 +1891,22 @@ export function OrdersDashboard() {
             </div>
           ) : (
             <div className="grid gap-4 max-w-3xl">
-              {orderRequests.map((request) => (
+              {/*
+                THE QUEUE-LEVEL COUNT. A per-card marker only helps someone already looking at that
+                card; this says how many are overdue before anyone scrolls — the half that was
+                missing when a request sat unanswered for 477 hours.
+              */}
+              {overdueRequestCount > 0 && (
+                <div
+                  data-testid="overdue-requests-banner"
+                  className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900"
+                >
+                  {overdueRequestCount === 1
+                    ? `1 request has been waiting more than ${Math.round(STALE_REQUEST_THRESHOLD_MS / 60000)} minutes with no answer. It is at the top of this list.`
+                    : `${overdueRequestCount} requests have been waiting more than ${Math.round(STALE_REQUEST_THRESHOLD_MS / 60000)} minutes with no answer. They are at the top of this list.`}
+                </div>
+              )}
+              {rankedOrderRequests.map((request) => (
                 <OrderRequestCard
                   key={request.id}
                   request={request}

@@ -218,3 +218,62 @@ export function isStaleDeadOrder(
   if (!Number.isFinite(t)) return true
   return nowMs - t > DEAD_ORDER_LIVE_WINDOW_MS
 }
+
+/**
+ * HOW LONG AN UNANSWERED REQUEST WAITS BEFORE STAFF ARE TOLD IT IS OVERDUE.
+ *
+ * THE DEFECT THIS SERVES, measured 2026-08-18. Every writer of `order_requests.status` is a human
+ * action (staff accept / decline / review, and the customer's own insert); the every-2-minutes
+ * cron sweeps `orders` only. So an unanswered request has no timeout, no escalation, and no
+ * surface that ranks it — it is indistinguishable from one placed thirty seconds ago until
+ * somebody scrolls. Production had one open for 477 HOURS. That is not staff ignoring a customer.
+ * Nothing told them.
+ *
+ * WHY FIFTEEN MINUTES, and the honest state of the evidence.
+ *
+ *   WHAT WAS MEASURED. Time-to-accept on production, via `orders.placed_at` minus
+ *   `order_requests.placed_at` joined on `source_request_id`: **1.1 minutes**, and the whole
+ *   sample was n=1 — `source_request_id` is a recent column and is barely populated yet. The open
+ *   rows at the same moment were 3.2h and 477h. There is nothing in between.
+ *
+ *   SO THIS IS A JUDGEMENT ON THIN EVIDENCE, and it is stated as one rather than dressed up as a
+ *   percentile. What the data does support is the SHAPE: an answer that happens happens in about a
+ *   minute, and the ones that do not happen are hours to weeks away. Any threshold in that gap
+ *   separates the two populations.
+ *
+ *   FIFTEEN MINUTES sits in that gap, roughly 13x the one observed accept, so ordinary service —
+ *   including a genuinely busy pass — does not trip it. It is short enough to matter inside one
+ *   sitting: a customer who has waited a quarter of an hour with no answer is still at the table
+ *   and can still be served, which is exactly the window where telling staff changes the outcome.
+ *
+ *   REVISABLE, and deliberately one named constant so it moves on evidence rather than being
+ *   hunted through render code. Re-run
+ *   scripts/probe-waiting-review-age-production-readonly.ts once `source_request_id` has a real
+ *   sample and set it from the p95.
+ *
+ * THIS IS A READ. Nothing here or at its call sites changes a request's status. Auto-declining
+ * food for a customer who may still be sitting at the table is a separate ruling and is not this.
+ */
+export const STALE_REQUEST_THRESHOLD_MS = 15 * 60 * 1000
+
+/**
+ * Has this submission been waiting longer than staff should ever leave one?
+ *
+ * An unparseable timestamp reads as NOT stale, the opposite of `isStaleDeadOrder`. The two
+ * defaults differ because the consequences do: there, treating undated debris as old CLEARS a
+ * dead row off a customer's screen; here, treating an undated row as overdue would put a false
+ * alarm at the top of a working queue, and a staff signal that cries wolf is ignored — which is
+ * the failure this exists to fix.
+ */
+export function isRequestOverdue(placedAt: unknown, nowMs: number = Date.now()): boolean {
+  const t = placedAt instanceof Date ? placedAt.getTime() : Date.parse(String(placedAt ?? ''))
+  if (!Number.isFinite(t)) return false
+  return nowMs - t > STALE_REQUEST_THRESHOLD_MS
+}
+
+/** Whole minutes a submission has been waiting. For the staff label; never shown to a customer. */
+export function requestWaitingMinutes(placedAt: unknown, nowMs: number = Date.now()): number {
+  const t = placedAt instanceof Date ? placedAt.getTime() : Date.parse(String(placedAt ?? ''))
+  if (!Number.isFinite(t)) return 0
+  return Math.max(0, Math.floor((nowMs - t) / 60000))
+}
