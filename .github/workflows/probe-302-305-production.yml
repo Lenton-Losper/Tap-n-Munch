@@ -1,0 +1,43 @@
+# Re-verify Deploy 1's redaction against PRODUCTION, read-only.
+#
+# WHY A WORKFLOW. The probe needs the production Supabase service-role key to find an existing
+# order to read, and that credential exists only as a GitHub secret — there is no copy on any
+# developer machine. Running it here is the only way to point it at production at all.
+#
+# STRICTLY READ-ONLY. scripts/probe-302-305-production-readonly.ts performs one `.select()` per
+# shape and one HTTP GET each. It seeds no fixture and issues no insert, update, delete or rpc —
+# production is not a test environment. It refuses to run unless SUPABASE_URL is the production
+# project, so a mis-set secret aborts instead of testing the wrong database.
+#
+# IT DISTINGUISHES FIXED FROM BROKEN. Every shape reports a [control] line first: did the order row
+# come back AT ALL. "Both ids are absent" is also what a 404, a wrong table number and a typo'd
+# query string look like, so a run where no row arrives is INCONCLUSIVE, not a pass.
+name: Probe #302/#305 redaction on production (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    name: Read-only #302/#305 production redaction probe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The probe lives on the working branch, not on main — it is an instrument, not
+          # shipped code.
+          ref: cloudflare-staging
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Probe production (no writes)
+        run: npx tsx scripts/probe-302-305-production-readonly.ts
+        env:
+          # The UNPREFIXED pair is production — the same one production-worker.yml hands to its
+          # migration drift check. STAGING_* are a different project entirely.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PROD_BASE: https://flashtap.app
