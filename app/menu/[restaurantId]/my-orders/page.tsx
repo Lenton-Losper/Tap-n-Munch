@@ -9,6 +9,8 @@ import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orde
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
 import { readTabSessionId } from '@/lib/tab-storage'
+// #313: the way back after a table close. The path only -- this screen never redirects on its own.
+import { tableLandingPath } from '@/lib/session-token-client'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
 import { mapOrderStatusToBadge } from '@/components/receipt/receipt-types'
@@ -57,6 +59,18 @@ export default function MyOrdersPage() {
   const restaurantId = params.restaurantId as string
   const tableNumber = searchParams.get('table') || ''
   const [orders, setOrders] = useState<any[]>([])
+  /**
+    #313. The customer's table was closed by staff, so the server withheld their previous
+    session's orders and the list is correctly empty -- but nothing said so, and an unexplained
+    empty screen is indistinguishable from a lost order.
+
+    READ, NOT DECIDED. The flag comes from the same filter that enforced the boundary, so the
+    notice cannot contradict the list. This screen does NOT evict the session, clear storage or
+    redirect: that was useSessionTokenGuard, which was deleted rather than mounted, and a
+    boundary enforced on the phone is not a boundary. The customer is told and given a way back;
+    they choose.
+  */
+  const [sessionEnded, setSessionEnded] = useState(false)
   const [loading, setLoading] = useState(true)
   const sessionId = getCurrentSession()
   // Every id this browser holds. The order carries whichever the placing screen used, and the
@@ -123,7 +137,7 @@ export default function MyOrdersPage() {
     }
 
     const loadOrders = async () => {
-      const { orders } = await fetchGuestOrdersBySession({
+      const { orders, sessionEnded: ended } = await fetchGuestOrdersBySession({
         restaurantId,
         sessionId,
         // Orders placed from the tab flow carry the tab-context session id, not this one;
@@ -136,6 +150,10 @@ export default function MyOrdersPage() {
       })
       const ordersList = (orders || []).filter((order: any) => order.is_closed !== true)
       setOrders(ordersList)
+      // Only ever set true by a response that says so. It is not cleared on a later poll that
+      // omits the field -- an endpoint that does not compute it means "not known to have ended",
+      // never "still current".
+      if (ended) setSessionEnded(true)
       setLoading(false)
     }
     void loadOrders()
@@ -492,7 +510,35 @@ export default function MyOrdersPage() {
         </div>
 
         {/* Orders List */}
-        {orders.length === 0 ? (
+        {orders.length === 0 && sessionEnded ? (
+          /*
+            #313. THE SAME EMPTY LIST, EXPLAINED.
+
+            "No orders yet" is a lie here: they ordered, and possibly paid. Staff closed the table,
+            so those orders belong to a session that is over and the server will not return them.
+            Sending this customer to Browse Menu would start an order against a table they are no
+            longer checked in to.
+
+            NOTHING IS EVICTED. No storage is cleared and no redirect fires -- the link is offered
+            and the customer takes it or does not. The rows still exist for staff and on the
+            settled tab; they are financial records.
+          */
+          <div className="bg-card border border-border p-16 text-center" data-testid="my-orders-session-ended">
+            <div className="text-6xl mb-6">🔄</div>
+            <h2 className="text-xl font-serif font-bold text-foreground mb-2">
+              {QR_REDESIGN_PENDING_COPY.sessionEndedTitle}
+            </h2>
+            <p className="text-muted-foreground font-sans mb-8">
+              {QR_REDESIGN_PENDING_COPY.sessionEndedBody}
+            </p>
+            <Button
+              onClick={() => router.push(tableLandingPath(restaurantId, Number(tableNumber)))}
+              className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8"
+            >
+              {QR_REDESIGN_PENDING_COPY.sessionEndedAction}
+            </Button>
+          </div>
+        ) : orders.length === 0 ? (
           <div className="bg-card border border-border p-16 text-center">
             <div className="text-6xl mb-6">🍽️</div>
             <h2 className="text-xl font-serif font-bold text-foreground mb-2">No orders yet</h2>
