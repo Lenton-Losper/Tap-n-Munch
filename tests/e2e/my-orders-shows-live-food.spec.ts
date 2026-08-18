@@ -28,6 +28,7 @@ import {
   FIXTURE_RESTAURANT,
   type Fixture,
 } from './lib/fixture'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 
 let db: SupabaseClient
 let fixture: Partial<Fixture> = {}
@@ -124,27 +125,45 @@ test.describe('My Orders — the live list', () => {
     await openMyOrders(page, baseURL!, f)
     await assertLiveOrderVisible(page, f, f.itemName)
 
-    /**
-     * ASSERTED AS ORDERING, which is what ships. The collapsed section is built but held back:
-     * it needs a heading, a heading is a customer-facing string, and the PENDING COPY marker
-     * would render literally to a customer. Ordering needs no wording and fixes the reported
-     * harm -- the dead order no longer sits ABOVE today's food.
-     */
-    const cards = page.locator('[data-testid="my-orders-card"]')
-    await expect(cards.first()).toBeVisible({ timeout: 20_000 })
-    const texts = await cards.allInnerTexts()
-    const liveIdx = texts.findIndex((t) => t.includes(f.itemName))
-    const staleIdx = texts.findIndex((t) => t.includes(staleName))
+    const live = page.locator('[data-testid="my-orders-live"]')
+    await expect(
+      live,
+      '[control] the live list must exist as its own region, or there is nothing to bound',
+    ).toBeVisible({ timeout: 20_000 })
+    await expect(
+      live.getByText(new RegExp(f.itemName, 'i')),
+      '[control] today’s food must be IN the live list, or the assertion below is reading an ' +
+        'empty region rather than a bounded one',
+    ).toHaveCount(1)
 
-    expect(liveIdx, '[control] the current order must be among the cards').toBeGreaterThanOrEqual(0)
-    expect(staleIdx, '[control] the stale decline must be among the cards, not dropped').toBeGreaterThanOrEqual(0)
-    expect(
-      staleIdx,
-      `a declined order from 10 hours ago must come AFTER today's food, not above it ` +
-        `(live at ${liveIdx}, stale at ${staleIdx})`,
-    ).toBeGreaterThan(liveIdx)
+    await expect(
+      live.getByText(new RegExp(staleName, 'i')),
+      'a declined order from 10 hours ago must not be in the LIVE list',
+    ).toHaveCount(0)
   })
 
+  /** And it is in the collapsed section — placement, not deletion. */
+  test('the stale decline is in the collapsed “Earlier” section', async ({ page, baseURL }) => {
+    const f = await seedTableWithOrder(db)
+    fixture = f
+    const staleName = `earlier-decline-${randomUUID().slice(0, 6)}`
+    await seedAgedDecline(f, 10, staleName)
+
+    await openMyOrders(page, baseURL!, f)
+    await assertLiveOrderVisible(page, f, f.itemName)
+
+    const earlier = page.locator('[data-testid="my-orders-earlier"]')
+    await expect(earlier, 'the collapsed section must render when it has content').toBeVisible({
+      timeout: 20_000,
+    })
+    // The signed-off heading read from the CONSTANT rather than typed out, so a copy change
+    // cannot silently break the selector — that has happened before on this project.
+    await expect(earlier).toContainText(QR_REDESIGN_PENDING_COPY.myOrdersEarlierSection)
+    await expect(
+      earlier.getByText(new RegExp(staleName, 'i')),
+      'the stale decline must be INSIDE the collapsed section',
+    ).toHaveCount(1)
+  })
   /**
    * THE OTHER SIDE OF DEFECT 1, and the reason this is not a blanket terminal-state filter: a
    * customer declined a minute ago must SEE it. Hiding a fresh decline is a worse defect than
