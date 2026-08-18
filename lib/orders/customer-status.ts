@@ -125,3 +125,57 @@ export function customerStatusLabel(status: unknown, paymentStatus?: unknown): s
 export function customerStateNeedsAttention(state: CustomerOrderState): boolean {
   return state === 'needs_you'
 }
+
+/**
+ * IS THIS ORDER OVER, with nothing left for the customer to do or expect?
+ *
+ * FOUND ON PRODUCTION 2026-08-18: three declined orders from ten hours earlier were stacked above
+ * today's food on My Orders. Measured cause — `lib/guest-orders/queries.ts` bounds the list by
+ * restaurant, session and `tab_settlement_for_tab_id IS NULL` and by nothing else on the orders
+ * side, and by `status IN ('waiting_review','accepting','declined')` on the requests side. No time
+ * bound and no limit on either. So every order a session ever placed accumulates forever.
+ *
+ * DELIBERATELY NARROWER THAN `needs_you`. That state also covers `ready_for_terminal` and a failed
+ * payment, both of which the customer genuinely must act on — demoting those would hide something
+ * that needs attention, which is a worse defect than the one being fixed. Dead means dead:
+ *
+ *   declined   staff refused it. There is nothing coming and no number will ever be allocated.
+ *   cancelled  it was called off. Same.
+ *
+ * `paid` and `completed` are NOT dead here. A paid order from twenty minutes ago is still part of
+ * "what is happening with my food"; it is the record of the meal in progress.
+ */
+export function isDeadOrder(input: CustomerStatusInput): boolean {
+  const status = normalizeOrderStatusForDisplay(input.status)
+  return status === 'declined' || status === 'cancelled'
+}
+
+/**
+ * How long a dead order stays in the LIVE list before moving to the collapsed section.
+ *
+ * A customer declined a minute ago must SEE it — hiding a fresh decline is worse than showing a
+ * stale one, and it is the whole reason this is a window rather than a blanket filter. 90 minutes
+ * covers a meal with room to spare, and is short enough that yesterday's refusals are gone by the
+ * time the same phone scans again.
+ *
+ * Chosen, not measured: there is no data on how long a customer takes to notice a decline. It is
+ * one named constant so it can be moved on evidence rather than hunted through render code.
+ */
+export const DEAD_ORDER_LIVE_WINDOW_MS = 90 * 60 * 1000
+
+/**
+ * Whether a dead order has aged out of the live list. Live orders never age out, whatever their
+ * age — a submission the restaurant has not answered is still the customer's open question.
+ */
+export function isStaleDeadOrder(
+  input: CustomerStatusInput & { placedAt?: unknown },
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isDeadOrder(input)) return false
+  const raw = input.placedAt
+  const t = raw instanceof Date ? raw.getTime() : Date.parse(String(raw ?? ''))
+  // An unparseable timestamp is treated as OLD. A dead order with no readable date is exactly the
+  // debris this is meant to clear, and keeping it live forever is the failure being fixed.
+  if (!Number.isFinite(t)) return true
+  return nowMs - t > DEAD_ORDER_LIVE_WINDOW_MS
+}

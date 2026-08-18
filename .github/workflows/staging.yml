@@ -508,6 +508,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # The drift check compares branches by patch-id and reverse-applies patches against
+          # the tree. Both need real history; the default depth-1 checkout has neither.
+          fetch-depth: 0
       # Runs before `npm ci` so node_modules cannot pollute the scan.
       # #142: conflict markers sat in a JSDoc block for days because neither the build nor
       # typecheck could see them. Catches a class of error typecheck structurally cannot.
@@ -537,6 +541,23 @@ jobs:
       # are baselined inside the script, so this can only fail on something new.
       - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
         run: npx tsx scripts/check-migration-inline-check.ts
+      # cloudflare-staging fell 23 commits behind main without anyone noticing, and the only
+      # number on offer overstated it 2.4x (250 by rev-list, 106 by patch-id), so looking did not
+      # help. Among the gap was a live PostgREST .or() injection fix main had and staging did not.
+      #
+      # BLOCKING, unlike the migration drift check below, and for the same reason the inline-CHECK
+      # step above is blocking: the existing gap is baselined inside the script, so this can only
+      # fail on drift that is NEW. Main being ahead of staging is a defect, not a state — it is the
+      # direction that silently reverts a production security fix on the next merge.
+      #
+      # This runs BEFORE the deploy job (which `needs: build-verification`), so failing here
+      # blocks the staging deploy outright.
+      - name: Check branch drift (main vs cloudflare-staging, by patch-id)
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git fetch --no-tags origin cloudflare-staging:refs/remotes/origin/cloudflare-staging || true
+          node scripts/check-branch-drift.mjs origin/main origin/cloudflare-staging
       - name: Unit and schema tests (no HTTP)
         run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities"
         env:
@@ -662,3 +683,19 @@ jobs:
         run: npm run test:e2e
         env:
           E2E_BASE_URL: https://flashtap-staging.llosperofficial.workers.dev
+          # ADDED 2026-08-18. Every spec that seeds its own fixture calls `assertStagingDb()` in
+          # tests/e2e/lib/fixture.ts, which throws `missing env SUPABASE_URL` before the browser
+          # opens. That helper landed on 2026-08-16 with the browser suite and this step's env was
+          # never extended, so EIGHT specs have failed on every push since — banner-shows-only-my-order,
+          # browse-header-fits, click-test-script, editor-desired-quantities,
+          # line-configuration-is-visible, no-invented-order-number, order-identity-and-status and
+          # repro-known-defects. All eight died in `beforeAll` with the same message.
+          #
+          # The deploy job runs BEFORE this one, so the red never blocked anything: the worker
+          # shipped and the gate failed afterwards. Two days of that.
+          #
+          # Same secret names the neighbouring staging steps use. STAGING_*, never the unprefixed
+          # pair — those are PRODUCTION, and the fixture writes.
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}

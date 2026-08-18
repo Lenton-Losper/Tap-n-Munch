@@ -75,6 +75,36 @@ export const QR_REDESIGN_PENDING_COPY = {
   /** Renders: the Tab, per order, before staff have accepted it and allocated a number. */
   tabOrderNotYetNumbered: 'Not numbered yet',
 
+  /**
+   * SIGNED OFF 2026-08-18. Renders: the order editor, a grey line under a row whose desired
+   * quantity exceeds what the order currently holds. `{n}` is the difference.
+   *
+   * Not PENDING COPY -- the human wrote this one. Section 19 of the editor ruling: once the
+   * separate pending-additions list was removed (it double-counted), a row showed one number and
+   * a customer could not tell which part of "3x" was already ordered and which was about to be.
+   */
+  editorPendingAddition: '{n} not yet sent',
+
+  /**
+   * PENDING COPY -- Renders: My Orders and every other surface naming an order, when the order
+   * is DEAD (declined or cancelled) and therefore has no number and never will.
+   *
+   * `tabOrderNotYetNumbered` means "submitted, awaiting acceptance, no number allocated YET".
+   * On a declined order that is a promise that cannot be kept -- found on production 2026-08-18,
+   * three declined orders each headed "Not numbered yet". The string was right; the condition
+   * rendering it was wrong.
+   */
+  orderNeverNumbered: 'PENDING COPY - a declined/cancelled order has no number and never will',
+
+  /**
+   * PENDING COPY -- Renders: My Orders, the heading of the collapsed section holding orders that
+   * are over (declined or cancelled) and older than the freshness window.
+   *
+   * They are NOT deleted: a customer who was declined and sees nothing has no idea what
+   * happened. They are moved out of the live list, which answers "what is happening with my
+   * food now".
+   */
+  myOrdersEarlierSection: 'PENDING COPY - heading for finished/declined orders from earlier',
   /** Renders: the Tab, per order, on a submitted-but-unanswered order. */
   tabOrderAwaitingConfirmation: 'Waiting for restaurant',
 

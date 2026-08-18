@@ -17,6 +17,7 @@ import { getCurrentSession } from '@/lib/session'
 import { fetchSharedTab, type SharedTabResponse } from '@/lib/tabs/shared-tab-client'
 import { customerStatusLabel } from '@/lib/orders/customer-status'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { orderIdentityLabel } from '@/lib/orders/order-identity'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
@@ -467,9 +468,10 @@ export default function TabSummaryPage() {
                   <div key={order.id}>
                     <div className="flex items-baseline justify-between gap-2 text-xs font-sans">
                       <span className="text-muted-foreground">
-                        {order.order_number != null
-                          ? `Order #${order.order_number}`
-                          : QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered}
+                        {/* Routed through the shared function 2026-08-18. This site inlined the
+                            decision, so it kept saying "Not numbered yet" on a DECLINED order --
+                            the third time a number-rendering branch has been wrong (#296, #308). */}
+                        {orderIdentityLabel(order)}
                       </span>
                       <span
                         className={

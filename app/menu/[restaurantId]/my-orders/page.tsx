@@ -19,6 +19,7 @@ import {
   customerOrderState,
   customerStateNeedsAttention,
   customerStatusLabel,
+  isStaleDeadOrder,
 } from '@/lib/orders/customer-status'
 import {
   EDIT_COPY,
@@ -177,6 +178,37 @@ export default function MyOrdersPage() {
   const isDeclined = (order: any) => order?.status === 'declined'
 
   /**
+   * THE LIVE LIST, AND THE ONE BELOW IT. Found on production 2026-08-18: three declined orders
+   * from ten hours earlier stacked above today's food.
+   *
+   * My Orders answers "what is happening with my food NOW". Nothing bounded this list -- measured
+   * in lib/guest-orders/queries.ts, the orders side filters on restaurant, session and
+   * `tab_settlement_for_tab_id IS NULL` and nothing else; the requests side on status alone. No
+   * time bound, no limit. So every order a session ever placed accumulated forever.
+   *
+   * WHY A COLLAPSED SECTION rather than a filter or a plain time bound, of the three defensible
+   * options:
+   *
+   *   a plain TIME BOUND would hide a decline from ten hours ago that the customer never saw --
+   *     and being declined without ever learning it is the worse failure;
+   *   a blanket TERMINAL-STATE FILTER would hide a decline from thirty seconds ago, which is
+   *     worse still;
+   *   a COLLAPSED SECTION drops nothing. Everything stays on the screen and one tap away, so the
+   *     customer can still ask staff about it, while the live list holds only what is actually
+   *     happening.
+   *
+   * So the rule is BOTH conditions: dead AND aged. A dead order stays live for
+   * DEAD_ORDER_LIVE_WINDOW_MS so the customer sees it; a LIVE order never ages out at all,
+   * because a submission the restaurant has not answered is still their open question.
+   */
+  const liveOrders = orders.filter(
+    (o) => !isStaleDeadOrder({ status: o?.status, paymentStatus: o?.payment_status, placedAt: o?.placed_at }),
+  )
+  const earlierOrders = orders.filter((o) =>
+    isStaleDeadOrder({ status: o?.status, paymentStatus: o?.payment_status, placedAt: o?.placed_at }),
+  )
+
+  /**
    * REMOVED FROM THE SCREEN 2026-08-16 (spec section 18), and the function deleted with it.
    *
    * It rendered as **"Total Spent"** and it was not what anyone had spent: it summed this
@@ -228,6 +260,146 @@ export default function MyOrdersPage() {
         </div>
       </div>
     )
+  }
+  /**
+   * ONE CARD, rendered by both sections. Extracted 2026-08-18 with the live/earlier split: the
+   * alternative was 120 lines of duplicated JSX that would drift the moment either half changed.
+   */
+  const renderOrderCard = (order: any) => {
+      const placedAt = order.placed_at?.toDate
+        ? order.placed_at.toDate()
+        : order.placed_at
+        ? (typeof order.placed_at === 'string' ? new Date(order.placed_at) : new Date())
+        : new Date()
+      const timeAgo = getTimeAgo(placedAt)
+
+      return (
+        <div
+          key={order.id}
+          data-testid="my-orders-card"
+          className="bg-card border border-border p-6 cursor-pointer hover:border-foreground/30 transition"
+          onClick={() =>
+            router.push(`/order-confirmation?orderId=${order.id}${tableNumber ? `&table=${tableNumber}` : ''}`)
+          }
+        >
+          {/* Order Header */}
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h3 className="font-sans font-bold text-foreground text-lg">
+                {orderIdentityLabel(order)}
+              </h3>
+              <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xl font-bold text-foreground font-sans">
+                N${order.total?.toFixed(2)}
+              </p>
+              {/* One vocabulary, from lib/orders/customer-status.ts. A state that
+                  expects something of the customer is styled apart from one that does
+                  not -- "Needs you" must not look like "Being prepared". */}
+              <span
+                className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${
+                  statusNeedsAttention(order)
+                    ? 'bg-amber-100 text-amber-900'
+                    : 'bg-muted text-foreground'
+                }`}
+              >
+                {statusLabel(order)}
+              </span>
+            </div>
+          </div>
+
+          {/* Order Items Preview */}
+          <div className="border-t border-border pt-4">
+            <p className="text-sm text-muted-foreground font-sans mb-2">
+              {order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}:
+            </p>
+            {/*
+              #307: LOTS ARE AGGREGATED FOR DISPLAY, never for storage.
+
+              Additions append, so ordering one more Pork Star produced a second identical
+              row with no total and no explanation -- the #297/#299 complaint, guaranteed by
+              the per-line addition model. `aggregateOrderLines` merges lots ONLY when the
+              server proves item, configuration AND authoritative unit price are identical,
+              and it SUMS the stored figures rather than recomputing quantity x price.
+
+              When the prices DIFFER the group keeps one row per price, each with its own
+              figure. Hiding that behind a single averaged line is the one thing the ruling
+              forbids outright.
+            */}
+            <div className="space-y-1">
+              {aggregateOrderLines(order.items ?? []).slice(0, 3).map((group, idx: number) => (
+                <div key={idx}>
+                  <p className="text-sm text-foreground font-sans">
+                    {group.quantity}× {String((group.sample as any).displayName || (group.sample as any).name || 'Item')}
+                    {lineConfigurationSummary(group.sample as any) ? (
+                      <span className="block text-xs text-muted-foreground">
+                        {lineConfigurationSummary(group.sample as any)}
+                      </span>
+                    ) : null}
+                  </p>
+                  {group.hasMixedPrices && (
+                    <span className="block pl-4 text-xs text-muted-foreground">
+                      {group.rows.map((row, ri) => (
+                        <span key={ri} className="block">
+                          {row.quantity}× {currency}
+                          {(row.unitPrice ?? 0).toFixed(2)} — {currency}
+                          {row.total.toFixed(2)}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              ))}
+              {aggregateOrderLines(order.items ?? []).length > 3 && (
+                <p className="text-sm text-muted-foreground font-sans italic">
+                  +{aggregateOrderLines(order.items ?? []).length - 3} more item
+                  {aggregateOrderLines(order.items ?? []).length - 3 !== 1 ? 's' : ''}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Edit entry point. Routes to the per-order confirmation screen, which is
+              where the editor lives — one place a customer can change an order from,
+              rather than a second editor embedded in a list card. The button appears
+              only while the order is still open to editing; the server refuses
+              regardless, so this only avoids offering a dead control. */}
+          {isEditableHere(order, editSessionIds) && (
+            <div className="mt-4">
+              <Button
+                variant="outline"
+                className="w-full font-sans font-semibold"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  router.push(
+                    `/menu/${restaurantId}/order-confirmation/${order.id}${tableNumber ? `?table=${tableNumber}` : ''}`,
+                  )
+                }}
+              >
+                {EDIT_COPY.editCta}
+              </Button>
+            </div>
+          )}
+
+    {/*
+      PAYMENT REMOVED FROM THIS CARD 2026-08-18.
+
+      It rendered `Payment: cash` beside a `PENDING` chip on a card whose subject is FOOD STATUS.
+      On a live order nothing is wrong and PENDING reads as though something is; payment belongs
+      on the Tab, which owns the money and shows the two figures that actually mean something.
+
+      The DECLINE SENTENCE stays. It is not payment information -- it is the only thing on this
+      screen that tells a customer their order was refused, and it is the same sentence the direct
+      link shows, so arriving by list and arriving by link do not say two different things.
+    */}
+    {isDeclined(order) && (
+      <p className="mt-4 text-sm font-sans text-muted-foreground">
+        {mapOrderStatusToBadge('declined').description}
+      </p>
+    )}
+        </div>
+      )
   }
 
   return (
@@ -304,153 +476,26 @@ export default function MyOrdersPage() {
             </Button>
           </div>
         ) : (
-          <div className="space-y-4">
-            {orders.map((order) => {
-              const placedAt = order.placed_at?.toDate
-                ? order.placed_at.toDate()
-                : order.placed_at
-                ? (typeof order.placed_at === 'string' ? new Date(order.placed_at) : new Date())
-                : new Date()
-              const timeAgo = getTimeAgo(placedAt)
-
-              return (
-                <div
-                  key={order.id}
-                  className="bg-card border border-border p-6 cursor-pointer hover:border-foreground/30 transition"
-                  onClick={() =>
-                    router.push(`/order-confirmation?orderId=${order.id}${tableNumber ? `&table=${tableNumber}` : ''}`)
-                  }
-                >
-                  {/* Order Header */}
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h3 className="font-sans font-bold text-foreground text-lg">
-                        {orderIdentityLabel(order)}
-                      </h3>
-                      <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xl font-bold text-foreground font-sans">
-                        N${order.total?.toFixed(2)}
-                      </p>
-                      {/* One vocabulary, from lib/orders/customer-status.ts. A state that
-                          expects something of the customer is styled apart from one that does
-                          not -- "Needs you" must not look like "Being prepared". */}
-                      <span
-                        className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${
-                          statusNeedsAttention(order)
-                            ? 'bg-amber-100 text-amber-900'
-                            : 'bg-muted text-foreground'
-                        }`}
-                      >
-                        {statusLabel(order)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Order Items Preview */}
-                  <div className="border-t border-border pt-4">
-                    <p className="text-sm text-muted-foreground font-sans mb-2">
-                      {order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}:
-                    </p>
-                    {/*
-                      #307: LOTS ARE AGGREGATED FOR DISPLAY, never for storage.
-
-                      Additions append, so ordering one more Pork Star produced a second identical
-                      row with no total and no explanation -- the #297/#299 complaint, guaranteed by
-                      the per-line addition model. `aggregateOrderLines` merges lots ONLY when the
-                      server proves item, configuration AND authoritative unit price are identical,
-                      and it SUMS the stored figures rather than recomputing quantity x price.
-
-                      When the prices DIFFER the group keeps one row per price, each with its own
-                      figure. Hiding that behind a single averaged line is the one thing the ruling
-                      forbids outright.
-                    */}
-                    <div className="space-y-1">
-                      {aggregateOrderLines(order.items ?? []).slice(0, 3).map((group, idx: number) => (
-                        <div key={idx}>
-                          <p className="text-sm text-foreground font-sans">
-                            {group.quantity}× {String((group.sample as any).displayName || (group.sample as any).name || 'Item')}
-                            {lineConfigurationSummary(group.sample as any) ? (
-                              <span className="block text-xs text-muted-foreground">
-                                {lineConfigurationSummary(group.sample as any)}
-                              </span>
-                            ) : null}
-                          </p>
-                          {group.hasMixedPrices && (
-                            <span className="block pl-4 text-xs text-muted-foreground">
-                              {group.rows.map((row, ri) => (
-                                <span key={ri} className="block">
-                                  {row.quantity}× {currency}
-                                  {(row.unitPrice ?? 0).toFixed(2)} — {currency}
-                                  {row.total.toFixed(2)}
-                                </span>
-                              ))}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                      {aggregateOrderLines(order.items ?? []).length > 3 && (
-                        <p className="text-sm text-muted-foreground font-sans italic">
-                          +{aggregateOrderLines(order.items ?? []).length - 3} more item
-                          {aggregateOrderLines(order.items ?? []).length - 3 !== 1 ? 's' : ''}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Edit entry point. Routes to the per-order confirmation screen, which is
-                      where the editor lives — one place a customer can change an order from,
-                      rather than a second editor embedded in a list card. The button appears
-                      only while the order is still open to editing; the server refuses
-                      regardless, so this only avoids offering a dead control. */}
-                  {isEditableHere(order, editSessionIds) && (
-                    <div className="mt-4">
-                      <Button
-                        variant="outline"
-                        className="w-full font-sans font-semibold"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          router.push(
-                            `/menu/${restaurantId}/order-confirmation/${order.id}${tableNumber ? `?table=${tableNumber}` : ''}`,
-                          )
-                        }}
-                      >
-                        {EDIT_COPY.editCta}
-                      </Button>
-                    </div>
-                  )}
-
-                  {/* Payment Status.
-                      Suppressed for a declined request: it never became an order, so its
-                      payment_status is 'declined' and the badge below would have rendered the
-                      fallback "⏳ Pending" -- telling the customer they still owe for something
-                      the restaurant refused. The decline is stated in words instead. */}
-                  {isDeclined(order) ? (
-                    <p className="mt-4 text-sm font-sans text-muted-foreground">
-                      {/* Same sentence the direct link already shows, so arriving by list and
-                          arriving by link do not tell the customer two different things. */}
-                      {mapOrderStatusToBadge('declined').description}
-                    </p>
-                  ) : (
-                    <div className="mt-4 flex items-center gap-4 text-sm font-sans">
-                      <span className="text-muted-foreground">
-                        Payment: {order.payment_method === 'card' ? '💳' : '💵'} {order.payment_method}
-                      </span>
-                      <span className={`px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
-                        order.payment_status === 'paid'
-                          ? 'bg-foreground text-background'
-                          : 'bg-muted text-foreground'
-                      }`}>
-                        {order.payment_status === 'paid' ? '✓ Paid' : '⏳ Pending'}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+          <div className="space-y-4" data-testid="my-orders-live">
+            {/*
+              LIVE FIRST, then whatever is over and old. Shipping as an ORDERING rather than the
+              collapsed section the code below is ready for, because the section needs a HEADING,
+              a heading is a customer-facing string, and the placeholder would render literally.
+              Ordering needs no wording and already fixes the reported harm: dead orders no longer
+              sit above today's food. Swap to <details> when the copy lands.
+            */}
+            {[...liveOrders, ...earlierOrders].map((order) => renderOrderCard(order))}
           </div>
         )}
+
+        {/*
+          THE COLLAPSED "EARLIER" SECTION IS BUILT AND HELD BACK, awaiting one string.
+          `earlierOrders` is computed above and rendered at the END of the list for now. The
+          section itself -- a native <details> so it works without JS state and is keyboard- and
+          screen-reader-operable -- needs `myOrdersEarlierSection`, which is still PENDING COPY.
+          Shipping the marker text would put "PENDING COPY - heading for ..." in front of a
+          customer, which is worse than the defect.
+        */}
 
         {/* Order More Button */}
         {orders.length > 0 && (
