@@ -157,8 +157,12 @@ export function OrderEditPanel({
       const acquired = await acquireOrderEditLock({ orderId, restaurantId, sessionIds })
       setGrant(acquired)
       setRows(mergePicks(toWorkingRows(acquired.items), readPendingAdditions(orderId)))
-      // Deliberately NOT resetting `additions`: a reopen after the menu round trip must keep
-      // what the customer just picked.
+      // The picks are ABSORBED into the rows here rather than kept beside them, and the store is
+      // rewritten from those rows by the effect below -- which is what makes re-acquiring the
+      // lock idempotent instead of counting every pick twice.
+      //
+      // A reopen after the menu round trip must keep what the customer just picked, which is why
+      // the store is read here and not cleared.
       setNotes(String(acquired.orderInstructions ?? ''))
     } catch (err) {
       setError(err instanceof OrderEditRefused ? err.message : 'Could not open this order for editing')
