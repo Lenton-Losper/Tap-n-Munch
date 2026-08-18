@@ -17,9 +17,17 @@ import {
 import {
   applyOrderRealtimeEvent,
   countPendingHostedOrders,
-  playNewOrderSound,
   unlockNewOrderSound,
 } from '@/lib/dashboard/order-realtime'
+import {
+  announceIncomingOrder,
+  suppressOrderAlert,
+  getAlertArmedState,
+  isOrderAlertMuted,
+  setOrderAlertMuted,
+  subscribeAlertArmedState,
+  type AlertArmedState,
+} from '@/lib/dashboard/order-alert-sound'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
@@ -36,7 +44,7 @@ import {
   TAB_TOTAL_ORDER_COLUMNS,
   computeTabFigures,
 } from '@/lib/tabs/tab-outstanding'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList, Volume2, VolumeX, BellOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
@@ -277,7 +285,17 @@ function OrderRequestCard({
   }
 
   return (
-    <div className="border border-border bg-card rounded-lg p-4">
+    /**
+      `data-request-id` is for TESTS, and it earned its place. A browser test that located a card
+      by its table number accepted a DIFFERENT restaurant's request: the shared staging fixture had
+      five waiting-review rows on it, and a text locator cannot tell them apart. A test that mutates
+      data it does not own is worse than no test.
+    */
+    <div
+      className="border border-border bg-card rounded-lg p-4"
+      data-testid="order-request-card"
+      data-request-id={request.id}
+    >
       <div className="flex justify-between items-start gap-3 mb-2">
         <div>
           <span className="font-bold text-foreground">
@@ -418,6 +436,80 @@ function OrderRequestCard({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * PENDING COPY — staff-facing, three states of the incoming-order sound.
+ *
+ * There is no signed-off wording for these yet. They are listed here rather than inline so the
+ * outstanding set is a grep, matching the convention in lib/customer-copy/qr-redesign-copy.ts.
+ */
+const ORDER_ALERT_PENDING_COPY = {
+  armed: 'PENDING COPY - sound on for new orders',
+  blocked: 'PENDING COPY - tap to turn on sound',
+  muted: 'PENDING COPY - sound off',
+} as const
+
+/**
+ * WHETHER A STAFF MEMBER WILL ACTUALLY HEAR AN INCOMING ORDER, and a control to change it.
+ *
+ * THIS IS THE POINT OF THE FEATURE, not decoration. Browsers block audio until the page has been
+ * interacted with, so before this existed the dashboard could sit silent all shift with nothing
+ * on screen saying so — and a silent alert nobody knows is silent is worse than no alert, because
+ * staff stop watching the screen having been told they do not need to.
+ *
+ * THREE STATES, not two: `blocked` (the browser has not granted audio) is a different problem from
+ * `muted` (a staff member turned it off) and needs a different action, so they must not collapse
+ * into one "off". Clicking while blocked attempts the unlock; clicking while armed or muted
+ * toggles the mute.
+ *
+ * The state is SUBSCRIBED, not read once: a browser can suspend an AudioContext without being
+ * asked, and an indicator that went stale would be lying about the one thing it exists to report.
+ */
+function OrderAlertIndicator() {
+  const [state, setState] = useState<AlertArmedState>('blocked')
+
+  useEffect(() => {
+    const sync = () => setState(getAlertArmedState())
+    sync()
+    return subscribeAlertArmedState(sync)
+  }, [])
+
+  const handleClick = () => {
+    if (state === 'blocked') {
+      // Inside a click, so this is the gesture the browser is waiting for.
+      unlockNewOrderSound()
+      setOrderAlertMuted(false)
+    } else {
+      setOrderAlertMuted(!isOrderAlertMuted())
+    }
+    setState(getAlertArmedState())
+  }
+
+  const Icon = state === 'armed' ? Volume2 : state === 'muted' ? VolumeX : BellOff
+  const label = ORDER_ALERT_PENDING_COPY[state]
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label={label}
+      title={label}
+      data-testid="order-alert-indicator"
+      data-alert-state={state}
+      className={
+        'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ' +
+        (state === 'armed'
+          ? 'border-green-300 bg-green-50 text-green-700 hover:bg-green-100'
+          : state === 'muted'
+            ? 'border-border bg-muted text-muted-foreground hover:bg-muted/80'
+            : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100')
+      }
+    >
+      <Icon className="h-4 w-4" />
+      <span>{label}</span>
+    </button>
   )
 }
 
@@ -810,11 +902,16 @@ export function OrdersDashboard() {
 
             if (payload.eventType === 'INSERT') {
               const row = payload.new as Order | null
-              if (row && String(row.status || '').toLowerCase() === 'pending') {
-                playNewOrderSound()
+              /**
+                An accepted request arrives here a SECOND time -- createOrder writes status
+                'pending', so this branch used to chime again for an order the request
+                subscription had already announced. announceIncomingOrder keys both events to one
+                identity via source_request_id. See lib/dashboard/order-alert-sound.ts.
+              */
+              if (announceIncomingOrder(row, 'orders').notify) {
                 toastRef.current({
                   title: 'New order',
-                  description: `Order #${row.order_number ?? '?'} — Table ${row.table_number ?? '?'}`,
+                  description: `Order #${row?.order_number ?? '?'} — Table ${row?.table_number ?? '?'}`,
                 })
               }
             }
@@ -873,13 +970,16 @@ export function OrdersDashboard() {
 
             if (payload.eventType === 'INSERT') {
               const row = payload.new
-              playNewOrderSound()
-              toastRef.current({
-                title: 'New order request',
-                description: row?.channel === 'kiosk'
-                  ? 'A kiosk order is waiting for review.'
-                  : `A table order is waiting for review (Table ${row?.table_number ?? '?'}).`,
-              })
+              // A customer's QR submission lands here first. The matching `orders` INSERT after
+              // staff Accept is keyed to the SAME identity and stays silent.
+              if (announceIncomingOrder(row, 'order_requests').notify) {
+                toastRef.current({
+                  title: 'New order request',
+                  description: row?.channel === 'kiosk'
+                    ? 'A kiosk order is waiting for review.'
+                    : `A table order is waiting for review (Table ${row?.table_number ?? '?'}).`,
+                })
+              }
             }
           },
         },
@@ -1174,6 +1274,14 @@ export function OrdersDashboard() {
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || 'Failed to accept order')
+      /**
+        #SOUND. Accepting creates an `orders` row, which arrives back over realtime as an INSERT
+        at status 'pending'. Keying both events to one identity already silences it whenever this
+        dashboard chimed for the request -- but NOT when the request was already on screen at page
+        load, which is the ordinary case: staff arrive, see something waiting, and accept it.
+        Without this, their own click would chime at them.
+      */
+      suppressOrderAlert({ requestId, orderId: data?.orderId ?? null })
       setOrderRequests((prev) => prev.filter((request) => request.id !== requestId))
       toast({ title: 'Order accepted', description: 'It now appears in New Orders.' })
     } catch (error: any) {
@@ -1819,6 +1927,7 @@ export function OrdersDashboard() {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <h1 className="text-3xl font-bold">Live Orders</h1>
+            <OrderAlertIndicator />
           </div>
           <Button
             variant="outline"

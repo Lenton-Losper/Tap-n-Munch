@@ -92,3 +92,15 @@ export function unlockNewOrderSound() {
     void ctx.resume()
   }
 }
+
+/**
+ * The live AudioContext, or null if one has never been built.
+ *
+ * Exposed for ./order-alert-sound, which needs to report to a staff member whether a chime would
+ * actually be heard. DELIBERATELY DOES NOT CREATE ONE: constructing a context is what the browser
+ * gates on a user gesture, and a read of "is sound armed?" must not itself change the answer.
+ * A null return and a suspended context mean the same thing to the person reading the indicator.
+ */
+export function getNewOrderAudioContext(): AudioContext | null {
+  return audioContext
+}
