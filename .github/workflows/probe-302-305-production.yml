@@ -42,7 +42,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - name: Probe production (no writes)
+      - name: Probe #302/#305 redaction (no writes)
         run: npx tsx scripts/probe-302-305-production-readonly.ts
         env:
           # The UNPREFIXED pair is production — the same one production-worker.yml hands to its
@@ -50,3 +50,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           PROD_BASE: https://flashtap.app
+
+      # A second read-only probe on the same run: how long anything has been waiting for the
+      # restaurant. Both are pure selects and neither seeds a fixture, so they share a job rather
+      # than paying for a second checkout and npm ci.
+      - name: Probe unaccepted request age (no writes)
+        run: npx tsx scripts/probe-waiting-review-age-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
