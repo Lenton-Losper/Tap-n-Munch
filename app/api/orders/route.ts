@@ -105,14 +105,42 @@ export async function POST(req: Request) {
       if (mismatch) return mismatch
     }
 
-    // Tab orders: card only, pending until tab is settled at the table
-    let resolvedPaymentMethod = paymentMethod || 'cash'
+    /**
+     * ON A TAB ORDER, DO NOT INVENT A PAYMENT METHOD. Ruled 2026-08-19.
+     *
+     * This read `paymentMethod || 'cash'` for EVERY order. On a tab the customer is never asked
+     * how they will pay -- payment happens at the table when the tab is settled -- so the row was
+     * stamped 'cash' on nobody's authority, and the confirmation screen told a real customer
+     * "Cash" as a fact. The route already knew: `paymentMethodIsChosenAtSubmission = !isTabOrder`
+     * below skips the accepted-methods validation for exactly this reason.
+     *
+     * THE COMMENT THAT WAS HERE SAID "Tab orders: card only" and the line under it defaulted to
+     * cash. Neither half was true, so both are gone.
+     *
+     * NULL IS THE HONEST VALUE and the schema already supports it: `order_requests.payment_method`
+     * is nullable with no default. The `|| 'cash'` fallback is kept for the DIRECT-order path,
+     * where the method IS chosen at submission and a missing one is a client bug rather than a
+     * normal state.
+     *
+     * NOTE: `orders.payment_method` carries a column DEFAULT of 'cash' (baseline schema), so an
+     * insert that omits the field still lands as cash. createOrder always passes a value, so
+     * passing null here is what actually reaches the row -- but the default is a second, silent
+     * source of the same wrong answer and wants a migration. Not changed here: that is a money
+     * field and the change was referred for a ruling.
+     */
+    let resolvedPaymentMethod: string | null = isTabOrder ? (paymentMethod || null) : (paymentMethod || 'cash')
     let resolvedPaymentChannel = paymentChannel ?? null
     const channelLower = String(resolvedPaymentChannel || '').toLowerCase()
     let paymentStatus: string
     if (channelLower === 'cash' || channelLower === 'card_manual' || channelLower === 'other') {
       paymentStatus = 'pending'
     } else if (resolvedPaymentMethod === 'cash' && !resolvedPaymentChannel) {
+      /**
+       * Unchanged, and now unreachable for a tab order with no chosen method -- which is the
+       * point. `cash_pending` was being derived from the invented 'cash', so the badge beside the
+       * invented method was manufactured by it. A tab order with no method now takes the plain
+       * `pending` branch below.
+       */
       paymentStatus = 'cash_pending'
     } else {
       paymentStatus = 'pending'
@@ -145,11 +173,27 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `Tab is not open (status=${tabStatus})` }, { status: 400 })
       }
 
-      // Preserve the customer's payment preference — do not overwrite with 'tab'
-      // resolvedPaymentMethod already contains cash/card/other from the request
-      // Only override if no valid payment method was sent
+      /**
+       * THE DECISIVE LINE, and the one that actually reached production. Ruled 2026-08-19.
+       *
+       * This read:
+       *
+       *     if (!resolvedPaymentMethod || resolvedPaymentMethod === 'tab') {
+       *       resolvedPaymentMethod = 'cash' // default to cash if nothing selected
+       *     }
+       *
+       * "default to cash if nothing selected" is the defect stated as a comment. On a tab the
+       * customer is NEVER asked, so "nothing selected" is the normal case, not an edge one — and
+       * the confirmation screen then told them "Cash" as an established fact.
+       *
+       * `'tab'` is not a payment method either. It is the customer saying "put it on the tab",
+       * which is a statement about WHEN they will pay, not HOW. It also becomes null.
+       *
+       * The preference the old comment wanted to preserve IS preserved: a customer who genuinely
+       * chose cash or card still has it here, and only the invented value is removed.
+       */
       if (!resolvedPaymentMethod || resolvedPaymentMethod === 'tab') {
-        resolvedPaymentMethod = 'cash' // default to cash if nothing selected
+        resolvedPaymentMethod = null
       }
       paymentStatus = 'pending'
       resolvedPaymentChannel = resolvedPaymentChannel || null
