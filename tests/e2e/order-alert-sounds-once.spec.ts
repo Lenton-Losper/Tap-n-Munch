@@ -112,7 +112,6 @@ test.describe('the incoming-order sound alert', () => {
   }) => {
     // Count every tone the app produces, before any page script runs.
     await page.addInitScript(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const w = window as any
       w.__toneCount = 0
       const Ctx = w.AudioContext || w.webkitAudioContext
