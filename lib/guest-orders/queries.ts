@@ -4,6 +4,7 @@ import { guestCanAccessOrder, paymentRefOrFilter, redactGuestOrderRow } from './
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
+import { filterToCurrentSession } from './session-boundary'
 import type { GuestOrderRow } from './types'
 
 /**
@@ -284,8 +285,35 @@ export async function fetchGuestOrdersBySession(params: {
     return [...byId.values()]
   }
 
-  const data = mergeById(bySession.data, byMember.data)
-  const pending = mergeById(reqBySession.data, reqByMember.data)
+  const mergedOrders = mergeById(bySession.data, byMember.data)
+  const mergedPending = mergeById(reqBySession.data, reqByMember.data)
+
+  /**
+   * THE SESSION BOUNDARY. A session ended by Close Table is over, and nothing placed before it
+   * renders to a customer.
+   *
+   * This read scoped by `restaurant_id` + `session_id` and nothing else, so a phone that kept its
+   * session id across a table close — which every phone does, because the client guard that would
+   * have cleared it was mounted by no screen — saw its own pre-close orders beside the new ones.
+   * Measured on production 2026-08-18. The #302 class: scoped by an identifier rather than by a
+   * session that is still valid.
+   *
+   * Enforced HERE, on the server, deliberately. See lib/guest-orders/session-boundary.ts for what
+   * the schema permits, why there is no migration, and what failing closed costs.
+   *
+   * NOTHING IS DELETED. Every row remains for staff, on the settled tab, and in every financial
+   * record.
+   */
+  const [ordersBounded, pendingBounded] = await Promise.all([
+    filterToCurrentSession(supabase, mergedOrders as Record<string, unknown>[], {
+      surface: 'orders',
+    }),
+    filterToCurrentSession(supabase, mergedPending as Record<string, unknown>[], {
+      surface: 'order_requests',
+    }),
+  ])
+  const data = ordersBounded.kept
+  const pending = pendingBounded.kept
 
   // TWO read-time redactions, and neither replaces the other.
   //

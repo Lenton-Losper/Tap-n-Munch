@@ -45,6 +45,11 @@ const ORDER_ACCEPTED: Row = {
   is_closed: false,
   status: 'preparing',
   payment_status: 'pending',
+  // A REAL request always has a tab — measured on staging 2026-08-18, 0 of 11 are tab-less,
+  // because the order flow creates the tab first. Without one the session-boundary filter
+  // cannot attribute the row and drops it, which is correct and was not what these fixtures
+  // meant to express.
+  tab_id: 'tab-1',
   tab_settlement_for_tab_id: null,
   placed_at: '2026-08-11T10:00:00.000Z',
   total: 120,
@@ -55,6 +60,7 @@ const REQ_WAITING: Row = {
   restaurant_id: RESTAURANT,
   session_id: SESSION,
   table_number: 5,
+  tab_id: 'tab-1',
   status: 'waiting_review',
   placed_at: '2026-08-11T10:05:00.000Z',
   items: [{ name: 'Latte', quantity: 1 }],
@@ -71,6 +77,7 @@ const REQ_DECLINED: Row = {
   restaurant_id: RESTAURANT,
   session_id: SESSION,
   table_number: 5,
+  tab_id: 'tab-1',
   status: 'declined',
   declined_reason: 'kitchen shut early, regular timewaster — do not tell them that',
   decided_at: '2026-08-11T10:12:00.000Z',
@@ -84,6 +91,7 @@ const REQ_ACCEPTED: Row = {
   id: 'req-accepted',
   restaurant_id: RESTAURANT,
   session_id: SESSION,
+  tab_id: 'tab-1',
   status: 'accepted',
   accepted_order_id: 'order-1',
   placed_at: '2026-08-11T09:55:00.000Z',
@@ -94,6 +102,7 @@ const REQ_DECLINED_OTHER: Row = {
   id: 'req-declined-other',
   restaurant_id: RESTAURANT,
   session_id: OTHER_SESSION,
+  tab_id: 'tab-1',
   status: 'declined',
   declined_reason: 'someone else business',
   placed_at: '2026-08-11T10:11:00.000Z',
@@ -152,6 +161,26 @@ function makeSupabaseStub() {
     applied,
     client: {
       from(table: string) {
+          /**
+           * THE SESSION BOUNDARY, added 2026-08-18. fetchGuestOrdersBySession now reads `tabs`
+           * and `restaurant_tables` to establish that a row belongs to the table's CURRENT
+           * session — a phone kept its session id across a Close Table and saw its own pre-close
+           * orders. This stub threw on any other table, so the whole suite failed: the suite
+           * correctly noticing a behaviour change, not a defect.
+           *
+           * The fixture tab is kept AT the table's current version, so these tests go on
+           * exercising the visibility rules they are about. The boundary itself is asserted in
+           * __tests__/session-boundary.test.ts.
+           */
+          if (table === 'tabs' || table === 'restaurant_tables') {
+            const boundaryRows =
+              table === 'tabs'
+                ? [{ id: 'tab-1', table_id: 'table-1', session_version: 1 }]
+                : [{ id: 'table-1', current_session_version: 1 }]
+            return {
+              select: () => ({ in: async () => ({ data: boundaryRows, error: null }) }),
+            }
+          }
         const rows = table === 'orders' ? ORDERS : REQUESTS
         if (table !== 'orders' && table !== 'order_requests') {
           throw new Error(`unexpected table ${table}`)
