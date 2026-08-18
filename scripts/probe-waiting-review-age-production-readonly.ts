@@ -126,6 +126,55 @@ async function main() {
   }
   if (old.length > 15) console.log(`    … and ${old.length - 15} more`)
 
+  /**
+   * HOW LONG DOES AN ANSWER NORMALLY TAKE? This is the number a threshold has to clear.
+   *
+   * A threshold picked from the OPEN rows alone would be circular — chosen to catch the rows
+   * already visible. What matters is the shape of NORMAL: if staff answer in minutes, a threshold
+   * in hours flags nothing that is merely busy.
+   *
+   * Measured from ANSWERED requests. `updated_at` is the only timestamp an answer touches — there
+   * is no dedicated answered_at — so this is an UPPER BOUND on the answer time (a later edit
+   * inflates it), which is the safe direction for choosing a threshold.
+   */
+  const { data: answered, error: e2 } = await admin
+    .from('order_requests')
+    .select('placed_at, updated_at, status')
+    .in('status', ['accepted', 'declined'])
+    .order('placed_at', { ascending: false })
+    .limit(1000)
+  if (e2) {
+    console.log(`
+  ANSWERED-REQUEST TIMING unavailable: ${e2.message}`)
+  } else {
+    const deltas = (answered ?? [])
+      .map((r) => {
+        const a = Date.parse(String(r.placed_at ?? ''))
+        const b = Date.parse(String(r.updated_at ?? ''))
+        return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : NaN
+      })
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b)
+
+    console.log(`
+  HOW LONG AN ANSWER NORMALLY TAKES (n=${deltas.length} answered)`)
+    if (deltas.length === 0) {
+      console.log('    no usable timings — a threshold cannot be grounded on this data')
+    } else {
+      const at = (q) => deltas[Math.min(deltas.length - 1, Math.floor(q * deltas.length))]
+      const mins = (ms) => (ms / 60000).toFixed(1)
+      for (const [label, v] of [
+        ['p50', at(0.5)],
+        ['p90', at(0.9)],
+        ['p95', at(0.95)],
+        ['p99', at(0.99)],
+        ['max', deltas[deltas.length - 1]],
+      ]) {
+        console.log(`    ${label}  ${mins(v).padStart(10)} min`)
+      }
+    }
+  }
+
   console.log(
     '\n  There is no timeout and no escalation on an unaccepted request: the cron sweeps\n' +
       '  `orders` only (pos + hosted), and every writer of order_requests.status is a human\n' +
