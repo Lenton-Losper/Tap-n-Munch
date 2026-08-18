@@ -56,13 +56,26 @@ test.beforeAll(async () => {
     .insert({ restaurant_id: FIXTURE_RESTAURANT, user_id: staffUserId, role: 'owner' })
   if (memberErr) throw new Error(`membership: ${memberErr.message}`)
 
-  // Two tables, because the reported symptom is "clearing several in a row".
+  /**
+   * Two tables, because the reported symptom is "clearing several in a row".
+   *
+   * The number is cleared first. On a RETRY, `afterAll` has not run yet — Playwright retries the
+   * test, not the file — so the previous attempt's rows are still there and a plain insert dies on
+   * restaurant_tables_restaurant_id_table_number_key. That turned a real failure into a confusing
+   * seed error on the retry line, hiding which assertion actually broke.
+   */
   for (let i = 0; i < 2; i++) {
+    const tableNumber = 9860 + Math.floor(Math.random() * 30) + i * 40
+    await db
+      .from('restaurant_tables')
+      .delete()
+      .eq('restaurant_id', FIXTURE_RESTAURANT)
+      .eq('table_number', tableNumber)
     const { data, error } = await db
       .from('restaurant_tables')
       .insert({
         restaurant_id: FIXTURE_RESTAURANT,
-        table_number: 9860 + Math.floor(Math.random() * 30) + i * 40,
+        table_number: tableNumber,
         active: true,
         is_view_only: false,
         is_kiosk: false,
@@ -70,7 +83,7 @@ test.beforeAll(async () => {
       })
       .select('id')
       .single()
-    if (error) throw new Error(`seed table ${i}: ${error.message}`)
+    if (error) throw new Error(`seed table ${i} (number ${tableNumber}): ${error.message}`)
     tableIds.push(data.id)
   }
 })
@@ -127,9 +140,15 @@ test.describe('the table card three-dot menu', () => {
 
     /**
      * THE MEASUREMENT. Read what is actually stuck rather than inferring it from the symptom.
-     * Radix locks pointer events on the body while a modal is open and is known to leave the lock
-     * behind when a Dialog is opened from a DropdownMenuItem.
+     * Radix locks pointer events on the body while a modal is open, and leaves the lock behind
+     * when a Dialog is opened from a DropdownMenuItem.
+     *
+     * WAIT FOR THE DIALOG TO GO FIRST. Taken immediately after the toast, the snapshot caught
+     * `openDialogs: 1` — the dialog was still unmounting and still legitimately owned the lock, so
+     * the reading said "locked" in both the broken and the fixed build and discriminated nothing.
+     * A lock is only evidence once there is nothing left to own it.
      */
+    await expect(page.locator('[role="dialog"]')).toHaveCount(0, { timeout: 15_000 })
     const diag = await page.evaluate(() => {
       const body = document.body
       const cs = getComputedStyle(body)
