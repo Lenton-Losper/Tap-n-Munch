@@ -119,10 +119,29 @@ test.describe('#308 — an unnumbered submission never shows a number the restau
       /Order\s*#\s*[0-9A-F]{6}\b/,
     )
 
+    /**
+     * WHAT THIS TEST IS ACTUALLY ABOUT: no identifier the restaurant cannot look up. The two
+     * assertions above are that, and they are unchanged.
+     *
+     * IT ALSO REQUIRED THE NOT-YET PHRASE TO BE PRESENT ON MY ORDERS, which was incidental to
+     * #308 and is now wrong. Ruled 2026-08-18 after a production click test: an absent number is
+     * not headline material. The bold top-left slot said "Not numbered yet" — the loudest thing
+     * on the card announcing that something does not exist — while the badge beside it already
+     * said WAITING FOR RESTAURANT. My Orders now leads with the time instead and says nothing
+     * about the number.
+     *
+     * NOT WEAKENED. The phrase is still required where it is the whole point — the TAB screen
+     * names every order in a list and needs to distinguish an unnumbered one, which is the
+     * `tabOrderNotYetNumbered` constant's own name. What is dropped here is a demand that My
+     * Orders repeat it, which the ruling reversed.
+     *
+     * The replacement is stronger than nothing: the card must still say WHAT IS HAPPENING, so
+     * this cannot pass for a card that renders no state at all.
+     */
     expect(
       text,
-      `it must say what the Tab says instead. Screen: ${text.slice(0, 400)}`,
-    ).toMatch(new RegExp(escapeRe(QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered), 'i'))
+      `the card must still state the order's status. Screen: ${text.slice(0, 400)}`,
+    ).toMatch(new RegExp(escapeRe(CUSTOMER_STATUS_COPY.waiting), 'i'))
   })
 })
 
