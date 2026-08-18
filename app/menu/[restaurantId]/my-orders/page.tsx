@@ -313,14 +313,26 @@ export default function MyOrdersPage() {
               <p className="text-xl font-bold text-foreground font-sans">
                 N${order.total?.toFixed(2)}
               </p>
-              {/* One vocabulary, from lib/orders/customer-status.ts. A state that
-                  expects something of the customer is styled apart from one that does
-                  not -- "Needs you" must not look like "Being prepared". */}
+              {/*
+                A STATUS BADGE, NOT A CONTROL. Ruled 2026-08-18: the filled rounded box with
+                padding on all four sides is button styling, and it is why "See staff" read as
+                something to tap. A customer tapping it got the card's own navigation and no
+                staff member.
+
+                So: no fill, no box. A small uppercase label with a left rule, which reads as
+                metadata about the order rather than an affordance. `role="status"` states the
+                same thing to a screen reader that the visual treatment now states to an eye.
+
+                One vocabulary, from lib/orders/customer-status.ts. The one state that genuinely
+                asks something of the customer — a failed payment — keeps a colour; the rest are
+                statements and are not shouted.
+              */}
               <span
-                className={`inline-block px-3 py-1 text-xs font-semibold uppercase tracking-wide mt-2 ${
+                role="status"
+                className={`mt-2 inline-block border-l-2 pl-2 text-xs font-semibold uppercase tracking-wide ${
                   statusNeedsAttention(order)
-                    ? 'bg-amber-100 text-amber-900'
-                    : 'bg-muted text-foreground'
+                    ? 'border-red-400 text-red-700'
+                    : 'border-border text-muted-foreground'
                 }`}
               >
                 {statusLabel(order)}

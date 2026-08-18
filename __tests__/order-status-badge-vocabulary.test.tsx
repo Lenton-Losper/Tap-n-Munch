@@ -75,7 +75,7 @@ describe('customer-facing order status vocabulary (#131)', () => {
       expect(mapOrderStatusToBadge('ready').label).toBe(CUSTOMER_STATUS_COPY.ready)
       expect(mapOrderStatusToBadge('confirmed').label).toBe(CUSTOMER_STATUS_COPY.accepted)
       expect(mapOrderStatusToBadge('accepted').label).toBe(CUSTOMER_STATUS_COPY.accepted)
-      expect(mapOrderStatusToBadge('ready_for_terminal').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
+      expect(mapOrderStatusToBadge('ready_for_terminal').label).toBe(CUSTOMER_STATUS_COPY.awaiting_payment)
     })
 
     /**
@@ -89,12 +89,27 @@ describe('customer-facing order status vocabulary (#131)', () => {
       expect(mapOrderStatusToBadge('ready').label).toBe(CUSTOMER_STATUS_COPY.ready)
     })
 
+    /**
+     * THE SPLIT OF 2026-08-18, asserted as DISTINCTNESS. The three labels above would all still
+     * pass if `needs_you` had merely been renamed and every status still pointed at it, which is
+     * exactly the shortcut this ruling forbids.
+     */
+    it('gives declined, cancelled and awaiting-payment three different badges', () => {
+      const labels = [
+        mapOrderStatusToBadge('declined').label,
+        mapOrderStatusToBadge('cancelled').label,
+        mapOrderStatusToBadge('ready_for_terminal').label,
+      ]
+      expect(new Set(labels).size).toBe(3)
+      expect(labels).not.toContain('See staff')
+    })
+
     it('keeps the statuses that were already correct', () => {
       expect(mapOrderStatusToBadge('waiting_review').label).toBe(CUSTOMER_STATUS_COPY.waiting)
-      expect(mapOrderStatusToBadge('declined').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
+      expect(mapOrderStatusToBadge('declined').label).toBe(CUSTOMER_STATUS_COPY.declined)
       expect(mapOrderStatusToBadge('pending').label).toBe(CUSTOMER_STATUS_COPY.waiting)
       expect(mapOrderStatusToBadge('completed').label).toBe(CUSTOMER_STATUS_COPY.ready)
-      expect(mapOrderStatusToBadge('cancelled').label).toBe(CUSTOMER_STATUS_COPY.needs_you)
+      expect(mapOrderStatusToBadge('cancelled').label).toBe(CUSTOMER_STATUS_COPY.cancelled)
     })
   })
 

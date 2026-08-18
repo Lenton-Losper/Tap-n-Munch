@@ -45,22 +45,42 @@
  */
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 
-/** The six words a QR customer may be shown, plus the honest unknown. */
+/**
+ * THE TEN WORDS a QR customer may be shown, the last being the honest catch-all.
+ *
+ * `needs_you` ("See staff") WAS REMOVED 2026-08-18 and split into four. It collapsed a refusal,
+ * a called-off order, an order sitting at the terminal and a failed card into one sentence, so
+ * the badge told the customer to go and ask what had actually happened — which is the app
+ * declining to answer a question it knows the answer to.
+ *
+ * NOT MERGED, deliberately: `declined` and `cancelled` are DIFFERENT CONVERSATIONS with staff.
+ * A refusal is the restaurant saying no; a cancellation is the order being called off. Collapsing
+ * them would be the same mistake one level down.
+ */
 export const CUSTOMER_ORDER_STATES = [
   'waiting',
   'accepted',
   'preparing',
   'ready',
   'paid',
-  'needs_you',
+  'declined',
+  'cancelled',
+  'awaiting_payment',
+  'payment_failed',
   'unknown',
 ] as const
 
 export type CustomerOrderState = (typeof CUSTOMER_ORDER_STATES)[number]
 
 /**
- * PLACEHOLDER WORDING. Signed-off copy replaces the values, never the keys.
- * `git grep "PENDING COPY" -- lib/orders/customer-status.ts`
+ * All ten signed off. Wording is the human's; this module owns the KEYS and the mapping.
+ *
+ * WHY "Waiting for payment" AND NOT "Ready to pay". `stripHeadlineReadyToPay` on the tab strip
+ * already reads "Ready for payment", and two near-identical phrases meaning different things on
+ * one customer's screen is worse than either phrasing alone. They are different facts:
+ *
+ *   the STRIP    the TABLE asking to settle — a thing the customer initiated
+ *   this BADGE   one ORDER waiting at the terminal — a thing the customer is waiting on
  */
 export const CUSTOMER_STATUS_COPY: Record<CustomerOrderState, string> = {
   waiting: 'Waiting for restaurant',
@@ -68,7 +88,10 @@ export const CUSTOMER_STATUS_COPY: Record<CustomerOrderState, string> = {
   preparing: 'Being prepared',
   ready: 'Ready',
   paid: 'Paid',
-  needs_you: 'See staff',
+  declined: 'Not accepted',
+  cancelled: 'Cancelled',
+  awaiting_payment: 'Waiting for payment',
+  payment_failed: 'Payment failed',
   unknown: 'Order update',
 }
 
@@ -76,7 +99,15 @@ const WAITING = new Set(['waiting_review', 'pending'])
 const ACCEPTED = new Set(['accepted'])
 const PREPARING = new Set(['preparing'])
 const READY = new Set(['ready'])
-const NEEDS_YOU = new Set(['ready_for_terminal', 'cancelled', 'declined', 'failed'])
+/**
+ * The four sets that replaced NEEDS_YOU. Each is exactly one raw status today; they are Sets so
+ * a synonym can be added to ONE of them without widening the others, which is what
+ * `new Set(['ready_for_terminal','cancelled','declined','failed'])` made impossible.
+ */
+const DECLINED = new Set(['declined'])
+const CANCELLED = new Set(['cancelled'])
+const AWAITING_PAYMENT = new Set(['ready_for_terminal'])
+const PAYMENT_FAILED = new Set(['failed'])
 const COMPLETED = new Set(['completed'])
 
 export type CustomerStatusInput = {
@@ -95,7 +126,7 @@ export type CustomerStatusInput = {
 export function customerOrderState(input: CustomerStatusInput): CustomerOrderState {
   const payment = String(input.paymentStatus ?? '').toLowerCase()
   if (payment === 'paid') return 'paid'
-  if (payment === 'failed') return 'needs_you'
+  if (payment === 'failed') return 'payment_failed'
 
   const status = normalizeOrderStatusForDisplay(input.status)
   if (!status) return 'unknown'
@@ -103,7 +134,10 @@ export function customerOrderState(input: CustomerStatusInput): CustomerOrderSta
   if (ACCEPTED.has(status)) return 'accepted'
   if (PREPARING.has(status)) return 'preparing'
   if (READY.has(status)) return 'ready'
-  if (NEEDS_YOU.has(status)) return 'needs_you'
+  if (DECLINED.has(status)) return 'declined'
+  if (CANCELLED.has(status)) return 'cancelled'
+  if (AWAITING_PAYMENT.has(status)) return 'awaiting_payment'
+  if (PAYMENT_FAILED.has(status)) return 'payment_failed'
   /**
    * `completed` without `payment_status = 'paid'`. Deliberately NOT "Paid": staff reconcile can
    * complete an order without a payment (#234), and telling a customer they have paid when the
@@ -119,11 +153,16 @@ export function customerStatusLabel(status: unknown, paymentStatus?: unknown): s
 }
 
 /**
- * Whether the state calls for the customer to do something. Drives emphasis at render sites, so
- * that "Needs you" is not styled like "Being prepared".
+ * Whether the state calls for the customer to do something, so a render site can emphasise it
+ * apart from one that does not.
+ *
+ * ONLY `payment_failed` qualifies. The other three ex-`needs_you` states are STATEMENTS, not
+ * requests: a refusal, a cancellation and an order sitting at the terminal are all things that
+ * have happened TO the order, and none of them is an instruction. Treating them as demands is
+ * what made "See staff" read like a control the customer was supposed to operate.
  */
 export function customerStateNeedsAttention(state: CustomerOrderState): boolean {
-  return state === 'needs_you'
+  return state === 'payment_failed'
 }
 
 /**
