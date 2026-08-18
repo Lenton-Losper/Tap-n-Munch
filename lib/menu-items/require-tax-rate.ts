@@ -47,9 +47,16 @@
  * removing it would silently reprice every legacy item.
  */
 
-/** PENDING COPY — the refusal shown when a menu item is saved with no tax rate chosen. */
-export const TAX_RATE_REQUIRED_MESSAGE =
-  'PENDING COPY - a tax rate must be chosen before this item can be saved'
+/**
+ * The refusal shown when a menu item is saved with no tax rate chosen. SIGNED OFF 2026-08-18,
+ * wording the human's, verbatim.
+ *
+ * Staff-facing, and it renders in two places that must not disagree: the form's validation toast
+ * and the API's error body, which is why it is one exported constant rather than a string at each
+ * site. It is an instruction, not an explanation -- the person is mid-save and needs the next
+ * action, not the reason.
+ */
+export const TAX_RATE_REQUIRED_MESSAGE = 'Choose a tax rate before saving this item.'
 
 export type TaxRateRefusal = { ok: false; message: string; field: 'tax_rate_id' }
 export type TaxRateOk = { ok: true }

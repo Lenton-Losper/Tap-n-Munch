@@ -74,8 +74,16 @@ export function orderIdentityLabel(order: IdentifiableOrder): string {
   if (isDeadOrder({ status: order?.status, paymentStatus: order?.payment_status })) {
     /**
      * NOTHING, not a placeholder. A dead order has no number and never will, so the honest render
-     * is no number line at all -- the card already says "See staff" and carries the decline
+     * is no number line at all -- the card already names the state and carries the decline
      * sentence, so the customer is not left guessing.
+     *
+     * The card said "See staff" when this was written. It no longer does: `needs_you` was split
+     * into four on 2026-08-18 (4e876e4), and `isDeadOrder` is exactly declined-or-cancelled, so
+     * the two words a customer actually reads here are now "Not accepted" and "Cancelled". The
+     * reasoning is unchanged -- a named state beside a decline sentence still leaves nobody
+     * guessing -- but the quoted string was stale and is not restated, because naming one of the
+     * four here would go stale again the next time the vocabulary moves.
+     * See lib/orders/customer-status.ts for the live words.
      *
      * A WORDED label would be better, and `orderNeverNumbered` is reserved for it in the copy
      * module as PENDING COPY. It is deliberately NOT used yet: the marker text would render
