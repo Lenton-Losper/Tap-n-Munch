@@ -526,6 +526,9 @@ export async function POST(
       tabId,
       logPrefix: '[terminal/tabs/settle]',
       tabWasClosedOut: tab.settled_at != null,
+      // #287. THE subset-settlement path: staff can settle a selection of orders, so this is
+      // exactly where one diner paying used to wipe the signal for everyone still waiting.
+      reason: 'money_taken',
     })
 
     return NextResponse.json({

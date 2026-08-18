@@ -153,6 +153,9 @@ export async function POST(
         await clearReadyToPayAndReopenTab(supabase, {
           tabId: result.tabId,
           logPrefix: '[terminal/orders/payment]',
+          // Money was taken. #287: if this tab still owes, the ready-to-pay RECORD survives so the
+          // other diners' request is not erased by the first person to pay.
+          reason: 'money_taken',
         })
       }
     } else {
@@ -207,6 +210,8 @@ export async function POST(
           await clearReadyToPayAndReopenTab(supabase, {
             tabId: failedResult.tabId,
             logPrefix: '[terminal/orders/payment:corrected_to_paid]',
+            // Same as above: this branch corrects a false failure TO paid, so money was taken.
+            reason: 'money_taken',
           })
         }
 
