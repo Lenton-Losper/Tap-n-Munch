@@ -48,8 +48,16 @@ describe('creating a menu item', () => {
     expect(r.field).toBe('tax_rate_id')
   })
 
-  it('ships the message as PENDING COPY — wording is the human’s', () => {
-    expect(TAX_RATE_REQUIRED_MESSAGE).toMatch(/^PENDING COPY/)
+  /**
+   * Was `toMatch(/^PENDING COPY/)` while the wording was outstanding. Signed off 2026-08-18, so
+   * the assertion INVERTS rather than being deleted: the thing worth guarding was never that a
+   * placeholder existed, it was that a placeholder must never reach a person. This message renders
+   * in a staff-facing toast and in the API error body, and it shipped to production once already
+   * with the marker still on it.
+   */
+  it('ships real wording — a placeholder must never reach the person saving', () => {
+    expect(TAX_RATE_REQUIRED_MESSAGE).not.toMatch(/PENDING COPY|TODO|TBD|FIXME/i)
+    expect(TAX_RATE_REQUIRED_MESSAGE.trim().length).toBeGreaterThan(0)
   })
 })
 

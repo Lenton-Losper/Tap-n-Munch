@@ -110,12 +110,17 @@ export const QR_REDESIGN_PENDING_COPY = {
    * session.
    *
    * The body must survive being read by someone who has just paid and now sees an empty screen.
+   *
+   * SIGNED OFF 2026-08-18. The wording is the human's, verbatim. Note what it does NOT say: it
+   * never uses "session", "ended" or "expired" -- "This table has been cleared" is a thing STAFF
+   * did, not a thing that happened to the customer or that they caused. And the money sentence
+   * comes before the instruction, because the reader may have just paid.
    */
-  sessionEndedTitle: 'PENDING COPY - this dining session has ended',
+  sessionEndedTitle: 'This table has been cleared',
   sessionEndedBody:
-    'PENDING COPY - orders from the previous session are no longer shown here. Nothing has been ' +
-    'lost; staff still have the full record. Scan the QR code on the table to start a new order.',
-  sessionEndedAction: 'PENDING COPY - back to the table',
+    'Your orders are all still on record with the restaurant, and anything you paid for has been ' +
+    'paid. To order again, scan the QR code on your table.',
+  sessionEndedAction: 'Scan to start again',
   /** Renders: the Tab, per order, on a submitted-but-unanswered order. */
   tabOrderAwaitingConfirmation: 'Waiting for restaurant',
 
