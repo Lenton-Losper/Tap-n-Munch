@@ -477,26 +477,25 @@ export default function MyOrdersPage() {
           </div>
         ) : (
           <div className="space-y-4" data-testid="my-orders-live">
-            {liveOrders.map((order) => renderOrderCard(order))}
+            {/*
+              LIVE FIRST, then whatever is over and old. Shipping as an ORDERING rather than the
+              collapsed section the code below is ready for, because the section needs a HEADING,
+              a heading is a customer-facing string, and the placeholder would render literally.
+              Ordering needs no wording and already fixes the reported harm: dead orders no longer
+              sit above today's food. Swap to <details> when the copy lands.
+            */}
+            {[...liveOrders, ...earlierOrders].map((order) => renderOrderCard(order))}
           </div>
         )}
 
         {/*
-          EARLIER — orders that are over and old enough that they are no longer part of "now".
-          Collapsed, never dropped: a customer who was declined and sees nothing has no idea what
-          happened, and they may still need to ask staff about it. Native <details> so it works
-          without JavaScript state and is keyboard- and screen-reader-operable for free.
+          THE COLLAPSED "EARLIER" SECTION IS BUILT AND HELD BACK, awaiting one string.
+          `earlierOrders` is computed above and rendered at the END of the list for now. The
+          section itself -- a native <details> so it works without JS state and is keyboard- and
+          screen-reader-operable -- needs `myOrdersEarlierSection`, which is still PENDING COPY.
+          Shipping the marker text would put "PENDING COPY - heading for ..." in front of a
+          customer, which is worse than the defect.
         */}
-        {earlierOrders.length > 0 && (
-          <details className="mt-6" data-testid="my-orders-earlier">
-            <summary className="cursor-pointer text-sm font-sans text-muted-foreground py-2">
-              {QR_REDESIGN_PENDING_COPY.myOrdersEarlierSection} ({earlierOrders.length})
-            </summary>
-            <div className="space-y-4 mt-3">
-              {earlierOrders.map((order) => renderOrderCard(order))}
-            </div>
-          </details>
-        )}
 
         {/* Order More Button */}
         {orders.length > 0 && (

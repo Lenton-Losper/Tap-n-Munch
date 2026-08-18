@@ -124,17 +124,25 @@ test.describe('My Orders — the live list', () => {
     await openMyOrders(page, baseURL!, f)
     await assertLiveOrderVisible(page, f, f.itemName)
 
-    const live = page.locator('[data-testid="my-orders-live"]')
-    await expect(
-      live,
-      'the live list must exist as its own region — without it there is nothing to bound',
-    ).toBeVisible({ timeout: 15_000 })
+    /**
+     * ASSERTED AS ORDERING, which is what ships. The collapsed section is built but held back:
+     * it needs a heading, a heading is a customer-facing string, and the PENDING COPY marker
+     * would render literally to a customer. Ordering needs no wording and fixes the reported
+     * harm -- the dead order no longer sits ABOVE today's food.
+     */
+    const cards = page.locator('[data-testid="my-orders-card"]')
+    await expect(cards.first()).toBeVisible({ timeout: 20_000 })
+    const texts = await cards.allInnerTexts()
+    const liveIdx = texts.findIndex((t) => t.includes(f.itemName))
+    const staleIdx = texts.findIndex((t) => t.includes(staleName))
 
-    await expect(
-      live.getByText(new RegExp(staleName, 'i')),
-      `a declined order from 10 hours ago must not be in the LIVE list. It should still be ` +
-        `reachable — this asserts placement, not deletion.`,
-    ).toHaveCount(0)
+    expect(liveIdx, '[control] the current order must be among the cards').toBeGreaterThanOrEqual(0)
+    expect(staleIdx, '[control] the stale decline must be among the cards, not dropped').toBeGreaterThanOrEqual(0)
+    expect(
+      staleIdx,
+      `a declined order from 10 hours ago must come AFTER today's food, not above it ` +
+        `(live at ${liveIdx}, stale at ${staleIdx})`,
+    ).toBeGreaterThan(liveIdx)
   })
 
   /**
@@ -151,9 +159,8 @@ test.describe('My Orders — the live list', () => {
     await openMyOrders(page, baseURL!, f)
     await assertLiveOrderVisible(page, f, f.itemName)
 
-    const live = page.locator('[data-testid="my-orders-live"]')
-    await expect(
-      live.getByText(new RegExp(freshName, 'i')),
+        await expect(
+      page.getByText(new RegExp(freshName, 'i')),
       'a decline the customer has not seen yet must stay in the live list',
     ).toHaveCount(1)
   })

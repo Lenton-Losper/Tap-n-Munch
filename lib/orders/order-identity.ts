@@ -54,7 +54,17 @@ export function orderIdentityLabel(order: IdentifiableOrder): string {
    * routed through here by the same change.
    */
   if (isDeadOrder({ status: order?.status, paymentStatus: order?.payment_status })) {
-    return QR_REDESIGN_PENDING_COPY.orderNeverNumbered
+    /**
+     * NOTHING, not a placeholder. A dead order has no number and never will, so the honest render
+     * is no number line at all -- the card already says "See staff" and carries the decline
+     * sentence, so the customer is not left guessing.
+     *
+     * A WORDED label would be better, and `orderNeverNumbered` is reserved for it in the copy
+     * module as PENDING COPY. It is deliberately NOT used yet: the marker text would render
+     * literally to a customer, which is worse than the defect it fixes. Wire it up when the
+     * wording is signed off.
+     */
+    return ''
   }
   return QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered
 }
