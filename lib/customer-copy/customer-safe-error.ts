@@ -42,10 +42,12 @@ export const CUSTOMER_SAFE_MESSAGES: SafeMessage[] = [
     pattern: /^This is a view-only menu [-—] ordering is not available here\.$/,
     source: 'app/api/orders/route.ts (view-only table)',
   },
-  {
-    pattern: /^This tab is ready to pay [-—] you cannot add more items\.$/,
-    source: 'app/api/orders/route.ts (tab ready_to_pay)',
-  },
+    // REMOVED 2026-08-18 (#303). The sentence 'This tab is ready to pay — you cannot add more
+    // items.' was allowlisted here as customer-visible, and measurement showed no caller could
+    // ever reach it: requireSessionToken runs first and validateSessionToken refuses any tab that
+    // is not 'open' with a 410. The route now answers with the session-ended sentence already in
+    // this list, so there is one message rather than two. An allowlist entry for an unreachable
+    // path documents a guarantee that does not exist.
   {
     pattern: /^This table has been closed\. Please scan the QR code to start a new session\.$/,
     source: 'app/api/orders/route.ts (table session closed)',

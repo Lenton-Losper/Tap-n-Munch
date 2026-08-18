@@ -180,16 +180,36 @@ export async function POST(req: Request) {
       if (!tabRow) {
         return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
       }
-      const tabStatus = String(tabRow.status || '')
-      if (tabStatus === 'ready_to_pay') {
-        return NextResponse.json(
-          { error: 'This tab is ready to pay — you cannot add more items.' },
-          { status: 400 }
-        )
-      }
-      if (tabStatus !== 'open') {
-        return NextResponse.json({ error: `Tab is not open (status=${tabStatus})` }, { status: 400 })
-      }
+        /**
+         * THE TOKEN GUARD OWNS THIS REFUSAL. #303.
+         *
+         * This answered 400 with two bespoke sentences — one of them 'This tab is ready to pay —
+         * you cannot add more items.', which #206's census had allowlisted as customer-visible.
+         * MEASURED against deployed staging: no caller can reach either. `requireSessionToken`
+         * runs above, and `validateSessionToken` refuses any tab whose status is not 'open' first
+         * (lib/session-token.ts), so every shape — valid token, no token, bogus token — answers
+         * 410 'Your dining session has ended…'.
+         *
+         * The strings documented a path that does not exist, and the code claimed a guarantee it
+         * was not providing.
+         *
+         * THE CHECK STAYS, because the one opening is real: a sub-second race where the tab flips
+         * to ready_to_pay between token validation and this load. Deleting it outright — the
+         * literal reading of the issue's option B — would let a racing order land on a tab that is
+         * being settled. What is deleted is the SECOND VOCABULARY: the same status and the same
+         * sentence the token guard already gives, so there is one mechanism and one message
+         * rather than two that disagree.
+         */
+        const tabStatus = String(tabRow.status || '')
+        if (tabStatus !== 'open') {
+          return NextResponse.json(
+            {
+              error: 'Your dining session has ended. Please scan the QR code to start a new order.',
+              reason: 'tab_not_open',
+            },
+            { status: 410 },
+          )
+        }
 
       /**
        * THE DECISIVE LINE, and the one that actually reached production. Ruled 2026-08-19.
