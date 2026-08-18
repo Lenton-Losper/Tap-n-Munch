@@ -23,6 +23,7 @@ import {
   validateMenuItemDraft,
   type ExistingMenuItem,
 } from '@/lib/menu/validate-menu-item'
+import { TAX_RATE_REQUIRED_MESSAGE } from '@/lib/menu-items/require-tax-rate'
 import {
   canEditMenuInventoryAction,
   loadInventoryPickerAction,
@@ -471,6 +472,29 @@ function MenuItemFormContent({
       return
     }
 
+    /**
+      A TAX RATE MUST BE CHOSEN. Ruled 2026-08-18, after a coffee with no rate reached a paid
+      production receipt at 0% VAT (order #10) because this form's default selection was
+      "Use restaurant default".
+
+      Convenience only -- the authoritative refusal is in app/api/admin/menu/items, which is
+      reachable without this form. It is repeated here so the person is told at the field rather
+      than by a round trip.
+
+      An EDIT of a legacy item lands here too: itemForm.tax_rate_id is empty when the row has none,
+      so the save stops and the question is finally put. Nothing is assigned on their behalf --
+      that would change what a customer is charged.
+    */
+    if (!itemForm.tax_rate_id) {
+      toast({
+        title: 'Validation Error',
+        description: TAX_RATE_REQUIRED_MESSAGE,
+        variant: 'destructive',
+      })
+      setActiveTab('pricing')
+      return
+    }
+
     const price = parseFloat(itemForm.base_price)
     if (Number.isNaN(price) || price <= 0) {
       toast({
@@ -786,21 +810,27 @@ function MenuItemFormContent({
               />
             </div>
             <div>
-              <Label>Tax Rate</Label>
+              <Label>Tax Rate *</Label>
+              {/*
+                "Use restaurant default" REMOVED 2026-08-18. It was the DEFAULT SELECTION, so an
+                item could be created without the question ever being put -- and a coffee reached a
+                paid production receipt at 0% VAT because of it (order #10).
+
+                Zero-rating is still available: a restaurant that means it picks its own 0% rate,
+                which is a rate like any other. What is gone is the IMPLICIT one.
+
+                This is CONVENIENCE ONLY. The refusal that matters is server-side, in
+                app/api/admin/menu/items -- a disabled control is not a rule, and that route is
+                reachable without this form.
+              */}
               <Select
-                value={itemForm.tax_rate_id || '__default__'}
-                onValueChange={(value) =>
-                  setItemForm((prev) => ({
-                    ...prev,
-                    tax_rate_id: value === '__default__' ? '' : value,
-                  }))
-                }
+                value={itemForm.tax_rate_id || undefined}
+                onValueChange={(value) => setItemForm((prev) => ({ ...prev, tax_rate_id: value }))}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="Use restaurant default" />
+                <SelectTrigger aria-invalid={!itemForm.tax_rate_id}>
+                  <SelectValue placeholder="Choose a tax rate" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__default__">Use restaurant default</SelectItem>
                   {taxRates.map((rate) => (
                     <SelectItem key={rate.id} value={rate.id}>
                       {formatTaxRateLabel(rate)}
