@@ -127,51 +127,68 @@ async function main() {
   if (old.length > 15) console.log(`    … and ${old.length - 15} more`)
 
   /**
-   * HOW LONG DOES AN ANSWER NORMALLY TAKE? This is the number a threshold has to clear.
+   * HOW LONG DOES AN ACCEPT NORMALLY TAKE? This is the number a threshold has to clear.
    *
    * A threshold picked from the OPEN rows alone would be circular — chosen to catch the rows
    * already visible. What matters is the shape of NORMAL: if staff answer in minutes, a threshold
    * in hours flags nothing that is merely busy.
    *
-   * Measured from ANSWERED requests. `updated_at` is the only timestamp an answer touches — there
-   * is no dedicated answered_at — so this is an UPPER BOUND on the answer time (a later edit
-   * inflates it), which is the safe direction for choosing a threshold.
+   * MEASURED VIA THE REQUEST -> ORDER LINK, because `order_requests` has NO `updated_at` — tried
+   * that first and the column does not exist. Accepting CREATES an order and
+   * lib/orders/create-order.ts stamps `placed_at: new Date()` on it, so
+   *
+   *     orders.placed_at  −  order_requests.placed_at   =   how long the answer took
+   *
+   * joined on `orders.source_request_id`. Declines are invisible here — they create no order — so
+   * this describes time-to-ACCEPT, which is the case a staff signal exists to catch anyway.
    */
-  const { data: answered, error: e2 } = await admin
-    .from('order_requests')
-    .select('placed_at, updated_at, status')
-    .in('status', ['accepted', 'declined'])
+  const { data: linked, error: e2 } = await admin
+    .from('orders')
+    .select('placed_at, source_request_id')
+    .not('source_request_id', 'is', null)
     .order('placed_at', { ascending: false })
     .limit(1000)
+
   if (e2) {
     console.log(`
-  ANSWERED-REQUEST TIMING unavailable: ${e2.message}`)
+  ACCEPT-TIME unavailable: ${e2.message}`)
   } else {
-    const deltas = (answered ?? [])
-      .map((r) => {
-        const a = Date.parse(String(r.placed_at ?? ''))
-        const b = Date.parse(String(r.updated_at ?? ''))
-        return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : NaN
+    const ids = (linked ?? []).map((o) => o.source_request_id).filter(Boolean)
+    const placedById = new Map()
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data: reqs } = await admin
+        .from('order_requests')
+        .select('id, placed_at')
+        .in('id', ids.slice(i, i + 200))
+      for (const r of reqs ?? []) placedById.set(r.id, r.placed_at)
+    }
+    const deltas = (linked ?? [])
+      .map((o) => {
+        const submitted = Date.parse(String(placedById.get(o.source_request_id) ?? ''))
+        const answered = Date.parse(String(o.placed_at ?? ''))
+        return Number.isFinite(submitted) && Number.isFinite(answered) && answered >= submitted
+          ? answered - submitted
+          : NaN
       })
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b)
 
     console.log(`
-  HOW LONG AN ANSWER NORMALLY TAKES (n=${deltas.length} answered)`)
+  HOW LONG AN ACCEPT NORMALLY TAKES (n=${deltas.length} linked pairs)`)
     if (deltas.length === 0) {
       console.log('    no usable timings — a threshold cannot be grounded on this data')
     } else {
       const at = (q) => deltas[Math.min(deltas.length - 1, Math.floor(q * deltas.length))]
       const mins = (ms) => (ms / 60000).toFixed(1)
       for (const [label, v] of [
-        ['p50', at(0.5)],
-        ['p90', at(0.9)],
-        ['p95', at(0.95)],
-        ['p99', at(0.99)],
+        ['p50', at(0.5)], ['p90', at(0.9)], ['p95', at(0.95)], ['p99', at(0.99)],
         ['max', deltas[deltas.length - 1]],
       ]) {
         console.log(`    ${label}  ${mins(v).padStart(10)} min`)
       }
+      console.log(
+        `    accepts that took over an hour: ${deltas.filter((d) => d > 3600000).length} of ${deltas.length}`,
+      )
     }
   }
 
