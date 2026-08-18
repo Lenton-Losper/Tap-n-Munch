@@ -25,8 +25,7 @@ import {
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
-import { deriveEditIntent, desiredFromStored } from '@/lib/orders/derive-edit-intent'
-import { capIdentity } from '@/lib/orders/logical-item-identity'
+import { MAX_LINE_QUANTITY } from '@/lib/orders/quantity-limits'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { useRouter } from 'next/navigation'
 import {
@@ -292,13 +291,8 @@ export function OrderEditPanel({
    */
   const displayRows = rows
 
-  /**
-   * Guarded, because `deriveEditIntent` THROWS on a fractional or duplicated row and this runs
-   * during render. A stepper cannot produce either -- but the rows are seeded from
-   * sessionStorage, which is the one input here that a previous version of the app, or a hand-
-   * edited value, could have written. An exception in a `useMemo` is a blank screen; refusing to
-   * enable Save is a customer who can still read their order.
-   */
+  // Guarded against a corrupt sessionStorage payload -- see safeDeriveEditIntent, which explains
+  // why a throw during render is worse than an inert Save button.
   const intent = safeDeriveEditIntent(order.items, displayRows)
 
   /**
@@ -501,32 +495,47 @@ export function OrderEditPanel({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="h-7 w-7"
+                    className="h-11 w-11 border-border"
+                    /**
+                     * STOPPED AT THE CAP, the way the cart's own stepper is.
+                     *
+                     * #307 made the ceiling apply to the RESULTING quantity of a logical item,
+                     * which is exactly the number this row holds. Letting a customer press past
+                     * it builds an edit the server will refuse at Save, after they have already
+                     * committed to the change — the cart solved that by disabling the control,
+                     * and the same refusal reaching a customer by two routes should not look
+                     * like two different products.
+                     */
+                    disabled={row.quantity >= MAX_LINE_QUANTITY}
                     onClick={() => increment(row.identity)}
-                    aria-label={`${EDIT_COPY.addOneMore} — ${row.name}`}
+                    aria-label={
+                      row.quantity >= MAX_LINE_QUANTITY
+                        ? `Maximum ${MAX_LINE_QUANTITY} per item — ${row.name}`
+                        : `${EDIT_COPY.addOneMore} — ${row.name}`
+                    }
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="h-4 w-4 stroke-[1.5]" />
                   </Button>
                 )}
                 <Button
                   type="button"
                   size="icon"
                   variant="outline"
-                  className="h-7 w-7"
+                  className="h-11 w-11 border-border"
                   onClick={() => decrement(row.identity)}
                   aria-label={`Reduce ${row.name}`}
                 >
-                  <Minus className="h-3 w-3" />
+                  <Minus className="h-4 w-4 stroke-[1.5]" />
                 </Button>
                 <Button
                   type="button"
                   size="icon"
                   variant="outline"
-                  className="h-7 w-7"
+                  className="h-11 w-11 border-border"
                   onClick={() => remove(row.identity)}
                   aria-label={`Remove ${row.name}`}
                 >
-                  <XCircle className="h-3 w-3" />
+                  <XCircle className="h-4 w-4 stroke-[1.5]" />
                 </Button>
               </div>
             )}

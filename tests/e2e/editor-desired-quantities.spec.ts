@@ -236,3 +236,73 @@ test.describe('the order editor', () => {
     expect(Number(items[0].quantity)).toBe(2)
   })
 })
+
+/**
+ * SECTION 20 — the controls are reachable with a thumb, and section 3's cap stop.
+ *
+ * 44 CSS pixels is not a number picked here: it is what the CART's own stepper uses
+ * (components/menu/item-detail-modal.tsx, `h-11 w-11`). The editor's controls were 28px, so the
+ * same customer met two different targets for the same gesture on two screens.
+ *
+ * The cap stop is measured in the same test because it is the same button: #307 made the ceiling
+ * apply to the RESULTING quantity of a logical item, which is exactly what a row holds, and the
+ * cart disables `+` there rather than letting a customer build an edit the server will refuse
+ * after they have committed to it.
+ */
+test.describe('the editor’s controls', () => {
+  test('are at least 44px, and the raise stops at the cap', async ({ page, baseURL }) => {
+    const f = await seedTableWithOrder(db, { price: 5 })
+    fixture = f
+
+    const { error: seedErr } = await db
+      .from('orders')
+      .update({
+        items: [
+          {
+            menuItemId: f.menuItemIds[0],
+            name: f.itemName,
+            displayName: f.itemName,
+            quantity: 19,
+            unitPrice: 5,
+            subtotal: 82.61,
+            tax: 12.39,
+            total: 95,
+            size: null,
+            addons: [],
+            selectedVariants: {},
+            specialInstructions: '',
+          },
+        ],
+        subtotal: 82.61,
+        tax: 12.39,
+        total: 95,
+        status: 'accepted',
+        payment_status: 'pending',
+      })
+      .eq('id', f.orderId)
+    if (seedErr) throw new Error(`seed nineteen: ${seedErr.message}`)
+
+    await adoptSession(page.context(), baseURL!, f)
+    await page.goto(
+      `${baseURL}/menu/${FIXTURE_RESTAURANT}/order-confirmation/${f.orderId}?table=${f.tableNumber}`,
+      { waitUntil: 'domcontentloaded' },
+    )
+    await page.getByRole('button', { name: /change|edit/i }).first().click()
+    await expect(editorRow(page, f.itemName)).toContainText('19×', { timeout: 20_000 })
+
+    for (const control of [`Reduce ${f.itemName}`, `Remove ${f.itemName}`]) {
+      const box = await page.getByRole('button', { name: control }).boundingBox()
+      expect(box, `${control} must be on screen to be measured`).not.toBeNull()
+      expect(box!.width, `${control} width`).toBeGreaterThanOrEqual(44)
+      expect(box!.height, `${control} height`).toBeGreaterThanOrEqual(44)
+    }
+
+    // THE CAP. 19 -> 20 is allowed; 20 -> 21 is not, and the control says so rather than going
+    // dead silently.
+    const plus = page.getByRole('button', { name: new RegExp(`— ${f.itemName}$`) }).first()
+    await expect(plus, '[control] at 19 the raise must still be offered').toBeEnabled()
+    await plus.click()
+    await expect(editorRow(page, f.itemName)).toContainText('20×')
+    await expect(page.getByRole('button', { name: /Maximum 20 per item/ })).toBeDisabled()
+  })
+})
