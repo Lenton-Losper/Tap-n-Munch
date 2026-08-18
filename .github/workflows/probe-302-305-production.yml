@@ -14,11 +14,20 @@
 # query string look like, so a run where no row arrives is INCONCLUSIVE, not a pass.
 name: Probe #302/#305 redaction on production (read-only)
 
+# TRIGGERED BY A COMMIT MARKER, not workflow_dispatch. A dispatchable workflow must exist on the
+# DEFAULT branch, and this instrument has no business on main -- it would be repo state that
+# production carries for a check production never runs. The marker convention is this repo's own,
+# from probe-webhook-sig-fallback.yml.
+#
+#   git commit --allow-empty -m 'probe: [probe-302-305-production]'
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - cloudflare-staging
 
 jobs:
   probe:
+    if: contains(github.event.head_commit.message, '[probe-302-305-production]')
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     name: Read-only #302/#305 production redaction probe
