@@ -124,6 +124,19 @@ export async function POST(req: Request) {
       restaurant_id: restaurantUuid,
       table_id: tableRow.id,
       table_number: tableNumber,
+      /**
+       * STAMPED AT INSERT, added 2026-08-18 with the session boundary.
+       *
+       * `mintSessionToken` already writes this (lib/session-token.ts) — but only when a token is
+       * minted, which is a separate call moments later. Between the two the tab exists with a NULL
+       * version, and if minting never happens it stays null forever.
+       *
+       * That matters now that guest reads are bounded by it: a tab with no version cannot be
+       * placed on either side of a table reset, so it is dropped, and a customer who had just
+       * created a tab would see nothing. The value is already in hand — this route selects
+       * `current_session_version` when it loads the table — so the window closes for free.
+       */
+      session_version: tableRow.current_session_version ?? 1,
       status: 'open',
       members,
       total: 0,

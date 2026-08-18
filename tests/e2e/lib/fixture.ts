@@ -160,6 +160,14 @@ export async function seedTableWithOrder(
       table_id: tableId,
       table_number: tableNumber,
       status: 'open',
+        /**
+         * THE FIXTURE MUST LOOK LIKE A REAL TAB. Added 2026-08-18: guest reads are now bounded by
+         * the session version, so a tab without one is dropped as unattributable — and every spec
+         * using this fixture failed its own positive control, which is how the gap was found.
+         *
+         * A freshly seeded table sits at version 1, the same value POST /api/tabs now stamps.
+         */
+        session_version: 1,
       session_token: sessionToken,
       members: [{ session_id: sessionId, display_name: 'Probe' }],
       total: 0,

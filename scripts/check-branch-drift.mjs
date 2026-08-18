@@ -162,7 +162,23 @@ function promotedState(sha) {
     const mainBlob = tryGit(['rev-parse', `${BASE}:${file}`])
     if (!mainBlob.ok) continue // not on BASE (a deletion); nothing of main's to lack
     const headBlob = tryGit(['rev-parse', `${HEAD}:${file}`])
-    if (!headBlob.ok) return false // HEAD lacks the file outright
+    if (!headBlob.ok) {
+      /**
+       * HEAD DOES NOT HAVE THE FILE. Two very different situations, and returning false for both
+       * was wrong — fixed 2026-08-18, the third refinement of #310 and the same class as the
+       * other two:
+       *
+       *   never had it   main holds a file this branch never received. Genuine drift.
+       *   DELETED it     this branch had it and removed it deliberately, which makes it AHEAD of
+       *                  main, not behind. `hooks/useSessionTokenGuard.ts` was deleted as dead
+       *                  code and the whole customer-redesign commit went red as a result.
+       *
+       * The same question as everywhere else in this function: did HEAD ever hold main's blob.
+       */
+      const everHadIt = tryGit(['rev-list', HEAD, '--', file])
+      if (!everHadIt.ok || !everHadIt.out.trim()) return false
+      continue
+    }
     if (mainBlob.out.trim() === headBlob.out.trim()) continue // identical
 
     // Differing. HEAD is only level-or-ahead if it CONTAINS main's last change to this path.

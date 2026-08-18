@@ -699,3 +699,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          # The dashboard spec mints a staff user and signs in through the form; without this it
+          # REFUSES rather than reporting 'the banner is absent', which is why staging went red
+          # the moment it landed.
+          STAGING_TEST_PASSWORD: ${{ secrets.STAGING_TEST_PASSWORD }}
