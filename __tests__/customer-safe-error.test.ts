@@ -24,7 +24,9 @@ const FALLBACK = 'Please try again.'
 /** Written for a customer. Must reach the screen unchanged. */
 const SAFE: Array<[string, string]> = [
   ['view-only table', 'This is a view-only menu — ordering is not available here.'],
-  ['tab ready to pay', 'This tab is ready to pay — you cannot add more items.'],
+  // 'tab ready to pay' REMOVED 2026-08-18 (#303): the route can no longer emit it, because no
+  // caller could ever reach the branch that did. Keeping a census row for an unreachable string
+  // asserts coverage of a path that does not exist.
   ['table closed', 'This table has been closed. Please scan the QR code to start a new session.'],
   ['payment method', 'This restaurant does not accept cash payments.'],
   ['payment method, underscored', 'This restaurant does not accept card_terminal payments.'],
