@@ -57,7 +57,20 @@ function mapOrderRequestToGuestRow(row: Record<string, unknown>): GuestOrderRow 
     payment_channel: row.payment_channel as string | null,
     tab_id: row.tab_id as string | null,
     tab_settlement_for_tab_id: row.tab_settlement_for_tab_id as string | null,
-    order_number: 0,
+    /**
+     * THE ROOT OF "Order #0". Fixed 2026-08-19, after a real customer saw it on the confirmation
+     * screen for the third time.
+     *
+     * This was a literal `order_number: 0`. `order_requests` has no `order_number` column at all
+     * -- a number is allocated by createOrder when staff Accept -- so this function was inventing
+     * one and handing it to every render site downstream. Each site then had to defend itself, and
+     * two of them defended with `!= null`, which 0 passes.
+     *
+     * NULL is the honest value, and every reader already handles it: `hasAllocatedOrderNumber`
+     * rejects null, undefined, '' and 0 together, and scripts/check-order-number-guard.ts now
+     * fails the build on any site that tests this field without it.
+     */
+    order_number: null,
     placed_at: row.placed_at,
     items,
     subtotal,

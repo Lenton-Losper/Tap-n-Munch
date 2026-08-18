@@ -2,6 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
@@ -41,7 +42,22 @@ type Order = {
 function mapGuestRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: String(row.id || ''),
-    order_number: row.order_number != null ? Number(row.order_number) : null,
+    /**
+     * THE SOURCE OF "Order #0" ON PRODUCTION, 2026-08-19.
+     *
+     * This was `row.order_number != null ? Number(row.order_number) : null`. The guest-order
+     * mapper handed it a literal `0` for an order_request -- that table has no order_number
+     * column at all -- and `0 != null` is true, so a real customer was shown "Order #0".
+     *
+     * The mapper is fixed at source (lib/guest-orders/queries.ts now yields null), and this stays
+     * on the helper so the two cannot disagree if another producer ever sends 0 again.
+     *
+     * `hasAllocatedOrderNumber` is the one test for "is there a number", and it already rejects
+     * 0, '' and null together. Used here so the mapper cannot disagree with the render.
+     */
+    order_number: hasAllocatedOrderNumber({ order_number: row.order_number })
+      ? Number(row.order_number)
+      : null,
     status: String(row.status || 'pending') as OrderStatusKey,
     placed_at: String(row.placed_at || row.created_at || ''),
     payment_method: String(row.payment_method || ''),
@@ -264,6 +280,12 @@ export default function OrderConfirmationPage() {
       paymentMethod={order.payment_method}
       paymentStatus={order.payment_status}
       paymentChannel={order.payment_channel}
+      /**
+       * Read from the RAW row, not the mapped `order`: the Order type above deliberately does not
+       * carry tab_id, and widening it would push the field through every prop of this view for
+       * one boolean. `orderRow` is the same row the edit panel already reads for the same reason.
+       */
+      isTabOrder={Boolean(String(orderRow?.tab_id ?? '').trim())}
       items={order.items}
       total={order.total}
       subtotal={order.subtotal}

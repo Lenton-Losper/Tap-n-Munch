@@ -6,6 +6,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
 import { getCurrentSession } from '@/lib/session'
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
@@ -164,8 +165,11 @@ function inferCancelledFromSearchParams(searchParams: URLSearchParams): boolean 
 function mapSupabaseRowToOrderDoc(row: Record<string, unknown>): OrderDoc {
   return {
     id: String(row.id ?? ''),
-    order_number:
-      typeof row.order_number === 'number' ? row.order_number : Number(row.order_number) || undefined,
+    // One test for "is there a number", shared with every other render. A bare typeof check
+    // admits 0, which is not a legal order number -- allocation starts at 1.
+    order_number: hasAllocatedOrderNumber({ order_number: row.order_number })
+      ? Number(row.order_number)
+      : undefined,
     table_number:
       typeof row.table_number === 'number' ? row.table_number : Number(row.table_number) || undefined,
     session_id: typeof row.session_id === 'string' ? row.session_id : undefined,
@@ -186,12 +190,11 @@ function aggregateOrders(rows: OrderDoc[]): ReceiptView {
   if (rows.length === 0) return { id: '', items: [], subtotal: 0, tax: 0, total: 0 }
   if (rows.length === 1) {
     const o = rows[0]
-    const od =
-      typeof o.order_number === 'number'
-        ? `#${o.order_number}`
-        : o.id
-          ? o.id.slice(-8).toUpperCase()
-          : '—'
+    const od = hasAllocatedOrderNumber({ order_number: o.order_number })
+      ? `#${Number(o.order_number)}`
+      : o.id
+        ? o.id.slice(-8).toUpperCase()
+        : '—'
     return { ...o, merged: false, orderDisplay: od }
   }
   const items = rows.flatMap((o) => (Array.isArray(o.items) ? o.items : []))
@@ -210,7 +213,7 @@ function aggregateOrders(rows: OrderDoc[]): ReceiptView {
   }
   const nums = rows
     .map((o) => o.order_number)
-    .filter((n): n is number => typeof n === 'number')
+    .filter((n): n is number => hasAllocatedOrderNumber({ order_number: n }))
   const uniqueNums = [...new Set(nums)].sort((a, b) => a - b)
   const orderDisplay =
     uniqueNums.length > 0
@@ -475,7 +478,7 @@ function OrderConfirmationContent() {
   const displayOrderNumber = useMemo(() => {
     if (!receipt) return null
     if (receipt.orderDisplay) return receipt.orderDisplay
-    if (typeof receipt.order_number === 'number') return `#${receipt.order_number}`
+    if (hasAllocatedOrderNumber({ order_number: receipt.order_number })) return `#${Number(receipt.order_number)}`
     return receipt.id ? receipt.id.slice(-8).toUpperCase() : null
   }, [receipt])
 

@@ -534,6 +534,14 @@ jobs:
         run: npx eslint . --max-warnings=0
       - name: Typecheck
         run: npx tsc --noEmit
+      # "Order #0" has reached production THREE times, in three different files, each time
+      # because a render site asked "does this order have a number?" itself instead of asking
+      # hasAllocatedOrderNumber(). `!= null` and `typeof === 'number'` both admit 0, and an
+      # order_request carries order_number as an empty string, which Number() turns into 0.
+      # Static: no credentials, no database. BLOCKING — the tree is clean as of 2026-08-19, so
+      # this can only fail on something NEW.
+      - name: Every order-number test goes through hasAllocatedOrderNumber
+        run: npx tsx scripts/check-order-number-guard.ts
       # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
       # when the column already exists — the migration succeeds and the
       # constraint is never created. Static, no credentials, no database.

@@ -7,6 +7,7 @@ import {
 } from '@/lib/guest-orders/client'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
 import { customerOrderState } from '@/lib/orders/customer-status'
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 
 interface Notification {
   id: string
@@ -23,16 +24,35 @@ interface OrderStatusBannerProps {
 type OrderSnapshot = {
   status: string
   payment_status: string
-  order_number: number
+  /** What to print after "Order #": the allocated number, or the short id when there is none. */
+  orderLabel: string
 }
 
 function normalizePaid(value: unknown): boolean {
   return String(value ?? '').toLowerCase() === 'paid'
 }
 
-function orderNumberFromRow(row: GuestOrderRow): number {
-  if (typeof row.order_number === 'number') return row.order_number
-  return Number(row.order_number) || 0
+/**
+ * WHAT TO CALL THIS ORDER IN A NOTIFICATION. Found by scripts/check-order-number-guard.ts on
+ * 2026-08-19, not by hand -- this was a live "Order #0" the eye had missed.
+ *
+ * It returned `Number(row.order_number) || 0`, so a row with no allocated number produced 0 and
+ * the customer was told "Order #0 has been accepted!". The guest-order mapper was handing every
+ * order_request a literal `order_number: 0`, which is now null at source.
+ *
+ * NO NEW COPY IS INVENTED. When there is no number the short id is used instead, which is exactly
+ * what app/order-confirmation/page.tsx already does for the same situation
+ * (`o.id.slice(-8).toUpperCase()`). The customer gets an identifier that is real and that they can
+ * show a staff member, rather than one that is neither.
+ *
+ * Returns the string that goes after "Order #", so the call sites do not each decide.
+ */
+function orderLabelFromRow(row: GuestOrderRow): string {
+  if (hasAllocatedOrderNumber({ order_number: row.order_number })) {
+    return String(Number(row.order_number))
+  }
+  const id = String(row.id ?? '')
+  return id ? id.slice(-8).toUpperCase() : '—'
 }
 
 export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderStatusBannerProps) {
@@ -87,7 +107,7 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
    */
   const getStatusNotification = (
     newStatus: string,
-    orderNumber: number,
+    orderNumber: string,
     _oldStatus: string,
     paymentStatus?: string
   ): Notification | null => {
@@ -176,7 +196,7 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
         if (Number(row.table_number) !== Number(tableNumber)) continue
 
         currentIds.add(id)
-        const orderNum = orderNumberFromRow(row)
+        const orderNum = orderLabelFromRow(row)
         const newStatus = String(row.status ?? '')
         const newPay = String(row.payment_status ?? '')
         const prev = prevById.get(id)
@@ -210,7 +230,7 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
         prevById.set(id, {
           status: newStatus,
           payment_status: newPay,
-          order_number: orderNum,
+          orderLabel: orderNum,
         })
       }
 
@@ -232,8 +252,8 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
            * change to the defect it is about.
            */
           addNotification({
-            id: `${prev.order_number}-vanished-${Date.now()}`,
-            message: `Order #${prev.order_number} completed. Enjoy your meal!`,
+            id: `${prev.orderLabel}-vanished-${Date.now()}`,
+            message: `Order #${prev.orderLabel} completed. Enjoy your meal!`,
             type: 'success',
             icon: '🎉',
           })

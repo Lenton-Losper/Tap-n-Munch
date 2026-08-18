@@ -16,7 +16,7 @@ import { PaymentBadge } from './payment-badge'
 import { InfoBanner } from './info-banner'
 import { OrderSummary } from './order-summary'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
-import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { orderIdentityLabel, hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 import {
   formatReceiptDate,
   mapOrderStatusToBadge,
@@ -36,6 +36,19 @@ export type OrderConfirmationViewProps = {
   paymentMethod: string
   paymentStatus: string
   paymentChannel?: string | null
+  /**
+   * Is this order on a TAB? Ruled 2026-08-19: the payment block is removed for tab orders.
+   *
+   * On a tab the customer is not asked how they will pay -- that happens at the table when the
+   * tab is settled -- so before payment exists there is no true value either field can show. The
+   * method was invented ('cash', from a route fallback since removed) and the status was derived
+   * from that invention, so "PENDING" sent a customer to ask staff about a transaction that did
+   * not exist. Payment lives on the Tab.
+   *
+   * Non-tab orders KEEP the block: there the method IS chosen at submission and both fields are
+   * facts the customer supplied.
+   */
+  isTabOrder?: boolean
   items: ReceiptLineItem[]
   total: number
   subtotal?: number
@@ -73,6 +86,7 @@ export function OrderConfirmationView({
   paymentMethod,
   paymentStatus,
   paymentChannel,
+  isTabOrder = false,
   items,
   total,
   subtotal,
@@ -124,8 +138,16 @@ export function OrderConfirmationView({
 
               Demoted to the muted metadata line: a real number is worth showing and is not the
               headline.
+
+              2026-08-19: THIS BRANCH USED `orderNumber != null` AND SHIPPED "Order #0" ANYWAY.
+              A real customer saw it on production. `!= null` admits `0`, and the guest-order
+              mapper was handing every order_request a literal `order_number: 0`.
+
+              `hasAllocatedOrderNumber` is the ONLY test for this question anywhere now, and a
+              CI scan (scripts/check-order-number-guard.ts) fails the build on any file that
+              compares an order number to null without it. Three instances was enough.
             */}
-            {orderNumber != null ? (
+            {hasAllocatedOrderNumber({ order_number: orderNumber }) ? (
               <p className="mt-2 text-sm text-[#6B7280]">
                 Order <span className="font-semibold text-[#111827]">#{orderNumber}</span>
               </p>
@@ -176,7 +198,8 @@ export function OrderConfirmationView({
             </InfoBanner>
           )}
 
-          {/* Payment row */}
+          {/* Payment row — hidden on a tab order; see the isTabOrder prop. */}
+          {!isTabOrder && (
           <div className="mt-6 grid grid-cols-2 gap-4 rounded-xl border border-[#E5E7EB] bg-[#F8FAFC]/60 p-4">
             <div>
               <p className="text-xs font-medium text-[#6B7280] mb-1.5">Payment Method</p>
@@ -190,8 +213,9 @@ export function OrderConfirmationView({
               <PaymentBadge status={statusLabel} />
             </div>
           </div>
+          )}
 
-          {showReadyToPayHint && statusLabel === 'Pending' && (
+          {!isTabOrder && showReadyToPayHint && statusLabel === 'Pending' && (
             <p className="mt-3 text-xs text-center text-[#6B7280] leading-relaxed">
               {methodLabel === 'Cash'
                 ? 'A waiter will bring your bill when your order is ready.'
