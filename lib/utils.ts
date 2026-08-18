@@ -1,3 +1,4 @@
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
@@ -89,7 +90,22 @@ export function normalizeOrder(data: any) {
       : null,
     // Ensure numeric fields have safe defaults
     table_number: typeof data.table_number === 'number' ? data.table_number : 0,
-    order_number: typeof data.order_number === 'number' ? data.order_number : 0,
+    /**
+     * NULL, NOT 0. Found by scripts/check-order-number-guard.ts on 2026-08-19.
+     *
+     * "Safe default" is the wrong idea for this one field: 0 is not a safe order number, it is a
+     * WRONG one. Allocation starts at 1, so 0 can only ever mean "none allocated", and every time
+     * that has been written into a render it produced "Order #0" in front of a customer. The
+     * neighbouring fields keep 0 because 0 really is their neutral value; a number that does not
+     * exist has no neutral value, so it stays absent.
+     *
+     * `normalizeOrder` currently has NO consumers anywhere in the app or the test suite -- checked
+     * 2026-08-19, and stated because "it's dead" is the kind of claim that goes stale. It is fixed
+     * rather than deleted so that whoever wires it up next does not reintroduce the defect.
+     */
+    order_number: hasAllocatedOrderNumber({ order_number: data.order_number })
+      ? Number(data.order_number)
+      : null,
     subtotal: typeof data.subtotal === 'number' ? data.subtotal : 0,
     tax: typeof data.tax === 'number' ? data.tax : 0,
     total: typeof data.total === 'number' ? data.total : 0,

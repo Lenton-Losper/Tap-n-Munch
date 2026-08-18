@@ -69,3 +69,44 @@ test('an unnumbered submission never renders "#0"', async ({ page, baseURL }) =>
     new RegExp(`Order Placed|${escapeRe(QR_REDESIGN_PENDING_COPY.tabOrderNotYetNumbered)}`, 'i'),
   )
 })
+
+/**
+ * THE CASE THE TEST ABOVE COULD NOT SEE, added 2026-08-19 after a real customer hit it.
+ *
+ * The fixture above inserts NO order_number, so the column is NULL — and null always took the
+ * safe branch. The value that actually shipped "Order #0" was a literal **0**, invented by
+ * `mapOrderRequestToGuestRow` for rows on a table that has no such column, and then admitted by
+ * two separate `!= null` guards.
+ *
+ * So the original spec passed honestly for two days while being structurally unable to fail on
+ * the defect. Seeding 0 explicitly is what closes that.
+ */
+test('a ZERO order number never renders "#0" either', async ({ page, baseURL }) => {
+  const f = await seedTableWithOrder(db, { price: 25 })
+  fixture = f
+
+  // The shape the mapper used to produce. Written directly, because no code path creates it now.
+  const { error } = await db.from('orders').update({ order_number: 0 }).eq('id', f.orderId)
+  if (error) throw new Error(`could not seed order_number = 0: ${error.message}`)
+
+  const { data: check } = await db.from('orders').select('order_number').eq('id', f.orderId).single()
+  expect(
+    Number(check?.order_number),
+    '[control] the fixture must really hold 0, or this test proves nothing',
+  ).toBe(0)
+
+  await adoptSession(page.context(), baseURL!, f)
+  await page.goto(
+    `${baseURL}/menu/${FIXTURE_RESTAURANT}/order-confirmation/${f.orderId}?table=${f.tableNumber}`,
+    { waitUntil: 'domcontentloaded' },
+  )
+  await page.waitForFunction(() => document.body.innerText.trim().length > 20, null, {
+    timeout: 25_000,
+  })
+  await expect(page.getByText(f.itemName, { exact: false }).first()).toBeVisible({ timeout: 20_000 })
+
+  const text = (await page.innerText('body')).replace(/\s+/g, ' ').trim()
+  expect(text, `0 is not an allocated order number. Screen said: ${text}`).not.toMatch(
+    /Order\s*#0\b/,
+  )
+})

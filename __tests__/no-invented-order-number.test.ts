@@ -45,7 +45,14 @@ describe('#296 the mapper stops coercing a missing number to zero', () => {
   })
 
   it('passes null through instead', () => {
-    expect(codeOnly(PAGE)).toContain('row.order_number != null ? Number(row.order_number) : null')
+    /**
+      STRENGTHENED 2026-08-19, not weakened. This pinned the exact shape
+      `row.order_number != null ? Number(...) : null`, which was itself the defect: `!= null`
+      admits 0, and the guest-order mapper handed every order_request a literal 0. The page
+      rendered "Order #0" to a real customer while this assertion passed.
+    */
+    expect(codeOnly(PAGE)).toContain('hasAllocatedOrderNumber({ order_number: row.order_number })')
+    expect(codeOnly(PAGE)).not.toMatch(/order_number\s*!=\s*null/)
   })
 
   it('the type admits null, so the compiler holds the view to it', () => {
@@ -59,7 +66,7 @@ describe('#296 the view shows a number only when one exists', () => {
     // the fix, because the guarded branch legitimately renders exactly that. "Never render it"
     // was the wrong claim; "never render it unguarded" is the right one.
     const code = codeOnly(VIEW)
-    const guard = code.indexOf('orderNumber != null ?')
+    const guard = code.indexOf('hasAllocatedOrderNumber({ order_number: orderNumber })')
     expect(guard).toBeGreaterThan(-1)
     // jest's expect takes no message argument -- that is Playwright's. The indices carry it.
     const renders = [...code.matchAll(/#\{orderNumber\}/g)].map((m) => m.index ?? -1)
@@ -69,7 +76,14 @@ describe('#296 the view shows a number only when one exists', () => {
 
   it('branches on null and falls back to the not-yet-numbered copy', () => {
     const code = codeOnly(VIEW)
-    expect(code).toMatch(/orderNumber != null \?/)
+    /**
+     * STRENGTHENED 2026-08-19, not weakened. This required `orderNumber != null ?` — the very
+     * shape that rendered "Order #0" to a real customer, because `!= null` admits 0 and the
+     * guest-order mapper was inventing one. The guard must be the shared helper, which rejects
+     * null, undefined, '' and 0 together.
+     */
+    expect(code).toMatch(/hasAllocatedOrderNumber\(\{ order_number: orderNumber \}\)/)
+    expect(code).not.toMatch(/orderNumber\s*!=\s*null/)
     /**
      * STRENGTHENED 2026-08-18. This used to require the constant INLINE here, which is the weaker
      * form of the same rule -- and it is what let the branch be wrong a third time: on a DECLINED
