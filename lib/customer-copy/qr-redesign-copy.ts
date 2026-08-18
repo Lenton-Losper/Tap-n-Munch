@@ -94,6 +94,28 @@ export const QR_REDESIGN_PENDING_COPY = {
    * food now".
    */
   myOrdersEarlierSection: 'Earlier',
+
+  /**
+   * Renders: My Orders, replacing the "No orders yet" empty state when the customer's dining
+   * session has been ended by staff closing the table (#313).
+   *
+   * WHY IT EXISTS. Their phone keeps its session id across a close -- nothing clears it -- so the
+   * list correctly shows nothing and they are told nothing about why. An unexplained empty screen
+   * is indistinguishable from a lost order, and the second reading sends someone to staff with a
+   * complaint that is not real.
+   *
+   * WHAT IT MUST NOT SAY. Not that anything was deleted or cancelled: every order still exists,
+   * for staff and on the settled tab, and several may have been paid. Not that the customer did
+   * anything wrong. The action is a rescan, because the table's QR code is what starts the next
+   * session.
+   *
+   * The body must survive being read by someone who has just paid and now sees an empty screen.
+   */
+  sessionEndedTitle: 'PENDING COPY - this dining session has ended',
+  sessionEndedBody:
+    'PENDING COPY - orders from the previous session are no longer shown here. Nothing has been ' +
+    'lost; staff still have the full record. Scan the QR code on the table to start a new order.',
+  sessionEndedAction: 'PENDING COPY - back to the table',
   /** Renders: the Tab, per order, on a submitted-but-unanswered order. */
   tabOrderAwaitingConfirmation: 'Waiting for restaurant',
 

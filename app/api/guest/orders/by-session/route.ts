@@ -34,7 +34,7 @@ export async function GET(request: Request) {
     // tabId is optional refinement only — never sufficient alone for a dump.
     void tabId
 
-    const { orders, count } = await fetchGuestOrdersBySession({
+    const { orders, count, sessionEnded } = await fetchGuestOrdersBySession({
       restaurantId,
       sessionId: sessionId || null,
       sessionIds,
@@ -44,11 +44,19 @@ export async function GET(request: Request) {
       includeDeclined,
     })
 
+    /**
+      `sessionEnded` is a COURTESY, not a gate (#313). It says the caller had rows that a table
+      close has since put out of reach, so a screen can explain an empty list instead of leaving
+      it looking like a lost order. It changes nothing about what is returned -- the boundary that
+      withheld those rows is in lib/guest-orders/session-boundary.ts and is unaffected.
+
+      It discloses no row and no id: one boolean about the caller's OWN session.
+    */
     if (countOnly) {
-      return NextResponse.json({ orders: [], count })
+      return NextResponse.json({ orders: [], count, sessionEnded })
     }
 
-    return NextResponse.json({ orders, count })
+    return NextResponse.json({ orders, count, sessionEnded })
   } catch (err) {
     console.error('[guest/orders/by-session] GET failed:', err)
     return NextResponse.json({ error: 'Failed to load session orders' }, { status: 500 })

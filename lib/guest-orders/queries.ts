@@ -154,7 +154,17 @@ export async function fetchGuestOrdersBySession(params: {
    * different audiences and only one of them wants them -- see the status filter below.
    */
   includeDeclined?: boolean
-}): Promise<{ orders: GuestOrderRow[]; count: number }> {
+  /**
+    Whether ANY row was dropped because its dining session has since been closed.
+
+    Derived from the SAME filter that enforces the boundary -- filterToCurrentSession already
+    counts droppedStaleSession -- so the notice the customer sees cannot disagree with what the
+    server actually withheld. A second query asking "is my session current?" could answer
+    differently from the filter that ran a moment earlier; this cannot.
+
+    It is a COURTESY, not a gate. Nothing about what is returned changes. #313.
+  */
+}): Promise<{ orders: GuestOrderRow[]; count: number; sessionEnded: boolean }> {
   const supabase = createServerSupabaseClient()
   const restaurantUuid = await resolveGuestRestaurantId(params.restaurantId)
 
@@ -168,7 +178,7 @@ export async function fetchGuestOrdersBySession(params: {
   // Fail closed: never dump a full tab by UUID alone. Require session scope
   // (same pattern as active-table). Tab id may still refine the filter.
   if (sessionIds.length === 0) {
-    return { orders: [], count: 0 }
+    return { orders: [], count: 0, sessionEnded: false }
   }
 
   /**
@@ -181,10 +191,10 @@ export async function fetchGuestOrdersBySession(params: {
    * from the client. Two parser-free `.in()` calls and a Map cost one extra round trip and
    * reintroduce nothing.
    */
-  const ordersQueryFor = (column: 'session_id' | 'member_session_id') => {
+  const ordersQueryFor = (column: 'session_id' | 'member_session_id', select?: string) => {
     let q = supabase
       .from('orders')
-      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .select(select ?? '*')
       .eq('restaurant_id', restaurantUuid)
       .in(column, sessionIds)
     if (tabId) q = q.eq('tab_id', tabId)
@@ -193,19 +203,15 @@ export async function fetchGuestOrdersBySession(params: {
   }
 
   /**
-   * `countOnly` stays SINGLE-COLUMN, deliberately, and this is the measurement that makes it safe
-   * rather than an assumption: on 2026-08-13, ZERO rows had a `member_session_id` differing from
-   * their `session_id` — 0 of 213 on staging, 0 of 1000 on production — because
-   * app/menu/[restaurantId]/cart/page.tsx:286 writes the one value into both columns.
+   * The old `countOnly` restriction to a SINGLE placer column is retired (#313). Its reason was
+   * sound while counts were HEAD counts: `count` arrives as a number with no ids, so adding two
+   * of them double-counts every row both columns match. The count path now selects ids, so the
+   * two merge by id like every other path and the count no longer has to be narrower than the
+   * list it describes.
    *
-   * So the second query cannot add a row here today. It is omitted because counts CANNOT be
-   * merged the way rows can: `count` comes back as a number with no ids, so adding the two counts
-   * double-counts every row both columns match, which today is every row. A wrong count is worse
-   * than a narrow one — these callers ask "does this session have orders?" and drive the stale-tab
-   * cleanup that returns a customer to the menu.
-   *
-   * If that measurement ever stops holding, this needs ids rather than counts. Re-measure before
-   * assuming it still does.
+   * (The measurement that made the narrow count safe -- 2026-08-13, 0 of 213 staging and 0 of
+   * 1000 production rows with a member_session_id differing from session_id -- no longer has to
+   * keep holding for this to be correct.)
    */
   const query = ordersQueryFor('session_id')
 
@@ -239,10 +245,10 @@ export async function fetchGuestOrdersBySession(params: {
     : [...LIVE_REQUEST_STATUSES]
 
   // Same both-columns treatment as orders above, same reason, same no- rule.
-  const requestsQueryFor = (column: 'session_id' | 'member_session_id') => {
+  const requestsQueryFor = (column: 'session_id' | 'member_session_id', select?: string) => {
     let q = supabase
       .from('order_requests')
-      .select('*', params.countOnly ? { count: 'exact', head: true } : undefined)
+      .select(select ?? '*')
       .eq('restaurant_id', restaurantUuid)
       .in(column, sessionIds)
       .in('status', requestStatuses)
@@ -250,17 +256,61 @@ export async function fetchGuestOrdersBySession(params: {
     return q
   }
 
-  // countOnly: single column, for the reason measured above.
   const pendingQuery = requestsQueryFor('session_id')
 
   if (params.countOnly) {
-    const [{ count, error }, { count: pendingCount, error: pendingError }] = await Promise.all([
-      query,
-      pendingQuery,
+    /**
+     * THE COUNT IS BOUNDED TOO, as of #313. It was not, and that is a real residual of e13340c:
+     * the session boundary was applied to the ROW paths below and this path was left alone, so a
+     * customer at a closed table saw a badge counting orders the list refuses to show. An
+     * unexplained empty screen is the defect #313 is about; a "3" above it is the same defect
+     * with a number on it.
+     *
+     * A HEAD count cannot be filtered — `count` arrives as a number with no ids, and the boundary
+     * needs each row's tab. So this now selects the few columns the filter reads instead.
+     *
+     * That also RETIRES the single-column restriction the old comment here defended. Its reason
+     * was that two counts cannot be merged without double-counting every row both placer columns
+     * match; with ids in hand they merge by id like every other path, so the count no longer has
+     * to be narrower than the list it describes. The 2026-08-13 measurement that made the narrow
+     * count safe (0 of 213 staging, 0 of 1000 production with differing columns) no longer has to
+     * keep holding.
+     *
+     * Cost: two extra small selects on a guest's own rows instead of two HEAD counts. These
+     * callers are a badge and the stale-tab cleanup, not a hot loop.
+     */
+    const boundaryColumns = 'id, tab_id, session_id, member_session_id, is_closed, table_closed'
+    const [ordersA, ordersB, reqA, reqB] = await Promise.all([
+      ordersQueryFor('session_id', boundaryColumns),
+      ordersQueryFor('member_session_id', boundaryColumns),
+      requestsQueryFor('session_id', 'id, tab_id, session_id, member_session_id'),
+      requestsQueryFor('member_session_id', 'id, tab_id, session_id, member_session_id'),
     ])
-    if (error) throw error
-    if (pendingError) throw pendingError
-    return { orders: [], count: (count ?? 0) + (pendingCount ?? 0) }
+    for (const r of [ordersA, ordersB, reqA, reqB]) if (r.error) throw r.error
+
+    // PostgREST types a dynamic .select() as GenericStringError[] | null, so the rows are cast
+    // at the boundary rather than fighting the generic.
+    const dedupe = (...sets: Array<unknown>) => {
+      const seen = new Map<string, Record<string, unknown>>()
+      for (const set of sets) {
+        for (const row of (Array.isArray(set) ? set : []) as Record<string, unknown>[]) {
+          seen.set(String(row.id), row)
+        }
+      }
+      return [...seen.values()]
+    }
+
+    const [countedOrders, countedRequests] = await Promise.all([
+      filterToCurrentSession(supabase, dedupe(ordersA.data, ordersB.data), { surface: 'orders' }),
+      filterToCurrentSession(supabase, dedupe(reqA.data, reqB.data), { surface: 'order_requests' }),
+    ])
+
+    return {
+      orders: [],
+      count: countedOrders.kept.length + countedRequests.kept.length,
+      sessionEnded:
+        countedOrders.droppedStaleSession > 0 || countedRequests.droppedStaleSession > 0,
+    }
   }
 
   // The row paths DO merge both placer columns — see ordersQueryFor / requestsQueryFor above.
@@ -315,6 +365,22 @@ export async function fetchGuestOrdersBySession(params: {
   const data = ordersBounded.kept
   const pending = pendingBounded.kept
 
+  /**
+   * THE COURTESY SIGNAL (#313). Did this session have rows that a table close has since put out
+   * of reach?
+   *
+   * Taken from the filter that just ran, not from a second question. A separate "is my session
+   * current?" read could answer differently from the filter that decided what to return a
+   * moment earlier — and a notice that contradicts the list is worse than no notice.
+   *
+   * `droppedStaleSession` only. NOT `droppedClosed` (an ordinary settled tab, which is not a
+   * table close) and NOT `droppedUnattributable` (the fail-closed bucket, which means "could not
+   * tell" — telling a customer their session ended because a join came back empty would be
+   * inventing a fact).
+   */
+  const sessionEnded =
+    ordersBounded.droppedStaleSession > 0 || pendingBounded.droppedStaleSession > 0
+
   // TWO read-time redactions, and neither replaces the other.
   //
   //   redactGuestOrderRow       strips edit_lock_token -- a CAPABILITY: whoever holds it can
@@ -351,7 +417,7 @@ export async function fetchGuestOrdersBySession(params: {
     return bMs - aMs
   })
 
-  return { orders: merged, count: merged.length }
+  return { orders: merged, count: merged.length, sessionEnded }
 }
 
 export async function fetchGuestActiveTableOrders(params: {
