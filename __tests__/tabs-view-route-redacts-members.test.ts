@@ -53,6 +53,8 @@ let ordersSelected: string
 let orderRows: Array<Record<string, unknown>>
 let requestRows: Array<Record<string, unknown>>
 let requestsSelected: string
+let tabQuerySeen = false
+let recordTabFilters = false
 
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
@@ -65,15 +67,52 @@ jest.mock('@/lib/supabase/server', () => ({
         select(columns: string) {
           if (table === 'orders') ordersSelected = columns
           else if (table === 'order_requests') requestsSelected = columns
-          else selected = columns
+            // `tabs` EXPLICITLY, not "anything that is not orders". The session-boundary
+            // check reads `restaurant_tables` too, and an else-branch captured that as though
+            // it were the tabs select — so an assertion about the tabs query started reading
+            // `current_session_version`.
+            /**
+             * ONLY THE ROUTE'S OWN tabs QUERY. Since 2026-08-18 the route makes TWO reads of
+             * `tabs`: its own, and the session-boundary check's. Recording both appended a second
+             * `eq id` to tabFilters and overwrote `selected` with the boundary check's narrow
+             * column list, so assertions about the route's query started reading the wrong one.
+             */
+            else if (table === 'tabs' && !tabQuerySeen) {
+              tabQuerySeen = true
+              selected = columns
+              recordTabFilters = true
+            } else if (table === 'tabs') {
+              recordTabFilters = false
+            }
           const builder: Record<string, unknown> = {
             eq: (col: string, val: unknown) => {
               if (table === 'orders') orderFilters.push(['eq', col, val])
-              else if (table !== 'order_requests') tabFilters.push(['eq', col, val])
+                else if (table === 'tabs' && recordTabFilters) tabFilters.push(['eq', col, val])
               return builder
             },
             in: () => builder,
-            maybeSingle: async () => ({ data: tabRow, error: null }),
+            /**
+             * `restaurant_tables` was added to this mock on 2026-08-18 with the SESSION BOUNDARY
+             * check. The route now refuses with 410 when the tab's `session_version` does not
+             * match its table's `current_session_version`, and a mock returning `tabRow` for every
+             * table made that comparison fail — so the whole suite 410'd. That was the suite
+             * correctly noticing a behaviour change, not a defect.
+             *
+             * The fixture table is kept AT the tab's version, so these tests go on exercising the
+             * redaction they are about. The boundary itself is asserted in
+             * __tests__/session-boundary.test.ts, in both directions.
+             */
+            maybeSingle: async () => ({
+              data:
+                table === 'restaurant_tables'
+                  ? {
+                      id: 'table-uuid-1',
+                      current_session_version:
+                        (tabRow as Record<string, unknown> | null)?.session_version ?? 3,
+                    }
+                  : tabRow,
+              error: null,
+            }),
             // The orders read is awaited directly rather than via maybeSingle.
             then: (resolve: (v: unknown) => unknown) =>
               resolve({
@@ -94,6 +133,9 @@ jest.mock('@/lib/session-guard', () => ({
 }))
 
 beforeEach(() => {
+  // Reset per test, or the second test in the file records nothing.
+  tabQuerySeen = false
+  recordTabFilters = false
   tabFilters = []
   selected = ''
   orderFilters = []

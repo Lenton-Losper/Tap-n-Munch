@@ -97,7 +97,10 @@ const CLIENT_TABS_READERS = [
   'app/menu/[restaurantId]/v2/page.tsx',
   'app/menu/[restaurantId]/receipt/page.tsx',
   'contexts/tab-context.tsx',
-  'hooks/useSessionTokenGuard.ts',
+  // hooks/useSessionTokenGuard.ts DELETED 2026-08-18. It was imported by no screen — it existed,
+  // was named in this list, and ran nowhere, which reads as coverage it never provided. The
+  // session boundary is enforced SERVER-side now (lib/guest-orders/session-boundary.ts), which is
+  // where a boundary belongs.
   'hooks/useTabSessionEndedRedirect.ts',
   'lib/tab-session.ts',
   'lib/session-token.ts',

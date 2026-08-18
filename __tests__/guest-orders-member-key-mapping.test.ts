@@ -29,6 +29,22 @@ jest.mock('@/lib/supabase/restaurants', () => ({
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
     from(table: string) {
+        /**
+         * THE SESSION BOUNDARY, added 2026-08-18. fetchGuestOrdersBySession now reads `tabs` and
+         * `restaurant_tables` and AWAITS `.in(...)` directly. This stub's `in()` returned the
+         * non-thenable builder, so both reads resolved to undefined, no tab was found, and every
+         * row was dropped as unattributable — the suite correctly noticing a behaviour change.
+         *
+         * The fixture tab sits AT the table's current version, so these tests go on exercising
+         * the member-key mapping they are about.
+         */
+        if (table === 'tabs' || table === 'restaurant_tables') {
+          const rows =
+            table === 'tabs'
+              ? [{ id: TAB_ID, table_id: 'table-1', session_version: 1 }]
+              : [{ id: 'table-1', current_session_version: 1 }]
+          return { select: () => ({ in: async () => ({ data: rows, error: null }) }) }
+        }
       return {
         select() {
           const builder: Record<string, unknown> = {

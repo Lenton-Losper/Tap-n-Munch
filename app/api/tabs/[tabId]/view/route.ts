@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { tabIsCurrentSession } from '@/lib/guest-orders/session-boundary'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { createTabMemberKeyDeriver, redactTabMembers } from '@/lib/tab-member-key'
 import {
@@ -96,6 +97,29 @@ export async function GET(
     }
     if (!data) {
       return NextResponse.json({ tab: null, self_member_keys: [] })
+    }
+
+    /**
+     * THE SESSION BOUNDARY. Same defect as My Orders, and this is the MONEY surface — it serves
+     * the two figures a customer is asked to settle.
+     *
+     * `close_table_session` settles the table's tabs and bumps
+     * `restaurant_tables.current_session_version`, leaving the old tab behind at the old version.
+     * This route never checked, so a phone that kept its session id across a close could read the
+     * previous party's figures.
+     *
+     * 410, matching what `requireSessionToken` answers for an ended session, so a client that
+     * already handles "your dining session has ended" handles this too rather than meeting a shape
+     * it has never seen.
+     */
+    if (!(await tabIsCurrentSession(supabase, normalizedTabId))) {
+      return NextResponse.json(
+        {
+          error: 'Your dining session has ended. Please scan the QR code to start a new order.',
+          reason: 'session_version_mismatch',
+        },
+        { status: 410 },
+      )
     }
 
     const row = data as Record<string, unknown>

@@ -133,7 +133,8 @@ export async function fetchActiveTabForTable(
   tableId: string | null,
   tableNumber: number
 ): Promise<TabRow | null> {
-  // #262: no `members`. Its only consumer is useSessionTokenGuard's evaluateTabRow, which
+  // #262: no `members`. Its only consumer WAS useSessionTokenGuard's evaluateTabRow (deleted
+  // 2026-08-18 as dead code; the session boundary is enforced server-side now), which
   // reads `status` and `session_token` and never touches members -- and `members` under the
   // anon key is every diner's session_id on every open tab. Do NOT add it back: PostgREST
   // refuses the whole query when the select list names an ungranted column, so this select
