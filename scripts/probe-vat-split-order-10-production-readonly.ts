@@ -127,10 +127,18 @@ async function main() {
       }
     }
 
-    const { data: allRates } = await admin
+    /**
+     * `is_active` DOES NOT EXIST on tax_rates — the columns are id, restaurant_id, name,
+     * percentage, is_inclusive, is_default, created_at. Selecting it made PostgREST error, and
+     * the first run of this probe printed an EMPTY rate list because the error was never checked.
+     * A silent empty result read as "this restaurant has no tax rates", which would have been a
+     * finding in itself. Errors are surfaced now.
+     */
+    const { data: allRates, error: ratesErr } = await admin
       .from('tax_rates')
-      .select('id, name, percentage, is_inclusive, is_default, is_active')
+      .select('id, name, percentage, is_inclusive, is_default')
       .eq('restaurant_id', o.restaurant_id)
+    if (ratesErr) console.log(`    RATE READ FAILED: ${ratesErr.message}`)
     console.log('\n  EVERY TAX RATE on this restaurant:')
     for (const r of allRates ?? []) {
       console.log(
