@@ -29,6 +29,7 @@ import {
   type Fixture,
 } from './lib/fixture'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { CUSTOMER_STATUS_COPY } from '@/lib/orders/customer-status'
 
 let db: SupabaseClient
 let fixture: Partial<Fixture> = {}
@@ -221,6 +222,44 @@ test.describe('My Orders — the live list', () => {
       card.getByText(/not numbered yet/i),
       'a declined order will never receive a number; "not yet" is a promise that cannot be kept',
     ).toHaveCount(0)
+  })
+
+  /**
+   * THE HEADLINE IS A FACT, NOT AN ABSENCE.
+   *
+   * The bold top-left slot held "Not numbered yet" — the loudest thing on the card announcing
+   * that something does not exist, while the badge beside it already said WAITING FOR RESTAURANT.
+   *
+   * Asserted by ROLE and prominence, not by absence of a string: `getByRole('heading')` is the
+   * slot itself, so this fails if the phrase merely moves to a different bold heading. A plain
+   * `not.toContainText` over the whole card would also pass for a card that stopped rendering.
+   */
+  test('an unnumbered order does not headline with “Not numbered yet”', async ({ page, baseURL }) => {
+    const f = await seedTableWithOrder(db)
+    fixture = f
+
+    await openMyOrders(page, baseURL!, f)
+    await assertLiveOrderVisible(page, f, f.itemName)
+
+    const card = page.locator('[data-testid="my-orders-card"]').first()
+    await expect(card, '[control] a card must be on screen to be read').toBeVisible()
+
+    const heading = card.getByRole('heading')
+    await expect(heading, '[control] the card must still HAVE a headline').toHaveCount(1)
+    await expect(
+      heading,
+      'the loudest slot on the card must not announce that a number does not exist',
+    ).not.toContainText(/not numbered yet/i)
+
+    // ...and the state is still stated, in the slot that owns it. Matched against the SHARED
+    // vocabulary rather than one phrase: the fixture seeds an ACCEPTED order, so demanding
+    // "Waiting for restaurant" here failed on a card that was rendering perfectly — the control
+    // was wrong, not the fix.
+    const states = Object.values(CUSTOMER_STATUS_COPY).join('|')
+    await expect(
+      card,
+      '[control] the badge must still say what is happening, or this passes for a blank card',
+    ).toContainText(new RegExp(states, 'i'))
   })
 
   /**
