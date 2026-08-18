@@ -88,3 +88,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # How many production orders say 'cash', and how many of those are TAB orders where the
+      # route stamped it and nobody was asked. Decides migration vs schema tidy. Read-only.
+      - name: Probe payment_method cash on tab orders (no writes)
+        run: npx tsx scripts/probe-payment-method-cash-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
