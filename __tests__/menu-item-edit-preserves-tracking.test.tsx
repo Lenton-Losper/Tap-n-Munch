@@ -117,6 +117,17 @@ const EDITING_ITEM = {
   name: 'Red Bull',
   description: '',
   base_price: 25,
+  /**
+   * A TAX RATE, added 2026-08-18. Without it these three tests fail before they reach the
+   * assertion, because a menu item can no longer be saved without one -- see
+   * lib/menu-items/require-tax-rate.ts and the paid production receipt that caused the ruling.
+   *
+   * The fixture is updated, NOT the rule. This suite is about track_inventory; a legacy item with
+   * no rate is simply not the subject, and any real edit of one now has to answer the tax question
+   * first. That these tests went red is the client guard working, and is the only place in the
+   * unit suite that exercises it through the actual form.
+   */
+  tax_rate_id: 'rate-standard-15',
   // itemToForm reads menu_category_id, not category_id.
   menu_category_id: 'cat-1',
   sub_category_id: '',
