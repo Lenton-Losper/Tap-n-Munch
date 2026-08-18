@@ -764,6 +764,13 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       await clearReadyToPayAndReopenTab(supabase, {
         tabId,
         logPrefix: '[guest/orders/:id/edit]',
+        /**
+         * EXPLICIT, not left to the default, because #287 gave the other callers a reason to
+         * PRESERVE the ready-to-pay record and this one must never do that. No money was taken
+         * here -- the customer changed what they owe after pressing the button, so staff must not
+         * settle at a figure that has moved. The flag clears and the customer presses again.
+         */
+        reason: 'amount_changed',
       })
     }
 
