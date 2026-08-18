@@ -86,6 +86,17 @@ describe('deriveEditIntent — the four sequences of section 3', () => {
     expect(intent.keep).toEqual([])
     expect(intent.unchanged).toBe(false)
   })
+
+  it('reports `reduced` so the caller does not re-derive it by comparing keep to the order', () => {
+    // The panel sends `keep` only when this is true. A second implementation of the question in a
+    // component is how the two halves drift, so it is answered once, here.
+    expect(deriveEditIntent(stored, [want(line(), 1)]).reduced).toBe(true)
+    expect(deriveEditIntent(stored, [want(line(), 0)]).reduced).toBe(true)
+    expect(deriveEditIntent(stored, [want(line(), 2)]).reduced).toBe(false)
+    // A pure ADDITION is not a reduction — `keep` must stay unsent, or the reduction path
+    // repriced an order nobody reduced.
+    expect(deriveEditIntent(stored, [want(line(), 5)]).reduced).toBe(false)
+  })
 })
 
 describe('deriveEditIntent — lots', () => {

@@ -25,6 +25,8 @@ import {
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
+import { deriveEditIntent, desiredFromStored } from '@/lib/orders/derive-edit-intent'
+import { capIdentity } from '@/lib/orders/logical-item-identity'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { useRouter } from 'next/navigation'
 import {
@@ -41,41 +43,16 @@ import {
   type EditLockGrant,
 } from '@/lib/guest-orders/client'
 
-type WorkingLine = {
-  index: number
-  quantity: number
-  originalQuantity: number
-  name: string
-  removed: boolean
-  /** The stored line, so the row can render its size / variants / add-ons (#298). */
-  raw: Record<string, unknown>
-}
-
-function lineName(item: Record<string, unknown>): string {
-  return String(item.displayName ?? item.name ?? 'Item')
-}
-
-function toWorkingLines(items: Array<Record<string, unknown>>): WorkingLine[] {
-  return items.map((item, index) => {
-    const quantity = Number(item.quantity)
-    const safeQuantity = Number.isInteger(quantity) && quantity > 0 ? quantity : 1
-    return {
-      index,
-      quantity: safeQuantity,
-      originalQuantity: safeQuantity,
-      name: lineName(item),
-      removed: false,
-      /**
-       * The stored line itself, kept so the row can show what was CONFIGURED (#298).
-       *
-       * Not flattened here: `lineConfigurationSummary` owns reading the two possible shapes, and
-       * a second copy of that logic in this component is exactly the drift #295 spent a sweep
-       * undoing.
-       */
-      raw: item,
-    }
-  })
-}
+import {
+  mergePicks,
+  pendingAdditionsFor,
+  restoredQuantity,
+  rowCanBeAddedTo,
+  safeDeriveEditIntent,
+  setRowQuantity,
+  toWorkingRows,
+  type WorkingRow,
+} from '@/lib/orders/edit-panel-rows'
 
 export function OrderEditPanel({
   orderId,
@@ -107,7 +84,7 @@ export function OrderEditPanel({
   const sessionIds = useMemo(() => (sessionIdsKey ? sessionIdsKey.split('|') : []), [sessionIdsKey])
 
   const [grant, setGrant] = useState<EditLockGrant | null>(null)
-  const [lines, setLines] = useState<WorkingLine[]>([])
+  const [rows, setRows] = useState<WorkingRow[]>([])
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -179,7 +156,7 @@ export function OrderEditPanel({
     try {
       const acquired = await acquireOrderEditLock({ orderId, restaurantId, sessionIds })
       setGrant(acquired)
-      setLines(toWorkingLines(acquired.items))
+      setRows(mergePicks(toWorkingRows(acquired.items), readPendingAdditions(orderId)))
       // Deliberately NOT resetting `additions`: a reopen after the menu round trip must keep
       // what the customer just picked.
       setNotes(String(acquired.orderInstructions ?? ''))
@@ -221,68 +198,74 @@ export function OrderEditPanel({
   const close = () => {
     release()
     setGrant(null)
-    setLines([])
-    setAdditions([])
+    setRows([])
+    clearPendingAdditions(orderId)
     setError(null)
   }
 
-  const decrement = (index: number) => {
-    setLines((prev) =>
-      prev.map((line) =>
-        line.index === index
-          ? line.quantity <= 1
-            ? { ...line, removed: true }
-            : { ...line, quantity: line.quantity - 1 }
-          : line,
-      ),
-    )
-  }
-
-  const remove = (index: number) => {
-    setLines((prev) => prev.map((line) => (line.index === index ? { ...line, removed: true } : line)))
-  }
-
-  const restore = (index: number) => {
-    setLines((prev) =>
-      prev.map((line) =>
-        line.index === index ? { ...line, removed: false, quantity: line.originalQuantity } : line,
-      ),
-    )
-  }
-
   /**
-   * ADDING ONE MORE OF A LINE ALREADY ON THE ORDER.
+   * ALL FOUR CONTROLS SET ONE NUMBER. That is the entire point of the 2026-08-18 rewrite: there
+   * is no longer a `+` path and a `-` path that accumulate into different lists, so pressing them
+   * in any order leaves the same state, and Save derives the same wire form from it.
    *
-   * Deliberately NOT expressed as a raised `keep` quantity. `repriceKeptLines` refuses a raise
-   * BY CONSTRUCTION, and that refusal is load-bearing: the reduction path re-sums from the
-   * order's own stored lines, so a raise there would multiply a stored price without ever
-   * touching the stock check, the quantity cap or the live menu.
+   * `restore` returns to the ORIGINAL quantity rather than to 1, so undoing a removal undoes the
+   * removal rather than silently reducing a 3 to a 1.
+   */
+  const setQuantity = (identity: string, next: number) =>
+    setRows((prev) => setRowQuantity(prev, identity, next))
+
+  const step = (identity: string, delta: number) => {
+    const row = rows.find((r) => r.identity === identity)
+    if (row) setQuantity(identity, row.quantity + delta)
+  }
+
+  const increment = (identity: string) => step(identity, 1)
+  const decrement = (identity: string) => step(identity, -1)
+  const remove = (identity: string) => setQuantity(identity, 0)
+
+  const restore = (identity: string) => {
+    const row = rows.find((r) => r.identity === identity)
+    if (row) setQuantity(identity, restoredQuantity(row))
+  }
+
+  /**
+   * WHY A RAISE STILL BECOMES AN `add`, EVEN THOUGH THE CUSTOMER JUST PRESSES `+`.
    *
-   * So a raise is sent as an ADDITION of the same menu item, which goes through
-   * applyEditAdditions and therefore through all three guards. The order ends up with two lines
-   * of the same item rather than one line of two — which is what the bill honestly shows: the
-   * first at the price quoted when it was ordered, the second at today's.
+   * `repriceKeptLines` refuses a raised `keep` BY CONSTRUCTION, and that refusal is load-bearing:
+   * the reduction path re-sums from the order's own STORED lines, so a raise there would multiply
+   * a stored price without ever touching the stock check, the quantity cap or the live menu.
+   *
+   * The customer no longer expresses that distinction -- `deriveEditIntent` does, at Save, by
+   * splitting one desired number into `min(original, desired)` on `keep` and the remainder on
+   * `add`. That is what lets `+` and `-` be the same control and still route a genuine increase
+   * through all three guards.
+   *
+   * The order ends up with two stored lines of the same item rather than one line of two, which
+   * is what the bill honestly shows: the first at the price quoted when it was ordered, the second
+   * at today's. #307 aggregates them for display without merging the money.
    */
-  /**
-   * Seeded from sessionStorage, because "+ Add something" leaves this ROUTE and unmounts this
-   * component -- which also releases the edit lock, deliberately. See
-   * lib/orders/edit-pending-additions.ts for why the pending edit cannot live in component state
-   * across that round trip and must not live on the server either.
-   */
-  const [additions, setAdditions] = useState<Array<Record<string, unknown>>>(() =>
-    readPendingAdditions(orderId),
-  )
-
-  // Kept in sync both ways: every change to the list is written back, so a customer who goes to
-  // the menu a second time does not lose the first pick.
-  useEffect(() => {
-    writePendingAdditions(orderId, additions)
-  }, [orderId, additions])
 
   /**
-   * Leave for the menu in picker mode. The lock is released on unmount as usual -- holding it
-   * while the customer browses would block the table for three minutes for no benefit, and the
-   * editor re-acquires on return.
+   * THE PICKER ROUND TRIP, and why picks are ABSORBED rather than held alongside.
+   *
+   * "+ Add something" leaves this ROUTE and unmounts this component -- which also releases the
+   * edit lock, deliberately. See lib/orders/edit-pending-additions.ts for why the pending edit
+   * cannot live in component state across that trip and must not live on the server either.
+   *
+   * A first attempt kept `picks` as a second state and merged it into the rows at render. That is
+   * wrong in a way worth recording, because it looks fine: a pick that merges into an existing row
+   * can then never be reduced to zero. The row's own quantity drops, the merge adds the pick back
+   * on the next render, and the customer's `-` does nothing at the bottom of the range.
+   *
+   * So sessionStorage is a TRANSPORT, not a parallel state. Picks are folded into `rows` when the
+   * lock is acquired and the store is cleared; on the way out, whatever is currently beyond the
+   * stored order -- `intent.add`, the same value Save would send -- is written back for the return
+   * leg. One state, one number per row, no reconciliation.
+   *
+   * KNOWN AND UNCHANGED: a REDUCTION does not survive the picker trip, because only additions are
+   * carried. That was true before this rewrite too (the rows were rebuilt from the order on every
+   * re-acquire) and closing it means persisting desired quantities, which changes the format the
+   * browse picker appends to. Out of scope here; recorded rather than silently inherited.
    */
   const goPickSomething = () => {
     // From the ORDER ROW, not from props: this component is mounted on two different screens and
@@ -296,48 +279,54 @@ export function OrderEditPanel({
     router.push(`/menu/${restaurantId}/browse?${query.toString()}`)
   }
 
-  const addOneMore = (index: number) => {
-    const item = (Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [])[index]
-    // No menu item id means nothing can be priced against the live menu, so the control is not
-    // offered for that line at all (see the render below). Belt and braces here.
-    const menuItemId = String(item?.menuItemId ?? item?.menu_item_id ?? '').trim()
-    if (!menuItemId) return
-    setAdditions((prev) => [
-      ...prev,
-      {
-        menuItemId,
-        name: item?.name ?? item?.displayName ?? '',
-        displayName: item?.displayName ?? item?.name ?? '',
-        quantity: 1,
-        selectedVariants: item?.selectedVariants ?? {},
-        size: item?.size ?? null,
-        addons: item?.addons ?? [],
-        specialInstructions: item?.specialInstructions ?? '',
-      },
-    ])
-  }
+  /**
+   * THE SINGLE SOURCE OF TRUTH FOR BOTH THE SCREEN AND THE SAVE.
+   *
+   * Rendered rows and saved intent come from the SAME value, so the screen cannot show one thing
+   * and commit another. That was possible before: the list rendered `lines` while Save also sent
+   * `additions`, and nothing tied the two together.
+   */
+  const displayRows = rows
 
-  const undoAddition = (position: number) => {
-    setAdditions((prev) => prev.filter((_, i) => i !== position))
-  }
+  /**
+   * Guarded, because `deriveEditIntent` THROWS on a fractional or duplicated row and this runs
+   * during render. A stepper cannot produce either -- but the rows are seeded from
+   * sessionStorage, which is the one input here that a previous version of the app, or a hand-
+   * edited value, could have written. An exception in a `useMemo` is a blank screen; refusing to
+   * enable Save is a customer who can still read their order.
+   */
+  const intent = safeDeriveEditIntent(order.items, displayRows)
 
-  /** Whether a line can be added to at all — no menu item id, no live pricing, no control. */
-  const lineHasMenuItemId = (index: number): boolean => {
-    const item = (Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [])[index]
-    return Boolean(String(item?.menuItemId ?? item?.menu_item_id ?? '').trim())
-  }
+  /**
+   * KEEP THE TRANSPORT EQUAL TO THE DERIVED ADDITIONS, not to a list of presses.
+   *
+   * The store holds exactly what `intent.add` holds, rewritten whenever the rows move. That makes
+   * absorbing it at acquisition IDEMPOTENT: rows are seeded as stored + store, the store is then
+   * rewritten to the additions those rows imply, and a second acquisition seeds the same rows
+   * again. An earlier version cleared the store on absorb instead, which loses every pick on an
+   * ordinary unmount, and not clearing it at all double-counts on re-acquire. Neither is needed if
+   * the two are simply kept equal.
+   *
+   * GATED ON `grant`. Before the editor is opened `rows` is empty, so `intent.add` is empty, and an
+   * ungated effect would write [] over the customer's picks the moment this component mounted --
+   * wiping the menu round trip it exists to carry.
+   */
+  useEffect(() => {
+    if (!grant) return
+    writePendingAdditions(
+      orderId,
+      pendingAdditionsFor(intent),
+    )
+  }, [grant, orderId, intent])
 
-  const kept = lines.filter((line) => !line.removed)
   // #291: emptiness is a property of the RESULT, so it counts additions too. Zero kept with one
   // addition is a swap, not an empty order. Imported, not restated -- the route decides the same
   // question with the same function.
   const wouldBeEmpty = editLeavesOrderEmpty({
-    keptLineCount: kept.length,
-    additionCount: additions.length,
+    keptLineCount: intent.keep.length,
+    additionCount: intent.add.length,
   })
-  const itemsChanged =
-    lines.some((line) => line.removed || line.quantity !== line.originalQuantity) ||
-    additions.length > 0
+  const itemsChanged = !intent.unchanged
   const notesChanged = grant != null && notes.trim() !== String(grant.orderInstructions ?? '').trim()
 
   const save = async () => {
@@ -350,21 +339,24 @@ export function OrderEditPanel({
         restaurantId,
         sessionIds,
         lockToken: grant.lockToken,
-        // `keep` is sent whenever the SURVIVING lines changed. It is deliberately not sent for
-        // an additions-only edit: an unchanged `keep` would be a no-op the server still has to
-        // reprice, and omitting it keeps the reduction path untouched in that case.
-        ...(lines.some((line) => line.removed || line.quantity !== line.originalQuantity)
-          ? { keep: kept.map((line) => ({ index: line.index, quantity: line.quantity })) }
-          : {}),
-        ...(additions.length > 0 ? { add: additions } : {}),
+        /**
+         * DERIVED, never accumulated. `keep` is sent only when the surviving lines actually
+         * changed -- an unchanged `keep` would be a no-op the server still has to reprice, and
+         * omitting it keeps the reduction path untouched for an additions-only edit.
+         *
+         * The comparison is against what the order HOLDS, so a customer who reduced and then put
+         * it back sends neither half. That is section 3's `2 -> 1 -> 2`, and it falls out of the
+         * derivation rather than needing a case of its own.
+         */
+        ...(intent.reduced ? { keep: intent.keep } : {}),
+        ...(intent.add.length > 0 ? { add: pendingAdditionsFor(intent) } : {}),
         ...(notesChanged ? { orderInstructions: notes } : {}),
       })
       // The lock is spent by a successful commit, so there is nothing to release.
       clearPendingAdditions(orderId)
       grantRef.current = null
       setGrant(null)
-      setLines([])
-    setAdditions([])
+      setRows([])
       setNotice(
         result.totalChanged
           ? result.message.replace('{total}', `${currency}${result.total.toFixed(2)}`)
@@ -387,8 +379,8 @@ export function OrderEditPanel({
           clearPendingAdditions(orderId)
           grantRef.current = null
           setGrant(null)
-          setLines([])
-          setAdditions([])
+          setRows([])
+          clearPendingAdditions(orderId)
           const savedTotal = Number(err.details?.total)
           setNotice(
             Number.isFinite(savedTotal)
@@ -470,41 +462,44 @@ export function OrderEditPanel({
       )}
 
       <div className="space-y-2">
-        {lines.map((line) => (
+        {displayRows.map((row) => (
           <div
-            key={line.index}
+            key={row.identity}
             className={`flex items-center justify-between gap-2 text-sm ${
-              line.removed ? 'text-[#9CA3AF] line-through' : 'text-[#111827]'
+              row.quantity === 0 ? 'text-[#9CA3AF] line-through' : 'text-[#111827]'
             }`}
           >
             <span className="flex-1">
-              {line.quantity}× {line.name}
+              {/* ONE NUMBER, and it is the DESIRED one. Not the stored quantity, not the stored
+                  quantity plus pending additions shown separately — what the customer will end up
+                  with. The stepper beside it moves this and nothing else. */}
+              {row.quantity}× {row.name}
               {/* #298: this is the screen the two indistinguishable Beef Burgers were on. */}
-              {lineConfigurationSummary(line.raw) ? (
+              {lineConfigurationSummary(row.raw) ? (
                 <span className="block text-xs text-[#6B7280]">
-                  {lineConfigurationSummary(line.raw)}
+                  {lineConfigurationSummary(row.raw)}
                 </span>
               ) : null}
             </span>
-            {line.removed ? (
-              <Button type="button" size="sm" variant="ghost" onClick={() => restore(line.index)}>
+            {row.quantity === 0 ? (
+              <Button type="button" size="sm" variant="ghost" onClick={() => restore(row.identity)}>
                 Undo
               </Button>
             ) : (
               <div className="flex shrink-0 items-center gap-2">
-                {/* One more of this line. Sent as an ADDITION, never as a raised `keep`
-                    quantity — see the comment on addOneMore for why that distinction is
-                    load-bearing rather than stylistic. Offered only when the stored line
-                    carries a menu item id, because without one nothing can be priced against
-                    the live menu and the server would refuse. */}
-                {lineHasMenuItemId(line.index) && (
+                {/* `+` and `-` are the SAME control now: both set the desired quantity. Which
+                    half of the wire form a press ends up in — `keep` or the guarded `add` — is
+                    decided by deriveEditIntent at Save, not here. Offered only when the row
+                    carries a menu item id, because without one nothing can be priced against the
+                    live menu and the server would refuse a raise. */}
+                {rowCanBeAddedTo(row) && (
                   <Button
                     type="button"
                     size="icon"
                     variant="outline"
                     className="h-7 w-7"
-                    onClick={() => addOneMore(line.index)}
-                    aria-label={`${EDIT_COPY.addOneMore} — ${line.name}`}
+                    onClick={() => increment(row.identity)}
+                    aria-label={`${EDIT_COPY.addOneMore} — ${row.name}`}
                   >
                     <Plus className="h-3 w-3" />
                   </Button>
@@ -514,8 +509,8 @@ export function OrderEditPanel({
                   size="icon"
                   variant="outline"
                   className="h-7 w-7"
-                  onClick={() => decrement(line.index)}
-                  aria-label={`Reduce ${line.name}`}
+                  onClick={() => decrement(row.identity)}
+                  aria-label={`Reduce ${row.name}`}
                 >
                   <Minus className="h-3 w-3" />
                 </Button>
@@ -524,8 +519,8 @@ export function OrderEditPanel({
                   size="icon"
                   variant="outline"
                   className="h-7 w-7"
-                  onClick={() => remove(line.index)}
-                  aria-label={`Remove ${line.name}`}
+                  onClick={() => remove(row.identity)}
+                  aria-label={`Remove ${row.name}`}
                 >
                   <XCircle className="h-3 w-3" />
                 </Button>
@@ -535,38 +530,16 @@ export function OrderEditPanel({
         ))}
       </div>
 
-      {/* PENDING ADDITIONS. Nothing here has been sent: they exist only in this component's
-          state until Save, and they are priced by the SERVER at commit — no amount is shown
-          beside them, because the client does not know what they cost and a client-side figure
-          beside a real bill is exactly what this project has ruled against. */}
-      {additions.length > 0 && (
-        <div className="space-y-1 rounded-md border border-dashed border-[#E5E7EB] p-2">
-          {additions.map((addition, position) => (
-            <div
-              key={`addition-${position}`}
-              className="flex items-center justify-between gap-2 text-sm text-[#111827]"
-            >
-              <span className="flex-1">
-                + {String(addition.displayName ?? addition.name ?? 'Item')}
-                {lineConfigurationSummary(addition) ? (
-                  <span className="block text-xs text-[#6B7280]">
-                    {lineConfigurationSummary(addition)}
-                  </span>
-                ) : null}
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => undoAddition(position)}
-                aria-label={`Undo ${String(addition.displayName ?? addition.name ?? 'item')}`}
-              >
-                Undo
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* THE SEPARATE "PENDING ADDITIONS" LIST IS GONE, 2026-08-18.
+          It rendered picks BESIDE the rows while the rows already counted them, so an item the
+          customer had one of appeared twice — once inside "2× Wrap" and once as "+ Wrap" — and
+          neither figure was the answer to "how many am I getting". One row per logical item, at
+          the desired quantity, is now the whole list.
+
+          What that list existed to promise still holds: nothing has been sent, and no amount is
+          shown beside an addition, because the client does not know what it costs and a
+          client-side figure beside a real bill is exactly what this project has ruled against.
+          The resulting total is the SERVER's, after Save. */}
 
       {/* "+ ADD SOMETHING". Ruled 2026-08-16. Opens the MENU in picker mode and comes back to
           this pending edit -- not to the cart, which would place a second order for what the

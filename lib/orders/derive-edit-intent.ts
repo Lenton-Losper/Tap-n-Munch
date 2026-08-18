@@ -65,6 +65,15 @@ export type EditIntent = {
   keep: LineKeepInstruction[]
   add: EditAddition[]
   /**
+   * True when some stored lot is being kept at a lower quantity, or dropped entirely.
+   *
+   * Exposed because the CALLER needs it and would otherwise re-derive it by comparing `keep`
+   * against the stored lines -- a second implementation of the same question, in a component,
+   * which is how the two halves drift. `keep` is sent to the server only when this is true: an
+   * unchanged `keep` is a no-op the server still has to reprice.
+   */
+  reduced: boolean
+  /**
    * True when nothing about the order changed -- no reduction, no removal, no addition. Save
    * should be inert rather than taking a lock and writing an identical order.
    */
@@ -167,5 +176,5 @@ export function deriveEditIntent(
     if (extra > 0) add.push({ identity: row.identity, quantity: extra, sample: row.sample })
   }
 
-  return { keep, add, unchanged: !reduced && add.length === 0 }
+  return { keep, add, reduced, unchanged: !reduced && add.length === 0 }
 }
