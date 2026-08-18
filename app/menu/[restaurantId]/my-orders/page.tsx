@@ -32,7 +32,7 @@ import {
   QR_REDESIGN_PENDING_COPY,
   shouldShowOrderPlacedBanner,
 } from '@/lib/customer-copy/qr-redesign-copy'
-import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { hasAllocatedOrderNumber, orderIdentityLabel } from '@/lib/orders/order-identity'
 import { aggregateOrderLines } from '@/lib/orders/aggregate-order-lines'
 
 /**
@@ -284,11 +284,30 @@ export default function MyOrdersPage() {
         >
           {/* Order Header */}
           <div className="flex justify-between items-start mb-4">
+            {/*
+              THE HEADLINE IS A FACT, NOT AN ABSENCE.
+
+              This slot -- bold, top-left, the loudest thing on the card -- used to hold
+              `orderIdentityLabel(order)` unconditionally, so an order with no number yet announced
+              "Not numbered yet" more prominently than anything the customer cares about. The badge
+              beside it already says WAITING FOR RESTAURANT, which is the actual state. That is
+              #296's mistake in a new place: an absent number occupying the headline.
+
+              A number that EXISTS still leads -- it is what a customer reads out to staff. When
+              there is none, the time they ordered leads instead and nothing is said about the
+              number at all. No new wording: `timeAgo` was already on the card.
+            */}
             <div>
-              <h3 className="font-sans font-bold text-foreground text-lg">
-                {orderIdentityLabel(order)}
-              </h3>
-              <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
+              {hasAllocatedOrderNumber(order) ? (
+                <>
+                  <h3 className="font-sans font-bold text-foreground text-lg">
+                    {orderIdentityLabel(order)}
+                  </h3>
+                  <p className="text-sm text-muted-foreground font-sans">{timeAgo}</p>
+                </>
+              ) : (
+                <h3 className="font-sans font-bold text-foreground text-lg">{timeAgo}</h3>
+              )}
             </div>
             <div className="text-right">
               <p className="text-xl font-bold text-foreground font-sans">

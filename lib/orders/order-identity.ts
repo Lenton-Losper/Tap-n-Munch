@@ -32,13 +32,31 @@ export type IdentifiableOrder = {
   payment_status?: unknown
 } | null | undefined
 
-export function orderIdentityLabel(order: IdentifiableOrder): string {
+/**
+ * DOES A NUMBER EXIST? The same test `orderIdentityLabel` applies, exported so a render site can
+ * ask about PROMINENCE without re-deriving it.
+ *
+ * Needed because "what do I call this order" and "should the name lead the card" are different
+ * questions with the same input. My Orders put the label in a bold h3 at the top-left -- the
+ * loudest slot on the card -- so an order with no number yet announced ABSENCE more loudly than
+ * anything the customer cares about, while the badge beside it already said what was actually
+ * happening. That is #296's mistake in a new place: an absent number occupying the headline.
+ *
+ * A caller that inlines `order.order_number != null` gets the `0` and empty-string cases wrong,
+ * which is how the derived-identifier bug reached production twice.
+ */
+export function hasAllocatedOrderNumber(order: IdentifiableOrder): boolean {
   const raw = order?.order_number
-  // `0` is not a legal order number here (allocation starts at 1), and an empty string is the
-  // shape a mapped request row leaves behind. Both mean "none allocated", same as null.
-  const hasNumber =
+  return (
     raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) && Number(raw) > 0
-  if (hasNumber) return `Order #${Number(raw)}`
+  )
+}
+
+export function orderIdentityLabel(order: IdentifiableOrder): string {
+  // `0` is not a legal order number here (allocation starts at 1), and an empty string is the
+  // shape a mapped request row leaves behind. Both mean "none allocated", same as null -- the
+  // test lives in `hasAllocatedOrderNumber` so this function and the render sites cannot disagree.
+  if (hasAllocatedOrderNumber(order)) return `Order #${Number(order?.order_number)}`
 
   /**
    * THE THIRD ANSWER, added 2026-08-18 after a production click test.
