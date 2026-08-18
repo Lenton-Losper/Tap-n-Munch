@@ -326,6 +326,13 @@ export type EditHistoryEntry = {
   discarded_staff_review?: unknown
   notes_changed: boolean
   items_changed: boolean
+  /**
+   * WHICH clause sent this edit back to staff, or `none`. Added 2026-08-18 with the widened
+   * predicate: once an equal-price swap can require re-acceptance, `new_total > previous_total` no
+   * longer explains why an order returned to `pending`, and a reader would otherwise have to
+   * re-derive it from two line lists. Optional because entries written before that date have none.
+   */
+  reacceptance_reason?: 'total_rose' | 'introduced_content' | 'none'
 }
 
 export function appendEditHistory(

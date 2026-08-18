@@ -1,7 +1,20 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 /**
- * Bring a tab's state back in line after money has been taken against it.
+ * Take a tab OFF the ready-to-pay queue and, if it is still live, reopen it.
+ *
+ * TWO REASONS TO CALL THIS, and the second arrived on 2026-08-18. It was written for the first
+ * and named after it, which is why the name says nothing about either:
+ *
+ *   1. MONEY WAS TAKEN against the tab. The queue entry has served its purpose.
+ *   2. THE AMOUNT CHANGED under the queue entry -- a customer edited an order after pressing
+ *      Ready to Pay. Staff must not settle at a figure that is no longer owed, so the tab leaves
+ *      the queue and the customer presses the button again. See the call site in
+ *      app/api/guest/orders/[orderId]/edit/route.ts for why that is gated on the total moving.
+ *
+ * Both want exactly the same two writes, including the split and the guard below, so they share
+ * one implementation rather than growing a near-copy that drifts. The `logPrefix` is what tells
+ * the two apart in the logs.
  *
  * Two statements, not one, and only the second is guarded. Both properties matter and they were
  * introduced independently:
@@ -31,8 +44,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
  * single-order terminal payment route kept the original fused, unguarded, unchecked write, and
  * that divergence is issue #123. Every caller that marks tab money as taken must use this.
  *
- * Never throws, and never fails its caller's request: the payment is already recorded by the
- * time this runs, so a tab-state write that cannot land is logged, not escalated.
+ * Never throws, and never fails its caller's request. Whichever reason brought it here, the thing
+ * that mattered has already been recorded by the time this runs -- the payment, or the edit -- so
+ * a tab-state write that cannot land is logged, not escalated. Telling a customer their change
+ * failed because a queue flag would not clear would be a worse answer than a stale flag.
  */
 export async function clearReadyToPayAndReopenTab(
   supabase: SupabaseClient,

@@ -1,11 +1,12 @@
 /**
  * When are two order lines the SAME LOGICAL ITEM?
  *
- * There are two answers, they differ by exactly one field, and conflating them is a defect in both
- * directions. Ruled 2026-08-17 after measuring the stored line shape on real orders.
+ * There are THREE answers. Each neighbouring pair differs by exactly one field, and conflating any
+ * two is a defect in both directions. Ruled 2026-08-17, extended 2026-08-18.
  *
- *   CAP identity      the configuration the customer chose.        PRICE EXCLUDED.
- *   DISPLAY identity  that, plus the price they will be charged.   PRICE INCLUDED.
+ *   RE-ACCEPTANCE id  the configuration, WITHOUT the note.         "is this new content?"
+ *   CAP identity      that, plus the note.       PRICE EXCLUDED.   "how many of this preparation?"
+ *   DISPLAY identity  that, plus the price.      PRICE INCLUDED.   "may these share one row?"
  *
  * WHY PRICE IS OUT OF THE CAP. If price were part of cap identity, two price lots of the same
  * burger would each see a fresh ceiling: 12 + 12 both "pass" a cap of 20 while the customer holds
@@ -26,11 +27,15 @@
  *   size                  IN both     changes what is made, and the price
  *   selectedVariants      IN both     same
  *   addons                IN both     same
- *   specialInstructions   IN both     RULED: two differently-worded notes are two preparations.
- *                                     The kitchen makes them separately, so they get separate
- *                                     ceilings. Trimmed but NOT lower-cased -- #133 established
- *                                     that collapsing "No nuts" into "no nuts" discards a
- *                                     distinction a customer deliberately wrote.
+ *   specialInstructions   IN cap and display, OUT of re-acceptance.
+ *                                     RULED 2026-08-17: two differently-worded notes are two
+ *                                     preparations. The kitchen makes them separately, so they get
+ *                                     separate ceilings. Trimmed but NOT lower-cased -- #133
+ *                                     established that collapsing "No nuts" into "no nuts"
+ *                                     discards a distinction a customer deliberately wrote.
+ *                                     RULED 2026-08-18: the SAME field is out of the re-acceptance
+ *                                     key, because rewording a note on food already accepted asks
+ *                                     the kitchen for nothing new. See `reacceptanceIdentity`.
  *   authoritative price   IN display, OUT of cap    see above
  *   displayName / name    OUT of both for the cap; #133 keeps it for the CART because the cart
  *                         merges what renders identically. Here a rename must not reset a ceiling.
@@ -105,19 +110,59 @@ function instructions(line: ComparableLine): string {
 }
 
 /**
+ * The parts every identity is built from, normalised ONCE.
+ *
+ * All three exported identities are derived from this single tuple rather than each assembling
+ * their own. That is the anti-drift measure: if a future field changes how it is sorted or
+ * trimmed, it changes here and all three move together. An identity that normalised its own
+ * fields could silently diverge from a sibling and the divergence would show up as a ceiling that
+ * resets, or a re-acceptance that fires on nothing.
+ */
+function identityParts(line: ComparableLine) {
+  return {
+    product: str(line.menuItemId ?? line.menu_item_id).trim(),
+    size: sizeName(line),
+    variants: normalizeVariants(line),
+    addons: normalizeAddons(line),
+    instructions: instructions(line),
+  }
+}
+
+/**
  * THE CAP IDENTITY. Everything the customer chose, and no price.
  *
  * Two lines with equal cap identity count toward ONE ceiling, however many lots they arrived in
  * and whatever they were charged.
  */
 export function capIdentity(line: ComparableLine): string {
-  return JSON.stringify([
-    str(line.menuItemId ?? line.menu_item_id).trim(),
-    sizeName(line),
-    normalizeVariants(line),
-    normalizeAddons(line),
-    instructions(line),
-  ])
+  const p = identityParts(line)
+  return JSON.stringify([p.product, p.size, p.variants, p.addons, p.instructions])
+}
+
+/**
+ * THE RE-ACCEPTANCE IDENTITY. The cap identity MINUS `specialInstructions`.
+ *
+ * Ruled 2026-08-18. The cap and re-acceptance ask different questions and the answer differs by
+ * exactly this one field:
+ *
+ *   CAP           "how many of this PREPARATION?"     A note makes it a different preparation --
+ *                                                     the kitchen makes them separately, so they
+ *                                                     get separate ceilings. Note IN.
+ *   RE-ACCEPTANCE "was the kitchen asked for something
+ *                  NEW?"                              Rewording a note on food already accepted is
+ *                                                     not new content. Note OUT.
+ *
+ * The note-only exemption predates this ruling; it is not a new concession. Keeping the note in
+ * this key would send every "actually, no onions" back to a staff member for re-acceptance, which
+ * is the behaviour the exemption exists to prevent.
+ *
+ * Deliberately NOT a superset or subset relationship anyone should rely on implicitly: this is a
+ * third sibling of `capIdentity` and `displayIdentity`, built from the same `identityParts` so the
+ * three cannot drift apart on sorting or trimming.
+ */
+export function reacceptanceIdentity(line: ComparableLine): string {
+  const p = identityParts(line)
+  return JSON.stringify([p.product, p.size, p.variants, p.addons])
 }
 
 /**
