@@ -212,7 +212,7 @@ export async function reconcileOrphanPayments(
     }
 
     if (plainIds.length) {
-      await supabase
+      const { error: bulkError } = await supabase
         .from('orders')
         .update({
           payment_status: 'paid',
@@ -221,6 +221,62 @@ export async function reconcileOrphanPayments(
           completed_at: paidAt,
         })
         .in('id', plainIds)
+
+      /**
+       * #239. THIS PATH MARKED ORDERS PAID AND LEFT NO RECORD OF HAVING DONE SO.
+       *
+       * The auto-cancelled subset a few lines above routes through `markOrderPaidConfirmed` and
+       * gets a full audit entry; the amount-mismatch subset writes
+       * `payment.verification_uncertain`. This one wrote neither — same sweep, same run, on a
+       * SCHEDULED PRODUCTION CRON, with two different evidentiary standards.
+       *
+       * An order marked paid here left no trail of having been marked, which is precisely the
+       * record anyone reconciling a disputed charge would go looking for.
+       *
+       * ONE ROW PER ORDER, not one for the batch. A dispute is about a single order, and a
+       * batch-shaped row would make the reconciler read the whole sweep to find out whether their
+       * order was in it.
+       *
+       * DELIBERATELY NOT ROUTED THROUGH `markOrderPaidConfirmed`. That helper performs its own
+       * amount verification, and this subset reached here precisely because no amount comparison
+       * was possible — sending it through would either fabricate an amount or trip a guard that
+       * exists for a different question. The audit row therefore records `amountVerified: false`
+       * explicitly rather than staying silent about it, so the row cannot be mistaken for a
+       * verified settlement.
+       *
+       * NON-FATAL, like its two siblings. The money is already recorded by the time this runs; a
+       * failed audit write is logged and the sweep continues, because losing the payment record
+       * to protect the audit record would be the wrong trade.
+       */
+      if (bulkError) {
+        console.error('[reconcileOrphanPayments] bulk mark-paid failed:', bulkError)
+      } else {
+        const { error: auditError } = await supabase.from('audit_logs').insert(
+          // Mapped over the ROWS, not the ids: restaurantId is scoped to the per-row loops above
+          // and each order carries its own restaurant. A batch cannot assume one tenant.
+          plain.map((row) => ({
+            restaurant_id: String(row.restaurant_id),
+            action: 'payment.marked_paid_by_reconcile',
+            entity_type: 'order',
+            entity_id: String(row.id),
+            metadata: {
+              paidAt,
+              amountVerified: false,
+              reason: 'gateway settlement found with no matching paid order',
+              paymentEventId: String(event.id),
+              businessOrderNo: merchantNo || null,
+              source: 'cron_reconcile_orphan_payments',
+              batchSize: plainIds.length,
+            },
+          })),
+        )
+        if (auditError) {
+          console.error(
+            '[reconcileOrphanPayments] payment.marked_paid_by_reconcile audit failed:',
+            auditError,
+          )
+        }
+      }
     }
 
     if (merchantNo) {
