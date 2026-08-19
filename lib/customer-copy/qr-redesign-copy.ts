@@ -127,6 +127,24 @@ export const QR_REDESIGN_PENDING_COPY = {
    * did, not a thing that happened to the customer or that they caused. And the money sentence
    * comes before the instruction, because the reader may have just paid.
    */
+  /**
+   * Renders: the Tab screen, top-left, as the only way out of it.
+   *
+   * WHY IT EXISTS. `/menu/[id]/tab` is reachable from the browse strip and the header and had NO
+   * exit of its own — every sibling customer screen has one, this had none. A customer who opened
+   * their tab could only leave with the browser's back button, and on a phone in a restaurant that
+   * is not a discoverable action.
+   *
+   * NAMES THE DESTINATION, NOT A DIRECTION. Ruled: not a bare arrow and not "Back". The tab screen
+   * is reached from more than one place, so "back" is ambiguous about where it goes; this control
+   * always goes to the MENU (`/menu/{id}/browse`), and the label should say so. That also makes it
+   * safe that it is a forward navigation rather than `router.back()` — history could return the
+   * customer to a stale confirmation or an ended session, so this deliberately does not use it.
+   *
+   * The empty state ("No active tab") already has its own exit and is untouched.
+   */
+  tabBackToMenu: 'PENDING COPY - back to the menu',
+
   sessionEndedTitle: 'This table has been cleared',
   sessionEndedBody:
     'Your orders are all still on record with the restaurant, and anything you paid for has been ' +
