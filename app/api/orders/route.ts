@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { normalizeOrderInstructions } from '@/lib/orders/instruction-limits'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderRestaurantScope, resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
@@ -37,7 +38,24 @@ export async function POST(req: Request) {
         ? String(rest.paymentMethod).trim()
         : undefined
     const paymentChannel = rest.paymentChannel
-    const orderInstructions = rest.orderInstructions
+    /**
+     * #129. CAPPED SERVER-SIDE, not just in the textarea.
+     *
+     * Both textareas carry maxLength={MAX_INSTRUCTIONS_LENGTH} and the guest EDIT route already
+     * normalises -- but THIS route, which creates every order, took the field straight from the
+     * request body into a `text` column with no bound. A maxLength attribute is a convenience for
+     * someone typing; it is not a cap, and this endpoint is reachable without the form.
+     *
+     * Uncapped text here is a layout and print blowout rather than an injection risk (the
+     * dashboard renders it as JSX text, so React escapes it, and nothing in that path uses
+     * dangerouslySetInnerHTML) -- but a receipt printer given 40kB of instructions is still a
+     * real outage at the counter.
+     *
+     * The SAME helper the edit route uses, so the two cannot disagree about the limit.
+     */
+    const orderInstructions = normalizeOrderInstructions(
+      String(rest.orderInstructions ?? rest.order_instructions ?? ''),
+    )
     const tabId = rest.tabId ?? rest.tab_id ?? null
     const tabSettlementForTabId =
       rest.tabSettlementForTabId ?? rest.tab_settlement_for_tab_id ?? null
