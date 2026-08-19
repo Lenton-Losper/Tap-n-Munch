@@ -268,6 +268,19 @@ export async function POST(req: Request) {
          * `TAB_PIN_INCORRECT` both mean "show the PIN prompt"; they are separate so the prompt can
          * open clean the first time and show an inline error on a retry. `TAB_ALREADY_OPEN` has no
          * customer-side remedy, which is why its copy sends them to staff.
+         *
+         * NO `tabId` IN ANY REFUSAL BODY. Removed 2026-08-19. All three 4xx responses used to
+         * return the occupant's tab UUID so the client could address the join call — and that was
+         * the first link in a complete off-site takeover chain: a stranger who knew only the QR
+         * URL asked to create a tab, was refused, and the refusal handed them the identifier of
+         * the tab already at that table.
+         *
+         * THE CLIENT NEVER NEEDED IT. It prompts on the CODE, and `joinTabWithPin` resolves the
+         * tab by restaurant + table number, which the customer already has. A refusal should say
+         * why it refused and nothing more; naming the resource being protected is the opposite.
+         *
+         * The SUCCESS body below still returns tabId, correctly — by then the caller has proven
+         * they may have it. The console.warn keeps it too: a server log is not a disclosure.
          */
         if (!existingPin) {
           console.warn('[TABS] refusing to mint on the 23505 branch: existing tab has no PIN', {
@@ -280,7 +293,6 @@ export async function POST(req: Request) {
             {
               error: 'This table already has an open tab. Ask a member of staff to add you to it.',
               code: 'TAB_ALREADY_OPEN',
-              tabId: existingTab.id,
             },
             { status: 409 },
           )
@@ -291,7 +303,6 @@ export async function POST(req: Request) {
             {
               error: 'This table already has an open tab. Enter the tab PIN to join.',
               code: 'TAB_PIN_REQUIRED',
-              tabId: existingTab.id,
             },
             { status: 403 },
           )
@@ -302,7 +313,6 @@ export async function POST(req: Request) {
             {
               error: "That PIN doesn't match. Check with someone at your table.",
               code: 'TAB_PIN_INCORRECT',
-              tabId: existingTab.id,
             },
             { status: 403 },
           )
