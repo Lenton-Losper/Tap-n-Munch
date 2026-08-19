@@ -57,6 +57,31 @@ class MainActivity : ReactActivity() {
      * authorisation. It is never a decline.
      */
     private val USER_CANCEL_RESULT_CODES = setOf("K026")
+
+    /**
+     * #182: staff-facing text for the pre-transaction WiseCashier failure codes that are
+     * actionable at the till, replacing the generic "Payment result was not a confirmed
+     * success" message with something a staff member can act on (e.g. "flat battery" instead
+     * of a raw K029). English text is WiseCashier's own -- recovered from
+     * TransactionExceptionMapper's string resources, see docs/wisecashier-result-codes.md.
+     * Not new copy: transcribed vendor text, not authored here.
+     *
+     * DISPLAY TEXT ONLY. None of these six may take the USER_CANCEL_RESULT_CODES bypass --
+     * they all stay in the "Bypass: no" group in the doc and fall through to the same
+     * PAYMENT_AMBIGUOUS branch as before, still going through Finatic verify. Every message
+     * built from this map keeps the trailing "(gateway result=$resultExtra)" suffix intact,
+     * because src/lib/payment.ts's extractGatewayResult() regexes it back out for the audit
+     * reference, and the ambiguous-classification regex in the same file also matches on
+     * message text as a fallback -- changing wording must never break either.
+     */
+    private val STAFF_FAILURE_MESSAGES = mapOf(
+      "K025" to "Need Sign In",
+      "K029" to "Battery too low to trade. Please charge your device first.",
+      "K030" to "The remote card reader is not connected!",
+      "K031" to "Please settle first",
+      "K032" to "Please load emv parameters",
+      "K033" to "Key Not Injected",
+    )
   }
 
   override fun getMainComponentName(): String = "FlashTapTerminal"
@@ -172,9 +197,17 @@ class MainActivity : ReactActivity() {
             "Card declined by gateway (gateway result=$resultExtra)",
           )
         } else {
+          // #182: STAFF_FAILURE_MESSAGES is keyed on resultExtra (the code), never on
+          // resultMsg -- same rule as USER_CANCEL_RESULT_CODES above, since resultMsg is a
+          // localised vendor string that changes with device language.
+          val friendly = STAFF_FAILURE_MESSAGES[resultExtra]
           promise.reject(
             "PAYMENT_AMBIGUOUS",
-            "Payment result was not a confirmed success (gateway result=$resultExtra)",
+            if (friendly != null) {
+              "$friendly (gateway result=$resultExtra)"
+            } else {
+              "Payment result was not a confirmed success (gateway result=$resultExtra)"
+            },
           )
         }
       } else if (resultCode == Activity.RESULT_CANCELED) {

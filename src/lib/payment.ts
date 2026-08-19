@@ -153,6 +153,20 @@ export const DECLINED_PAYMENT_REF_PREFIX = 'DECLINED-';
  */
 export const TERMINAL_USER_CANCELLED_REASON = 'terminal_cancelled_by_user_pre_gateway';
 
+/**
+ * Pulls the raw gateway code back out of a native payment-failure message, e.g.
+ * "Battery too low to trade. Please charge your device first. (gateway result=K029)" ->
+ * "K029". Native (MainActivity.kt) always appends this exact trailing
+ * "(gateway result=XYZ)" substring verbatim, regardless of which display text precedes it
+ * (#182 maps several codes to WiseCashier's own English text instead of a generic
+ * "not a confirmed success" string) -- that suffix MUST stay intact or this silently stops
+ * extracting the code, which is used in the audit reference (declinedFailureReference).
+ * Exported so a test can pin the contract independently of any specific message wording.
+ */
+export function extractGatewayResult(message: string): string | undefined {
+  return message.match(/gateway result=(\S+)\)/i)?.[1];
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
@@ -251,7 +265,27 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
   };
 }
 
-async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
+/**
+ * #183: native (MainActivity.kt onActivityResult, promise == null branch) already computes
+ * and persists outcome: 'user_cancelled' for an orphaned callback -- guarded by its own
+ * comment: "Same split as the promise path above: an orphaned USER CANCEL must not be
+ * reported as ambiguous, or it strands exactly as before." That value survives the round
+ * trip through SharedPreferences intact. This function used to only test
+ * orphaned.outcome === 'success', so every non-success orphan -- including a correctly
+ * tagged cancel -- fell through to 'orphaned_ambiguous' and triggered a doomed Finatic
+ * verify (E04111), stranding the order exactly as the native comment says it must not.
+ *
+ * Trusting outcome === 'user_cancelled' here is not a new judgment call: native sets it
+ * ONLY from Activity.RESULT_CANCELED or a USER_CANCEL_RESULT_CODES (K026) match against the
+ * resultExtra WiseCashier itself returned -- the same two conditions that drive the live
+ * (non-orphaned) path's code === 'PAYMENT_CANCELLED_BY_USER' branch below. "Orphaned" means
+ * the JS promise reference was lost (RN bridge/process-death), not that the Android
+ * activity-result values themselves are less trustworthy -- the classification happens
+ * synchronously in native right when WiseCashier returns, before any orphaning occurs. So
+ * the same "a cancel cannot have charged" argument that justifies the live path's
+ * no-gateway-attempt bypass applies unchanged here.
+ */
+export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
   if (!PaymentModule?.consumeOrphanedPaymentResult) {
     return null;
   }
@@ -264,14 +298,25 @@ async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
     if (orphaned.outcome === 'success' || String(orphaned.voucherNo ?? '').trim()) {
       return mapNativeSuccess({...orphaned, orphaned: true});
     }
+    const businessOrderNo =
+      String(orphaned.businessOrderNo ?? '').trim() ||
+      String(orphaned.merchantOrderNo ?? '').trim() ||
+      undefined;
+    if (orphaned.outcome === 'user_cancelled') {
+      return {
+        success: false,
+        orphaned: true,
+        outcomeKind: 'user_cancelled',
+        businessOrderNo,
+        gatewayResult: orphaned.gatewayResult,
+        error: orphaned.error || 'Payment was cancelled on the reader before the gateway was contacted',
+      };
+    }
     return {
       success: false,
       orphaned: true,
       outcomeKind: 'orphaned_ambiguous',
-      businessOrderNo:
-        String(orphaned.businessOrderNo ?? '').trim() ||
-        String(orphaned.merchantOrderNo ?? '').trim() ||
-        undefined,
+      businessOrderNo,
       error:
         orphaned.error ||
         'Payment callback was delivered without an active JS promise — outcome unconfirmed by device',
@@ -351,7 +396,7 @@ export async function processPaymentIntent(
 
     // Native embeds the raw gateway code as "gateway result=XYZ)" in both the ambiguous
     // and PAYMENT_DECLINED messages — pull it out so it can ride along in the audit ref.
-    const gatewayResult = message.match(/gateway result=(\S+)\)/i)?.[1];
+    const gatewayResult = extractGatewayResult(message);
 
     // Native rejects a known decline code (see MainActivity's KNOWN_DECLINE_CODES) as
     // PAYMENT_DECLINED — that's a confirmed no-charge, safe to report without a Finatic
