@@ -440,15 +440,23 @@ function OrderRequestCard({
 }
 
 /**
- * PENDING COPY — staff-facing, three states of the incoming-order sound.
+ * SIGNED OFF 2026-08-19. Staff-facing, the three states of the incoming-order sound.
  *
- * There is no signed-off wording for these yet. They are listed here rather than inline so the
- * outstanding set is a grep, matching the convention in lib/customer-copy/qr-redesign-copy.ts.
+ * Each string is used THREE times per state — visible label, `aria-label` and `title` — so each has
+ * to read as a standalone statement, not as a fragment that only makes sense beside an icon.
+ *
+ * TWO STATE FACTS AND EXACTLY ONE INSTRUCTION. `blocked` is the only state where the staff member
+ * has something to do, so it is the only imperative. Making another one imperative would turn a
+ * status readout into three competing buttons.
+ *
+ * Kept as a constant rather than inline for the same reason lib/customer-copy/qr-redesign-copy.ts
+ * exists: one place to read, and one place a marker can be found by grep. These three were the last
+ * PENDING COPY strings rendering on production.
  */
-const ORDER_ALERT_PENDING_COPY = {
-  armed: 'PENDING COPY - sound on for new orders',
-  blocked: 'PENDING COPY - tap to turn on sound',
-  muted: 'PENDING COPY - sound off',
+const ORDER_ALERT_COPY = {
+  armed: 'Sound on',
+  blocked: 'Turn on sound',
+  muted: 'Sound off',
 } as const
 
 /**
@@ -488,7 +496,7 @@ function OrderAlertIndicator() {
   }
 
   const Icon = state === 'armed' ? Volume2 : state === 'muted' ? VolumeX : BellOff
-  const label = ORDER_ALERT_PENDING_COPY[state]
+  const label = ORDER_ALERT_COPY[state]
 
   return (
     <button
