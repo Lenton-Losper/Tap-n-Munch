@@ -17,11 +17,15 @@
 -- before this ran, with paste-ready rollback statements generated from the measured values.
 --
 -- =====================================================================================
--- TWO BIND POINTS ARE UNFILLED. Do not run this file until both are replaced:
---   :COMPANY_NAME    the surviving organisation's new name
---   :OWNER_USER_ID   the account that holds org-level capability (see step 3 below)
--- Running it as-is is a syntax error, which is the intended failure mode -- a placeholder that
--- silently resolved to something plausible is how the wrong account ends up owning a business.
+-- VALUES FILLED IN 2026-08-19 from the ruling. No placeholders remain.
+--   company name : Gosto Investment CC
+--   ownership    : flashtapapp2@gmail.com (f9bf5348-1c1c-4574-8830-13b249722097), UNCHANGED --
+--                  it is already both organizations.owner_user_id and the sole OWNER row on the
+--                  surviving organisation, so the ruling "keep it" means NO ownership statement
+--                  runs at all. See section 4.
+--
+-- PREREQUISITE: 00-rename-chownow-coke.sql must have run first. This file does not check names,
+-- and the assertion that would have caught a collision lives there, where it is still cheap to fix.
 -- =====================================================================================
 
 BEGIN;
@@ -41,28 +45,25 @@ UPDATE public.organization_stock_items
  WHERE organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412';
 
 -- 3. THE SURVIVING ORGANISATION IS RENAMED to the company, not the site.
+--    "Riviera" is a site name; it is about to front two-to-three of them.
 UPDATE public.organizations
-   SET name = :'COMPANY_NAME'
- WHERE id = '5608ba8f-54a7-445b-aca5-80593663670c';
+   SET name = 'Gosto Investment CC'
+ WHERE id = '5608ba8f-54a7-445b-aca5-80593663670c'
+   AND name = 'Riviera';  -- refuses if it has already been renamed by something else
 
--- 4. ORG-LEVEL OWNERSHIP.
---    organization_users is what authorizeOrganization actually reads -- OWNER rows only.
---    organizations.owner_user_id is written at signup and read by NO application code, so it is
---    updated here for provenance only and grants nothing on its own.
+-- 4. ORG-LEVEL OWNERSHIP: NO STATEMENT, BY RULING.
 --
---    Uncomment ONLY the block matching the ruling.
-
---  (a) SINGLE OWNER -- the surviving org keeps exactly one OWNER row.
---      Nothing to do beyond the provenance column; Riviera's existing OWNER row already stands.
--- UPDATE public.organizations
---    SET owner_user_id = :'OWNER_USER_ID'
---  WHERE id = '5608ba8f-54a7-445b-aca5-80593663670c';
-
---  (b) SECOND OWNER -- add the named account alongside the existing one.
---      ON CONFLICT DO NOTHING so a re-run cannot create a duplicate membership.
--- INSERT INTO public.organization_users (organization_id, user_id, role)
--- VALUES ('5608ba8f-54a7-445b-aca5-80593663670c', :'OWNER_USER_ID', 'OWNER')
--- ON CONFLICT DO NOTHING;
+--    flashtapapp2@gmail.com is f9bf5348-1c1c-4574-8830-13b249722097, and is ALREADY both
+--    organizations.owner_user_id and the single OWNER row in organization_users on the surviving
+--    organisation. "Keep it, no change to ownership" therefore executes nothing -- the correct
+--    implementation of that ruling is an absence, not an idempotent self-assignment, which would
+--    only add a write that could go wrong.
+--
+--    THE CONSEQUENCE, RESTATED SO IT IS NOT A SURPRISE LATER: flashtaptestacc1@gmail.com's OWNER
+--    row belongs to the organisation being left behind, so after this it holds no org-level
+--    capability -- no Add Location, no view-all-locations. Its `owner` row in restaurant_users for
+--    FNB ChowNow is untouched, so its day-to-day access to that restaurant is entirely unchanged.
+--    Section 5 explains why that row is left in place rather than tidied away.
 
 -- 5. THE EMPTIED ORGANISATION IS LEFT IN PLACE, deliberately.
 --    Deleting it would CASCADE to its organization_users row, silently revoking
@@ -79,6 +80,9 @@ DECLARE
     v_rest_in_org   int;
     v_orphan_links  int;
     v_left_behind   int;
+    v_named         int;
+    v_owners        int;
+    v_staff         int;
 BEGIN
     SELECT count(*) INTO v_rest_in_org
       FROM public.restaurants
@@ -103,6 +107,36 @@ BEGIN
      WHERE organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412';
     IF v_left_behind <> 0 THEN
         RAISE EXCEPTION 'catalogue rows left behind in the emptied organisation: %', v_left_behind;
+    END IF;
+
+    -- The rename actually applied. Guarded above with AND name = 'Riviera', so a no-op would
+    -- otherwise pass silently and the organisation would still be called after one of its sites.
+    SELECT count(*) INTO v_named
+      FROM public.organizations
+     WHERE id = '5608ba8f-54a7-445b-aca5-80593663670c'
+       AND name = 'Gosto Investment CC';
+    IF v_named <> 1 THEN
+        RAISE EXCEPTION 'surviving organisation is not named "Gosto Investment CC" after the rename';
+    END IF;
+
+    -- OWNERSHIP UNCHANGED. Nothing above touches organization_users, so this asserts an absence:
+    -- exactly the one OWNER row that was there before, still there, still that account.
+    SELECT count(*) INTO v_owners
+      FROM public.organization_users
+     WHERE organization_id = '5608ba8f-54a7-445b-aca5-80593663670c';
+    IF v_owners <> 1 THEN
+        RAISE EXCEPTION 'expected the surviving organisation to still have exactly 1 member, found %', v_owners;
+    END IF;
+
+    -- STAFF ACCESS UNCHANGED. The four rows measured in the snapshot, across both restaurants.
+    -- This is the assertion that matters most to the people actually working tomorrow.
+    SELECT count(*) INTO v_staff
+      FROM public.restaurant_users
+     WHERE restaurant_id IN ('b161c758-582d-4dfa-839a-9fa35c492a49',
+                             '01bf27f1-a958-4322-bb3e-cc5240987808')
+       AND deleted_at IS NULL;
+    IF v_staff <> 4 THEN
+        RAISE EXCEPTION 'restaurant_users changed: expected 4 live rows across both restaurants, found %', v_staff;
     END IF;
 END $$;
 
