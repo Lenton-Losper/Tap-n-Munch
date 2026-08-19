@@ -35,30 +35,57 @@ const HOSTS = ['https://flashtap.app', 'https://riviera.flashtap.app']
 async function main() {
   console.log('\nDEPLOY 1 REDACTION — live production worker, with a positive control.\n')
 
-  // ---- find a real tab, newest first, that actually has members to redact
+  // ---- find a real tab the route will actually SERVE
   //
-  // `members` IS A JSONB COLUMN ON `tabs`, not a table. The first version of this counted rows in
-  // a `tab_members` table that does not exist -- and PostgREST answers {head:true,count:'exact'}
-  // on a missing table with count=null and error=null (#169/#290), so the guard silently found
-  // zero members on every tab and declared the check void. The absent-table idiom that looks like
-  // a check is the exact trap this repo has hit twice; reading the column cannot make that mistake.
+  // Three conditions, and the first two were each learned by a void run rather than reasoned:
+  //
+  //   `members` IS A JSONB COLUMN ON `tabs`, not a table. The first version counted rows in a
+  //   `tab_members` table that does not exist, and PostgREST answers {head:true,count:'exact'} on a
+  //   missing table with count=null and error=null (#169/#290) -- so it found zero members on every
+  //   tab and never errored.
+  //
+  //   THE TAB MUST STILL BE THE TABLE'S CURRENT SESSION. The route refuses with 410 when
+  //   tabs.session_version != restaurant_tables.current_session_version (the session boundary that
+  //   stops a phone reading the previous party's figures). Almost every historical tab is stale, so
+  //   "newest with members" picked one the route is correct to refuse.
+  //
+  //   AND IT MUST HAVE MEMBERS, or there is nothing to redact and the assertion is vacuous.
   const { data: tabs, error: tabErr } = await admin
     .from('tabs')
-    .select('id, restaurant_id, table_number, members, created_at')
+    .select('id, restaurant_id, table_id, session_version, members, created_at')
     .order('created_at', { ascending: false })
-    .limit(60)
+    .limit(400)
   if (tabErr) throw new Error(`tabs read failed: ${tabErr.message}`)
   if (!tabs?.length) throw new Error('no tabs on production — cannot build a positive control')
 
-  const subject = tabs.find((t) => Array.isArray(t.members) && t.members.length > 0)
+  const withMembers = tabs.filter((t) => Array.isArray(t.members) && t.members.length > 0)
+
+  const { data: tables, error: tblErr } = await admin
+    .from('restaurant_tables')
+    .select('id, current_session_version')
+  if (tblErr) throw new Error(`restaurant_tables read failed: ${tblErr.message}`)
+  const currentVersionOf = new Map((tables ?? []).map((t) => [String(t.id), Number(t.current_session_version)]))
+
+  const subject = withMembers.find((t) => {
+    const tableId = String(t.table_id ?? '').trim()
+    if (!tableId) return true // a tab with no table cannot have been reset by a table close
+    return currentVersionOf.get(tableId) === Number(t.session_version)
+  })
+
   if (!subject) {
-    throw new Error(
-      `no tab in the newest ${tabs.length} has a non-empty members array — a redaction check with ` +
-        'nothing to redact is void',
+    // NOT the same as a pass, and not the same as a leak. Say which.
+    console.error(
+      `
+  NOT RUNNABLE — of the newest ${tabs.length} tabs, ${withMembers.length} have members and none is
+` +
+        '  still its table's current session. The route would correctly 410 every one of them, so there
+' +
+        '  is no body to inspect. This is a check that did not run; it is not evidence of safety.',
     )
+    process.exit(2)
   }
   console.log(
-    `  subject tab ${subject.id}  restaurant ${subject.restaurant_id}  members ${subject.members.length}`,
+    `  subject tab ${subject.id}  restaurant ${subject.restaurant_id}  members ${subject.members.length}  session_version ${subject.session_version}`,
   )
 
   let failed = false
