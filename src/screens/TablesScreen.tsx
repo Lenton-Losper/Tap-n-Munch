@@ -40,7 +40,17 @@ function TableCard({table, onPress}: TableCardProps) {
   const orderCount = tab?.orders.length ?? 0;
   const unpaidTotal = tab?.unpaid_total ?? 0;
   const unpaidCount = countUnpaidOrders(table);
-  const isReadyToPay = tab?.status === 'ready_to_pay';
+  // Every settle path reopens tabs.status to 'open' once ANY payment lands,
+  // even when other diners still owe money — status is the ordering gate,
+  // not a "has everyone paid" flag. ready_to_pay_at is preserved server-side
+  // across a partial settle when unpaid_total remains > 0, so it's the signal
+  // for "tab was marked ready and money is still outstanding". Until the
+  // server starts returning ready_to_pay_at on /api/terminal/tables, this is
+  // undefined and the expression falls back to the status arm (today's
+  // behaviour) — that fallback is intentional, not a bug.
+  const isReadyToPay =
+    tab?.status === 'ready_to_pay' ||
+    (tab?.ready_to_pay_at != null && (tab?.unpaid_total ?? 0) > 0);
 
   return (
     <Pressable

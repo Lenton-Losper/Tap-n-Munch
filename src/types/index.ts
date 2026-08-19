@@ -77,6 +77,14 @@ export interface TableTab {
   unpaid_total: number;
   payment_preference?: string;
   orders: TabOrder[];
+  /**
+   * Set when the tab first became ready to pay; preserved across a partial
+   * settle (some diners paid, some money still owed) so the client can tell
+   * "still waiting on some of this tab" apart from "nobody has paid yet".
+   * Not yet returned by /api/terminal/tables — optional so older/current
+   * server responses degrade to undefined rather than crash.
+   */
+  ready_to_pay_at?: string | null;
 }
 
 export interface TableWithTab {
