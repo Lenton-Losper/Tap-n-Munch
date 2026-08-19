@@ -95,8 +95,27 @@ async function main() {
   for (const table of tables) {
     const { count, error } = await admin.from(table).select('id', { count: 'exact', head: true })
     if (error) throw error
-    tableCounts[table] = count ?? 0
-    console.log(`${table} rows: ${count ?? 0}`)
+    /**
+     * #290. A MISSING TABLE MUST NOT READ AS "0 rows".
+     *
+     * `{ head: true, count: 'exact' }` returns error=null and count=NULL for a table that does
+     * not exist -- verified on both production and staging (#169). `count ?? 0` therefore turned
+     * "this table is not there" into "this table is empty", and a pre/post migration check built
+     * on that agrees with itself: both snapshots say 0, the diff is clean, and nothing was ever
+     * counted.
+     *
+     * The same absent table answers PGRST205 to a select WITHOUT head, which is how #169
+     * distinguished them. Here the null is simply refused: a snapshot that cannot count is not a
+     * snapshot, and continuing would produce a number this script's whole purpose is to trust.
+     */
+    if (count === null || count === undefined) {
+      throw new Error(
+        `${table}: count came back NULL. With head:true that means the table does not exist -- ` +
+          'not that it is empty. Refusing to record 0 and pretend this was measured.',
+      )
+    }
+    tableCounts[table] = count
+    console.log(`${table} rows: ${count}`)
   }
 
   const all: ViolationRow[] = []
