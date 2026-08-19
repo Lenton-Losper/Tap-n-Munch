@@ -140,3 +140,10 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # Standing rule: re-verify Deploy 1's redaction after every production deploy.
+      - name: Verify Deploy 1 redaction live (positive control, no writes)
+        run: npx tsx scripts/verify-deploy1-redaction-live-production.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
