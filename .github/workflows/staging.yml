@@ -542,6 +542,11 @@ jobs:
       # this can only fail on something NEW.
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
+      # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
+      # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
+      # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
+      - name: No new @ts-nocheck files
+        run: node scripts/check-ts-nocheck-baseline.mjs
       # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
       # when the column already exists — the migration succeeds and the
       # constraint is never created. Static, no credentials, no database.
