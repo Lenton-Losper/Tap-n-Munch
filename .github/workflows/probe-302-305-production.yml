@@ -96,3 +96,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # Abandoned-request count before the status change touches anything, plus tab-creation
+      # context and the tab-PIN census for the End Session hole. Read-only.
+      - name: Probe abandoned requests and tab creation (no writes)
+        run: npx tsx scripts/probe-abandoned-and-tab-creation-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
