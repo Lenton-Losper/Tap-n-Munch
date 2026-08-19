@@ -1,0 +1,79 @@
+Read-only	Probe org merge snapshot (no writes)	﻿2026-08-19T11:41:43.7476501Z ##[group]Run npx tsx scripts/probe-org-merge-snapshot-production-readonly.ts
+^[[36;1mnpx tsx scripts/probe-org-merge-snapshot-production-readonly.ts^[[0m
+
+PRE-MERGE SNAPSHOT — production, read-only, changes nothing.
+  project ref confirmed in URL: ihlmmpmolnpchzgwyhgh
+  [control] restaurants readable: YES
+
+  --- organizations (BEFORE) (2 rows)
+      {"id":"5608ba8f-54a7-445b-aca5-80593663670c","name":"Riviera","legal_name":null,"owner_user_id":"f9bf5348-1c1c-4574-8830-13b249722097","created_at":"2026-05-07T10:01:33.699483+00:00"}
+      {"id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"FNB ChowNow","legal_name":null,"owner_user_id":"b2660df1-a9fa-45a6-9705-79cbbd07102f","created_at":"2026-06-25T02:20:03.348692+00:00"}
+
+  --- restaurants (BEFORE) — organization_id is what changes (2 rows)
+      {"id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"FNB ChowNow","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","location_type":"RETAIL","timezone":"Africa/Windhoek","currency":"NAD"}
+      {"id":"01bf27f1-a958-4322-bb3e-cc5240987808","name":"Riviera","organization_id":"5608ba8f-54a7-445b-aca5-80593663670c","location_type":"RETAIL","timezone":"Africa/Windhoek","currency":"NAD"}
+
+  --- organization_stock_items to MOVE (BEFORE) (8 rows)
+      {"id":"7f55bd7d-beda-45ff-96a5-c65036b036be","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Beef Stew","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T09:43:24.777169+00:00"}
+      {"id":"9fbbefab-6e20-4c38-97c9-3572a1addaa8","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Cabage Roll","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T09:40:31.068717+00:00"}
+      {"id":"ce4c0bde-6b03-45b2-882f-7e3005c58e61","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Chicken Wings","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T08:35:21.031957+00:00"}
+      {"id":"760b6027-7084-4cc8-b565-be8940c13072","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"coke","base_unit_id":"01dce2ef-b2b5-4a72-888e-3ad2aa4435ee","is_manufactured":false,"created_at":"2026-07-01T21:11:02.342038+00:00"}
+      {"id":"3826281c-0a67-4894-9884-19f829953e9f","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Fanta","base_unit_id":"01dce2ef-b2b5-4a72-888e-3ad2aa4435ee","is_manufactured":false,"created_at":"2026-07-02T01:57:58.288192+00:00"}
+      {"id":"c82d6e6a-6c6a-4d1f-be91-cc601be1267e","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Hake","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T10:26:11.545588+00:00"}
+      {"id":"fbd111b7-431f-4839-a1ba-3335257d6302","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"hake fillet","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T09:46:12.623418+00:00"}
+      {"id":"67c409a7-48e8-4eec-855f-8d4313836b99","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","name":"Lamb chop","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-06T10:30:42.852795+00:00"}
+
+  --- organization_stock_items already in the SURVIVING org (2 rows)
+      {"id":"9efa7312-7635-4492-b714-2369c39b2268","organization_id":"5608ba8f-54a7-445b-aca5-80593663670c","name":"coke","base_unit_id":"9fe4625a-69a2-466b-a217-9f52eefb9579","is_manufactured":false,"created_at":"2026-08-12T13:26:56.116148+00:00"}
+      {"id":"8128e143-0f66-47da-9ddc-4fed0aaf3994","organization_id":"5608ba8f-54a7-445b-aca5-80593663670c","name":"dsgdsg","base_unit_id":"0172befb-55e0-4af6-9fbf-73ec96837730","is_manufactured":false,"created_at":"2026-07-07T04:05:25.177838+00:00"}
+
+  --- organization_users (BEFORE) — org-level capability (2 rows)
+      {"id":"551cb8bc-321e-4f24-a3a9-f6e21b64dd59","organization_id":"5608ba8f-54a7-445b-aca5-80593663670c","user_id":"f9bf5348-1c1c-4574-8830-13b249722097","role":"OWNER","created_at":"2026-05-07T10:01:33.699483+00:00"}
+      {"id":"e9c708d6-06ed-4747-b604-4924f4af0d5b","organization_id":"1d623c21-8c5e-40fd-b7bc-df654166d412","user_id":"b2660df1-a9fa-45a6-9705-79cbbd07102f","role":"OWNER","created_at":"2026-06-25T02:20:03.348692+00:00"}
+
+  --- restaurant_users (BEFORE) — staff access, MUST be identical afterwards (4 rows)
+      {"id":"577100fe-6f81-4a3d-80cb-9473d3bc8b5b","restaurant_id":"01bf27f1-a958-4322-bb3e-cc5240987808","user_id":"f9bf5348-1c1c-4574-8830-13b249722097","role":"owner","invited_by":null,"invite_accepted":true,"deleted_at":null,"created_at":"2026-06-18T21:29:59.563289+00:00","updated_at":"2026-06-18T21:29:59.563289+00:00"}
+      {"id":"c637066e-b966-44f8-bfab-2948346ac802","restaurant_id":"01bf27f1-a958-4322-bb3e-cc5240987808","user_id":"a119e7a8-78c1-4e8d-9066-b54d1dc63b23","role":"owner","invited_by":null,"invite_accepted":true,"deleted_at":null,"created_at":"2026-06-24T20:35:05.427564+00:00","updated_at":"2026-06-24T20:35:05.427564+00:00"}
+      {"id":"28cd10d3-8b99-4e48-97b2-9765ab8346ec","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","user_id":"b2660df1-a9fa-45a6-9705-79cbbd07102f","role":"owner","invited_by":null,"invite_accepted":true,"deleted_at":null,"created_at":"2026-06-25T02:20:03.697596+00:00","updated_at":"2026-06-25T02:20:03.697596+00:00"}
+      {"id":"02d76d1a-33ad-459d-bf8a-d1ac65ee2342","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","user_id":"218e29df-2387-47d1-b16b-ac7a58bc70b8","role":"manager","invited_by":null,"invite_accepted":true,"deleted_at":null,"created_at":"2026-07-22T08:21:49.061284+00:00","updated_at":"2026-07-22T08:21:49.061284+00:00"}
+
+  --- stock_items (BEFORE) — untouched by the merge, but their invariant depends on it (10 rows)
+      {"id":"ff60c792-f7ea-418a-8088-ccb895ecacc8","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"coke","organization_stock_item_id":"760b6027-7084-4cc8-b565-be8940c13072","is_active":true}
+      {"id":"38976582-1a7b-490d-86d4-69a7aad2b135","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Fanta","organization_stock_item_id":"3826281c-0a67-4894-9884-19f829953e9f","is_active":true}
+      {"id":"68e9032f-fc79-4ef1-b961-f4c556f57d1d","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Chicken Wings","organization_stock_item_id":"ce4c0bde-6b03-45b2-882f-7e3005c58e61","is_active":true}
+      {"id":"65517012-4670-4b07-a912-550896322208","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Cabage Roll","organization_stock_item_id":"9fbbefab-6e20-4c38-97c9-3572a1addaa8","is_active":true}
+      {"id":"9bcba4c6-86fa-40c4-a093-c793bbac88c1","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Beef Stew","organization_stock_item_id":"7f55bd7d-beda-45ff-96a5-c65036b036be","is_active":true}
+      {"id":"c95dfd30-93b8-4050-bc2f-aaa83f3ca6cb","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"hake fillet","organization_stock_item_id":"fbd111b7-431f-4839-a1ba-3335257d6302","is_active":true}
+      {"id":"27dd3d65-0fe5-4ca1-bfa9-192007815249","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Hake","organization_stock_item_id":"c82d6e6a-6c6a-4d1f-be91-cc601be1267e","is_active":true}
+      {"id":"19e9a76c-5402-46d1-9edd-59d1225efd07","restaurant_id":"b161c758-582d-4dfa-839a-9fa35c492a49","name":"Lamb chop","organization_stock_item_id":"67c409a7-48e8-4eec-855f-8d4313836b99","is_active":true}
+      {"id":"b77e6ec7-8a55-46e4-9eab-3f4d5eb235c2","restaurant_id":"01bf27f1-a958-4322-bb3e-cc5240987808","name":"dsgdsg","organization_stock_item_id":"8128e143-0f66-47da-9ddc-4fed0aaf3994","is_active":true}
+      {"id":"be8372c8-022f-4164-a259-849162919731","restaurant_id":"01bf27f1-a958-4322-bb3e-cc5240987808","name":"coke","organization_stock_item_id":"9efa7312-7635-4492-b714-2369c39b2268","is_active":true}
+
+  ================ CATALOGUE NAME COLLISIONS
+  organization_stock_items has NO unique index on (organization_id, name), so a
+  collision does not fail -- it silently creates two identical-looking rows.
+
+  *** 1 COLLISION(S) — the merge would create duplicates:
+      "coke"  moving 760b6027-7084-4cc8-b565-be8940c13072  <->  existing 9efa7312-7635-4492-b714-2369c39b2268
+          same base_unit? false   same is_manufactured? true
+
+  STOP AND RULE ON THESE before merging. Deduplicating after the fact means
+  re-pointing stock_items rows, which DOES fire the cross-org trigger.
+
+  ================ ROLLBACK (generated from the measured values above)
+  BEGIN;
+    UPDATE public.restaurants SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = 'b161c758-582d-4dfa-839a-9fa35c492a49';
+    UPDATE public.restaurants SET organization_id = '5608ba8f-54a7-445b-aca5-80593663670c' WHERE id = '01bf27f1-a958-4322-bb3e-cc5240987808';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = '7f55bd7d-beda-45ff-96a5-c65036b036be';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = '9fbbefab-6e20-4c38-97c9-3572a1addaa8';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = 'ce4c0bde-6b03-45b2-882f-7e3005c58e61';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = '760b6027-7084-4cc8-b565-be8940c13072';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = '3826281c-0a67-4894-9884-19f829953e9f';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = 'c82d6e6a-6c6a-4d1f-be91-cc601be1267e';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = 'fbd111b7-431f-4839-a1ba-3335257d6302';
+    UPDATE public.organization_stock_items SET organization_id = '1d623c21-8c5e-40fd-b7bc-df654166d412' WHERE id = '67c409a7-48e8-4eec-855f-8d4313836b99';
+    UPDATE public.organizations SET name = 'Riviera' WHERE id = '5608ba8f-54a7-445b-aca5-80593663670c';
+    UPDATE public.organizations SET name = 'FNB ChowNow' WHERE id = '1d623c21-8c5e-40fd-b7bc-df654166d412';
+  COMMIT;
+
+  ^ Paste-ready. Every value came from a read a moment ago, not from a hand-written guess.
