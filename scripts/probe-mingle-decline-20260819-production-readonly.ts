@@ -48,7 +48,19 @@ async function main() {
   const cols =
     'id, order_number, restaurant_id, table_number, status, payment_status, payment_method, payment_channel, ' +
     'total, paid_at, cancelled_at, cancellation_reason, paycloud_merchant_order_no, paycloud_transaction_id, ' +
-    'terminal_status, placed_at, created_at, tab_id, channel'
+    'terminal_status, placed_at, tab_id, channel'
+
+  /**
+   * A FAILED READ MUST VOID THE CONCLUSION, not be narrated past.
+   *
+   * The first run of this probe selected a non-existent column (`orders.created_at` — orders use
+   * `placed_at`), every lookup errored, and it then printed "NO ORDER FOUND ... that is itself an
+   * answer". A confident absence built on three failed reads and a void time window.
+   *
+   * The errors WERE surfaced. The conclusion just did not depend on them. That is the whole trap:
+   * "nothing was found" and "nothing was successfully searched" print the same way.
+   */
+  let readFailed = false
 
   // ------------------------------------------------------- 1. by the transaction reference
   const hits: Record<string, any[]> = {}
@@ -57,16 +69,17 @@ async function main() {
     ['orders.paycloud_merchant_order_no', admin.from('orders').select(cols).eq('paycloud_merchant_order_no', TXN)],
   ] as const) {
     const { data, error } = await q
-    if (error) console.log(`  ${label}: READ FAILED ${error.message}`)
+    if (error) { readFailed = true; console.log(`  ${label}: READ FAILED ${error.message}`) }
     hits[label] = data ?? []
     console.log(`  ${label.padEnd(34)} ${data?.length ?? 0} row(s)`)
   }
 
   // ------------------------------------------------------- 2. payment_events by business_order_no
-  const { data: events } = await admin
+  const { data: events, error: eventsErr } = await admin
     .from('payment_events')
     .select('id, event_type, business_order_no, order_ids, amount, created_at')
     .or(`business_order_no.eq.${TXN},business_order_no.eq.${MERCHANT}`)
+  if (eventsErr) { readFailed = true; console.log(`  payment_events: READ FAILED ${eventsErr.message}`) }
   console.log(`  payment_events matching ref/merchant  ${events?.length ?? 0} row(s)`)
   for (const e of events ?? []) {
     console.log(`      ${e.created_at}  ${e.event_type}  amount=${e.amount}  orders=${JSON.stringify(e.order_ids)}`)
@@ -79,19 +92,28 @@ async function main() {
 
   let windowRows: any[] = []
   if (mingle?.id) {
-    const { data } = await admin
+    const { data, error: winErr } = await admin
       .from('orders')
       .select(cols)
       .eq('restaurant_id', mingle.id)
-      .gte('created_at', WINDOW_FROM)
-      .lte('created_at', WINDOW_TO)
-      .order('created_at', { ascending: true })
+      .gte('placed_at', WINDOW_FROM)
+      .lte('placed_at', WINDOW_TO)
+      .order('placed_at', { ascending: true })
+    if (winErr) { readFailed = true; console.log(`  window read FAILED: ${winErr.message}`) }
     windowRows = data ?? []
   }
   console.log(`  orders at Mingle ${WINDOW_FROM} .. ${WINDOW_TO}: ${windowRows.length}`)
 
   const all = [...hits['orders.paycloud_transaction_id'], ...hits['orders.paycloud_merchant_order_no'], ...windowRows]
   const byId = new Map(all.map((o) => [String(o.id), o]))
+
+  if (byId.size === 0 && readFailed) {
+    console.error('\n  INCONCLUSIVE — a read FAILED above, so "no order found" would mean "nothing')
+    console.error('  was successfully searched". Refusing to report an absence produced by a broken')
+    console.error('  query. Fix the query and re-run.')
+    process.exitCode = 1
+    return
+  }
 
   if (byId.size === 0) {
     console.log('\n  NO ORDER FOUND by reference or in the window.')
@@ -104,7 +126,7 @@ async function main() {
   console.log(`\n  ${byId.size} candidate order(s):\n`)
   for (const o of byId.values()) {
     console.log(`  ORDER ${o.id}  #${o.order_number ?? '(none)'}  table ${o.table_number}`)
-    show('created_at', o.created_at)
+    show('placed_at', o.placed_at)
     show('status', o.status)
     show('payment_status', o.payment_status)
     show('terminal_status', o.terminal_status)
@@ -132,6 +154,8 @@ async function main() {
       .from('audit_logs')
       .select('action, created_at, metadata')
       .eq('entity_id', o.id)
+      // audit_logs DOES have created_at — only `orders` uses placed_at. A blanket rename broke
+      // this line once; the two tables genuinely differ.
       .order('created_at', { ascending: true })
     console.log(`      audit rows: ${audits?.length ?? 0}`)
     for (const a of audits ?? []) console.log(`        ${a.created_at}  ${a.action}`)
