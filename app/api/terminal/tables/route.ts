@@ -29,6 +29,16 @@ export async function GET(req: Request) {
 
     const { data: tables, error } = await supabase
       .from('restaurant_tables')
+      /**
+       * `ready_to_pay_at` is SELECTED here, not merely returned in the mapping below (#318).
+       * A column that is written but never selected reaches the client as `undefined` and the
+       * feature ships doing nothing — exactly how #306's fix shipped inert. The mapping cannot
+       * invent what the query did not fetch.
+       *
+       * NOTE: this string is parsed by PostgREST, NOT by Postgres. It is not SQL and it does not
+       * accept `--` comments — putting one inside the template literal breaks the query at
+       * runtime, which typecheck cannot see. Comments belong out here.
+       */
       .select(`
         id,
         table_number,
@@ -38,6 +48,7 @@ export async function GET(req: Request) {
           status,
           total,
           payment_preference,
+          ready_to_pay_at,
           members,
           orders(
             id,
@@ -144,6 +155,21 @@ export async function GET(req: Request) {
           total: tab.total,
           unpaid_total: unpaidTotal,
           payment_preference: tab.payment_preference,
+          /**
+           * #318. The terminal's table-card chip decides "Ready to Pay" from `status` alone, and
+           * every settle path reopens `status` to 'open' -- correctly, because status is the
+           * ORDERING gate and the remaining diners must be able to keep ordering. So on a table of
+           * four who have all asked to pay, the first person paying flipped the chip to
+           * "3 unpaid orders" and nothing told staff anyone was still waiting.
+           *
+           * `ready_to_pay_at` now SURVIVES a partial settle when money remains (1f47752, live on
+           * production), so the honest signal is `ready_to_pay_at IS NOT NULL AND unpaid_total > 0`.
+           * This is the field the device needs to compute it. One column, no schema change.
+           *
+           * Adding it is inert on its own -- the terminal must widen its condition to read it, and
+           * that ships in an APK.
+           */
+          ready_to_pay_at: tab.ready_to_pay_at ?? null,
           orders,
         },
         can_close: canClose,
