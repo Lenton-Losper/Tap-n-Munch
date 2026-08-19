@@ -230,11 +230,39 @@ export async function POST(req: Request) {
     }
 
     const transId = String(raw.psn || raw.transaction_id || '') || null
+
+    /**
+     * #234. THIS ROUTE MARKED ORDERS PAID WITH NO `paid_at`, AND THE SAFETY NET COULD NOT SEE THEM.
+     *
+     * `orders.paid_at` is nullable with no default and no trigger, so an order reconciled here had
+     * `payment_status='paid'` and `paid_at IS NULL`. The paid-but-never-issued sweep in
+     * reconcile-orphan-payments filters `.eq('payment_status','paid').gte('paid_at', since)`, and
+     * a NULL fails that comparison — so a staff-reconciled order was PERMANENTLY invisible to the
+     * compensating control, not merely late to it.
+     *
+     * The customer therefore never got a receipt, and the mechanism that exists to catch exactly
+     * that could not.
+     *
+     * FIX-FORWARD ONLY, and this is the honest limit: the TRUE payment date does not exist
+     * anywhere for these orders. The gateway settled at some earlier moment this route never
+     * learns. Stamping `now()` records when the RECONCILIATION happened, which is a real fact and
+     * the one the sweep needs — it is NOT a claim about when the customer paid. Historical rows
+     * already carrying NULL are left alone; inventing a date for them would be worse than the gap.
+     *
+     * Only set when it is absent, so a re-run cannot move a date that a real settlement wrote.
+     */
+    const reconciledAt = new Date().toISOString()
     for (const { orderId, data } of rows) {
       const currentStatusRaw = String(data.status || '')
       const nextStatus =
         currentStatusRaw === 'pending' ? 'accepted' : currentStatusRaw || 'accepted'
-      const patch = { status: nextStatus, payment_status: 'paid', paycloud_transaction_id: transId }
+      const patch: Record<string, unknown> = {
+        status: nextStatus,
+        payment_status: 'paid',
+        paycloud_transaction_id: transId,
+      }
+      if (!data.paid_at) patch.paid_at = reconciledAt
+
       const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
       if (error) throw error
     }
