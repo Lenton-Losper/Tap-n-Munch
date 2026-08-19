@@ -19,6 +19,7 @@ import { customerStatusLabel } from '@/lib/orders/customer-status'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
 import { Button } from '@/components/ui/button'
+import { ArrowLeft } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
@@ -393,6 +394,30 @@ export default function TabSummaryPage() {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-3xl px-4 py-6">
+        {/*
+          THE ONLY WAY OUT OF THIS SCREEN. It had none. /menu/[id]/tab is reachable from the
+          browse strip and from the header, and every sibling customer screen carries an exit
+          while this one left the browser back button as the only route out -- which on a phone,
+          mid-meal, is not a discoverable action.
+
+          A FORWARD NAVIGATION, NOT router.back(). This screen is reached from more than one
+          place, so "back" is ambiguous about where it lands, and history can hold a stale
+          confirmation screen or an ended session. Going to the menu is always a true statement
+          about where this control leads -- which is why the label names the destination rather
+          than a direction.
+
+          The "No active tab" empty state above already has its own exit and is untouched.
+        */}
+        <button
+          type="button"
+          onClick={() => router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)}
+          data-testid="tab-back-to-menu"
+          className="mb-4 flex items-center gap-2 text-foreground font-sans font-semibold hover:opacity-70 transition"
+        >
+          <ArrowLeft className="w-4 h-4 stroke-[1.5]" aria-hidden />
+          {QR_REDESIGN_PENDING_COPY.tabBackToMenu}
+        </button>
+
         <div className="mb-6 text-center">
           <h1 className="font-serif text-2xl font-bold text-foreground">Table {tableNumber || '-'} Tab</h1>
           <p className="mt-1 text-sm text-muted-foreground font-sans">Review your tab before paying</p>
