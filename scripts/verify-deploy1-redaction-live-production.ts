@@ -75,12 +75,13 @@ async function main() {
   if (!subject) {
     // NOT the same as a pass, and not the same as a leak. Say which.
     console.error(
-      `
-  NOT RUNNABLE — of the newest ${tabs.length} tabs, ${withMembers.length} have members and none is
-` +
-        '  still its table's current session. The route would correctly 410 every one of them, so there
-' +
-        '  is no body to inspect. This is a check that did not run; it is not evidence of safety.',
+      [
+        '',
+        `  NOT RUNNABLE — of the newest ${tabs.length} tabs, ${withMembers.length} have members and none`,
+        '  is still the current session for its table. The route would correctly 410 every one of',
+        '  them, so there is no body to inspect. This is a check that DID NOT RUN, and it is not',
+        '  evidence of safety.',
+      ].join('\n'),
     )
     process.exit(2)
   }
