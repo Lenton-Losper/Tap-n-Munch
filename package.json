@@ -19,7 +19,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:live": "node test-payment-live.js",
-    "vercel:env:push": "node scripts/push-env-to-vercel.mjs"
+    "vercel:env:push": "node scripts/push-env-to-vercel.mjs",
+    "worktree:remove": "node scripts/safe-worktree-remove.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
