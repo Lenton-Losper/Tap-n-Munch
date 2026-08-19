@@ -68,6 +68,43 @@ const KNOWN_ABSENT = new Set([
   '56f70b8', // #254/?ref= — `paymentRefOrFilter` and `isWellFormedPaymentRef` are BYTE-IDENTICAL
              //              on both branches; only the test file differs
   'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
+
+  // ADDED 2026-08-19, and these two are a DIFFERENT case from the two above — worth stating
+  // because the distinction is the whole reason the PROMOTED classifier exists.
+  //
+  // Both were classifying PROMOTED on their own evidence until today. They stopped because
+  // #310's classifier compares CURRENT blobs, and today's work edited files these commits
+  // touched — qr-redesign-copy.ts (the four signed-off strings), order-identity.ts (the stale
+  // "See staff" comment), order-confirmation-view.tsx (the Order #0 guard). Editing a file after
+  // a commit was promoted un-promotes that commit, because the blob no longer matches.
+  //
+  // The right question is "did HEAD ever hold this?", not "does HEAD hold it now". Until the
+  // classifier asks that, an entry here is the honest alternative to weakening the check.
+  //
+  // BEHAVIOUR VERIFIED PRESENT ON origin/cloudflare-staging before baselining, per this file's
+  // own instruction to read the decisive line:
+  //   b30b7e5 — all six distinctive modules present (tab-order-groups, tab-outstanding,
+  //             ready-to-pay-placement, resolve-order-member-names, shared-tab-client,
+  //             tab-flag-copy) and the signed-off copy constants present
+  //   77dbf76 — isDeadOrder / DEAD_ORDER_LIVE_WINDOW_MS / isStaleDeadOrder present in
+  //             customer-status.ts, hasAllocatedOrderNumber present in order-identity.ts
+  'b30b7e5', // QR customer redesign — un-promoted by later edits to files it touched
+  '77dbf76', // my-orders dead orders — same; staging carries it as 22fe0e4
+
+  // The MAIN-SIDE cherry-picks of two fixes authored on staging the same day. Their patches
+  // differ from the staging originals only because promoting them required resolving a conflict
+  // (main had no tests/e2e/ suite until aa7e7c8), so patch-id cannot match by construction.
+  // Every decisive line read on origin/cloudflare-staging before baselining:
+  //   71fe6a3 — hasAllocatedOrderNumber guard in order-confirmation-view, `order_number: null`
+  //             in the guest-orders mapper, and scripts/check-order-number-guard.ts present
+  //   908516b — `resolvedPaymentMethod = null` in the orders route, `{!isTabOrder && (` in the
+  //             confirmation view
+  //
+  // STRUCTURAL NOTE for whoever reads this next: every promotion from staging to main creates a
+  // new drift entry, because the cherry-pick necessarily has a different patch-id. That is worth
+  // fixing in the classifier rather than growing this list one promotion at a time.
+  '71fe6a3', // #315 Order #0 class fix — staging original is 188172f
+  '908516b', // #316/#317 tab payment method — staging original is ec50ac6
   // 9fcb147 (#262 member key) REMOVED 2026-08-18. It was here because the only difference was
   // __tests__/tab-member-key.test.ts, which staging held as a strict SUBSET of main's. Porting
   // main's file reconciled the commit outright, so it no longer needs an exemption. The check
