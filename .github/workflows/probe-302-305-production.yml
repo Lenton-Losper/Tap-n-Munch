@@ -133,3 +133,10 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # Could Riviera and the ChowNows share one organisation? Measure what a move lands on.
+      - name: Probe org merge feasibility (no writes)
+        run: npx tsx scripts/probe-org-merge-feasibility-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
