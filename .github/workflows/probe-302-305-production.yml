@@ -104,3 +104,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # The order behind the 08:47 Mingle decline (FT17871220357211600) — what state did a
+      # mid-flow decline leave it in, on a device without #182/#183. Read-only.
+      - name: Probe the Mingle decline order state (no writes)
+        run: npx tsx scripts/probe-mingle-decline-20260819-production-readonly.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
