@@ -36,29 +36,30 @@ async function main() {
   console.log('\nDEPLOY 1 REDACTION — live production worker, with a positive control.\n')
 
   // ---- find a real tab, newest first, that actually has members to redact
+  //
+  // `members` IS A JSONB COLUMN ON `tabs`, not a table. The first version of this counted rows in
+  // a `tab_members` table that does not exist -- and PostgREST answers {head:true,count:'exact'}
+  // on a missing table with count=null and error=null (#169/#290), so the guard silently found
+  // zero members on every tab and declared the check void. The absent-table idiom that looks like
+  // a check is the exact trap this repo has hit twice; reading the column cannot make that mistake.
   const { data: tabs, error: tabErr } = await admin
     .from('tabs')
-    .select('id, restaurant_id, table_number, created_at')
+    .select('id, restaurant_id, table_number, members, created_at')
     .order('created_at', { ascending: false })
-    .limit(25)
+    .limit(60)
   if (tabErr) throw new Error(`tabs read failed: ${tabErr.message}`)
   if (!tabs?.length) throw new Error('no tabs on production — cannot build a positive control')
 
-  let subject = null
-  for (const t of tabs) {
-    const { count } = await admin
-      .from('tab_members')
-      .select('id', { count: 'exact', head: true })
-      .eq('tab_id', t.id)
-    if ((count ?? 0) > 0) {
-      subject = { ...t, memberCount: count }
-      break
-    }
-  }
+  const subject = tabs.find((t) => Array.isArray(t.members) && t.members.length > 0)
   if (!subject) {
-    throw new Error('no recent tab has members — a redaction check with nothing to redact is void')
+    throw new Error(
+      `no tab in the newest ${tabs.length} has a non-empty members array — a redaction check with ` +
+        'nothing to redact is void',
+    )
   }
-  console.log(`  subject tab ${subject.id}  restaurant ${subject.restaurant_id}  members ${subject.memberCount}`)
+  console.log(
+    `  subject tab ${subject.id}  restaurant ${subject.restaurant_id}  members ${subject.members.length}`,
+  )
 
   let failed = false
   for (const host of HOSTS) {
@@ -72,7 +73,11 @@ async function main() {
     } catch {
       /* left null — reported below */
     }
-    const members = Array.isArray(body?.members) ? body.members : null
+    // The route answers `{ tab: { ..., members: [...] } }` -- its own docblock says so. Accepting
+    // a top-level `members` too, so a shape change surfaces as a redaction result rather than as
+    // a void control that reads like an outage.
+    const raw = body?.tab?.members ?? body?.members
+    const members = Array.isArray(raw) ? raw : null
 
     // ---- POSITIVE CONTROL first. Without it, "no session_id" is not a finding.
     const controlPassed = res.status === 200 && !!members && members.length > 0
