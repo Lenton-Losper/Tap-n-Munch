@@ -14,6 +14,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {getTables} from '../lib/api';
+import {owesMoney} from '../lib/paymentIntegrity';
 import {getRestaurantName, getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TableWithTab} from '../types';
@@ -23,11 +24,20 @@ function formatUnpaidTotal(amount: number): string {
   return `NAD ${safe.toFixed(2)}`;
 }
 
+/**
+ * #230: this used to filter `payment_status !== 'paid'`, which is also true of a
+ * CANCELLED order — so a table with only cancelled orders could render "NAD 0.00"
+ * and "1 unpaid order" simultaneously. owesMoney() is the server-mirrored "still
+ * owed" set (#231): unpaid/pending/cash_pending/failed/terminal_pending, explicitly
+ * excluding 'paid' and 'cancelled'. TableDetailScreen already avoided this bug by
+ * routing through isClaimablePaymentStatus; this badge wants the wider owesMoney
+ * set instead, since it's a debt count, not a "may I charge a new card" gate.
+ */
 function countUnpaidOrders(table: TableWithTab): number {
   if (!table.tab) {
     return 0;
   }
-  return table.tab.orders.filter(o => o.payment_status !== 'paid').length;
+  return table.tab.orders.filter(o => owesMoney(o.payment_status)).length;
 }
 
 interface TableCardProps {

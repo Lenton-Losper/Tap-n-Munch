@@ -1,5 +1,8 @@
 import {
+  isCashSettleablePaymentStatus,
   isClaimablePaymentStatus,
+  isMidFlightCardPayment,
+  owesMoney,
   selectClaimableOrdersForSettle,
 } from '../paymentIntegrity';
 
@@ -84,5 +87,57 @@ describe('selectClaimableOrdersForSettle', () => {
 
     expect(result.amount).toBe(100);
     expect(result.orderIds).toEqual(['order-unpaid']);
+  });
+});
+
+// #231/#230: owesMoney is the set TablesScreen's unpaid-count badge now uses. It must be
+// wider than isClaimablePaymentStatus (a cash_pending/failed/terminal_pending order is still
+// owed, just not claimable for a NEW card charge right now) and must exclude 'cancelled' —
+// that exclusion is the entire point of #230, since `!== 'paid'` treated a cancelled order as
+// still owed.
+describe('owesMoney', () => {
+  it.each(['unpaid', 'pending', 'cash_pending', 'failed', 'terminal_pending', 'FAILED', ' Pending '])(
+    'treats %j as still owed',
+    status => {
+      expect(owesMoney(status)).toBe(true);
+    },
+  );
+
+  it.each(['paid', 'cancelled', 'refunded', '', null, undefined])(
+    'treats %j as NOT owed — this is the #230 fix: a cancelled order must never count as unpaid',
+    status => {
+      expect(owesMoney(status)).toBe(false);
+    },
+  );
+});
+
+describe('isMidFlightCardPayment', () => {
+  it('is true only for terminal_pending', () => {
+    expect(isMidFlightCardPayment('terminal_pending')).toBe(true);
+    expect(isMidFlightCardPayment('TERMINAL_PENDING')).toBe(true);
+  });
+
+  it.each(['unpaid', 'pending', 'cash_pending', 'failed', 'paid', 'cancelled'])(
+    'is false for %j',
+    status => {
+      expect(isMidFlightCardPayment(status)).toBe(false);
+    },
+  );
+});
+
+describe('isCashSettleablePaymentStatus', () => {
+  it.each(['unpaid', 'pending', 'cash_pending', 'failed'])(
+    'treats %j as cash-settleable',
+    status => {
+      expect(isCashSettleablePaymentStatus(status)).toBe(true);
+    },
+  );
+
+  it('excludes terminal_pending — a card payment already in flight must not also be cash-settleable', () => {
+    expect(isCashSettleablePaymentStatus('terminal_pending')).toBe(false);
+  });
+
+  it.each(['paid', 'cancelled', ''])('excludes %j', status => {
+    expect(isCashSettleablePaymentStatus(status)).toBe(false);
   });
 });

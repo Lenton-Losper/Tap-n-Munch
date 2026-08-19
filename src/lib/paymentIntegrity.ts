@@ -1,18 +1,74 @@
 /**
  * Client-side mirror of the web repo's lib/payments/payment-integrity.ts —
- * keep CLAIMABLE_PAYMENT_STATUSES in sync with that file. Used so the
- * terminal never sums or lets staff select an order the backend wouldn't
- * accept as claimable (e.g. cancelled, already paid) — the check has to
- * happen before a card is charged, not just when the backend later
- * verifies the settle request.
+ * keep these status sets in sync with that file. Used so the terminal never
+ * sums or lets staff select an order the backend wouldn't accept as
+ * claimable (e.g. cancelled, already paid) — the check has to happen before
+ * a card is charged, not just when the backend later verifies the settle
+ * request.
+ *
+ * #231: this file used to mirror only CLAIMABLE_PAYMENT_STATUSES, so any
+ * "is this still owed" question on the terminal had to be hand-rolled
+ * against payment_status directly — which is how #230 happened
+ * (TablesScreen filtered `!== 'paid'`, so a cancelled order counted as
+ * unpaid). The three sets below are ported verbatim from the web repo's
+ * lib/payments/payment-integrity.ts (confirmed via
+ * `git show ffa247bd8e9ae79b2d920f0f10e7a2c045920fd4:lib/payments/payment-integrity.ts`
+ * against origin/main) so the terminal has the same three-way split the
+ * server has, instead of only the narrowest one.
  */
-export const CLAIMABLE_PAYMENT_STATUSES = ['unpaid', 'pending'] as const;
-
-export function isClaimablePaymentStatus(status: unknown): boolean {
+function matchesStatusSet(status: unknown, set: readonly string[]): boolean {
   const s = String(status ?? '')
     .trim()
     .toLowerCase();
-  return (CLAIMABLE_PAYMENT_STATUSES as readonly string[]).includes(s);
+  return set.includes(s);
+}
+
+export const CLAIMABLE_PAYMENT_STATUSES = ['unpaid', 'pending'] as const;
+
+export function isClaimablePaymentStatus(status: unknown): boolean {
+  return matchesStatusSet(status, CLAIMABLE_PAYMENT_STATUSES);
+}
+
+/** A card payment is currently in flight on the reader for this order. */
+export const MID_FLIGHT_CARD_PAYMENT_STATUSES = ['terminal_pending'] as const;
+
+export function isMidFlightCardPayment(status: unknown): boolean {
+  return matchesStatusSet(status, MID_FLIGHT_CARD_PAYMENT_STATUSES);
+}
+
+/**
+ * Statuses where the restaurant is still owed money. Deliberately wider than
+ * CLAIMABLE_PAYMENT_STATUSES: a 'cash_pending', 'failed' or 'terminal_pending'
+ * order has NOT been collected on, even though it isn't claimable for a NEW
+ * card charge right now. Terminal states ('paid', 'cancelled') are absent by
+ * design — this is the set TablesScreen's unpaid-count badge should use
+ * (#230), since "N unpaid orders" is a debt count, not a claimability gate.
+ */
+export const OWES_MONEY_PAYMENT_STATUSES = [
+  'unpaid',
+  'pending',
+  'cash_pending',
+  'failed',
+  'terminal_pending',
+] as const;
+
+export function owesMoney(status: unknown): boolean {
+  return matchesStatusSet(status, OWES_MONEY_PAYMENT_STATUSES);
+}
+
+/**
+ * Statuses a CASH settlement may claim: everything that still owes money
+ * except a card payment that is currently in flight. Display/reasoning
+ * mirror only — the actual settle action must keep gating on the server's
+ * can_settle_cash (see TableDetailScreen), never re-derive that from
+ * payment_status on the client.
+ */
+export const CASH_SETTLEABLE_PAYMENT_STATUSES = OWES_MONEY_PAYMENT_STATUSES.filter(
+  status => !isMidFlightCardPayment(status),
+) as readonly (typeof OWES_MONEY_PAYMENT_STATUSES)[number][];
+
+export function isCashSettleablePaymentStatus(status: unknown): boolean {
+  return matchesStatusSet(status, CASH_SETTLEABLE_PAYMENT_STATUSES);
 }
 
 export interface ClaimableOrderLike {
