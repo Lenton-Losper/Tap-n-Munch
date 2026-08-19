@@ -7,7 +7,7 @@ import { getAuthenticatedSettingsContext } from '@/lib/settings/auth'
 import { buildDefaultRestaurantRolesSeed } from '@/lib/auth/create-restaurant'
 import {
   getOrganizationIdForRestaurant,
-  getOrganizationRestaurants,
+  resolveVisibleLocations,
   type OrganizationRestaurantOption,
 } from '@/lib/organizations/queries'
 
@@ -37,10 +37,23 @@ export async function getLocationsPageDataAction(): Promise<
     return { error: 'This restaurant is not linked to a business.' }
   }
 
-  const [canCreateLocation, locations] = await Promise.all([
+  // Two separate questions, deliberately not collapsed into one call even though
+  // authorizeOrganization grants every capability to an OWNER today: "may I add a location" and
+  // "may I see the other locations" are different permissions, and a future non-owner org role
+  // (MEMBER is already a placeholder) will answer them differently.
+  const [canCreateLocation, canViewAllLocations] = await Promise.all([
     authorizeOrganization(userId, organizationId, 'create_location'),
-    getOrganizationRestaurants(supabase, organizationId),
+    authorizeOrganization(userId, organizationId, 'view_all_locations'),
   ])
+
+  // The elevated read happens ONLY behind canViewAllLocations -- see resolveVisibleLocations for
+  // why a session-scoped read cannot answer this question at all.
+  const locations = await resolveVisibleLocations({
+    organizationId,
+    sessionClient: supabase,
+    createAdminClient: createServerSupabaseClient,
+    canViewAllLocations,
+  })
 
   return { data: { organizationId, canCreateLocation, locations } }
 }
