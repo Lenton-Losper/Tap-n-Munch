@@ -104,6 +104,59 @@ async function main() {
   const all = localMigrations()
   const applied = new Set(await appliedMigrationVersions(supabase))
 
+  /**
+   * #280 OPTION A — TWO FILES SHARING A VERSION MAKE THIS CHECK LIE.
+   *
+   * A migration is identified by its numeric prefix alone and versions are collapsed into a Set,
+   * while the ledger stores one row per VERSION, not per file. So two different migrations with
+   * the same prefix are indistinguishable here, and applying either one marks the version applied
+   * and silences the other.
+   *
+   * IT HAS HAPPENED, and for three days: `20260811120000` was
+   * `..._tabs_anon_grant_drop_members.sql` on main (#262, revoking an anon grant) and
+   * `..._restaurant_terminals_status_check_live_vocabulary.sql` on cloudflare-staging (#193, a
+   * CHECK on the table gating terminal auth). The dangerous direction was that applying #193's
+   * file on staging would have let main read ITS `20260811120000` as satisfied and ship #262's
+   * code with the anon grant still wide open — the exact exposure #262 exists to close.
+   *
+   * This is the lying-instrument shape: `MIGRATION DRIFT CHECK: OK` would have been true about
+   * VERSIONS and false about MIGRATIONS. A wrong answer, well formatted, instead of an error.
+   *
+   * Checked BEFORE any comparison, and fatal, because every number computed below is derived from
+   * a Set that has already discarded one of the duplicates — there is no partial answer worth
+   * printing once this is true.
+   *
+   * WHAT THIS DOES NOT CATCH, stated so nobody reads more into a green than it carries: duplicates
+   * living on DIFFERENT branches, where each branch sees only one file. That is exactly the state
+   * that existed for three days. It fires the moment a cherry-pick brings them onto one branch,
+   * which is when the damage would otherwise land. Option C — refusing a version already present
+   * on any remote at creation time — is what closes that, and is not this.
+   */
+  const byVersion = new Map()
+  for (const m of all) {
+    if (!byVersion.has(m.version)) byVersion.set(m.version, [])
+    byVersion.get(m.version).push(m.name)
+  }
+  const duplicates = [...byVersion.entries()].filter(([, names]) => names.length > 1)
+
+  if (duplicates.length) {
+    console.error('\nMIGRATION DRIFT CHECK: FAILED — duplicate migration version(s)\n')
+    console.error(
+      'Two committed files share one numeric prefix. The ledger stores one row per VERSION, so\n' +
+        'applying either marks the version applied and silences the other. Every count this check\n' +
+        'would print below is computed from a Set that has already dropped one of them.\n',
+    )
+    for (const [version, names] of duplicates) {
+      console.error(`  ${version}`)
+      for (const n of names) console.error(`      ${n}`)
+    }
+    console.error(
+      '\nRename one of them to a free prefix and re-run. Do NOT apply either until you have,\n' +
+        'and read both files first — they are different migrations, not a duplicate of one.\n',
+    )
+    process.exit(1)
+  }
+
   // Every committed version regardless of scope: an applied migration that has ANY committed
   // file is documented, so scoping can never manufacture "undocumented drift".
   const allVersions = new Set(all.map((m) => m.version))
