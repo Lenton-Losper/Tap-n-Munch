@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,15 +19,22 @@ export async function GET(req: Request) {
   const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.ANALYTICS_VIEW, req)
   if (isAuthError(auth)) return auth
 
-  const { data: orders, error } = await auth.supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantUuid)
-    .eq('payment_status', 'paid')
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  // #323: paid orders for a whole restaurant with NO date bound -- 740 for FNB ChowNow today.
+  // The try/catch is not decoration: this handler had none, so once fetchAllRows can throw, an
+  // unhandled failure would leave as a zero-length 500 -- the #322 shape all over again.
+  try {
+    const orders = await fetchAllRows<Record<string, unknown>>(
+      auth.supabase
+        .from('orders')
+        .select('*')
+        .eq('restaurant_id', restaurantUuid)
+        .eq('payment_status', 'paid'),
+      { label: 'orders-summary' },
+    )
+    return NextResponse.json({ orders })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    console.error('[analytics/orders-summary] failed', { restaurantUuid, error: err })
+    return NextResponse.json({ error: message }, { status: 500 })
   }
-
-  return NextResponse.json({ orders: orders ?? [] })
 }

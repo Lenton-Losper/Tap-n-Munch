@@ -7,6 +7,7 @@ import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,16 +33,17 @@ export async function GET(req: Request) {
     // anything mid-flight is resolved by the Finatic-verified cron instead (up to ~2min extra).
     await autoCancelStalePosOrders(supabase, { restaurantId: terminal.restaurantId, verifyWithFinatic: false })
 
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('restaurant_id', terminal.restaurantId)
-      .in('status', ['pending', 'confirmed', 'preparing', 'ready', 'completed'])
-      .order('placed_at', { ascending: false })
-
-    if (error) {
-      return NextResponse.json({ error: 'Failed to load orders' }, { status: 500 })
-    }
+    // #323: every live order for the restaurant, no date bound -- 739 for FNB ChowNow today.
+    // fetchAllRows throws on failure; the enclosing try/catch already answers with JSON.
+    const data = await fetchAllRows<Record<string, unknown>>(
+      supabase
+        .from('orders')
+        .select('*')
+        .eq('restaurant_id', terminal.restaurantId)
+        .in('status', ['pending', 'confirmed', 'preparing', 'ready', 'completed'])
+        .order('placed_at', { ascending: false }),
+      { label: 'terminal-orders' },
+    )
 
     const orderIds = (data ?? []).map((o: any) => String(o.id)).filter(Boolean)
     const projections = await getPaymentProjections(supabase, terminal.restaurantId, orderIds)

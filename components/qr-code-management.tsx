@@ -53,6 +53,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { ArrowLeft, Copy, Download, MoreHorizontal, Plus } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 type TableLiveStatus = 'active' | 'needs_payment' | 'empty'
 
@@ -356,15 +357,18 @@ export function QRCodeManagement() {
       const scope = orderScope ?? (await resolveOrderRestaurantScope(restaurantId))
       if (!orderScope) setOrderScope(scope)
 
-      const { data, error } = await supabase
-        .from('orders')
-        .select('table_number, status, payment_status')
-        .eq('restaurant_id', scope.restaurantId)
-        .eq('is_closed', false)
-        .not('status', 'in', '("completed","cancelled")')
-
-      if (error) throw error
-      setTableStatusByNumber(groupOrdersByTableStatus((data || []) as OpenOrderRow[]))
+      // #323: open orders for the whole restaurant. Small today (5 at the busiest), but the cap is
+      // a property of the read. fetchAllRows throws on failure; the surrounding catch already logs.
+      const data = await fetchAllRows<OpenOrderRow>(
+        supabase
+          .from('orders')
+          .select('table_number, status, payment_status')
+          .eq('restaurant_id', scope.restaurantId)
+          .eq('is_closed', false)
+          .not('status', 'in', '("completed","cancelled")'),
+        { label: 'qr-code-management.openOrders' },
+      )
+      setTableStatusByNumber(groupOrdersByTableStatus(data))
     } catch (err) {
       console.error('[ORDERING CHANNELS] failed to refresh statuses', err)
     }

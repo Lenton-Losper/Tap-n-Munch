@@ -1,5 +1,6 @@
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export interface DailyAnalytics {
   id: string
@@ -25,24 +26,25 @@ export async function calculateDailyAnalytics(restaurantId: string, date: string
   const sb = createServerSupabaseClient()
   const dayStart = new Date(`${date}T00:00:00.000Z`).toISOString()
   const dayEnd = new Date(`${date}T23:59:59.999Z`).toISOString()
-  const { data: orders, error } = await sb
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('payment_status', 'paid')
-    .gte('placed_at', dayStart)
-    .lte('placed_at', dayEnd)
+  // #323: day-scoped, so small today -- but the cap is a property of the READ, not of the data,
+  // and a busy day is exactly when the number matters. fetchAllRows THROWS on failure, which
+  // preserves the reason the check below exists: an empty list must never stand in for a failed
+  // query, because "took nothing" and "could not tell" are different answers.
+  const orders = await fetchAllRows<Record<string, unknown>>(
+    sb
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .eq('payment_status', 'paid')
+      .gte('placed_at', dayStart)
+      .lte('placed_at', dayEnd),
+    { label: 'calculateDailyAnalytics' },
+  )
 
-  // Was `data: orders = []`. A destructuring default only fires for undefined, and supabase-js
-  // returns `{ data: null, error }` on failure -- so the default never covered the case it was
-  // written for. Reject rather than fall back to []: an empty list here would report
-  // total_revenue 0 for a day whose revenue query failed, which is indistinguishable from a day
-  // that genuinely took nothing.
-  if (error || !orders) {
-    throw new Error(
-      `Failed to load paid orders for ${date}: ${error?.message || 'query returned no result'}`,
-    )
-  }
+  // The guard that used to sit here rejected `{ data: null, error }`, because an empty list would
+  // have reported total_revenue 0 for a day whose query FAILED -- indistinguishable from a day that
+  // genuinely took nothing. fetchAllRows keeps that distinction by throwing on failure, so the
+  // check is not dropped, it has moved into the helper.
 
   const totalOrders = orders.length
   const totalRevenue = orders.reduce((sum: number, o: any) => sum + (Number(o.total) || 0), 0)
@@ -93,22 +95,23 @@ export async function calculateDailyAnalytics(restaurantId: string, date: string
 export async function getDailyAnalytics(restaurantId: string, date: string): Promise<DailyAnalytics> {
   const dayStart = new Date(`${date}T00:00:00.000Z`).toISOString()
   const dayEnd = new Date(`${date}T23:59:59.999Z`).toISOString()
-  const { data: orders, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('payment_status', 'paid')
-    .gte('placed_at', dayStart)
-    .lte('placed_at', dayEnd)
+  // #323: day-scoped, so small today -- but the cap is a property of the READ, not of the data,
+  // and a busy day is exactly when the number matters. fetchAllRows THROWS on failure, which
+  // preserves the reason the check below exists: an empty list must never stand in for a failed
+  // query, because "took nothing" and "could not tell" are different answers.
+  const orders = await fetchAllRows<Record<string, unknown>>(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .eq('payment_status', 'paid')
+      .gte('placed_at', dayStart)
+      .lte('placed_at', dayEnd),
+    { label: 'getDailyAnalytics' },
+  )
 
-  // Same defect as calculateDailyAnalytics above, and the one that actually ships: the browser
-  // client types `data` as any, so tsc never flagged this copy. Reject on failure for the same
-  // reason -- this is the reader the analytics dashboard calls.
-  if (error || !orders) {
-    throw new Error(
-      `Failed to load paid orders for ${date}: ${error?.message || 'query returned no result'}`,
-    )
-  }
+  // Same reasoning as calculateDailyAnalytics above, and this is the copy the analytics dashboard
+  // actually calls. fetchAllRows throws on failure, so "could not tell" never becomes "took zero".
 
   const totalOrders = orders.length
   const totalRevenue = orders.reduce((sum: number, o: any) => sum + (Number(o.total) || 0), 0)

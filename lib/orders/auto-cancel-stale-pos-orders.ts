@@ -10,6 +10,7 @@ import {
   amountsMatch,
   GATEWAY_AMOUNT_TOLERANCE_CENTS,
 } from '@/lib/payments/payment-integrity'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 
@@ -200,9 +201,15 @@ export async function autoCancelStalePosOrders(
     candidateQuery = candidateQuery.eq('restaurant_id', restaurantId)
   }
 
-  const { data: candidates, error: candidatesError } = await candidateQuery
-  if (candidatesError) throw candidatesError
-  if (!candidates || candidates.length === 0) return result
+  // #323: a GLOBAL sweep -- every stale pending POS order across every restaurant, with no upper
+  // bound but the cutoff. Nine rows today; it grows with unpaid POS attempts, not with sales.
+  const candidates = await fetchAllRows<{
+    id: string
+    restaurant_id: string
+    total: number
+    paycloud_merchant_order_no: string | null
+  }>(candidateQuery, { label: 'autoCancelStalePosOrders' })
+  if (candidates.length === 0) return result
 
   const rows = candidates as StaleOrderCandidate[]
   // The `payment.attempt_started` lookup that used to live here fed the removed E04111 cancel
