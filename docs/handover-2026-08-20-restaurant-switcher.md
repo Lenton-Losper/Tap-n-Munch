@@ -1,7 +1,8 @@
 # Handover — the restaurant switcher, 2026-08-20
 
 Branch `fix/sidebar-restaurant-switcher`, off `cloudflare-staging` (`d913a34`).
-Commits `e4c1d26` (the switcher) and `54bbdd4` (the probe).
+Five commits: `e4c1d26` the switcher, `54bbdd4` the probe, `fca64ba` the resolver convergence and
+the scan, `b6facea` / `9f908e2` this document.
 
 ## What the defect actually was, in three layers
 
@@ -80,6 +81,80 @@ deployed URL, which would exercise whatever is deployed there rather than the co
 - **The FNB ChowNow backfill was not run** and is not needed for this. `flashtapapp2@gmail.com` holds
   no row on FNB ChowNow; that is a separate access question, and adding one grants a live restaurant
   with an external manager on it.
+
+## Second pass — the 13 call sites, and a scan to hold them
+
+The switcher alone would have shipped a worse bug than the one it fixed. **Thirteen** call sites
+answered "which restaurant is this user on?" independently, and my first commit converged exactly
+one of them.
+
+Nine were byte-identical copies of `resolveStaffRestaurantId` in
+`lib/{analytics,documents,menu,orders,recipes,settings,staff,stock,tables}/auth.ts`. Four more lived
+in `app/api/auth/role`, `app/api/admin/setup-status`, `app/api/bug-reports` and
+`app/api/auth/create-restaurant`. All now call `resolveSessionRestaurantId`.
+
+**Two were already broken in production, not merely divergent.** `setup-status` and
+`create-restaurant` used a bare `.maybeSingle()`, which raises PGRST116 for any account holding two
+memberships. Proved by reintroducing the old shape against a live server:
+
+```
+multi   HTTP 500  {"error":"Failed to load setup status"}
+single  HTTP 200  {"hasRestaurant":true,...}
+```
+
+`SetupChecklistBanner` renders on every staff page through `DashboardShell`, so
+`flashtapapp2@gmail.com` — two memberships since 2026-08-19 — is hitting that 500 on every page load
+on production right now. It is invisible because the banner fails quietly.
+
+`bug-reports` attributed a report to the first membership, so a bug filed while working at one
+location was filed against another.
+
+### The scan
+
+`scripts/check-session-restaurant-resolver.ts`, blocking in both workflows beside the order-number
+guard. Two findable shapes:
+
+- **A** — a `restaurant_users` read filtered by `user_id` alone and narrowed with `.limit(1)` /
+  `.maybeSingle()`. Filtering by `user_id` **and** `restaurant_id` is an authorization check and is
+  not flagged; selecting every membership without narrowing is an enumeration and is not flagged.
+- **B** — `.eq('owner_id', <user id>)`, the legacy pre-`restaurant_users` provisioning column.
+
+It **found the thirteenth site itself**, after I had enumerated twelve by hand — which is the whole
+argument for it existing.
+
+Two properties beyond matching:
+
+- **It self-tests before it reports.** Four fixtures — two that must be caught, two that must be
+  ignored — checked on every run. A detector whose regex has rotted reports `OK` over a codebase
+  full of offenders, and that green is indistinguishable from a real one. Proved: renaming the table
+  in the regex makes the run fail with `SELF-TEST FAILED`, not pass.
+- **A stale `ALLOWED_FILES` entry is itself a failure.** An allowance guarding something that has
+  moved would wave through the next real offender in that file.
+
+Verified exit codes directly, not through a pipe: clean tree `0`, planted offender `1`, restored `0`.
+
+### Where the stored selection lives, and what happens when it goes stale
+
+`public.user_active_context` — a table row, `user_id` PRIMARY KEY. **Not a cookie and not the JWT**,
+so it cannot be forged client-side and needs no re-issuing. RLS allows a user to `SELECT` only their
+own row, and there is **no authenticated INSERT/UPDATE policy at all** — writes happen solely through
+`/api/auth/select-context`, which re-derives the caller's real contexts first.
+
+| what happens | where it is handled | result |
+|---|---|---|
+| restaurant deleted | FK `ON DELETE CASCADE` | context row goes with it |
+| membership revoked | FK knows nothing of `restaurant_users` — row survives | re-derived every call, stored id discarded |
+| membership soft-deleted | membership query filters `deleted_at IS NULL` | stops matching |
+| user deleted | `ON DELETE CASCADE` from `auth.users` | row gone |
+| the read itself fails | caught and logged | treated as "no preference" |
+
+In every case it falls back to `memberRestaurantIds[0]`, then legacy `owner_id`, then null. The
+stored value can only **narrow** among current memberships — never widen, so it cannot fail open;
+never the sole candidate, so it cannot strand anyone on a site they cannot use.
+
+Nine tests in `__tests__/resolve-session-restaurant.test.ts` cover exactly those rows, including the
+strongest form: memberships empty but a stored row still present must return `null`, not the stored
+restaurant. Failing-first — relaxing the re-validation fails 6 of them.
 
 ---
 
