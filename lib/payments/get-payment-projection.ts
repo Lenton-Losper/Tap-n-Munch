@@ -73,10 +73,29 @@ export async function getPaymentProjection(
 }
 
 /**
- * Batched equivalent of getPaymentProjection: two round-trips for the whole set
- * (sales overlapping any order_id, then refunds for those origin_business_order_nos)
- * instead of 2N sequential queries.
+ * Batched equivalent of getPaymentProjection: a small number of round-trips for the whole set
+ * (sales overlapping any order_id, then refunds for those origin_business_order_nos) instead of
+ * 2N sequential queries.
+ *
+ * #322 -- THE ID LISTS ARE CHUNKED, AND THAT IS LOAD-BEARING.
+ *
+ * `.overlaps('order_ids', ids)` and `.in('origin_business_order_no', nos)` are GET filters, so
+ * every id is spelled out in the request URI. At ~37 bytes per uuid the URI crosses roughly 24 KB
+ * somewhere past 620 ids, and the upstream answers `400 Bad Request` -- measured on staging: 620
+ * paid orders in the window returned 200, 640 returned a zero-length 500. The 400 became a throw
+ * here, and app/api/orders/history had no try/catch, so the worker died and the customer got a
+ * blank 500 with nothing to read.
+ *
+ * CHUNK_SIZE is chosen for the URI budget, not for row throughput: 200 uuids is roughly 7.4 KB,
+ * a third of the observed ceiling. Raising it walks back toward the same cliff.
  */
+const CHUNK_SIZE = 200
+
+function chunk<T>(items: T[], size = CHUNK_SIZE): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
 export async function getPaymentProjections(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   restaurantId: string,
@@ -88,15 +107,22 @@ export async function getPaymentProjections(
 
   const orderIdSet = new Set(uniqueOrderIds)
 
-  const { data: sales, error: saleError } = await supabase
-    .from('payment_events')
-    .select('business_order_no, amount, currency, order_ids, created_at')
-    .eq('restaurant_id', restaurantId)
-    .eq('event_type', 'sale')
-    .overlaps('order_ids', uniqueOrderIds)
-    .order('created_at', { ascending: false })
+  const sales: { business_order_no: string; amount: number; currency: string; order_ids: unknown; created_at: string }[] = []
+  for (const batch of chunk(uniqueOrderIds)) {
+    const { data, error: saleError } = await supabase
+      .from('payment_events')
+      .select('business_order_no, amount, currency, order_ids, created_at')
+      .eq('restaurant_id', restaurantId)
+      .eq('event_type', 'sale')
+      .overlaps('order_ids', batch)
+      .order('created_at', { ascending: false })
 
-  if (saleError) throw saleError
+    if (saleError) throw saleError
+    sales.push(...((data ?? []) as typeof sales))
+  }
+
+  // Re-sort across batches: "newest sale wins" has to hold over the whole set, not per batch.
+  sales.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
 
   // Newest sale first → first assignment wins (mirrors limit(1) desc per order).
   type SaleRow = {
@@ -105,7 +131,7 @@ export async function getPaymentProjections(
     currency: string
   }
   const saleByOrderId = new Map<string, SaleRow>()
-  for (const sale of sales ?? []) {
+  for (const sale of sales) {
     const ids = Array.isArray(sale.order_ids)
       ? sale.order_ids.map((id: unknown) => String(id))
       : []
@@ -125,17 +151,21 @@ export async function getPaymentProjections(
     ...new Set([...saleByOrderId.values()].map((s) => s.business_order_no)),
   ]
 
-  const { data: priorRefunds, error: priorError } = await supabase
-    .from('payment_events')
-    .select('amount, origin_business_order_no')
-    .eq('restaurant_id', restaurantId)
-    .eq('event_type', 'refund_succeeded')
-    .in('origin_business_order_no', originNos)
+  const priorRefunds: { amount: number; origin_business_order_no: string }[] = []
+  for (const batch of chunk(originNos)) {
+    const { data, error: priorError } = await supabase
+      .from('payment_events')
+      .select('amount, origin_business_order_no')
+      .eq('restaurant_id', restaurantId)
+      .eq('event_type', 'refund_succeeded')
+      .in('origin_business_order_no', batch)
 
-  if (priorError) throw priorError
+    if (priorError) throw priorError
+    priorRefunds.push(...((data ?? []) as typeof priorRefunds))
+  }
 
   const refundedByOrigin = new Map<string, number>()
-  for (const row of priorRefunds ?? []) {
+  for (const row of priorRefunds) {
     const origin = String(row.origin_business_order_no)
     refundedByOrigin.set(origin, (refundedByOrigin.get(origin) ?? 0) + Number(row.amount))
   }
