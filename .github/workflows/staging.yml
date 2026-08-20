@@ -542,6 +542,11 @@ jobs:
       # this can only fail on something NEW.
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
+
+      # Static: no credentials, no database. BLOCKING - the tree is clean as of 2026-08-20, so
+      # this can only fail on something NEW. Self-tests its own detectors before reporting.
+      - name: Every session-restaurant lookup goes through resolveSessionRestaurantId
+        run: npx tsx scripts/check-session-restaurant-resolver.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.

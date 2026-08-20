@@ -2,43 +2,12 @@ import { redirect } from 'next/navigation'
 import { authorize } from '@/lib/permissions/authorize'
 import type { Permission } from '@/lib/permissions'
 import { createServerSessionClient } from '@/lib/supabase/server-session'
+import { resolveSessionRestaurantId } from '@/lib/auth/resolve-session-restaurant'
 
 export type StaffAccessContext = {
   supabase: Awaited<ReturnType<typeof createServerSessionClient>>
   userId: string
   restaurantId: string
-}
-
-async function resolveStaffRestaurantId(
-  supabase: Awaited<ReturnType<typeof createServerSessionClient>>,
-  userId: string,
-): Promise<string | null> {
-  const { data: membership, error: membershipError } = await supabase
-    .from('restaurant_users')
-    .select('restaurant_id')
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-    .limit(1)
-    .maybeSingle()
-
-  if (membershipError) throw membershipError
-  if (membership?.restaurant_id) {
-    return String(membership.restaurant_id)
-  }
-
-  const { data: restaurant, error: restaurantError } = await supabase
-    .from('restaurants')
-    .select('id')
-    .eq('owner_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (restaurantError) throw restaurantError
-  if (restaurant?.id) {
-    return String(restaurant.id)
-  }
-
-  return null
 }
 
 async function getAuthenticatedStaffContext(): Promise<StaffAccessContext | { error: string }> {
@@ -51,7 +20,7 @@ async function getAuthenticatedStaffContext(): Promise<StaffAccessContext | { er
     return { error: 'Sign in required.' }
   }
 
-  const restaurantId = await resolveStaffRestaurantId(supabase, user.id)
+  const restaurantId = await resolveSessionRestaurantId(supabase, user.id)
   if (!restaurantId) {
     return { error: 'Restaurant not found for this account.' }
   }

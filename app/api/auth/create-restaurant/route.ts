@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createRestaurantForUserAtomic, upsertPublicUserProfile } from '@/lib/auth/create-restaurant'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
+import { getRestaurantIdsForUser, getUserFromRequest } from '@/lib/supabase/admin-restaurant-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,14 +38,13 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
 
-    const { data: existingMembership, error: membershipLookupError } = await supabase
-      .from('restaurant_users')
-      .select('restaurant_id')
-      .eq('user_id', authUser.id)
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (membershipLookupError) {
+    // An EXISTENCE check, not a pick: "does this account already have any restaurant?". It used
+    // to be a bare .maybeSingle(), which raises PGRST116 the moment an account holds two
+    // memberships -- a 500 where the honest answer is the 400 below.
+    let existingRestaurantIds: string[]
+    try {
+      existingRestaurantIds = await getRestaurantIdsForUser(supabase, authUser.id)
+    } catch (membershipLookupError) {
       console.error('[create-restaurant] membership lookup failed', {
         userId: authUser.id,
         error: membershipLookupError,
@@ -53,7 +52,7 @@ export async function POST(request: Request) {
       throw membershipLookupError
     }
 
-    if (existingMembership?.restaurant_id) {
+    if (existingRestaurantIds.length > 0) {
       return NextResponse.json(
         { error: 'Restaurant already exists for this account' },
         { status: 400 }
