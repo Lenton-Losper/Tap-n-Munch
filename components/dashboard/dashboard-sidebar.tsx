@@ -19,6 +19,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ReportBugButton } from '@/components/dashboard/report-bug-dialog'
+import { RestaurantSwitcher } from '@/components/dashboard/restaurant-switcher'
 import { useAuth, type StaffRole } from '@/components/auth/auth-provider'
 import { usePermissions } from '@/hooks/use-permissions'
 import { PERMISSIONS, type Permission } from '@/lib/permissions'
@@ -139,6 +140,9 @@ export function DashboardSidebar() {
         {restaurantName ? (
           <p className="mt-0.5 text-xs text-[#6B675F]">{restaurantName}</p>
         ) : null}
+        {/* Renders null unless the account holds more than one restaurant, so a single-location
+            sidebar is byte-for-byte what it was before this control existed. */}
+        <RestaurantSwitcher />
         {displayName || role ? (
           <div className="mt-3 flex flex-col gap-1.5">
             {displayName ? (
