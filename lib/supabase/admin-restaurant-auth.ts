@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from './server'
+import { resolveSessionRestaurantId } from '@/lib/auth/resolve-session-restaurant'
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -44,18 +45,6 @@ export async function getUserFromRequest(request: Request) {
   return data.user
 }
 
-/** Thrown by getRestaurantIdForUser when the caller belongs to more than one restaurant and
- *  the endpoint has no way to disambiguate which one was meant. Callers that CAN accept a
- *  set should use getRestaurantIdsForUser instead. */
-export class AmbiguousRestaurantError extends Error {
-  readonly restaurantIds: string[]
-  constructor(restaurantIds: string[]) {
-    super('This account belongs to multiple restaurants; this action requires an explicit restaurantId.')
-    this.name = 'AmbiguousRestaurantError'
-    this.restaurantIds = restaurantIds
-  }
-}
-
 /** Every restaurant_id the user belongs to (restaurant_users), in no particular guaranteed
  *  order beyond "owner rows first" -- use this instead of getRestaurantIdForUser wherever a
  *  caller can legitimately handle 0, 1, or many restaurants. */
@@ -78,25 +67,35 @@ export async function getRestaurantIdsForUser(
 }
 
 /**
- * Resolves the SINGLE restaurant a user belongs to. Throws if the user belongs to zero
- * restaurants (unchanged from prior behavior), and throws AmbiguousRestaurantError if the
- * user belongs to more than one -- previously this silently picked one via a non-deterministic
- * `.limit(1)`, which is a real cross-tenant risk once a user can have multiple memberships.
- * Callers that can accept a set instead of forcing disambiguation should call
- * getRestaurantIdsForUser directly.
+ * Resolves THE RESTAURANT THIS SESSION IS ON. Throws only when the user has access to none.
+ *
+ * REVERSES A WS1 RULING, DELIBERATELY. This used to throw AmbiguousRestaurantError for anyone
+ * holding two memberships, and scripts/verify-ws1-tenancy-foundation-staging.ts asserted that it
+ * did -- "not a silent arbitrary pick". That ruling was correct when it was made: there was no
+ * principled way to choose, so refusing beat guessing.
+ *
+ * The premise stopped being true on 2026-08-19. #321 gave the product a stored, server-validated
+ * active restaurant, and there is now a switcher to set it. Resolving to the user's OWN CURRENT
+ * SELECTION is not an arbitrary pick, which is the only thing the ruling forbade.
+ *
+ * The cost of keeping the refusal was not theoretical: on production, Order History rendered
+ * "This account belongs to multiple restaurants. Specify a restaurantId." to the account owner,
+ * and ~24 call sites across payments, terminals, staff, invites and menu either showed that or
+ * returned a 500. Every one of them broke the moment an owner gained a second location.
+ *
+ * Single-restaurant accounts are unaffected: with one membership, resolveSessionRestaurantId
+ * returns that one membership whatever is stored, which is byte-identical to the old
+ * restaurantIds[0]. That is the control that matters, because it is every ChowNow staff member.
  */
 export async function getRestaurantIdForUser(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   userId: string
 ): Promise<string> {
-  const restaurantIds = await getRestaurantIdsForUser(supabase, userId)
-  if (restaurantIds.length === 0) {
+  const restaurantId = await resolveSessionRestaurantId(supabase, userId)
+  if (!restaurantId) {
     throw new Error('Restaurant not found for this account')
   }
-  if (restaurantIds.length > 1) {
-    throw new AmbiguousRestaurantError(restaurantIds)
-  }
-  return restaurantIds[0]
+  return restaurantId
 }
 
 /**

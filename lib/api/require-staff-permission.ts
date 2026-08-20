@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server'
 import { createServerSessionClient } from '@/lib/supabase/server-session'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
-  AmbiguousRestaurantError,
   getRestaurantIdForUser,
   getUserFromRequest,
 } from '@/lib/supabase/admin-restaurant-auth'
@@ -84,17 +83,11 @@ export async function requireCallerRestaurantPermission(
   const supabase = createServerSupabaseClient()
   let restaurantId: string
   try {
+    // Resolves to the session's ACTIVE restaurant. This used to refuse with a 409 reading
+    // "Specify a restaurantId" for any account holding two memberships -- a developer string
+    // rendered to the account owner, on a well-formed request, in the normal flow.
     restaurantId = await getRestaurantIdForUser(supabase, user.id)
-  } catch (err) {
-    if (err instanceof AmbiguousRestaurantError) {
-      // Distinct from "no restaurant" (403 below): this account genuinely belongs to
-      // multiple restaurants and this endpoint has no way to infer which one was meant --
-      // it needs an explicit restaurantId, not a silently-guessed one.
-      return NextResponse.json(
-        { error: 'This account belongs to multiple restaurants. Specify a restaurantId.' },
-        { status: 409 },
-      )
-    }
+  } catch {
     return NextResponse.json(
       { error: 'Restaurant not found for this account.' },
       { status: 403 },
