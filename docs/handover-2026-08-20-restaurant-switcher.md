@@ -156,6 +156,57 @@ Nine tests in `__tests__/resolve-session-restaurant.test.ts` cover exactly those
 strongest form: memberships empty but a stored row still present must return `null`, not the stored
 restaurant. Failing-first — relaxing the re-validation fails 6 of them.
 
+### The scan was written in the wrong order, and here is the payment
+
+The rule is: write the scan, watch it fail on every offender, then convert until it passes. I did
+the opposite — converted twelve by hand, then wrote the scan, which found the thirteenth. That
+leaves a check which has only ever failed on one shape in one file, and a check that has barely
+failed is the position the order-number helper was in before it became a script.
+
+Reconstructed rather than claimed. A detached worktree at `54bbdd4` (the tree *before* the
+conversion), with only the scan file copied in:
+
+```
+$ npx tsx scripts/check-session-restaurant-resolver.ts
+check-session-restaurant-resolver: 22 finding(s).
+EXIT=1
+```
+
+22 findings across all 13 offender files, both shapes, every one named:
+
+| file | A: first-membership pick | B: legacy owner_id |
+|---|---|---|
+| `app/api/admin/setup-status/route.ts` | :30 | :44 |
+| `app/api/auth/create-restaurant/route.ts` | :42 | — |
+| `app/api/auth/role/route.ts` | — | :59 |
+| `app/api/bug-reports/route.ts` | :17 | — |
+| `lib/analytics/auth.ts` | :17 | :32 |
+| `lib/documents/auth.ts` | :17 | :32 |
+| `lib/menu/auth.ts` | :17 | :32 |
+| `lib/orders/auth.ts` | :17 | :32 |
+| `lib/recipes/auth.ts` | :17 | :32 |
+| `lib/settings/auth.ts` | — (already part-converted at this commit) | :64 |
+| `lib/staff/auth.ts` | :17 | :32 |
+| `lib/stock/auth.ts` | :17 | :32 |
+| `lib/tables/auth.ts` | :17 | :32 |
+
+The same run also reported one **stale allowance** — `lib/auth/resolve-session-restaurant.ts` is in
+`ALLOWED_FILES` and does not exist on that tree — which is the stale-allowance guard doing its job
+unprompted.
+
+### Two-sided on the scan itself, against a real call site
+
+Not a synthetic fixture: `lib/orders/auth.ts` re-inlined with exactly the resolver it used to hold.
+
+```
+lib/orders/auth.ts:12   A: picks a FIRST restaurant_users row for a user
+lib/orders/auth.ts:27   B: resolves a restaurant via the legacy owner_id fallback
+check-session-restaurant-resolver: 2 finding(s).   EXIT=1
+```
+
+Restored: `EXIT=0`, tree clean. Red on re-inline, green on restore, correct line numbers, both
+shapes.
+
 ---
 
 # INSTRUMENT — *an affordance you did not grep is a test whose inputs never arrive*
