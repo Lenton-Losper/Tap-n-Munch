@@ -169,7 +169,8 @@ async function main() {
   )
   check(
     'ignoring it (the old restaurantIds[0]) would have returned the FIRST -- the defect',
-    members[0] === BASE_RESTAURANT && members[0] !== PROBE_RESTAURANT,
+    String(members[0]) === String(BASE_RESTAURANT) &&
+      String(members[0]) !== String(PROBE_RESTAURANT),
   )
 
   // =============== POSITIVE CONTROL 1: one restaurant, no switcher ===============
