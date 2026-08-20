@@ -5,6 +5,7 @@ import {
   resolveRestaurantUuid,
   type OrderRestaurantScope,
 } from './restaurants'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export type Order = Record<string, unknown> & {
   id: string
@@ -67,19 +68,19 @@ export async function getSupabaseOrdersByStatus(
   scopeOverride?: OrderRestaurantScope | null
 ) {
   const scope = scopeOverride ?? (await resolveOrderRestaurantScope(restaurantId))
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', scope.restaurantId)
-    .eq('status', status)
-    .eq('is_closed', false)
-    .order(status === 'completed' ? 'completed_at' : 'placed_at', {
-      ascending: status !== 'completed',
-      nullsFirst: false,
-    })
-  if (error) {
-    throw error
-  }
+  const data = await fetchAllRows(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', scope.restaurantId)
+      .eq('status', status)
+      .eq('is_closed', false)
+      .order(status === 'completed' ? 'completed_at' : 'placed_at', {
+        ascending: status !== 'completed',
+        nullsFirst: false,
+      }),
+    { label: 'getOrdersByStatus' },
+  )
   return data ?? []
 }
 
@@ -166,17 +167,17 @@ export async function getPendingHostedOrders(
   scopeOverride?: OrderRestaurantScope | null
 ) {
   const scope = scopeOverride ?? (await resolveOrderRestaurantScope(restaurantId))
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', scope.restaurantId)
-    .eq('payment_status', 'pending')
-    .eq('payment_channel', 'hosted')
-    .eq('is_closed', false)
-    .order('placed_at', { ascending: false })
-  if (error) {
-    throw error
-  }
+  const data = await fetchAllRows(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', scope.restaurantId)
+      .eq('payment_status', 'pending')
+      .eq('payment_channel', 'hosted')
+      .eq('is_closed', false)
+      .order('placed_at', { ascending: false }),
+    { label: 'getPendingHostedOrders' },
+  )
   return data ?? []
 }
 
@@ -186,15 +187,15 @@ export async function getAllOpenRestaurantOrders(
   scopeOverride?: OrderRestaurantScope | null
 ) {
   const scope = scopeOverride ?? (await resolveOrderRestaurantScope(restaurantId))
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', scope.restaurantId)
-    .eq('is_closed', false)
-    .order('placed_at', { ascending: false })
-  if (error) {
-    throw error
-  }
+  const data = await fetchAllRows(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', scope.restaurantId)
+      .eq('is_closed', false)
+      .order('placed_at', { ascending: false }),
+    { label: 'getOpenOrders' },
+  )
   return data ?? []
 }
 
@@ -415,8 +416,9 @@ export async function getOrders(restaurantId: string, status?: string): Promise<
     .eq('restaurant_id', scope.restaurantId)
     .order('placed_at', { ascending: false })
   if (status) query = query.eq('status', status)
-  const { data, error } = await query
-  if (error) throw error
+  // #323: FNB ChowNow already holds 849 orders here -- 85% of the 1000-row cap, and this read has
+  // no date filter at all, so it is the first of the four that would have started truncating.
+  const data = await fetchAllRows(query, { label: 'getOrders' })
   return (data || []) as Order[]
 }
 

@@ -1,4 +1,5 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -60,14 +61,14 @@ export async function resolveOrderIdsByMerchantOrderNo(
   // result set does not depend on which one happens to be checked first.
   const orderIds = new Set<string>()
   for (const column of ORDER_REFERENCE_COLUMNS) {
-    const { data: orderRows, error: orderError } = await supabase
-      .from('orders')
-      .select('id')
-      .eq(column, mo)
-
-    if (orderError) {
-      throw new Error(`resolveOrderIdsByMerchantOrderNo orders: ${orderError.message}`)
-    }
+    // Narrow by construction -- a payment reference matches one order -- but routed through the
+    // helper anyway. A read that returns one row costs exactly one request either way, and the
+    // invariant "every read of orders goes through fetchAllRows or an explicit range" is worth
+    // more than the exception, because an exception list is where the next real one hides.
+    const orderRows = await fetchAllRows<{ id: string }>(
+      supabase.from('orders').select('id').eq(column, mo),
+      { label: 'resolveOrderIdsByMerchantOrderNo' },
+    )
 
     for (const row of orderRows ?? []) {
       const id = String(row.id || '').trim()

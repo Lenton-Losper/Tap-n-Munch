@@ -9,6 +9,7 @@ import {
   DEFAULT_REPORT_TIMEZONE,
 } from '@/lib/reports/format-report-datetime'
 import { owesMoney } from '@/lib/payments/payment-integrity'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export interface ReportOrder {
   order_number: number
@@ -102,8 +103,16 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     query = query.eq('status', params.status)
   }
 
-  const { data: rawOrders, error: ordersError } = await query
-  if (ordersError) throw new Error(ordersError.message)
+  // #323: THIS PATH REACHES CLIENTS AS A DOCUMENT.
+  //
+  // It backs the CSV export, the emailed report, and the nightly cron. Unpaginated it was capped at
+  // 1000 rows, so a busy month would have produced a PDF that looked complete and under-reported
+  // the total. No client has been sent a wrong figure yet -- the largest real restaurant-month on
+  // production is FNB ChowNow 2026-07 at 695 orders -- but that is headroom, not safety.
+  const rawOrders = await fetchAllRows<{
+    id: string
+    [key: string]: unknown
+  }>(query, { label: 'getReportData' })
 
   const orderIds = (rawOrders ?? []).map((o: { id: string }) => String(o.id))
   const projections = await getPaymentProjections(

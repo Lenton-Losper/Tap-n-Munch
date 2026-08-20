@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { checkPaycloudHealth } from '@/payments/paycloud'
 import { RECOVERED_AFTER_AUTO_CANCEL_ACTION } from '@/lib/payments/e04111-recovery'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 export const TERMINAL_OFFLINE_MS = 15 * 60 * 1000
 export const DASHBOARD_POLL_INTERVAL_MS = 30_000
@@ -384,12 +385,17 @@ async function computeRestaurantHealthScores(): Promise<RestaurantHealthScore[]>
         .in('restaurant_id', ids)
         .eq('active', true)
         .eq('status', 'active'),
-      supabase
-        .from('orders')
-        .select('restaurant_id')
-        .in('restaurant_id', ids)
-        .eq('payment_status', 'failed')
-        .gte('placed_at', dayAgo),
+      // #323: bounded by the 24h window in practice, unbounded in principle. Wrapped so the
+      // Promise.all entry still resolves to the { data } shape its destructuring expects.
+      fetchAllRows<{ restaurant_id: string }>(
+        supabase
+          .from('orders')
+          .select('restaurant_id')
+          .in('restaurant_id', ids)
+          .eq('payment_status', 'failed')
+          .gte('placed_at', dayAgo),
+        { label: 'platformDashboard.failedOrders' },
+      ).then((data) => ({ data })),
       supabase
         .from('audit_logs')
         .select('restaurant_id')

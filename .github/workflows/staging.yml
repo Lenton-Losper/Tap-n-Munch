@@ -547,6 +547,12 @@ jobs:
       # this can only fail on something NEW. Self-tests its own detectors before reporting.
       - name: Every session-restaurant lookup goes through resolveSessionRestaurantId
         run: npx tsx scripts/check-session-restaurant-resolver.ts
+
+      # Static: no credentials, no database. BLOCKING - the tree is clean as of 2026-08-20.
+      # Self-tests its own detectors, including the stored-builder and generic-argument cases that
+      # produced false positives in earlier drafts.
+      - name: Every read of orders is ranged, narrowed, or paginated
+        run: npx tsx scripts/check-orders-read-bounded.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
