@@ -148,7 +148,7 @@ async function main() {
   // ============================================================
   console.log('\n--- Part 2: multi-restaurant resolution ---')
 
-  const { getRestaurantIdForUser, getRestaurantIdsForUser, requireCallerRestaurantId, AmbiguousRestaurantError } =
+  const { getRestaurantIdForUser, getRestaurantIdsForUser, requireCallerRestaurantId } =
     await import('../lib/supabase/admin-restaurant-auth')
 
   // 2a. Zero restaurants
@@ -198,19 +198,67 @@ async function main() {
   assert(multiIds[0] === restaurantB, `owner-role restaurant should sort first (deterministic), got ${JSON.stringify(multiIds)}`)
   console.log('2-restaurant user: getRestaurantIdsForUser returns both, owner-first -- OK', multiIds)
 
-  let threwAmbiguous = false
-  let ambiguousIds: string[] = []
-  try {
-    await getRestaurantIdForUser(db as any, multiRestaurantUserId)
-  } catch (err) {
-    if (err instanceof AmbiguousRestaurantError) {
-      threwAmbiguous = true
-      ambiguousIds = err.restaurantIds
-    }
-  }
-  assert(threwAmbiguous, 'getRestaurantIdForUser should throw AmbiguousRestaurantError for a real 2-restaurant user')
-  assert(ambiguousIds.length === 2, 'AmbiguousRestaurantError should carry both real restaurant ids')
-  console.log('2-restaurant user: getRestaurantIdForUser throws AmbiguousRestaurantError (not a silent arbitrary pick) -- OK')
+  // SUPERSEDED 2026-08-20. This block asserted that getRestaurantIdForUser THREW
+  // AmbiguousRestaurantError for a 2-restaurant user -- "not a silent arbitrary pick". That was
+  // right when written: nothing could say which restaurant was meant, so refusing beat guessing.
+  // #321 (2026-08-19) gave the product a stored, server-validated active restaurant and a switcher
+  // to set it, so there is now a principled answer. The refusal had reached production as
+  // "This account belongs to multiple restaurants. Specify a restaurantId." rendered to the account
+  // owner on Order History.
+  //
+  // The ruling's actual constraint is preserved and asserted below: it must resolve to the user's
+  // OWN SELECTION, and must never resolve to a restaurant they do not belong to.
+  const resolvedWithoutSelection = await getRestaurantIdForUser(db as any, multiRestaurantUserId)
+  assert(
+    multiIds.includes(resolvedWithoutSelection),
+    `resolved restaurant must be one the user belongs to, got ${resolvedWithoutSelection}`,
+  )
+  assert(
+    resolvedWithoutSelection === restaurantB,
+    `with no stored selection it must fall back to the owner-first membership, got ${resolvedWithoutSelection}`,
+  )
+  console.log('2-restaurant user, no selection: resolves to the owner-first membership -- OK')
+
+  const { error: selectionError } = await db.from('user_active_context').upsert(
+    {
+      user_id: multiRestaurantUserId,
+      context_type: 'restaurant',
+      restaurant_id: restaurantC,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id' },
+  )
+  if (selectionError) throw selectionError
+
+  const resolvedWithSelection = await getRestaurantIdForUser(db as any, multiRestaurantUserId)
+  assert(
+    resolvedWithSelection === restaurantC,
+    `must follow the stored selection, expected ${restaurantC} got ${resolvedWithSelection}`,
+  )
+  console.log('2-restaurant user, selection stored: resolves to the SELECTED restaurant -- OK')
+
+  // The half of the ruling that still stands: a selection cannot grant access.
+  const { error: staleError } = await db.from('user_active_context').upsert(
+    {
+      user_id: multiRestaurantUserId,
+      context_type: 'restaurant',
+      restaurant_id: restaurantA,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id' },
+  )
+  if (staleError) throw staleError
+
+  const resolvedWithStale = await getRestaurantIdForUser(db as any, multiRestaurantUserId)
+  assert(
+    resolvedWithStale !== restaurantA,
+    'a stored selection naming a restaurant the user does NOT belong to must be discarded',
+  )
+  assert(
+    multiIds.includes(resolvedWithStale),
+    `must fall back to a real membership, got ${resolvedWithStale}`,
+  )
+  console.log('2-restaurant user, stale selection: discarded, falls back to a real membership -- OK')
 
   // requireCallerRestaurantId: explicit id -> should authorize against EITHER of the two,
   // proving it uses the full set, not the old single-scalar comparison.
