@@ -17,7 +17,35 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-export async function GET(req: Request) {
+/**
+ * #322 -- EVERY FAILURE LEAVES AS JSON.
+ *
+ * This handler used to have no try/catch at all, so anything thrown below it -- and
+ * getPaymentProjections throws on any PostgREST error -- escaped and the worker returned a
+ * ZERO-LENGTH 500. That is what shipped: a blank response, no message, nothing in the UI to read,
+ * for weeks. The underlying cause is fixed (chunked filters, paginated summary), but the class of
+ * failure must never be silent again, so the boundary is closed regardless of cause.
+ */
+export async function GET(req: Request): Promise<Response> {
+  try {
+    return await loadOrderHistory(req)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    console.error('[orders/history] unhandled failure', {
+      url: req.url,
+      error: err,
+    })
+    return NextResponse.json(
+      {
+        error: 'Could not load order history. Try a narrower date range.',
+        detail: message,
+      },
+      { status: 500 },
+    )
+  }
+}
+
+async function loadOrderHistory(req: Request): Promise<Response> {
   const { searchParams } = new URL(req.url)
   const restaurantId = searchParams.get('restaurantId') || ''
   const startDate = searchParams.get('startDate') || new Date().toISOString().split('T')[0]
@@ -129,22 +157,40 @@ export async function GET(req: Request) {
     if (Number.isFinite(num)) summaryQuery = summaryQuery.eq('order_number', num)
   }
 
-  const { data: summary } = await summaryQuery
+  // #322 -- PAGINATED, AND THAT IS LOAD-BEARING TOO.
+  //
+  // This query is not the page: it is every PAID order in the window, and it feeds totalRevenue,
+  // totalOrders and avgOrderValue. PostgREST caps a response at 1000 rows, so unpaginated it
+  // silently truncated -- measured on staging: 1220 paid orders in the window, 1000 returned.
+  // Fixing only the URI ceiling would have turned a blank 500 into a WRONG REVENUE FIGURE that
+  // looks right, which is worse for a trading restaurant than an obvious failure.
+  const SUMMARY_PAGE = 1000
+  const summary: { id: string; total: number }[] = []
+  for (let offset = 0; ; offset += SUMMARY_PAGE) {
+    const { data: page, error: summaryError } = await summaryQuery.range(
+      offset,
+      offset + SUMMARY_PAGE - 1,
+    )
+    if (summaryError) throw summaryError
+    const rows = (page ?? []) as typeof summary
+    summary.push(...rows)
+    if (rows.length < SUMMARY_PAGE) break
+  }
 
-  const summaryOrderIds = (summary || []).map((o) => String(o.id))
+  const summaryOrderIds = summary.map((o) => String(o.id))
   const summaryProjections = await getPaymentProjections(
     supabase,
     restaurantUuid,
     summaryOrderIds,
   )
 
-  const grossPaid = (summary || []).reduce((sum, o) => sum + (Number(o.total) || 0), 0)
+  const grossPaid = summary.reduce((sum, o) => sum + (Number(o.total) || 0), 0)
   const refundedDistinct = sumDistinctRefundedAmounts(
-    (summary || []).map((o) => String(o.id)),
+    summary.map((o) => String(o.id)),
     summaryProjections,
   )
   const totalRevenue = grossPaid - refundedDistinct
-  const avgOrderValue = summary?.length ? totalRevenue / summary.length : 0
+  const avgOrderValue = summary.length ? totalRevenue / summary.length : 0
 
   return NextResponse.json({
     orders: enrichedOrders,
@@ -152,7 +198,7 @@ export async function GET(req: Request) {
     page,
     pageSize,
     totalRevenue,
-    totalOrders: summary?.length ?? 0,
+    totalOrders: summary.length,
     avgOrderValue,
   })
 }
