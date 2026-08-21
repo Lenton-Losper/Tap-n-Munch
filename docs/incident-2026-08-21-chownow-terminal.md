@@ -296,5 +296,8 @@ And **B alone leaves the row exactly as stranded as it is today** — a `waiting
 reaper (#215) is the 20-day row #311 was filed about. Telling the customer how long they have
 waited does not resolve the record.
 
-**Re-ruling needed.** My recommendation is now: **B only, plus the migration for C when migrations
-are back on the table** — or accept a migration for this one and do B+C together as ruled.
+**RULED 2026-08-21: B only.** Implemented on `cloudflare-staging` — the active-order banner now
+shows the elapsed wait, computed from `placed_at`, on its own one-minute clock, suppressed under a
+minute, with the wording as `PENDING COPY`. **Display only: the record is exactly as stranded as it
+was**, and the code says so in both docblocks so a later reader does not assume something now cleans
+these up. C stays unbuilt until a migration is authorised; D stays blocked behind #215.
