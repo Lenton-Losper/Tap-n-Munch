@@ -1,5 +1,41 @@
 # PENDING COPY on production — the sign-off list
 
+> **CLOSED 2026-08-21. All five signed off and deployed.** Production is
+> `bbce8cb`; `/api/version` reads it 20/20 on `flashtap.app`, `www.flashtap.app` and
+> `riviera.flashtap.app`. Verified at the byte level, not just in source: all 20 JS chunks served
+> from `/staff` were fetched and grepped — **zero `PENDING COPY`**, and `Choose a location` is
+> present in `b83d276b3729a20a.js`.
+>
+> | key | shipped wording |
+> |---|---|
+> | `label` | `Location` |
+> | `placeholder` | `Choose a location` |
+> | `switching` | `Switching…` (U+2026) |
+> | `failedTitle` | `Could not switch location` |
+> | `failedBody` | `You are still on your previous location.` |
+>
+> `waitingForRestaurantElapsed` → `waiting {minutes} min`, signed at the same time, **staging only**;
+> it rides with #311. Lowercase was verified at the render site first: it appends to an existing
+> sentence inside one `<p>`, so it does not start its own line.
+>
+> `scripts/check-no-pending-copy.mjs` ran inside the production deploy and passed. The list below is
+> kept as the record of what was found and where.
+
+---
+
+## Next batch — not a marker, but queued
+
+**#303's refusal sentence.** `app/api/orders/route.ts` answers 409 for a tab that is not open and
+still says *"Your dining session has ended. Please scan the QR code to start a new order."* Under a
+409 that is untrue — the tab is being settled, the session has not ended. It is not in
+`customer-safe-error.ts`, so the customer sees the generic fallback rather than these words. Left
+as-is because vague beats untrue; queued for your next pass.
+
+**This is a genuine limit of the gate:** it catches strings nobody has written yet, not strings that
+have stopped being true. Nothing automated will find the next one of these.
+
+---
+
 **Sweep of `origin/main` = `1811b0e`, which is what production serves.** Not the staging gap — the
 earlier "tabBackToMenu was the only unsigned copy" was scoped to the main↔staging *gap*, and a
 string already live on both branches is not in a gap. That is how this was missed.
