@@ -36,23 +36,34 @@ import {
  */
 
 /**
- * PARTIALLY SIGNED OFF. Placeholders below are placeholders, not drafted copy — do not write final
- * wording here.
+ * SIGNED OFF 2026-08-21. All five. The wording below is the owner's, verbatim.
  *
- * These five reached PRODUCTION as markers and the restaurant owner read one of them on every staff
- * screen. The convention worked; the enforcement did not. `scripts/check-no-pending-copy.mjs` now
- * fails the production deploy while any of them remains, so this block cannot ship half-done again.
+ * These five reached PRODUCTION as `PENDING COPY` markers, and the owner of a multi-location
+ * account read `PENDING COPY — Location` above this control on all twenty staff screens. The
+ * convention worked; nothing enforced it. `scripts/check-no-pending-copy.mjs` now fails the
+ * production deploy while any marker remains in shippable source.
  *
- * The const keeps its `_PENDING` name until the last one is signed, because renaming it while four
- * are outstanding would say the block is done when it is not.
+ * Renamed from `SWITCHER_COPY_PENDING` now that none of it is pending — the old name would have
+ * said the block was unfinished when it is not, which is the same class of untrue-by-omission the
+ * markers themselves existed to prevent.
+ *
+ * TWO DECISIONS RECORDED SO THEY ARE NOT RE-LITIGATED:
+ *
+ * "LOCATION" THROUGHOUT, never "restaurant". The label is `Location`, so every sibling string has
+ * to agree with it; a control labelled one thing that fails with the vocabulary of another reads as
+ * two different features.
+ *
+ * `failedBody` STATES THE OUTCOME AND DOES NOT SAY "TRY AGAIN". It is the FALLBACK, shown only when
+ * the server gave no reason of its own (see both call sites below) — so we do not know the failure
+ * is transient, and inviting a retry we cannot justify is how a retry loop starts. It reassures
+ * rather than alarms: nothing broke, you simply did not move.
  */
-const SWITCHER_COPY_PENDING = {
-  /** SIGNED OFF 2026-08-21. */
+const SWITCHER_COPY = {
   label: 'Location',
-  placeholder: 'PENDING COPY — Choose a location',
-  switching: 'PENDING COPY — Switching…',
-  failedTitle: 'PENDING COPY — Could not switch location',
-  failedBody: 'PENDING COPY — Your location was not changed. Try again.',
+  placeholder: 'Choose a location',
+  switching: 'Switching…',
+  failedTitle: 'Could not switch location',
+  failedBody: 'You are still on your previous location.',
 } as const
 
 export function RestaurantSwitcher() {
@@ -116,8 +127,8 @@ export function RestaurantSwitcher() {
           // Never a silent no-op: a refused or failed switch says so, and the sidebar keeps
           // showing the restaurant the session is actually on.
           toast({
-            title: SWITCHER_COPY_PENDING.failedTitle,
-            description: payload?.error || SWITCHER_COPY_PENDING.failedBody,
+            title: SWITCHER_COPY.failedTitle,
+            description: payload?.error || SWITCHER_COPY.failedBody,
             variant: 'destructive',
           })
           setSwitching(false)
@@ -127,8 +138,8 @@ export function RestaurantSwitcher() {
         window.location.assign(payload.destination)
       } catch (error: unknown) {
         toast({
-          title: SWITCHER_COPY_PENDING.failedTitle,
-          description: error instanceof Error ? error.message : SWITCHER_COPY_PENDING.failedBody,
+          title: SWITCHER_COPY.failedTitle,
+          description: error instanceof Error ? error.message : SWITCHER_COPY.failedBody,
           variant: 'destructive',
         })
         setSwitching(false)
@@ -145,7 +156,7 @@ export function RestaurantSwitcher() {
         htmlFor="restaurant-switcher"
         className="text-[10px] font-medium uppercase tracking-wide text-[#6B675F]"
       >
-        {SWITCHER_COPY_PENDING.label}
+        {SWITCHER_COPY.label}
       </label>
       <Select
         value={restaurantId ?? undefined}
@@ -156,7 +167,7 @@ export function RestaurantSwitcher() {
           id="restaurant-switcher"
           className="mt-1 h-8 w-full border-[#E9E9E7] bg-[#FAFAF8] px-2 text-xs text-[#37352F]"
         >
-          <SelectValue placeholder={SWITCHER_COPY_PENDING.placeholder} />
+          <SelectValue placeholder={SWITCHER_COPY.placeholder} />
         </SelectTrigger>
         <SelectContent>
           {model.options.map((option) => (
@@ -167,7 +178,7 @@ export function RestaurantSwitcher() {
         </SelectContent>
       </Select>
       {switching ? (
-        <p className="mt-1 text-[10px] text-[#6B675F]">{SWITCHER_COPY_PENDING.switching}</p>
+        <p className="mt-1 text-[10px] text-[#6B675F]">{SWITCHER_COPY.switching}</p>
       ) : null}
     </div>
   )
