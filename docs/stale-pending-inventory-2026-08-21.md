@@ -130,8 +130,10 @@ Two things follow, and they point the same way:
    may have been presented.
 
 **None of the ten has a terminal-reported outcome.** Their audit trails are
-`payment.attempt_started` and, for six of them, `payment.verification_uncertain` — which is the cron
-recording that it queried Finatic, got E04111, and deliberately declined to decide.
+`payment.attempt_started` and, for six of them, `payment.verification_uncertain` — written by
+`lib/payments/handle-terminal-payment-failed.ts`, the terminal's *synchronous* failure path, within
+~30 seconds of the attempt. (Corrected: an earlier version of this sentence attributed those rows to
+the cron. The cron writes nothing when it skips.)
 
 Contrast **#850 this morning**, which I *was* able to classify as not-debited: it had
 `payment.failed` with `cancellation_reason: terminal_cancelled_by_user_pre_gateway` and WiseCashier
