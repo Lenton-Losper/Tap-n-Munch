@@ -57,9 +57,30 @@ export function menuBodyState({
   // the customer is in the middle of retrying.
   if (loading) return 'loading'
 
-  // The notice is only ever non-null after a fetch REJECTED, so this cannot capture a slow load.
-  // While searching, a stale notice must not displace the "no results" wording.
-  if (notice && !searchQuery) return 'failed'
+  /**
+   * The notice is only ever non-null after a fetch REJECTED, so this cannot capture a slow load.
+   * While searching, a stale notice must not displace the "no results" wording.
+   *
+   * NARROWED 2026-08-21 (#289), by ruling, to TOTAL outages only.
+   *
+   * The decision above stands for what it was written about: a PARTIAL failure, where items did
+   * load and the search legitimately matched none of them. "No items found" is true there, and a
+   * stale notice displacing it would be wrong.
+   *
+   * A TOTAL outage is a different state, and the wording does not appear to have contemplated it.
+   * Nothing loaded, so there was nothing to search — "No items found" is then a false claim about
+   * the restaurant's menu, and the customer may reasonably conclude the kitchen has nothing rather
+   * than that the app failed.
+   *
+   * This is a narrowing, not an overrule: `!searchQuery` still guards the partial case exactly as
+   * before. Only `tone === 'total'` now survives an active search.
+   *
+   * NO NEW COPY. The `failed` state renders the existing full-page failure block, which already
+   * carries its own title, description and retry. `shouldShowMenuNoticeBanner` below stays
+   * consistent for free — it excludes `bodyState === 'failed'`, so the banner does not also appear
+   * and say the same thing twice.
+   */
+  if (notice && (!searchQuery || notice.tone === 'total')) return 'failed'
 
   // Nothing in flight, nothing failed, and nothing has successfully come back yet: we still do
   // not know. This is the window between the category list arriving and the items arriving.
@@ -107,16 +128,23 @@ export function shouldShowMenuNoticeBanner(input: {
    * because `bodyState === 'failed'` — that block already carries the same title, description and
    * retry, so a banner would be the message twice.
    *
-   * But `menuBodyState` deliberately does NOT return `failed` while a search is running: its
-   * recorded decision is *"while searching, a stale notice must not displace the 'no results'
-   * wording."* So during a search a total outage falls to `empty`, and the customer was shown a
-   * bare **"No items found"** — a claim about the restaurant's menu — when in fact NOTHING had
-   * loaded and there was nothing to search.
+   * SUPERSEDED IN PART, 2026-08-21 (#289 ruled B).
    *
-   * That decision is not overruled here and `menuBodyState` is untouched. The body still says
-   * "No items found"; this puts the outage and its retry ABOVE it, which is the same two-seam
-   * split #246 established. Whether the BODY's own wording should change for a total outage is a
-   * separate question and is the human's — filed rather than built.
+   * This used to read: `menuBodyState` deliberately does not return `failed` while a search is
+   * running, so during a search a total outage fell to `empty` and the customer was shown a bare
+   * **"No items found"** — a claim about the restaurant's menu — when nothing had loaded and there
+   * was nothing to search. The open question was whether the BODY's wording should change. **It
+   * was ruled that it should**, for total outages only.
+   *
+   * So a total outage now returns `failed` even mid-search, and this predicate excludes it via
+   * `bodyState !== 'failed'` — which is the behaviour that was always intended for a total outage
+   * and previously could not fire during a search. The banner is no longer the only thing telling
+   * the truth in that case.
+   *
+   * PARTIAL is unchanged and is what this predicate is now almost entirely for: items loaded, the
+   * search matched none of them, the body correctly says "No items found", and this puts the
+   * incomplete-menu warning and its retry above it. That is the two-seam split #246 established
+   * and it still stands.
    */
   if (input.notice.tone !== 'partial' && input.notice.tone !== 'total') return false
   return input.bodyState !== 'failed'

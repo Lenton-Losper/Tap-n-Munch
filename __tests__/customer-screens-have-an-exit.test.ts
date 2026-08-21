@@ -50,9 +50,18 @@ describe('the Tab screen — the reported dead end', () => {
     expect(code).not.toMatch(/router\.back\(\)/)
   })
 
-  it('ships the label as PENDING COPY — wording is the human’s', () => {
+  it('carries the signed-off label, and names the destination', () => {
+    // SIGNED OFF 2026-08-21: 'Back to menu'.
+    //
+    // This assertion used to require the string still say 'PENDING COPY', as a tripwire so the
+    // placeholder could not reach a customer unnoticed. It fired exactly as intended — signing the
+    // wording off is what brought us here — so it is retargeted rather than deleted. The job it
+    // does now is the same job: nobody changes this label without a human deciding to.
     const copy = read('lib/customer-copy/qr-redesign-copy.ts')
-    expect(copy).toMatch(/tabBackToMenu:\s*'PENDING COPY/)
+    expect(copy).toMatch(/tabBackToMenu:\s*'Back to menu'/)
+    expect(copy).not.toMatch(/tabBackToMenu:\s*'PENDING COPY/)
+    // Still the ruling from the commit that added it: name where it goes, not which way.
+    expect(copy).not.toMatch(/tabBackToMenu:\s*'Back'/)
   })
 })
 

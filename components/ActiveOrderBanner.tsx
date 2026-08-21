@@ -17,6 +17,7 @@ import {
   normalizeOrderStatusForDisplay,
 } from '@/lib/orders/active-order-visibility'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
 
 /**
  * PART 3: Active Order Banner
@@ -55,6 +56,23 @@ export function ActiveOrderBanner() {
   )
   const [lastOrder, setLastOrder] = useState<Record<string, any> | null>(null)
   const [lastOrderLoaded, setLastOrderLoaded] = useState(false)
+
+  /**
+   * #311: a ticking clock, only so the waiting figure does not sit frozen.
+   *
+   * Kept separate from the order poll (GUEST_ORDER_POLL_MS) because it answers a different
+   * question -- the poll asks whether the ORDER changed, this asks what time it is now. Coupling
+   * them would either re-render the wait figure only as often as the network allows, or poll the
+   * API every minute to update a number we already have locally.
+   *
+   * One minute, because the figure is rendered in whole minutes; a faster tick would re-render
+   * without ever changing what the customer reads.
+   */
+  const [nowMs, setNowMs] = useState<number>(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
   const persistedOrderId =
     typeof window !== 'undefined'
       ? String(
@@ -177,8 +195,35 @@ export function ActiveOrderBanner() {
     // Scoped to exactly those statuses -- the unpaid `accepted`/`ready` paths were already
     // reachable before and are left as they were.
     if (s === 'waiting_review') {
+      /**
+       * #311, ruled B: TELL the customer how long they have been waiting.
+       *
+       * An unanswered request has no timeout, no escalation and no expiry — the cron sweeps
+       * `orders` only. Production has held one open for 480 hours while the customer was shown a
+       * sentence that never changed. An elapsed figure is the difference between "the restaurant
+       * is looking at this" and "this has been sitting for forty minutes", and only the customer
+       * can act on the second one — by talking to staff.
+       *
+       * DISPLAY ONLY. The record is untouched and remains exactly as stranded as before; C
+       * (withdraw) has no status to write to and D (auto-expire) is blocked behind #215. This does
+       * not imply either is happening.
+       *
+       * Suppressed under a minute so the banner does not flicker "0 min" the instant an order is
+       * placed, which would read as a stall rather than as a normal wait.
+       */
+      const placedAtMs = Date.parse(String(currentOrder.placed_at ?? ''))
+      const waitedMin = Number.isFinite(placedAtMs)
+        ? Math.floor((nowMs - placedAtMs) / 60000)
+        : 0
+      const base = 'Order sent - waiting for the restaurant to confirm'
       return {
-        text: 'Order sent - waiting for the restaurant to confirm',
+        text:
+          waitedMin >= 1
+            ? `${base} · ${QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed.replace(
+                '{minutes}',
+                String(waitedMin),
+              )}`
+            : base,
         pulse: true,
         tone: 'neutral' as const,
       }

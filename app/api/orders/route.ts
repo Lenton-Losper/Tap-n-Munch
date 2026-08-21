@@ -199,6 +199,38 @@ export async function POST(req: Request) {
          * being settled. What is deleted is the SECOND VOCABULARY: the same status and the same
          * sentence the token guard already gives, so there is one mechanism and one message
          * rather than two that disagree.
+         *
+         * 409, NOT 410, AND THE DIFFERENCE IS THE CUSTOMER'S BASKET. Ruled 2026-08-21.
+         *
+         * An earlier version of this answered 410, on the reasoning that it should match the token
+         * guard. But a 410 out of this route is not a message — it is an eviction.
+         * `app/menu/[restaurantId]/cart/page.tsx:342` maps ANY 410 to `handleSessionExpired`, which
+         * clears the session token, `flashtap_tab_id`, `flashtap_table` and the CART, then
+         * hard-redirects to /session-ended. `lib/fetch-with-session.ts:37` does the same for every
+         * caller that uses it. So the sentence below would never have been rendered on that path.
+         *
+         * In the sub-second race this guard exists for, that is strictly worse than the 400 it
+         * replaced: staff press Ready to Pay while a customer is ordering, and the customer's
+         * basket is wiped and they are told to rescan. 409 is the honest status anyway — the tab's
+         * state conflicts with the request; the customer's SESSION has not ended, and saying it
+         * has is the part that costs them their order.
+         *
+         * The cart's 410 branch is deliberately NOT made reason-aware: that is more surface area
+         * on the customer money path than this warrants.
+         *
+         * OPEN, AND DELIBERATELY NOT DECIDED HERE — the sentence below is now inaccurate.
+         *
+         * With a 409 the cart falls through to its generic `!response.ok` branch and shows the
+         * message as a toast, with the basket intact. But this sentence says the customer's SESSION
+         * has ended, and under a 409 it has not — the tab is being settled, which is a different
+         * thing. It is also NOT in `lib/customer-copy/customer-safe-error.ts`, so
+         * `classifyCustomerError` will not match it and the customer sees the caller's generic
+         * fallback rather than these words.
+         *
+         * That is the safe failure — vague beats untrue — so it is left exactly as it is. Writing
+         * a replacement is a copy decision and copy is signed off by the owner, not here. Raised in
+         * the write-up rather than silently reworded, so the wrong sentence does not become
+         * permanent by being harmless.
          */
         const tabStatus = String(tabRow.status || '')
         if (tabStatus !== 'open') {
@@ -207,7 +239,7 @@ export async function POST(req: Request) {
               error: 'Your dining session has ended. Please scan the QR code to start a new order.',
               reason: 'tab_not_open',
             },
-            { status: 410 },
+            { status: 409 },
           )
         }
 
