@@ -4,9 +4,10 @@ How to move a wave of `cloudflare-staging` commits onto `main` without resurrect
 already there, without shipping a runtime change you did not intend, and with a verification that
 can actually fail.
 
-Written from the wave 1 attempt of 2026-08-21, which **stopped at step 6** — see
-[wave-1-stop-2026-08-21.md](wave-1-stop-2026-08-21.md). Every step below was executed; the
-procedure is proven, the wave is not promoted.
+Written from wave 1 on 2026-08-21. It stopped at step 6 for a ruling, the ruling went against the
+check rather than the wave, and **wave 1 then promoted: 76 commits, `f04c01b` → `1811b0e`.** Step 6
+below is the corrected check, not the one that stopped it. See
+[wave-1-stop-2026-08-21.md](wave-1-stop-2026-08-21.md) for the three rulings and their answers.
 
 Companion documents: [staging-backlog-inventory.md](staging-backlog-inventory.md) is what to
 promote and in what order. [promotion-constraints.md](promotion-constraints.md) is the list of
@@ -22,8 +23,9 @@ orderings that must not be violated. This file is *how*.
 2. **A commit classified as inert is not.** The inventory groups commits by *subject*, and says so.
    Subject is not diff. A wave selected by subject will contain runtime changes and will miss
    inert commits that belong with it.
-3. **The verification passes without proving anything.** "The backlog count dropped" is not a
-   sound check — see step 6, which is where wave 1 stopped.
+3. **The verification measures the wrong thing.** "The backlog count dropped by N" is not a sound
+   check — it fails on a correct promotion and it cannot fail on a wrong one. Wave 1 stopped on it
+   for nothing. **Verify by content: the file gap.** See step 6.
 
 ---
 
@@ -62,8 +64,8 @@ number for anything.
 **`git cherry` is necessary but not sufficient.** It compares patch-ids of *commits*, not content
 of *files*. A commit whose content reached `main` inside a larger squashed commit still reads `+`.
 Wave 1 hit this exactly once (`74b0529e`, whose file arrived on `main` inside `5c9d31d`) and it is
-what makes step 6 fail. `scripts/check-branch-drift.mjs` exists precisely for this — it measures
-twice, patch-id then reverse-apply — and step 6 uses it.
+why step 6 counts **files**, not commits. `scripts/check-branch-drift.mjs` exists precisely for this
+— it measures twice, patch-id then reverse-apply — and step 6 uses it.
 
 ## Step 2 — Classify by diff, never by subject
 
@@ -128,7 +130,8 @@ A file can be inert by trigger and still be wrong to promote.
 on `main` it can never fire — and its own header says *"this instrument has no business on main --
 it would be repo state that production carries for a check production never runs."* That is a
 recorded decision. Read the header of every workflow the wave adds to `main`, and escalate rather
-than override. Wave 1 stopped partly here.
+than override. Wave 1 stopped here and the ruling upheld the header: the file was removed in a final
+commit and `main` took the wave with **no `.github/` change at all**.
 
 Also check the wave's **end state**, not its commits: `apply-org-merge.yml` is added and removed
 inside wave 1, so it never lands. `git diff --name-status origin/main..<branch>` is the only view
@@ -188,49 +191,71 @@ Everything in step 6 can be measured against the local branch. Do it there. A pr
 its own verification should never have reached `origin/main`, and on this repo nothing forces you
 to push first — `main` has no push-triggered workflow (step 3b).
 
-Wave 1 stopped here with `main` untouched, which is the outcome the ordering is for.
+Wave 1 stopped here with `main` untouched while three rulings were answered — which is the outcome
+the ordering is for. Had step 6 run after the push, a promotion would have been reversed for a
+residual that turned out to be benign.
 
-## Step 6 — The verification, and why the obvious form of it is wrong
+## Step 6 — Verify by CONTENT. Do not verify by commit count.
 
-The intuitive check is *"the backlog dropped by exactly the number promoted"*. **It does not, and a
-sound wave can fail it.** Wave 1 promoted 76 and the backlog fell by 74:
+**Ruled 2026-08-21, after wave 1: the count check is wrong and a later wave must not stop on it.**
 
-```bash
-git cherry promote/waveN origin/cloudflare-staging > cherry_after.txt
-grep -c '^+' cherry_after.txt
-```
+The intuitive check is *"the backlog dropped by exactly the number promoted"*. It does not, a sound
+wave fails it, and wave 1 stopped on it for nothing. Wave 1 promoted 76 and the commit backlog fell
+by 74 — **both residuals were benign and neither was a selection error**:
 
-199 → 125. The two residuals are both benign, and both are shapes that will recur:
-
-| commit | why it still reads `+` |
+| commit | why it still read `+` after a correct promotion |
 |---|---|
-| `b915483b` | Applied **partially**. One of its three files (`.github/workflows/staging.yml`) was already on `main`, so the cherry-pick's diff — and therefore its patch-id — differs from the original. |
+| `b915483b` | Applied **partially**. One of its three files (`.github/workflows/staging.yml`) was already on `main`, so the cherry-pick's diff — and therefore its patch-id — differs from the original. The content promoted; the patch-id did not match. |
 | `74b0529e` | Applied **empty**. Its only file was already on `main` byte-identical, having arrived inside the squashed promotion `5c9d31d`. There was never anything to promote. |
 
-So use the **set** check, not the count check:
+Both shapes recur in every wave, because `main` is built by cherry-pick and by squash. **A commit
+count cannot distinguish "did not promote" from "was already there under a different patch-id."**
+Content can.
+
+### The measure: the file gap, before and after
 
 ```bash
-comm -23 before_plus.txt after_plus.txt   # what left the backlog
-comm -12 after_plus.txt wave.txt          # promoted but still listed — must be explained
+git diff --name-status origin/main origin/cloudflare-staging > gap_before.txt      # before the push
+# ... promote ...
+git diff --name-status origin/main origin/cloudflare-staging > gap_after.txt       # after
+diff <(awk '{print $2}' gap_before.txt | sort) <(awk '{print $2}' gap_after.txt | sort)
 ```
 
-Pass conditions:
+**Pass condition: the files that leave the gap are exactly the files the wave's end-state diff
+carries, and no others.**
 
-1. **Nothing left the backlog that was not in the wave.** `comm -23 before after` minus the wave
-   must be empty. Wave 1: empty. This is the check that catches an accidental merge, and it is the
-   one that must never be waived.
-2. **Every promoted commit that still reads `+` is explained**, individually, by partial or empty
-   application — confirmed with `git show --stat` on both the original and the applied commit, and
-   by `git rev-parse` on the file blobs. An unexplained residual means the wave did not apply what
-   you think it applied.
-3. **`scripts/check-branch-drift.mjs origin/main origin/cloudflare-staging`** agrees. It
-   reverse-applies each patch-id candidate against the tree, so content ported under a different
-   patch-id reads PRESENT rather than missing — which is precisely the `74b0529e` case. Its
-   `KNOWN_ABSENT` baseline must shrink by the wave, and stale entries are reported so the list
-   cannot rot.
+```bash
+git diff --name-only origin/main..promote/waveN | sort > wave_files.txt
+comm -23 <(awk '{print $2}' gap_before.txt | sort) <(awk '{print $2}' gap_after.txt | sort) > left_the_gap.txt
+comm -23 left_the_gap.txt wave_files.txt     # must be EMPTY — files left the gap that the wave did not carry
+comm -13 left_the_gap.txt wave_files.txt     # wave files still differing — see below
+```
 
-Record the residuals in the wave's write-up. They are permanent: the backlog will read two higher
-than the truth until those two commits are baselined.
+The second list is not automatically a failure. A file the wave carried can still differ afterwards
+when `main` and staging both changed it — that is genuine two-sided divergence, and it must be named
+and explained, not waived.
+
+### Three further checks, in order of what they catch
+
+1. **Nothing left that was not in the wave** — the `comm -23` above, empty. This is what catches an
+   accidental merge dragging unrelated work along, and it is the one that must never be waived.
+2. **`scripts/check-branch-drift.mjs origin/main origin/cloudflare-staging` agrees.** It measures
+   twice — patch-id, then reverse-apply against the tree — so content ported under a different
+   patch-id reads PRESENT rather than missing. That is exactly the `74b0529e` case, and it is why
+   this script is the authority and raw `git cherry` is not.
+3. **The commit count, recorded but never gating.** Print it, note any residual, and move on. If a
+   promoted commit still reads `+`, explain it with `git show --stat` on the original versus the
+   applied commit and a blob comparison on the file — then carry on. **An unexplained residual is
+   worth investigating; a mismatched count is not worth stopping for.**
+
+### Why the commit backlog will read high forever
+
+`git cherry` compares patch-ids of *commits*. A squashed promotion has **one** patch-id for what
+staging holds as twenty commits, so all twenty keep reading `+` after their content has landed.
+Wave 1's re-measurement found `main` holding 43 such squashes — `b30b7e5` "the customer redesign",
+`1591d12` and `cd5e01a` for order-editing, `e703eb5` for the staff side — which is why a 199-commit
+"backlog" corresponded to a 115-file, 4-runtime-file real gap. **The commit number is not a
+quantity of work. The file gap is.**
 
 ## Step 7 — Deploy, and verify all three hostnames
 
