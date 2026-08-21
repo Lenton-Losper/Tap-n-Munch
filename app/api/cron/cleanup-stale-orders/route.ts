@@ -49,6 +49,15 @@ async function runCleanup(req: Request) {
   if (pos.skippedUncertainCount > 0) {
     console.warn('[CLEANUP-STALE-ORDERS] POS skipped (Finatic check inconclusive, retrying next run):', pos.skippedUncertainCount, pos.skippedUncertainIds)
   }
+  if (pos.deferredRecentlyProbedIds.length > 0) {
+    // Not a skip: these were not asked about at all this run, because Finatic was already asked
+    // within SKIP_REPROBE_INTERVAL_MS. Logged separately so a quiet run is distinguishable from a
+    // run that probed and learned nothing.
+    console.log(
+      '[CLEANUP-STALE-ORDERS] POS deferred (probed within the rest interval):',
+      pos.deferredRecentlyProbedIds.length,
+    )
+  }
   if (pos.e04111Ids.length > 0) {
     console.warn('[CLEANUP-STALE-ORDERS] POS skipped with E04111 (gateway has no record yet):', pos.e04111Ids.length, pos.e04111Ids)
   }
@@ -110,6 +119,7 @@ async function runCleanup(req: Request) {
     posCorrectedToPaid: pos.correctedToPaidCount,
     posCorrectedToPaidIds: pos.correctedToPaidIds,
     posSkippedUncertain: pos.skippedUncertainCount,
+    posDeferredRecentlyProbed: pos.deferredRecentlyProbedIds.length,
     posSkippedUncertainIds: pos.skippedUncertainIds,
     hostedExpired: hosted.expiredCount,
     hostedClosedTabs: hosted.closedTabCount,

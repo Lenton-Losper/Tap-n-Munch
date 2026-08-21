@@ -17,6 +17,27 @@ export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 /** Defensive throttle, not a documented Finatic limit -- caps outbound calls in one run. */
 export const MAX_FINATIC_VERIFIED_PER_RUN = 20
 
+/**
+ * How long a skipped order rests before Finatic is asked about it again.
+ *
+ * THE PROBLEM THIS SOLVES. An order that carries a paycloud_merchant_order_no and answers E04111 is
+ * skipped, correctly, and then re-queried on the NEXT run two minutes later, and the one after
+ * that, forever -- because the skip branch has no terminating condition. Ten such orders is roughly
+ * 7,200 Finatic queries a day that cannot change anything. Measured 2026-08-21.
+ *
+ * ONE HOUR, and the rest interval is enforced by the audit row itself rather than by a new column:
+ * the most recent payment.verification_skipped row IS the "last probed at" timestamp. That keeps
+ * this migration-free and makes the rest interval auditable rather than invisible.
+ *
+ * THIS CHANGES NO DECISION. An order that is due for a probe is treated exactly as before; an order
+ * that is not due is left untouched and reported separately. Nothing is cancelled, corrected or
+ * resolved by this constant.
+ */
+export const SKIP_REPROBE_INTERVAL_MS = 60 * 60 * 1000
+
+/** audit_logs.action written when an order is probed and no confident answer comes back. */
+export const VERIFICATION_SKIPPED_ACTION = 'payment.verification_skipped'
+
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
 type StaleOrderCandidate = {
@@ -33,6 +54,12 @@ export type AutoCancelStalePosOrdersResult = {
   correctedToPaidIds: string[]
   skippedUncertainCount: number
   skippedUncertainIds: string[]
+  /**
+   * Orders that were candidates but were NOT probed this run, because Finatic was already asked
+   * about them within SKIP_REPROBE_INTERVAL_MS. Reported separately from skippedUncertainIds so a
+   * quiet run is distinguishable from a run that probed and learned nothing.
+   */
+  deferredRecentlyProbedIds: string[]
   /**
    * Subset of skippedUncertainIds where Finatic specifically answered E04111 ("no record
    * of this merchant_order_no"), as opposed to being unreachable or erroring. Always a
@@ -185,6 +212,7 @@ export async function autoCancelStalePosOrders(
     correctedToPaidIds: [],
     skippedUncertainCount: 0,
     skippedUncertainIds: [],
+    deferredRecentlyProbedIds: [],
     e04111Ids: [],
     heldForAmountReviewCount: 0,
     heldForAmountReviewIds: [],
@@ -226,10 +254,51 @@ export async function autoCancelStalePosOrders(
     return result
   }
 
-  const toProcess = withAttempt.slice(0, MAX_FINATIC_VERIFIED_PER_RUN)
-  if (withAttempt.length > toProcess.length) {
+  /**
+   * REST INTERVAL, applied BEFORE the per-run cap so the cap spends its budget on orders that are
+   * actually due rather than on ones asked about minutes ago.
+   *
+   * The most recent payment.verification_skipped audit row is the "last probed at" timestamp. No
+   * new column, no migration, and the interval is auditable because the evidence for it is the same
+   * row a human would read.
+   *
+   * A read failure here DEFERS NOTHING -- `recentlyProbed` stays empty and every candidate is
+   * probed exactly as before. Losing the rate cut is a cost; wrongly skipping an order because an
+   * unrelated read failed would be a behaviour change, and this is not allowed to make one.
+   */
+  const recentlyProbed = new Set<string>()
+  const priorSkipCounts = new Map<string, number>()
+  try {
+    const since = new Date(Date.now() - SKIP_REPROBE_INTERVAL_MS).toISOString()
+    const { data: priorSkips } = await supabase
+      .from('audit_logs')
+      .select('entity_id, created_at')
+      .eq('action', VERIFICATION_SKIPPED_ACTION)
+      .in(
+        'entity_id',
+        withAttempt.map((o) => String(o.id)),
+      )
+    for (const row of priorSkips ?? []) {
+      const id = String((row as { entity_id: string }).entity_id)
+      priorSkipCounts.set(id, (priorSkipCounts.get(id) ?? 0) + 1)
+      if (String((row as { created_at: string }).created_at) >= since) recentlyProbed.add(id)
+    }
+  } catch (probeReadErr) {
+    console.error(
+      '[autoCancelStalePosOrders] could not read prior skip audit rows; probing every candidate:',
+      probeReadErr,
+    )
+  }
+
+  const due = withAttempt.filter((o) => !recentlyProbed.has(String(o.id)))
+  result.deferredRecentlyProbedIds.push(
+    ...withAttempt.filter((o) => recentlyProbed.has(String(o.id))).map((o) => String(o.id)),
+  )
+
+  const toProcess = due.slice(0, MAX_FINATIC_VERIFIED_PER_RUN)
+  if (due.length > toProcess.length) {
     console.warn(
-      `[autoCancelStalePosOrders] ${withAttempt.length - toProcess.length} stale in-flight order(s) deferred to next run (per-run cap ${MAX_FINATIC_VERIFIED_PER_RUN})`,
+      `[autoCancelStalePosOrders] ${due.length - toProcess.length} stale in-flight order(s) deferred to next run (per-run cap ${MAX_FINATIC_VERIFIED_PER_RUN})`,
     )
   }
 
@@ -350,6 +419,47 @@ export async function autoCancelStalePosOrders(
         `[autoCancelStalePosOrders] Finatic check failed for order ${orderId} (restaurant ${orderRestaurantId}), skipping this run${e04111 ? ' [E04111 -- gateway has no record of this reference yet]' : ''}:`,
         err instanceof Error ? err.message : err,
       )
+      /**
+       * WRITE THE SKIP DOWN. Part 2 of docs/design-persistence-pass-2026-08-21.md.
+       *
+       * Until now this path wrote nothing at all -- only a console.warn -- so NOTHING IN THE
+       * DATABASE recorded whether the cron had looked at an order once or sixty times. That is
+       * precisely why the #876 question could not be answered from data and had to be
+       * reconstructed by reading this file.
+       *
+       * The row is also the rate-limit state: its created_at is the "last probed at" the block
+       * above reads, so one write serves both purposes and neither needs a new column.
+       *
+       * BEST-EFFORT ON PURPOSE. A failed audit insert must not change what happens to the order --
+       * it is still skipped, exactly as before. The consequence of losing a row is a lost
+       * observation and an earlier re-probe, not a different decision about money.
+       *
+       * observationCount is the count BEFORE this row, so the first skip reads 0. The persistence
+       * pass is specified to need span and count; this is where both come from.
+       */
+      const priorCount = priorSkipCounts.get(orderId) ?? 0
+      const { error: skipAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: orderRestaurantId,
+        entity_type: 'order',
+        entity_id: orderId,
+        action: VERIFICATION_SKIPPED_ACTION,
+        metadata: {
+          source: 'auto_cancel_cron',
+          businessOrderNo: merchantOrderNo,
+          gatewayCode: e04111 ? 'E04111' : null,
+          isE04111: e04111,
+          reason: err instanceof Error ? err.message : String(err),
+          observationCount: priorCount,
+          reprobeIntervalMs: SKIP_REPROBE_INTERVAL_MS,
+        },
+      })
+      if (skipAuditError) {
+        console.error(
+          `[autoCancelStalePosOrders] skip audit insert failed for order ${orderId}:`,
+          skipAuditError,
+        )
+      }
+
       result.skippedUncertainIds.push(orderId)
       // Classification only -- E04111 orders are still skipped, exactly as before. A single
       // E04111 is never terminal (#149 registered 22s later); deciding on persistence is

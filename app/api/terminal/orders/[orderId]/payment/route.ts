@@ -223,9 +223,33 @@ export async function POST(
       }
 
       if (failedResult.outcome === 'left_pending_finatic_uncertain') {
-        // Do not cancel; cron with verifyWithFinatic will resolve later.
+        /**
+         * success: FALSE. This is the #868 root cause and it is not a cosmetic change.
+         *
+         * This branch used to answer `success: true` -- the same value returned for
+         * `corrected_to_paid` (payment confirmed) and for `cancelled` (payment definitively not
+         * taken). A client branching on `success`, which is the obvious thing to branch on, could
+         * not tell paid from cancelled from unknown. On 2026-08-21 the reader reported order #868
+         * as DECLINED, this route answered `success: true`, and N$33 of food was released on a
+         * payment that never cleared.
+         *
+         * The operation did not succeed. The order is still `pending` and its payment state is
+         * unknown, so the honest answer is false. `outcome` remains the precise discriminator;
+         * `success` now merely stops contradicting it.
+         *
+         * FALSE RATHER THAN REMOVING THE FIELD, deliberately: every response from this route still
+         * carries `success`, so the shape is unchanged and nothing destructuring it breaks. Removing
+         * it would make `res.success` undefined, which reads falsy in the common case but differs
+         * from `false` under `=== false` and in any typed client.
+         *
+         * THE OLD COMMENT HERE PROMISED THAT THE STALE-ORDER CRON WOULD RESOLVE THESE LATER. That
+         * promise is false, and its being false is how this stayed invisible: auto-cancel-stale-pos-orders.ts
+         * partitions on paycloud_merchant_order_no, and an order WITH a reference goes to the
+         * Finatic branch, answers E04111, and is skipped on every run with no terminating
+         * condition. Nothing resolves these today. See docs/design-persistence-pass-2026-08-21.md.
+         */
         return NextResponse.json({
-          success: true,
+          success: false,
           canClose: false,
           outcome: 'left_pending_finatic_uncertain',
           reason: failedResult.reason,
