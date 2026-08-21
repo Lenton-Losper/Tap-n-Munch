@@ -14,6 +14,7 @@ import {
   calendarDateRangeToUtcIso,
   DEFAULT_REPORT_TIMEZONE,
 } from '@/lib/reports/format-report-datetime'
+import { preLaunchRestaurant } from '@/lib/reporting/pre-launch-restaurants'
 
 export const dynamic = 'force-dynamic'
 
@@ -192,13 +193,30 @@ async function loadOrderHistory(req: Request): Promise<Response> {
   const totalRevenue = grossPaid - refundedDistinct
   const avgOrderValue = summary.length ? totalRevenue / summary.length : 0
 
+  /**
+   * A venue that has not opened reports test data, not trade. Ruled 2026-08-21 for Riviera, whose
+   * 15 orders are all owner testing and whose N$1385 of `payment_status = 'paid'` would otherwise
+   * be counted as revenue by the sum above.
+   *
+   * FLAGGED, NOT ZEROED. The figures are withheld and the caller is told why, because a fabricated
+   * 0.00 rendered in the same place as a real total is a lying instrument -- indistinguishable from
+   * a venue that genuinely took nothing. `preLaunch` is what the UI branches on; the numeric fields
+   * stay in the payload shape so nothing downstream has to guard for a missing key.
+   *
+   * NOTHING IS ALTERED UNDERNEATH. No order is cancelled, edited or hidden from the list -- the
+   * orders array is untouched and every row is still there to inspect. Remove the entry from
+   * PRE_LAUNCH_RESTAURANTS and every figure returns.
+   */
+  const preLaunch = preLaunchRestaurant(restaurantUuid)
+
   return NextResponse.json({
     orders: enrichedOrders,
     total: count || 0,
     page,
     pageSize,
-    totalRevenue,
-    totalOrders: summary.length,
-    avgOrderValue,
+    totalRevenue: preLaunch ? null : totalRevenue,
+    totalOrders: preLaunch ? null : summary.length,
+    avgOrderValue: preLaunch ? null : avgOrderValue,
+    preLaunch: preLaunch ? { name: preLaunch.name, reason: preLaunch.reason } : null,
   })
 }
