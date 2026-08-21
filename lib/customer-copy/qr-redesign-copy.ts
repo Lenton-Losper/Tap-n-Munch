@@ -162,9 +162,15 @@ export const QR_REDESIGN_PENDING_COPY = {
    * SO THIS CHANGES NOTHING ABOUT THE RECORD. It is display only: the row is exactly as stranded as
    * it was, and this says so honestly rather than implying someone is acting on it.
    *
-   * PENDING COPY — the wording is the owner's. `{minutes}` is substituted at the render site.
+   * SIGNED OFF 2026-08-21: `waiting {minutes} min`. `{minutes}` is substituted at the render site.
+   *
+   * LOWERCASE ON PURPOSE, and verified at the render site before shipping rather than assumed. It
+   * does not start its own line: ActiveOrderBanner composes one string and renders it inside a
+   * single `<p>` as `{orderIdentity} {statusInfo.text}`, so the line reads
+   * "Order #123 Order sent - waiting for the restaurant to confirm · waiting 4 min". It appends to
+   * an existing sentence after a separator, so a capital would start a sentence mid-line.
    */
-  waitingForRestaurantElapsed: 'PENDING COPY - waiting {minutes} min',
+  waitingForRestaurantElapsed: 'waiting {minutes} min',
 
   sessionEndedTitle: 'This table has been cleared',
   sessionEndedBody:

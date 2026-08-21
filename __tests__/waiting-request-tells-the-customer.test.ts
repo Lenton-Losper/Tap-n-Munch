@@ -24,9 +24,19 @@ describe('#311 — the waiting customer is told how long', () => {
   // the explanation instead of the code is the failure mode #205 recorded.
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 
-  it('the copy key exists and is still PENDING COPY — the wording is the owner’s', () => {
-    expect(QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed).toMatch(/^PENDING COPY/)
-    expect(QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed).toContain('{minutes}')
+  /**
+   * RETARGETED 2026-08-21. This asserted the string still said `PENDING COPY`, as a tripwire so an
+   * unsigned string could not reach production unnoticed -- the exact defect the switcher hit. It
+   * is signed off now, so it pins the signed wording instead. Retargeted rather than deleted: the
+   * job is the same either way, which is that nobody changes this label without a human deciding to.
+   */
+  it('carries the signed-off wording, lowercase, with the {minutes} slot intact', () => {
+    expect(QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed).toBe('waiting {minutes} min')
+    expect(QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed).not.toMatch(/PENDING COPY/)
+    // Lowercase is a ruling, not a style accident: it appends after a separator to an existing
+    // sentence in the same <p>, so a capital would start a sentence mid-line. Verified at the
+    // render site before signing.
+    expect(QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed[0]).toBe('w')
   })
 
   it('the waiting_review branch renders the elapsed copy', () => {
