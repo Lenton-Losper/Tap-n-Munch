@@ -89,6 +89,21 @@ jobs:
       # only fail on a newly committed migration.
       - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
         run: npx tsx scripts/check-migration-inline-check.ts
+      # A `PENDING COPY` marker reached production and the owner of a multi-location account read
+      # `PENDING COPY — Location` above the switcher on all twenty staff screens (2026-08-21).
+      #
+      # FOUR PENDING COPY CHECKS ALREADY EXISTED AND NONE COULD HAVE CAUGHT IT. Each was written at
+      # the moment its own string was signed off and pins that string only:
+      # order-alert-copy-signed-off reads components/orders-dashboard.tsx; customer-status-vocabulary
+      # asserts on CUSTOMER_STATUS_COPY; no-invented-order-number on one key; menu-item-requires-tax-rate
+      # on one constant. A file created afterwards was invisible to all four, and the convention
+      # itself was documented in a header telling the reader to `git grep` by hand.
+      #
+      # HERE AND NOT IN staging.yml ON PURPOSE. Shipping a placeholder to staging IS the workflow --
+      # mark it, build the screen, get the wording signed off, then promote. This blocks the one
+      # door that matters without breaking how the work gets done.
+      - name: No PENDING COPY in shippable source
+        run: node scripts/check-no-pending-copy.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the
       # UNPREFIXED SUPABASE_* secrets, which in this repo are the PRODUCTION ones (see the
       # migration-drift step below, which uses the same names against the production DB), and

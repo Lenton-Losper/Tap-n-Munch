@@ -35,9 +35,20 @@ import {
  * re-resolves only on load. Persistence across a reload is the whole point of the control.
  */
 
-/** PENDING COPY -- placeholders, not drafted copy. Do not write final wording here. */
+/**
+ * PARTIALLY SIGNED OFF. Placeholders below are placeholders, not drafted copy — do not write final
+ * wording here.
+ *
+ * These five reached PRODUCTION as markers and the restaurant owner read one of them on every staff
+ * screen. The convention worked; the enforcement did not. `scripts/check-no-pending-copy.mjs` now
+ * fails the production deploy while any of them remains, so this block cannot ship half-done again.
+ *
+ * The const keeps its `_PENDING` name until the last one is signed, because renaming it while four
+ * are outstanding would say the block is done when it is not.
+ */
 const SWITCHER_COPY_PENDING = {
-  label: 'PENDING COPY — Location',
+  /** SIGNED OFF 2026-08-21. */
+  label: 'Location',
   placeholder: 'PENDING COPY — Choose a location',
   switching: 'PENDING COPY — Switching…',
   failedTitle: 'PENDING COPY — Could not switch location',
