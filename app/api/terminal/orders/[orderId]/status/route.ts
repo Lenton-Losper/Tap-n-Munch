@@ -176,8 +176,16 @@ export async function PATCH(
         }
 
         if (failedResult.outcome === 'left_pending_finatic_uncertain') {
+          /**
+           * success: FALSE, for the same reason as the payment route -- see the long note there.
+           *
+           * This route carries the identical defect and was NOT named in the report that found it,
+           * which is exactly why it is fixed in the same change: an unconfirmed payment answering
+           * `success: true` from one endpoint and `false` from the other would be worse than the
+           * original bug, because the two would disagree.
+           */
           return NextResponse.json({
-            success: true,
+            success: false,
             outcome: 'left_pending_finatic_uncertain',
             reason: failedResult.reason,
             order,
