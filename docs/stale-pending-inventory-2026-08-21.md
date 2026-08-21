@@ -152,8 +152,16 @@ and no lower bound. Every one of the ten matches it, and has matched it on every
 rung up.
 
 **The cron is scheduled on production and it is running.** `wrangler.production.toml` carries
-`crons = ["*/2 * * * *"]`, and the `payment.verification_uncertain` audit rows on six of the ten are
-that cron doing its work and choosing not to act.
+`crons = ["*/2 * * * *"]`, and it demonstrably cancelled orders #854 (2.0 min) and #901 (2.3 min)
+today.
+
+> **CORRECTED 2026-08-21.** This paragraph originally said the `payment.verification_uncertain`
+> audit rows were "that cron doing its work and choosing not to act". **That was wrong.** Those rows
+> are written by `lib/payments/handle-terminal-payment-failed.ts` — the terminal's *synchronous*
+> failure path — within ~30 seconds of the attempt. **The cron's skip path writes no audit row at
+> all**, only a `console.warn`, so there is no database trace of it having looked at any of these.
+> That observability gap is itself part of the finding. See
+> [order-876-and-the-cron-gap-2026-08-21.md](order-876-and-the-cron-gap-2026-08-21.md).
 
 **So the cron is not broken and this is not a windowing bug. These orders are skipped by design**,
 every two minutes, for the reason above.
