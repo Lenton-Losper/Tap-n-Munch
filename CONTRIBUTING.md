@@ -108,3 +108,16 @@ Do not take this file's word for it:
 
 That skips the unlink on purpose and reports the damage. Point it at a throwaway worktree
 junctioned to a throwaway directory -- never at the real `node_modules`.
+
+# Contributing -- one remote, two codebases
+
+**The React Native terminal app and this Next.js web app share one GitHub remote, with disjoint
+histories.** `git fetch --all` in either clone pulls the other's ~199 branches, and
+`git log --all -S'…'` searches both projects at once — so a hit can belong to a codebase you are
+not in.
+
+Scope history-wide searches with a ref range or a pathspec rather than `--all`. Neither project can
+break the other's build, because the histories never meet; this is a search and discovery hazard,
+not a correctness one.
+
+Full detail, the measured costs, and why splitting is deferred: [docs/one-remote-two-codebases.md](docs/one-remote-two-codebases.md).

@@ -132,7 +132,28 @@ export const QR_REDESIGN_PENDING_COPY = {
    *
    * The empty state ("No active tab") already has its own exit and is untouched.
    */
-  tabBackToMenu: 'PENDING COPY - back to the menu',
+  tabBackToMenu: 'Back to menu',
+
+  /**
+   * Renders: the active-order banner, while an order request is still `waiting_review`.
+   *
+   * WHY IT EXISTS (#311, ruled B on 2026-08-21). `order_requests.status` has four writers and all
+   * four are human — staff accept, decline, review, and the customer's own insert. The
+   * every-2-minutes cron sweeps `orders` only, never `order_requests`, so an unanswered request has
+   * no timeout, no escalation and no expiry. Production has held one open for 480 hours. The
+   * customer was told "waiting for the restaurant to confirm" and nothing else, forever.
+   *
+   * B ONLY, DELIBERATELY. The ruling was to TELL the customer, not to let them withdraw (C) and not
+   * to auto-expire (D). C has no status to write — the CHECK is
+   * (waiting_review, accepting, accepted, declined) and adding `withdrawn` needs a migration. D is
+   * blocked behind #215, which needs the claim to record a timestamp first.
+   *
+   * SO THIS CHANGES NOTHING ABOUT THE RECORD. It is display only: the row is exactly as stranded as
+   * it was, and this says so honestly rather than implying someone is acting on it.
+   *
+   * PENDING COPY — the wording is the owner's. `{minutes}` is substituted at the render site.
+   */
+  waitingForRestaurantElapsed: 'PENDING COPY - waiting {minutes} min',
 
   sessionEndedTitle: 'This table has been cleared',
   sessionEndedBody:

@@ -72,7 +72,21 @@ describe('the partial-failure banner', () => {
    * while a search is running, because of its own recorded decision. So during a search a total
    * outage fell through to "No items found" with nothing saying the menu had not loaded.
    */
-  it('#224: a TOTAL outage shows the banner while searching, because the body will not', () => {
+  /**
+   * RETARGETED 2026-08-21 — #289 ruled B, and this expectation is what the ruling changed.
+   *
+   * It asserted `bodyState === 'empty'` mid-search during a TOTAL outage, and that the banner
+   * therefore had to carry the truth alone. That was a faithful pin of the recorded decision at the
+   * time, and it is why the ruling was needed rather than a quiet edit.
+   *
+   * The decision was narrowed: a total outage now returns `failed` even while searching, because
+   * nothing loaded and "No items found" is a false claim about the restaurant's menu. The body
+   * tells the truth itself, so the banner stands down to avoid saying it twice.
+   *
+   * Kept, inverted, rather than deleted — the case it covers is still the one that matters, and
+   * losing it would leave the mid-search total outage untested in either direction.
+   */
+  it('#289: a TOTAL outage now fails the BODY while searching, and the banner stands down', () => {
     const bodyState = menuBodyState({
       hasEntries: false,
       notice: total,
@@ -80,10 +94,24 @@ describe('the partial-failure banner', () => {
       loadedOnce: true,
       searchQuery: 'espresso',
     })
-    // The body keeps its recorded wording...
+    // The body no longer claims "No items found" when nothing was ever loaded to search.
+    expect(bodyState).toBe('failed')
+    // And the banner does not repeat what the full-page failure block is already saying.
+    expect(shouldShowMenuNoticeBanner({ notice: total, bodyState })).toBe(false)
+  })
+
+  it('#289: a PARTIAL failure is UNCHANGED — the body keeps "no results", the banner carries the rest', () => {
+    // The half the ruling deliberately did not touch. Items loaded, the search matched none of
+    // them, so "No items found" is true and must not be displaced.
+    const bodyState = menuBodyState({
+      hasEntries: false,
+      notice: partial,
+      loading: false,
+      loadedOnce: true,
+      searchQuery: 'espresso',
+    })
     expect(bodyState).toBe('empty')
-    // ...and the banner carries the truth the body is not allowed to.
-    expect(shouldShowMenuNoticeBanner({ notice: total, bodyState })).toBe(true)
+    expect(shouldShowMenuNoticeBanner({ notice: partial, bodyState })).toBe(true)
   })
 
   it('a TOTAL outage does NOT duplicate the full-page block when not searching', () => {
