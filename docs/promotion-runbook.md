@@ -289,3 +289,70 @@ list belongs in the file — SHAs on staging, and the `-x` trailer links each pr
   conflicted cherry-pick is a judgement call that this document currently just hands back to you.
 - **Whether the promoted content is correct.** Everything here proves the *transfer* was faithful.
   For a runtime wave that is the smaller half of the problem.
+
+---
+
+# Pre-launch: a venue's first card
+
+Not a promotion step — a separate gate, kept here because this is the file that gets read before
+something ships to a live venue.
+
+**No venue takes its first card until `finatic_merchant_no` and `finatic_store_no` are non-null.**
+
+```bash
+node scripts/check-venue-payment-readiness.mjs          # every venue with a registered terminal
+node scripts/check-venue-payment-readiness.mjs --all    # every venue, test rows included
+node scripts/check-venue-payment-readiness.mjs <id>     # one venue
+```
+
+Exit 0 = ready. Exit 1 = at least one venue with a terminal cannot settle a card.
+
+## Why this is a gate and not a nice-to-have
+
+On 2026-08-21, **every** card taken at FNB ChowNow settled through `path: fallback_verified_paid` —
+not one went through the signed webhook. The PayCloud signature fails on ~100% of live traffic
+(#107, `Encryption block is invalid.`), so the recovery path is the **primary** settlement path.
+
+And that path opens with:
+
+```ts
+const creds = await getRestaurantFinaticCredentials(restaurantId)   // throws if unconfigured
+```
+
+The signed webhook does not need per-restaurant credentials. The fallback does. So a venue with
+NULL credentials has **no settlement path at all**: the card clears at the gateway, the signature
+check fails, the fallback throws, and the order is never marked paid. **The money is taken and the
+order shows unpaid, with nothing behind it.**
+
+Chownow Nedbank was in exactly that state when its devices were handed over on 2026-08-20. It had
+not traded yet, so nothing was lost. This gate is what turns that from luck into a check.
+
+## What to obtain, per venue
+
+| field | required | notes |
+|---|---|---|
+| `finatic_merchant_no` | **yes** | 12 digits; the three live venues all begin `3426` |
+| `finatic_store_no` | **yes** | 10 digits; all begin `4426` |
+| `checkout_merchant_no` | only for QR / hosted checkout | **ask, do not assume** — Riviera's is `342600032359`, different from its card `342600171063` |
+| `checkout_store_no` | only for QR / hosted checkout | `app/api/orders/route.ts:519` reads this pair with **no fallback**, so an empty value sends Finatic a blank merchant number rather than failing cleanly |
+| `finatic_terminal_sn` | no | stamped into payment-attempt audit metadata only |
+
+App-level `app_id` and keys are environment-wide, **not** per venue — unless the venue is onboarded
+under a different Finatic account, which is worth asking explicitly, because then the app-level keys
+change too and it stops being a four-column job.
+
+## What this gate does not check
+
+It reads columns; it does not call Finatic. **A merchant/store pair that is present but wrong passes
+here and fails at the till.** Confirming the pair is live means running one real card at the venue
+and watching the order settle. This gate protects that first-card test; it does not replace it.
+
+## Standing state, 2026-08-21
+
+| venue | terminal | card pair | |
+|---|---|---|---|
+| Riviera | registered | set | READY |
+| FNB ChowNow | registered | set | READY |
+| Mingle Brew & Pour | registered | set | READY |
+| **Digi Cofee** | **registered, active** | **NULL** | **BLOCKED** — dormant since 2026-07-29, 15 card orders historically and 2 settled (N$3 each, 20–22 July, while the signed webhook still worked). Either give it credentials or deactivate its terminal. |
+| **Chownow Nedbank** | none yet | **NULL** | **BLOCKED** — devices handed over 2026-08-20, not yet opened |

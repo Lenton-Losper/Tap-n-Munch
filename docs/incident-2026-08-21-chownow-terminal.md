@@ -13,12 +13,18 @@ FNB ChowNow's own merchant credentials.
 webhook-signature fallback at 07:14:37 — 3 minutes 41 seconds *before* the terminal displayed
 "FAILED". Nothing needs fixing in the data.
 
-**Two things are genuinely wrong, and neither is the one that was suspected:**
+**One thing is genuinely wrong, and it is not the one that was suspected:**
 
-1. **This morning's Nedbank trading is being recorded against FNB ChowNow.** The terminal is paired
-   to the wrong restaurant. Chownow Nedbank has **zero orders and zero terminals**.
-2. **Chownow Nedbank has no Finatic credentials.** The moment a terminal *is* paired to it
-   correctly, the recovery path that saved #851 cannot run at all.
+**Chownow Nedbank has no Finatic credentials.** It has not opened yet — its devices were handed
+over on 2026-08-20 and have not been used — so nothing is broken today. The moment it takes its
+first card, the recovery path that saved #851 cannot run at all. See §3.
+
+> **Correction, 2026-08-21.** An earlier version of this document concluded that terminal
+> `ft-2aceb31b` was mis-paired and that Nedbank trade was being booked against FNB ChowNow. **That
+> was wrong.** The terminal is at FNB ChowNow, and orders #850–#858 are real FNB ChowNow trade,
+> correctly attributed. Chownow Nedbank has zero orders because it has not opened, not because its
+> sales are landing elsewhere. The error came from assuming the incident happened at Nedbank and
+> reading the zero-order count as displacement rather than as a venue that has not started trading.
 
 ---
 
@@ -97,7 +103,8 @@ fallback any more — it is the primary settlement path.** A venue without Finat
 *no* settlement path: the signature check fails, the fallback throws on credentials, and the order
 stays unpaid with the money taken.
 
-Chownow Nedbank is only surviving this because its terminal is pointed at FNB ChowNow.
+Chownow Nedbank has not taken a card yet, so nothing has been lost. It is a pre-launch gap, not a
+live one — but it becomes live on its first sale. §3 is what to do about it.
 
 ## 2. #850 and #854 — no card was debited for either
 
@@ -127,17 +134,84 @@ and Oven Buns = N$50), which Finatic confirms **PAID**, amount 50, txn `08210550
 
 **Nothing to refund and nothing to correct on either.**
 
-## 3. Where the money was actually booked
+## 3. Chownow Nedbank cannot settle a card — what Sedrick needs to supply
 
-Terminal `ft-2aceb31b-152c-4a0c-8a75-5cecb8084b37` resolves to `restaurant_terminals.id`
-`2aceb31b-…`, `restaurant_id = b161c758` — **FNB ChowNow** — activated 2026-08-20 08:32.
+**Attribution today is correct.** Terminal `ft-2aceb31b-152c-4a0c-8a75-5cecb8084b37` is registered
+to `restaurant_id = b161c758` — **FNB ChowNow** — activated 2026-08-20 08:32, and orders #850–#858
+are real FNB ChowNow trade, correctly attributed. Nothing is commingled.
 
-**Chownow Nedbank (`38c493cf`, created 2026-08-19) has zero terminals and zero orders.**
+**Chownow Nedbank (`38c493cf`, created 2026-08-19) has zero orders because it has not opened.** Its
+devices were handed over on 2026-08-20 and have not been used. That is a venue waiting to start,
+not a venue whose sales are going somewhere else.
 
-So every sale rung on the Nedbank device this morning carries `restaurant_id = FNB ChowNow`: order
-numbers, revenue, Order History and every report are commingled between the two venues. That is
-#320's "multi-location paths have never been exercised", now exercised in production with real
-money.
+### The gap, and why it only bites on the first sale
+
+`restaurants` on production:
+
+| restaurant | `finatic_merchant_no` | `finatic_store_no` | `checkout_merchant_no` | `checkout_store_no` |
+|---|---|---|---|---|
+| Riviera | `342600171063` | `4426017125` | `342600032359` | `4426010221` |
+| FNB ChowNow | `342600131153` | `4426015803` | **NULL** | **NULL** |
+| Mingle Brew & Pour | `342600160494` | `4426016800` | **NULL** | **NULL** |
+| **Chownow Nedbank** | **NULL** | **NULL** | **NULL** | **NULL** |
+
+Two things fall out of that table that were not the point of this investigation:
+
+- **Riviera's checkout merchant number is a different number from its card one** (`342600032359`
+  vs `342600171063`). So the hosted-checkout pair is genuinely separate, not a copy — which is why
+  §"Exactly what to get from Sedrick" says ask rather than assume.
+- **FNB ChowNow and Mingle have no checkout credentials at all.** If either is expected to accept
+  QR / hosted-checkout payments today, it cannot: `app/api/orders/route.ts:519` reads the checkout
+  pair with no fallback and would send Finatic a blank merchant number. Card-present is unaffected,
+  which is why nobody has noticed. Worth confirming whether those two venues are meant to offer QR
+  payment at all — if they are not, this is correct as it stands and needs nothing.
+
+The sequence on Nedbank's first card, with today's code:
+
+1. Card is presented and **clears at Finatic**. The money leaves the customer's account.
+2. PayCloud posts the webhook. Its signature fails — `Encryption block is invalid.` — as it does on
+   ~100% of live traffic (#107).
+3. The `fallback_verified_paid` path runs, and calls
+   `getRestaurantFinaticCredentials(restaurantId)`, which throws:
+   `No Finatic credentials configured for restaurant`.
+4. **The order is never settled.** The card is debited, FlashTap shows unpaid, and there is no
+   second recovery path behind the one that just threw.
+
+That is the same 19-second rescue that saved #851 this morning, except it cannot start.
+
+### Exactly what to get from Sedrick
+
+Two values are **required** before the first card. Both are per-venue and both come from Finatic's
+merchant onboarding for the Nedbank site:
+
+| field | what to ask for | format seen on the three live venues |
+|---|---|---|
+| `finatic_merchant_no` | **Merchant number** for the Chownow Nedbank merchant | 12 digits, all beginning `3426` — e.g. `342600131153` |
+| `finatic_store_no` | **Store number** for that merchant's Nedbank store | 10 digits, all beginning `4426` — e.g. `4426015803` |
+
+Two more are **required only if Nedbank will take QR / hosted-checkout payments** (customer pays on
+their own phone rather than tapping the terminal):
+
+| field | what to ask for |
+|---|---|
+| `checkout_merchant_no` | the **hosted-checkout** merchant number — often the same as the card one, but ask rather than assume |
+| `checkout_store_no` | the hosted-checkout store number |
+
+**These two need their own check, because the credential guard does not cover them.**
+`getRestaurantFinaticCredentials` throws only when the *card* pair is missing. If the card pair is
+set and the checkout pair is empty, it returns empty strings and
+`app/api/orders/route.ts:519` uses them **with no fallback** — so a QR payment would go to Finatic
+with a blank merchant number instead of failing cleanly. Card-present would work while QR silently
+did not.
+
+One field is **optional** and does not block anything: `finatic_terminal_sn`, which is only stamped
+into payment-attempt audit metadata.
+
+**Nothing app-level is needed.** `app_id` (`wz66363c6bb9592fb5`), the signing private key and the
+gateway public key are environment-wide and already configured — Sedrick does not need to issue new
+ones per venue, unless Nedbank is being onboarded under a different Finatic account entirely. Worth
+asking him that one question explicitly, because if it is a separate account the app-level keys
+change too and this becomes a much bigger job than four columns.
 
 ## 4. The N$51 breakdown — the 6.00 is not VAT
 
