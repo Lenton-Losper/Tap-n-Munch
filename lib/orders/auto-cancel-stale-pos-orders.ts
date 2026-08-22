@@ -11,6 +11,11 @@ import {
   GATEWAY_AMOUNT_TOLERANCE_CENTS,
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import {
+  CANCEL_BASIS_NOTE,
+  ORDER_CANCELLED_ACTION,
+  type CancelBasis,
+} from './cancel-order-with-trail'
 
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 
@@ -114,25 +119,73 @@ async function holdForAmountReview(
   return true
 }
 
+/**
+ * THE CANCEL WRITES ITSELF DOWN. Ruled 2026-08-22.
+ *
+ * Measured on production the same day: 95 of 272 cancelled orders carry NO audit row of any kind,
+ * and 90 of those are this function's `auto_timeout`. The automated path was the single largest
+ * source of untracked cancellation in the system.
+ *
+ * `cancellation_reason` is deliberately UNCHANGED -- both callers still write 'auto_timeout'. That
+ * string is read as a NON-recoverable prefix, so changing it would silently make these orders
+ * recoverable, which is a money-path change nobody ruled. Which caller decided is recorded in the
+ * audit row's `basis` instead.
+ *
+ * A FAILED AUDIT INSERT THROWS. The orders are already cancelled by then and throwing cannot undo
+ * that, but a cancellation going unrecorded is precisely the defect being fixed.
+ */
 async function cancelByIds(
   supabase: Supabase,
   ids: string[],
   cancellationReason: string = 'auto_timeout',
+  basis: CancelBasis = 'no_gateway_reference',
 ): Promise<string[]> {
   if (!ids.length) return []
+  const cancelledAt = new Date().toISOString()
   const { data, error } = await supabase
     .from('orders')
     .update({
       status: 'cancelled',
       payment_status: 'cancelled',
-      cancelled_at: new Date().toISOString(),
+      cancelled_at: cancelledAt,
       cancellation_reason: cancellationReason,
     })
     .in('id', ids)
     .eq('payment_status', 'pending') // re-assert: a concurrent terminal callback wins the race
-    .select('id')
+    // restaurant_id is required for the audit row; total and the reference make it readable
+    // without joining back to orders.
+    .select('id, restaurant_id, total, paycloud_merchant_order_no')
   if (error) throw error
-  return (data ?? []).map((row) => String(row.id))
+
+  const cancelled = (data ?? []) as Array<{
+    id: string
+    restaurant_id: string
+    total: number | null
+    paycloud_merchant_order_no: string | null
+  }>
+  if (cancelled.length === 0) return []
+
+  const { error: auditError } = await supabase.from('audit_logs').insert(
+    cancelled.map((row) => ({
+      restaurant_id: row.restaurant_id,
+      entity_type: 'order',
+      entity_id: String(row.id),
+      action: ORDER_CANCELLED_ACTION,
+      metadata: {
+        source: 'auto_cancel_stale_pos_orders',
+        automated: true,
+        basis,
+        basisNote: CANCEL_BASIS_NOTE[basis],
+        cancellationReason,
+        cancelledAt,
+        orderTotal: row.total,
+        businessOrderNo: row.paycloud_merchant_order_no ?? null,
+      },
+    })),
+  )
+  if (auditError) throw new Error(`cancelByIds audit: ${auditError.message}`)
+
+  return cancelled.map((row) => String(row.id))
 }
 
 /**
