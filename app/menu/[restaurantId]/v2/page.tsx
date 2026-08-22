@@ -28,6 +28,7 @@ import {
   readStoredTabId,
   consumeSessionEndedNotice,
   clearActiveOrderBannerState,
+  heldSessionIds,
 } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -429,6 +430,8 @@ export function MenuLandingPageV2Content({
       const { count: openOrdersCount } = await fetchGuestActiveTableOrders({
         restaurantId: restaurantUuid,
         tableNumber: tableNum,
+        // #279: the table number scopes this, it does not authorise it.
+        sessionIds: heldSessionIds(),
         countOnly: true,
       })
       if ((openOrdersCount || 0) === 0) {
@@ -623,6 +626,7 @@ export function MenuLandingPageV2Content({
       const { count: abandonedCount } = await fetchGuestActiveTableOrders({
         restaurantId,
         tableNumber: tableNum,
+        sessionIds: heldSessionIds(),
         paymentStatus: 'pending',
         paymentChannel: 'hosted',
         placedBefore: tenMinutesAgo,
@@ -640,6 +644,8 @@ export function MenuLandingPageV2Content({
       const { orders: recentPending } = await fetchGuestActiveTableOrders({
         restaurantId,
         tableNumber: tableNum,
+        // Without this the customer loses the resume-payment prompt for their OWN order.
+        sessionIds: heldSessionIds(),
         paymentStatus: 'pending',
         paymentChannel: 'hosted',
         placedAfter: tenMinutesAgo,
