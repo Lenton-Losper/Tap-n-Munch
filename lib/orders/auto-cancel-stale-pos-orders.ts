@@ -146,20 +146,33 @@ async function holdForAmountReview(
   return true
 }
 
+// The cancel action, the basis vocabulary and its notes live in the shared helper now,
+// because the terminal status route must write the IDENTICAL row. Re-exported here so
+// existing importers keep their path.
+export { ORDER_CANCELLED_ACTION }
+export type { CancelBasis }
+
+
 /**
  * THE CANCEL WRITES ITSELF DOWN. Ruled 2026-08-22.
  *
- * Measured on production the same day: 95 of 272 cancelled orders carry NO audit row of any kind,
- * and 90 of those are this function's `auto_timeout`. The automated path was the single largest
- * source of untracked cancellation in the system.
+ * Until now this wrote the four order columns and nothing else. Measured on production the same
+ * day: 95 of 272 cancelled orders carry NO audit row of any kind, and 90 of those are this
+ * function's `auto_timeout`. So the single largest source of untracked cancellation in the system
+ * was the automated one -- roughly ten times the incident that prompted the audit.
  *
- * `cancellation_reason` is deliberately UNCHANGED -- both callers still write 'auto_timeout'. That
- * string is read as a NON-recoverable prefix, so changing it would silently make these orders
- * recoverable, which is a money-path change nobody ruled. Which caller decided is recorded in the
- * audit row's `basis` instead.
+ * The audit row goes INSIDE this function rather than at the two call sites, so a future third
+ * caller cannot reintroduce a silent cancel by forgetting to add one.
  *
- * A FAILED AUDIT INSERT THROWS. The orders are already cancelled by then and throwing cannot undo
- * that, but a cancellation going unrecorded is precisely the defect being fixed.
+ * WHAT IS DELIBERATELY NOT CHANGED: `cancellation_reason`. Both paths still write 'auto_timeout'
+ * exactly as before. That string is read by isCancelledOnE04111Evidence as a NON-recoverable
+ * prefix, so changing it here would silently make these orders recoverable -- a money-path change
+ * nobody ruled. The path that decided is recorded in the audit row's `basis` instead, which is
+ * additive and reads nothing.
+ *
+ * A FAILED AUDIT INSERT THROWS, matching holdForAmountReview above. The orders are already
+ * cancelled by then and throwing cannot undo that -- but a cancellation that went unrecorded is
+ * precisely the defect being fixed, so it must not pass quietly.
  */
 async function cancelByIds(
   supabase: Supabase,
@@ -179,7 +192,7 @@ async function cancelByIds(
     })
     .in('id', ids)
     .eq('payment_status', 'pending') // re-assert: a concurrent terminal callback wins the race
-    // restaurant_id is required for the audit row; total and the reference make it readable
+    // restaurant_id is required for the audit row; total and the reference make the row readable
     // without joining back to orders.
     .select('id, restaurant_id, total, paycloud_merchant_order_no')
   if (error) throw error
@@ -190,6 +203,7 @@ async function cancelByIds(
     total: number | null
     paycloud_merchant_order_no: string | null
   }>
+  // Lost the race on every id: nothing was cancelled, so nothing is recorded.
   if (cancelled.length === 0) return []
 
   const { error: auditError } = await supabase.from('audit_logs').insert(
@@ -490,7 +504,14 @@ export async function autoCancelStalePosOrders(
         )
         result.skippedUncertainIds.push(orderId)
       } else {
-        const cancelled = await cancelByIds(supabase, [orderId])
+        // Same cancellation_reason as before ('auto_timeout'); only the audit row records
+        // that Finatic was asked and answered.
+        const cancelled = await cancelByIds(
+          supabase,
+          [orderId],
+          'auto_timeout',
+          'finatic_verified_not_paid',
+        )
         result.cancelledIds.push(...cancelled)
       }
     } catch (err) {
