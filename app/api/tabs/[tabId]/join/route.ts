@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { issueTokenForOpenTab } from '@/lib/session-token'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { generateTabPin } from '@/lib/tabs/generate-tab-pin'
+import { resolveTabPinPolicy } from '@/lib/tabs/pin-policy'
 
 export const dynamic = 'force-dynamic'
 
@@ -159,12 +160,36 @@ export async function POST(
         // ever see a live PIN.
       })
     } else {
-      const pinRequired = tabData.pin_required !== false && Boolean(tabData.tab_pin)
-      if (pinRequired) {
+      /**
+       * #236. The predicate used to be inline and read `pin_required !== false &&
+       * Boolean(tab_pin)`, so a tab with the flag set and NO pin resolved to "no PIN required"
+       * and this route let anyone join. It now goes through resolveTabPinPolicy, which returns a
+       * third state for that case instead of collapsing it into 'none'.
+       */
+      const policy = resolveTabPinPolicy(tabData)
+      if (policy.mode === 'misconfigured') {
+        // Fails CLOSED, matching the ruling already applied on the 23505 branch of
+        // POST /api/tabs (owner, 2026-08-15): a tab with no PIN is refused, not minted.
+        console.warn('[TABS] refusing join: pin_required is set but the tab has no PIN', {
+          tabId: normalizedTabId,
+          restaurantId: restaurantUuid,
+        })
+        return NextResponse.json(
+          {
+            // Reuses the sentence signed off 2026-08-15 for the same situation on POST /api/tabs,
+            // rather than inventing customer-facing tab copy. The CODE is distinct so the client
+            // can tell "ask staff" from "show the PIN prompt".
+            error: 'This table already has an open tab. Ask a member of staff to add you to it.',
+            code: 'TAB_PIN_UNAVAILABLE',
+          },
+          { status: 403 },
+        )
+      }
+      if (policy.mode === 'required') {
         if (!pin) {
           return NextResponse.json({ error: 'PIN required to join this tab' }, { status: 403 })
         }
-        if (String(tabData.tab_pin ?? '') !== pin) {
+        if (policy.pin !== pin) {
           return NextResponse.json({ error: 'Incorrect PIN' }, { status: 403 })
         }
       }
