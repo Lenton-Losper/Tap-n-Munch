@@ -34,6 +34,10 @@ export function stagingFinaticQueryStub(
     if (mode === 'paid') {
       return {
         paid: true,
+        // The stub simulates a status we DO recognise -- it stands in for a real gateway
+        // answer, not for an unknown one. A stub reporting statusRecognised:false would exercise
+        // the skip path, which is not what any caller uses it for.
+        statusRecognised: true,
         merchantOrderNo: params.merchantOrderNo,
         status: '2',
         transactionId: `STUB-TXN-${params.merchantOrderNo.slice(-6)}`,
@@ -44,6 +48,7 @@ export function stagingFinaticQueryStub(
     if (mode === 'not_paid' || mode === 'declined') {
       return {
         paid: false,
+        statusRecognised: true,
         merchantOrderNo: params.merchantOrderNo,
         status: 'failed',
         transactionId: null,
