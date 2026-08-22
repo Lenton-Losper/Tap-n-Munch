@@ -24,11 +24,53 @@ export type RecoverableOrderRow = {
 }
 
 /**
- * True when this order was cancelled on E04111 evidence, by EITHER rule.
+ * Cancellation reasons that represent a DELIBERATE decision that the order is dead, and which a
+ * webhook must therefore not revive.
  *
- * Both are cancellations made because Finatic said it had no record of the reference --
- * and E04111 is time-dependent, so both can be wrong in exactly the same way. Which rule
- * did the cancelling is irrelevant to whether a later payment must be recoverable.
+ * This is the list that carries the risk, so it is the list that is enumerated. Everything else is
+ * recoverable -- see isCancelledOnE04111Evidence.
+ *
+ * Matched as prefixes so a reason that appends detail (`staff_cancelled: wrong table`) still
+ * matches. Measured against the live vocabulary on 2026-08-22: auto_timeout (137),
+ * payment_declined (35), terminal_cancelled_by_user_pre_gateway (33), terminal_cancelled (1),
+ * terminal_callback_incomplete (1).
+ */
+export const NON_RECOVERABLE_CANCELLATION_REASON_PREFIXES = [
+  'auto_timeout',
+  'hosted_timeout',
+  'staff_',
+  'terminal_cancelled',
+  'terminal_callback_incomplete',
+  'payment_declined',
+] as const
+
+/**
+ * True when a later, proven payment must be allowed to revive this cancelled order.
+ *
+ * INVERTED 2026-08-22, and the inversion IS the fix. This used to be an ALLOWLIST of two reason
+ * strings -- `auto_cancelled_e04111*` and `no_payment_attempt_made` -- while the docblock above it
+ * said "which rule did the cancelling is irrelevant to whether a later payment must be
+ * recoverable". The code did not match that intent: it enumerated rules, so every rule nobody
+ * thought to add was silently unrecoverable.
+ *
+ * WHAT THAT COST, measured on production 2026-08-22: 27 cancelled orders were unrecoverable that
+ * should not have been. Nine carried `operator_ruling_finatic_confirmed_unpaid_20260821`, and
+ * about eighteen carried long manual-Finatic-portal confirmations -- every one of them cancelled on
+ * gateway evidence of non-payment, exactly the class this file exists to protect. One of those
+ * reasons ends with the sentence "If a charge is later found, this order must be treated as
+ * recoverable." The code could not honour it.
+ *
+ * SO THE AXIS IS INVERTED. Enumerate what must NOT be revived -- the deliberate-death reasons the
+ * original docblock already named -- and let everything else through. Adding one more string to an
+ * allowlist would have fixed nine orders and left the same trap set for the tenth rule.
+ *
+ * IT FAILS TOWARD RECOVERY, deliberately. A new cancel reason nobody classifies becomes
+ * recoverable rather than silently unrecoverable. That is the right direction: the recovery only
+ * ever fires on a PROVEN payment, so the cost of a wrong revive is an order restored for money
+ * that was genuinely taken, while the cost of a wrong refusal is a real payment discarded and a
+ * customer charged for nothing.
+ *
+ * The name is kept for its callers and its history, though it is now broader than E04111.
  */
 export function isCancelledOnE04111Evidence(
   row: RecoverableOrderRow | null | undefined,
@@ -36,9 +78,7 @@ export function isCancelledOnE04111Evidence(
   if (!row) return false
   if (String(row.payment_status ?? '').trim().toLowerCase() !== 'cancelled') return false
   const reason = String(row.cancellation_reason ?? '').trim().toLowerCase()
-  return (
-    reason.startsWith(AUTO_CANCELLED_E04111_REASON_PREFIX) || reason === NO_PAYMENT_ATTEMPT_REASON
-  )
+  return !NON_RECOVERABLE_CANCELLATION_REASON_PREFIXES.some((p) => reason.startsWith(p))
 }
 
 /**

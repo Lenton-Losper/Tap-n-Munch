@@ -2,6 +2,14 @@ import { queryPaymentOrder } from '@/payments/paycloud'
 
 export type FinaticOrderPaidResult = {
   paid: boolean
+  /**
+   * Whether the gateway's status was a value we know how to read.
+   *
+   * `paid: false` alone cannot distinguish "the gateway told us it failed" from "the gateway said
+   * something we have never seen". A caller that CANCELS on not-paid must check this first --
+   * unknown never authorises a cancel. See the note at the assignment site.
+   */
+  statusRecognised: boolean
   merchantOrderNo: string
   status: string
   transactionId: string | null
@@ -93,6 +101,34 @@ export async function queryFinaticOrderPaid(params: {
     transStatus === '2' ||
     ['paid', 'success', 'succeeded'].includes(tradeOrStatus)
 
+  /**
+   * IS THIS A STATUS WE ACTUALLY RECOGNISE? Ruled 2026-08-22.
+   *
+   * `paid` is a boolean, so every value the gateway could ever return collapses into "not paid".
+   * That is not safe in both directions: auto-cancel-stale-pos-orders.ts cancels an order outright
+   * on `paid === false`, so a status nobody has ever seen would CANCEL A REAL CUSTOMER ORDER on a
+   * card that may have cleared.
+   *
+   * NOBODY HAS THE ENUM. Measured 2026-08-21: no vendor documentation of `trans_status` exists on
+   * either drive -- not in the Wise SDK javadocs (those are the on-device SDK, a different
+   * surface), not in this repo, and the PayCloud REST reference directories are tracked but empty.
+   * Across 43 live order.query calls spanning three restaurants and four weeks, exactly two values
+   * were ever observed: 2 (paid, money fields populated) and 1 (failed, paid_amount "0", carrying
+   * a trans_error_code). Everything else is unknown territory.
+   *
+   * So this reports whether the status was one we know how to read. `paid` keeps its exact meaning
+   * -- this is additive, and no existing caller changes behaviour unless it opts in.
+   *
+   * Same asymmetry as the 2026-08-05 E04111 ruling: UNKNOWN NEVER AUTHORISES A CANCEL.
+   */
+  const RECOGNISED_PAID = [2, '2']
+  const RECOGNISED_NOT_PAID = [1, '1']
+  const RECOGNISED_TRADE_STATUS = ['paid', 'success', 'succeeded', 'failed', 'fail', 'closed']
+  const statusRecognised =
+    RECOGNISED_PAID.includes(transStatus as never) ||
+    RECOGNISED_NOT_PAID.includes(transStatus as never) ||
+    RECOGNISED_TRADE_STATUS.includes(tradeOrStatus)
+
   const statusText =
     tradeOrStatus ||
     (transStatus != null && String(transStatus).trim() ? String(transStatus) : 'unknown')
@@ -106,17 +142,35 @@ export async function queryFinaticOrderPaid(params: {
         '',
     ).trim() || null
 
+  /**
+   * paid_amount FIRST, and that ordering is the whole fix. Ruled 2026-08-22.
+   *
+   * This used to read `amount ?? order_amount ?? paid_amount`. Measured 2026-08-21: real
+   * order.query responses carry NO `amount` key at all, so `order_amount` always won and
+   * `paid_amount` was never reached.
+   *
+   * `order_amount` IS THE FIGURE WE SENT, echoed back. So every amountsMatch() gate downstream --
+   * 24 call sites -- was comparing our own number against our own number. A gate that cannot fail.
+   * On a real failed row (#563, N$25) the old expression extracted 25 from a transaction whose
+   * paid_amount was "0".
+   *
+   * `paid_amount` is what the gateway says it actually took, which is what an amount gate is for.
+   * Latent until now only because paid_amount == order_amount on all 13 paid rows measured; a tip,
+   * a partial capture or an FX difference separates them and the gate silently passes the wrong
+   * figure. order_amount is kept as a fallback for a response shape that omits paid_amount.
+   */
   const amount = toMoney(
-    orderData?.amount ??
+    orderData?.paid_amount ??
+      orderData?.amount ??
       orderData?.order_amount ??
-      orderData?.paid_amount ??
+      raw.paid_amount ??
       raw.amount ??
-      raw.order_amount ??
-      raw.paid_amount,
+      raw.order_amount,
   )
 
   return {
     paid,
+    statusRecognised,
     merchantOrderNo,
     status: statusText,
     transactionId,

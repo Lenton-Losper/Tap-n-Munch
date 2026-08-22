@@ -390,6 +390,52 @@ export async function autoCancelStalePosOrders(
         }
         // claim.claimed === false just means something else (e.g. a live terminal
         // callback) resolved it concurrently -- not an error, nothing further to do.
+      } else if (!finaticResult.statusRecognised) {
+        /**
+         * UNKNOWN STATUS NEVER AUTHORISES A CANCEL. Ruled 2026-08-22.
+         *
+         * `paid` is a boolean, so before this branch existed EVERY status that was not 2 fell
+         * through to the cancel below -- including any value the gateway has never returned to us
+         * before. Nobody has the enum: measured 2026-08-21, no vendor documentation of
+         * trans_status exists on either drive, and only 1 and 2 have ever been observed in 43 live
+         * calls. A 3 would have cancelled a real customer's order on a card that may have cleared.
+         *
+         * This is the same asymmetry the 2026-08-05 E04111 ruling established. An E04111 THROWS
+         * and lands in the catch below, where it is skipped safely; an unrecognised status
+         * returned successfully did not, and that gap is what this closes. Both now skip.
+         *
+         * IT IS RECORDED, NOT JUST SKIPPED. If Finatic ever returns a 3 the owner wants to find
+         * out from the database, not from a cancelled customer order -- so the audit row names the
+         * value verbatim.
+         */
+        const { error: unknownAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: orderRestaurantId,
+          entity_type: 'order',
+          entity_id: orderId,
+          action: VERIFICATION_SKIPPED_ACTION,
+          metadata: {
+            source: 'auto_cancel_cron',
+            businessOrderNo: merchantOrderNo,
+            unrecognisedStatus: true,
+            gatewayStatus: finaticResult.status,
+            gatewayAmount: finaticResult.amount,
+            reason:
+              'Gateway answered with a trans_status this codebase does not recognise. Not cancelled: ' +
+              'unknown is not not-paid. Recorded so the value can be found here rather than in a ' +
+              'cancelled order.',
+            observationCount: priorSkipCounts.get(orderId) ?? 0,
+          },
+        })
+        if (unknownAuditError) {
+          console.error(
+            `[autoCancelStalePosOrders] unrecognised-status audit insert failed for order ${orderId}:`,
+            unknownAuditError,
+          )
+        }
+        console.warn(
+          `[autoCancelStalePosOrders] order ${orderId}: UNRECOGNISED gateway status ${JSON.stringify(finaticResult.status)} -- skipping, not cancelling`,
+        )
+        result.skippedUncertainIds.push(orderId)
       } else {
         const cancelled = await cancelByIds(supabase, [orderId])
         result.cancelledIds.push(...cancelled)

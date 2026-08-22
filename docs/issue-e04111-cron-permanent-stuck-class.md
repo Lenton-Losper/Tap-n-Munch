@@ -1,6 +1,7 @@
 # The E04111 permanent-stuck class
 
-Referenced by `scripts/resolve-mingle-pending-20260803.ts` and issues #149 / #153 / #154.
+Referenced by issues #149 / #153 / #154. (It also cited `scripts/resolve-mingle-pending-20260803.ts`,
+which exists in no commit in this repository — see the retraction under "Evidence standard".)
 
 ## What E04111 is
 
@@ -68,6 +69,39 @@ missing is a rule for when it never does.
 
 ## Evidence standard for calling an E04111 order genuinely unpaid
 
+> **RETRACTED IN PART, 2026-08-22. Read this before using anything below.**
+>
+> **The standard below is UNVERIFIABLE.** It is attributed to
+> `scripts/resolve-mingle-pending-20260803.ts`. That file exists in **zero commits across all
+> history** — checked with `git rev-list --all -- <path>`, which returns 0. So do the three other
+> scripts this document cites: `control-e04111-discriminator-20260803.ts`,
+> `resolve-mingle-81-20260730.ts` and `resolve-mingle-e04111-20260730.ts`. Nothing in this
+> repository implements the six conditions, and they cannot be checked against code.
+>
+> **Condition 1 is WRONG as a general rule, and the validation claim below is retracted.**
+> Marker absence — `payment_reference` / `payment_voucher_no` NULL — is NOT evidence of
+> non-payment. Falsified on production: FNB ChowNow orders **#456 (N$36), #500 (N$125) and #546
+> (N$40)**, all 2026-07-24, have both markers NULL and were confirmed **PAID at Finatic**,
+> `trans_status 2`, amounts matching exactly, against three same-day known-paid controls that also
+> passed. N$201 was genuinely charged on orders whose markers were empty.
+>
+> **The control group cannot support a general claim.** It covers ONE restaurant (Mingle), ONE
+> payment path, and a SIX-HOUR window on 2026-07-31. The scripts that originated the rule kept that
+> scoping — `resolve-mingle-cluster-20260731.ts` says "on this restaurant, path and day". This
+> document dropped it and turned a local observation into a standing standard. That is the error.
+>
+> **What still stands:** conditions 5 and 6 — a fresh live `order.query` returning E04111, proven
+> meaningful by a same-session control probe on a known-paid reference. That is the sound half and
+> it is what every 2026-08-21 ruling actually relied on. Marker *presence* also remains sound as a
+> one-way guard that SPARES an order; only marker *absence* is worthless.
+>
+> See `docs/issue-attempt-started-marker-is-not-evidence.md`, whose rule — "marker absence must
+> never gate a cancel; marker presence is sound as a one-way guard" — now covers the column markers
+> too.
+
+The six conditions are kept below as the historical record of what was claimed. They are not a
+standard to act on.
+
 No single signal is sufficient. `scripts/resolve-mingle-pending-20260803.ts` requires all of:
 
 1. `status` and `payment_status` both `pending`; `payment_reference`, `payment_voucher_no`,
@@ -89,7 +123,9 @@ are missing or lagging while old ones resolve fine — which, given that E04111 
 artifact, is the most likely shape of a systemic failure. The volume circuit breaker in the
 auto-cancel rule exists specifically for that hole: an incident is characterised by *count*.
 
-The discriminator has been validated against a control group rather than assumed. On
+**RETRACTED 2026-08-22 — see the note at the top of this section. The paragraph below is kept
+as the historical claim; it does not support a general rule.** ~~The discriminator has been
+validated against a control group rather than assumed.~~ On
 2026-07-31, 13 payments that succeeded on the identical path in the same window all set both
 `payment_reference` and `payment_voucher_no`; the 6 failures set neither. Successes log
 `payment.completed`, failures log only `payment.verification_uncertain`; no order has both.

@@ -101,6 +101,7 @@ async function main() {
     if (params.merchantOrderNo === MERCHANT_ORDER_NO_PAID) {
       return {
         paid: true,
+        statusRecognised: true,
         merchantOrderNo: params.merchantOrderNo,
         status: 'paid',
         transactionId: 'FINATIC-TXN-PROBE-0001',
