@@ -141,25 +141,99 @@ async function holdForAmountReview(
   return true
 }
 
+/**
+ * audit_logs.action written when this cron cancels an order. Deliberately the SAME action the
+ * dashboard staff-cancel and the one-off operator scripts write, so every cancellation is found by
+ * one query rather than three.
+ */
+export const ORDER_CANCELLED_ACTION = 'order.cancelled'
+
+/** Which of this cron's two cancel paths decided. Recorded in the audit row, never in the order. */
+export type CancelBasis = 'no_gateway_reference' | 'finatic_verified_not_paid'
+
+const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
+  no_gateway_reference:
+    'No paycloud_merchant_order_no was ever allocated, so prepare-payment never ran and no charge ' +
+    'is possible. Cancelled without a gateway call, which is why none was recorded.',
+  finatic_verified_not_paid:
+    'Finatic was queried directly and returned a RECOGNISED not-paid status before this cancel. ' +
+    'An unrecognised status does not reach here -- it is skipped, per the 2026-08-05 ruling.',
+}
+
+/**
+ * THE CANCEL WRITES ITSELF DOWN. Ruled 2026-08-22.
+ *
+ * Until now this wrote the four order columns and nothing else. Measured on production the same
+ * day: 95 of 272 cancelled orders carry NO audit row of any kind, and 90 of those are this
+ * function's `auto_timeout`. So the single largest source of untracked cancellation in the system
+ * was the automated one -- roughly ten times the incident that prompted the audit.
+ *
+ * The audit row goes INSIDE this function rather than at the two call sites, so a future third
+ * caller cannot reintroduce a silent cancel by forgetting to add one.
+ *
+ * WHAT IS DELIBERATELY NOT CHANGED: `cancellation_reason`. Both paths still write 'auto_timeout'
+ * exactly as before. That string is read by isCancelledOnE04111Evidence as a NON-recoverable
+ * prefix, so changing it here would silently make these orders recoverable -- a money-path change
+ * nobody ruled. The path that decided is recorded in the audit row's `basis` instead, which is
+ * additive and reads nothing.
+ *
+ * A FAILED AUDIT INSERT THROWS, matching holdForAmountReview above. The orders are already
+ * cancelled by then and throwing cannot undo that -- but a cancellation that went unrecorded is
+ * precisely the defect being fixed, so it must not pass quietly.
+ */
 async function cancelByIds(
   supabase: Supabase,
   ids: string[],
   cancellationReason: string = 'auto_timeout',
+  basis: CancelBasis = 'no_gateway_reference',
 ): Promise<string[]> {
   if (!ids.length) return []
+  const cancelledAt = new Date().toISOString()
   const { data, error } = await supabase
     .from('orders')
     .update({
       status: 'cancelled',
       payment_status: 'cancelled',
-      cancelled_at: new Date().toISOString(),
+      cancelled_at: cancelledAt,
       cancellation_reason: cancellationReason,
     })
     .in('id', ids)
     .eq('payment_status', 'pending') // re-assert: a concurrent terminal callback wins the race
-    .select('id')
+    // restaurant_id is required for the audit row; total and the reference make the row readable
+    // without joining back to orders.
+    .select('id, restaurant_id, total, paycloud_merchant_order_no')
   if (error) throw error
-  return (data ?? []).map((row) => String(row.id))
+
+  const cancelled = (data ?? []) as Array<{
+    id: string
+    restaurant_id: string
+    total: number | null
+    paycloud_merchant_order_no: string | null
+  }>
+  // Lost the race on every id: nothing was cancelled, so nothing is recorded.
+  if (cancelled.length === 0) return []
+
+  const { error: auditError } = await supabase.from('audit_logs').insert(
+    cancelled.map((row) => ({
+      restaurant_id: row.restaurant_id,
+      entity_type: 'order',
+      entity_id: String(row.id),
+      action: ORDER_CANCELLED_ACTION,
+      metadata: {
+        source: 'auto_cancel_stale_pos_orders',
+        automated: true,
+        basis,
+        basisNote: CANCEL_BASIS_NOTE[basis],
+        cancellationReason,
+        cancelledAt,
+        orderTotal: row.total,
+        businessOrderNo: row.paycloud_merchant_order_no ?? null,
+      },
+    })),
+  )
+  if (auditError) throw new Error(`cancelByIds audit: ${auditError.message}`)
+
+  return cancelled.map((row) => String(row.id))
 }
 
 /**
@@ -437,7 +511,14 @@ export async function autoCancelStalePosOrders(
         )
         result.skippedUncertainIds.push(orderId)
       } else {
-        const cancelled = await cancelByIds(supabase, [orderId])
+        // Same cancellation_reason as before ('auto_timeout'); only the audit row records
+        // that Finatic was asked and answered.
+        const cancelled = await cancelByIds(
+          supabase,
+          [orderId],
+          'auto_timeout',
+          'finatic_verified_not_paid',
+        )
         result.cancelledIds.push(...cancelled)
       }
     } catch (err) {
