@@ -1379,14 +1379,26 @@ export async function createPOSOrder(
     subtotal: number;
     total: number;
     orderInstructions?: string;
+    /**
+     * #328. One key per SALE ATTEMPT, from CartContext. REQUIRED, not optional: the whole defect
+     * was a client silently not sending it, and an optional field is how that happens again.
+     * The server (app/api/terminal/orders/route.ts) treats a repeat of the same key as "this order
+     * already exists" and returns the existing row instead of creating a duplicate.
+     */
+    idempotencyKey: string;
   },
 ): Promise<{orderId: string; orderNumber: number}> {
+  const {idempotencyKey, ...body} = params;
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/orders`,
     {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(params),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-idempotency-key': idempotencyKey,
+      },
+      // The key travels in the header only; the route reads it there and nowhere else.
+      body: JSON.stringify(body),
     },
     token,
   );

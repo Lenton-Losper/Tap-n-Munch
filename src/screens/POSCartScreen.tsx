@@ -22,7 +22,7 @@ type NavProp = NativeStackNavigationProp<MainStackParamList>;
 export default function POSCartScreen() {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<POSCartRouteProp>();
-  const {cart, updateQuantity, clearCart} = useCart();
+  const {cart, updateQuantity, clearCart, saleAttemptKey} = useCart();
   const {restaurantId} = route.params;
   const [charging, setCharging] = useState(false);
 
@@ -40,11 +40,21 @@ export default function POSCartScreen() {
         throw new Error('Not authenticated');
       }
 
+      if (!saleAttemptKey) {
+        // Cannot happen: the key is generated when the first item is rung up and the charge
+        // button is unreachable with an empty cart. Refusing beats sending no key, which is the
+        // exact defect #328 fixes.
+        throw new Error('This sale could not be identified. Clear it and ring it up again.');
+      }
+
       const result = await createPOSOrder(token, {
         restaurantId,
         items: cart,
         subtotal,
         total,
+        // #328. Stable across retries of THIS sale, so a retry after a failed launch returns the
+        // order that already exists rather than stranding it and creating another.
+        idempotencyKey: saleAttemptKey,
       });
 
       // Prevent a prior order's persisted SUCCESS from painting "Payment successful"
