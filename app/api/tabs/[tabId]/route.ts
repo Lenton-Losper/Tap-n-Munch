@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireSessionToken } from '@/lib/session-guard'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { redactTabMembers } from '@/lib/tab-member-key'
+import { resolveTabPinPolicy, tabPinIsDisclosable } from '@/lib/tabs/pin-policy'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,15 +79,19 @@ export async function GET(
     // Never logged: reset-pin's and join's audit rows both deliberately omit the PIN, on the
     // grounds that those rows are read by more people than should see a live one. Same here.
     const tokenTabId = String(guard.tabId || '').trim()
-    const pinRequired = row.pin_required !== false && Boolean(row.tab_pin)
-    const disclosePin = Boolean(tokenTabId) && tokenTabId === normalizedTabId && pinRequired
+    // #236. Disclosure, NOT enforcement -- a misconfigured tab (flag set, no PIN) must
+    // disclose nothing, so this asks for 'required' specifically rather than reusing the
+    // enforcement predicate, which would try to disclose the string "null".
+    const pinPolicy = resolveTabPinPolicy(row)
+    const disclosePin =
+      Boolean(tokenTabId) && tokenTabId === normalizedTabId && tabPinIsDisclosable(pinPolicy)
 
     return NextResponse.json({
       success: true,
       tab: {
         ...safeColumns,
         members: await redactTabMembers(normalizedTabId, row.members),
-        ...(disclosePin ? { tab_pin: String(row.tab_pin) } : {}),
+        ...(disclosePin ? { tab_pin: pinPolicy.pin } : {}),
       },
     })
   } catch (err) {
