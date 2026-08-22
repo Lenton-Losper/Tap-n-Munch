@@ -453,9 +453,19 @@ export async function fetchGuestActiveTableOrders(params: {
     [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '').trim()).filter(Boolean),
   )]
 
-  // Fail closed for open-table polling: require session scope so one guest never
-  // sees another customer's open orders/requests at the same table.
-  if (heldIds.length === 0 && !params.countOnly) {
+  /**
+   * Fail closed for open-table polling: require session scope so one guest never sees another
+   * customer's open orders/requests at the same table.
+   *
+   * #279, ruled 2026-08-22: the `&& !params.countOnly` exemption is GONE. A table number is
+   * printed on a stand in a public room and can never be a credential, and countOnly was the one
+   * path that still accepted it alone. Measured on production before the fix: the rows path
+   * correctly returned nothing to a caller with no session, while
+   * `?restaurantId=…&table_number=1&countOnly=1` returned a live count -- so the leak was
+   * EXISTENCE ("someone at table 1 has an open order right now"), not the order itself. A count
+   * is small and it is still a disclosure nobody authorised.
+   */
+  if (heldIds.length === 0) {
     return { orders: [], count: 0 }
   }
 

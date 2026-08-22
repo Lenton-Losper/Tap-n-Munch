@@ -78,6 +78,18 @@ export async function fetchGuestActiveTableOrders(params: {
   placedBefore?: string
   countOnly?: boolean
 }): Promise<GuestOrdersApiResponse> {
+  /**
+   * #279. The server now REFUSES this route without a session id, including countOnly. A visitor
+   * who has never ordered holds none, and parseGuestOrdersResponse throws on a non-2xx -- so
+   * calling anyway would turn a correct refusal into a thrown error on the QR landing, which
+   * renders before anyone has a session. Answer locally instead: no session means no orders of
+   * yours to find, which is the same answer the server would give.
+   */
+  const held = [...new Set(
+    [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '').trim()).filter(Boolean),
+  )]
+  if (held.length === 0) return { orders: [], count: 0 }
+
   const qs = new URLSearchParams({
     restaurantId: params.restaurantId,
     table_number: String(params.tableNumber),
