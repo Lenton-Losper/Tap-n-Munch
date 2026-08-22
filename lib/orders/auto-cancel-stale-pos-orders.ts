@@ -11,6 +11,11 @@ import {
   GATEWAY_AMOUNT_TOLERANCE_CENTS,
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import {
+  CANCEL_BASIS_NOTE,
+  ORDER_CANCELLED_ACTION,
+  type CancelBasis,
+} from './cancel-order-with-trail'
 
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 
@@ -141,24 +146,12 @@ async function holdForAmountReview(
   return true
 }
 
-/**
- * audit_logs.action written when this cron cancels an order. Deliberately the SAME action the
- * dashboard staff-cancel and the one-off operator scripts write, so every cancellation is found by
- * one query rather than three.
- */
-export const ORDER_CANCELLED_ACTION = 'order.cancelled'
+// The cancel action, the basis vocabulary and its notes live in the shared helper now,
+// because the terminal status route must write the IDENTICAL row. Re-exported here so
+// existing importers keep their path.
+export { ORDER_CANCELLED_ACTION }
+export type { CancelBasis }
 
-/** Which of this cron's two cancel paths decided. Recorded in the audit row, never in the order. */
-export type CancelBasis = 'no_gateway_reference' | 'finatic_verified_not_paid'
-
-const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
-  no_gateway_reference:
-    'No paycloud_merchant_order_no was ever allocated, so prepare-payment never ran and no charge ' +
-    'is possible. Cancelled without a gateway call, which is why none was recorded.',
-  finatic_verified_not_paid:
-    'Finatic was queried directly and returned a RECOGNISED not-paid status before this cancel. ' +
-    'An unrecognised status does not reach here -- it is skipped, per the 2026-08-05 ruling.',
-}
 
 /**
  * THE CANCEL WRITES ITSELF DOWN. Ruled 2026-08-22.

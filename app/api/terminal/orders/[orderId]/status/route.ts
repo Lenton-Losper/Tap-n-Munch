@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { staffStatusRefusal } from '@/lib/orders/staff-status-refusal'
+import { cancelOrderWithTrail } from '@/lib/orders/cancel-order-with-trail'
 
 export const dynamic = 'force-dynamic'
 
@@ -203,38 +204,36 @@ export async function PATCH(
         })
       }
 
-      // No merchant_order_no — pre-payment abandon; cancel immediately (safe).
-      const updates: Record<string, unknown> = {
-        status: 'cancelled',
-        payment_status: 'cancelled',
-        cancellation_reason: cancellationReason,
-        cancelled_at: new Date().toISOString(),
+      /**
+       * No merchant_order_no — pre-payment abandon; cancel immediately (safe).
+       *
+       * Goes through cancelOrderWithTrail so the audit row CANNOT be omitted. Until 2026-08-22 this
+       * branch wrote all four order columns and no audit row, which is why Riviera #7 (cancelled
+       * 2026-08-18) is the one untracked `terminal_cancelled` row on production. `guard: 'none'`
+       * preserves this branch's existing behaviour exactly -- see the parameter's docblock.
+       */
+      let cancelResult
+      try {
+        cancelResult = await cancelOrderWithTrail(supabase, {
+          orderId,
+          restaurantId: terminal.restaurantId,
+          cancellationReason,
+          basis: 'terminal_pre_gateway',
+          guard: 'none',
+          metadata: { terminalId: terminal.terminalId ?? null, requestedStatus: newStatus },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify({ message, orderId, newStatus }))
+        return NextResponse.json({ error: message }, { status: 500 })
       }
 
-      const { data, error: updateError } = await supabase
-        .from('orders')
-        .update(updates)
-        .eq('id', orderId)
-        .eq('restaurant_id', terminal.restaurantId)
-        .select()
-
-      console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify(updateError))
-      console.log('[STATUS UPDATE DATA]', JSON.stringify(data))
-
-      if (updateError) {
-        return NextResponse.json(
-          { error: updateError.message, details: updateError },
-          { status: 500 },
-        )
-      }
-
-      const updatedOrder = data?.[0]
-      if (!updatedOrder) {
+      if (!cancelResult.cancelled) {
         console.error('[STATUS UPDATE ERROR FULL]', JSON.stringify({ message: 'Update returned no rows', orderId, newStatus }))
         return NextResponse.json({ error: 'Failed to update order — no rows returned' }, { status: 500 })
       }
 
-      return NextResponse.json({ success: true, outcome: 'cancelled', order: updatedOrder })
+      return NextResponse.json({ success: true, outcome: 'cancelled', order: cancelResult.order })
     }
 
     const updates: Record<string, unknown> = { status: newStatus }
