@@ -113,7 +113,7 @@ unestablished and belongs in §4. Close the *trail* half only.
 
 | issue | on whom | what unblocks it |
 |---|---|---|
-| **#107** PayCloud signature verification | **Finatic** | Their production **response-signing public key** for `order.query` on merchant `342600131153`. Ask drafted at `docs/finatic-ask-response-signing-key.md`. |
+| **#107** PayCloud signature verification | **Finatic** | Their production **response-signing public key** for `order.query` on merchant `342600131153`. Ask drafted at `docs/finatic-ask-trans-status-semantics.md`. |
 | **#329** (money half) N$201 on three cancelled orders | **Finatic** | Their statement of whether the three were refunded or retained. |
 | **#170**, **#245**, **#263**, **#281**, **#280**, **#145** migration/RLS integrity | **migration freeze** | These need DDL or a ledger repair. All read-only-diagnosable, none actionable under the freeze. |
 | **#198** staging has no Finatic credentials | **Finatic / config** | Real staging credentials, or a documented decision to keep using the stub. |

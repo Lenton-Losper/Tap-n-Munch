@@ -129,7 +129,7 @@ are correctly *distinct*. **No key we hold verifies a production response**, inc
 one. The response does carry a genuine 344-character RSA-2048 signature, so there IS something to
 verify — this is a wrong-key problem, not a canonicalisation problem.
 
-**The ask is drafted and ready to send to Sedrick:** `docs/finatic-ask-response-signing-key.md`. It
+**The ask is drafted and ready to send to Sedrick:** `docs/finatic-ask-trans-status-semantics.md`. It
 names the artefact three ways so it cannot be misread — the **production response-signing public key
 for `order.query` on merchant `342600131153`** — and includes one redacted real response.
 

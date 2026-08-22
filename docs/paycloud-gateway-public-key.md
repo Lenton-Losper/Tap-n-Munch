@@ -77,7 +77,7 @@ production orders (#456, #500, #546) came back PAID at Finatic on N$201 that the
 was never charged. Whether `2` guarantees a *captured* charge — as opposed to authorised, reserved,
 or pending settlement — is unanswered and is a money-correctness question.
 
-The ask is drafted at `docs/finatic-ask-response-signing-key.md`.
+The ask is drafted at `docs/finatic-ask-trans-status-semantics.md`.
 
 ## Reproducing the measurement, if you ever need to
 
