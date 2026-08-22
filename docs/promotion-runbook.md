@@ -185,6 +185,41 @@ git -C "...wt-waveN" diff --name-only origin/main..HEAD | grep -E '^(app|lib|com
 Empty output, or the wave does not ship. Wave 1: 45 files, all under
 `scripts/ ops/ docs/ CONTRIBUTING.md .gitignore .github/`.
 
+### A clean cherry-pick is not a correct one
+
+**Zero conflicts does not mean the right content landed.** Measured 2026-08-22 on `e304ddc` (the
+E04111 payments wave) against `origin/main` at `bbce8cb`:
+
+    cherry-pick e304ddc onto bare main   -> CLEAN, zero conflicts
+    lib/orders/auto-cancel-stale-pos-orders.ts
+      after the pick : 3d3f3fee
+      on staging     : 225d4529     *** 113 insertions missing ***
+
+The pick was clean **because** its hunks did not overlap the earlier wave's. The earlier wave's
+skip-audit and rest-interval work simply was not underneath, and nothing at apply time said so.
+Applied in order after that wave, the same commit produces a file byte-identical to staging.
+
+So git's silence is evidence about *textual overlap*, not about *dependency*. Step 4's virtual-tree
+walk catches a commit that modifies a file **absent** from `main`; it cannot catch one that modifies
+a file **present but older**. That is the gap this note closes.
+
+**What actually caught it, in this instance:** the deployed file used `VERIFICATION_SKIPPED_ACTION`
+at line 346 while its declaration stayed behind in the earlier wave, so `tsc --noEmit`
+(`production-worker.yml:59`) fails. Neither wave-6 test exists on `main`, so the jest step could not
+have caught it — `tsc` was the only backstop, and it was luck rather than design.
+
+**Do not rely on that.** A wave whose missing lines are pure logic rather than a new export
+typechecks perfectly and ships wrong behaviour silently. The check that does not depend on luck:
+
+    # for every runtime file the wave touches, after assembling the wave and before pushing
+    git rev-parse HEAD:<path>
+    git rev-parse origin/cloudflare-staging:<path>
+    # equal, or the wave is incomplete — regardless of what the cherry-pick reported
+
+Blob equality per touched file is cheap, total, and independent of conflict reporting. Run it at
+**assembly** time, not only at Step 6 — Step 6's end-state gap check does catch this, but only after
+the push, which is the expensive place to find out.
+
 ## Step 5 — Verify BEFORE pushing, not after
 
 Everything in step 6 can be measured against the local branch. Do it there. A promotion that fails
