@@ -45,6 +45,19 @@ export function normalizePublicKeyMaterialToPem(raw) {
   return toPemBlock(body, 'PUBLIC KEY')
 }
 
+/**
+ * READ docs/paycloud-gateway-public-key.md BEFORE CHANGING THIS VALUE.
+ *
+ * Measured 2026-08-22 against live production order.query: NO key we hold verifies a real
+ * production response. The currently deployed value fails, so swapping in another key we
+ * already have is not the fix and has been tried. The response does carry a genuine 344-char
+ * RSA-2048 signature, so there IS something to verify -- this is a wrong-key problem, and the
+ * only thing that closes it is Finatic supplying their production response-signing public key.
+ *
+ * Do not reopen the sign-string / field-order / charset family: node-forge throws
+ * 'Encryption block is invalid.' for a wrong KEY and returns false for a wrong sign-string.
+ * We get the throw.
+ */
 export function normalizeGatewayPublicKeyEnvToPem() {
   return normalizePublicKeyMaterialToPem(process.env.PAYCLOUD_GATEWAY_PUBLIC_KEY)
 }

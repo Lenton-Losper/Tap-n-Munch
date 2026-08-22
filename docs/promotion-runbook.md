@@ -348,6 +348,11 @@ On 2026-08-21, **every** card taken at FNB ChowNow settled through `path: fallba
 not one went through the signed webhook. The PayCloud signature fails on ~100% of live traffic
 (#107, `Encryption block is invalid.`), so the recovery path is the **primary** settlement path.
 
+**Measured 2026-08-22: this is not a configuration error we can fix.** No key we hold verifies a
+live production response, and the key currently deployed was proved wrong against production. It
+needs an artefact only Finatic can supply. So the fallback is not an interim state pending a fix
+on our side — it is settlement, indefinitely. See `docs/paycloud-gateway-public-key.md`.
+
 And that path opens with:
 
 ```ts
@@ -390,4 +395,4 @@ and watching the order settle. This gate protects that first-card test; it does 
 | FNB ChowNow | registered | set | READY |
 | Mingle Brew & Pour | registered | set | READY |
 | **Digi Cofee** | **registered, active** | **NULL** | **BLOCKED** — dormant since 2026-07-29, 15 card orders historically and 2 settled (N$3 each, 20–22 July, while the signed webhook still worked). Either give it credentials or deactivate its terminal. |
-| **Chownow Nedbank** | none yet | **NULL** | **BLOCKED** — devices handed over 2026-08-20, not yet opened |
+| **Chownow Nedbank** | none yet | **NULL** | **BLOCKED** — devices handed over 2026-08-20, not yet opened. With #107 confirmed unfixable from our side (2026-08-22), this is a hard gate: it has no settlement path until the pair is set. |

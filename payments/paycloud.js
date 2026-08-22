@@ -1026,6 +1026,9 @@ export async function queryPaymentOrder(input, options = {}) {
         console.warn('[PayCloud][QUERY] Response signature did not verify (ignored; code ok)')
       }
     } catch (err) {
+      // EXPECTED ON PRODUCTION, and not benign. This fires on ~100% of live traffic (#107).
+      // The response is trusted unverified as a result. docs/paycloud-gateway-public-key.md
+      // has the measurement and the one artefact that would close it.
       console.warn('[PayCloud][QUERY] Response signature verification threw (ignored):', err?.message || err)
     }
   }
