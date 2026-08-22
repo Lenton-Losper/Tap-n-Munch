@@ -1,72 +1,93 @@
-# `PAYCLOUD_GATEWAY_PUBLIC_KEY` — the standing record
+# `PAYCLOUD_GATEWAY_PUBLIC_KEY` — CLOSED. There is no key to find.
 
-**This supersedes any note saying "Finatic cannot supply it, closed as unavailable."** That framing
-is wrong in a way that matters: it reads as *there is nothing to verify*, and stops anyone looking.
-There is something to verify, we are failing to verify it, and the thing we need has a precise name.
+**Ruled 2026-08-22 by the owner, from direct contact with Finatic: a merchant-facing public key
+does not exist.** Not "not supplied yet", not "blocked on the vendor" — there is no artefact.
 
-Undated on purpose. This is the file to update when the position changes — not a dated incident doc.
+**Stop looking. Do not open a ticket, do not chase Sedrick for it, do not try another key.** Every
+framing this file has carried before today was wrong in a way that cost time:
 
-## What the variable is for
+| framing | why it was wrong |
+|---|---|
+| "Finatic cannot supply it, closed as unavailable" | Read as *there is nothing to verify*, so nobody looked. |
+| "A live vendor ask — the one artefact that would close it" | Read as *someone just needs to send an email*. Nobody can send what does not exist. |
 
-Finatic **signs their responses**. `payments/paycloud.js` verifies that signature with
-`PAYCLOUD_GATEWAY_PUBLIC_KEY`. When the check fails it is swallowed with a `console.warn`
-(`[PayCloud][QUERY] Response signature verification threw (ignored)`) and the response is trusted
-anyway. That swallow is why this has been invisible for months.
+Undated on purpose. This is the file to update if the position ever changes.
 
-It is **not** the key used to sign our outbound requests — that is `PAYCLOUD_PRIVATE_KEY`, and it
-works. Conflating the two is the origin of the misconfiguration below.
+## What this means, and it is structural rather than a defect
 
-## Measured position, 2026-08-22
+**Response signature verification can never succeed.** `payments/paycloud.js` verifies Finatic's
+response signature against `PAYCLOUD_GATEWAY_PUBLIC_KEY`; with no such key in existence, the check
+fails on every call, forever. The `console.warn` it emits is expected noise, not a symptom.
 
-Three live production `order.query` calls, FNB ChowNow merchant `342600131153`, real paid orders:
+**Therefore the fallback is not a workaround. It IS the settlement architecture.** On 2026-08-21
+every card taken at FNB ChowNow settled through `path: fallback_verified_paid` and not one through
+the signed webhook. That is the steady state and it is not going to change.
 
-- **No key we hold verifies a live production response.** Every call logged
-  `Response signature verification threw (ignored): Encryption block is invalid.`
-- **The deployed `fe8000ae` fails against production.** It was in use for these very calls. The
-  proposal to "try `fe8000ae` in the deployed secret" is therefore **disproved** — it is already
-  there and it does not work.
-- **The response genuinely carries a signature.** Top-level keys are
-  `["code","data","msg","psn","sign"]`, with `sign` a **344-character standard-base64 string** —
-  a 256-byte RSA-2048 signature. So this is not "they don't sign"; there is a real artefact and our
-  key is the wrong one for it.
-- **The UAT key proves nothing about production.** A UAT key verifying a *UAT-captured* response is
-  self-consistent and says nothing about the production endpoint. Do not cite it as progress.
-- **This is a wrong-key result, not a canonicalisation bug.** node-forge throws
-  `Encryption block is invalid.` for a wrong *key*; a wrong *sign-string* returns `false` instead.
-  We get the throw. **Do not reopen the sign-string / field-ordering / charset family.**
+The security model that follows is the outbound `order.query`, authenticated by our own credentials
+over TLS. **The webhook is an untrusted trigger, never evidence.** That was already the written
+model; what changed today is that it is now permanent rather than interim.
 
-The separate finding that the deployed Vercel snapshots carried *our own* public key in the gateway
-slot is real, and is a genuine misconfiguration. It is **not** a complete explanation: the env
-measured above has correctly *distinct* keys and still fails.
+## The consequence nobody can design around
 
-## The fingerprint trap
+`queryFinaticOrderPaid` **is** settlement. It opens with:
 
-`5ea7ef1d` and `fe8000ae` **are not comparable.** The SDK's `[PayCloud][ENV]` fingerprints digest a
-different input than a hand-derived one. Only ever compare values produced by the same method, and
-say which method produced any fingerprint you write down. Two numbers that "obviously differ" may be
-the same key, and two that match may not be.
+```ts
+const creds = await getRestaurantFinaticCredentials(restaurantId)   // throws if unconfigured
+```
 
-## What would actually close this
+Three separate recovery paths read it — the webhook fallback, the stale-order cron, and terminal
+verify-payment — so they **all fail together** for a venue with no credentials.
 
-Finatic must supply **the production response-signing public key for `order.query` responses on our
-merchant account**. Nothing else substitutes. The ask is drafted in
-`docs/finatic-ask-response-signing-key.md`.
+> ### No venue can take a card without `finatic_merchant_no` and `finatic_store_no`. Ever.
+>
+> Not "should not". **Cannot.** The card clears at the gateway, the signature check fails as it
+> always will, the fallback throws for want of credentials, and the order stays unpaid. The money is
+> taken and the system has no record that it was.
 
-## What follows from it being open
+**Two venues are in exactly that state today: Chownow Nedbank and Digi Cofee.** Digi Cofee still has
+a registered, active terminal. The gate is `scripts/check-venue-payment-readiness.mjs`, documented in
+`docs/promotion-runbook.md` under *Pre-launch: a venue's first card*.
 
-`fallback_verified_paid` is the **primary** settlement path, not a recovery path — on 2026-08-21
-every card taken at FNB ChowNow settled through it and none through the signed webhook. The fallback
-needs per-restaurant credentials, so **a venue with NULL `finatic_merchant_no` / `finatic_store_no`
-has no settlement path at all.** See the pre-launch gate in `docs/promotion-runbook.md`.
+## What was measured, and still stands
 
-## Reproducing the measurement
+Measured 2026-08-22 against live production `order.query` (FNB ChowNow merchant `342600131153`,
+three real paid orders). These observations were correct; only their interpretation was wrong.
+
+- Every response failed verification with `Encryption block is invalid.`, **including in an
+  environment whose keys are correctly distinct** (`derived 1e5dcffc` vs `configured fe8000ae`).
+- The response **does** carry a `sign` field — 344 characters of standard base64, an RSA-2048
+  signature. A signature being present is not evidence that a verifying key is obtainable; it is a
+  field in their response format. **Do not treat its presence as a reason to reopen this.**
+- The separate finding that the deployed Vercel snapshots carried *our own* public key in the gateway
+  slot is real, and is a genuine misconfiguration — it is simply no longer worth fixing, because a
+  correctly configured slot would not verify either.
+
+**The fingerprint trap.** `5ea7ef1d` and `fe8000ae` are **not comparable**: the SDK's
+`[PayCloud][ENV]` fingerprints digest a different input than a hand-derived one. Only ever compare
+values produced by the same method, and say which method produced any fingerprint you write down.
+
+**Do not reopen the canonicalisation family** — sign-string assembly, field ordering, charset.
+node-forge throws `Encryption block is invalid.` for a wrong *key* and returns `false` for a wrong
+*sign-string*. We get the throw. That question is settled and it is moot anyway.
+
+## What IS still open with Finatic
+
+Not the key. **The meaning of `trans_status`.** `2` is treated everywhere as "paid", and three
+production orders (#456, #500, #546) came back PAID at Finatic on N$201 that the owner's records say
+was never charged. Whether `2` guarantees a *captured* charge — as opposed to authorised, reserved,
+or pending settlement — is unanswered and is a money-correctness question.
+
+The ask is drafted at `docs/finatic-ask-response-signing-key.md`.
+
+## Reproducing the measurement, if you ever need to
 
 `qrd-stage/.env.local` is the only one of ~60 `.env.local` files with no `PAYCLOUD_ENDPOINT` /
 `PAYCLOUD_PRIVATE_KEY`, so point tsx at a populated one:
 
 ```bash
-node node_modules/tsx/dist/cli.mjs --env-file=../restaurant-menu-screen/.env.local <script>
+NODE_OPTIONS=--no-network-family-autoselection \
+  node node_modules/tsx/dist/cli.mjs --env-file=../restaurant-menu-screen/.env.local <script>
 ```
 
-Set `NODE_OPTIONS=--no-network-family-autoselection` or every fetch dies `ETIMEDOUT` while curl
-works. The SDK floods stdout — filter for your own lines or you will lose them.
+Without `--no-network-family-autoselection` every fetch dies `ETIMEDOUT` while curl works. The SDK
+floods stdout — filter for your own lines.

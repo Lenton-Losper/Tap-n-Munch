@@ -348,10 +348,20 @@ On 2026-08-21, **every** card taken at FNB ChowNow settled through `path: fallba
 not one went through the signed webhook. The PayCloud signature fails on ~100% of live traffic
 (#107, `Encryption block is invalid.`), so the recovery path is the **primary** settlement path.
 
-**Measured 2026-08-22: this is not a configuration error we can fix.** No key we hold verifies a
-live production response, and the key currently deployed was proved wrong against production. It
-needs an artefact only Finatic can supply. So the fallback is not an interim state pending a fix
-on our side — it is settlement, indefinitely. See `docs/paycloud-gateway-public-key.md`.
+**RULED 2026-08-22: there is no key, and there never will be.** Finatic has no merchant-facing
+public key at all — established by the owner in direct contact with them, and #107 is CLOSED on that
+basis rather than deferred. Signature verification can never succeed.
+
+So this is not an interim state and not a defect awaiting a vendor. **`fallback_verified_paid` IS the
+settlement architecture, permanently**, and that makes the gate below structural:
+
+> `queryFinaticOrderPaid` opens with `getRestaurantFinaticCredentials`, which THROWS when
+> unconfigured. Three recovery paths read it — the webhook fallback, the stale-order cron, and
+> terminal verify-payment — so they all fail together. **A venue with NULL credentials cannot take a
+> card at all.** Not "should not": the card clears at the gateway, the fallback throws, and the order
+> stays unpaid with no record that money moved.
+
+Do not chase the key. See `docs/paycloud-gateway-public-key.md`.
 
 And that path opens with:
 
@@ -394,5 +404,5 @@ and watching the order settle. This gate protects that first-card test; it does 
 | Riviera | registered | set | READY |
 | FNB ChowNow | registered | set | READY |
 | Mingle Brew & Pour | registered | set | READY |
-| **Digi Cofee** | **registered, active** | **NULL** | **BLOCKED** — dormant since 2026-07-29, 15 card orders historically and 2 settled (N$3 each, 20–22 July, while the signed webhook still worked). Either give it credentials or deactivate its terminal. |
-| **Chownow Nedbank** | none yet | **NULL** | **BLOCKED** — devices handed over 2026-08-20, not yet opened. With #107 confirmed unfixable from our side (2026-08-22), this is a hard gate: it has no settlement path until the pair is set. |
+| **Digi Cofee** | **registered, active** | **NULL** | **BLOCKED, permanently until set** — and it still has a LIVE terminal, so it can be handed a card today. Dormant since 2026-07-29; 15 card orders historically, 2 settled (N$3 each, 20-22 July). This row used to explain those two as the signed webhook working back then — that explanation is WITHDRAWN, since no gateway public key has ever existed. How they settled is unestablished. Give it credentials or deactivate the terminal. |
+| **Chownow Nedbank** | none yet | **NULL** | **BLOCKED, permanently until set.** Devices handed over 2026-08-20. With no gateway public key in existence (#107 closed 2026-08-22), the fallback is the only settlement path and it throws without credentials. This venue cannot take a card. |
