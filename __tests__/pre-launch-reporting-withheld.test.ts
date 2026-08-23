@@ -83,6 +83,6 @@ describe('pre-launch reporting', () => {
     const src = read('components/order-history/order-history-content.tsx')
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
     expect(code).toMatch(/data\?\.preLaunch \?/)
-    expect(code).toMatch(/REPORTING_PENDING_COPY\.preLaunchTitle/)
+    expect(code).toMatch(/REPORTING_COPY\.preLaunchTitle/)
   })
 })

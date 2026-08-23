@@ -23,7 +23,7 @@ import {
   type DateRangePresetId,
 } from '@/lib/reports/date-range-presets'
 import { DEFAULT_REPORT_TIMEZONE } from '@/lib/reports/format-report-datetime'
-import { REPORTING_PENDING_COPY } from '@/lib/reporting/reporting-copy'
+import { REPORTING_COPY } from '@/lib/reporting/reporting-copy'
 
 type OrderItem = {
   name?: string
@@ -552,10 +552,10 @@ export function OrderHistoryContent() {
             {data?.preLaunch ? (
               <div className="rounded-2xl border border-[#E9E9E7] bg-[#FAFAF8] p-5">
                 <p className="text-sm font-medium text-[#37352F]">
-                  {REPORTING_PENDING_COPY.preLaunchTitle}
+                  {REPORTING_COPY.preLaunchTitle}
                 </p>
                 <p className="mt-1 text-xs text-[#6B675F]">
-                  {REPORTING_PENDING_COPY.preLaunchBody}
+                  {REPORTING_COPY.preLaunchBody}
                 </p>
               </div>
             ) : (
