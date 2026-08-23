@@ -611,7 +611,15 @@ export function OrderHistoryContent() {
                           <td className="px-4 py-3 font-medium text-[#37352F]">
                             #{order.order_number ?? '—'}
                           </td>
-                          <td className="px-4 py-3 text-[#37352F]">{order.table_number ?? '—'}</td>
+                          {/*
+                            #325. `??` substitutes only for null/undefined, and the terminal POS
+                            route hardcodes `tableNumber: 0` — so every POS row rendered a literal
+                            "0" in the Table column rather than a dash. 0 is never a real table:
+                            every route that accepts one rejects `tableNumber <= 0` as invalid.
+                            `||` is therefore correct here, and is what the neighbouring
+                            `memberName` cell already uses.
+                          */}
+                          <td className="px-4 py-3 text-[#37352F]">{order.table_number || '—'}</td>
                           <td className="px-4 py-3 text-[#37352F]">{order.memberName || '—'}</td>
                           <td className="max-w-xs px-4 py-3 text-[#6B675F]">
                             <span className="line-clamp-2">{formatItemsSummary(order.items)}</span>
