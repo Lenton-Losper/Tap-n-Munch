@@ -76,6 +76,25 @@ export const QR_REDESIGN_PENDING_COPY = {
   tabOrderNotYetNumbered: 'Not numbered yet',
 
   /**
+   * The active-order banner's pre-acceptance status line. Signed off 2026-08-23.
+   *
+   * MOVED HERE FROM A BARE LITERAL in components/ActiveOrderBanner.tsx, and that is the point: a
+   * customer-facing string living inside a component is how this one escaped sign-off entirely.
+   * check-no-pending-copy.mjs scans for the marker, and a string that never carried a marker and
+   * never lived in a copy file cannot be found by any gate. Keep customer wording here.
+   */
+  activeOrderWaitingForRestaurant: 'Order sent - waiting for the restaurant to confirm',
+
+  /**
+   * The separator between the parts of the banner line: identity · status · elapsed.
+   *
+   * Ruled 2026-08-23. It was already used between status and elapsed; the identity join used a
+   * bare space, so "Not numbered yet Order sent - waiting for the restaurant to confirm" ran two
+   * sentences together. One separator, stated once, used at every join.
+   */
+  bannerPartSeparator: ' · ',
+
+  /**
    * Shown IN THE PAGE when a customer lands on My Orders with no session — after ending one, or
    * on a link opened in a browser that never scanned. Signed off by the owner 2026-08-23.
    *

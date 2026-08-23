@@ -215,11 +215,11 @@ export function ActiveOrderBanner() {
       const waitedMin = Number.isFinite(placedAtMs)
         ? Math.floor((nowMs - placedAtMs) / 60000)
         : 0
-      const base = 'Order sent - waiting for the restaurant to confirm'
+      const base = QR_REDESIGN_PENDING_COPY.activeOrderWaitingForRestaurant
       return {
         text:
           waitedMin >= 1
-            ? `${base} · ${QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed.replace(
+            ? `${base}${QR_REDESIGN_PENDING_COPY.bannerPartSeparator}${QR_REDESIGN_PENDING_COPY.waitingForRestaurantElapsed.replace(
                 '{minutes}',
                 String(waitedMin),
               )}`
@@ -285,8 +285,16 @@ export function ActiveOrderBanner() {
         >
           <div className="flex items-center gap-3">
             <div>
+              {/*
+                #326 class. This joined identity and status with a BARE SPACE, so an order with no
+                number rendered "Not numbered yet Order sent - waiting for the restaurant to
+                confirm" — two sentences run together. The separator is the same one already used
+                between status and elapsed, stated once in the copy file.
+              */}
               <p className="font-semibold text-sm">
-                {orderIdentity} {statusInfo.text}
+                {orderIdentity}
+                {QR_REDESIGN_PENDING_COPY.bannerPartSeparator}
+                {statusInfo.text}
               </p>
               <p className="text-xs opacity-90">
                 {currentOrder.total && `Total: N$${Number(currentOrder.total).toFixed(2)} • `}
