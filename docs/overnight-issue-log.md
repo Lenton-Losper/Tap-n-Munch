@@ -64,3 +64,36 @@ pushed.
 
 `939af4b` was to ship with the last wave. With the waves held, it is held too — it is comment-only
 and carries no urgency.
+
+
+---
+
+## Issues skipped, and why
+
+Worked in the triage's ranked LIVE DEFECT order. Two fixed, four skipped. **No three consecutive
+skips shared a reason**, so the stop condition did not fire.
+
+| issue | outcome |
+|---|---|
+| #107 | already closed earlier tonight — no key exists |
+| #236 | fixed previously, on production |
+| #279 | fixed previously, on production |
+| **#127** duplicate order numbers | **SKIPPED — needs a ruling.** The unique index cannot be added while 3 real FNB ChowNow duplicates exist on live financial records. Renumber, partial index, or defer. |
+| **#170** `document_sequences` defined twice | **SKIPPED — needs a migration.** Hard rule: no migrations tonight. Also one of the two files with no `@env:` header that blocks every production deploy. |
+| **#325** Table renders 0 | **FIXED on staging.** 1640 of 2992 production orders affected. |
+| **#324** 1315 NULL `restaurant_id` | **SKIPPED — needs a ruling** on live financial records: delete, backfill, or leave and exclude from reporting. |
+| **#284 / #262** anon `tabs` exposure | **SKIPPED — needs a ruling.** `tabs/active` is a *recorded decision* with a written rationale; overturning it is yours, not mine. |
+| **#260** citation to a non-existent doc | **FIXED on staging.** The claim was sound; re-cited to production audit rows that can be re-queried. |
+
+### Decisions waiting in this set
+
+1. **#127** — renumber the 3 real duplicates, use a partial index, or defer.
+2. **#324** — what happens to 1315 legacy `restaurant_id = NULL` rows in a financial table.
+3. **#284 / #262** — whether an unscoped anon `SELECT` on `tabs`, protected only by a column grant,
+   stays as ruled.
+
+### One thing found while fixing #325, not fixed
+
+A single order with `channel = 'table'` and `table_number = 0`. POS legitimately has no table;
+a table-channel order should not. One row, unrelated to #325's display bug, and the fix now renders
+it as `—` rather than `0` — which hides it rather than surfacing it. Noted on #325.
