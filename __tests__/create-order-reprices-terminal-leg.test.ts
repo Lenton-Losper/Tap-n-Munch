@@ -204,4 +204,37 @@ describe('#240: createOrder re-prices the terminal/POS leg from the catalog', ()
     expect(insertedOrder!.subtotal).toBe(80)
     expect(insertedOrder!.tax).toBe(5)
   })
+
+  /**
+   * The reverse link (20260816090000). The point of putting it on the order row is that it is
+   * written by the SAME INSERT that creates the order -- there is no window in which the order
+   * exists without knowing where it came from, and no transaction is needed to achieve that.
+   *
+   * Asserting it on the insert PAYLOAD is what proves that: a later UPDATE would satisfy a test
+   * that only checked the stored row, and would reintroduce exactly the gap this closes.
+   */
+  it('writes source_request_id in the SAME insert that creates the order', async () => {
+    await createOrder({
+      ...terminalCall(85, 85),
+      channel: 'table',
+      sourceRequestId: 'req-abc',
+      preauthorizedPricing: {
+        items: [{ menuItemId: MENU_ITEM_ID, quantity: 1, unitPrice: 85 }],
+        subtotal: 80,
+        tax: 5,
+        total: 85,
+      },
+    } as never)
+
+    expect(insertedOrder!.source_request_id).toBe('req-abc')
+  })
+
+  it('writes NULL when there is no request — terminal/POS never has one', async () => {
+    // NULL must mean "not from a request", never "link missing", so the column is always present
+    // in the payload rather than omitted.
+    await createOrder(terminalCall(0.01, 0.01) as never)
+
+    expect(insertedOrder!).toHaveProperty('source_request_id')
+    expect(insertedOrder!.source_request_id).toBeNull()
+  })
 })

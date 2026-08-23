@@ -209,7 +209,12 @@ async function probeGuestPage(path: string) {
     status: res.status,
     finalUrl: res.url,
     blocked:
-      body.includes('not available for ordering') ||
+      // #273 renamed this refusal and gave it a CODE. Match the code, not the prose: the old
+      // substring is placeholder copy now, and a probe keyed to a sentence stops checking
+      // anything the moment the sentence is rewritten.
+      body.includes('MENU_ITEM_NOT_ORDERABLE') ||
+      body.includes('MENU_ITEM_NOT_FOUND') ||
+      body.includes('no longer on the menu') ||
       body.includes('not configured as a kiosk') ||
       body.includes('This kiosk is not available') ||
       body.includes('invalid'),

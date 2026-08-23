@@ -2,17 +2,19 @@
  * Runs in the default node environment: renderToStaticMarkup is a server render and needs
  * MessageChannel, which jsdom does not provide.
  *
- * Issue #130. `browse/page.tsx` quick-adds any item that has no addons — including the
- * variant-group drinks Riviera sells — and hardcodes `special_instructions: ''`. The item
- * modal is the only place the per-item field exists, and the cart's Edit button cannot stand
- * in for it: the modal renders no variant-group UI, so reopening a variant drink through it
- * drops `selected_variants` / `display_name` and recomputes the price from `base_price`.
+ * Issue #129. Nothing capped instruction text anywhere: no maxLength on the order-level
+ * textarea, none on the per-item one, and the column is `text`. Rendering is safe -- every
+ * consumer puts the value in JSX and React escapes it, and there is no dangerouslySetInnerHTML
+ * in app/, components/ or lib/ -- so the exposure is a layout and print blowout, not XSS.
  *
- * So the cart row itself has to carry the per-item note. These tests pin that, plus the
- * order-level label, which said only "Order Instructions (Optional)" and gave the customer
- * nothing to distinguish it from a note about one drink.
+ * These tests cover the client caps only. The server-side half is deliberately absent: see the
+ * batch report. app/api/orders/route.ts is the order-creation path, and a silent slice there
+ * would truncate the customer's own words (an allergy note is the obvious case) without telling
+ * anyone.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
+import { ItemDetailModal } from '@/components/menu/item-detail-modal'
+import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 
 const cartItems: any[] = []
 
@@ -72,13 +74,10 @@ jest.mock('@/contexts/tab-context', () => ({
 jest.mock('@/hooks/useClearCartOnTableChange', () => ({
   useClearCartOnTableChange: () => undefined,
 }))
-
 jest.mock('@/hooks/useTabSessionEndedRedirect', () => ({
   useTabSessionEndedRedirect: () => ({ redirecting: false }),
 }))
-
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }))
-
 jest.mock('@/lib/supabase/menu', () => ({ getSupabaseMenuItemById: jest.fn() }))
 jest.mock('@/lib/guest-orders/client', () => ({ fetchGuestOrdersBySession: jest.fn() }))
 jest.mock('@/lib/session', () => ({
@@ -89,10 +88,7 @@ jest.mock('@/lib/idempotency', () => ({
   clearCartIdempotencyKey: jest.fn(),
   getOrCreateCartIdempotencyKey: () => 'idem-1',
 }))
-jest.mock('@/lib/tab-storage', () => ({
-  clearTabSession: jest.fn(),
-  readStoredTabId: () => '',
-}))
+jest.mock('@/lib/tab-storage', () => ({ clearTabSession: jest.fn(), readStoredTabId: () => '' }))
 jest.mock('@/lib/fetch-with-session', () => ({ fetchWithSession: jest.fn() }))
 jest.mock('@/lib/handle-session-expired', () => ({ handleSessionExpired: jest.fn() }))
 jest.mock('@/lib/kiosk', () => ({
@@ -103,26 +99,17 @@ jest.mock('@/lib/kiosk', () => ({
 
 import CartPage from '@/app/menu/[restaurantId]/cart/page'
 
-/** A drink as `browse/page.tsx` quick-adds it: variants resolved, instructions hardcoded ''. */
-const quickAddedDrink = {
+const drinkWithNote = {
   menu_item_id: 'coffee-1',
   name: 'Americano',
   display_name: 'Americano - Large',
   quantity: 1,
   base_price: 30,
-  selected_size: { name: 'Large', price_modifier: 0 },
+  selected_size: null,
   selected_addons: [],
   selected_variants: { Size: 'Large' },
-  special_instructions: '',
-  subtotal: 30,
-}
-
-const drinkWithNote = {
-  ...quickAddedDrink,
-  menu_item_id: 'coffee-2',
-  display_name: 'Americano - Small',
   special_instructions: 'no sugar',
-  selected_variants: { Size: 'Small' },
+  subtotal: 30,
 }
 
 function renderCart(items: any[]): string {
@@ -131,38 +118,58 @@ function renderCart(items: any[]): string {
   return renderToStaticMarkup(<CartPage />)
 }
 
-describe('cart: per-item instructions (#130)', () => {
-  it('offers a note control on a quick-added row that has no instructions yet', () => {
-    const html = renderCart([quickAddedDrink])
-    // The customer who wants "no sugar" on one of two coffees must be able to say so
-    // against that coffee, not only in the order-level box.
-    expect(html).toMatch(/Add a note/i)
-  })
+// This React version emits the attribute as written in JSX (maxLength), not lowercased.
+function maxLengthsIn(html: string): string[] {
+  return Array.from(html.matchAll(/<textarea[^>]*?maxlength="(\d+)"/gi)).map((m) => m[1])
+}
 
-  it('names the item in the note affordance so two identical drinks stay distinguishable', () => {
-    const html = renderCart([quickAddedDrink, drinkWithNote])
-    expect(html).toContain('Americano - Large')
-    expect(html).toMatch(/aria-label="[^"]*Americano - Large[^"]*"/)
-  })
+function textareaCount(html: string): number {
+  return (html.match(/<textarea/g) || []).length
+}
 
-  it('opens an editable textarea prefilled with a note the item already carries', () => {
+describe('instruction length caps (#129)', () => {
+  it('caps the order-level instructions box', () => {
     const html = renderCart([drinkWithNote])
-    expect(html).toMatch(/<textarea[^>]*id="item-note-0"/)
-    expect(html).toContain('no sugar')
+    expect(html).toMatch(
+      new RegExp(`<textarea[^>]*id="instructions"[^>]*maxlength="${MAX_INSTRUCTIONS_LENGTH}"`, "i"),
+    )
   })
 
-  it('does not route the customer through the item modal to leave a note', () => {
-    // Reopening a variant drink in the modal drops selected_variants and reprices it,
-    // so "just press Edit" is not a workaround.
-    const html = renderCart([quickAddedDrink])
-    // Was `not.toMatch(/Customize Item/)`. That header has been removed, so the old assertion
-    // would have passed against a cart that DID render the modal — a negative check that can no
-    // longer fail is worse than no check. The dialog role is what actually marks it open.
-    expect(html).not.toMatch(/role="dialog"/)
+  it('caps the per-item note on the cart row', () => {
+    const html = renderCart([drinkWithNote])
+    expect(html).toMatch(
+      new RegExp(`<textarea[^>]*id="item-note-0"[^>]*maxlength="${MAX_INSTRUCTIONS_LENGTH}"`, "i"),
+    )
   })
 
-  it('says the order-level box applies to the whole order', () => {
-    const html = renderCart([quickAddedDrink])
-    expect(html).toMatch(/whole order/i)
+  it('leaves no uncapped textarea on the cart page', () => {
+    const html = renderCart([drinkWithNote, { ...drinkWithNote, special_instructions: 'oat milk' }])
+    expect(maxLengthsIn(html)).toHaveLength(textareaCount(html))
+    expect(new Set(maxLengthsIn(html))).toEqual(new Set([String(MAX_INSTRUCTIONS_LENGTH)]))
+  })
+
+  it('caps the special instructions field in the item modal', () => {
+    const item = {
+      id: 'coffee-1',
+      name: 'Americano',
+      base_price: 30,
+      has_sizes: false,
+      sizes: [],
+      has_addons: false,
+      addons: [],
+      allow_special_instructions: true,
+      image_url: null,
+    }
+    const html = renderToStaticMarkup(
+      <ItemDetailModal
+        item={item as never}
+        restaurant={{ currency: 'N$' }}
+        onClose={() => undefined}
+        onAddToCart={() => undefined}
+      />,
+    )
+    expect(html).toMatch(
+      new RegExp(`<textarea[^>]*id="instructions"[^>]*maxlength="${MAX_INSTRUCTIONS_LENGTH}"`, "i"),
+    )
   })
 })

@@ -110,6 +110,23 @@ const KNOWN_ABSENT = new Set([
   // main's file reconciled the commit outright, so it no longer needs an exemption. The check
   // reported it as stale itself, which is the mechanism working: an entry that stops being
   // needed says so rather than sitting here forever.
+
+  // ADDED 2026-08-21 by wave 1 (main f04c01b -> 1811b0e, 76 commits). This is the STRUCTURAL NOTE
+  // above coming true, and it is the ONLY new drift the whole 76-commit promotion produced.
+  //
+  // 865aa17 is main's copy of staging's b915483b. It is a PARTIAL apply: b915483b carried three
+  // files and one of them, .github/workflows/staging.yml, was already on main, so the cherry-pick
+  // landed two files and its patch-id differs from the original by construction. Nothing is
+  // missing from staging — the direction is the opposite of what "main is ahead" usually means.
+  //
+  // DECISIVE LINES READ on origin/cloudflare-staging before baselining, per this file's own rule:
+  //   docs/promotion-constraints.md   — blob 66da8d5c on BOTH refs, byte-identical
+  //   scripts/check-branch-drift.mjs  — present, and staging's copy is a strict superset (it is
+  //                                     this file; staging is where it was written)
+  //
+  // RECONCILE WOULD BE WRONG HERE, which is why this is a baseline entry: cherry-picking 865aa17
+  // onto staging would try to re-add content staging already has and is the origin of.
+  '865aa17', // wave 1 partial apply of b915483b — both files present on staging, one identical
 ])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
@@ -199,14 +216,60 @@ function promotedState(sha) {
     const mainBlob = tryGit(['rev-parse', `${BASE}:${file}`])
     if (!mainBlob.ok) continue // not on BASE (a deletion); nothing of main's to lack
     const headBlob = tryGit(['rev-parse', `${HEAD}:${file}`])
-    if (!headBlob.ok) return false // HEAD lacks the file outright
+    if (!headBlob.ok) {
+      /**
+       * HEAD DOES NOT HAVE THE FILE. Two very different situations, and returning false for both
+       * was wrong — fixed 2026-08-18, the third refinement of #310 and the same class as the
+       * other two:
+       *
+       *   never had it   main holds a file this branch never received. Genuine drift.
+       *   DELETED it     this branch had it and removed it deliberately, which makes it AHEAD of
+       *                  main, not behind. `hooks/useSessionTokenGuard.ts` was deleted as dead
+       *                  code and the whole customer-redesign commit went red as a result.
+       *
+       * The same question as everywhere else in this function: did HEAD ever hold main's blob.
+       */
+      const everHadIt = tryGit(['rev-list', HEAD, '--', file])
+      if (!everHadIt.ok || !everHadIt.out.trim()) return false
+      continue
+    }
     if (mainBlob.out.trim() === headBlob.out.trim()) continue // identical
 
     // Differing. HEAD is only level-or-ahead if it CONTAINS main's last change to this path.
     const mainCommitForPath = tryGit(['log', '-1', '--format=%H', BASE, '--', file]).out.trim()
     if (!mainCommitForPath) return false
     const contained = tryGit(['merge-base', '--is-ancestor', mainCommitForPath, HEAD]).ok
-    if (!contained) return false // main holds a change to this file that HEAD does not
+    if (contained) continue
+
+    /**
+     * LAST RESORT, and the reason this function needed a third test at all.
+     *
+     * FIXED 2026-08-18, the day after #310 shipped, because #310 was wrong in a way that only
+     * showed up once ordinary work resumed. The two tests above compare HEAD's CURRENT blob. A
+     * promotion satisfies them the moment it lands -- and stops satisfying them as soon as anyone
+     * edits one of the promoted files on HEAD again. The commit then flips back to ABSENT, and
+     * the gate goes red on work that is strictly AHEAD of main.
+     *
+     * That is the worst possible failure for a gate: it fires on normal activity, so it gets
+     * ignored, and then it is not a gate. It reproduced within two commits of #310 landing --
+     * editing lib/orders/logical-item-identity.ts un-promoted #307.
+     *
+     * The stable question is not "does HEAD hold main's blob NOW" but "did HEAD EVER hold it".
+     * A promotion means main took content that came FROM here, so that content is somewhere in
+     * this branch's history for the path, whatever has happened to the file since.
+     *
+     * Deliberately scoped to commits that touched this path, so it stays bounded, and it can only
+     * ever ACCEPT -- a commit main genuinely holds alone has a blob HEAD has never contained, at
+     * any point, and still fails. The three real gaps below stay loud.
+     */
+    const headHistory = tryGit(['rev-list', HEAD, '--', file])
+    if (!headHistory.ok) return false
+    const everHeld = headHistory.out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((sha) => tryGit(['rev-parse', `${sha}:${file}`]).out.trim() === mainBlob.out.trim())
+    if (!everHeld) return false // main holds a change to this file that HEAD has never had
   }
   return true
 }

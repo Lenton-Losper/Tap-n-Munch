@@ -9,6 +9,10 @@
  * the validation. Each was shipped as "the #122 fix" on its own branch, and neither branch had
  * both — so this suite exists to make sure whichever half is touched next announces itself.
  *
+ * This file is the staging half of that union (#254). Door 2 arrived here with #122; door 1 is
+ * what this branch adds, and neither suite existed on `cloudflare-staging` at all — so staging
+ * was green on both doors by OMISSION, which is why nothing there noticed the hole was open.
+ *
  *   TEST 1  a filter-injecting ref must not widen the query
  *   TEST 2  a VALID, KNOWN reference must not read across tenants
  *

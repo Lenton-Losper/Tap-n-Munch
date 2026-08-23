@@ -57,10 +57,55 @@ const RID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 
 type Verdict = 'PASSES' | 'PASSES WITH CAVEAT' | 'FAILS' | 'NEEDS-DEVICE' | 'NOT RUN'
 type Result = { event: string; verdict: Verdict; observed: string; detail?: unknown }
+/**
+ * THE ROSTER — every event this run is expected to reach.
+ *
+ * WHY IT EXISTS. The summary used to print `${results.length} checked`, which is the count of
+ * results RECORDED, not of events EXPECTED. Any block guarded by an `if` that did not fire simply
+ * recorded nothing: the run stayed green and the tally shrank. Reading "27 checked, 0 FAILS"
+ * instead of "31 checked, 0 FAILS" was the only signal a reader ever got that four checks had
+ * vanished — and nobody memorises last week's number.
+ *
+ * A VANISHED CHECK NOW FAILS THE RUN. Every name below must appear in `results`, or the process
+ * exits non-zero and names the ones that did not, in the same breath as any FAILS.
+ *
+ * NOT a list of things that must PASS. `NEEDS-DEVICE` and `NOT RUN` are legitimate verdicts and
+ * count as reached — the roster asks a narrower question: was this event's code path entered at
+ * all, and did it say something. An event that is genuinely retired is deleted from here
+ * deliberately, which is a diff a reviewer can see.
+ *
+ * DELIBERATELY ABSENT: 'J/K'. It is not an event -- it is the name the terminal block records a
+ * NOT RUN under when a terminal cannot be seeded, i.e. the fallback for J and K rather than a
+ * check of its own. Listing it made a HEALTHY run fail, which the first run of this roster
+ * demonstrated within a minute. An `unexpected` entry will flag it if it ever does fire.
+ *
+ * The reverse is checked too: an event recorded that is NOT on the roster fails the run, so a new
+ * check cannot be added without being registered here.
+ */
+const EXPECTED_EVENTS = [
+  'A', 'B', 'B-money', 'B6', 'B-sec', 'H', 'N', '#249', '#248', 'Q', 'AUTH',
+  'C/M', 'C', 'B/C-personal', 'A7', 'H-lines', 'E', 'D', 'D-reversal', 'D-add',
+  'D-add-review', 'D-swap', 'D-swap-review', 'F', 'G/P', 'I', 'J', 'J-visible', 'K', 'L',
+] as const
+
 const results: Result[] = []
 const record = (r: Result) => {
   results.push(r)
   console.log(`  ${r.verdict.padEnd(20)} ${r.event.padEnd(6)} ${r.observed}`)
+}
+
+/**
+ * #302: the edit route now requires the session token a real client holds. `apiAs` sends it, so
+ * the simulation exercises the route the way the app does rather than a shape no client uses.
+ */
+async function apiAs(customer: { token?: string | null }, path: string, init: RequestInit = {}) {
+  return api(path, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      ...(customer?.token ? { 'x-session-token': customer.token } : {}),
+    },
+  })
 }
 
 async function api(path: string, init: RequestInit = {}) {
@@ -724,6 +769,24 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       anaOrderId = orderRow.id
       created.orderIds.push(anaOrderId)
       await admin.from('order_requests').update({ status: 'accepted' }).eq('id', anaRequestId)
+    } else {
+      /**
+       * THE ACCEPT FAILED. This used to be silent -- no else branch at all.
+       *
+       * `anaOrderId` stayed null, `editTarget` fell back to `anaRequestId`, and events D/E/F then
+       * ran against an ORDER_REQUESTS row instead of an ORDERS row: a different surface, a
+       * different status vocabulary, a different edit path. They could still report PASSES. The
+       * run would look complete and be testing something else.
+       *
+       * Throwing is right rather than recording a FAILS: this is the FIXTURE, not the subject.
+       * Everything after it is meaningless, and the abort path already prints
+       * "ABORTED AFTER n CHECKS ... the rest NEVER RAN. This is not a pass."
+       */
+      throw new Error(
+        `FIXTURE FAILED: could not accept request ${anaRequestId} into an order -- ` +
+          `${orderErr?.message ?? 'insert returned no row'}. Refusing to continue: every event ` +
+          `after this one would silently test an order_requests row instead of an order.`,
+      )
     }
     // A second accepted order, belonging to a DIFFERENT diner, so J can settle one person's
     // share and K can settle what is left -- which is the whole point of events J and K.
@@ -802,10 +865,20 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
   })
 
   // ---- D / E / F: editing --------------------------------------------------
-  const editTarget = anaOrderId ?? anaRequestId
+  /**
+   * THE EDIT TARGET IS AN ORDER, never a request.
+   *
+   * This was `anaOrderId ?? anaRequestId`, which looks defensive and is not: it silently swapped
+   * the SUBJECT of events D, E and F to a different table with a different status vocabulary, and
+   * nothing in the output said so. The accept above now throws rather than reaching here with a
+   * null, so the fallback has no remaining job -- and keeping it would restore the hazard the
+   * moment someone softened that throw.
+   */
+  const editTarget = anaOrderId
   if (editTarget) {
     const acquire = await api(`/api/guest/orders/${editTarget}/edit`, {
       method: 'POST',
+      headers: ana.token ? { 'x-session-token': ana.token } : {},
       body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
     })
     if (acquire.status !== 200) {
@@ -821,6 +894,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       // own ownership check should answer 404 -- not 403, which would confirm the order exists.
       const boTries = await api(`/api/guest/orders/${editTarget}/edit`, {
         method: 'POST',
+        headers: bo.token ? { 'x-session-token': bo.token } : {},
         body: JSON.stringify({ restaurantId: RID, sessionIds: [bo.sessionId] }),
       })
       record({
@@ -836,6 +910,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       const beforeView = await readTabView(ana, tabId)
       const commit = await api(`/api/guest/orders/${editTarget}/edit`, {
         method: 'PATCH',
+        headers: ana.token ? { 'x-session-token': ana.token } : {},
         body: JSON.stringify({
           restaurantId: RID,
           sessionIds: [ana.sessionId],
@@ -875,6 +950,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
       if (anaOrderId) {
         const reAcquire = await api(`/api/guest/orders/${anaOrderId}/edit`, {
           method: 'POST',
+          headers: ana.token ? { 'x-session-token': ana.token } : {},
           body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
         })
         if (reAcquire.status !== 200) {
@@ -889,6 +965,7 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
           )
           const addCommit = await api(`/api/guest/orders/${anaOrderId}/edit`, {
             method: 'PATCH',
+            headers: ana.token ? { 'x-session-token': ana.token } : {},
             body: JSON.stringify({
               restaurantId: RID,
               sessionIds: [ana.sessionId],
@@ -941,11 +1018,189 @@ async function runLiveTableEvents(menu: Array<{ id: string; name: string; base_p
         }
       }
 
+      /**
+       * ---- D-swap: REMOVE THE ONLY LINE AND ADD ANOTHER (#291) --------------
+       *
+       * The event Events A-Q never had. The spec did not ask for a swap, so the simulation never
+       * drove one, and 28/28 stayed green for as long as swapping was completely impossible --
+       * including on the run immediately before the click test that found it. The harness was not
+       * lying; it was answering the question it had been given. This is the question it was
+       * missing.
+       *
+       * It must be able to FAIL. Before the fix this exact call returned 400 with
+       * "An order needs at least one item", because the emptiness guard counted only kept lines.
+       */
+      {
+        const from = menu[0]
+        const to = menu[1]
+        // Defined here on purpose. This file carries `@ts-nocheck`, so tsc reports NOTHING about
+        // it -- a deliberately bogus identifier appended to this file still gives exit 0. An
+        // undefined helper would have surfaced only as a runtime abort mid-run.
+        const r2 = (n: number) => Math.round(n * 100) / 100
+        const inclusive = (p: number) => {
+          const total = r2(p)
+          const subtotal = r2(total / 1.15)
+          return { total, subtotal, tax: r2(total - subtotal) }
+        }
+        const fromMoney = inclusive(Number(from.base_price))
+        const { data: swapRow } = await admin
+          .from('orders')
+          .insert({
+            restaurant_id: RID,
+            tab_id: tabId,
+            table_id: table.id,
+            table_number: tableNumber,
+            session_id: ana.sessionId,
+            member_session_id: ana.sessionId,
+            channel: 'table',
+            status: 'accepted',
+            payment_status: 'pending',
+            items: [
+              {
+                name: from.name,
+                displayName: from.name,
+                menuItemId: from.id,
+                quantity: 1,
+                unitPrice: Number(from.base_price),
+                basePrice: Number(from.base_price),
+                subtotal: fromMoney.subtotal,
+                tax: fromMoney.tax,
+                total: fromMoney.total,
+                taxRatePercentage: 15,
+                taxInclusive: true,
+                selectedVariants: {},
+                size: null,
+                addons: [],
+                specialInstructions: '',
+              },
+            ],
+            subtotal: fromMoney.subtotal,
+            tax: fromMoney.tax,
+            total: fromMoney.total,
+            placed_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single()
+
+        if (!swapRow?.id) {
+          record({
+            event: 'D-swap',
+            verdict: 'FAILS',
+            observed: 'could not seed the one-line order the swap needs',
+          })
+        } else {
+          created.orderIds.push(swapRow.id)
+          const lock = await api(`/api/guest/orders/${swapRow.id}/edit`, {
+            method: 'POST',
+            headers: ana.token ? { 'x-session-token': ana.token } : {},
+            body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
+          })
+          if (lock.status !== 200) {
+            record({
+              event: 'D-swap',
+              verdict: 'FAILS',
+              observed: `could not open the editor for the swap: ${lock.status} ${JSON.stringify(lock.body).slice(0, 160)}`,
+            })
+          } else {
+            const swap = await api(`/api/guest/orders/${swapRow.id}/edit`, {
+              method: 'PATCH',
+              headers: ana.token ? { 'x-session-token': ana.token } : {},
+              body: JSON.stringify({
+                restaurantId: RID,
+                sessionIds: [ana.sessionId],
+                lockToken: lock.body.lockToken,
+                // The whole point: an EMPTY keep alongside a non-empty add.
+                keep: [],
+                add: [
+                  {
+                    menuItemId: to.id,
+                    name: to.name,
+                    displayName: to.name,
+                    quantity: 1,
+                    basePrice: Number(to.base_price),
+                    subtotal: Number(to.base_price),
+                    selectedVariants: {},
+                    size: null,
+                    addons: [],
+                    specialInstructions: '',
+                  },
+                ],
+              }),
+            })
+
+            const { data: after } = await admin
+              .from('orders')
+              .select('items, total')
+              .eq('id', swapRow.id)
+              .single()
+            const lines = Array.isArray((after as any)?.items) ? (after as any).items : []
+            const names = lines.map((l: any) => String(l?.displayName ?? l?.name ?? ''))
+            const swapped =
+              swap.status === 200 &&
+              lines.length === 1 &&
+              names[0] === to.name &&
+              !names.includes(from.name)
+            const pricedAtMenu = Math.abs(Number((after as any)?.total ?? 0) - Number(to.base_price)) < 0.01
+
+            record({
+              event: 'D-swap',
+              verdict: swapped && pricedAtMenu ? 'PASSES' : 'FAILS',
+              observed: swapped
+                ? `swap committed: "${from.name}" -> "${to.name}", order now ${lines.length} line, ` +
+                  `total ${(after as any)?.total} (menu ${to.base_price}, ${pricedAtMenu ? 'repriced by the server' : 'NOT at the menu price'}), ` +
+                  `requiresReacceptance=${swap.body?.requiresReacceptanceDecision}`
+                : `swap REFUSED ${swap.status}: ${JSON.stringify(swap.body).slice(0, 220)} ` +
+                  `[lines now ${lines.length}: ${names.join(', ') || 'none'}]`,
+              detail: { status: swap.status, body: swap.body, lines: names },
+            })
+
+            /**
+             * A SWAP ALWAYS RETURNS TO STAFF. Ruling of 2026-08-18, section 12(D).
+             *
+             * THIS ASSERTION WAS REVERSED, and the old one is quoted so nobody has to reconstruct
+             * it from a diff. It read:
+             *
+             *     verdict: requiresReacceptanceDecision === rose ? 'PASSES' : 'FAILS'
+             *     "must equal ${rose}; the existing total rule decides, a swap is not special-cased"
+             *
+             * That encoded the pre-2026-08-18 rule, where the TOTAL alone gated staff. Under it a
+             * Burger+Cheese swapped for a Burger+Bacon at the same price reached the kitchen with
+             * no human ever seeing the substitution -- the kitchen was told to make a different
+             * thing and nobody was asked. Every equal-price substitution was a silent instruction.
+             *
+             * The predicate now ORs the rise with INTRODUCED CONTENT: any logical item whose
+             * quantity exceeds what staff accepted, compared over `reacceptanceIdentity`. A swap
+             * introduces the new item by construction, so it re-accepts WHATEVER the price does --
+             * including the case measured here, 95 -> 20, a fall.
+             *
+             * NOT WEAKENED. The old assertion allowed exactly one value and so does this one; the
+             * value changed because the ruling did. `true` for a rise AND for a fall is the whole
+             * point -- an assertion that accepted either would pass for the defect this ruling
+             * closed.
+             */
+            if (swap.status === 200) {
+              const rose = Number(to.base_price) > Number(from.base_price)
+              const decision = swap.body?.requiresReacceptanceDecision
+              record({
+                event: 'D-swap-review',
+                verdict: decision === true ? 'PASSES' : 'FAILS',
+                observed:
+                  `swap ${from.base_price} -> ${to.base_price} (${rose ? 'RISE' : 'fall or level'}), ` +
+                  `requiresReacceptance=${decision} ` +
+                  `(must be true whatever the price does: a swap introduces content staff never ` +
+                  `accepted -- ruling 2026-08-18 section 12(D))`,
+              })
+            }
+          }
+        }
+      }
+
       // F: the kitchen wins. Move the order to preparing, then try to edit.
       if (anaOrderId) {
         await admin.from('orders').update({ status: 'preparing', edit_lock_token: null }).eq('id', anaOrderId)
         const afterKitchen = await api(`/api/guest/orders/${anaOrderId}/edit`, {
           method: 'POST',
+          headers: ana.token ? { 'x-session-token': ana.token } : {},
           body: JSON.stringify({ restaurantId: RID, sessionIds: [ana.sessionId] }),
         })
         const humanReadable = String(afterKitchen.body?.error ?? '')
@@ -1167,15 +1422,47 @@ async function runTerminalSettlement(tabId: string, customer: Customer) {
   console.log('\n--- RESULTS ---')
   for (const r of results) console.log(`${r.verdict.padEnd(20)} ${r.event.padEnd(6)} ${r.observed}`)
   const fails = results.filter((r) => r.verdict === 'FAILS')
+
+  /**
+   * WHICH EXPECTED EVENTS NEVER REPORTED. See EXPECTED_EVENTS for why this is not optional.
+   *
+   * Reported after an abort too, where it is expected to be long — the abort line already says the
+   * rest never ran, and naming them turns "the rest" into something actionable.
+   */
+  const reached = new Set(results.map((r) => r.event))
+  const missing = EXPECTED_EVENTS.filter((e) => !reached.has(e))
+  const unexpected = [...reached].filter((e) => !(EXPECTED_EVENTS as readonly string[]).includes(e))
+
   // Never print a clean-looking tally after an abort. `process.exit(1)` and the withheld
   // QR_EVENTS_SIM_DONE sentinel were always correct, but a human -- or a background watcher
   // running `tail` -- reads this line, and "10 checked, 0 FAILS" after the run died at check
   // 11 is the summary telling a true number in a way that means the opposite of how it reads.
+  if (missing.length) {
+    console.log(`\nNEVER REPORTED (${missing.length} of ${EXPECTED_EVENTS.length}): ${missing.join(', ')}`)
+    console.log('  A check that vanishes is not a check that passed. See EXPECTED_EVENTS.')
+  }
+  if (unexpected.length) {
+    console.log(`\nNOT IN THE ROSTER: ${unexpected.join(', ')} — add them to EXPECTED_EVENTS.`)
+  }
+
   console.log(
     failed
       ? `\nABORTED AFTER ${results.length} CHECKS -- ${fails.length} FAILS among those; the rest NEVER RAN. This is not a pass.`
-      : `\n${results.length} checked, ${fails.length} FAILS`
+      : // UNIQUE events reached, not rows recorded. Several events report twice (H and D-add
+        // among them), so `results.length` read "31 of 30" on a healthy run — a tally that
+        // exceeds its own roster invites exactly the shrug this roster exists to prevent.
+        // Counts events BOTH reached and on the roster. `reached.size` counted an unregistered
+        // event toward the total, so a run missing L while recording L-VANISHED printed
+        // "30 of 30" — a tally agreeing with itself while the list above said otherwise.
+        `\n${EXPECTED_EVENTS.filter((e) => reached.has(e)).length} of ${EXPECTED_EVENTS.length} ` +
+        `expected events reported (${results.length} checks), ${fails.length} FAILS`
   )
-  if (!failed && fails.length === 0) console.log('QR_EVENTS_SIM_DONE')
-  process.exit(failed || fails.length > 0 ? 1 : 0)
+
+  /**
+   * INCOMPLETE IS A FAILURE. A run that reached 27 of 31 events with no FAILS used to exit 0 and
+   * print a green-looking tally; the only tell was a number nobody memorises.
+   */
+  const incomplete = missing.length > 0 || unexpected.length > 0
+  if (!failed && fails.length === 0 && !incomplete) console.log('QR_EVENTS_SIM_DONE')
+  process.exit(failed || fails.length > 0 || incomplete ? 1 : 0)
 })()

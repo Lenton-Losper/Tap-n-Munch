@@ -3,12 +3,23 @@
  *
  * `paymentRefOrFilter` interpolated the caller's string straight into a PostgREST `.or()` filter.
  * The comma is PostgREST's term separator, so `?ref=zzz,total.gte.0` appended a term matching
- * every row. `/api/guest/orders/by-payment-ref` has no authentication, and on `main`
- * `restaurantId` is optional, so that URL returned up to 15 full order rows across ALL
- * restaurants with no credential and no knowledge of any reference.
+ * every row. `/api/guest/orders/by-payment-ref` has no authentication of its own, and when the
+ * incident was found the restaurant scope was optional too, so that URL returned up to 15 full
+ * order rows across ALL restaurants with no credential and no knowledge of any reference.
  *
  * Reproduced read-only against staging on 2026-08-08: benign unguessable ref -> 0 rows; the
  * injected ref -> 15 rows, that restaurant's entire order table.
+ *
+ * #254 — THIS BRANCH. The fix landed on `main` only; `cloudflare-staging` kept the injectable
+ * form, so the environment everything is reproduced against ran the vulnerable code. Re-measured
+ * read-only on staging 2026-08-11 through this branch's own function: benign
+ * `NONEXISTENT-REF-ZZZZZZ` -> 0 rows, and `NONEXISTENT-REF-ZZZZZZ,id.not.is.null` -> 213 rows
+ * across 2 restaurants with the validation reverted, 0 rows with it in place.
+ *
+ * Doors 2 and 3 (restaurant scope, per-row `guestCanAccessOrder`) were ALREADY on this branch
+ * from wave-2's #122 — so the widening here is bounded by them. That is not a reason to leave
+ * door 1 open: the filter can still be widened within a tenant, and a paid/closed row passes
+ * door 3 on restaurant scope alone.
  *
  * WHY THIS TEST IS SHAPED THIS WAY. The suite that shipped alongside the original #122 fix could
  * not have caught this: its Supabase stub THREW on any operator other than `.eq` inside `.or()`,
