@@ -45,6 +45,22 @@ export function normalizePublicKeyMaterialToPem(raw) {
   return toPemBlock(body, 'PUBLIC KEY')
 }
 
+/**
+ * DEAD BY DESIGN. Ruled 2026-08-22: Finatic has NO merchant-facing public key. It does not exist,
+ * so response signature verification can never succeed and this value can never be made correct.
+ *
+ * DO NOT chase it, do not open a vendor ticket for it, do not try another key. Every earlier note
+ * framed this as "not supplied yet", which read as though an email would fix it.
+ *
+ * The consequence is structural, not a defect: `fallback_verified_paid` IS the settlement
+ * architecture, permanently. The security model is the outbound order.query authenticated by our
+ * own credentials over TLS; the webhook is an untrusted trigger, never evidence.
+ *
+ * The failing verification and its console.warn are EXPECTED. Do not treat them as a symptom, and
+ * do not reopen the sign-string / field-order / charset family -- node-forge throws for a wrong KEY
+ * and returns false for a wrong sign-string, and we get the throw. See
+ * docs/paycloud-gateway-public-key.md.
+ */
 export function normalizeGatewayPublicKeyEnvToPem() {
   return normalizePublicKeyMaterialToPem(process.env.PAYCLOUD_GATEWAY_PUBLIC_KEY)
 }

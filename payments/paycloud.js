@@ -1026,6 +1026,11 @@ export async function queryPaymentOrder(input, options = {}) {
         console.warn('[PayCloud][QUERY] Response signature did not verify (ignored; code ok)')
       }
     } catch (err) {
+      // EXPECTED, PERMANENTLY, AND NOT A SYMPTOM. Finatic has no merchant-facing public key --
+      // ruled 2026-08-22, #107 closed on that basis -- so this fires on ~100% of live traffic and
+      // always will. The response is trusted unverified; settlement rests on the outbound
+      // order.query instead, authenticated by our own credentials over TLS. Do not chase a key and
+      // do not silence this without reading docs/paycloud-gateway-public-key.md.
       console.warn('[PayCloud][QUERY] Response signature verification threw (ignored):', err?.message || err)
     }
   }

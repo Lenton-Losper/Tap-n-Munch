@@ -23,6 +23,7 @@ import {
   type DateRangePresetId,
 } from '@/lib/reports/date-range-presets'
 import { DEFAULT_REPORT_TIMEZONE } from '@/lib/reports/format-report-datetime'
+import { REPORTING_COPY } from '@/lib/reporting/reporting-copy'
 
 type OrderItem = {
   name?: string
@@ -49,9 +50,11 @@ type HistoryResponse = {
   total: number
   page: number
   pageSize: number
-  totalRevenue: number
-  totalOrders: number
-  avgOrderValue: number
+  /** null when the venue has not opened -- the figures are withheld, not zero. */
+  totalRevenue: number | null
+  totalOrders: number | null
+  avgOrderValue: number | null
+  preLaunch?: { name: string; reason: string } | null
   error?: string
 }
 
@@ -532,6 +535,30 @@ export function OrderHistoryContent() {
           <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-800">{error}</div>
         ) : (
           <>
+            {/*
+              A venue that has not opened reports test data, not trade. Ruled 2026-08-21.
+
+              WITHHELD, NOT ZEROED, and that distinction is the whole point. Rendering
+              `currency(0)` in the same three cards would be indistinguishable from a venue that
+              genuinely took nothing all week -- a plausible, well-formatted, wrong number, which is
+              the failure shape this codebase keeps paying for. The cards are replaced outright so
+              there is no figure to misread.
+
+              THE ORDERS THEMSELVES ARE UNTOUCHED. The table below still lists every row, so nothing
+              is hidden from inspection -- only the roll-up is suppressed. No financial record was
+              altered to produce this, and deleting the PRE_LAUNCH_RESTAURANTS entry brings every
+              figure back.
+            */}
+            {data?.preLaunch ? (
+              <div className="rounded-2xl border border-[#E9E9E7] bg-[#FAFAF8] p-5">
+                <p className="text-sm font-medium text-[#37352F]">
+                  {REPORTING_COPY.preLaunchTitle}
+                </p>
+                <p className="mt-1 text-xs text-[#6B675F]">
+                  {REPORTING_COPY.preLaunchBody}
+                </p>
+              </div>
+            ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
                 <p className="text-sm text-[#6B675F]">Total Revenue</p>
@@ -551,6 +578,7 @@ export function OrderHistoryContent() {
                 </p>
               </div>
             </div>
+            )}
 
             <div className="overflow-hidden rounded-2xl border border-[#E9E9E7] bg-white">
               <div className="overflow-x-auto">
@@ -583,7 +611,15 @@ export function OrderHistoryContent() {
                           <td className="px-4 py-3 font-medium text-[#37352F]">
                             #{order.order_number ?? '—'}
                           </td>
-                          <td className="px-4 py-3 text-[#37352F]">{order.table_number ?? '—'}</td>
+                          {/*
+                            #325. `??` substitutes only for null/undefined, and the terminal POS
+                            route hardcodes `tableNumber: 0` — so every POS row rendered a literal
+                            "0" in the Table column rather than a dash. 0 is never a real table:
+                            every route that accepts one rejects `tableNumber <= 0` as invalid.
+                            `||` is therefore correct here, and is what the neighbouring
+                            `memberName` cell already uses.
+                          */}
+                          <td className="px-4 py-3 text-[#37352F]">{order.table_number || '—'}</td>
                           <td className="px-4 py-3 text-[#37352F]">{order.memberName || '—'}</td>
                           <td className="max-w-xs px-4 py-3 text-[#6B675F]">
                             <span className="line-clamp-2">{formatItemsSummary(order.items)}</span>
