@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { fetchGuestOrdersBySession, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
-import { getCurrentSession, clearSession, getSessionInfo } from '@/lib/session'
+import { getCurrentSession, getSessionInfo } from '@/lib/session'
 import { readTabSessionId } from '@/lib/tab-storage'
 // #313: the way back after a table close. The path only -- this screen never redirects on its own.
 import { tableLandingPath } from '@/lib/session-token-client'
@@ -29,6 +29,7 @@ import {
   requestEditRefusalReason,
 } from '@/lib/orders/edit-lock'
 import {
+  NO_SESSION_NOTICE_MS,
   ORDER_PLACED_BANNER_MS,
   ORDER_PLACED_PARAM,
   QR_REDESIGN_PENDING_COPY,
@@ -131,9 +132,18 @@ export default function MyOrdersPage() {
 
   useEffect(() => {
     if (!sessionId) {
-      alert('No active session. Please scan the QR code to start ordering.')
-      router.push(`/menu/${restaurantId}?table=${tableNumber}`)
-      return
+      /**
+       * IN-PAGE NOTICE, NOT A DIALOG. This used to be `alert()`, which blocks the page, is
+       * unstyled, and names the hostname to a diner. The redirect is unchanged; the notice is
+       * rendered first and held briefly so it can actually be read, rather than flashing past.
+       */
+      // No setState here: the notice renders off `!sessionId`, which is already derived. Setting
+      // a flag would only restate it and trips the cascading-render rule for nothing.
+      const t = window.setTimeout(
+        () => router.push(`/menu/${restaurantId}?table=${tableNumber}`),
+        NO_SESSION_NOTICE_MS,
+      )
+      return () => window.clearTimeout(t)
     }
 
     const loadOrders = async () => {
@@ -167,13 +177,22 @@ export default function MyOrdersPage() {
     }
   }, [sessionId, restaurantId, tableNumber, router])
 
-  const handleEndSession = () => {
-    if (confirm('Are you sure you want to end your session?')) {
-      clearSession()
-      alert('Session ended. Thank you!')
-      router.push(`/menu/${restaurantId}/v2?table=${tableNumber}`)
-    }
-  }
+  /**
+   * END SESSION REMOVED 2026-08-23, and it must not come back.
+   *
+   * It called clearSession() — three localStorage keys and one sessionStorage key — and NOTHING
+   * server-side. The server session lives on `restaurant_tables.current_session_version` and was
+   * untouched. So a customer who pressed it kept a live session on the table while losing the only
+   * ids that addressed their orders: re-scanning minted a NEW session id, and their existing orders
+   * stayed keyed to the OLD one. They came back to an empty list with live orders still cooking.
+   * That is lost food, not a UX wart.
+   *
+   * It also fired confirm() and alert(). No customer screen fires a native dialog.
+   *
+   * A session ends when STAFF close the table, which bumps current_session_version. Nothing else
+   * ends one — there is no expiry and no reaper. See the filed issue; removing this button does not
+   * create that gap, but it does remove the only other exit.
+   */
 
   /**
    * ONE VOCABULARY, and it lives in lib/orders/customer-status.ts.
@@ -279,7 +298,8 @@ export default function MyOrdersPage() {
       </div>
     )
   }
-  /**
+
+  /**
    * ONE CARD, rendered by both sections. Extracted 2026-08-18 with the live/earlier split: the
    * alternative was 120 lines of duplicated JSX that would drift the moment either half changed.
    */
@@ -451,6 +471,31 @@ export default function MyOrdersPage() {
       )
   }
 
+  /**
+   * The no-session state renders IN THE PAGE. The effect above redirects shortly after; this is
+   * what the customer sees in the meantime, and it replaces a native alert().
+   */
+  if (!sessionId) {
+    return (
+      <div className="min-h-screen bg-background">
+        <div className="max-w-2xl mx-auto p-6">
+          <div
+            role="status"
+            aria-live="polite"
+            className="border border-border bg-card px-4 py-6 text-center"
+          >
+            <p className="font-serif text-xl font-bold text-foreground mb-2">
+              {QR_REDESIGN_PENDING_COPY.noActiveSessionTitle}
+            </p>
+            <p className="font-sans text-sm text-muted-foreground">
+              {QR_REDESIGN_PENDING_COPY.noActiveSessionBody}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto p-6">
@@ -473,12 +518,6 @@ export default function MyOrdersPage() {
             >
               <ArrowLeft className="w-4 h-4 stroke-[1.5]" />
               Back
-            </button>
-            <button
-              onClick={handleEndSession}
-              className="text-destructive font-sans font-semibold text-sm hover:opacity-70 transition"
-            >
-              End Session
             </button>
           </div>
 

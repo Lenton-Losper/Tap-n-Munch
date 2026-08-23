@@ -76,6 +76,17 @@ export const QR_REDESIGN_PENDING_COPY = {
   tabOrderNotYetNumbered: 'Not numbered yet',
 
   /**
+   * Shown IN THE PAGE when a customer lands on My Orders with no session — after ending one, or
+   * on a link opened in a browser that never scanned. Signed off by the owner 2026-08-23.
+   *
+   * It replaces a native `alert()`. A customer screen must never fire a browser dialog: it is
+   * unstyled, it blocks the page, it says the site's hostname to a diner, and on the QR flow it
+   * appears over a screen the customer never chose to open.
+   */
+  noActiveSessionTitle: 'no active session',
+  noActiveSessionBody: 'scan the QR code at your table to start ordering',
+
+  /**
    * SIGNED OFF 2026-08-18. Renders: the order editor, a grey line under a row whose desired
    * quantity exceeds what the order currently holds. `{n}` is the difference.
    *
@@ -204,6 +215,13 @@ export const QR_REDESIGN_PENDING_COPY = {
  * Not a copy string, but it belongs beside the banner it governs: a value chosen at the render
  * site is a value nobody can find later.
  */
+/**
+ * How long the no-session notice is held before redirecting. Long enough to read a two-line
+ * message, short enough not to feel like a stall. The redirect is not optional — the notice
+ * explains it rather than replacing it.
+ */
+export const NO_SESSION_NOTICE_MS = 2600
+
 export const ORDER_PLACED_BANNER_MS = 6000
 
 /** The query parameter the cart sets on its way to My Orders. */
