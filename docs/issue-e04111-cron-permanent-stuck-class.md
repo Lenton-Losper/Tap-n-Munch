@@ -12,7 +12,9 @@ is not a format complaint — it means *"I have no record of this `merchant_orde
 **It is time-dependent, and this is the single most important fact about it.** On 2026-08-03,
 order **#149** logged E04111 for reference `FT17857583233613303` at 13:58:48 and was confirmed
 **PAID on that same reference at 13:59:10** — 22 seconds later
-(`docs/finatic-questions-for-vernon.md`). So E04111 means "not registered at the gateway
+(re-verified 2026-08-24 against production `audit_logs`: order #149 at Mingle, reference
+`FT17857583233613303`, `payment.verification_uncertain` 11:58:48 -> `payment.completed` 11:59:10).
+So E04111 means "not registered at the gateway
 *yet*", and a single observation is never proof that no payment exists.
 
 ## Why orders get stuck forever
@@ -166,7 +168,9 @@ The POS client is a separate APK, not in this repo.
 
 ## Related
 
-- `docs/finatic-questions-for-vernon.md` — the open questions with Finatic, incl. #149.
+- ~~`docs/finatic-questions-for-vernon.md`~~ — **#260: this file exists on no branch and never
+  has.** The #149 evidence it was cited for lives in production `audit_logs` and is quoted above.
+  The live Finatic question is now `docs/finatic-ask-trans-status-semantics.md`.
 - `scripts/diagnose-mingle-pending-20260803.ts` — read-only checklist.
 - `scripts/resolve-mingle-pending-20260803.ts` — gated manual resolution.
 - `scripts/control-e04111-discriminator-20260803.ts`,

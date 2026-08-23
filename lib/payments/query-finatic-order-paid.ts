@@ -24,10 +24,19 @@ export type FinaticOrderPaidResult = {
  * non-success `body.code`, so without this check E04111 is indistinguishable from a
  * network timeout at every catch site.
  *
- * IMPORTANT: this is NOT proof that no payment exists. E04111 is time-dependent -- order
- * #149 returned E04111 at 13:58:48 and was confirmed PAID on the same reference 22 seconds
- * later (docs/finatic-questions-for-vernon.md). It means "not registered at the gateway
- * *yet*". A single observation is never a terminal answer.
+ * IMPORTANT: this is NOT proof that no payment exists. E04111 is time-dependent, and the
+ * evidence is IN THE DATABASE rather than in a document -- order #149 at Mingle
+ * (paycloud_merchant_order_no FT17857583233613303, 2026-08-03) has:
+ *
+ *     11:58:48  payment.verification_uncertain
+ *     11:59:10  payment.completed          <- 22 seconds later, same reference
+ *
+ * Re-verified against production audit_logs 2026-08-24. It means "not registered at the
+ * gateway *yet*". A single observation is never a terminal answer.
+ *
+ * #260: this used to cite docs/finatic-questions-for-vernon.md, which EXISTS ON NO BRANCH and
+ * never has (`git log --all` returns nothing). The claim was sound; its citation was not. Cite
+ * the audit rows -- they can be re-queried, and a document that was never written cannot.
  */
 export function isFinaticMerchantOrderInvalidError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
