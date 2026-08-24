@@ -13,6 +13,72 @@ jobs:
   # Issue #141: production had no Lint/Typecheck/unit-test gate while staging.yml did, so
   # production was the LESS verified path. ~80 TS2339 errors deployed to production from `main`
   # and were only caught on the way to staging.
+  staging-health:
+    # WHY THIS GATE EXISTS, and why it is HERE rather than on the staging workflow.
+    #
+    # The staging pipeline is build-verification -> deploy -> verify, and `verify` is DEPLOYMENT
+    # verification: it drives the deployed worker. It therefore cannot gate the deploy it verifies
+    # without being circular. Asking it to was the obvious answer and it is not available.
+    #
+    # What actually caused harm on 2026-08-24 was not staging serving a broken banner -- staging is
+    # a test environment and that is survivable. It was PROMOTING that code to production while the
+    # staging E2E had been red for twelve consecutive runs, naming the exact defect, on the exact
+    # commit that caused it. The signal existed and nothing consumed it. This consumes it.
+    #
+    # Deliberately "the latest staging run", not "the run for this commit": a promotion to main is a
+    # cherry-pick and carries a DIFFERENT sha, so a per-commit lookup would match nothing and pass
+    # vacuously -- which is the failure mode this whole gate exists to stop.
+    if: ${{ inputs.skip_verification != true }}
+    runs-on: ubuntu-latest
+    name: Staging Health (last staging run must be green)
+    #
+    # THIS GATE HAD NEVER RUN. `gh run list --workflow=staging.yml` calls
+    # /repos/{owner}/{repo}/actions/workflows/{file}/runs, which needs the `actions: read`
+    # scope. Without it the step died on
+    #
+    #     HTTP 403: Resource not accessible by integration
+    #
+    # -- so from the day it was added it FAILED rather than evaluating, and every production
+    # deploy either went out with skip_verification or never reached it. A gate that 403s is
+    # decorative. That is the same shape as the E2E which was red for twelve runs while deploys
+    # shipped past it -- which is the very thing this job exists to prevent.
+    #
+    # `contents: read` is here NOT as loosening but because a job-level `permissions:` block
+    # REPLACES the workflow default outright rather than adding to it. Listing only
+    # `actions: read` would strip the token's repo access and the CLI could not resolve
+    # --repo at all. These two are the minimum: read the repo, read its workflow runs.
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Refuse to promote from a red staging
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow=staging.yml                   --limit 1 --json databaseId,conclusion,headSha,status)
+          echo "latest staging run: $RUN"
+          CONC=$(echo "$RUN" | jq -r '.[0].conclusion // "none"')
+          STAT=$(echo "$RUN" | jq -r '.[0].status // "none"')
+          SHA=$(echo "$RUN"  | jq -r '.[0].headSha // "none"')
+          if [ "$STAT" != "completed" ]; then
+            echo "STAGING HEALTH: the latest staging run is '$STAT', not completed."
+            echo "Wait for it, or dispatch with skip_verification if this is an emergency."
+            exit 1
+          fi
+          if [ "$CONC" != "success" ]; then
+            echo "STAGING HEALTH: FAILED -- latest staging run ($SHA) concluded '$CONC'."
+            echo ""
+            echo "Production is not promoted from a staging that has not verified. On 2026-08-24"
+            echo "twelve deploys shipped over a red E2E that named the exact live defect, and the"
+            echo "code reached production anyway. That is what this refuses."
+            echo ""
+            echo "Fix staging, or dispatch with skip_verification=true -- which is recorded here."
+            exit 1
+          fi
+          echo "STAGING HEALTH: OK -- latest staging run ($SHA) is green."
+
+
   build-verification:
     # The override exists because this workflow is the only route to production. If `main` goes
     # red for an unrelated reason, an urgent hotfix must still be shippable. Defaults to false,
@@ -104,6 +170,19 @@ jobs:
       # door that matters without breaking how the work gets done.
       - name: No PENDING COPY in shippable source
         run: node scripts/check-no-pending-copy.mjs
+      # #334. The PENDING COPY gate above catches a placeholder someone REMEMBERED TO MARK. It
+      # cannot catch a string that never carried a marker and never lived in a copy file -- which is
+      # exactly what 'Order sent - waiting for the restaurant to confirm' was when it reached
+      # production inside ActiveOrderBanner.tsx. Enforcement was opt-in and the one string that
+      # mattered had opted out.
+      #
+      # This asks the class question instead: any customer sentence written inline under app/menu/**
+      # fails the build. NOTHING IS EXCLUDED -- no file carve-outs and no per-string allowlist,
+      # because an exception list is how the previous convention decayed into something you had to
+      # remember to grep. 188 call sites were moved to lib/customer-copy before switching it on, so
+      # it starts green rather than starting with a backlog nobody will clear.
+      - name: Customer copy under app/menu is sourced from lib/customer-copy
+        run: node scripts/check-menu-copy-sourced.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the
       # UNPREFIXED SUPABASE_* secrets, which in this repo are the PRODUCTION ones (see the
       # migration-drift step below, which uses the same names against the production DB), and
@@ -120,11 +199,13 @@ jobs:
         run: npx jest --ci --forceExit --testPathPattern="capabilities|table-close-payment-safety|production-deploy-gate|migration-inline-check"
 
   deploy:
-    needs: build-verification
+    needs: [build-verification, staging-health]
     # A skipped `needs:` dependency skips the dependent job by default, so without this the
     # emergency override would deploy nothing instead of deploying unverified. `!cancelled()`
     # rather than `always()` so a cancelled run does not still deploy.
-    if: ${{ !cancelled() && (needs.build-verification.result == 'success' || needs.build-verification.result == 'skipped') }}
+    if: ${{ !cancelled()
+      && (needs.build-verification.result == 'success' || needs.build-verification.result == 'skipped')
+      && (needs.staging-health.result == 'success' || needs.staging-health.result == 'skipped') }}
     runs-on: ubuntu-latest
     name: Build and Deploy flashtap-production
     steps:
