@@ -4,8 +4,68 @@ Written 2026-08-24. **Read the first two sections before touching the terminal r
 
 The server now answers `success: false` for `outcome: 'left_pending_finatic_uncertain'`. That change
 is live. Devices in the field were written against the old contract, where that same case answered
-`success: true`. The staging fleet spans **1.31 → 1.88 across 19 terminals, seven of them on 1.34**,
-and #868 happened on **1.89** — so old builds are receiving a value they have never seen.
+`success: true`, so old builds are receiving a value they have never seen.
+
+**Superseded 2026-08-24:** this section originally cited staging's 19 terminals. Production is 87
+across eleven versions with 27 unknowns — see §0, which replaces that reasoning entirely.
+
+---
+
+## 0. THE PRODUCTION FLEET, measured 2026-08-24 — read this before anything else
+
+**87 terminals. Eleven versions. 27 reporting no version at all.** Staging's 19 were not
+representative and nothing below should be reasoned about from them.
+
+```
+1.89 x4    1.85 x12   1.78 x1    1.75 x2    1.69 x10
+1.59 x3    1.34 x10   1.30 x8    1.25 x1    1.18 x9
+none x27
+```
+
+`success: false` for the uncertain outcome is **already reaching all of them.**
+
+### What "no version" means, and it is the worst reading
+
+`restaurant_terminals.app_version` is written **only** by the heartbeat, **only** when the device
+sends `appVersion`, and **is never cleared**. A device that has ever reported a version keeps it
+forever.
+
+So a device that is heartbeating *now* and still shows NULL has **never sent one** — which means a
+build older than the field itself. **The 27 unknowns are most likely the oldest software in the
+fleet, not unidentified modern devices.** `probe-terminal-versions.ts` now partitions them three
+ways — never activated, heartbeating-but-versionless, long stale — and cross-checks against
+`payment_events.app_version`, which records the version *at the time of a sale* and can date a device
+that has since gone quiet.
+
+Run it again before deciding: the partition is the number that matters, not the 27.
+
+### 87 rows is not 87 terminals
+
+Several were last seen 6000+ minutes ago. The probe now reports the fleet in four windows — 15
+minutes, 24 hours, 7 days, 30 days — plus never-seen.
+
+**The rollout is the 30-day set.** A till that is off tonight is still a terminal that will take a
+card on Monday; "online now" understates the fleet as badly as the row count overstates it.
+
+### What this changes about the decision
+
+The question was *"what does a 1.34 device do with `success: false`"*. With eleven versions and 27
+unknowns it is now **"what do eleven builds plus an unknown tail do"**, and that is not answerable
+by reading one handler. It has to be answered by the **oldest** build still in service, because that
+is the one whose behaviour nobody has looked at in the longest time.
+
+**Was `success: false` safe to ship ahead of the APK?** Honestly: it was shipped without knowing, and
+that is now visible. The direction is still right — the old contract released food on an unconfirmed
+payment (#868, N$33), and no reading of a failure screen is worse than that. But the trade was made
+against a fleet assumed to look like staging's 19, and it looks like 87 across eleven versions.
+
+Two things follow, in order:
+
+1. **Establish what the oldest in-service build does** (§1). If a shared HTTP client retries, that is
+   an unattended double-charge path across an unknown number of devices and the APK is tonight's
+   work.
+2. **If it does not auto-retry**, the exposure is one deliberate operator action per occurrence, and
+   the APK follows the normal release path — with §1b's design decided before it is written.
 
 ---
 
@@ -253,6 +313,44 @@ immediately** — that is an unattended double-charge path on every affected dev
 occurrence**, which is materially slower, and the APK can follow the normal release path.
 
 Either way, run script 5 first: it tells you whether this has already happened.
+
+---
+
+## 2b. DOES SIGNAL B SHARE SIGNAL A's BLIND SPOT? NO — DIFFERENT ENDPOINT, DIFFERENT GAP
+
+This matters because signal A looked blind on most card traffic, and the two are often assumed to
+stand or fall together. They do not.
+
+**They are posted to different endpoints, by different code, at different moments:**
+
+| | signal A | signal B |
+|---|---|---|
+| written by | the DEVICE, `POST /api/terminal/payment-events/sale` | OUR SERVER, in the payment route |
+| trigger | the device chooses to report a completed sale | a second success callback is refused |
+| needs the device to | call a SECOND endpoint after paying | call the payment endpoint at all |
+| blind when | the build never posts sale events | the second charge never reached us |
+
+A build that calls `POST /orders/:id/payment` but never `POST /payment-events/sale` is entirely
+possible — they are separate calls, and the sale event was added later. **Such a build is invisible
+to A and fully visible to B.** That is the common case among old software, which is precisely the
+tail that worries us.
+
+So signal B is **narrower in what it detects** — only refused second callbacks, not every duplicate
+— and **broader in which devices it covers**. It requires nothing of the device beyond reaching the
+endpoint it was already going to call.
+
+### The gap they DO share
+
+A charge taken on a device that then reaches our server for neither call — no payment callback, no
+sale event — leaves **no trace at all**, and no query can find what was never sent. Both signals are
+blind there, and nothing can fix that server-side. It is an argument for the gateway's own
+transaction listing being the authority, not our database.
+
+### And B has a start date
+
+Signal B begins the moment the promotion deploys. It says nothing about the past. **Only signal A can
+see history**, which is why the sale-event gap is worth understanding rather than dismissing:
+whatever A cannot see before today is permanently unknowable.
 
 ---
 
