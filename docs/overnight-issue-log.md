@@ -97,3 +97,22 @@ skips shared a reason**, so the stop condition did not fire.
 A single order with `channel = 'table'` and `table_number = 0`. POS legitimately has no table;
 a table-channel order should not. One row, unrelated to #325's display bug, and the fix now renders
 it as `—` rather than `0` — which hides it rather than surfacing it. Noted on #325.
+
+
+---
+
+## RETRACTED — the stale link is UNEXPLAINED, not fixed
+
+I reported that `browse/page.tsx` and `tab/page.tsx` place orders without persisting
+`last_order_id`, and that this caused the confirmation link to carry an older order's id.
+
+**That is wrong.** Neither file places an order; neither even contains an `orderId`. I inferred it
+from a list of write sites without checking whether those screens were writers at all.
+
+The client-side order creators are **three**, and all three persist: `cart/page.tsx` (two sites) and
+`order-secure/page.tsx`. The fourth apparent creator, `createOrder` in `lib/supabase/orders.ts:401`,
+is called only by server routes.
+
+**`lib/orders/last-placed-order.ts` is kept**, because the duplicated two-key convention was real and
+a fifth screen will appear. **It is not the fix for the stale link.** The cause is open — see the
+investigation below.
