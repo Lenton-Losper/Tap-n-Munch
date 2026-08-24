@@ -124,18 +124,32 @@ async function main() {
   if (overcharged === 0) console.log('  none')
 
   // ---------------------------------------------------------------- 3. the reverse blind spot
-  const paid = await all<{ id: string; order_number: number; payment_channel: string | null }>((f, t) =>
-    db.from('orders').select('id, order_number, payment_channel').eq('payment_status', 'paid').range(f, t),
+  const paid = await all<{ id: string; order_number: number; payment_channel: string | null; paycloud_merchant_order_no: string | null }>((f, t) =>
+    db
+      .from('orders')
+      .select('id, order_number, payment_channel, paycloud_merchant_order_no')
+      .eq('payment_status', 'paid')
+      .range(f, t),
   )
-  const posPaid = paid.filter((o) => String(o.payment_channel ?? '').includes('card') || o.payment_channel == null)
+  // NARROWED 2026-08-24. This used to include `payment_channel == null`, which swept in every
+  // order that was never a terminal card sale -- cash, hosted checkout, legacy rows -- and
+  // reported 1144 of 1633 as a blind spot. That number was an artefact of the filter.
+  //
+  // A sale event is expected only where a card reader settled the order: `card_manual` (written
+  // by the terminal POS route and by the cart's pay-by-card choice) WITH a gateway reference.
+  // scripts/prod/probe-sale-event-gap.ts partitions this properly.
+  const posPaid = paid.filter(
+    (o) => String(o.payment_channel ?? '') === 'card_manual' && Boolean(o.paycloud_merchant_order_no),
+  )
   const withoutEvent = posPaid.filter((o) => !byOrder.has(String(o.id)))
   console.log('')
   console.log('='.repeat(78))
-  console.log('3. FOR CONTEXT — paid card orders with NO sale event at all')
+  console.log('3. THE BLIND SPOT — TERMINAL-SETTLED orders with NO sale event')
   console.log('='.repeat(78))
   console.log(`  ${withoutEvent.length} of ${posPaid.length}`)
-  console.log('  This is the reverse blind spot: if a device does not post sale events, check 1 above')
-  console.log('  cannot see ITS double charges either. A high number here weakens check 1.')
+  console.log('  card_manual WITH a gateway reference, so a reader settled it and a sale event was')
+  console.log('  expected. If a device does not post them, check 1 cannot see ITS double charges.')
+  console.log('  A high number here weakens check 1 in direct proportion.')
 
   console.log('')
   console.log('PROBE_DUPLICATE_CHARGES_OK')

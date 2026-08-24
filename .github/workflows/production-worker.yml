@@ -31,6 +31,25 @@ jobs:
     if: ${{ inputs.skip_verification != true }}
     runs-on: ubuntu-latest
     name: Staging Health (last staging run must be green)
+    #
+    # THIS GATE HAD NEVER RUN. `gh run list --workflow=staging.yml` calls
+    # /repos/{owner}/{repo}/actions/workflows/{file}/runs, which needs the `actions: read`
+    # scope. Without it the step died on
+    #
+    #     HTTP 403: Resource not accessible by integration
+    #
+    # -- so from the day it was added it FAILED rather than evaluating, and every production
+    # deploy either went out with skip_verification or never reached it. A gate that 403s is
+    # decorative. That is the same shape as the E2E which was red for twelve runs while deploys
+    # shipped past it -- which is the very thing this job exists to prevent.
+    #
+    # `contents: read` is here NOT as loosening but because a job-level `permissions:` block
+    # REPLACES the workflow default outright rather than adding to it. Listing only
+    # `actions: read` would strip the token's repo access and the CLI could not resolve
+    # --repo at all. These two are the minimum: read the repo, read its workflow runs.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Refuse to promote from a red staging
         env:
@@ -162,6 +181,12 @@ jobs:
       # because an exception list is how the previous convention decayed into something you had to
       # remember to grep. 188 call sites were moved to lib/customer-copy before switching it on, so
       # it starts green rather than starting with a backlog nobody will clear.
+      # A @ts-nocheck file has opted out of the one tool that catches a named import which does
+      # not exist. ActiveOrderBanner imported and CALLED orderPlacedAtMs for ten hours -- tsc
+      # skipped the file, jest turned the missing import into `undefined` without throwing, and
+      # only the bundler noticed, by which point it was a failed deploy on every push.
+      - name: Named imports in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-imports-resolve.mjs
       - name: Customer copy under app/menu is sourced from lib/customer-copy
         run: node scripts/check-menu-copy-sourced.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the

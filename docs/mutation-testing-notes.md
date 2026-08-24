@@ -138,3 +138,39 @@ database at all: **5 of 5 failed**, so it genuinely exercises its success path.
    renders them identically will eventually tell you your test suite is worthless, and it will be
    wrong.
 5. **Mutate the file the suite reads, not the file its name suggests.**
+
+---
+
+## A partition over an empty map is not a result (2026-08-24)
+
+Same family as the two dead detectors above, and it survived long enough to reach a report.
+
+`probe-sale-event-gap.ts` partitioned paid orders by `audit_logs.action = 'order.paid'`.
+**That action has never existed.** `markOrderPaidConfirmed` writes `payment.completed`, hardcoded,
+with no exported constant -- so the name was guessable, and I guessed.
+
+The query returned **zero rows across 1633 paid orders**. Every bucket collapsed into
+`(no order.paid audit row)`, and the script printed that breakdown as though it were an answer. I
+then drew a conclusion from it -- "the detector is not blind on terminal traffic" -- which was not
+measured from anything.
+
+**The control collapsed too, and that is what should have caught it.** A control that agrees with
+the result for the same reason the result is wrong is not a control.
+
+### THE RULE
+
+> **An instrument that groups by a key must refuse to report when the key is mostly absent.**
+
+A `groupBy` never fails. It silently produces one enormous unknown bucket, formatted exactly like a
+finding. So:
+
+1. **Count the coverage before partitioning**, and print it: "grouping key present on N of M rows".
+2. **Refuse below a threshold.** The probe now stops at under 20% and says why, rather than
+   rendering a partition nobody can use.
+3. **Read the constant, never the string.** Every action name in this codebase that is exported --
+   `ORDER_CANCELLED_ACTION`, `PAYMENT_STATUS_CHANGED_ACTION`, `SECOND_PAYMENT_REFUSED_ACTION` --
+   is exported precisely so a consumer cannot guess. `payment.completed` is the one on the paid
+   path that is NOT, which is why this happened there and not elsewhere.
+4. **Prefer a discriminator that does not depend on the instrument.** The probe now leads with a
+   structural one -- `payment_channel = card_manual` AND a gateway reference -- which works on
+   history predating any audit row.
