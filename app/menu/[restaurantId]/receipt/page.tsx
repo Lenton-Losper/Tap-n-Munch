@@ -29,6 +29,7 @@ import {
   type TabRow,
 } from '@/lib/tab-session'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -428,7 +429,7 @@ export default function ReceiptPage() {
           <p className="text-muted-foreground font-sans mb-6">
             {tableNumber 
               ? `No active orders found for Table ${tableNumber}.`
-              : 'No active orders found.'}
+              : MENU_COPY.receiptNoActiveOrders}
           </p>
           {restaurantId && tableNumber && (
             <Button
@@ -535,7 +536,7 @@ export default function ReceiptPage() {
                     {order.items.map((item: any, idx: number) => (
                       <div key={idx} className="flex justify-between text-sm font-sans">
                         <span className="text-muted-foreground">
-                          {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
+                          {(item?.quantity || 1)}× {item?.name || MENU_COPY.receiptUnknownItem}
                           {lineConfigurationSummary(item) ? (
                             <span className="block text-xs">
                               {lineConfigurationSummary(item)}
