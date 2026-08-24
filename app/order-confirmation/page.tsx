@@ -15,6 +15,11 @@ import {
   fetchGuestOrdersBySession,
   GUEST_ORDER_POLL_MS,
 } from '@/lib/guest-orders/client'
+import {
+  CONFIRM_SETTLE_MAX_ATTEMPTS,
+  CONFIRM_SETTLE_RETRY_MS,
+  QR_REDESIGN_PENDING_COPY,
+} from '@/lib/customer-copy/qr-redesign-copy'
 
 type OrderDoc = {
   id: string
@@ -299,6 +304,12 @@ function OrderConfirmationContent() {
   const [notFoundReason, setNotFoundReason] = useState<
     'tn-miss' | 'no-context' | 'fallback-empty' | null
   >(null)
+  /**
+   * #337. A reference that has not resolved YET and one that never will are different states.
+   * The page rendered one screen for both, telling a customer to refresh a lookup that could
+   * never succeed. This counts how many times we have re-asked before deciding it never will.
+   */
+  const [settleAttempts, setSettleAttempts] = useState(0)
   const [restaurant, setRestaurant] = useState<{ name?: string; currency?: string } | null>(null)
   const [resolvedRestaurantId, setResolvedRestaurantId] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<ReceiptView | null>(null)
@@ -401,7 +412,18 @@ function OrderConfirmationContent() {
     return () => {
       cancelled = true
     }
-  }, [orderRef, restaurantIdParam, searchParams])
+  }, [orderRef, restaurantIdParam, searchParams, settleAttempts])
+
+  /**
+   * STILL SETTLING -> retry ITSELF. A customer must never be told to refresh a page on the
+   * payment path. Bounded, because an order id that does not exist will not start existing.
+   */
+  useEffect(() => {
+    if (!notFound || notFoundReason !== 'tn-miss') return
+    if (settleAttempts >= CONFIRM_SETTLE_MAX_ATTEMPTS) return
+    const t = window.setTimeout(() => setSettleAttempts((n) => n + 1), CONFIRM_SETTLE_RETRY_MS)
+    return () => window.clearTimeout(t)
+  }, [notFound, notFoundReason, settleAttempts])
 
   useEffect(() => {
     const rid = resolvedRestaurantId || restaurantIdParam
@@ -457,6 +479,20 @@ function OrderConfirmationContent() {
   ])
 
   const currency = restaurant?.currency || 'N$'
+
+  /** #337. Their order probably exists — this is where they can see it. */
+  const goToMyOrders = () => {
+    if (typeof window === 'undefined') return
+    const rid =
+      resolvedRestaurantId || restaurantIdParam || localStorage.getItem('current_restaurant_id') || ''
+    const table = tableForLinks?.trim() || sessionStorage.getItem('flashtap_return_table') || ''
+    if (!rid) return router.push('/menu')
+    router.push(
+      table
+        ? `/menu/${encodeURIComponent(rid)}/my-orders?table=${encodeURIComponent(table)}`
+        : `/menu/${encodeURIComponent(rid)}/my-orders`,
+    )
+  }
 
   const goBackToMenu = () => {
     if (typeof window === 'undefined') return
@@ -563,12 +599,23 @@ function OrderConfirmationContent() {
     const noContext = !orderRef && notFoundReason === 'no-context'
     const fallbackEmpty = !orderRef && notFoundReason === 'fallback-empty'
     const tnMiss = orderRef && notFoundReason === 'tn-miss'
+      /**
+       * STILL SETTLING vs CANNOT FIND. Same missing row; different truth. While we are still
+       * within the retry window the reference may simply not be queryable yet, so the customer
+       * is told it is confirming and the page re-asks itself. Once the window closes, the honest
+       * answer is that it will not resolve, and the advice changes with it.
+       */
+      const settling = Boolean(tnMiss) && settleAttempts < CONFIRM_SETTLE_MAX_ATTEMPTS
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-6">
           <AlertCircle className="w-16 h-16 text-destructive mx-auto stroke-[1.5]" aria-hidden />
           <h1 className="text-2xl font-serif font-bold text-foreground">
-            {tnMiss ? 'Order not found' : 'Unable to show receipt'}
+              {settling
+                ? QR_REDESIGN_PENDING_COPY.confirmSettlingTitle
+                : tnMiss
+                  ? QR_REDESIGN_PENDING_COPY.confirmCannotFindTitle
+                  : 'Unable to show receipt'}
           </h1>
           {noContext ? (
             <p className="text-muted-foreground font-sans text-sm">
@@ -585,25 +632,34 @@ function OrderConfirmationContent() {
             </p>
           ) : tnMiss ? (
             <p className="text-muted-foreground font-sans text-sm">
-              We couldn&apos;t find an order for this payment reference. If you completed payment, wait
-              a moment and refresh, or contact the restaurant.
+                {settling
+                  ? QR_REDESIGN_PENDING_COPY.confirmSettlingBody
+                  : QR_REDESIGN_PENDING_COPY.confirmCannotFindBody}
             </p>
           ) : (
             <p className="text-muted-foreground font-sans text-sm">
               Something went wrong loading your receipt. Please go back to the menu and try again.
             </p>
           )}
-          {orderRef ? (
-            <p className="text-foreground font-sans text-xs break-all text-left bg-muted/50 border border-border p-3">
-              Reference: <span className="font-semibold">{orderRef}</span>
-            </p>
-          ) : null}
+          {/*
+            #337. The raw reference is NOT rendered: a UUID the customer cannot quote to staff and
+            which means nothing to them. Kept as a data attribute so support can read it off the
+            DOM; it is already in the console log on the failing path.
+          */}
+          <span data-order-ref={orderRef || ''} hidden />
+          {/*
+            #337. On the cannot-find state this used to go to the MENU — away from the order the
+            customer is looking for. Their order probably exists; My orders is where they can see
+            it. The other states keep the menu, which is the right destination for them.
+          */}
           <Button
             type="button"
-            onClick={goBackToMenu}
+            onClick={tnMiss && !settling ? goToMyOrders : goBackToMenu}
             className="w-full bg-foreground text-background hover:bg-foreground/90 py-6 font-semibold font-sans"
           >
-            Back to menu
+            {tnMiss && !settling
+              ? QR_REDESIGN_PENDING_COPY.confirmCannotFindButton
+              : 'Back to menu'}
           </Button>
         </div>
       </div>

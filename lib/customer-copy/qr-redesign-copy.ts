@@ -76,6 +76,28 @@ export const QR_REDESIGN_PENDING_COPY = {
   tabOrderNotYetNumbered: 'Not numbered yet',
 
   /**
+   * ORDER CONFIRMATION, TWO DISTINCT STATES. Signed off by the owner 2026-08-24.
+   *
+   * They were one state, and that was the defect behind #337: a lookup that can NEVER succeed was
+   * given advice that can never work -- "wait a moment and refresh" -- while the only button on the
+   * page left the page you would refresh.
+   *
+   * CANNOT FIND: the reference will not resolve. Retrying is pointless, so the customer is sent
+   * somewhere useful instead. The button goes to MY ORDERS, not the menu: their order probably
+   * exists and that is where they can see it.
+   *
+   * STILL SETTLING: a genuine race, where the row is not queryable yet. This one retries ITSELF.
+   * A customer should never be asked to refresh a page on the payment path.
+   */
+  confirmCannotFindTitle: "we couldn't open this order",
+  confirmCannotFindBody:
+    'your order may still be fine. check my orders, or ask a staff member and they can look it up.',
+  confirmCannotFindButton: 'my orders',
+
+  confirmSettlingTitle: 'still confirming your payment',
+  confirmSettlingBody: 'this usually takes a few seconds.',
+
+  /**
    * The active-order banner's pre-acceptance status line. Signed off 2026-08-23.
    *
    * MOVED HERE FROM A BARE LITERAL in components/ActiveOrderBanner.tsx, and that is the point: a
@@ -240,6 +262,14 @@ export const QR_REDESIGN_PENDING_COPY = {
  * explains it rather than replacing it.
  */
 export const NO_SESSION_NOTICE_MS = 2600
+
+/**
+ * #337. How long the confirmation screen keeps re-asking before it decides the reference will never
+ * resolve. Four tries about two seconds apart covers a gateway return that lands ahead of the row,
+ * without leaving a customer watching a spinner for a lookup that cannot succeed.
+ */
+export const CONFIRM_SETTLE_MAX_ATTEMPTS = 4
+export const CONFIRM_SETTLE_RETRY_MS = 2000
 
 export const ORDER_PLACED_BANNER_MS = 6000
 

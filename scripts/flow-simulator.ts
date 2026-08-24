@@ -142,7 +142,9 @@ function placeOrder(ctx: { restaurantId: string; menuItemId: string; tableNumber
  * the page does it, because the page's failure is the thing under test.
  */
 function confirmationLookup(ref: string, restaurantId: string, tableNumber: number, sessionId: string) {
-  const qs = new URLSearchParams({ paymentRef: ref, restaurantId, table_number: String(tableNumber) })
+  // The route reads `ref` (or `tn`), NOT `paymentRef`. Sending the wrong name returns 400
+  // 'ref is required', which looks exactly like a failed lookup and is not one.
+  const qs = new URLSearchParams({ ref, restaurantId, table_number: String(tableNumber) })
   qs.append('session_id', sessionId)
   return fetch(`${WORKER}/api/guest/orders/by-payment-ref?${qs.toString()}`).then(async (res) => ({
     status: res.status,
