@@ -69,6 +69,102 @@ Two things follow, in order:
 
 ---
 
+## 0a. THE FLEET, MEASURED ON PRODUCTION 2026-08-25 — the answer is two builds, not eleven
+
+**87 terminal rows is not 87 terminals, and eleven versions is not eleven live builds.** Measured
+directly, read-only:
+
+### What has actually attempted a payment
+
+`audit_logs.action = 'payment.attempt_started'` carries `appVersion`, and it is **the only reliable
+version record that exists** — see the warning below about `payment_events`.
+
+```
+LAST 7 DAYS          1.89   416 attempts   last 2026-08-24 12:45
+                     1.85   102 attempts   last 2026-08-24 15:03
+
+LAST 30 DAYS         1.89   416
+                     1.85   292
+                     1.78    54            last 2026-08-07   (18 days ago)
+                     1.75     1            last 2026-08-06   (one attempt, ever)
+
+ALL TIME             the same four. Nothing older has EVER attempted a payment.
+```
+
+**1.18, 1.25, 1.30, 1.34, 1.59, 1.69 — none of them has ever tried to take a card.** They exist as
+rows in `restaurant_terminals` and nowhere else.
+
+### So the supported version floor is 1.85
+
+Everything transacting in the last week is **1.85 or 1.89**. `1.78` is the oldest build to transact
+in 30 days and has been silent for 18 days. A floor of **1.85** covers 100% of current payment
+traffic; a floor of 1.78 covers everything that has transacted this month.
+
+### 87 rows, 16 real devices
+
+```
+ever posted a sale                16 of 87 rows
+status=active, active=true        76 rows   39 seen in 30d   16 with no version
+status=pending, active=false      11 rows    8 seen in 30d   11 with no version
+seen in the last 15 minutes        0
+last 24 hours                      5
+last 7 days                       18
+last 30 days                      47
+never seen at all                  0
+```
+
+The 11 `status=pending, active=false` rows are **dead registrations** — activation was started and
+never completed. Every one of them has no version, which is consistent: they never got far enough to
+heartbeat one.
+
+### THE 27 NO-VERSION DEVICES: none of them has ever reported a version through any channel
+
+```
+never activated (no last_seen_at)          0
+heartbeating but never sent a version      5     <- and all 5 last seen 4.4+ days ago
+last seen more than 7 days ago            22
+reported a version on a past sale          0 of 27
+```
+
+So they are not modern devices with a reporting bug. They are devices that have **never** sent a
+version by heartbeat or by sale, and **none of them has ever attempted a payment**. They are noise in
+the registration table, not risk in the field.
+
+### WARNING — `payment_events.app_version` IS NULL ON ALL 489 SALES
+
+The column exists, the sale route writes it from `body.app_version`, and **no device has ever sent
+one**. Any analysis that reads the version from `payment_events` — including the version breakdown in
+the duplicate-charge detector — returns nothing and will look like "no data" rather than "not
+recorded".
+
+Use `payment.attempt_started` instead. This is the same shape as
+`customer_sessions.last_seen_at` (#338): a column that reads as evidence and is never populated.
+
+### What this means for the APK decision
+
+The risk was framed as *"eleven builds plus 27 unknowns receiving `success: false`"*. The measured
+answer is **two builds, 1.85 and 1.89, are taking payments**, and both are recent. The long tail is a
+reporting artefact.
+
+That makes the §1 investigation dramatically smaller: **check what 1.85 does**, and 1.89 if it
+differs. It does not remove the need — an auto-retry in either is still an unattended double-charge
+path across the entire live estate, because the live estate *is* those two builds.
+
+### One more measured fact, for the retry question
+
+`payment_events` records **489 sales, and the last one was 2026-08-20 11:14** — four days ago, while
+`payment.attempt_started` shows payments being attempted **today**. Sale events cover only **16.9%**
+of terminal-shaped paid orders overall, and of the orders actually paid by a terminal callback, 46
+have a sale event and 30 do not.
+
+The bulk — **948 of 1045** missing sale events — were paid by
+`paycloud_webhook_fallback_finatic_verified`, i.e. the Finatic fallback resolved them rather than a
+device reporting. That is #107's world working as designed, and those correctly have no sale event.
+So the duplicate-charge blind spot is **far smaller than the raw gap suggests**, and signal B (the
+409 refusal row) covers the device-side path that signal A cannot see.
+
+---
+
 ## 1. WHAT TO LOOK FOR IN THE TERMINAL SOURCE
 
 The question: **when the response is `success: false`, does the device show a terminal error state, or
