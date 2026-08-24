@@ -62,6 +62,23 @@ describe('the helper records enough to reconstruct a transition', () => {
     expect(PAYMENT_STATUS_CHANGED_ACTION).not.toBe('order.cancelled')
   })
 
+  it('SWALLOWS a thrown insert, so a trail write can never fail the payment', async () => {
+    // The trail records what happened; it must never change what happens. Handling only the
+    // returned `{ error }` is not the same as being safe -- a client that cannot reach the database,
+    // or one whose shape lacks .from('audit_logs').insert, THROWS, and that exception would
+    // propagate into the caller and 500 a card terminal push.
+    //
+    // This is not hypothetical: adding the call took two partially-red suites fully red (1 of 5
+    // failing became 5 of 5) because their fake client has no audit_logs.
+    const client = { from: () => { throw new Error('no such table in this client') } }
+    await expect(
+      recordPaymentStatusChange(client as never, {
+        orderId: 'o', restaurantId: 'r', from: 'pending', to: 'terminal_pending',
+        source: 'payments/push-to-terminal', note: 'n',
+      }),
+    ).resolves.toBe(false)
+  })
+
   it('reports failure instead of throwing', async () => {
     // The status change has already been written by the time this runs. Throwing would report a
     // failure for work that happened.
