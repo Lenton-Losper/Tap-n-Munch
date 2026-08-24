@@ -134,3 +134,41 @@ describe('production deploy gate (#141)', () => {
     })
   })
 })
+
+/**
+ * THE GATE ADDED 2026-08-24, and it is asserted here so it cannot be quietly removed.
+ *
+ * On that date twelve staging deploys shipped over a red E2E that named the exact live defect, on
+ * the exact commit that caused it, and the code was then promoted to production. The signal existed
+ * for two days and nothing consumed it. A check nobody is forced to read is not a gate.
+ *
+ * It lives on PRODUCTION rather than on the staging deploy because staging's verify job drives the
+ * deployed worker — it cannot gate the deploy it verifies without being circular.
+ */
+describe('production refuses to promote from a red staging', () => {
+  it('has a staging-health job', () => {
+    const wf = loadWorkflow('production-worker.yml')
+    expect(Object.keys(wf.jobs)).toContain('staging-health')
+  })
+
+  it('and the deploy actually depends on it', () => {
+    // The job existing proves nothing if nothing waits for it.
+    const wf = loadWorkflow('production-worker.yml')
+    const needs = wf.jobs['deploy']?.needs
+    const asArray = Array.isArray(needs) ? needs : [needs]
+    expect(asArray).toContain('staging-health')
+  })
+
+  it('the deploy condition consults its result, not just its existence', () => {
+    const wf = loadWorkflow('production-worker.yml')
+    expect(String(wf.jobs['deploy']?.if ?? '')).toContain('needs.staging-health.result')
+  })
+
+  it('the emergency override still reaches production, and is recorded', () => {
+    // A gate with no override becomes the thing someone disables. This one skips with
+    // skip_verification, which the run log records.
+    const wf = loadWorkflow('production-worker.yml')
+    expect(String(wf.jobs['staging-health']?.if ?? '')).toContain('skip_verification')
+    expect(String(wf.jobs['deploy']?.if ?? '')).toContain("needs.staging-health.result == 'skipped'")
+  })
+})
