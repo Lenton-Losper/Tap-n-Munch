@@ -52,6 +52,27 @@ jest.mock('@/payments/signature', () => ({
 function makeSupabaseMock() {
   return {
     from: (table: string) => {
+      // audit_logs, taught to this fake 2026-08-24 (#331).
+      //
+      // The route has called markPaymentAttemptStarted since the 2026-08-02 merge cdc7502, and that
+      // helper READS and INSERTS audit_logs and RETHROWS its errors. This fake threw on any table
+      // but `orders`, so that throw reached the route's outer catch and every push() returned 500.
+      //
+      // Only the assertions that check res.status noticed. The rest of this file was green over a
+      // 500 for three weeks, reading as coverage of the terminal push path while exercising the
+      // error handler. That is the reason this repair matters more than the red count suggested.
+      if (table === 'audit_logs') {
+        const b: any = {
+          select: () => b,
+          eq: () => b,
+          order: () => b,
+          limit: () => b,
+          maybeSingle: async () => ({ data: null, error: null }),
+          single: async () => ({ data: null, error: null }),
+          insert: async () => ({ error: null }),
+        }
+        return b
+      }
       if (table !== 'orders') throw new Error(`unexpected table ${table}`)
       return {
         select: () => {

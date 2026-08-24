@@ -67,7 +67,11 @@ export async function resolveOrderIdsByMerchantOrderNo(
     // more than the exception, because an exception list is where the next real one hides.
     const orderRows = await fetchAllRows<{ id: string }>(
       supabase.from('orders').select('id').eq(column, mo),
-      { label: 'resolveOrderIdsByMerchantOrderNo' },
+      // The label names the TABLE, matching the payment_events leg below, which throws
+      // `resolveOrderIdsByMerchantOrderNo payment_events: ...`. #323 moved this leg onto
+      // fetchAllRows and dropped the segment, so the two legs stopped identifying themselves
+      // the same way and a thrown error no longer said which read failed.
+      { label: 'resolveOrderIdsByMerchantOrderNo orders' },
     )
 
     for (const row of orderRows ?? []) {

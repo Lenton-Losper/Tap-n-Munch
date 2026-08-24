@@ -78,7 +78,10 @@ const PRINTED_QR_SHAPES: Array<[string, string]> = [
 ]
 
 /** Finite-positive non-integers: cleared the page's guard, never triggered the rewrite. */
-const GAP_SHAPES = ['/table/5.5', '/table/0.5', '/table/1e-3', '/table/%205']
+// '/table/%205' was here until #179 (2bb43b0) made parseTableLandingPath decode and trim before
+// Number(), so an encoded space now resolves to table 5 rather than falling through. It moved
+// to its own positive assertion below; these three are genuine non-integers and still fall through.
+const GAP_SHAPES = ['/table/5.5', '/table/0.5', '/table/1e-3']
 
 /**
  * Never valid table numbers. The page already 404'd these itself, via its own guard or by not
@@ -132,6 +135,18 @@ describe('the non-integer gap now 404s instead of throwing (#118 residual)', () 
     // Half one: middleware leaves it alone. This is unchanged and deliberately so -- widening
     // parseTableLandingPath to swallow these would be new behaviour on the QR entry path.
     expect(await route(RIVIERA_HOST, path)).toEqual({ kind: 'fallthrough' })
+  })
+
+  it('BUT a percent-encoded space now resolves, deliberately (#179)', () => {
+    // /table/%205 used to fall through with the genuine non-integer shapes above. 2bb43b0 made
+    // parseTableLandingPath decode and trim before Number(), so a scanned QR carrying an encoded
+    // space reaches table 5 instead of 404ing. This assertion is the inverse of the one it
+    // replaced, on purpose: the shape moved from the gap into the routed set.
+    return expect(route(RIVIERA_HOST, '/table/%205')).resolves.toEqual({
+      kind: 'rewrite',
+      pathname: RIVIERA_TABLE_LANDING_PATH,
+      table: '5',
+    })
   })
 
   it('and nothing under app/table can serve it', () => {

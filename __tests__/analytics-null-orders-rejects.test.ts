@@ -19,7 +19,12 @@ const queryError = { message: 'index required on orders(placed_at)', code: '42P1
 /** Terminal thenable standing in for a PostgREST builder that failed. */
 function failingQuery() {
   const builder: Record<string, unknown> = {}
-  for (const method of ['select', 'eq', 'gte', 'lte', 'order']) {
+  // `range` added 2026-08-24 (#331). #323 moved both analytics readers onto fetchAllRows, which
+  // calls .range() -- so this fake threw "query.range is not a function" before the assertion
+  // ran, and the suite reported that instead of the error it exists to check. The property it
+  // guards was never lost: fetchAllRows still throws, so an empty list can never stand in for a
+  // failed query.
+  for (const method of ['select', 'eq', 'gte', 'lte', 'order', 'range']) {
     builder[method] = () => builder
   }
   builder.then = (resolve: (v: unknown) => unknown) => resolve({ data: null, error: queryError })
