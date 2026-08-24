@@ -18,6 +18,7 @@ import {
 } from '@/lib/orders/active-order-visibility'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { orderPlacedAtMs } from '@/lib/orders/active-order-visibility'
 
 /**
  * PART 3: Active Order Banner
@@ -151,9 +152,28 @@ export function ActiveOrderBanner() {
     return null
   }
 
+  /**
+   * WHICHEVER IS NEWER, not whichever is remembered.
+   *
+   * This was `lastOrder || activeOrder`, so a REMEMBERED pointer beat a freshly queried one.
+   * `lastOrder` is fetched by an id in sessionStorage; `activeOrder` is the customer's own
+   * session-scoped list, sorted newest-first. If the stored id ever went stale -- a second
+   * diner on the device, storage surviving an earlier visit, an older order still 'ready' --
+   * the banner showed the OLD order and its tap navigated to that order's confirmation while a
+   * newer one existed. Reported 2026-08-24: a URL carrying order #21's id while the customer
+   * was on #23, all three live at the same table.
+   *
+   * Comparing placed_at makes the stored pointer an OPTIMISATION rather than an authority: it
+   * still saves a round trip when current, and can no longer win when it is not.
+   */
+  const eligibleLast = lastOrder && isBannerEligibleOrder(lastOrder) ? lastOrder : null
+  const eligibleActive = activeOrder && isBannerEligibleOrder(activeOrder) ? activeOrder : null
   const currentOrder =
-    (lastOrder && isBannerEligibleOrder(lastOrder) ? lastOrder : null) ||
-    (activeOrder && isBannerEligibleOrder(activeOrder) ? activeOrder : null)
+    eligibleLast && eligibleActive
+      ? orderPlacedAtMs(eligibleActive) > orderPlacedAtMs(eligibleLast)
+        ? eligibleActive
+        : eligibleLast
+      : eligibleLast || eligibleActive
 
   if (!currentOrder) {
     return null

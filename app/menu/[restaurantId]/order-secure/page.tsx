@@ -14,6 +14,7 @@ import { useClearCartOnTableChange } from '@/hooks/useClearCartOnTableChange'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
+import { rememberPlacedOrder } from '@/lib/orders/last-placed-order'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -131,8 +132,7 @@ export default function OrderSecurePage() {
       const checkoutUrl = data.checkoutUrl as string | undefined
       if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
       if (typeof window !== 'undefined') {
-        sessionStorage.setItem('last_order_id', orderId)
-        sessionStorage.setItem('flashtap_return_order_id', orderId)
+        rememberPlacedOrder(orderId, tableNumber)
         if (tableNumber > 0) {
           sessionStorage.setItem('flashtap_return_table', String(tableNumber))
         }

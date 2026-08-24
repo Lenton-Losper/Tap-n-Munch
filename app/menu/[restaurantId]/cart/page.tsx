@@ -34,6 +34,7 @@ import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { rememberPlacedOrder } from '@/lib/orders/last-placed-order'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -365,9 +366,7 @@ export default function CartPage() {
       clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       await refreshTab()
       if (typeof window !== 'undefined' && data?.orderId) {
-        sessionStorage.setItem('last_order_id', String(data.orderId))
-        sessionStorage.setItem('flashtap_return_order_id', String(data.orderId))
-        if (tableNumber > 0) sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+        rememberPlacedOrder(String(data.orderId), tableNumber)
       }
       clearCart()
       /**
@@ -464,9 +463,7 @@ export default function CartPage() {
 
       clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       if (typeof window !== 'undefined') {
-        sessionStorage.setItem('last_order_id', String(orderId))
-        sessionStorage.setItem('flashtap_return_order_id', String(orderId))
-        sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+        rememberPlacedOrder(String(orderId), tableNumber)
       }
       clearCart()
 
