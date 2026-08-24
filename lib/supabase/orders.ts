@@ -98,69 +98,25 @@ export async function getSupabaseOrdersByTable(restaurantId: string, tableNumber
   return data
 }
 
-// UPDATE ORDER STATUS
-export async function updateSupabaseOrderStatus(orderId: string, status: string) {
-  const supabase = createServerSupabaseClient()
-  const timestamp = new Date().toISOString()
-  const timestampField = `${status}_at`
-
-  const { error } = await supabase
-    .from('orders')
-    .update({
-      status,
-      [timestampField]: timestamp,
-    })
-    .eq('id', orderId)
-  if (error) throw error
-}
-
-// UPDATE ORDER PAYMENT STATUS
-export async function updateSupabaseOrderPayment(
-  orderId: string,
-  paymentStatus: string,
-  extras?: Record<string, any>
-) {
-  const supabase = createServerSupabaseClient()
-  const { error } = await supabase
-    .from('orders')
-    .update({
-      payment_status: paymentStatus,
-      ...(paymentStatus === 'paid' ? { paid_at: new Date().toISOString() } : {}),
-      ...extras,
-    })
-    .eq('id', orderId)
-  if (error) throw error
-}
-
-// UPDATE ORDER BY MERCHANT ORDER NO (for webhooks)
-export async function updateSupabaseOrderByMerchantNo(
-  merchantOrderNo: string,
-  updates: Record<string, any>
-) {
-  const supabase = createServerSupabaseClient()
-  const { error } = await supabase
-    .from('orders')
-    .update(updates)
-    .eq('paycloud_merchant_order_no', merchantOrderNo)
-  if (error) throw error
-}
-
-// CLOSE TABLE ORDERS
-export async function closeSupabaseTableOrders(restaurantId: string, tableNumber: number) {
-  const scope = await resolveOrderRestaurantScope(restaurantId)
-  const supabase = createServerSupabaseClient()
-  const { error } = await supabase
-    .from('orders')
-    .update({
-      is_closed: true,
-      table_closed: true,
-    })
-    .eq('restaurant_id', scope.restaurantId)
-    .eq('table_number', tableNumber)
-    .eq('is_closed', false)
-  if (error) throw error
-}
-
+/*
+ * FOUR WRITERS REMOVED HERE, #329, 2026-08-24: updateSupabaseOrderStatus,
+ * updateSupabaseOrderPayment, updateSupabaseOrderByMerchantNo, closeSupabaseTableOrders.
+ *
+ * All four had ZERO callers anywhere in the repository, tests included. They are recorded here
+ * rather than only in git because the reason for the deletion is a property of their SHAPE, and
+ * the next person tempted to reintroduce one of them will be looking at this file.
+ *
+ * updateSupabaseOrderPayment took a free-text payment status, set `paid_at` when it happened to
+ * be 'paid', wrote NO audit row, and was scoped by `.eq('id', orderId)` with NO restaurant_id.
+ * That is a cross-tenant, untrailed 'mark any order paid' -- one import away from being live, and
+ * it would have passed review precisely because it looked like the house helper.
+ *
+ * updateSupabaseOrderByMerchantNo took an arbitrary `updates` object keyed on a gateway reference,
+ * which is the same hole with an extra step.
+ *
+ * Money statuses are written through paths that leave a trail: lib/orders/cancel-order-with-trail
+ * for cancels, lib/payments/mark-order-paid-confirmed for paid. Use those.
+ */
 /** Hosted checkout orders awaiting payment (not a workflow status). */
 export async function getPendingHostedOrders(
   restaurantId: string,
@@ -448,17 +404,14 @@ export async function updateOrderStatus(restaurantId: string, orderId: string, s
   if (error) throw error
 }
 
-export async function updateOrderPayment(
-  restaurantId: string,
-  orderId: string,
-  paymentStatus: string,
-  paidBy?: string
-) {
-  return updateSupabaseOrderPayment(orderId, paymentStatus, {
-    paid_by: paidBy || null,
-  })
-}
-
+/*
+ * updateOrderPayment REMOVED with them (#329, 2026-08-24). Also zero callers.
+ *
+ * It was a thin wrapper over updateSupabaseOrderPayment that took a `restaurantId` and then never
+ * used it for scoping -- it passed only the order id through. So it read as the scoped, safe
+ * version of its sibling and was neither. That is worse than the unscoped one it wrapped, because
+ * the signature is the reassurance.
+ */
 export function subscribeToOrders(
   restaurantId: string,
   status: string,

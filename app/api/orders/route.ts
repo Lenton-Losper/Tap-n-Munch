@@ -9,6 +9,7 @@ import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
+import { recordPaymentStatusChange } from '@/lib/orders/record-payment-status-change'
 
 export const dynamic = 'force-dynamic'
 
@@ -693,6 +694,19 @@ export async function POST(req: Request) {
             .from('orders')
             .update({ payment_status: 'failed' })
             .eq('id', orderId)
+          // #329: no money moved -- the gateway never returned a link, so nothing was ever
+          // presented to the customer. Trailed anyway, because an order sitting at 'failed' with no
+          // record of who failed it is the shape that made three orders unreconstructable.
+          await recordPaymentStatusChange(supabase, {
+            orderId,
+            restaurantId: String(restaurantUuid),
+            from: 'pending',
+            to: 'failed',
+            source: 'orders:prepare-payment-failed',
+            note:
+              'Hosted checkout preparation returned no payment link, so the customer was never ' +
+              'shown a payment page. No charge is possible against this order.',
+          })
           return NextResponse.json(
             {
               error: 'Payment link was not returned by PayCloud',
@@ -730,6 +744,19 @@ export async function POST(req: Request) {
           .from('orders')
           .update({ payment_status: 'failed' })
           .eq('id', orderId)
+        // #329: same transition, different cause. Recording WHICH of the two failure paths ran is
+        // the difference between "payment init failed" and knowing whether the gateway was reached.
+        await recordPaymentStatusChange(supabase, {
+          orderId,
+          restaurantId: String(restaurantUuid),
+          from: 'pending',
+          to: 'failed',
+          source: 'orders:prepare-payment-failed',
+          note:
+            'Hosted checkout preparation threw before a payment link existed. No charge is ' +
+            'possible against this order.',
+          metadata: { error: payErr instanceof Error ? payErr.message : String(payErr) },
+        })
         return NextResponse.json(
           {
             error: payErr instanceof Error ? payErr.message : 'Payment initialization failed',
