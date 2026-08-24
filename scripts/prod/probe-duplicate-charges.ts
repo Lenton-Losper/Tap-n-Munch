@@ -14,6 +14,12 @@
  *
  * Nothing in the system detects that today. This is that detector.
  *
+ *
+ * NOTE 2026-08-24: the two signals this looks for are now also implemented as a reusable
+ * detector, lib/payments/detect-duplicate-charges.ts, so a scheduled check and this one-off
+ * cannot drift apart in what they consider a duplicate. This script stays because it prints the
+ * full working -- every event, both references, the blind-spot count -- which is what you want
+ * the first time you look, and the library returns a list, which is what you want on a schedule.
  * It reports three things, and they are different questions:
  *   1. orders named by more than one `sale` event      -> a probable second charge
  *   2. sale events whose amount exceeds the order total -> a charge that does not match the sale

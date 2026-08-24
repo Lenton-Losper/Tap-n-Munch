@@ -107,6 +107,76 @@ Answer these three, in this order:
 
 ---
 
+## 1b. THE OPERATOR RETRY — what the terminal SHOULD do, and why
+
+This is the design question, and it is the one that is easy to get backwards, because the *correct*
+behaviour and the *dangerous* behaviour look identical on the screen.
+
+An operator pressing retry after a genuine failure is **correct**. It is also a second card
+transaction. So the question is not whether to allow it — you must — but **what the retry is attached
+to.**
+
+### The answer, first
+
+| outcome | what a retry should do | why |
+|---|---|---|
+| `cancelled` — definitively not paid | **resume the SAME order** | nothing was taken; the order is still owed for. A new order would strand the first. |
+| `left_pending_finatic_uncertain` | **resume the SAME order, and only after the operator confirms with the customer** | this is the dangerous one — see below |
+| `corrected_to_paid` | **no retry at all** — it is paid | the screen should not offer one |
+
+**Same order, in all cases where a retry is offered. Never a new sale.**
+
+### Why "same order" is the safe default
+
+A retry that starts a **new sale** creates a second order, and:
+
+- the first order stays `pending` forever and is stranded — that is #868's neighbour, the exact shape
+  `docs/order-876-and-the-cron-gap-2026-08-21.md` describes, where the stale-order cron has a branch
+  with no terminating condition
+- **the two charges have no recorded relationship.** Two orders, two references, nothing linking
+  them. Neither of the two duplicate-charge signals in §2 can see it, because both work by finding
+  two references against **one** order id
+- the customer's bill is now two orders for one meal, and reconciliation is manual
+
+Re-POSTing the **same** `orderId` keeps every one of those problems visible: the server refuses with
+409, and — from 2026-08-24 — **writes an audit row carrying both gateway references and a
+`distinctGatewayTransaction` flag.** A second charge against the same order is detectable. A second
+charge against a new order is not.
+
+### But `left_pending_finatic_uncertain` is different, and this is the crux
+
+For `cancelled`, the gateway has told us no money moved. Retrying is unambiguous.
+
+For **uncertain**, the gateway could not tell us either way. **A retry there may be charging a card
+that has already been charged**, and no amount of client logic can determine that — the information
+does not exist on the device, or on our server, at that moment.
+
+So the uncertain screen should not present a bare "Retry" button. It should present the *state*, and
+make retry the deliberate second step:
+
+1. say plainly that the payment could **not be confirmed**, and that the food must **not** be
+   released
+2. offer **"Check payment status"** as the primary action — re-query rather than re-charge. Any
+   endpoint that re-reads the order is safe to press repeatedly; a charge is not
+3. offer retry only as a secondary action, and word it so the operator knows what they are doing —
+   the customer may already have been debited
+
+If you want one rule for the APK: **the primary action on an uncertain outcome must be idempotent.**
+Re-reading is idempotent. Re-charging is not. Making the safe action the big button is worth more
+than any warning text.
+
+### And regardless of which retry shape you choose — send the key
+
+Whatever the retry does, it should carry a stable `x-idempotency-key` for the sale, per §1 item 3.
+That is what makes "resume the same order" safe even if the operator presses twice, and it is what
+would bound the new-sale shape if you ever did need it.
+
+**Generate it when the operator starts ringing up. Hold it for that sale, across retries. Clear it
+when the sale completes or is abandoned.** A key minted per render does not survive a navigation and
+is no key at all.
+
+---
+
 ## 2. DOES THE SERVER PROTECT YOU IF AN OLD DEVICE RETRIES?
 
 **Partly — and it protects the bookkeeping, not the card. Plainly: the exposure is bounded in our
@@ -127,9 +197,15 @@ So: no duplicated `paid` row, no duplicated receipt from that path, no doubled t
 we return can prevent a second transaction — by the time the POST arrives, the money has moved. Our
 409 is bookkeeping applied after the fact.
 
-Worse, **the 409 branch returns before writing any audit row.** The route replies and stops. So a
-second charge against the same order leaves *nothing* in `audit_logs` saying a second attempt was
-made.
+**FIXED 2026-08-24.** That branch used to return before writing anything, so the single moment the
+server learns a payment succeeded for an already-paid order produced no record at all. It now
+writes a `payment.refused_already_paid` audit row carrying BOTH gateway references and a
+`distinctGatewayTransaction` flag — true when the reference differs from the one the order already
+carries, which is a second transaction rather than a repeated callback. The refusal itself is
+unchanged; only its visibility.
+
+The flag is derived at the moment both references are in hand, because the order's reference is
+whatever the FIRST payment wrote and never changes — the comparison cannot be reconstructed later.
 
 ### The one place a second charge WOULD leave a trace
 
@@ -142,7 +218,17 @@ That makes it *detectable after the fact* — and only if the device posts the s
 this category exists is a `duplicate_charge` reason code on the refund route, i.e. a human cleaning
 it up afterwards.
 
-I have prepared a detector for you to run: **§4, script 5.**
+I have prepared a detector for you to run: `scripts/prod/probe-duplicate-charges.ts`, and the same
+two signals as a reusable library, `lib/payments/detect-duplicate-charges.ts`, so a one-off and a
+scheduled check cannot drift apart in what they consider a duplicate.
+
+**Should it be scheduled? Yes, but hourly, not on the 2-minute tick.** A double charge is not
+time-critical in the way a stranded pending order is -- the money has already moved and the remedy
+is a refund a human performs -- so the value is *never missing one*, not *catching it in ninety
+seconds*. It should run alongside the other self-limiting crons (negative-stock-balances,
+reap-abandoned-tabs), scan only rows newer than its last run, and `console.error` per hit with the
+order number and both references. It is NOT built: putting a scheduled writer on the payment path
+the same night as a promotion is the kind of thing that should land on its own.
 
 ### The worse retry shape
 
