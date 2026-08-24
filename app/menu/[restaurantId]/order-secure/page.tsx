@@ -15,6 +15,7 @@ import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { clearCartIdempotencyKey, getOrCreateCartIdempotencyKey } from '@/lib/idempotency'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 import { rememberPlacedOrder } from '@/lib/orders/last-placed-order'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 export default function OrderSecurePage() {
   const params = useParams()
@@ -42,8 +43,8 @@ export default function OrderSecurePage() {
     if (submitting) return
     if (!Array.isArray(items) || items.length === 0) {
       toast({
-        title: 'Cart is empty',
-        description: 'Please add items to your cart before placing an order.',
+        title: MENU_COPY.cartEmpty,
+        description: MENU_COPY.pleaseAddItemsYourCart,
         variant: 'destructive',
       })
       return
@@ -56,15 +57,15 @@ export default function OrderSecurePage() {
 
     if (!sessionId) {
       toast({
-        title: 'Session Error',
-        description: 'Unable to create session. Please try again.',
+        title: MENU_COPY.sessionError,
+        description: MENU_COPY.unableCreateSessionPleaseTry,
         variant: 'destructive',
       })
       return
     }
 
     setSubmitting(true)
-    toast({ title: 'Processing your order...', description: 'Please wait.' })
+    toast({ title: MENU_COPY.processingYourOrder, description: MENU_COPY.pleaseWait })
 
     try {
       const subtotal = getTotal()
@@ -125,12 +126,12 @@ export default function OrderSecurePage() {
       }
 
       const orderId = data.orderId as string | undefined
-      if (!orderId) throw new Error('Order was created but no order ID was returned')
+      if (!orderId) throw new Error(MENU_COPY.orderWasCreatedButNo)
 
       clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
 
       const checkoutUrl = data.checkoutUrl as string | undefined
-      if (!checkoutUrl) throw new Error('Payment link was not returned by PayCloud')
+      if (!checkoutUrl) throw new Error(MENU_COPY.paymentLinkWasNotReturned)
       if (typeof window !== 'undefined') {
         rememberPlacedOrder(orderId, tableNumber)
         if (tableNumber > 0) {
@@ -143,8 +144,8 @@ export default function OrderSecurePage() {
     } catch (error: any) {
       console.error('Order failure:', error)
       toast({
-        title: 'Order failed',
-        description: customerSafeError(error, 'Failed to place order. Please try again.'),
+        title: MENU_COPY.orderFailed,
+        description: customerSafeError(error, MENU_COPY.failedPlaceOrderPleaseTry),
         variant: 'destructive',
       })
       setSubmitting(false)
@@ -169,13 +170,13 @@ export default function OrderSecurePage() {
             <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
           </Button>
           <div>
-            <h1 className="text-xl font-serif font-bold text-foreground sm:text-2xl">Secure Checkout</h1>
+            <h1 className="text-xl font-serif font-bold text-foreground sm:text-2xl">{MENU_COPY.secureCheckout}</h1>
             {tableNumber > 0 && <p className="text-sm text-muted-foreground font-sans">Table {tableNumber}</p>}
           </div>
         </div>
 
         <div className="mb-6 border border-border bg-card p-4 sm:p-6">
-          <h2 className="text-lg font-serif font-bold text-foreground mb-4">Order Summary</h2>
+          <h2 className="text-lg font-serif font-bold text-foreground mb-4">{MENU_COPY.orderSummary}</h2>
           <div className="space-y-2 mb-5">
             {items.map((item, idx) => (
               <div key={`${item.menu_item_id || item.name}-${idx}`} className="flex justify-between text-sm font-sans">
@@ -217,11 +218,11 @@ export default function OrderSecurePage() {
           className="h-11 w-full py-6 text-base font-semibold font-sans bg-foreground text-background hover:bg-foreground/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-muted"
           size="lg"
         >
-          {submitting ? 'Processing...' : 'Continue to Payment'}
+          {submitting ? 'Processing...' : MENU_COPY.continuePayment}
         </Button>
         <p className="mt-3 text-xs text-muted-foreground font-sans text-center flex items-center justify-center gap-1.5">
           <ShieldCheck className="w-3.5 h-3.5" aria-hidden />
-          Secured by Finatic
+          {MENU_COPY.securedByFinatic}
         </p>
       </div>
     </div>

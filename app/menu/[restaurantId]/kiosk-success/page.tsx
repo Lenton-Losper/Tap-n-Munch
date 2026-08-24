@@ -5,6 +5,7 @@ import { CheckCircle2, Download, Mail } from 'lucide-react'
 import { getCurrentSession } from '@/lib/session'
 import { heldSessionIds } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -83,7 +84,7 @@ export default function KioskSuccessPage() {
   const handleEmailReceipt = async () => {
     if (!orderId || !EMAIL_RE.test(emailValue.trim())) {
       setEmailStatus('error')
-      setEmailError('Enter a valid email address')
+      setEmailError(MENU_COPY.enterValidEmailAddress)
       return
     }
     setEmailStatus('sending')
@@ -98,11 +99,11 @@ export default function KioskSuccessPage() {
         },
       )
       const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(data?.error || 'Failed to send receipt')
+      if (!response.ok) throw new Error(data?.error || MENU_COPY.failedSendReceipt)
       setEmailStatus('sent')
     } catch (err) {
       setEmailStatus('error')
-      setEmailError(err instanceof Error ? err.message : 'Failed to send receipt')
+      setEmailError(err instanceof Error ? err.message : MENU_COPY.failedSendReceipt)
     }
   }
 
@@ -111,14 +112,14 @@ export default function KioskSuccessPage() {
       <div className="flex flex-col items-center gap-6 text-center">
         <CheckCircle2 className="w-24 h-24 text-green-500" />
         <h1 className="text-3xl font-bold text-gray-900">
-          {isPaid ? 'Order confirmed!' : 'Order request sent!'}
+          {isPaid ? MENU_COPY.orderConfirmed : MENU_COPY.orderRequestSent}
         </h1>
         {orderNumber && (
           <div className="text-6xl font-bold text-gray-900">{orderNumber}</div>
         )}
         <p className="text-xl text-gray-600">
-          Thank you, <span className="font-semibold">{customerName}</span>.<br />
-          {isPaid ? 'Your payment was received.' : 'Waiting for the restaurant to confirm your order.'}
+          {MENU_COPY.thankYou} <span className="font-semibold">{customerName}</span>.<br />
+          {isPaid ? MENU_COPY.yourPaymentWasReceived : MENU_COPY.waitingRestaurantConfirmYourOrder}
         </p>
 
         {isPaid && orderId && (
@@ -129,7 +130,7 @@ export default function KioskSuccessPage() {
               className="flex items-center gap-2 px-5 py-3 rounded-lg bg-gray-900 text-white font-medium hover:bg-gray-800"
             >
               <Download className="w-4 h-4" />
-              Download Receipt
+              {MENU_COPY.downloadReceipt}
             </button>
 
             <div className="flex w-full gap-2">

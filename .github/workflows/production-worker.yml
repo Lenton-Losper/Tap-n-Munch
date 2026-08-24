@@ -151,6 +151,19 @@ jobs:
       # door that matters without breaking how the work gets done.
       - name: No PENDING COPY in shippable source
         run: node scripts/check-no-pending-copy.mjs
+      # #334. The PENDING COPY gate above catches a placeholder someone REMEMBERED TO MARK. It
+      # cannot catch a string that never carried a marker and never lived in a copy file -- which is
+      # exactly what 'Order sent - waiting for the restaurant to confirm' was when it reached
+      # production inside ActiveOrderBanner.tsx. Enforcement was opt-in and the one string that
+      # mattered had opted out.
+      #
+      # This asks the class question instead: any customer sentence written inline under app/menu/**
+      # fails the build. NOTHING IS EXCLUDED -- no file carve-outs and no per-string allowlist,
+      # because an exception list is how the previous convention decayed into something you had to
+      # remember to grep. 188 call sites were moved to lib/customer-copy before switching it on, so
+      # it starts green rather than starting with a backlog nobody will clear.
+      - name: Customer copy under app/menu is sourced from lib/customer-copy
+        run: node scripts/check-menu-copy-sourced.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the
       # UNPREFIXED SUPABASE_* secrets, which in this repo are the PRODUCTION ones (see the
       # migration-drift step below, which uses the same names against the production DB), and

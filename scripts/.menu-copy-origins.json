@@ -1,0 +1,512 @@
+{
+  "searchResults": [
+    "app/menu/[restaurantId]/browse/page.tsx:574"
+  ],
+  "allMenu": [
+    "app/menu/[restaurantId]/browse/page.tsx:575"
+  ],
+  "outStock": [
+    "app/menu/[restaurantId]/browse/page.tsx:723"
+  ],
+  "createTabOrder": [
+    "app/menu/[restaurantId]/browse/page.tsx:725"
+  ],
+  "yourSessionHasEndedScan": [
+    "app/menu/[restaurantId]/browse/page.tsx:778",
+    "app/menu/[restaurantId]/cart/page.tsx:507"
+  ],
+  "searchMenuItems": [
+    "app/menu/[restaurantId]/browse/page.tsx:1017"
+  ],
+  "popularPicks": [
+    "app/menu/[restaurantId]/browse/page.tsx:1070"
+  ],
+  "viewAll": [
+    "app/menu/[restaurantId]/browse/page.tsx:1081"
+  ],
+  "viewAllItems": [
+    "app/menu/[restaurantId]/browse/page.tsx:1145"
+  ],
+  "noItemsFound": [
+    "app/menu/[restaurantId]/browse/page.tsx:1230",
+    "app/menu/[restaurantId]/receipt/page.tsx:557"
+  ],
+  "menuComingSoon": [
+    "app/menu/[restaurantId]/browse/page.tsx:1230"
+  ],
+  "thisRestaurantHasntAddedMenu": [
+    "app/menu/[restaurantId]/browse/page.tsx:1237"
+  ],
+  "pleaseAskStaffAssistance": [
+    "app/menu/[restaurantId]/browse/page.tsx:1240"
+  ],
+  "orderSecondsFromYourTable": [
+    "app/menu/[restaurantId]/browse/page.tsx:1259"
+  ],
+  "noAppDownloadRequired": [
+    "app/menu/[restaurantId]/browse/page.tsx:1264"
+  ],
+  "createTabStartOrdering": [
+    "app/menu/[restaurantId]/browse/page.tsx:1318"
+  ],
+  "keptSeparateMaximumPerItem": [
+    "app/menu/[restaurantId]/cart/page.tsx:242"
+  ],
+  "keptSeparateDifferentPrices": [
+    "app/menu/[restaurantId]/cart/page.tsx:247"
+  ],
+  "theseWereAddedDifferentPrices": [
+    "app/menu/[restaurantId]/cart/page.tsx:249"
+  ],
+  "largerOrderPleaseAskMember": [
+    "app/menu/[restaurantId]/cart/page.tsx:254"
+  ],
+  "combinedWithMatchingItemYour": [
+    "app/menu/[restaurantId]/cart/page.tsx:257"
+  ],
+  "failedAddTab": [
+    "app/menu/[restaurantId]/cart/page.tsx:364"
+  ],
+  "couldNotAddTab": [
+    "app/menu/[restaurantId]/cart/page.tsx:389"
+  ],
+  "pleaseTryAgain": [
+    "app/menu/[restaurantId]/cart/page.tsx:390",
+    "app/menu/[restaurantId]/cart/page.tsx:488",
+    "app/menu/[restaurantId]/tab/page.tsx:361",
+    "app/menu/[restaurantId]/tab/page.tsx:475"
+  ],
+  "tableRequired": [
+    "app/menu/[restaurantId]/cart/page.tsx:404"
+  ],
+  "scanQrCodeYourTable2": [
+    "app/menu/[restaurantId]/cart/page.tsx:405"
+  ],
+  "failedPlaceOrder": [
+    "app/menu/[restaurantId]/cart/page.tsx:459"
+  ],
+  "noOrderIdReturned": [
+    "app/menu/[restaurantId]/cart/page.tsx:462"
+  ],
+  "orderFailed": [
+    "app/menu/[restaurantId]/cart/page.tsx:487",
+    "app/menu/[restaurantId]/order-secure/page.tsx:146"
+  ],
+  "yourOrder": [
+    "app/menu/[restaurantId]/cart/page.tsx:524",
+    "app/menu/[restaurantId]/cart/page.tsx:561"
+  ],
+  "yourCartEmpty": [
+    "app/menu/[restaurantId]/cart/page.tsx:530"
+  ],
+  "addSomeItemsGetStarted": [
+    "app/menu/[restaurantId]/cart/page.tsx:531"
+  ],
+  "browseMenu": [
+    "app/menu/[restaurantId]/cart/page.tsx:534",
+    "app/menu/[restaurantId]/my-orders/page.tsx:590",
+    "app/menu/[restaurantId]/receipt/page.tsx:345"
+  ],
+  "orderSummary": [
+    "app/menu/[restaurantId]/cart/page.tsx:681",
+    "app/menu/[restaurantId]/order-secure/page.tsx:178"
+  ],
+  "anythingKitchenShouldKnowAbout": [
+    "app/menu/[restaurantId]/cart/page.tsx:712"
+  ],
+  "paymentMethod": [
+    "app/menu/[restaurantId]/cart/page.tsx:722"
+  ],
+  "howWouldYouLikePay": [
+    "app/menu/[restaurantId]/cart/page.tsx:723",
+    "app/menu/[restaurantId]/tab/page.tsx:613"
+  ],
+  "payNowWithCardOnline": [
+    "app/menu/[restaurantId]/cart/page.tsx:746"
+  ],
+  "staffWillAssistWithPayment": [
+    "app/menu/[restaurantId]/cart/page.tsx:820"
+  ],
+  "placeOrder": [
+    "app/menu/[restaurantId]/cart/page.tsx:854"
+  ],
+  "youNeedTabPlaceOrder": [
+    "app/menu/[restaurantId]/cart/page.tsx:860"
+  ],
+  "createTab2": [
+    "app/menu/[restaurantId]/cart/page.tsx:870"
+  ],
+  "enterValidEmailAddress": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:86"
+  ],
+  "failedSendReceipt": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:101",
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:105"
+  ],
+  "orderConfirmed": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:114"
+  ],
+  "orderRequestSent": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:114"
+  ],
+  "thankYou": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:119"
+  ],
+  "yourPaymentWasReceived": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:121"
+  ],
+  "waitingRestaurantConfirmYourOrder": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:121"
+  ],
+  "downloadReceipt": [
+    "app/menu/[restaurantId]/kiosk-success/page.tsx:131"
+  ],
+  "thisLinkNotConfiguredAs": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:44"
+  ],
+  "thisKioskNotAvailableOrdering": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:50"
+  ],
+  "pleaseEnterYourNameContinue": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:60"
+  ],
+  "nameMustLeast2Characters": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:64"
+  ],
+  "thisKioskLinkInvalid": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:92"
+  ],
+  "welcomeEnterYourNameStart": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:115"
+  ],
+  "yourName": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:121",
+    "app/menu/[restaurantId]/v2/page.tsx:1332"
+  ],
+  "startOrder": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:133"
+  ],
+  "tapStartOrderBrowseMenu": [
+    "app/menu/[restaurantId]/kiosk/page.tsx:138"
+  ],
+  "justNow": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:285"
+  ],
+  "loadingYourOrders": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:296"
+  ],
+  "myOrders": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:524"
+  ],
+  "noOrdersYet2": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:583"
+  ],
+  "startByBrowsingMenuPlacing": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:584"
+  ],
+  "orderMoreItems": [
+    "app/menu/[restaurantId]/my-orders/page.tsx:628"
+  ],
+  "orderNotFound": [
+    "app/menu/[restaurantId]/order-confirmation/[orderId]/page.tsx:240"
+  ],
+  "backMenu": [
+    "app/menu/[restaurantId]/order-confirmation/[orderId]/page.tsx:243"
+  ],
+  "staffHasBeenNotifiedThey": [
+    "app/menu/[restaurantId]/order-confirmation/[orderId]/page.tsx:320"
+  ],
+  "yourOrderReadyStaffMember": [
+    "app/menu/[restaurantId]/order-confirmation/[orderId]/page.tsx:348"
+  ],
+  "cartEmpty": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:45"
+  ],
+  "pleaseAddItemsYourCart": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:46"
+  ],
+  "sessionError": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:59"
+  ],
+  "unableCreateSessionPleaseTry": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:60"
+  ],
+  "processingYourOrder": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:67"
+  ],
+  "pleaseWait": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:67"
+  ],
+  "orderWasCreatedButNo": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:128"
+  ],
+  "paymentLinkWasNotReturned": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:133"
+  ],
+  "failedPlaceOrderPleaseTry": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:147"
+  ],
+  "secureCheckout": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:172"
+  ],
+  "continuePayment": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:220"
+  ],
+  "securedByFinatic": [
+    "app/menu/[restaurantId]/order-secure/page.tsx:223"
+  ],
+  "tableNumberRequired": [
+    "app/menu/[restaurantId]/receipt/page.tsx:339"
+  ],
+  "pleaseScanQrCodeYour": [
+    "app/menu/[restaurantId]/receipt/page.tsx:340"
+  ],
+  "noOrdersYet": [
+    "app/menu/[restaurantId]/receipt/page.tsx:428"
+  ],
+  "startOver": [
+    "app/menu/[restaurantId]/receipt/page.tsx:438"
+  ],
+  "totalOrders": [
+    "app/menu/[restaurantId]/receipt/page.tsx:475"
+  ],
+  "tabTotal": [
+    "app/menu/[restaurantId]/receipt/page.tsx:479"
+  ],
+  "yourDiningSessionHasEnded": [
+    "app/menu/[restaurantId]/session-ended/page.tsx:34"
+  ],
+  "pleaseRescanQrCodeYour": [
+    "app/menu/[restaurantId]/session-ended/page.tsx:37"
+  ],
+  "failedUpdateName": [
+    "app/menu/[restaurantId]/tab/page.tsx:290"
+  ],
+  "couldNotNotifyWaiter": [
+    "app/menu/[restaurantId]/tab/page.tsx:360"
+  ],
+  "noActiveTab": [
+    "app/menu/[restaurantId]/tab/page.tsx:381"
+  ],
+  "startJoinTabFromTable": [
+    "app/menu/[restaurantId]/tab/page.tsx:382"
+  ],
+  "goStart": [
+    "app/menu/[restaurantId]/tab/page.tsx:386"
+  ],
+  "reviewYourTabBeforePaying": [
+    "app/menu/[restaurantId]/tab/page.tsx:423"
+  ],
+  "shareWithYourGroup": [
+    "app/menu/[restaurantId]/tab/page.tsx:429"
+  ],
+  "fullTabRunningTotal": [
+    "app/menu/[restaurantId]/tab/page.tsx:434"
+  ],
+  "enterYourName": [
+    "app/menu/[restaurantId]/tab/page.tsx:470"
+  ],
+  "couldNotUpdateName": [
+    "app/menu/[restaurantId]/tab/page.tsx:474"
+  ],
+  "orderMore": [
+    "app/menu/[restaurantId]/tab/page.tsx:595"
+  ],
+  "paymentRequested": [
+    "app/menu/[restaurantId]/tab/page.tsx:674"
+  ],
+  "waiterHasBeenNotifiedWill": [
+    "app/menu/[restaurantId]/tab/page.tsx:687"
+  ],
+  "paymentCurrentlyBeingProcessed": [
+    "app/menu/[restaurantId]/v2/page.tsx:41"
+  ],
+  "paymentBeingProcessed": [
+    "app/menu/[restaurantId]/v2/page.tsx:42"
+  ],
+  "paymentProgress": [
+    "app/menu/[restaurantId]/v2/page.tsx:55"
+  ],
+  "paymentCurrentlyBeingProcessedThis": [
+    "app/menu/[restaurantId]/v2/page.tsx:56"
+  ],
+  "restaurantIdMissingFromUrl": [
+    "app/menu/[restaurantId]/v2/page.tsx:222",
+    "app/menu/[restaurantId]/v2/page.tsx:1064"
+  ],
+  "pleaseScanValidQrCode": [
+    "app/menu/[restaurantId]/v2/page.tsx:232"
+  ],
+  "thisTableNotAvailableOrdering": [
+    "app/menu/[restaurantId]/v2/page.tsx:263"
+  ],
+  "loadingTookTooLongPlease": [
+    "app/menu/[restaurantId]/v2/page.tsx:346",
+    "app/menu/page.tsx:65"
+  ],
+  "pleaseEnterYourName": [
+    "app/menu/[restaurantId]/v2/page.tsx:720"
+  ],
+  "missingRestaurantTableNumberScan": [
+    "app/menu/[restaurantId]/v2/page.tsx:730"
+  ],
+  "failedCreateTabPleaseTry": [
+    "app/menu/[restaurantId]/v2/page.tsx:782"
+  ],
+  "noOpenTabFoundJoin": [
+    "app/menu/[restaurantId]/v2/page.tsx:847",
+    "app/menu/[restaurantId]/v2/page.tsx:874"
+  ],
+  "failedJoinTabPleaseTry": [
+    "app/menu/[restaurantId]/v2/page.tsx:862",
+    "app/menu/[restaurantId]/v2/page.tsx:904",
+    "app/menu/[restaurantId]/v2/page.tsx:965"
+  ],
+  "missingRestaurantTableNumber": [
+    "app/menu/[restaurantId]/v2/page.tsx:924"
+  ],
+  "enter4DigitPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:928"
+  ],
+  "couldNotResetPinAsk": [
+    "app/menu/[restaurantId]/v2/page.tsx:1009"
+  ],
+  "accessDenied": [
+    "app/menu/[restaurantId]/v2/page.tsx:1035"
+  ],
+  "restaurantNotFound": [
+    "app/menu/[restaurantId]/v2/page.tsx:1052",
+    "app/menu/page.tsx:179"
+  ],
+  "pleaseScanValidQrCode2": [
+    "app/menu/[restaurantId]/v2/page.tsx:1053"
+  ],
+  "welcomeTo": [
+    "app/menu/[restaurantId]/v2/page.tsx:1106",
+    "app/menu/[restaurantId]/v2/page.tsx:1190"
+  ],
+  "viewMenu": [
+    "app/menu/[restaurantId]/v2/page.tsx:1121",
+    "app/menu/[restaurantId]/v2/page.tsx:1417",
+    "app/menu/[restaurantId]/v2/page.tsx:1431",
+    "app/menu/[restaurantId]/v2/page.tsx:1464",
+    "app/menu/[restaurantId]/v2/page.tsx:1493"
+  ],
+  "poweredByFlashtap": [
+    "app/menu/[restaurantId]/v2/page.tsx:1128",
+    "app/menu/[restaurantId]/v2/page.tsx:1531"
+  ],
+  "yourTabPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:1217"
+  ],
+  "shareThisWithYourGroup": [
+    "app/menu/[restaurantId]/v2/page.tsx:1221"
+  ],
+  "getYourNewTabPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:1241"
+  ],
+  "staffHaveStartedPinReset": [
+    "app/menu/[restaurantId]/v2/page.tsx:1242"
+  ],
+  "gettingYourPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:1257"
+  ],
+  "getMyNewPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:1257"
+  ],
+  "enterTabPin": [
+    "app/menu/[restaurantId]/v2/page.tsx:1263"
+  ],
+  "askPersonWhoCreatedTab": [
+    "app/menu/[restaurantId]/v2/page.tsx:1264"
+  ],
+  "joinTab": [
+    "app/menu/[restaurantId]/v2/page.tsx:1292",
+    "app/menu/[restaurantId]/v2/page.tsx:1456"
+  ],
+  "paymentBeingProcessedThisTable": [
+    "app/menu/[restaurantId]/v2/page.tsx:1312"
+  ],
+  "pleaseWaitAskYourWaiter": [
+    "app/menu/[restaurantId]/v2/page.tsx:1315"
+  ],
+  "couldNotOpenTab": [
+    "app/menu/[restaurantId]/v2/page.tsx:1324"
+  ],
+  "rejoinYourTab": [
+    "app/menu/[restaurantId]/v2/page.tsx:1354",
+    "app/menu/[restaurantId]/v2/page.tsx:1371"
+  ],
+  "yourTabReadyPayYour": [
+    "app/menu/[restaurantId]/v2/page.tsx:1360"
+  ],
+  "tabAlreadyOpenThisTable": [
+    "app/menu/[restaurantId]/v2/page.tsx:1438"
+  ],
+  "createTab": [
+    "app/menu/[restaurantId]/v2/page.tsx:1478"
+  ],
+  "shareTabWithEveryoneYour": [
+    "app/menu/[restaurantId]/v2/page.tsx:1479"
+  ],
+  "browseOrderYourOwn": [
+    "app/menu/[restaurantId]/v2/page.tsx:1494"
+  ],
+  "viewMenuOrder": [
+    "app/menu/[restaurantId]/v2/page.tsx:1505"
+  ],
+  "viewReceipt": [
+    "app/menu/[restaurantId]/v2/page.tsx:1520"
+  ],
+  "invalidMenuUrlPleaseScan": [
+    "app/menu/page.tsx:55"
+  ],
+  "failedLoadRestaurantPleaseTry": [
+    "app/menu/page.tsx:79"
+  ],
+  "pleaseAskStaffOpenThis": [
+    "app/menu/page.tsx:116"
+  ],
+  "invalidMenuUrl": [
+    "app/menu/page.tsx:141"
+  ],
+  "thisMenuPageRequiresRestaurant": [
+    "app/menu/page.tsx:142"
+  ],
+  "goSign": [
+    "app/menu/page.tsx:151"
+  ],
+  "accessRestricted": [
+    "app/menu/page.tsx:179"
+  ],
+  "linkYouFollowedMayInvalid": [
+    "app/menu/page.tsx:182"
+  ],
+  "thisTableMayNotOpen": [
+    "app/menu/page.tsx:186"
+  ],
+  "goHome": [
+    "app/menu/page.tsx:202"
+  ],
+  "notProvided": [
+    "app/menu/page.tsx:208"
+  ],
+  "welcomeOurMenu": [
+    "app/menu/page.tsx:241"
+  ],
+  "yourLocation": [
+    "app/menu/page.tsx:248"
+  ],
+  "noteTableNotVerifiedOrdering": [
+    "app/menu/page.tsx:250"
+  ],
+  "scanQrCodeYourTable": [
+    "app/menu/page.tsx:253"
+  ],
+  "viewFullMenu": [
+    "app/menu/page.tsx:258"
+  ],
+  "viewMyCurrentReceipt": [
+    "app/menu/page.tsx:267"
+  ]
+}

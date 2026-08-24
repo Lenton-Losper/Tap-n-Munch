@@ -37,6 +37,7 @@ import {
 } from '@/lib/customer-copy/qr-redesign-copy'
 import { hasAllocatedOrderNumber, orderIdentityLabel } from '@/lib/orders/order-identity'
 import { aggregateOrderLines } from '@/lib/orders/aggregate-order-lines'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
@@ -282,7 +283,7 @@ export default function MyOrdersPage() {
    */
   function getTimeAgo(date: Date): string {
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
-    if (seconds < 60) return 'Just now'
+    if (seconds < 60) return MENU_COPY.justNow
     if (seconds < 3600) return `${Math.floor(seconds / 60)} mins ago`
     if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`
     return `${Math.floor(seconds / 86400)} days ago`
@@ -293,7 +294,7 @@ export default function MyOrdersPage() {
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin mx-auto" />
-          <p className="mt-6 text-muted-foreground font-sans">Loading your orders...</p>
+          <p className="mt-6 text-muted-foreground font-sans">{MENU_COPY.loadingYourOrders}</p>
         </div>
       </div>
     )
@@ -521,7 +522,7 @@ export default function MyOrdersPage() {
             </button>
           </div>
 
-          <h1 className="text-3xl font-serif font-bold text-foreground mb-2">My Orders</h1>
+          <h1 className="text-3xl font-serif font-bold text-foreground mb-2">{MENU_COPY.myOrders}</h1>
           {/* "Session active since N/A" is gone. `sessionInfo.created` is unset for every
               customer who reached this screen through the tab flow, so the line rendered the
               literal string "N/A" as a matter of course (QRA-13) — and a session start time was
@@ -580,15 +581,15 @@ export default function MyOrdersPage() {
         ) : orders.length === 0 ? (
           <div className="bg-card border border-border p-16 text-center">
             <div className="text-6xl mb-6">🍽️</div>
-            <h2 className="text-xl font-serif font-bold text-foreground mb-2">No orders yet</h2>
+            <h2 className="text-xl font-serif font-bold text-foreground mb-2">{MENU_COPY.noOrdersYet2}</h2>
             <p className="text-muted-foreground font-sans mb-8">
-              Start by browsing the menu and placing your first order
+              {MENU_COPY.startByBrowsingMenuPlacing}
             </p>
             <Button
               onClick={() => router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)}
               className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8"
             >
-              Browse Menu
+              {MENU_COPY.browseMenu}
             </Button>
           </div>
         ) : (
@@ -626,7 +627,7 @@ export default function MyOrdersPage() {
               onClick={() => router.push(`/menu/${restaurantId}/browse?table=${tableNumber}`)}
               className="w-full bg-foreground text-background hover:bg-foreground/90 font-sans font-semibold py-6 text-base"
             >
-              Order More Items
+              {MENU_COPY.orderMoreItems}
             </Button>
           </div>
         )}

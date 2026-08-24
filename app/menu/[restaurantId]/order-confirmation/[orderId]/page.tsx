@@ -21,6 +21,7 @@ import type { OrderStatusKey } from '@/components/receipt/receipt-types'
 import { InfoBanner } from '@/components/receipt/info-banner'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { OrderEditPanel } from '@/components/order-edit-panel'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 type Order = {
   id: string
@@ -237,11 +238,11 @@ export default function OrderConfirmationPage() {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-white rounded-2xl border border-[#E5E7EB] p-8 text-center shadow-sm">
-          <h1 className="text-2xl font-serif font-bold text-[#111827] mb-4">Order Not Found</h1>
+          <h1 className="text-2xl font-serif font-bold text-[#111827] mb-4">{MENU_COPY.orderNotFound}</h1>
           <p className="text-[#6B7280] mb-6">The order you&apos;re looking for doesn&apos;t exist.</p>
           <Link href={`/menu/${restaurantId}${tableNumber > 0 ? `?table=${tableNumber}` : ''}`}>
             <Button className="w-full bg-[#16A34A] hover:bg-green-700 text-white font-semibold">
-              Back to Menu
+              {MENU_COPY.backMenu}
             </Button>
           </Link>
         </div>
@@ -317,7 +318,7 @@ export default function OrderConfirmationPage() {
       }
       cashNotifiedSlot={
         showReadyToPayCashNotified(order) ? (
-          <InfoBanner variant="notify">Staff has been notified. They will be with you shortly.</InfoBanner>
+          <InfoBanner variant="notify">{MENU_COPY.staffHasBeenNotifiedThey}</InfoBanner>
         ) : undefined
       }
       editSlot={
@@ -346,7 +347,7 @@ export default function OrderConfirmationPage() {
       orderReadyBanner={
         order.status === 'ready' ? (
           <InfoBanner variant="success">
-            Your order is ready! A staff member will come to your table shortly.
+            {MENU_COPY.yourOrderReadyStaffMember}
           </InfoBanner>
         ) : undefined
       }

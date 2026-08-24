@@ -31,6 +31,7 @@ import {
   PAYMENT_METHOD_WITHDRAWN_TITLE,
   paymentMethodWithdrawnCopy,
 } from '@/lib/customer-copy/payment-method-withdrawn'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 type TabOrder = {
   id: string
@@ -287,7 +288,7 @@ export default function TabSummaryPage() {
     }
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      throw new Error(data?.error || 'Failed to update name')
+      throw new Error(data?.error || MENU_COPY.failedUpdateName)
     }
     sessionStorage.setItem('flashtap_display_name', newName)
     await refreshTab()
@@ -357,8 +358,8 @@ export default function TabSummaryPage() {
     } catch (err) {
       console.error('[TAB PAGE] ready to pay failed', err)
       toast({
-        title: 'Could not notify waiter',
-        description: customerSafeError(err, 'Please try again.'),
+        title: MENU_COPY.couldNotNotifyWaiter,
+        description: customerSafeError(err, MENU_COPY.pleaseTryAgain),
         variant: 'destructive',
       })
     } finally {
@@ -378,13 +379,13 @@ export default function TabSummaryPage() {
     return (
       <div className="min-h-screen bg-background px-4 py-10">
         <div className="mx-auto max-w-md text-center">
-          <h1 className="font-serif text-xl font-bold text-foreground">No active tab</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Start or join a tab from the table landing page.</p>
+          <h1 className="font-serif text-xl font-bold text-foreground">{MENU_COPY.noActiveTab}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{MENU_COPY.startJoinTabFromTable}</p>
           <Button
             className="mt-6"
             onClick={() => handleSessionExpired(restaurantId)}
           >
-            Go to start
+            {MENU_COPY.goStart}
           </Button>
         </div>
       </div>
@@ -420,18 +421,18 @@ export default function TabSummaryPage() {
 
         <div className="mb-6 text-center">
           <h1 className="font-serif text-2xl font-bold text-foreground">Table {tableNumber || '-'} Tab</h1>
-          <p className="mt-1 text-sm text-muted-foreground font-sans">Review your tab before paying</p>
+          <p className="mt-1 text-sm text-muted-foreground font-sans">{MENU_COPY.reviewYourTabBeforePaying}</p>
         </div>
 
         {creatorTabPin && tabRecord?.pin_required !== false && (
           <div className="mb-6 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-sans text-foreground">
             Tab PIN:{' '}
-            <span className="font-bold text-emerald-600">{creatorTabPin}</span> — Share with your group
+            <span className="font-bold text-emerald-600">{creatorTabPin}</span> {MENU_COPY.shareWithYourGroup}
           </div>
         )}
 
         <div className="mb-8 rounded-lg border-2 border-border bg-card p-6 text-center">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Full tab running total</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{MENU_COPY.fullTabRunningTotal}</p>
           <p className="mt-2 font-serif text-4xl font-bold text-foreground">{outstandingLabel}</p>
           {hasPending && (
             <p className="mt-2 text-xs font-sans text-amber-600">
@@ -467,12 +468,12 @@ export default function TabSummaryPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const newName = prompt('Enter your name:', group.display_name)
+                      const newName = prompt(MENU_COPY.enterYourName, group.display_name)
                       if (newName?.trim()) {
                         void updateMemberName(newName.trim()).catch((err) => {
                           toast({
-                            title: 'Could not update name',
-                            description: customerSafeError(err, 'Please try again.'),
+                            title: MENU_COPY.couldNotUpdateName,
+                            description: customerSafeError(err, MENU_COPY.pleaseTryAgain),
                             variant: 'destructive',
                           })
                         })
@@ -593,7 +594,7 @@ export default function TabSummaryPage() {
                 )
               }
             >
-              + Order More
+              {MENU_COPY.orderMore}
             </Button>
           )}
 
@@ -611,7 +612,7 @@ export default function TabSummaryPage() {
           {!tabReadyToPay && showPaymentSelector && (
             <div className="space-y-3">
               <p className="text-center text-sm font-semibold text-foreground font-sans">
-                How would you like to pay?
+                {MENU_COPY.howWouldYouLikePay}
               </p>
               {/* The sheet charges PAYABLE. If pending money exists the two figures differ, and
                   the customer is told why here rather than being left to notice it. */}
@@ -672,7 +673,7 @@ export default function TabSummaryPage() {
           {tabReadyToPay && (
             <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center space-y-2">
               <p className="font-sans text-sm font-medium text-green-900">
-                ✓ Payment Requested
+                {MENU_COPY.paymentRequested}
               </p>
               {tabRecord?.payment_preference && (
                 <p className="font-sans text-sm text-green-700">
@@ -685,7 +686,7 @@ export default function TabSummaryPage() {
                 </p>
               )}
               <p className="font-sans text-xs text-green-600">
-                A waiter has been notified and will assist you shortly.
+                {MENU_COPY.waiterHasBeenNotifiedWill}
               </p>
             </div>
           )}
