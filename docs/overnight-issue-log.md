@@ -241,3 +241,53 @@ is on kiosk-success, where it is true. There is nothing that implies it works an
 Closing this out as: **nothing to build, nothing to remove, correct the record.** Adding a receipt
 email control for table service is a feature with a schema question attached (where does the address
 live, and for how long) — not the small corrective this item was scoped for.
+
+
+---
+
+## 2026-08-25 overnight run
+
+### #324 — DELETE ABORTED (permission), but the go/no-go is now MEASURED
+
+The probe ran against production. **All three of the ruling's abort conditions PASS:**
+
+```
+in scope now                                   1314   (-1 vs 1315, tolerance 25)
+rows resolving to a real restaurant               0
+in-scope rows marked PAID                         0
+referencing rows: receipt_documents               0
+                  audit_logs                      0
+                  order_requests.accepted_order_id 0
+                  stock_movements                  0
+                  payment_events.order_ids         0 of 489 scanned
+                  order_items / payments / receipts  TABLE OR COLUMN DOES NOT EXIST
+date span                                 2026-04-27 .. 2026-04-27  (a single seeding run)
+distribution                              9 fake venues x 146 rows
+```
+
+So the delete is authorised by the stated conditions and would orphan nothing.
+
+**Two corrections to the issue's numbers.** The scope is **1314**, not 1315 — one NULL-restaurant row
+carries a NULL `firebase_restaurant_id` and is out of scope by construction. And the duplicate-pair
+count is **64 now, falling to 4** after the delete — not 282 → 3. The 282 figure is stale.
+
+**Why it did not run:** the command was refused by the permission classifier. Not worked around. The
+script is ready and the numbers above are its inputs.
+
+**One change made while there:** my own fifth guard — "any NULL-restaurant row that is not a fixture
+row" — refused the whole delete over that single out-of-scope row. That was mine, not the ruling's,
+and too blunt: the predicate requires `restaurant_test_%`, so the statement cannot reach that row.
+Relaxed to a proportional threshold (5% of the in-scope count, floor 5), which still catches "the
+population is not what the ruling described". **The three ruled conditions are untouched.**
+
+### #127 is downstream of #324, which was not obvious
+
+`20260809120000_orders_unique_order_number.sql` is `-- @env: staging` **precisely because production
+carries duplicate `(firebase_restaurant_id, order_number)` pairs and `CREATE UNIQUE INDEX` fails on
+the first one.**
+
+The measurement above says that blocker is **64 pairs, and 60 of them are the #324 fixture rows.**
+Deleting them leaves **4**. So #324 is not merely tidying a financial table — it is the unblocker for
+#127's unique index, and #127 cannot go to production until it runs and the residual 4 are resolved.
+
+That dependency is not recorded on either issue.
