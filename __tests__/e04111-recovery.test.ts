@@ -147,11 +147,39 @@ describe('claimableStatusesForRecovery scoping', () => {
   })
 
   test('does NOT widen for auto_timeout, hosted_timeout, or staff cancellations', () => {
-    for (const reason of ['auto_timeout', 'hosted_timeout', 'terminal_cancelled', null]) {
+    for (const reason of ['auto_timeout', 'hosted_timeout', 'terminal_cancelled']) {
       const row = { payment_status: 'cancelled', cancellation_reason: reason }
       expect(isCancelledOnE04111Evidence(row)).toBe(false)
       expect(claimableStatusesForRecovery(row)).not.toContain('cancelled')
     }
+  })
+
+  test('NULL is unrecoverable — the absence of a reason, not an unclassified one', () => {
+    // RULED 2026-08-24. The inversion fails toward recovery for a reason STRING nobody has
+    // classified. A NULL reason is a different thing: no rule recorded why the order died, so
+    // there is nothing to weigh.
+    //
+    // This case used to sit inside the denylist loop above, where it passed for the WRONG reason:
+    // String(null ?? '') is '' and ''.startsWith(anything) is false, so the denylist matched
+    // nothing and the inverted predicate returned `recoverable`. The old test asserted `false`
+    // and failed. Both the assertion and the behaviour are now deliberate rather than inherited
+    // from an expression.
+    for (const reason of [null, undefined, '', '   ']) {
+      const row = { payment_status: 'cancelled', cancellation_reason: reason }
+      expect(isCancelledOnE04111Evidence(row)).toBe(false)
+      expect(claimableStatusesForRecovery(row)).not.toContain('cancelled')
+    }
+  })
+
+  test('an unclassified reason STRING is still recoverable — the inversion is intact', () => {
+    // The counterpart, and the reason the NULL branch had to be written narrowly. If this ever
+    // flips, the 2026-08-22 fix has been undone and the 27 orders it rescued are stranded again.
+    const row = {
+      payment_status: 'cancelled',
+      cancellation_reason: 'operator_ruling_finatic_confirmed_unpaid_20260821',
+    }
+    expect(isCancelledOnE04111Evidence(row)).toBe(true)
+    expect(claimableStatusesForRecovery(row)).toContain('cancelled')
   })
 
   test('does not widen for a pending order that merely carries a stale reason string', () => {

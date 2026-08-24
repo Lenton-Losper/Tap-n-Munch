@@ -33,6 +33,8 @@ import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { rememberPlacedOrder } from '@/lib/orders/last-placed-order'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -67,6 +69,19 @@ export default function CartPage() {
   const { toast } = useToast()
   const { restaurant, settings, currency, paymentMethods: enabledMethods, kioskPaymentMethods, permissions, loading: restaurantLoading } =
     useRestaurant()
+  /**
+   * #334. The payment copy used to switch on isKiosk -- a CHANNEL flag -- so a counter-service
+   * venue ordering at a table was promised staff who were never coming. The service model is a
+   * property of the VENUE and now comes from the venue. A kiosk is counter-service by
+   * definition, so it still forces the counter wording before a venue is configured.
+   */
+  const isCounterService = isKiosk || restaurant?.is_counter_service === true
+  /**
+   * Fail CLOSED. card_payments_available is derived in the database from the Finatic
+   * credentials, and with #107 closed queryFinaticOrderPaid IS settlement -- it throws without
+   * them, so a venue lacking them cannot take a card at all.
+   */
+  const canTakeCard = restaurant?.card_payments_available === true
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
@@ -224,22 +239,22 @@ export default function CartPage() {
      */
     if (result.refusedBecause === 'cap') {
       toast({
-        title: 'Kept separate — maximum per item',
+        title: MENU_COPY.keptSeparateMaximumPerItem,
         description: `Together that's more than ${MAX_LINE_QUANTITY}. For a larger order, please ask a member of staff.`,
       })
     } else if (result.refusedBecause === 'price') {
       toast({
-        title: 'Kept separate — different prices',
+        title: MENU_COPY.keptSeparateDifferentPrices,
         description:
-          'These were added at different prices, so we have kept them separate. Each keeps the price you were shown.',
+          MENU_COPY.theseWereAddedDifferentPrices,
       })
     } else if (result.clamped) {
       toast({
         title: `Set to ${MAX_LINE_QUANTITY}, the maximum per item`,
-        description: 'For a larger order, please ask a member of staff.',
+        description: MENU_COPY.largerOrderPleaseAskMember,
       })
     } else if (result.merged) {
-      toast({ title: 'Combined with the matching item in your cart' })
+      toast({ title: MENU_COPY.combinedWithMatchingItemYour })
     }
   }
 
@@ -299,8 +314,10 @@ export default function CartPage() {
     if (!inTabFlow || !effectiveTabId) return
     if (tabReadyToPay) {
       toast({
-        title: 'Tab is ready to pay',
-        description: 'Your waiter has been notified. You cannot add more items.',
+        title: MENU_COPY.tabClosedTitle,
+        description: isCounterService
+          ? MENU_COPY.tabClosedCounterBody
+          : MENU_COPY.tabClosedTableBody,
         variant: 'destructive',
       })
       return
@@ -344,14 +361,12 @@ export default function CartPage() {
         return
       }
       const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(data?.error || 'Failed to add to tab')
+      if (!response.ok) throw new Error(data?.error || MENU_COPY.failedAddTab)
       console.log('[CART] add to tab success', data)
       clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       await refreshTab()
       if (typeof window !== 'undefined' && data?.orderId) {
-        sessionStorage.setItem('last_order_id', String(data.orderId))
-        sessionStorage.setItem('flashtap_return_order_id', String(data.orderId))
-        if (tableNumber > 0) sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+        rememberPlacedOrder(String(data.orderId), tableNumber)
       }
       clearCart()
       /**
@@ -371,8 +386,8 @@ export default function CartPage() {
       )
     } catch (err: any) {
       toast({
-        title: 'Could not add to tab',
-        description: customerSafeError(err, 'Please try again.'),
+        title: MENU_COPY.couldNotAddTab,
+        description: customerSafeError(err, MENU_COPY.pleaseTryAgain),
         variant: 'destructive',
       })
     } finally {
@@ -386,8 +401,8 @@ export default function CartPage() {
     if (resolvedPaymentChoice === 'online') return
     if (!tableNumber || tableNumber <= 0) {
       toast({
-        title: 'Table required',
-        description: 'Scan the QR code at your table to place an order.',
+        title: MENU_COPY.tableRequired,
+        description: MENU_COPY.scanQrCodeYourTable2,
         variant: 'destructive',
       })
       return
@@ -395,7 +410,11 @@ export default function CartPage() {
     let sid = getCurrentSession()
     if (!sid) sid = getOrCreateSession(restaurantId, String(tableNumber))
     if (!sid) {
-      toast({ title: 'Session error', description: 'Please try again.', variant: 'destructive' })
+      toast({
+        title: MENU_COPY.cartSessionEndedTitle,
+        description: MENU_COPY.cartSessionEndedBody,
+        variant: 'destructive',
+      })
       return
     }
 
@@ -437,16 +456,14 @@ export default function CartPage() {
         body: JSON.stringify(JSON.parse(JSON.stringify(payload))),
       })
       const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(data?.error || 'Failed to place order')
+      if (!response.ok) throw new Error(data?.error || MENU_COPY.failedPlaceOrder)
 
       const orderId = data?.orderId as string | undefined
-      if (!orderId) throw new Error('No order ID returned')
+      if (!orderId) throw new Error(MENU_COPY.noOrderIdReturned)
 
       clearCartIdempotencyKey(String(restaurantId), Number(tableNumber) || 0)
       if (typeof window !== 'undefined') {
-        sessionStorage.setItem('last_order_id', String(orderId))
-        sessionStorage.setItem('flashtap_return_order_id', String(orderId))
-        sessionStorage.setItem('flashtap_return_table', String(tableNumber))
+        rememberPlacedOrder(String(orderId), tableNumber)
       }
       clearCart()
 
@@ -467,8 +484,8 @@ export default function CartPage() {
       }
     } catch (err: unknown) {
       toast({
-        title: 'Order failed',
-        description: customerSafeError(err, 'Please try again.'),
+        title: MENU_COPY.orderFailed,
+        description: customerSafeError(err, MENU_COPY.pleaseTryAgain),
         variant: 'destructive',
       })
     } finally {
@@ -488,7 +505,7 @@ export default function CartPage() {
       <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-3 px-6 text-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
         <p className="text-sm text-muted-foreground max-w-xs">
-          Your session has ended. Scan the QR code to start a new order.
+          {MENU_COPY.yourSessionHasEndedScan}
         </p>
       </div>
     )
@@ -504,18 +521,18 @@ export default function CartPage() {
             <Button variant="ghost" size="icon" onClick={() => router.back()}>
               <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
             </Button>
-            <h1 className="text-2xl font-serif font-bold text-foreground">Your Order</h1>
+            <h1 className="text-2xl font-serif font-bold text-foreground">{MENU_COPY.yourOrder}</h1>
           </div>
           
           {/* Empty State */}
           <div className="bg-card border border-border p-16 text-center">
             <ShoppingCart className="w-16 h-16 text-muted-foreground mx-auto mb-6" />
-            <h2 className="text-xl font-serif font-bold text-foreground mb-2">Your cart is empty</h2>
-            <p className="text-muted-foreground font-sans mb-8">Add some items to get started!</p>
+            <h2 className="text-xl font-serif font-bold text-foreground mb-2">{MENU_COPY.yourCartEmpty}</h2>
+            <p className="text-muted-foreground font-sans mb-8">{MENU_COPY.addSomeItemsGetStarted}</p>
             <div className="flex flex-col items-center gap-3">
               <Link href={`/menu/${restaurantId}/browse${menuQuery}`}>
                 <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans px-8">
-                  Browse Menu
+                  {MENU_COPY.browseMenu}
                 </Button>
               </Link>
               {/* This is the screen a customer lands on right after placing an order — the cart
@@ -541,7 +558,7 @@ export default function CartPage() {
           <Button variant="ghost" size="icon" onClick={() => router.back()}>
             <ArrowLeft className="w-5 h-5 stroke-[1.5]" />
           </Button>
-          <h1 className="text-2xl font-serif font-bold text-foreground">Your Order</h1>
+          <h1 className="text-2xl font-serif font-bold text-foreground">{MENU_COPY.yourOrder}</h1>
         </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -661,7 +678,7 @@ export default function CartPage() {
           {/* Order Summary */}
           <div className="w-full max-w-full lg:col-span-1">
             <div className="w-full max-w-full bg-card border border-border p-4 sm:p-6 lg:sticky lg:top-4">
-              <h2 className="mb-6 font-serif text-xl font-bold text-foreground">Order Summary</h2>
+              <h2 className="mb-6 font-serif text-xl font-bold text-foreground">{MENU_COPY.orderSummary}</h2>
               
               {/* Totals */}
               <div className="mb-6 space-y-3">
@@ -692,7 +709,7 @@ export default function CartPage() {
                 </p>
                 <Textarea
                   id="instructions"
-                  placeholder="Anything the kitchen should know about the whole order?"
+                  placeholder={MENU_COPY.anythingKitchenShouldKnowAbout}
                   value={orderInstructions}
                   onChange={(e) => setOrderInstructions(e.target.value)}
                   maxLength={MAX_INSTRUCTIONS_LENGTH}
@@ -702,9 +719,9 @@ export default function CartPage() {
               </div>
 
               {!inTabFlow && showPaymentMethodChoice && (
-                <div className="mb-6" role="radiogroup" aria-label="Payment method">
+                <div className="mb-6" role="radiogroup" aria-label={MENU_COPY.paymentMethod}>
                   <Label className="mb-3 block font-sans text-base font-semibold text-foreground">
-                    How would you like to pay?
+                    {MENU_COPY.howWouldYouLikePay}
                   </Label>
                   <div className="grid gap-3">
                     {ENABLE_ONLINE_CARD_CHECKOUT && enabledPaymentMethods.card && (
@@ -726,7 +743,7 @@ export default function CartPage() {
                         🌐
                       </span>
                       <span className="ml-2 font-semibold text-foreground">Online (card)</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Pay now with card online</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{MENU_COPY.payNowWithCardOnline}</p>
                     </button>
                     )}
                     {(isKiosk ? enabledKioskMethods.cash : enabledPaymentMethods.cash) && (
@@ -748,16 +765,14 @@ export default function CartPage() {
                         💵
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isKiosk ? 'Pay at the counter' : 'Pay at table with cash'}
+                        {isCounterService ? MENU_COPY.payCounterCashLabel : MENU_COPY.payTableCashLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {isKiosk
-                          ? 'Collect your order and pay at the counter'
-                          : 'Staff will collect cash at your table'}
+                          {isCounterService ? MENU_COPY.payCounterCashBody : MENU_COPY.payTableCashBody}
                       </p>
                     </button>
                     )}
-                    {(isKiosk ? enabledKioskMethods.card : enabledPaymentMethods.card) && (
+                    {canTakeCard && (isKiosk ? enabledKioskMethods.card : enabledPaymentMethods.card) && (
                     <button
                       type="button"
                       role="radio"
@@ -776,12 +791,10 @@ export default function CartPage() {
                         💳
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isKiosk ? 'Tap your card at the counter' : 'Pay at table with card'}
+                        {isCounterService ? MENU_COPY.payCounterCardLabel : MENU_COPY.payTableCardLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {isKiosk
-                          ? 'Tap your card at the counter when you collect your order'
-                          : 'Staff will bring their card machine to your table'}
+                          {isCounterService ? MENU_COPY.payCounterCardBody : MENU_COPY.payTableCardBody}
                       </p>
                     </button>
                     )}
@@ -804,7 +817,7 @@ export default function CartPage() {
                         🤝
                       </span>
                       <span className="ml-2 font-semibold text-foreground">Other</span>
-                      <p className="mt-1 text-sm text-muted-foreground">Staff will assist with payment at your table</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{MENU_COPY.staffWillAssistWithPayment}</p>
                     </button>
                     )}
                   </div>
@@ -838,14 +851,14 @@ export default function CartPage() {
                   onClick={handlePlaceOrder}
                   disabled={paying || items.length === 0}
                 >
-                  {paying ? 'Placing order…' : 'Place Order'}
+                  {paying ? 'Placing order…' : MENU_COPY.placeOrder}
                 </Button>
               )}
 
               {!inTabFlow && !isKiosk && (
                 <div className="text-center py-4">
                   <p className="text-sm text-muted-foreground font-sans mb-3">
-                    You need a tab to place an order.
+                    {MENU_COPY.youNeedTabPlaceOrder}
                   </p>
                   <Button
                     variant="outline"
@@ -855,7 +868,7 @@ export default function CartPage() {
                       )
                     }
                   >
-                    Create a Tab
+                    {MENU_COPY.createTab2}
                   </Button>
                 </div>
               )}

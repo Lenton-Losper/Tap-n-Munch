@@ -77,7 +77,33 @@ export function isCancelledOnE04111Evidence(
 ): boolean {
   if (!row) return false
   if (String(row.payment_status ?? '').trim().toLowerCase() !== 'cancelled') return false
-  const reason = String(row.cancellation_reason ?? '').trim().toLowerCase()
+
+  /**
+   * NULL IS NOT AN UNCLASSIFIED REASON. IT IS THE ABSENCE OF ONE. Ruled 2026-08-24.
+   *
+   * The inversion above fails toward recovery for a reason STRING nobody has classified yet --
+   * a deliberate choice, because the recovery only fires on a proven payment. A NULL reason is
+   * a different thing: no rule recorded why this order died, so there is nothing to weigh.
+   *
+   * Without this branch the answer came out `recoverable` ANYWAY, purely because
+   * String(null ?? '') is '' and ''.startsWith(anything) is false, so the denylist matched
+   * nothing. That is an accident of the expression, not a decision, and it is stated here
+   * explicitly so nobody re-derives the opposite conclusion from the same accident.
+   *
+   * THIS BRANCH DOES NOT TOUCH THE 2026-08-21 OPERATOR RULINGS. Orders carrying
+   * `operator_ruling_finatic_confirmed_unpaid_20260821` remain RECOVERABLE, which is the whole
+   * point of the 2026-08-22 inversion described above -- that string matches no enumerated
+   * prefix, and one of those very reasons ends "If a charge is later found, this order must be
+   * treated as recoverable." Verified by evaluating the predicate, not by reading the list.
+   *
+   * Only a row with NO reason recorded is refused here.
+   */
+  if (row.cancellation_reason == null) return false
+
+  const reason = String(row.cancellation_reason).trim().toLowerCase()
+  // An empty-or-whitespace reason is the same absence wearing a string, and is refused for the
+  // same reason -- otherwise the accident above returns through the back door.
+  if (reason === '') return false
   return !NON_RECOVERABLE_CANCELLATION_REASON_PREFIXES.some((p) => reason.startsWith(p))
 }
 

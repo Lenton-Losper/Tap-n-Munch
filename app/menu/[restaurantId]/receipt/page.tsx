@@ -29,6 +29,7 @@ import {
   type TabRow,
 } from '@/lib/tab-session'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 const RECEIPT_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
@@ -335,14 +336,14 @@ export default function ReceiptPage() {
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
             <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
           </div>
-          <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Table Number Required</h1>
+          <h1 className="text-2xl font-serif font-bold text-foreground mb-4">{MENU_COPY.tableNumberRequired}</h1>
           <p className="text-muted-foreground font-sans mb-6">
-            Please scan the QR code at your table to view your receipt.
+            {MENU_COPY.pleaseScanQrCodeYour}
           </p>
           {restaurantId && (
             <Link href={`/menu/${restaurantId}/browse`}>
               <Button className="bg-foreground text-background hover:bg-foreground/90 font-sans">
-                Browse Menu
+                {MENU_COPY.browseMenu}
               </Button>
             </Link>
           )}
@@ -424,18 +425,18 @@ export default function ReceiptPage() {
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border-2 border-border bg-muted">
             <FileText className="h-8 w-8 text-muted-foreground stroke-[1.5]" aria-hidden />
           </div>
-          <h1 className="text-2xl font-serif font-bold text-foreground mb-4">No Orders Yet</h1>
+          <h1 className="text-2xl font-serif font-bold text-foreground mb-4">{MENU_COPY.noOrdersYet}</h1>
           <p className="text-muted-foreground font-sans mb-6">
             {tableNumber 
               ? `No active orders found for Table ${tableNumber}.`
-              : 'No active orders found.'}
+              : MENU_COPY.receiptNoActiveOrders}
           </p>
           {restaurantId && tableNumber && (
             <Button
               className="bg-foreground text-background hover:bg-foreground/90 font-sans"
               onClick={() => handleSessionExpired(restaurantId)}
             >
-              Start over
+              {MENU_COPY.startOver}
             </Button>
           )}
         </div>
@@ -471,11 +472,11 @@ export default function ReceiptPage() {
           {/* Summary */}
           <div className="space-y-3">
             <div className="flex justify-between items-center font-sans">
-              <span className="text-muted-foreground">Total Orders</span>
+              <span className="text-muted-foreground">{MENU_COPY.totalOrders}</span>
               <span className="font-bold text-foreground">{orders.length}</span>
             </div>
             <div className="flex justify-between items-center font-sans border-t border-border pt-3">
-              <span className="text-lg font-semibold text-foreground">Tab Total</span>
+              <span className="text-lg font-semibold text-foreground">{MENU_COPY.tabTotal}</span>
               <span className="text-2xl font-bold text-foreground">
                 {tabOutstandingTotal == null ? '—' : `${currency}${tabOutstandingTotal.toFixed(2)}`}
                 {(tabPendingTotal ?? 0) > 0 && (
@@ -535,7 +536,7 @@ export default function ReceiptPage() {
                     {order.items.map((item: any, idx: number) => (
                       <div key={idx} className="flex justify-between text-sm font-sans">
                         <span className="text-muted-foreground">
-                          {(item?.quantity || 1)}× {item?.name || 'Unknown Item'}
+                          {(item?.quantity || 1)}× {item?.name || MENU_COPY.receiptUnknownItem}
                           {lineConfigurationSummary(item) ? (
                             <span className="block text-xs">
                               {lineConfigurationSummary(item)}
@@ -553,7 +554,7 @@ export default function ReceiptPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-muted-foreground font-sans text-sm">No items found</p>
+                  <p className="text-muted-foreground font-sans text-sm">{MENU_COPY.noItemsFound}</p>
                 )}
 
                 {String(order.payment_channel || '').toLowerCase() === 'terminal' &&

@@ -8,6 +8,7 @@ import Image from 'next/image'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
 import { startKioskCustomerSession } from '@/lib/session'
 import { getSupabaseTableByNumber } from '@/lib/supabase/tables'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 export default function KioskPage() {
   const params = useParams()
@@ -41,13 +42,13 @@ export default function KioskPage() {
       .then((row) => {
         if (cancelled) return
         if (!row.is_kiosk) {
-          setTableBlocked('This link is not configured as a kiosk.')
+          setTableBlocked(MENU_COPY.thisLinkNotConfiguredAs)
           return
         }
         setTableReady(true)
       })
       .catch(() => {
-        if (!cancelled) setTableBlocked('This kiosk is not available for ordering.')
+        if (!cancelled) setTableBlocked(MENU_COPY.thisKioskNotAvailableOrdering)
       })
     return () => {
       cancelled = true
@@ -57,11 +58,11 @@ export default function KioskPage() {
   const handleStart = () => {
     const trimmed = name.trim()
     if (!trimmed) {
-      setError('Please enter your name to continue.')
+      setError(MENU_COPY.pleaseEnterYourNameContinue)
       return
     }
     if (trimmed.length < 2) {
-      setError('Name must be at least 2 characters.')
+      setError(MENU_COPY.nameMustLeast2Characters)
       return
     }
 
@@ -89,7 +90,7 @@ export default function KioskPage() {
     return (
       <div className="min-h-screen flex items-center justify-center px-6 text-center">
         <p className="text-lg text-gray-700">
-          {invalidLink ? 'This kiosk link is invalid.' : tableBlocked}
+          {invalidLink ? MENU_COPY.thisKioskLinkInvalid : tableBlocked}
         </p>
       </div>
     )
@@ -112,13 +113,13 @@ export default function KioskPage() {
 
         <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-900">{restaurant?.name}</h1>
-          <p className="mt-2 text-gray-500 text-lg">Welcome! Enter your name to start ordering.</p>
+          <p className="mt-2 text-gray-500 text-lg">{MENU_COPY.welcomeEnterYourNameStart}</p>
         </div>
 
         <div className="w-full flex flex-col gap-3">
           <Input
             autoFocus
-            placeholder="Your name"
+            placeholder={MENU_COPY.yourName}
             value={name}
             onChange={e => { setName(e.target.value); setError('') }}
             onKeyDown={handleKeyDown}
@@ -131,12 +132,12 @@ export default function KioskPage() {
             className="h-14 text-lg font-semibold w-full"
             disabled={!name.trim()}
           >
-            Start Order
+            {MENU_COPY.startOrder}
           </Button>
         </div>
 
         <p className="text-xs text-gray-400 text-center">
-          Tap Start Order to browse the menu
+          {MENU_COPY.tapStartOrderBrowseMenu}
         </p>
       </div>
     </div>

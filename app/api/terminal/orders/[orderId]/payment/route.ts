@@ -8,6 +8,7 @@ import { amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
+import { recordRefusedSecondPayment } from '@/lib/payments/record-refused-second-payment'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
 
 export const dynamic = 'force-dynamic'
@@ -66,7 +67,11 @@ export async function POST(
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .select(
-        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no',
+        // payment_reference added 2026-08-24: the 409 ALREADY_PAID branch compares the reference
+        // THIS attempt presents against the one the order already carries, and a different one
+        // means a second gateway transaction rather than a repeated callback. Read here, before
+        // the safety net below can write a merchant order number onto a row that had none.
+        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, payment_reference',
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -133,6 +138,39 @@ export async function POST(
       })
 
       if (!result.claimed) {
+        /**
+         * #329 follow-up, 2026-08-24. THIS BRANCH USED TO RETURN AND WRITE NOTHING.
+         *
+         * The refusal is correct and unchanged -- the atomic claim already stopped a second
+         * `paid` write. What was missing is that this is the ONE MOMENT the server is told a
+         * payment succeeded for an order that is already paid, and it recorded nothing at all.
+         *
+         * The card is charged on the DEVICE before this route is reached, so by now the money
+         * has already moved. If the reference differs from the one the order carries, a second
+         * gateway transaction exists and the customer has very likely been charged twice.
+         * Refusing silently made that invisible; it is the only trace there will ever be.
+         *
+         * `order` is the row read BEFORE the merchant-order safety net above, so the comparison
+         * cannot be corrupted by this attempt's own value landing on a row that had none.
+         *
+         * Best effort: the 409 is returned whatever this does.
+         */
+        await recordRefusedSecondPayment(supabase, {
+          orderId,
+          restaurantId: terminal.restaurantId,
+          reason: result.reason,
+          attemptedReference: reference || null,
+          attemptedBusinessOrderNo: businessOrderNo || null,
+          attemptedVoucherNo: voucherNo || null,
+          existingReference: (order.payment_reference as string | null) ?? null,
+          existingBusinessOrderNo: (order.paycloud_merchant_order_no as string | null) ?? null,
+          orderTotal: Number(order.total ?? 0),
+          amountClaimed: Number.isFinite(amount) ? amount : null,
+          terminalId: terminal.terminalId,
+          appVersion: typeof body?.app_version === 'string' ? body.app_version : null,
+          source: 'terminal/orders/payment',
+        })
+
         return NextResponse.json(
           {
             error: result.reason === 'already_paid' ? 'Order is already paid' : 'Order payment could not be claimed',

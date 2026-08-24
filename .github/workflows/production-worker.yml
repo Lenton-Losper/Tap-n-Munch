@@ -181,6 +181,12 @@ jobs:
       # because an exception list is how the previous convention decayed into something you had to
       # remember to grep. 188 call sites were moved to lib/customer-copy before switching it on, so
       # it starts green rather than starting with a backlog nobody will clear.
+      # A @ts-nocheck file has opted out of the one tool that catches a named import which does
+      # not exist. ActiveOrderBanner imported and CALLED orderPlacedAtMs for ten hours -- tsc
+      # skipped the file, jest turned the missing import into `undefined` without throwing, and
+      # only the bundler noticed, by which point it was a failed deploy on every push.
+      - name: Named imports in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-imports-resolve.mjs
       - name: Customer copy under app/menu is sourced from lib/customer-copy
         run: node scripts/check-menu-copy-sourced.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the

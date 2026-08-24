@@ -540,6 +540,12 @@ jobs:
       # order_request carries order_number as an empty string, which Number() turns into 0.
       # Static: no credentials, no database. BLOCKING — the tree is clean as of 2026-08-19, so
       # this can only fail on something NEW.
+      # A @ts-nocheck file has opted out of the one tool that catches a named import which does
+      # not exist. ActiveOrderBanner imported and CALLED orderPlacedAtMs for ten hours -- tsc
+      # skipped the file, jest turned the missing import into `undefined` without throwing, and
+      # only the bundler noticed, by which point it was a failed deploy on every push.
+      - name: Named imports in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-imports-resolve.mjs
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
 
@@ -582,8 +588,13 @@ jobs:
           git fetch --no-tags origin main:refs/remotes/origin/main
           git fetch --no-tags origin cloudflare-staging:refs/remotes/origin/cloudflare-staging || true
           node scripts/check-branch-drift.mjs origin/main origin/cloudflare-staging
+      # `realtime` removed from this pattern 2026-08-24 (#332). __tests__/realtime.test.ts opened a
+      # WebSocket to Supabase and checked it acked two channel joins. It imported `ws` and nothing
+      # else -- no app module, no route, no library -- so deleting the entire FlashTap application
+      # would not have made it fail. It tested a DEPENDENCY, and its only failure modes were
+      # timeouts and network errors, which is the definition of a flaky CI suite.
       - name: Unit and schema tests (no HTTP)
-        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|realtime|apk-terminal|capabilities"
+        run: npx jest --ci --forceExit --testPathPattern="schema-constraints|supabase-schema|payment|apk-terminal|capabilities"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}

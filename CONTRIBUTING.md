@@ -121,3 +121,43 @@ break the other's build, because the histories never meet; this is a search and 
 not a correctness one.
 
 Full detail, the measured costs, and why splitting is deferred: [docs/one-remote-two-codebases.md](docs/one-remote-two-codebases.md).
+
+## PostgREST fails the ENTIRE query on an ungranted column
+
+Adding one column to a guest-facing `.select()` is a **site-wide outage risk**, not a tidy-up.
+
+PostgREST does not silently omit a column the caller lacks a grant for — it fails the **whole
+query** with `42501`. `contexts/restaurant-context.tsx` wraps every guest-facing page, so a single
+ungranted column there takes out the menu, the cart, the tab and the receipt at once.
+
+This has bitten twice. Its own comment records `owner_id` doing it, and on 2026-08-24
+`is_counter_service` and `card_payments_available` were both verified denied to `anon` *before* they
+were added to that select — the grant migration (`20260824130000`) was mandatory, not housekeeping.
+
+**Before adding a column to any anon-key `.select()`:**
+
+```ts
+// prove it, do not assume — an ungranted column is indistinguishable from a typo until it 500s
+const { error } = await anon.from('restaurants').select('id, your_new_column').limit(1)
+// error?.code === '42501'  ->  you need a column grant first
+```
+
+Grant it explicitly, in a migration, alongside the column that needs it.
+
+## Card capability is a GENERATED column so credentials never reach the browser
+
+`restaurants.card_payments_available` is `GENERATED ALWAYS AS (finatic_merchant_no IS NOT NULL AND
+finatic_store_no IS NOT NULL AND ...) STORED`.
+
+**Do not "simplify" this by selecting `finatic_merchant_no` / `finatic_store_no` client-side and
+comparing them there.** That puts merchant identifiers in every customer's browser to answer a
+yes/no question, and those two columns are deliberately outside the anon grant.
+
+It is the same mistake #279 made with `session_id`: the client asked "is this mine?" by receiving
+the identifier and comparing it, so when the server correctly stopped sending the identifier, two
+customer-facing banners silently went dark for two days.
+
+**The rule both cases teach: when a client needs an answer, send the ANSWER, not the data it would
+be derived from.** Generated columns are the cheapest way to do that for a row-level fact — the
+database computes it, it cannot drift from its inputs, and there is no code path that can set it
+inconsistently.

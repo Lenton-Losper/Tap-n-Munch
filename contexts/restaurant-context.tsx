@@ -7,6 +7,13 @@ interface Restaurant {
   name: string
   phone: string | null
   logo_url: string | null
+  /** True when the customer collects and pays at a counter; false when staff come to the table. */
+  is_counter_service: boolean | null
+  /**
+   * DERIVED in the database from the Finatic credentials, so the client can learn whether a card
+   * may be offered without ever receiving the credentials themselves.
+   */
+  card_payments_available: boolean | null
 }
 
 interface RestaurantSettings {
@@ -92,7 +99,10 @@ export function RestaurantProvider({
           // anon column grant (20260726200000_enable_rls_...) and never read
           // by any consumer of this context -- selecting it 42501s the whole
           // query for every guest-facing page this provider wraps.
-          .select('id, name, phone, logo_url')
+          // is_counter_service / card_payments_available added 2026-08-24. BOTH are inside the anon
+            // column grant (20260824130000) -- PostgREST fails the WHOLE query with 42501 on any
+            // ungranted column, which is the failure this comment block already records.
+            .select('id, name, phone, logo_url, is_counter_service, card_payments_available')
           .eq('id', restaurantId)
           .maybeSingle(),
         fetch(`/api/admin/restaurants/${restaurantId}/settings`),

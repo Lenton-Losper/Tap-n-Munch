@@ -15,6 +15,7 @@ import { ShoppingCart, AlertCircle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 function MenuLandingPageContent() {
   const params = useParams()
@@ -52,7 +53,7 @@ function MenuLandingPageContent() {
   const canLoadRestaurant = Boolean(restaurantId)
   const missingRestaurantError =
     !authLoading && initialized && !restaurantId
-      ? 'Invalid menu URL. Please scan a valid QR code or use a valid menu link.'
+      ? MENU_COPY.invalidMenuUrlPleaseScan
       : null
   const displayError = error ?? missingRestaurantError
 
@@ -62,7 +63,7 @@ function MenuLandingPageContent() {
     let cancelled = false
     const timeoutId = setTimeout(() => {
       if (!cancelled && loading && !restaurant) {
-        setError('Loading took too long. Please scan a valid QR code or refresh the page.')
+        setError(MENU_COPY.loadingTookTooLongPlease)
         setLoading(false)
       }
     }, 5000)
@@ -76,7 +77,7 @@ function MenuLandingPageContent() {
       } catch (err: any) {
         if (cancelled) return
         setPermissionError(Boolean(err?.message?.includes('permission')))
-        setError(err?.message || 'Failed to load restaurant. Please try again.')
+        setError(err?.message || MENU_COPY.failedLoadRestaurantPleaseTry)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -113,7 +114,7 @@ function MenuLandingPageContent() {
         } catch (err: any) {
           if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
             setPermissionError(true)
-            setError('Please ask staff to open this table.')
+            setError(MENU_COPY.pleaseAskStaffOpenThis)
           }
         }
       }
@@ -138,9 +139,9 @@ function MenuLandingPageContent() {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle className="w-12 h-12 text-foreground mb-6 stroke-[1.5]" />
-        <h1 className="text-2xl font-serif font-bold text-foreground mb-4">Invalid Menu URL</h1>
+        <h1 className="text-2xl font-serif font-bold text-foreground mb-4">{MENU_COPY.invalidMenuUrl}</h1>
         <p className="text-muted-foreground font-sans mb-6">
-          This menu page requires a restaurant ID in the URL.
+          {MENU_COPY.thisMenuPageRequiresRestaurant}
         </p>
         <p className="text-sm text-muted-foreground font-sans mb-8">
           Please scan a valid QR code or use a menu link with the format: /menu/[restaurantId]
@@ -149,7 +150,7 @@ function MenuLandingPageContent() {
           onClick={() => router.push('/signin')}
           className="bg-foreground text-background hover:bg-foreground/90 font-sans"
         >
-          Go to Sign In
+          {MENU_COPY.goSign}
         </Button>
       </div>
     )
@@ -176,15 +177,15 @@ function MenuLandingPageContent() {
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle className="w-12 h-12 text-foreground mb-6 stroke-[1.5]" />
         <h1 className="text-2xl font-serif font-bold text-foreground mb-4">
-          {permissionError ? 'Access Restricted' : 'Restaurant Not Found'}
+          {permissionError ? MENU_COPY.accessRestricted : MENU_COPY.restaurantNotFound}
         </h1>
         <p className="text-muted-foreground font-sans mb-6">
-          {displayError || 'The link you followed may be invalid or expired.'}
+          {displayError || MENU_COPY.linkYouFollowedMayInvalid}
         </p>
         {permissionError && (
           <div className="p-4 bg-muted border border-border max-w-md mb-6">
             <p className="text-sm text-muted-foreground font-sans">
-              This table may not be open yet. Please ask a staff member to open the table for you.
+              {MENU_COPY.thisTableMayNotOpen}
             </p>
           </div>
         )}
@@ -200,12 +201,12 @@ function MenuLandingPageContent() {
             variant="outline"
             className="w-full border-border font-sans"
           >
-            Go Home
+            {MENU_COPY.goHome}
           </Button>
         </div>
         <div className="mt-8 p-4 bg-muted border border-border text-xs font-mono text-left max-w-md">
           <p className="text-muted-foreground">Restaurant ID: {restaurantId}</p>
-          <p className="text-muted-foreground">Table Number: {tableNum > 0 ? tableNum : 'Not provided'}</p>
+          <p className="text-muted-foreground">Table Number: {tableNum > 0 ? tableNum : MENU_COPY.notProvided}</p>
           <p className="text-muted-foreground">Table Found: {table ? 'Yes' : 'No'}</p>
         </div>
       </div>
@@ -238,25 +239,25 @@ function MenuLandingPageContent() {
           {/* Restaurant Info */}
           <div className="space-y-3">
             <h1 className="text-5xl font-serif font-bold text-foreground tracking-tight">{restaurant.name}</h1>
-            <p className="text-sm font-sans text-muted-foreground italic">{restaurant.description || 'Welcome to our menu'}</p>
+            <p className="text-sm font-sans text-muted-foreground italic">{restaurant.description || MENU_COPY.welcomeOurMenu}</p>
           </div>
 
           {/* Table Card */}
           <div className="bg-card p-6 border border-border">
             {tableNum > 0 ? (
               <div className="mb-6">
-                <span className="text-xs font-sans uppercase tracking-widest text-muted-foreground font-semibold">Your Location</span>
+                <span className="text-xs font-sans uppercase tracking-widest text-muted-foreground font-semibold">{MENU_COPY.yourLocation}</span>
                 <p className="text-2xl font-serif font-bold text-foreground mt-1">Table {tableNum}</p>
-                {!table && <p className="text-xs font-sans text-destructive mt-1">Note: Table not verified, ordering may be limited.</p>}
+                {!table && <p className="text-xs font-sans text-destructive mt-1">{MENU_COPY.noteTableNotVerifiedOrdering}</p>}
               </div>
             ) : (
-              <p className="text-sm font-sans text-muted-foreground mb-6">Scan a QR code at your table to start ordering.</p>
+              <p className="text-sm font-sans text-muted-foreground mb-6">{MENU_COPY.scanQrCodeYourTable}</p>
             )}
 
             <Link href={`/menu/${restaurantId}/browse${tableNum > 0 ? `?table=${tableNum}` : ''}`}>
               <Button size="lg" className="w-full bg-foreground text-background hover:bg-foreground/90 py-7 text-xl transition-all active:scale-95 font-sans">
                 <ShoppingCart className="w-6 h-6 mr-2 stroke-[1.5]" />
-                View Full Menu
+                {MENU_COPY.viewFullMenu}
               </Button>
             </Link>
           </div>
@@ -265,7 +266,7 @@ function MenuLandingPageContent() {
           {sessionReady && sessionId && tableNum > 0 && (
             <Link href={`/menu/${restaurantId}/receipt?table=${tableNum}`}>
               <Button variant="ghost" className="w-full text-foreground hover:bg-muted text-lg font-sans">
-                📋 View My Current Receipt
+                {MENU_COPY.viewMyCurrentReceipt}
               </Button>
             </Link>
           )}

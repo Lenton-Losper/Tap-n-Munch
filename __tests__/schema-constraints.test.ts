@@ -8,10 +8,33 @@ describe('Schema constraints', () => {
   const sb = getSupabaseAdmin();
 
   test('payment_methods CHECK constraint rejects invalid values', async () => {
+    // POSITIVE CONTROL FIRST. Without a row that actually matches, the UPDATE below returns no
+    // error whether or not the constraint exists -- PostgREST reports success for a zero-row
+    // update -- so this could not distinguish CHECK ENFORCED from CHECK DROPPED. It only ever
+    // detected a missing row. That is true wherever this suite is pointed, which is why this half
+    // of d5344c9 is kept while the rest of it is reverted.
+    const { data: before, error: readError } = await sb
+      .from('restaurant_settings')
+      .select('payment_methods')
+      .eq('restaurant_id', RIVIERA_ID)
+      .single();
+    expect(readError).toBeNull();
+    expect(before).not.toBeNull();
+
     const { error } = await sb
       .from('restaurant_settings')
       .update({ payment_methods: ['cashhhh'] })
       .eq('restaurant_id', RIVIERA_ID);
+
+    // If the constraint has been dropped the bad value LANDED on a real row. Put the original back
+    // before failing, so one red run does not leave broken data behind for every later suite.
+    if (!error) {
+      await sb
+        .from('restaurant_settings')
+        .update({ payment_methods: before!.payment_methods })
+        .eq('restaurant_id', RIVIERA_ID);
+    }
+
     expect(error).not.toBeNull();
     expect(error?.message).toMatch(/payment_methods_valid_values/);
   });

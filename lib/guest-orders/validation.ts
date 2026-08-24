@@ -194,6 +194,21 @@ export function redactGuestOrderRow(
  */
 const PAYMENT_REF_PATTERN = /^[A-Za-z0-9-]{1,64}$/
 
+/**
+ * A reference that is actually an ORDER ID.
+ *
+ * #337: the confirmation screen accepts `orderId` / `order_id` as its reference, but the payment-ref
+ * filter only matches `paycloud_merchant_order_no` and `payment_reference` -- neither of which ever
+ * holds an order id. So a link carrying one could never resolve, and the customer was shown "Order
+ * not found" for an order that existed and was being prepared. A UUID also satisfies
+ * PAYMENT_REF_PATTERN, so the filter was built and silently matched nothing.
+ */
+const ORDER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function looksLikeOrderId(ref: string): boolean {
+  return ORDER_ID_PATTERN.test(String(ref ?? '').trim())
+}
+
 export function isWellFormedPaymentRef(ref: string): boolean {
   return PAYMENT_REF_PATTERN.test(String(ref ?? '').trim())
 }

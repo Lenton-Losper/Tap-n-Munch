@@ -50,6 +50,7 @@ import {
   getVariantOptionLabel,
   isRequiredVariantMissing,
 } from '@/lib/menu/variant-groups'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 type MenuCategory = {
   id: string
@@ -571,8 +572,8 @@ export default function MenuBrowsePage() {
   const menuSectionTitle = selectedMenuCategory?.name
     ? selectedMenuCategory.name
     : normalizedSearchQuery
-      ? 'Search results'
-      : 'All Menu'
+      ? MENU_COPY.searchResults
+      : MENU_COPY.allMenu
 
   const popularItems = useMemo(
     () => flattenGroupedItems(allGroupedItems).filter(isPopularItem),
@@ -720,9 +721,9 @@ export default function MenuBrowsePage() {
               {displayPrice.toFixed(2)}
             </p>
             {item.status === 'out_of_stock' ? (
-              <span className="text-xs text-red-600">Out of stock</span>
+              <span className="text-xs text-red-600">{MENU_COPY.outStock}</span>
             ) : !effectiveIsInTab && !isKiosk && !isViewOnly ? (
-              <span className="text-[10px] text-gray-400">Create tab to order</span>
+              <span className="text-[10px] text-gray-400">{MENU_COPY.createTabOrder}</span>
             ) : null}
           </div>
         </div>
@@ -776,7 +777,7 @@ export default function MenuBrowsePage() {
       <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-3 px-6 text-center">
         <div className="w-10 h-10 border-2 border-border border-t-foreground animate-spin" />
         <p className="text-sm text-muted-foreground max-w-xs">
-          Your session has ended. Scan the QR code to start a new order.
+          {MENU_COPY.yourSessionHasEndedScan}
         </p>
       </div>
     )
@@ -1014,7 +1015,7 @@ export default function MenuBrowsePage() {
           <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400 stroke-[1.5]" />
           <Input
             type="text"
-            placeholder="Search menu items..."
+            placeholder={MENU_COPY.searchMenuItems}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-11 rounded-xl border-gray-200 bg-white pl-12 font-sans text-base text-black sm:text-sm"
@@ -1067,7 +1068,7 @@ export default function MenuBrowsePage() {
         {popularItems.length > 0 ? (
           <section className="mb-8">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-black">Popular Picks ⭐</h2>
+              <h2 className="text-lg font-bold text-black">{MENU_COPY.popularPicks}</h2>
               <button
                 type="button"
                 onClick={() => {
@@ -1079,7 +1080,7 @@ export default function MenuBrowsePage() {
                 className="text-sm font-medium"
                 style={{ color: ACCENT }}
               >
-                View All →
+                {MENU_COPY.viewAll}
               </button>
             </div>
             <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
@@ -1143,7 +1144,7 @@ export default function MenuBrowsePage() {
                 className="text-sm font-medium"
                 style={{ color: ACCENT }}
               >
-                View All Items →
+                {MENU_COPY.viewAllItems}
               </button>
             ) : null}
           </div>
@@ -1227,17 +1228,17 @@ export default function MenuBrowsePage() {
               <div className="mx-auto max-w-md px-6">
                 <div className="mb-6 text-6xl">🍽️</div>
                 <h3 className="mb-2 text-xl font-bold text-black">
-                  {searchQuery ? 'No items found' : 'Menu coming soon!'}
+                  {searchQuery ? MENU_COPY.noItemsFound : MENU_COPY.menuComingSoon}
                 </h3>
                 <p className="mb-2 text-gray-500">
                   {searchQuery
                     ? `No items found for "${searchQuery}"`
                     : selectedMenuCategory
                       ? `No items in "${selectedMenuCategory.name}" yet.`
-                      : "This restaurant hasn't added menu items yet."}
+                      : MENU_COPY.thisRestaurantHasntAddedMenu}
                 </p>
                 {!searchQuery ? (
-                  <p className="text-sm text-gray-400">Please ask staff for assistance.</p>
+                  <p className="text-sm text-gray-400">{MENU_COPY.pleaseAskStaffAssistance}</p>
                 ) : null}
               </div>
             </div>
@@ -1256,12 +1257,12 @@ export default function MenuBrowsePage() {
           <div className="text-center sm:text-left">
             <Zap className="mx-auto mb-2 h-6 w-6 text-black sm:mx-0" strokeWidth={1.5} />
             <p className="font-bold text-black">Fast &amp; Easy</p>
-            <p className="mt-1 text-sm text-gray-500">Order in seconds from your table</p>
+            <p className="mt-1 text-sm text-gray-500">{MENU_COPY.orderSecondsFromYourTable}</p>
           </div>
           <div className="text-center sm:text-left">
             <Smartphone className="mx-auto mb-2 h-6 w-6 text-black sm:mx-0" strokeWidth={1.5} />
             <p className="font-bold text-black">Contactless</p>
-            <p className="mt-1 text-sm text-gray-500">No app download required</p>
+            <p className="mt-1 text-sm text-gray-500">{MENU_COPY.noAppDownloadRequired}</p>
           </div>
         </div>
       </footer>
@@ -1316,7 +1317,7 @@ export default function MenuBrowsePage() {
             }
             className="underline"
           >
-            Create a tab to start ordering
+            {MENU_COPY.createTabStartOrdering}
           </button>
         </div>
       )}

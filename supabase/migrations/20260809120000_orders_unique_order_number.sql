@@ -1,0 +1,59 @@
+-- @env: staging
+--
+-- SCOPED TO STAGING, and this file is being committed rather than written: the index is ALREADY
+-- APPLIED to the staging database and has been since 2026-08-09, while the file existed only on
+-- origin/wave3/payment-seq. That is the APPLIED_NOT_LOCAL half of the drift table -- the ledger
+-- knew about it and no branch did.
+--
+-- It is scoped rather than committed unscoped because it CANNOT go to production yet: production
+-- carries 282 duplicate (firebase_restaurant_id, order_number) pairs, and CREATE UNIQUE INDEX
+-- fails on the first one. Committing it unscoped would make main LOCAL_NOT_APPLIED and block
+-- every production deploy -- the exact failure a6bb436 had to undo for #193.
+--
+-- This is what the -- @env: header in #143 was built for. Both drift scripts now understand it
+-- (#269 ported the three-state version to main), so main reports this as out-of-scope rather
+-- than missing. Removing the scope is a deliberate act that belongs with the production
+-- de-duplication, not with this commit.
+-- Issue #127: `orders` had NO unique constraint on (firebase_restaurant_id, order_number).
+-- The only unique indexes on the table were firebase_id, idempotency_key and
+-- paycloud_merchant_order_no, so uniqueness of the number staff and customers actually use to
+-- identify an order rested entirely on two copies of `SELECT count(*) + 1`
+-- (lib/orders/create-order.ts and app/api/orders/route.ts) -- a read-then-write with no lock.
+-- Two staff accepting at the same moment both read the same count and both insert.
+--
+-- count(*)+1 was also wrong single-threaded, which is the part that makes this urgent rather than
+-- theoretical: delete any order and the count drops below max(order_number), so the next order is
+-- issued a number that is still in use. No concurrency required.
+--
+-- This is not cosmetic. order_number is what the kitchen ticket, the customer's confirmation
+-- screen and the order-status banner all display, and it is how staff refer to an order verbally.
+-- Two orders sharing one number in a restaurant means the wrong food collected, and a refund or
+-- comp applied against the wrong bill.
+--
+-- SCOPED TO firebase_restaurant_id, not restaurant_id, because that is the column the allocator
+-- scopes by. A constraint on a different scope than the allocator uses would reject valid inserts
+-- while still permitting the collision it is meant to prevent.
+--
+-- PARTIAL, on both columns being NOT NULL. Staging has 130 orders rows with a NULL
+-- firebase_restaurant_id and 127 with a NULL order_number; the pair is only meaningful for rows
+-- that have both. Postgres already treats NULLs as distinct in a unique index, so the predicate
+-- does not change which rows conflict -- it states the intent and keeps the index off two thirds
+-- of the table.
+--
+-- Not CONCURRENTLY: the table is small (204 rows on staging) so the brief lock is irrelevant, and
+-- CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
+--
+-- Verified NO duplicate (firebase_restaurant_id, order_number) pairs on staging immediately before
+-- applying, via scripts/check-duplicate-order-numbers-readonly.ts: 204 rows scanned, 74 of them
+-- numbered under one restaurant with max = 74 and no repeats. This index cannot be created while
+-- any duplicate exists, so PRODUCTION MUST BE CHECKED WITH THE SAME SCRIPT BEFORE THIS IS APPLIED
+-- THERE -- production was deliberately not queried from the branch that wrote this migration.
+--
+-- The index alone does not fix the bug, it only makes the bug loud: with it in place a colliding
+-- allocation becomes a failed order instead of a duplicate one. lib/orders/order-number.ts carries
+-- the other half -- max(order_number)+1 plus a bounded retry on this index's 23505 -- and its
+-- header documents why retry was chosen over a sequence, an advisory lock or a counter table.
+
+CREATE UNIQUE INDEX IF NOT EXISTS orders_firebase_restaurant_id_order_number_key
+  ON public.orders (firebase_restaurant_id, order_number)
+  WHERE firebase_restaurant_id IS NOT NULL AND order_number IS NOT NULL;

@@ -105,6 +105,24 @@ function makeFakeSupabase(options?: { ordersError?: string; eventsError?: string
         predicates.push((row) => terms.some((p) => p(row)))
         return self
       },
+      /**
+       * #331. Added 2026-08-24, and this fake was broken WITHOUT it since #323 (343763a) rerouted
+       * the orders leg through fetchAllRows, which calls .range() on the builder. Every one of the
+       * twelve tests died with "query.range is not a function" BEFORE reaching an assertion, so
+       * #242's cross-tenant injection cover on the webhook path was dark for three weeks.
+       *
+       * The security property itself never regressed -- resolve-order-by-merchant-order.ts still
+       * issues two parser-free .eq() calls and builds no .or() -- but a suite that cannot run is
+       * not protecting it.
+       */
+      range(from: number, to: number) {
+        const err = table === 'orders' ? options?.ordersError : options?.eventsError
+        if (err) return Promise.resolve({ data: null, error: { message: err } })
+        const matched = rows()
+          .filter((row) => predicates.every((p) => p(row)))
+          .slice(0, limit)
+        return Promise.resolve({ data: matched.slice(from, to + 1), error: null })
+      },
       then(resolve: (r: { data: unknown; error: { message: string } | null }) => void) {
         const err = table === 'orders' ? options?.ordersError : options?.eventsError
         if (err) return resolve({ data: null, error: { message: err } })
