@@ -109,3 +109,58 @@ Two things separate here, and conflating them is how this got misread as a doubl
 - **Reports, does not fix.** Every finding gets an issue with the exact reproduction sequence.
 - **Seeds and cleans up its own data**, in `finally`.
 - **A run without a passing negative control is void** — say so rather than reporting its findings.
+
+---
+
+## Scenarios, 2026-08-24
+
+Six registered: three behaviours, each with its own negative control. Every control passed, so the
+three clean results mean something.
+
+```
+double-tap                        1 submission from two concurrent taps, same key
+double-tap-control                2 submissions with NO key          <- harness can see duplicates
+
+staff-closes-table-mid-checkout   HTTP 403, 0 submissions
+                                  "This table has been closed. Please scan the QR code to
+                                   start a new session."
+close-...-control                 HTTP 200, 1 submission             <- ordering works without a close
+
+two-sessions-one-table            phone B REFUSED, 403 TAB_PIN_REQUIRED
+                                  tab A pin_required=true has_pin=true
+two-sessions-...-control          a first scan at a fresh table opens a tab
+
+back-button-mid-payment           1 submission from two SEQUENTIAL taps, same key
+back-button-...-control           2 submissions with DIFFERENT keys  <- harness can see duplicates
+```
+
+### What each was actually looking for
+
+**Close table mid-checkout** — not whether the order is refused (it must be) but WHAT the customer is
+told, and whether anything is left half-done. The close settles the tab, expires the session and
+bumps `current_session_version`, so an order landing after it belongs to a session that no longer
+exists. Result: refused with a 403 and a message that names the cause and the remedy. The failure
+mode being watched for was a 5xx, which reads as "the app is broken" rather than "your table was
+closed" — the difference between rescanning and giving up.
+
+**Two sessions, one table** — the #211 / QRA-02 shape. `idx_tabs_one_open_per_table` guarantees the
+second insert hits 23505; the recovery branch decides what happens next. Handing over the existing
+tab with a fresh session token and no PIN would let a stranger add orders to somebody else's bill.
+**Refused with TAB_PIN_REQUIRED, so that branch is gated on staging.** The scenario does not stop at
+the refusal: had B received A's tab, it goes on to attempt an order on it, because reading a tab is
+already anon-visible and ACTING on it is the exposure.
+
+**Back button mid-payment** — the double tap with a gap in the middle, and the one the customer app
+is most likely to get wrong: the cart is still populated after a back navigation, so the second tap
+is a genuine second submission. It tests the idempotency key's LIFETIME rather than concurrency — a
+key minted per render would not survive the navigation. Deliberately sequential; the concurrent case
+is double-tap's job.
+
+### Worth knowing
+
+One table per scenario INCLUDING each control. A tab is unique per open table, so a second scenario
+reusing a table is refused with TAB_PIN_REQUIRED — which looks like a finding and is the product
+working. Eight scenarios, eight tables.
+
+The two-sessions result is staging only. The 23505 recovery branch was an open exposure on
+production at `fdb999a`; this run says nothing about whether production carries the gate.
