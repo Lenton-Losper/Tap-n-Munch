@@ -45,13 +45,31 @@ const TABLEMATE_FIELDS = [
  * which table it came from, and `edit_lock_held` is a boolean standing in for a token that is
  * never returned. They are safe and the edit panel needs them.
  */
-const DERIVED_FIELDS = ['surface', 'edit_lock_held'] as const
+const DERIVED_FIELDS = ['surface', 'edit_lock_held', 'isMine'] as const
 
+/**
+ * #279 + the regression it caused. The banner asks "is this MINE", and it used to answer that by
+ * comparing `order.session_id` to its own — so dropping session_id here made every row fail that
+ * check and the Active Order Banner rendered nothing for anybody. Twelve staging deploys shipped
+ * over the E2E control that said so.
+ *
+ * THE SERVER ANSWERS THE QUESTION INSTEAD OF HANDING OVER THE IDENTIFIER. `isMine` is derived here,
+ * not read from the row: the caller only ever receives rows that matched their own session ids
+ * (`fetchGuestActiveTableOrders` queries BOTH placer columns with `.in(column, heldIds)`), so every
+ * row it returns is theirs by construction.
+ *
+ * Another diner's order is therefore ABSENT rather than `isMine: false`, and absent is the safer
+ * shape: a row that never leaves the server cannot be exposed by a client bug. Sending it with a
+ * flag would mean shipping a stranger's order number, items and total to the browser and trusting
+ * the client to hide it — which is exactly what #302/#305 did, and it was rolled back within the
+ * hour.
+ */
 export function projectTablemateOrder(row: Record<string, unknown>): GuestOrderRow {
-  const out: Record<string, unknown> = {}
+  const out: Record<string, unknown> = { isMine: true }
   for (const key of [...TABLEMATE_FIELDS, ...DERIVED_FIELDS]) {
     if (key in row) out[key] = row[key]
   }
+  out.isMine = true
   return out as GuestOrderRow
 }
 

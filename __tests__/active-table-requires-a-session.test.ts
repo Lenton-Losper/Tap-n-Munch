@@ -147,3 +147,35 @@ describe('the redaction is an allowlist, not select(*) minus one field', () => {
     expect(Object.keys(projected).every((k) => TABLEMATE_ALLOWLIST.includes(k))).toBe(true)
   })
 })
+
+describe('the server answers ownership, so the banner never needs the session id', () => {
+  const withSession = `restaurantId=${RESTAURANT}&table_number=1&session_id=${SESSION}`
+
+  it('marks the caller\u2019s own rows isMine', async () => {
+    // The regression this replaces: the banner compared order.session_id to its own, so redacting
+    // that field made EVERY row fail the check and the banner rendered nothing for anybody.
+    const o = (await get(withSession)).body.orders[0]
+    expect(o.isMine).toBe(true)
+  })
+
+  it('derives it rather than reading it off the row', () => {
+    // A row that never carried the flag still comes back true, because the caller only receives
+    // rows that matched their own session ids. The truth is the query scope, not a column.
+    expect(projectTablemateOrder({ id: 'x' }).isMine).toBe(true)
+    expect(projectTablemateOrder({ id: 'x', isMine: false }).isMine).toBe(true)
+  })
+
+  it('and STILL never returns a session id', () => {
+    // #279's guarantee is not traded away to fix the banner.
+    const p = projectTablemateOrder({ id: 'x', session_id: SESSION, member_session_id: 'm' })
+    expect(p.session_id).toBeUndefined()
+    expect(p.member_session_id).toBeUndefined()
+    expect(JSON.stringify(p)).not.toContain(SESSION)
+  })
+
+  it('isMine is inside the allowlist, so it is not an accidental leak of a new field', () => {
+    expect(TABLEMATE_ALLOWLIST).toContain('isMine')
+    const p = projectTablemateOrder({ id: 'x', some_future_column: 'secret' })
+    expect(Object.keys(p).every((k) => TABLEMATE_ALLOWLIST.includes(k))).toBe(true)
+  })
+})
