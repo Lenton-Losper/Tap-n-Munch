@@ -116,3 +116,46 @@ is called only by server routes.
 **`lib/orders/last-placed-order.ts` is kept**, because the duplicated two-key convention was real and
 a fifth screen will appear. **It is not the fix for the stale link.** The cause is open — see the
 investigation below.
+
+
+---
+
+## #333 — built, with two gaps recorded rather than papered over
+
+### 1. Not measured on production. NOT AN ABORT — the item shipped.
+
+This worktree has **no production credentials**. `.env.local` and `.env.test` both point at the
+staging ref (`mdqjpxwczrhkxkbqatqa`); the production ref is `ihlmmpmolnpchzgwyhgh`, and no key for it
+is reachable here. A lookup in sibling checkouts was denied by the permission classifier and I did
+not work around it.
+
+So `scripts/probe-333-abandoned-sessions.ts` reports staging only. **The production backlog size is
+unknown.** It has a production branch that runs automatically if `SUPABASE_URL` ever resolves to a
+non-staging ref, so it needs no edit — only credentials.
+
+This does not weaken the fix: the design is safe at any count, because `reap_abandoned_tab` re-derives
+inactivity and refuses on money per tab rather than relying on the population looking like staging's.
+What it means is that **the first production run's audit rows are the measurement** — read
+`tab.reaped_abandoned` and `tab.abandoned_needs_attention` after the first hour rather than assuming
+the 6/4 split carries over.
+
+Supersedes the memory note claiming the production service-role key is in `.env.local`. It is not, in
+this worktree.
+
+### 2. `customer_sessions.last_seen_at` is a decoy column. Filed here, not fixed.
+
+The column exists, defaults to `now()`, and is **never written by anything**. Every `last_seen_at`
+hit in application code is the `restaurant_terminals` table. Verified on staging: **0 of 8** session
+rows on open tabs differ from their own `created_at`.
+
+It is exactly the column that would make "inactivity" mean what a reader assumes it means — real
+customer presence rather than the last thing that left a row somewhere. Without it, **browsing is
+invisible**: opening the menu, scrolling, filling a cart and not submitting leave no trace at all.
+
+Not fixed here because touching it means **writing on a read path** — every guest GET would become a
+write — and that is a decision with its own performance and contention shape, not a detail to smuggle
+into a reaper. The 4h threshold and the money guard were both chosen to be safe *without* it.
+
+This is the same class as `written-columns-are-not-selected-columns`, inverted: not a column written
+and never read, but one **read as evidence and never written**. A `SELECT last_seen_at` looks
+authoritative and returns the insert time.
