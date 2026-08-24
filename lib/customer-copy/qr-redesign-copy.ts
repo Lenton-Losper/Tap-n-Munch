@@ -271,6 +271,25 @@ export const NO_SESSION_NOTICE_MS = 2600
 export const CONFIRM_SETTLE_MAX_ATTEMPTS = 4
 export const CONFIRM_SETTLE_RETRY_MS = 2000
 
+/**
+ * Whether the confirmation screen is STILL SETTLING rather than certain the order is missing.
+ *
+ * A function, not an inline condition, because TWO places have to agree on it: the effect that
+ * schedules the next attempt, and the render that decides which of the two messages the customer
+ * reads and where the single button goes. If those two ever disagree, a customer sees "we cannot
+ * find your order" while the page is still quietly retrying, or the reverse.
+ *
+ * `tn-miss` is the only reason that can be transient -- a gateway return arriving ahead of its row.
+ * `no-context` and `fallback-empty` are not: no amount of waiting supplies a reference that was
+ * never in the URL. Retrying those would show a spinner for a lookup that cannot succeed.
+ */
+export function isStillSettling(
+  notFoundReason: string | null | undefined,
+  attempts: number,
+): boolean {
+  return notFoundReason === 'tn-miss' && attempts < CONFIRM_SETTLE_MAX_ATTEMPTS
+}
+
 export const ORDER_PLACED_BANNER_MS = 6000
 
 /** The query parameter the cart sets on its way to My Orders. */

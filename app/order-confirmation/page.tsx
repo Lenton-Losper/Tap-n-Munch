@@ -18,6 +18,7 @@ import {
 import {
   CONFIRM_SETTLE_MAX_ATTEMPTS,
   CONFIRM_SETTLE_RETRY_MS,
+  isStillSettling,
   QR_REDESIGN_PENDING_COPY,
 } from '@/lib/customer-copy/qr-redesign-copy'
 
@@ -419,8 +420,8 @@ function OrderConfirmationContent() {
    * payment path. Bounded, because an order id that does not exist will not start existing.
    */
   useEffect(() => {
-    if (!notFound || notFoundReason !== 'tn-miss') return
-    if (settleAttempts >= CONFIRM_SETTLE_MAX_ATTEMPTS) return
+    // Same predicate the render uses, so the message and the retry can never disagree.
+    if (!notFound || !isStillSettling(notFoundReason, settleAttempts)) return
     const t = window.setTimeout(() => setSettleAttempts((n) => n + 1), CONFIRM_SETTLE_RETRY_MS)
     return () => window.clearTimeout(t)
   }, [notFound, notFoundReason, settleAttempts])
@@ -605,7 +606,7 @@ function OrderConfirmationContent() {
        * is told it is confirming and the page re-asks itself. Once the window closes, the honest
        * answer is that it will not resolve, and the advice changes with it.
        */
-      const settling = Boolean(tnMiss) && settleAttempts < CONFIRM_SETTLE_MAX_ATTEMPTS
+      const settling = Boolean(tnMiss) && isStillSettling(notFoundReason, settleAttempts)
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-card border border-border p-10 text-center space-y-6">
