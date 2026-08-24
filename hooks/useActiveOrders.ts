@@ -35,6 +35,8 @@ export interface ActiveOrder {
   table_number?: number
   restaurant_id?: string
   session_id?: string
+  /** #279: derived server-side. The caller only ever receives rows that are theirs. */
+  isMine?: boolean
   [key: string]: any
 }
 
@@ -111,25 +113,24 @@ export function useActiveOrders(
             const tn = Number(order.table_number)
             if (!Number.isFinite(tn) || tn !== tableNumber) return false
             /**
-             * FAIL CLOSED. Absent means not-mine. Ruled 2026-08-17.
+             * FAIL CLOSED. Absent means not-mine. Ruled 2026-08-17, mechanism changed 2026-08-24.
              *
-             * This was `if (orderSession && orderSession !== scopedSessionId)`, and that shape
-             * fails OPEN the moment the field is redacted: `fetchGuestActiveTableOrders` is a
-             * TABLE-WIDE read, so it returns every diner's order, and #302/#305 now strip
-             * `session_id` from rows this caller does not own. An empty `orderSession` made the
-             * whole condition falsy, the guard was skipped, and a stranger's order — number, items
-             * and total — passed into `setActiveOrder`. Shipped and rolled back within the hour.
+             * THE RULE IS UNCHANGED: the banner is a PERSONAL surface answering "where is MY food",
+             * so "I could not establish this is yours" must resolve to NOT showing it.
              *
-             * The banner is a PERSONAL surface: it answers "where is MY food". "I could not
-             * establish this is yours" must resolve to not showing it, never to showing it. A
-             * legitimately-unowned-but-visible row belongs on the shared Tab, which has its own
-             * authorisation, not here.
+             * WHAT CHANGED IS WHO ANSWERS IT. This compared `order.session_id` to our own, which
+             * coupled the banner to a field the server had every reason to stop sending. When #279
+             * redacted `session_id` out of the response, this failed closed on EVERY row and the
+             * banner rendered nothing for anybody. The E2E positive control caught it on the very
+             * commit that caused it, and twelve staging deploys shipped over the red anyway.
              *
-             * Safe because `scopedSessionId` is guaranteed non-empty — the effect above returns
-             * early, fail-closed, when there is no session scope. So '' can never match it.
+             * The server now answers ownership directly: `isMine` is derived from the row having
+             * matched the caller's own session ids, and a stranger's order is ABSENT rather than
+             * flagged. A session id is a capability (#282) and no longer crosses the wire for this.
+             *
+             * Still fail-closed: a response without `isMine` drops the row rather than showing it.
              */
-            const orderSession = String(order.session_id || '').trim()
-            if (orderSession !== scopedSessionId) return false
+            if (order.isMine !== true) return false
             const placedMs = orderPlacedAtMs(order)
             if (!placedMs || placedMs < placedCutoff) return false
             return isActiveOrderStatus(order.status)

@@ -8,6 +8,7 @@ import {
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
 import { customerOrderState } from '@/lib/orders/customer-status'
 import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
+import { heldSessionIds } from '@/lib/tab-storage'
 
 interface Notification {
   id: string
@@ -272,9 +273,19 @@ export default function OrderStatusBanner({ restaurantId, tableNumber }: OrderSt
 
     const tick = async () => {
       try {
+        /**
+         * #279 REGRESSION FIX. This called the endpoint with NO session scope. Once the route
+         * began requiring one, the client short-circuited before issuing any request at all and
+         * this banner went permanently inert -- no status-change notification ever fired again.
+         *
+         * The browser already holds these ids; they simply were not being sent. Scoping is right
+         * on its own terms too: a status notification is personal, and this diffed EVERY order
+         * at the table.
+         */
         const { orders } = await fetchGuestActiveTableOrders({
           restaurantId,
           tableNumber,
+          sessionIds: heldSessionIds(),
         })
         if (cancelled) return
         applyOrderDiff(orders || [])
