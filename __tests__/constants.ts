@@ -7,7 +7,12 @@ export const DEV_PHONE_SN = '0ccdbf19965fecb6';
 export const SHARED_CHECKOUT_MERCHANT = '342600032359';
 export const SHARED_CHECKOUT_STORE = '4426010221';
 export const VALID_ORDER_STATUSES = ['pending', 'accepted', 'ready', 'completed', 'cancelled', 'PENDING', 'ACCEPTED', 'READY', 'COMPLETE', 'CANCELLED'];
-export const VALID_SETTLED_TYPES = ['cash', 'card', 'split', 'qr', 'manual_close'];
+// 'card_payment' is written by migration 20260531120000 and 'abandoned' by 20260824150000
+// (#333, the tab reaper). Both were missing, so this list would have failed on any card-settled
+// tab too -- it was already wrong before #333 exposed it. Checked the read side for a
+// cross-layer break and there is none: no exhaustive switch on settled_type exists anywhere,
+// and the only discriminator is a single === 'card_payment' in lib/tab-session.ts.
+export const VALID_SETTLED_TYPES = ['cash', 'card', 'split', 'qr', 'manual_close', 'card_payment', 'abandoned'];
 export const CHOWNOW_ID = 'b161c758-582d-4dfa-839a-9fa35c492a49';
 export const CHOWNOW_KIOSK_TABLE_ID = '0cc87cbf-dc65-4687-9bcc-ab2cf1a20952';
 export const VALID_ROLES = ['owner', 'manager', 'cashier', 'waiter', 'kitchen', 'bar'];

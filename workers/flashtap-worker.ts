@@ -34,11 +34,13 @@ export default {
     // All cron routes are driven off this one every-2-minutes trigger. send-scheduled-reports returns
     // immediately unless a schedule's local send_time has been reached, so per-restaurant
     // send times cost nothing extra and a missed tick catches up on the next one.
-    // negative-stock-balances (#146) self-limits the same way, to the first tick of each hour.
+    // negative-stock-balances (#146) and reap-abandoned-tabs (#333) self-limit the same way, to
+    // the first tick of each hour.
     const cronRoutes = [
       'cleanup-stale-orders',
       'send-scheduled-reports',
       'negative-stock-balances',
+      'reap-abandoned-tabs',
     ] as const
 
     const requestFor = (route: string) =>

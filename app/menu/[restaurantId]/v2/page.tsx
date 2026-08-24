@@ -32,14 +32,15 @@ import {
 } from '@/lib/tab-storage'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 function isTabPaymentInProgressError(message: string | null | undefined): boolean {
   if (!message) return false
   const lower = message.toLowerCase()
   return (
     lower.includes('ready_to_pay') ||
-    lower.includes('payment is currently being processed') ||
-    lower.includes('payment is being processed')
+    lower.includes(MENU_COPY.paymentCurrentlyBeingProcessed) ||
+    lower.includes(MENU_COPY.paymentBeingProcessed)
   )
 }
 
@@ -52,10 +53,9 @@ function TabPaymentInProgressCard() {
     >
       <AlertTriangle className="h-5 w-5 shrink-0 text-amber-300 mt-0.5" aria-hidden />
       <div>
-        <p className="font-sans text-sm font-semibold text-amber-50">Payment in progress</p>
+        <p className="font-sans text-sm font-semibold text-amber-50">{MENU_COPY.paymentProgress}</p>
         <p className="font-sans text-xs text-amber-100/90 mt-1 leading-relaxed">
-          A payment is currently being processed for this table. Please wait a moment until the
-          payment is completed before joining the tab.
+          {MENU_COPY.paymentCurrentlyBeingProcessedThis}
         </p>
       </div>
     </div>
@@ -219,7 +219,7 @@ export function MenuLandingPageV2Content({
   /* eslint-disable react-hooks/set-state-in-effect -- intentional deps-triggered data fetch; React Query refactor out of scope */
   useEffect(() => {
     if (!restaurantId) {
-      setError('Restaurant ID is missing from URL')
+      setError(MENU_COPY.restaurantIdMissingFromUrl)
       setLoading(false)
       return
     }
@@ -229,7 +229,7 @@ export function MenuLandingPageV2Content({
         setLoading(false)
       })
       .catch(() => {
-        setError('Please scan a valid QR code to access this restaurant menu.')
+        setError(MENU_COPY.pleaseScanValidQrCode)
         setLoading(false)
       })
   }, [restaurantId])
@@ -260,7 +260,7 @@ export function MenuLandingPageV2Content({
         if (!tableData) {
           setTable(null)
           setLoading(false)
-          setError('This table is not available for ordering.')
+          setError(MENU_COPY.thisTableNotAvailableOrdering)
           setTableFetchDone(true)
           return
         }
@@ -343,7 +343,7 @@ export function MenuLandingPageV2Content({
     if (loading) {
       const timeoutId = setTimeout(() => {
         if (loading && !restaurant) {
-          setError('Loading took too long. Please scan a valid QR code or refresh the page.')
+          setError(MENU_COPY.loadingTookTooLongPlease)
           setLoading(false)
         }
       }, 5000)
@@ -717,7 +717,7 @@ export function MenuLandingPageV2Content({
 
   const requireDisplayName = (): boolean => {
     if (!displayName.trim()) {
-      setDisplayNameError('Please enter your name')
+      setDisplayNameError(MENU_COPY.pleaseEnterYourName)
       return false
     }
     setDisplayNameError('')
@@ -727,7 +727,7 @@ export function MenuLandingPageV2Content({
   const handleCreateTab = async () => {
     if (!requireDisplayName()) return
     if (!restaurantId || tableNum <= 0) {
-      setTabActionError('Missing restaurant or table number. Scan the table QR code again.')
+      setTabActionError(MENU_COPY.missingRestaurantTableNumberScan)
       console.error('[V2] create tab blocked — missing restaurantId or tableNum', { restaurantId, tableNum })
       return
     }
@@ -779,7 +779,7 @@ export function MenuLandingPageV2Content({
         setShowJoinPinEntry(true)
         return
       }
-      const message = err instanceof Error ? err.message : 'Failed to create tab. Please try again.'
+      const message = err instanceof Error ? err.message : MENU_COPY.failedCreateTabPleaseTry
       setTabActionError(message)
     } finally {
       setTabActionLoading(null)
@@ -844,7 +844,7 @@ export function MenuLandingPageV2Content({
   const handleJoinWithoutPin = async () => {
     if (!requireDisplayName()) return
     if (!restaurantId || !openTab?.id) {
-      setTabActionError('No open tab found to join.')
+      setTabActionError(MENU_COPY.noOpenTabFoundJoin)
       return
     }
     try {
@@ -859,7 +859,7 @@ export function MenuLandingPageV2Content({
       })
       router.push(browseWithTab(openTab.id))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      const message = err instanceof Error ? err.message : MENU_COPY.failedJoinTabPleaseTry
       console.error('[V2] join tab without PIN failed:', err)
       setTabActionError(message)
     } finally {
@@ -871,7 +871,7 @@ export function MenuLandingPageV2Content({
     if (!requireDisplayName()) return
     const joinTabId = myStoredTab?.id
     if (!restaurantId || !joinTabId) {
-      setTabActionError('No open tab found to join.')
+      setTabActionError(MENU_COPY.noOpenTabFoundJoin)
       return
     }
     /**
@@ -901,7 +901,7 @@ export function MenuLandingPageV2Content({
       })
       router.push(browseWithTab(joinTabId))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      const message = err instanceof Error ? err.message : MENU_COPY.failedJoinTabPleaseTry
       console.error('[V2] rejoin tab failed:', err)
       // Belt and braces. `pinRequired` above is read from a snapshot taken at landing; staff can
       // set a PIN in between, and a refusal must never leave the screen with no way forward.
@@ -921,11 +921,11 @@ export function MenuLandingPageV2Content({
   const handleSubmitJoinPin = async () => {
     if (!requireDisplayName()) return
     if (!restaurantId || tableNum <= 0) {
-      setJoinPinError('Missing restaurant or table number.')
+      setJoinPinError(MENU_COPY.missingRestaurantTableNumber)
       return
     }
     if (!/^\d{4}$/.test(joinPin.trim())) {
-      setJoinPinError('Enter the 4-digit PIN.')
+      setJoinPinError(MENU_COPY.enter4DigitPin)
       return
     }
     try {
@@ -962,7 +962,7 @@ export function MenuLandingPageV2Content({
       setJoinPin('')
       router.push(browseWithTab(joinedTabId))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to join tab. Please try again.'
+      const message = err instanceof Error ? err.message : MENU_COPY.failedJoinTabPleaseTry
       setJoinPinError(message)
     } finally {
       setTabActionLoading(null)
@@ -1006,7 +1006,7 @@ export function MenuLandingPageV2Content({
       }
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Could not reset the PIN. Ask staff for a new recovery link.'
+        err instanceof Error ? err.message : MENU_COPY.couldNotResetPinAsk
       console.error('[V2] pin reset redemption failed:', err)
       setTabActionError(message)
     } finally {
@@ -1032,7 +1032,7 @@ export function MenuLandingPageV2Content({
     return (
       <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-serif font-bold text-white mb-4">Access Denied</h1>
+          <h1 className="text-2xl font-serif font-bold text-white mb-4">{MENU_COPY.accessDenied}</h1>
           <p className="text-white/60 font-sans mb-6">{error}</p>
           <Button
             onClick={() => window.location.reload()}
@@ -1049,8 +1049,8 @@ export function MenuLandingPageV2Content({
     return (
       <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
-          <h1 className="text-2xl font-serif font-bold text-white mb-4">Restaurant Not Found</h1>
-          <p className="text-white/60 font-sans">Please scan a valid QR code.</p>
+          <h1 className="text-2xl font-serif font-bold text-white mb-4">{MENU_COPY.restaurantNotFound}</h1>
+          <p className="text-white/60 font-sans">{MENU_COPY.pleaseScanValidQrCode2}</p>
         </div>
       </div>
     )
@@ -1061,7 +1061,7 @@ export function MenuLandingPageV2Content({
       <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
         <div className="text-center max-w-md">
           <h1 className="text-2xl font-serif font-bold text-white mb-4">Error</h1>
-          <p className="text-white/60 font-sans">Restaurant ID is missing from URL</p>
+          <p className="text-white/60 font-sans">{MENU_COPY.restaurantIdMissingFromUrl}</p>
         </div>
       </div>
     )
@@ -1103,7 +1103,7 @@ export function MenuLandingPageV2Content({
               )}
             </div>
             <div className="space-y-4">
-              <p className="text-white/60 font-sans text-sm uppercase tracking-[0.3em]">Welcome to</p>
+              <p className="text-white/60 font-sans text-sm uppercase tracking-[0.3em]">{MENU_COPY.welcomeTo}</p>
               <h1 className="text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
                 {restaurant?.name || 'Restaurant'}
               </h1>
@@ -1119,13 +1119,13 @@ export function MenuLandingPageV2Content({
                   size="lg"
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
                 >
-                  View Menu
+                  {MENU_COPY.viewMenu}
                   <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
                 </Button>
               </Link>
             </div>
             <div className="pt-12">
-              <p className="text-white/20 font-sans text-xs tracking-wide">Powered by FlashTap</p>
+              <p className="text-white/20 font-sans text-xs tracking-wide">{MENU_COPY.poweredByFlashtap}</p>
             </div>
           </div>
         </div>
@@ -1188,7 +1188,7 @@ export function MenuLandingPageV2Content({
           {/* Welcome Text */}
           <div className="space-y-4">
             <p className="text-white/60 font-sans text-sm uppercase tracking-[0.3em]">
-              Welcome to
+              {MENU_COPY.welcomeTo}
             </p>
             <h1 className="text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
               {restaurant?.name || 'Restaurant'}
@@ -1214,12 +1214,12 @@ export function MenuLandingPageV2Content({
             {createdTabPin ? (
               <div className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-6 text-center space-y-4">
                 <div>
-                  <p className="font-sans text-lg font-semibold text-white">Your tab PIN is</p>
+                  <p className="font-sans text-lg font-semibold text-white">{MENU_COPY.yourTabPin}</p>
                   <p className="font-mono text-5xl font-bold tracking-[0.3em] text-white mt-4">
                     {createdTabPin.pin}
                   </p>
                   <p className="font-sans text-sm text-white/80 mt-4">
-                    Share this with your group so they can join your tab.
+                    {MENU_COPY.shareThisWithYourGroup}
                   </p>
                 </div>
                 <Button
@@ -1238,9 +1238,9 @@ export function MenuLandingPageV2Content({
               // alongside it.
               <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
                 <div>
-                  <p className="font-sans text-lg font-semibold text-white">Get your new tab PIN</p>
+                  <p className="font-sans text-lg font-semibold text-white">{MENU_COPY.getYourNewTabPin}</p>
                   <p className="font-sans text-sm text-white/80 mt-2">
-                    Staff have started a PIN reset for this table.
+                    {MENU_COPY.staffHaveStartedPinReset}
                   </p>
                 </div>
                 {tabActionError ? (
@@ -1254,15 +1254,15 @@ export function MenuLandingPageV2Content({
                   disabled={tabActionLoading !== null}
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
-                  {tabActionLoading === 'join' ? 'Getting your PIN…' : 'Get My New PIN'}
+                  {tabActionLoading === 'join' ? MENU_COPY.gettingYourPin : MENU_COPY.getMyNewPin}
                 </Button>
               </div>
             ) : showJoinPinEntry ? (
               <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
                 <div>
-                  <p className="font-sans text-lg font-semibold text-white">Enter tab PIN</p>
+                  <p className="font-sans text-lg font-semibold text-white">{MENU_COPY.enterTabPin}</p>
                   <p className="font-sans text-sm text-white/70 mt-2">
-                    Ask the person who created the tab for the 4-digit PIN.
+                    {MENU_COPY.askPersonWhoCreatedTab}
                   </p>
                 </div>
                 <input
@@ -1289,7 +1289,7 @@ export function MenuLandingPageV2Content({
                   disabled={tabActionLoading !== null || joinPin.length !== 4}
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
-                  {tabActionLoading === 'join' ? 'Joining tab…' : 'Join Tab'}
+                  {tabActionLoading === 'join' ? 'Joining tab…' : MENU_COPY.joinTab}
                 </Button>
                 <Button
                   variant="outline"
@@ -1310,10 +1310,10 @@ export function MenuLandingPageV2Content({
             {tableNum > 0 && recentHostedPending && minutesSince(recentHostedPending.placed_at) < 10 && (
               <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 mb-2 text-center">
                 <p className="text-yellow-100 font-medium font-sans text-sm">
-                  A payment is being processed for this table.
+                  {MENU_COPY.paymentBeingProcessedThisTable}
                 </p>
                 <p className="text-yellow-200/80 font-sans text-xs mt-1">
-                  Please wait or ask your waiter for assistance.
+                  {MENU_COPY.pleaseWaitAskYourWaiter}
                 </p>
               </div>
             )}
@@ -1321,7 +1321,7 @@ export function MenuLandingPageV2Content({
               <TabPaymentInProgressCard />
             ) : tabActionError ? (
               <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-left">
-                <p className="font-sans text-sm font-medium text-red-100">Could not open tab</p>
+                <p className="font-sans text-sm font-medium text-red-100">{MENU_COPY.couldNotOpenTab}</p>
                 <p className="font-sans text-xs text-red-200/90 mt-1">{tabActionError}</p>
               </div>
             ) : null}
@@ -1329,7 +1329,7 @@ export function MenuLandingPageV2Content({
               <div className="mb-4">
                 <input
                   type="text"
-                  placeholder="Your name"
+                  placeholder={MENU_COPY.yourName}
                   value={displayName}
                   onChange={(e) => {
                     setDisplayName(e.target.value)
@@ -1351,14 +1351,14 @@ export function MenuLandingPageV2Content({
                   <p className="font-sans text-lg font-semibold text-white">
                     {storedTabIsAtAnotherTable && myStoredTab.tableNumber != null
                       ? TAB_ELSEWHERE_COPY.heading(myStoredTab.tableNumber)
-                      : 'Rejoin your tab'}
+                      : MENU_COPY.rejoinYourTab}
                   </p>
                   <p className="font-sans text-sm text-white/80 mt-2">
                     Total so far: {currency}{(myStoredTab.total || 0).toFixed(2)}
                   </p>
                   {myStoredTab.status === 'ready_to_pay' && (
                     <p className="font-sans text-xs text-amber-200/90 mt-2">
-                      Your tab is ready to pay — your waiter has been notified.
+                      {MENU_COPY.yourTabReadyPayYour}
                     </p>
                   )}
                 </div>
@@ -1368,7 +1368,7 @@ export function MenuLandingPageV2Content({
                   disabled={tabActionLoading !== null || blockOrderingForHostedPending}
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
-                  {tabActionLoading === 'join' ? 'Rejoining…' : 'Rejoin your tab'}
+                  {tabActionLoading === 'join' ? 'Rejoining…' : MENU_COPY.rejoinYourTab}
                 </Button>
                 {/*
                   #211: the second action. Without it "Rejoin your tab" is the ONLY thing offered
@@ -1415,7 +1415,7 @@ export function MenuLandingPageV2Content({
                   disabled={blockOrderingForHostedPending}
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
-                  View Menu
+                  {MENU_COPY.viewMenu}
                 </Button>
               </div>
             ) : tableNum > 0 && storedTabChecked && !tabLoading && openTab ? (
@@ -1429,14 +1429,14 @@ export function MenuLandingPageV2Content({
                     disabled={blockOrderingForHostedPending}
                     className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                   >
-                    View Menu
+                    {MENU_COPY.viewMenu}
                   </Button>
                 </div>
               ) : (
               <div className="rounded-xl border border-white/25 bg-white/10 p-6 text-center space-y-4">
                 <div>
                   <p className="font-sans text-lg font-semibold text-white">
-                    A tab is already open for this table
+                    {MENU_COPY.tabAlreadyOpenThisTable}
                   </p>
                   <p className="font-sans text-sm text-white/80 mt-2">
                     Total so far: {currency}{(openTab.total || 0).toFixed(2)}
@@ -1453,7 +1453,7 @@ export function MenuLandingPageV2Content({
                   disabled={tabActionLoading !== null || blockOrderingForHostedPending}
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans"
                 >
-                  {tabActionLoading === 'join' ? 'Joining tab…' : 'Join Tab'}
+                  {tabActionLoading === 'join' ? 'Joining tab…' : MENU_COPY.joinTab}
                 </Button>
                 <Button
                   variant="outline"
@@ -1462,7 +1462,7 @@ export function MenuLandingPageV2Content({
                   disabled={blockOrderingForHostedPending}
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
-                  View Menu
+                  {MENU_COPY.viewMenu}
                 </Button>
               </div>
               )
@@ -1475,9 +1475,9 @@ export function MenuLandingPageV2Content({
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group justify-between"
                 >
                   <span className="flex flex-col items-start leading-tight">
-                    <span>{tabActionLoading === 'create' ? 'Creating tab…' : 'Create Tab'}</span>
+                    <span>{tabActionLoading === 'create' ? 'Creating tab…' : MENU_COPY.createTab}</span>
                     <span className="text-xs font-normal text-gray-400">
-                      Share a tab with everyone at your table
+                      {MENU_COPY.shareTabWithEveryoneYour}
                     </span>
                   </span>
                   <ChevronRight className="w-5 h-5 ml-2 shrink-0 group-hover:translate-x-1 transition-transform stroke-[2]" />
@@ -1490,9 +1490,9 @@ export function MenuLandingPageV2Content({
                   className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
                 >
                   <span className="flex flex-col items-start leading-tight">
-                    <span>View Menu</span>
+                    <span>{MENU_COPY.viewMenu}</span>
                     <span className="text-xs font-normal text-white/50">
-                      Browse and order on your own
+                      {MENU_COPY.browseOrderYourOwn}
                     </span>
                   </span>
                 </Button>
@@ -1503,7 +1503,7 @@ export function MenuLandingPageV2Content({
                   size="lg"
                   className="w-full bg-white text-[#0A0A0A] hover:bg-white/90 text-base font-semibold py-6 font-sans group"
                 >
-                  View Menu & Order
+                  {MENU_COPY.viewMenuOrder}
                   <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform stroke-[2]" />
                 </Button>
               </Link>
@@ -1518,7 +1518,7 @@ export function MenuLandingPageV2Content({
                 className="w-full border-2 border-white/40 bg-transparent text-white hover:bg-white/10 hover:border-white/60 text-base py-6 font-sans"
               >
                 <Receipt className="w-5 h-5 mr-2 stroke-[1.5]" />
-                View Receipt
+                {MENU_COPY.viewReceipt}
               </Button>
             </Link>
             )}
@@ -1529,7 +1529,7 @@ export function MenuLandingPageV2Content({
           {/* Powered by Footer */}
           <div className="pt-12">
             <p className="text-white/20 font-sans text-xs tracking-wide">
-              Powered by FlashTap
+              {MENU_COPY.poweredByFlashtap}
             </p>
           </div>
         </div>

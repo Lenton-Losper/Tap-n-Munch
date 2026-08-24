@@ -8,6 +8,7 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import { recordPaymentStatusChange } from '@/lib/orders/record-payment-status-change'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -114,6 +115,20 @@ export async function POST(req: Request) {
       )
     }
 
+    // #329: the claim itself is a payment_status transition, so it gets a row. No money has moved,
+    // but this is the hop an investigation starts from when an order ends up somewhere unexplained.
+    await recordPaymentStatusChange(supabase, {
+      orderId: normalizedOrderId,
+      restaurantId: String(claimedOrder.restaurant_id ?? ''),
+      from: previousPaymentStatus || null,
+      to: 'terminal_pending',
+      source: 'payments/push-to-terminal',
+      note:
+        'Claimed for a card terminal push. No charge exists yet -- this only reserves the order so ' +
+        'two concurrent pushes cannot both reach the gateway.',
+      metadata: { orderTotal: claimedOrder.total ?? null },
+    })
+
     // Release the claim back to previousPaymentStatus on any failure path below, so a
     // failed push doesn't permanently strand the order in 'terminal_pending' with no
     // successful Finatic session and no clean way to retry.
@@ -125,7 +140,20 @@ export async function POST(req: Request) {
         .eq('payment_status', 'terminal_pending')
       if (releaseError) {
         console.error('[PUSH-TO-TERMINAL] Failed to release claim:', releaseError)
+        return
       }
+      // #329: releasing is a transition too. Without this row the order appears to have gone to
+      // terminal_pending and back on its own.
+      await recordPaymentStatusChange(supabase, {
+        orderId: normalizedOrderId,
+        restaurantId: String(claimedOrder.restaurant_id ?? ''),
+        from: 'terminal_pending',
+        to: previousPaymentStatus,
+        source: 'payments/push-to-terminal:release',
+        note:
+          'The terminal push failed, so the claim was released and the order returned to the status ' +
+          'it held before. No charge was made.',
+      })
     }
 
     let merchantNo: string

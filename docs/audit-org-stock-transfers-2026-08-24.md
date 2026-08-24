@@ -187,8 +187,20 @@ the schema requires `from_restaurant_id != to_restaurant_id`. Only one org can t
 canonical items and the other two locations have 8 each, with **no overlap**. Any Riviera transfer
 fails at dispatch with `has no active stock_items mapping at destination restaurant`.
 
-That failure is **safe** — it raises before deducting, so nothing is lost. But it is a wall the first
-user will hit, and the message names a `organization_stock_item` UUID rather than an item name.
+That failure is **safe** — it raises before deducting, so nothing is lost.
+
+> **CORRECTION, 2026-08-24.** This section originally said the message "names a
+> `organization_stock_item` UUID rather than an item name". **That is wrong, and it was wrong because
+> I read the SQL exception and did not follow its TypeScript caller.**
+>
+> `dispatchTransferAction` catches the RPC failure and calls `diagnoseUnconfiguredItems`, which
+> returns `itemName` and `missingAtRestaurantName` — the item and the location **in words**. The raw
+> UUID never reaches a user through the app.
+>
+> What survives is narrower: the good message only appears **after** a failed dispatch. A user still
+> builds a transfer, dispatches it, and only then learns the items are not mapped at both ends. The
+> create form knows both locations and could filter to transferable items up front. That is a UI
+> improvement, not the defect originally described.
 
 ---
 

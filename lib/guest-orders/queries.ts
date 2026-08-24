@@ -1,6 +1,11 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
-import { guestCanAccessOrder, paymentRefOrFilter, redactGuestOrderRow } from './validation'
+import {
+  guestCanAccessOrder,
+  looksLikeOrderId,
+  paymentRefOrFilter,
+  redactGuestOrderRow,
+} from './validation'
 import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibility'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
@@ -632,6 +637,26 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   const supabase = createServerSupabaseClient()
   const ref = params.paymentRef.trim()
   if (!ref || !params.restaurantId.trim()) return []
+
+  /**
+   * #337. AN ORDER ID IS NOT A PAYMENT REFERENCE, and the confirmation screen passes one.
+   *
+   * DOOR 1 below builds a filter over payment_reference / paycloud_merchant_order_no. Neither column
+   * ever holds an order id, and a UUID satisfies PAYMENT_REF_PATTERN -- so the filter was built and
+   * matched nothing, every time, and the customer saw "Order not found" for an order that existed.
+   *
+   * Delegated rather than bolted on: fetchGuestOrderById already scopes by restaurant AND gates the
+   * row through guestCanAccessOrder, which is the same authorisation the three doors below provide.
+   * Re-implementing an id lookup here would be a second, weaker copy of it.
+   */
+  if (looksLikeOrderId(ref)) {
+    const byId = await fetchGuestOrderById(ref, {
+      restaurantId: params.restaurantId,
+      tableNumber: params.tableNumber ?? null,
+      sessionId: params.sessionId ?? null,
+    })
+    return byId.order ? [byId.order] : []
+  }
 
   // DOOR 1. A string carrying PostgREST filter syntax is not a reference that failed to match --
   // it is an attempt to widen the query, and it must return nothing rather than everything.

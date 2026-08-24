@@ -6,6 +6,7 @@ import {
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
+import { recordPaymentStatusChange } from '@/lib/orders/record-payment-status-change'
 
 export async function POST(req: Request) {
   try {
@@ -101,6 +102,24 @@ export async function POST(req: Request) {
         terminal_pushed_at: null,
       })
       .eq('id', String(orderId))
+
+    if (!updateError) {
+      // #329: a card attempt becoming a cash-owed order is a payment_status transition. No money
+      // moved, but this is the hop that explains why an order with a gateway reference suddenly has
+      // none -- the references above are cleared in the same statement.
+      await recordPaymentStatusChange(supabase, {
+        orderId: String(orderId),
+        restaurantId: String(order.restaurant_id ?? ''),
+        from: String(order.payment_status ?? '') || null,
+        to: 'cash_pending',
+        source: 'payments/cancel-terminal',
+        note:
+          'The card attempt was cancelled at the terminal and the order was moved to cash. The ' +
+          'gateway reference, checkout URL and merchant order number were cleared in the same ' +
+          'statement, so a cash receipt cannot inherit a card-style reference.',
+        metadata: { clearedGatewayReference: true },
+      })
+    }
 
     if (updateError) {
       console.error('[cancel-terminal] order update failed', updateError)

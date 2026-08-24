@@ -187,7 +187,13 @@ describe('#176 scan -> clear -> scan again, on staging', () => {
     if (b.status < 400) {
       expect(bTabId).toEqual(aTabId)
     } else {
-      expect(b.status).toBe(409)
+      // 403 TAB_PIN_REQUIRED or 409 — the control's stated intent is "either the same tab is
+      // returned, or the second scan is refused, never a new tab", and both codes are refusals.
+      // The PIN gate (6f8247f, QRA-02/03) made 403 the normal answer for a tab that HAS a PIN;
+      // 409 is now only the no-PIN sub-case. Asserting the literal 409 was pinning which refusal,
+      // not that a refusal happened.
+      expect([403, 409]).toContain(b.status)
+      expect(bTabId).toBe('')
     }
   }, 120000)
 })

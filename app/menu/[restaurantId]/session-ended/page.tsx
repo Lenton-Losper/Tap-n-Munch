@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { QrCode } from 'lucide-react'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 export default function SessionEndedPage() {
   useEffect(() => {
@@ -32,10 +33,10 @@ export default function SessionEndedPage() {
       </div>
       <div className="space-y-2">
         <h1 className="text-xl font-semibold text-white font-sans">
-          Your dining session has ended
+          {MENU_COPY.yourDiningSessionHasEnded}
         </h1>
         <p className="text-sm text-white/60 max-w-xs font-sans leading-relaxed">
-          Please rescan the QR code on your table to start a new session and get a fresh token.
+          {MENU_COPY.pleaseRescanQrCodeYour}
         </p>
       </div>
     </div>

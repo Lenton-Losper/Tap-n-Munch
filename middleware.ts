@@ -50,11 +50,16 @@ function handleRivieraSubdomain(request: NextRequest): NextResponse | null {
   // drift when a provider is added to the menu layout. Rewrite rather than redirect so the
   // customer keeps the short URL in the address bar.
   //
-  // KNOWN GAP, deliberately not closed here: parseTableLandingPath requires an integer, so a
-  // finite-positive non-integer -- /table/5.5, and /table/%205, which middleware sees raw and
-  // Next would decode to " 5" -- is not rewritten and now 404s. That is a safe outcome, not a
-  // correct one; widening the parser is new behaviour on the QR entry path and is being raised
-  // separately. Pinned by __tests__/table-landing-routing.test.ts.
+  // KNOWN GAP, narrowed by #179 (2bb43b0) and REWRITTEN here 2026-08-24 because this comment
+  // still described the pre-#179 world: it named /table/%205 as a 404, and it has resolved to
+  // table 5 since parseTableLandingPath began decoding and trimming before Number().
+  //
+  // What remains a gap is narrower: a finite-positive NON-INTEGER -- /table/5.5, /table/0.5,
+  // /table/1e-3 -- is still not rewritten and 404s. That is a safe outcome rather than a correct
+  // one; widening the parser further is new behaviour on the QR entry path.
+  //
+  // Pinned by __tests__/table-landing-routing.test.ts, which now asserts the encoded space
+  // RESOLVES and keeps the three non-integers in the fallthrough set.
   const tableNumber = parseTableLandingPath(pathname)
   if (tableNumber !== null) {
     const rewriteUrl = request.nextUrl.clone()

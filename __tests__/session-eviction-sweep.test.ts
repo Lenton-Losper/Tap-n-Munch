@@ -22,6 +22,7 @@
  * A browser CAN see this one, and should: `tests/e2e/session-not-evicted.spec.ts` drives it.
  * This file is the cheap guard that runs on every commit.
  */
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import fs from 'fs'
 import path from 'path'
 
@@ -86,7 +87,12 @@ describe('#294 order-confirmation: a missing order is not an ended session', () 
   })
 
   it('renders its own Order Not Found screen instead', () => {
-    expect(CONFIRM).toContain('Order Not Found')
+    // TWO-SIDED since #334 moved the literal into the copy module. The screen still renders exactly
+    // this sentence; only its home changed. Asserting the key in the page AND the text in the copy
+    // module means neither half can be deleted without a failure -- a one-sided check on the page
+    // would now pass while the string itself was silently reworded.
+    expect(CONFIRM).toContain('MENU_COPY.orderNotFound')
+    expect(MENU_COPY.orderNotFound).toBe('Order Not Found')
   })
 
   it('never calls handleSessionExpired at all', () => {
