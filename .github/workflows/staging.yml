@@ -540,6 +540,12 @@ jobs:
       # order_request carries order_number as an empty string, which Number() turns into 0.
       # Static: no credentials, no database. BLOCKING — the tree is clean as of 2026-08-19, so
       # this can only fail on something NEW.
+      # A @ts-nocheck file has opted out of the one tool that catches a named import which does
+      # not exist. ActiveOrderBanner imported and CALLED orderPlacedAtMs for ten hours -- tsc
+      # skipped the file, jest turned the missing import into `undefined` without throwing, and
+      # only the bundler noticed, by which point it was a failed deploy on every push.
+      - name: Named imports in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-imports-resolve.mjs
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
 

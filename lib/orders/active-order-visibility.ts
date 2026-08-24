@@ -71,3 +71,36 @@ export function isBannerEligibleOrder(order: Record<string, any> | null | undefi
   if (order.is_closed === true || order.table_closed === true) return false
   return isActiveOrderStatus(order.status)
 }
+
+/**
+ * When an order was placed, in epoch milliseconds, for choosing between two candidate orders.
+ *
+ * WRITTEN 2026-08-24, LATE. `ActiveOrderBanner` has imported and CALLED this since 838189b
+ * ("whichever order is NEWER, not whichever is remembered") and it was never defined. Three layers
+ * missed it and it is worth naming which, because the combination is the lesson:
+ *
+ *   tsc      ActiveOrderBanner.tsx carries `@ts-nocheck`, so the compiler never looked at it.
+ *   jest     a named import that does not exist transpiles to `undefined` rather than throwing at
+ *            require time, and no test exercises the branch that calls it -- so 211 suites passed.
+ *   review   the import sat on its own line, away from the grouped import above it.
+ *
+ * Only the Next bundler resolves named exports statically, so only the BUILD caught it, and it has
+ * failed every staging deploy since. The saving grace is that a failing build never shipped: the
+ * banner would have thrown `orderPlacedAtMs is not a function` in exactly the stale-pointer case
+ * the fix was written for -- worse than the defect it replaced.
+ *
+ * `placed_at` is the canonical column; `created_at` is what the guest projection carries for an
+ * `order_requests` row, which has no `placed_at`. Comparing one of each is the normal case on a
+ * table where a request is still in review.
+ *
+ * UNKNOWN SORTS OLDEST, deliberately. A row with no usable timestamp returns 0, so it can never
+ * beat a row that has one -- the stored pointer only wins when it is provably newer, which is the
+ * whole point of comparing rather than trusting it.
+ */
+export function orderPlacedAtMs(order: Record<string, any> | null | undefined): number {
+  if (!order) return 0
+  const raw = order.placed_at ?? order.created_at ?? null
+  if (!raw) return 0
+  const ms = new Date(String(raw)).getTime()
+  return Number.isFinite(ms) ? ms : 0
+}
