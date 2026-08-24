@@ -1,41 +1,36 @@
 /**
- * WHY DO 1144 OF 1633 PAID CARD ORDERS HAVE NO SALE EVENT? Production, READ ONLY.
+ * WHY DO SO MANY PAID CARD ORDERS HAVE NO SALE EVENT? Production, READ ONLY.
  *
  * ============================================================================================
- * FIRST: MY OWN FILTER IS A SUSPECT, AND IT SHOULD BE RULED OUT BEFORE THE FLEET IS
+ * WHAT THE FIRST VERSION OF THIS PROBE GOT WRONG, because it matters more than the answer
  * ============================================================================================
  *
- * probe-duplicate-charges.ts counted "paid card orders" as
+ * It partitioned paid orders by `audit_logs.action = 'order.paid'`. THAT ACTION HAS NEVER EXISTED.
+ * markOrderPaidConfirmed writes `payment.completed`, hardcoded, with no exported constant -- so it
+ * was guessable, and I guessed. The query returned zero rows across 1633 paid orders, every bucket
+ * collapsed into "(no audit row)", and the output printed that as though it were a result. The
+ * control collapsed too, which is what should have made it obvious.
  *
- *     payment_status = 'paid' AND (payment_channel IS NULL OR payment_channel LIKE '%card%')
- *
- * `payment_channel IS NULL` sweeps in every order that was never a terminal card sale at all --
- * cash settlements, legacy rows, and anything created before that column was populated. ONLY THE
- * TERMINAL DEVICE POSTS A SALE EVENT (`POST /api/terminal/payment-events/sale`; nothing server-side
- * calls it), so an order paid by hosted checkout, by cash at the till, or by the reconcile cron
- * CORRECTLY has none.
- *
- * So a large "no sale event" count is expected and mostly benign. The number that matters is
- * narrower: orders THE TERMINAL ITSELF PAID that still have no sale event.
+ * Two fixes, and the second is the durable one:
+ *   1. the correct action names
+ *   2. THE PROBE NOW REFUSES to partition when the coverage is too thin to divide the population.
+ *      A partition over an empty map is not a result; it is a shape that reads like one.
  *
  * ============================================================================================
- * THE DISCRIMINATOR THAT ACTUALLY ANSWERS IT
+ * THE STRUCTURAL DISCRIMINATOR — works without any audit rows at all
  * ============================================================================================
  *
- * markOrderPaidConfirmed writes an audit row carrying `source`, which names the code path that
- * marked the order paid:
+ * Only the DEVICE posts a sale event (`POST /api/terminal/payment-events/sale`; nothing server-side
+ * calls it). So hosted-checkout, cash and reconcile-paid orders correctly have none, and a large
+ * "no sale event" count is expected.
  *
- *     terminal_callback              the device called us -> A SALE EVENT IS EXPECTED
- *     paycloud webhook / reconcile   hosted checkout or a cron  -> none expected
- *     terminal_verify_payment        a Finatic re-check         -> none expected
+ * What is NOT expected: `payment_channel = 'card_manual'` WITH a gateway reference.
+ * `card_manual` is written by app/api/terminal/orders/route.ts (a POS order rung up ON the terminal)
+ * and by the cart when a customer chooses to pay by card at the table. Both are settled at a card
+ * reader, and a `paycloud_merchant_order_no` means a transaction was actually allocated. Those
+ * should have a sale event.
  *
- * That turns "why is it missing" from a guess into a partition.
- *
- * AND THE VERSION IS RECOVERABLE, despite the obvious circularity. The app version at the time of
- * sale is recorded on payment_events.app_version -- the row that is missing. But
- * `payment.attempt_started` audit rows ALSO carry `appVersion`, written by mark-payment-attempt-
- * started when the push begins, and those survive. restaurant_terminals.app_version is NOT usable
- * for this: it is the CURRENT version of a device that may have updated since.
+ * That set, not the raw total, is the duplicate-charge detector's real blind spot.
  */
 import { guard, all } from './_guard'
 
@@ -54,12 +49,17 @@ type Order = {
   paid_at: string | null
 }
 
+/**
+ * The real vocabulary, read from the source rather than assumed. markOrderPaidConfirmed writes
+ * `payment.completed`; the reconcile path writes its own.
+ */
+const PAID_ACTIONS = ['payment.completed', 'payment.marked_paid_by_reconcile']
+
 async function main() {
   const { db } = guard([
     'Reads orders, payment_events and audit_logs. Writes nothing.',
-    'Partitions the paid orders that have no sale event by the code path that PAID',
-    'them, and correlates the terminal-paid ones with the app version recorded on',
-    'their payment.attempt_started audit row.',
+    'Establishes which paid orders SHOULD have a sale event and do not, using a',
+    'discriminator that does not depend on audit rows existing.',
   ])
 
   const orders = await all<Order>((f, t) =>
@@ -73,8 +73,8 @@ async function main() {
   )
   console.log(`paid orders: ${orders.length}`)
 
-  const events = await all<{ order_ids: string[] | null; event_type: string; app_version: string | null; created_at: string }>(
-    (f, t) => db.from('payment_events').select('order_ids, event_type, app_version, created_at').eq('event_type', 'sale').range(f, t),
+  const events = await all<{ order_ids: string[] | null; app_version: string | null; created_at: string }>((f, t) =>
+    db.from('payment_events').select('order_ids, app_version, created_at').eq('event_type', 'sale').range(f, t),
   )
   const withSale = new Set<string>()
   for (const e of events) for (const oid of e.order_ids ?? []) withSale.add(String(oid))
@@ -83,16 +83,14 @@ async function main() {
   const rests = await all<{ id: string; name: string }>((f, t) => db.from('restaurants').select('id, name').range(f, t))
   const nameOf = new Map(rests.map((r) => [String(r.id), String(r.name)]))
 
-  // ---------------------------------------------------------------- how the order was PAID
-  const paidAudits = await all<{ entity_id: string; metadata: Record<string, unknown> | null; created_at: string }>((f, t) =>
-    db.from('audit_logs').select('entity_id, metadata, created_at').eq('action', 'order.paid').range(f, t),
+  const paidAudits = await all<{ entity_id: string; metadata: Record<string, unknown> | null }>((f, t) =>
+    db.from('audit_logs').select('entity_id, metadata').in('action', PAID_ACTIONS).range(f, t),
   )
   const paidSource = new Map<string, string>()
   for (const a of paidAudits) {
     const src = String(a.metadata?.source ?? '')
     if (src) paidSource.set(String(a.entity_id), src)
   }
-  console.log(`order.paid audit rows: ${paidAudits.length}`)
 
   const attemptAudits = await all<{ entity_id: string; metadata: Record<string, unknown> | null }>((f, t) =>
     db.from('audit_logs').select('entity_id, metadata').eq('action', 'payment.attempt_started').range(f, t),
@@ -100,15 +98,15 @@ async function main() {
   const attemptVersion = new Map<string, string>()
   for (const a of attemptAudits) {
     const v = String(a.metadata?.appVersion ?? '')
-    if (v && v !== 'null') attemptVersion.set(String(a.entity_id), v)
+    if (v && v !== 'null' && v !== 'undefined') attemptVersion.set(String(a.entity_id), v)
   }
-  console.log(`payment.attempt_started audit rows: ${attemptAudits.length}, ${attemptVersion.size} carrying an appVersion`)
 
-  const missing = orders.filter((o) => !withSale.has(String(o.id)))
-  console.log('')
-  console.log('='.repeat(78))
-  console.log(`PAID ORDERS WITH NO SALE EVENT: ${missing.length} of ${orders.length}`)
-  console.log('='.repeat(78))
+  console.log(`paid-path audit rows (${PAID_ACTIONS.join(' / ')}): ${paidAudits.length}`)
+  console.log(`payment.attempt_started rows: ${attemptAudits.length}, ${attemptVersion.size} carrying an appVersion`)
+
+  const covered = orders.filter((o) => paidSource.has(String(o.id))).length
+  const ratio = orders.length === 0 ? 0 : covered / orders.length
+  console.log(`  paid-path coverage: ${covered} of ${orders.length} (${(ratio * 100).toFixed(1)}%)`)
 
   const bucket = (rows: Order[], key: (o: Order) => string) => {
     const m: Record<string, number> = {}
@@ -118,55 +116,80 @@ async function main() {
     }
     return Object.entries(m).sort(([, a], [, b]) => b - a)
   }
-
-  console.log('\nby the code path that PAID them (order.paid audit metadata.source):')
-  for (const [k, n] of bucket(missing, (o) => paidSource.get(String(o.id)) ?? '(no order.paid audit row)')) {
-    console.log('  ' + String(n).padStart(5) + '  ' + k)
+  const show = (rows: [string, number][]) => {
+    for (const [k, n] of rows) console.log('  ' + String(n).padStart(5) + '  ' + k)
   }
-  console.log('\n  Only `terminal_callback` is anomalous. Everything else correctly has no sale event.')
 
+  const missing = orders.filter((o) => !withSale.has(String(o.id)))
+  console.log('')
+  console.log('='.repeat(78))
+  console.log(`PAID ORDERS WITH NO SALE EVENT: ${missing.length} of ${orders.length}`)
+  console.log('='.repeat(78))
   console.log('\nby payment_channel:')
-  for (const [k, n] of bucket(missing, (o) => String(o.payment_channel ?? '(null)'))) console.log('  ' + String(n).padStart(5) + '  ' + k)
+  show(bucket(missing, (o) => String(o.payment_channel ?? '(null)')))
   console.log('\nby channel:')
-  for (const [k, n] of bucket(missing, (o) => String(o.channel ?? '(null)'))) console.log('  ' + String(n).padStart(5) + '  ' + k)
+  show(bucket(missing, (o) => String(o.channel ?? '(null)')))
   console.log('\nby payment_method:')
-  for (const [k, n] of bucket(missing, (o) => String(o.payment_method ?? '(null)'))) console.log('  ' + String(n).padStart(5) + '  ' + k)
-  console.log('\nhas a gateway reference (paycloud_merchant_order_no)?')
-  for (const [k, n] of bucket(missing, (o) => (o.paycloud_merchant_order_no ? 'yes' : 'no'))) console.log('  ' + String(n).padStart(5) + '  ' + k)
+  show(bucket(missing, (o) => String(o.payment_method ?? '(null)')))
+  console.log('\nhas a gateway reference?')
+  show(bucket(missing, (o) => (o.paycloud_merchant_order_no ? 'yes' : 'no')))
 
-  // ---------------------------------------------------------------- THE ANOMALY
-  const anomalous = missing.filter((o) => paidSource.get(String(o.id)) === 'terminal_callback')
+  // ---------------------------------------------------------------- the structural answer
+  const terminalShaped = missing.filter(
+    (o) => String(o.payment_channel ?? '') === 'card_manual' && Boolean(o.paycloud_merchant_order_no),
+  )
+  const terminalShapedCovered = orders.filter(
+    (o) =>
+      withSale.has(String(o.id)) &&
+      String(o.payment_channel ?? '') === 'card_manual' &&
+      Boolean(o.paycloud_merchant_order_no),
+  )
+  const denom = terminalShaped.length + terminalShapedCovered.length
+
   console.log('')
   console.log('='.repeat(78))
-  console.log(`THE REAL GAP — paid by terminal_callback, yet NO sale event: ${anomalous.length}`)
+  console.log(`TERMINAL-SHAPED YET NO SALE EVENT: ${terminalShaped.length}`)
   console.log('='.repeat(78))
-  if (anomalous.length === 0) {
-    console.log('  none. Every missing sale event belongs to a path that never posts one, so the')
-    console.log('  detector is NOT blind on terminal traffic — the 1144 was my filter, not the fleet.')
+  console.log('  card_manual AND carrying a gateway reference: a card reader settled these, so a')
+  console.log('  sale event was expected and is absent. THIS is the duplicate-charge blind spot.')
+  console.log(`\n  CONTROL — same shape, sale event PRESENT: ${terminalShapedCovered.length}`)
+  console.log(
+    `  sale events cover ${denom === 0 ? 'n/a' : ((terminalShapedCovered.length / denom) * 100).toFixed(1) + '%'} of terminal-shaped paid orders`,
+  )
+  console.log('\n  by app version (from payment.attempt_started):')
+  show(bucket(terminalShaped, (o) => attemptVersion.get(String(o.id)) ?? '(no version recorded)'))
+  console.log('\n  by venue:')
+  show(bucket(terminalShaped, (o) => nameOf.get(String(o.restaurant_id)) ?? String(o.restaurant_id)))
+  console.log('\n  by month — a clean cut-off means it STOPPED; a smear means it never worked:')
+  show(
+    bucket(terminalShaped, (o) => String(o.paid_at ?? o.placed_at ?? '').slice(0, 7) || '(no date)').sort(([a], [b]) =>
+      a.localeCompare(b),
+    ),
+  )
+
+  // ---------------------------------------------------------------- the audit partition, if usable
+  console.log('')
+  console.log('='.repeat(78))
+  if (ratio < 0.2) {
+    console.log('REFUSING TO PARTITION BY PAYING PATH — audit coverage too thin')
+    console.log('='.repeat(78))
+    console.log(`  Only ${(ratio * 100).toFixed(1)}% of paid orders carry a paid-path audit row, so a breakdown by`)
+    console.log('  `source` would put nearly everything in one unknown bucket and read as a result.')
+    console.log('')
+    console.log('  THAT IS ITSELF A FINDING. Either these rows predate markOrderPaidConfirmed, or the')
+    console.log('  audit insert has been failing: it logs on error and does NOT throw, by design,')
+    console.log('  because the money has already moved -- so a systematic failure is invisible.')
+    console.log('  Compare the oldest payment.completed row against the oldest paid order to tell')
+    console.log('  those apart.')
   } else {
-    console.log('\n  by app version, from the payment.attempt_started audit row:')
-    for (const [k, n] of bucket(anomalous, (o) => attemptVersion.get(String(o.id)) ?? '(no version recorded)')) {
-      console.log('  ' + String(n).padStart(5) + '  ' + k)
-    }
-    console.log('\n  by venue:')
-    for (const [k, n] of bucket(anomalous, (o) => nameOf.get(String(o.restaurant_id)) ?? String(o.restaurant_id))) {
-      console.log('  ' + String(n).padStart(5) + '  ' + k)
-    }
-    console.log('\n  by month — a clean cut-off means it STOPPED working; a smear means it never worked:')
-    for (const [k, n] of bucket(anomalous, (o) => String(o.paid_at ?? o.placed_at ?? '').slice(0, 7) || '(no date)').sort(([a], [b]) => a.localeCompare(b))) {
-      console.log('  ' + String(n).padStart(5) + '  ' + k)
-    }
+    console.log('BY THE CODE PATH THAT PAID THEM (audit metadata.source)')
+    console.log('='.repeat(78))
+    console.log('\n  with no sale event:')
+    show(bucket(missing, (o) => paidSource.get(String(o.id)) ?? '(no audit row)'))
+    console.log('\n  CONTROL — with a sale event:')
+    show(bucket(orders.filter((o) => withSale.has(String(o.id))), (o) => paidSource.get(String(o.id)) ?? '(no audit row)'))
+    console.log('\n  Only `terminal_callback` with no sale event is anomalous; the rest never post one.')
   }
-
-  // ---------------------------------------------------------------- the control
-  const covered = orders.filter((o) => withSale.has(String(o.id)))
-  console.log('')
-  console.log('CONTROL — paid orders that DO have a sale event, by paying path:')
-  for (const [k, n] of bucket(covered, (o) => paidSource.get(String(o.id)) ?? '(no order.paid audit row)')) {
-    console.log('  ' + String(n).padStart(5) + '  ' + k)
-  }
-  console.log('\n  If terminal_callback appears in BOTH lists, some devices post sale events and some')
-  console.log('  do not, and the version breakdown above says which.')
 
   console.log('\nPROBE_SALE_EVENT_GAP_OK')
 }
