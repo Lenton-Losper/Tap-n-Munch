@@ -33,6 +33,39 @@ export const MENU_COPY = {
    */
   cartSessionEndedTitle: 'session ended',
   cartSessionEndedBody: 'scan the QR code at your table to start again.',
+
+  /**
+   * PAYMENT METHOD COPY, keyed by SERVICE MODEL. Signed off by the owner 2026-08-24.
+   *
+   * These used to switch on `isKiosk` -- a CHANNEL flag, not a service model -- so a
+   * counter-service venue ordering at a table was told "Staff will collect cash at your table",
+   * promising a person who was never coming. It now derives from `restaurants.is_counter_service`.
+   *
+   * The distinction each pair carries is WHO MOVES. Counter variants never promise a person,
+   * because a counter-service venue may have no table staff at all; "someone" appears only where
+   * staff actually come to the table.
+   */
+  payCounterCashLabel: 'pay with cash',
+  payCounterCashBody: 'pay at the counter when you collect your order',
+  payCounterCardLabel: 'pay by card',
+  payCounterCardBody: 'tap your card at the counter when you collect your order',
+  payTableCashLabel: 'pay with cash',
+  payTableCashBody: 'someone will come to your table to take payment',
+  payTableCardLabel: 'pay by card',
+  payTableCardBody: 'someone will bring a card machine to your table',
+
+  /**
+   * READY-TO-PAY OUTCOMES. Signed off 2026-08-24.
+   *
+   * "tab closed" rather than "ready to pay": the customer's concern is that they can no longer add
+   * items, and that is what the body says. The failure body states the tab is still OPEN, because
+   * after a failure the customer's real question is whether they still owe or can still order.
+   */
+  tabClosedTitle: 'tab closed',
+  tabClosedTableBody: 'someone is on their way. you cannot add more items.',
+  tabClosedCounterBody: 'pay at the counter when you are ready. you cannot add more items.',
+  tabCloseFailedTitle: 'could not close your tab',
+  tabCloseFailedBody: 'your tab is still open. please ask a member of staff.',
 } as const
 
 /**

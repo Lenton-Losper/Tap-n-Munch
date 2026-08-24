@@ -68,6 +68,19 @@ export default function CartPage() {
   const { toast } = useToast()
   const { restaurant, settings, currency, paymentMethods: enabledMethods, kioskPaymentMethods, permissions, loading: restaurantLoading } =
     useRestaurant()
+  /**
+   * #334. The payment copy used to switch on isKiosk -- a CHANNEL flag -- so a counter-service
+   * venue ordering at a table was promised staff who were never coming. The service model is a
+   * property of the VENUE and now comes from the venue. A kiosk is counter-service by
+   * definition, so it still forces the counter wording before a venue is configured.
+   */
+  const isCounterService = isKiosk || restaurant?.is_counter_service === true
+  /**
+   * Fail CLOSED. card_payments_available is derived in the database from the Finatic
+   * credentials, and with #107 closed queryFinaticOrderPaid IS settlement -- it throws without
+   * them, so a venue lacking them cannot take a card at all.
+   */
+  const canTakeCard = restaurant?.card_payments_available === true
 
   useClearCartOnTableChange(restaurantId, tableNumber)
 
@@ -300,8 +313,10 @@ export default function CartPage() {
     if (!inTabFlow || !effectiveTabId) return
     if (tabReadyToPay) {
       toast({
-        title: 'Tab is ready to pay',
-        description: 'Your waiter has been notified. You cannot add more items.',
+        title: MENU_COPY.tabClosedTitle,
+        description: isCounterService
+          ? MENU_COPY.tabClosedCounterBody
+          : MENU_COPY.tabClosedTableBody,
         variant: 'destructive',
       })
       return
@@ -753,16 +768,14 @@ export default function CartPage() {
                         💵
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isKiosk ? 'Pay at the counter' : 'Pay at table with cash'}
+                        {isCounterService ? MENU_COPY.payCounterCashLabel : MENU_COPY.payTableCashLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {isKiosk
-                          ? 'Collect your order and pay at the counter'
-                          : 'Staff will collect cash at your table'}
+                          {isCounterService ? MENU_COPY.payCounterCashBody : MENU_COPY.payTableCashBody}
                       </p>
                     </button>
                     )}
-                    {(isKiosk ? enabledKioskMethods.card : enabledPaymentMethods.card) && (
+                    {canTakeCard && (isKiosk ? enabledKioskMethods.card : enabledPaymentMethods.card) && (
                     <button
                       type="button"
                       role="radio"
@@ -781,12 +794,10 @@ export default function CartPage() {
                         💳
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isKiosk ? 'Tap your card at the counter' : 'Pay at table with card'}
+                        {isCounterService ? MENU_COPY.payCounterCardLabel : MENU_COPY.payTableCardLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {isKiosk
-                          ? 'Tap your card at the counter when you collect your order'
-                          : 'Staff will bring their card machine to your table'}
+                          {isCounterService ? MENU_COPY.payCounterCardBody : MENU_COPY.payTableCardBody}
                       </p>
                     </button>
                     )}
