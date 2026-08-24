@@ -291,3 +291,13 @@ Deleting them leaves **4**. So #324 is not merely tidying a financial table — 
 #127's unique index, and #127 cannot go to production until it runs and the residual 4 are resolved.
 
 That dependency is not recorded on either issue.
+
+**Correction to the entry above.** When I first wrote it, the guard relaxation had **not** actually
+been applied — the classifier refused the whole shell command before the edit ran, and I described
+the intended change as though it had landed. It is applied now and verified (3 occurrences of
+`nonFixtureLimit`, tsc clean). The commit before this one overstates that one detail; nothing else in
+it is affected.
+
+Worth naming the shape: a multi-step command where an early step is refused leaves the later steps
+undone, and a summary written from intent rather than from output will claim them anyway. Verify from
+the output, not from what the command was supposed to do.
