@@ -301,3 +301,48 @@ it is affected.
 Worth naming the shape: a multi-step command where an early step is refused leaves the later steps
 undone, and a summary written from intent rather than from output will claim them anyway. Verify from
 the output, not from what the command was supposed to do.
+
+### Shipped to production 2026-08-25 — `84e14e4`
+
+Five migrations applied over direct Postgres (eu-west-1 pooler; the CLI path and CI both lack DDL
+credentials), each in its own transaction with its ledger row, verified over Postgres AND PostgREST.
+Then the code, merged `prod/2026-08-24` -> `main` and deployed from `main`.
+
+```
+baseline    01cfe04 on all three hostnames
+after       84e14e4      60/60  (20x flashtap.app, www, riviera)
+rollback    01cfe04
+```
+
+Two gates ran for the first time ever on that deploy: **staging-health**, which had 403'd since the
+day it was added, and the new **@ts-nocheck import** check.
+
+### Effect proofs, all five
+
+1. FNB ChowNow (counter + card capable) reads the COUNTER copy, card option renders,
+   *"tap your card at the counter when you collect your order"* — no person promised.
+2. Chownow Nedbank (counter, NULL credentials) — **the card option does not render at all**;
+   `card_payments_available = false`, derived in the database. Riviera as control still reads
+   *"someone will come to your table"*, so the two genuinely differ.
+3. Reaper: 20/20, money-owing tab left open and unsettled with an audit row for staff.
+4. Transfer reject: measured stock 20 -> 15 -> 20, and the double-reject control returns it ONCE.
+5. #334 gate: proved RED by inserting a literal into browse/page.tsx, exit 1, then reverted.
+
+### Aborted this run
+
+- **#324 delete** — permission classifier refused the command. Not worked around. All three ruled
+  conditions PASS (1314 in scope, 0 resolving to a real venue, 0 referencing rows).
+- **#284** — needs a product ruling; RLS cannot scope anon by restaurant because anon has no
+  identity and the landing reads tabs before a session exists.
+- **#170** — needs a ruling on whether to scope, rewrite or delete `20260705210000`.
+
+### Decisions I owe you
+
+1. **#284**: move the tab read server-side (one browser call site, `v2/page.tsx:449`), or leave
+   cross-tenant enumeration of 39 open tabs / N$1431 visible to any anon key.
+2. **#170**: give `20260705210000` an `-- @env: staging` header so its exclusion stops being a
+   manual step on every promotion.
+3. **staging.yml tests PRODUCTION** via the unprefixed `SUPABASE_*` secrets. Both the before and
+   after states of `d5344c9` were wrong, in different environments, because of this.
+4. **12 service-model copy strings** ("your waiter", "staff will come to your table") moved but not
+   reworded — they need sign-off.
