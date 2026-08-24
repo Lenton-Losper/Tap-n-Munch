@@ -193,3 +193,51 @@ reusable delete path.
 
 The delete itself is not written. Writing an unrunnable, unverifiable `DELETE` against a financial
 table on the strength of an issue description is exactly the thing that should not be committed.
+
+
+---
+
+## The receipt email works. Neither "finish it" nor "remove it" applied.
+
+Ruling was: finish the receipt email or remove the surface that implies it works, pick the smaller.
+**Neither, because the surface is not broken.** Measured over HTTP against deployed staging:
+
+```
+POST /api/guest/orders/{id}/receipt/email     HTTP 200  {"success":true,"deliveryId":"..."}
+receipt_documents: 1   receipt_deliveries: 1
+  EMAIL attempt 1 -> sent
+invalid address                                HTTP 400  "A valid email address is required"
+```
+
+A real email went out through Resend, with the PDF attached, and the append-only delivery row records
+the attempt. `sendReceiptEmail` was never a stub: HTML render, PDF render, provider call, per-attempt
+logging.
+
+### I was wrong on the way here, and the test is the only reason I know
+
+I had reasoned that it must be broken on staging: `RESEND_API_KEY` is put into the worker by
+`production-worker.yml` and appears **nowhere** in `staging.yml`, and `getResend()` throws without it.
+That inference was clean and wrong — the key is on the staging worker as a wrangler secret set outside
+the workflow file. **Absence from the deploy workflow is not absence from the environment.**
+
+Had I acted on the reasoning I would have "fixed" a working feature, and the fix I was drafting —
+mapping the raw error to customer-safe copy — was for a failure that does not occur.
+
+### What IS missing, and it is not a lie anyone is telling
+
+`#234`'s gap is real and narrower than "the email does not work":
+
+| path | collects an address? | emails? |
+|---|---|---|
+| kiosk-success | yes, the customer types it | **yes, proven** |
+| staff dashboard / terminal | staff type it | yes |
+| automatic issuance on payment | **nothing collects one** | no |
+| customer receipt screen, order-confirmation, my-orders | no control at all | no |
+
+So a table-service customer has no way to ask for a receipt by email, and issuance on payment writes a
+document addressed to nobody. **But no surface claims otherwise.** The only "Receipt sent to …" string
+is on kiosk-success, where it is true. There is nothing that implies it works and does not.
+
+Closing this out as: **nothing to build, nothing to remove, correct the record.** Adding a receipt
+email control for table service is a feature with a schema question attached (where does the address
+live, and for how long) — not the small corrective this item was scoped for.
