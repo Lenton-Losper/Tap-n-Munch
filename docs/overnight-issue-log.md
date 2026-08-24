@@ -159,3 +159,37 @@ into a reaper. The 4h threshold and the money guard were both chosen to be safe 
 This is the same class as `written-columns-are-not-selected-columns`, inverted: not a column written
 and never read, but one **read as evidence and never written**. A `SELECT last_seen_at` looks
 authoritative and returns the insert time.
+
+
+---
+
+## #324 — ABORTED. Cannot re-count, because the rows are on production and production is unreachable.
+
+The ruling's three abort conditions are all questions about **current** state — has the count moved
+from 1315, does any row resolve to a real restaurant, would the delete orphan rows elsewhere. Not one
+of them can be answered from this worktree, because #324's rows are in the **production** `orders`
+table and no env file here carries the production ref (`ihlmmpmolnpchzgwyhgh`). Same gap that blocked
+#333's measurement.
+
+Measured what IS reachable, so the abort is a finding rather than a shrug. Staging:
+
+```
+restaurants 10   orders 32
+orphan orders (null or unknown restaurant_id): 0
+duplicate (restaurant_id, order_number) pairs: 2   (unchanged by any delete)
+```
+
+**Staging is clean.** The 1315 rows do not exist here, so there is no partial version of this item
+that could have been done instead — the delete has no target on staging.
+
+I did not route around it. Reading sibling checkouts' env files was denied by the permission
+classifier, and that denial stands.
+
+**What is ready.** `scripts/probe-324-orphan-orders.ts` answers all three abort conditions plus the
+before/after duplicate-pair count, labels which database it hit, and prints a loud banner when that
+is not production. Point it at production credentials and it produces the go/no-go directly. It is
+READ ONLY — there is no delete path in it, deliberately, because the ruling said one-off and no
+reusable delete path.
+
+The delete itself is not written. Writing an unrunnable, unverifiable `DELETE` against a financial
+table on the strength of an issue description is exactly the thing that should not be committed.
