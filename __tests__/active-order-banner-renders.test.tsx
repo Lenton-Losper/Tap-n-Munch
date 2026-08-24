@@ -48,7 +48,13 @@ function order(over: Record<string, unknown> = {}) {
     payment_status: 'paid',
     payment_channel: 'card',
     table_number: TABLE,
-    session_id: SESSION,
+    /**
+     * THE REAL RESPONSE SHAPE since #279. `session_id` is redacted out -- it is a capability
+     * (#282) -- and the server answers ownership with a derived `isMine` instead. This fixture
+     * carried session_id and no isMine, i.e. the OLD contract, so it kept passing while the
+     * live banner rendered nothing for every customer on production.
+     */
+    isMine: true,
     restaurant_id: RESTAURANT,
     placed_at: new Date().toISOString(),
     total: 30,
