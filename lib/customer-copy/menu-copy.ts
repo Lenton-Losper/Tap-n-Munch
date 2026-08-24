@@ -23,6 +23,16 @@ export const MENU_COPY = {
    * customer-visible fallback rather than a developer placeholder, so it belongs here.
    */
   receiptUnknownItem: 'Unknown Item',
+
+  // ---------------------------------------------------------------- cart
+  /**
+   * Shown when the cart has no session to place an order against. Signed off 2026-08-24, and it
+   * REPLACES wording rather than moving it: the old pair was 'Session error' / 'Please try again.',
+   * which named no cause and offered a remedy that cannot work — retrying does not create a
+   * session. Matches the wording already signed for my-orders.
+   */
+  cartSessionEndedTitle: 'session ended',
+  cartSessionEndedBody: 'scan the QR code at your table to start again.',
 } as const
 
 /**

@@ -20,6 +20,11 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     // ---- app/menu/[restaurantId]/receipt/page.tsx
     receiptNoActiveOrders: 'No active orders found.',
     receiptUnknownItem: 'Unknown Item',
+    // ---- app/menu/[restaurantId]/cart/page.tsx
+    // SIGNED REPLACEMENTS, not moves. Pinned to the wording the owner signed 2026-08-24, so a
+    // later edit still has to be deliberate.
+    cartSessionEndedTitle: 'session ended',
+    cartSessionEndedBody: 'scan the QR code at your table to start again.',
   }
 
   it.each(Object.entries(ORIGINALS))('%s is unchanged', (key, original) => {

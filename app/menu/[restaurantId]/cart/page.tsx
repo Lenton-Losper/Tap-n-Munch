@@ -33,6 +33,7 @@ import { CUSTOMER_NAV_COPY } from '@/lib/customer-nav-copy'
 import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
 
@@ -395,7 +396,11 @@ export default function CartPage() {
     let sid = getCurrentSession()
     if (!sid) sid = getOrCreateSession(restaurantId, String(tableNumber))
     if (!sid) {
-      toast({ title: 'Session error', description: 'Please try again.', variant: 'destructive' })
+      toast({
+        title: MENU_COPY.cartSessionEndedTitle,
+        description: MENU_COPY.cartSessionEndedBody,
+        variant: 'destructive',
+      })
       return
     }
 
