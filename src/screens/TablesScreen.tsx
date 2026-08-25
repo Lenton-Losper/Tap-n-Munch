@@ -54,10 +54,18 @@ function TableCard({table, onPress}: TableCardProps) {
   // even when other diners still owe money — status is the ordering gate,
   // not a "has everyone paid" flag. ready_to_pay_at is preserved server-side
   // across a partial settle when unpaid_total remains > 0, so it's the signal
-  // for "tab was marked ready and money is still outstanding". Until the
-  // server starts returning ready_to_pay_at on /api/terminal/tables, this is
-  // undefined and the expression falls back to the status arm (today's
-  // behaviour) — that fallback is intentional, not a bug.
+  // for "tab was marked ready and money is still outstanding".
+  //
+  // #341: the server half IS LIVE. /api/terminal/tables both SELECTS
+  // ready_to_pay_at and returns it on the tab object — verified at
+  // origin/main 141677a1, route.ts:56 and :204. This comment previously said
+  // "until the server starts returning ready_to_pay_at", which by 2026-08-25
+  // read as if #318 were still inert on the device; it is not.
+  //
+  // The status arm stays anyway, and not only as a fallback: it is what shows
+  // the chip before ANYONE has paid, when ready_to_pay_at is set but
+  // unpaid_total has not yet been reduced by a settle. Removing it would blank
+  // the chip on exactly the tables that have just asked to pay.
   const isReadyToPay =
     tab?.status === 'ready_to_pay' ||
     (tab?.ready_to_pay_at != null && (tab?.unpaid_total ?? 0) > 0);
