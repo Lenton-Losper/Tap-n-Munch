@@ -19,6 +19,7 @@ export type CancelBasis =
   | 'finatic_verified_not_paid'
   | 'terminal_pre_gateway'
   | 'operator_duplicate_ruling'
+  | 'e04111_no_attempt_reached_gateway'
 
 export const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
   no_gateway_reference:
@@ -37,6 +38,18 @@ export const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
     'Deliberately distinct from `no_gateway_reference`, which asserts NO CHARGE IS POSSIBLE -- ' +
     'true of a card that never reached prepare-payment, and false here, where cash changed hands. ' +
     'Recording this cancel under that basis would put a false statement in the audit trail.',
+  e04111_no_attempt_reached_gateway:
+    'NO PAYMENT EVER REACHED THE GATEWAY. Established by a CONJUNCTION, and the two halves are ' +
+    'not interchangeable: (a) the order carries neither payment_reference nor payment_voucher_no, ' +
+    'and (b) a live Finatic order.query on its own merchant order number answered E04111 ' +
+    '"Merchant order number is invalid" in the same run as this cancel. ' +
+    'WHY BOTH ARE REQUIRED, measured on production 2026-08-25: three FNB ChowNow orders ' +
+    '(#456, #500, #546) are PAID and carry neither marker, and the gateway returns PAID for all ' +
+    'three. So (a) alone would have cancelled N$201 of real charges; (b) is the load-bearing half. ' +
+    'DISTINCT FROM `finatic_verified_not_paid`, which asserts a RECOGNISED not-paid status. ' +
+    'E04111 is an error, not a status -- it means the gateway has no such order, which is the ' +
+    'expected answer when staff cancelled on the reader before anything was sent. It is the ' +
+    '#327 `left_pending_finatic_uncertain` reading, and on its own it never authorises a cancel.',
 }
 
 export type CancelWithTrailResult = {
