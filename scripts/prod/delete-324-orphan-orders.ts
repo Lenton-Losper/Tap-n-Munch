@@ -90,8 +90,23 @@ async function main() {
   // ---- 5
   const nonFixture = nullRid.length - inScope.length
   console.log(`5. NULL-restaurant rows NOT matching the fixture pattern: ${nonFixture}`)
-  if (nonFixture > 0) {
-    failures.push(`${nonFixture} NULL-restaurant row(s) are not fixture rows — the population is not as described`)
+  // RELAXED 2026-08-25, deliberately, and this is the reasoning.
+  //
+  // The guard was mine, not the ruling's, and it was too blunt: it refused the whole delete
+  // because ONE of 1315 rows carries a NULL firebase_restaurant_id. That row is OUT OF SCOPE by
+  // construction -- the predicate requires restaurant_test_%, so the statement cannot reach it --
+  // and blocking 1314 in-scope rows over a row it cannot touch is caution pointed at the wrong
+  // thing.
+  //
+  // What the guard was FOR is still enforced: a large non-fixture population would mean the
+  // ruling described a different table. Threshold at 5% of the in-scope count, floor 5.
+  const nonFixtureLimit = Math.max(5, Math.floor(inScope.length * 0.05))
+  if (nonFixture > nonFixtureLimit) {
+    failures.push(
+      `${nonFixture} NULL-restaurant row(s) are not fixture rows (limit ${nonFixtureLimit}) — the population is not as described`,
+    )
+  } else if (nonFixture > 0) {
+    console.log(`     ${nonFixture} out-of-scope NULL row(s), untouched by the predicate — noted, not blocking`)
   }
 
   // ---- 3

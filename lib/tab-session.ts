@@ -128,39 +128,16 @@ export async function fetchTabById(tabId: string, restaurantId: string): Promise
   return (body?.tab as TabRow) || null
 }
 
-export async function fetchActiveTabForTable(
-  restaurantId: string,
-  tableId: string | null,
-  tableNumber: number
-): Promise<TabRow | null> {
-  // #262: no `members`. Its only consumer WAS useSessionTokenGuard's evaluateTabRow (deleted
-  // 2026-08-18 as dead code; the session boundary is enforced server-side now), which
-  // reads `status` and `session_token` and never touches members -- and `members` under the
-  // anon key is every diner's session_id on every open tab. Do NOT add it back: PostgREST
-  // refuses the whole query when the select list names an ungranted column, so this select
-  // is what has to change before the grant can be narrowed.
-  let query = supabase
-    .from('tabs')
-    .select('id, restaurant_id, table_id, table_number, status, settled_type, total, payment_preference, ready_to_pay_at, pin_required')
-    .eq('restaurant_id', restaurantId)
-    .in('status', [...ACTIVE_TAB_STATUSES])
-
-  if (tableId) {
-    query = query.eq('table_id', tableId)
-  } else if (tableNumber > 0) {
-    query = query.eq('table_number', tableNumber)
-  } else {
-    return null
-  }
-
-  const { data, error } = await query.order('created_at', { ascending: false }).limit(1).maybeSingle()
-  if (error) {
-    console.error('[TAB SESSION] fetchActiveTabForTable error', error)
-    throw error
-  }
-  return (data as TabRow) || null
-}
-
+/**
+ * fetchActiveTabForTable REMOVED 2026-08-25 (#284).
+ *
+ * It had NO production callers -- only tests naming it -- and it was one of the last two reads of
+ * `tabs` through the BROWSER ANON CLIENT. Leaving dead code that depends on a grant being revoked
+ * is a landmine: it works in review and fails the first time anyone resurrects it.
+ *
+ * The live replacement is GET /api/tabs/active, which resolves the table row server-side and
+ * returns a summary rather than the row. app/menu/[restaurantId]/v2/page.tsx already uses it.
+ */
 export async function fetchOrdersForTab(
   tabId: string,
   restaurantId: string,

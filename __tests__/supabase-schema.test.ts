@@ -31,7 +31,12 @@ describe('Supabase — schema & data', () => {
   });
 
   test('tabs.settled_type column exists', async () => {
-    const { error } = await sb.from('tabs').select('settled_type').limit(1);
+    // SERVICE ROLE, not anon. #284 withdrew the anon SELECT on `tabs` -- the policy had no
+    // restaurant scope, so any holder of the browser key could enumerate every open tab at every
+    // venue. This assertion is about the SCHEMA (does the column exist), which is not an
+    // anon-permission question, and asking it through the anon key made a schema check fail for a
+    // grant reason. Using `admin` restores what it was actually testing.
+    const { error } = await admin.from('tabs').select('settled_type').limit(1);
     expect(error).toBeNull();
   });
 

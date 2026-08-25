@@ -17,7 +17,12 @@ describe('Payment & checkout', () => {
   });
 
   test('Tab schema supports required columns', async () => {
-    const { error } = await sb
+    // SERVICE ROLE, not anon. #284 withdrew the anon SELECT on `tabs` -- the policy had no
+    // restaurant scope, so any holder of the browser key could enumerate every open tab at every
+    // venue. This assertion is about the SCHEMA (does the column exist), which is not an
+    // anon-permission question, and asking it through the anon key made a schema check fail for a
+    // grant reason. Using `admin` restores what it was actually testing.
+    const { error } = await admin
       .from('tabs')
       .select('id, status, settled_type, restaurant_id')
       .limit(1);
@@ -25,7 +30,12 @@ describe('Payment & checkout', () => {
   });
 
   test('All settled tabs have valid settled_type values', async () => {
-    const { data, error } = await sb
+    // SERVICE ROLE, not anon. #284 withdrew the anon SELECT on `tabs` -- the policy had no
+    // restaurant scope, so any holder of the browser key could enumerate every open tab at every
+    // venue. This assertion is about the SCHEMA (does the column exist), which is not an
+    // anon-permission question, and asking it through the anon key made a schema check fail for a
+    // grant reason. Using `admin` restores what it was actually testing.
+    const { data, error } = await admin
       .from('tabs')
       .select('settled_type')
       .not('settled_type', 'is', null)
