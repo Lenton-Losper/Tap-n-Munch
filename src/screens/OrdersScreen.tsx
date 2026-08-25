@@ -298,7 +298,10 @@ export default function OrdersScreen() {
               <Text
                 style={[
                   styles.tabText,
-                  isActive && {color: tab.color, fontWeight: '700'},
+                  // The weight is static and belongs in the sheet. The colour is per-tab and
+                  // cannot be, so it stays inline.
+                  isActive && styles.tabTextActive,
+                  isActive && {color: tab.color},
                 ]}>
                 {label}
               </Text>
@@ -430,6 +433,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textSecondary,
     marginBottom: Spacing.sm,
+  },
+  /** Weight only. The active tab's COLOUR is per-tab and stays at the call site. */
+  tabTextActive: {
+    fontWeight: '700',
   },
   tabIndicator: {
     height: 3,
