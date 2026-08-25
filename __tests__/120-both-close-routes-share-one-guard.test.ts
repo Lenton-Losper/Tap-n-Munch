@@ -125,3 +125,40 @@ describe('the two surfaces differ ONLY in authentication', () => {
     for (const f of files) expect(read(f).length).toBeGreaterThan(200)
   })
 })
+
+/**
+ * THE DASHBOARD RELEASE ROUTE'S GUARDS MUST BE REACHABLE.
+ *
+ * Found by probing the deployed route rather than by reading it: an empty body answered
+ * `500 {"error":"Restaurant id is required"}`. That message is `resolveRestaurantUuid`'s, thrown at
+ * restaurants.ts:79 — so the route's own `if (!restaurantUuid) return 400` sat AFTER a call that
+ * could never return falsy, and had never executed.
+ *
+ * Dead code shaped like a guard is worse than no guard, because it reads as covered. These pin the
+ * ordering rather than the strings.
+ */
+describe('the dashboard release route validates before it resolves', () => {
+  const src = read('app/api/order-requests/[requestId]/release/route.ts')
+  const code = codeOf('app/api/order-requests/[requestId]/release/route.ts')
+
+  it('checks the RAW input before calling the resolver', () => {
+    const check = code.indexOf('if (!rawRestaurantId)')
+    const resolve = code.indexOf('resolveRestaurantUuid(rawRestaurantId)')
+    expect(check).toBeGreaterThan(-1)
+    expect(resolve).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(resolve)
+  })
+
+  it('no longer tests the RESOLVED value for falsiness — that branch could never run', () => {
+    expect(code).not.toMatch(/if\s*\(\s*!restaurantUuid\s*\)/)
+  })
+
+  it('maps a resolver throw to 404 rather than letting it become a 500', () => {
+    expect(code).toMatch(/catch\s*\{[\s\S]{0,200}status:\s*404/)
+  })
+
+  it('CONTROL: the file still contains the route and the shared call', () => {
+    expect(src.length).toBeGreaterThan(200)
+    expect(code).toMatch(/releaseStrandedClaim\(/)
+  })
+})
