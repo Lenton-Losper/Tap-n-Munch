@@ -133,9 +133,11 @@ function describe(sha) {
  * the only branch it ever lands on, so every one of them reads as drift against staging FOREVER:
  * you cannot cherry-pick your way out, because the next deploy writes another.
  *
- * Eighteen had accumulated by 2026-08-25 and they buried the ONE real finding in the same list —
- * 382389b, a fix production had and staging lacked. That is how a blocking check dies. Not by
- * being switched off, but by its output becoming something nobody reads.
+ * Eighteen had accumulated by 2026-08-25, in a list of twenty. That is how a blocking check dies —
+ * not by being switched off, but by its output becoming something nobody reads. The two survivors
+ * were both false alarms for their own reasons (6db8a26 is empty too and carries no marker;
+ * 382389b tripped the `blobAt` bug below), which is the point: nobody was going to find that out
+ * while eighteen lines of noise sat on top of them.
  *
  * THE TEST IS "CHANGES NO FILE", NOT "MATCHES THE MARKER TEXT".
  *
@@ -171,6 +173,36 @@ function touchedFiles(sha) {
  */
 function isEmptyCommit(sha) {
   return touchedFiles(sha).length === 0
+}
+
+/**
+ * The blob sha for `file` at `ref`, or null if the ref does not have that path.
+ *
+ * THE SEVENTH LYING INSTRUMENT, found 2026-08-25. `promotedState` used
+ * `tryGit(['rev-parse', `${ref}:${file}`]).ok` to mean "the ref has this file", and it does not:
+ *
+ *     $ git rev-parse 'origin/main:app/table/[tableNumber]/page.tsx'   # deleted on main
+ *     origin/main:app/table/[tableNumber]/page.tsx
+ *     $ echo $?
+ *     0
+ *
+ * It EXITS ZERO and echoes the unresolved string back. So `.ok` was always true, the branch
+ * commented "not on BASE (a deletion); nothing of main's to lack" had NEVER ONCE EXECUTED, and the
+ * blob comparison below was comparing a path string against a real sha — so it always read
+ * "differing" and fell through to the expensive history walk.
+ *
+ * The visible cost: any commit that DELETES a file could never classify PROMOTED. 382389b (#118,
+ * which deletes the dead /table page) was reported as drift for that reason alone, while all three
+ * of its files are demonstrably reconciled on staging — the page absent on both refs, the test and
+ * middleware.ts byte-identical.
+ *
+ * Validated by SHAPE rather than by exit code, because the exit code is the thing that lied.
+ */
+function blobAt(ref, file) {
+  const r = tryGit(['rev-parse', `${ref}:${file}`])
+  if (!r.ok) return null
+  const out = r.out.trim()
+  return /^[0-9a-f]{40}$/.test(out) ? out : null
 }
 
 /** PRESENT = its patch reverse-applies, so the change is already here under another patch-id. */
@@ -209,10 +241,10 @@ function promotedState(sha) {
   if (files.length === 0) return false
 
   for (const file of files) {
-    const mainBlob = tryGit(['rev-parse', `${BASE}:${file}`])
-    if (!mainBlob.ok) continue // not on BASE (a deletion); nothing of main's to lack
-    const headBlob = tryGit(['rev-parse', `${HEAD}:${file}`])
-    if (!headBlob.ok) {
+    const mainBlob = blobAt(BASE, file)
+    if (mainBlob === null) continue // not on BASE (a deletion); nothing of main's to lack
+    const headBlob = blobAt(HEAD, file)
+    if (headBlob === null) {
       /**
        * HEAD DOES NOT HAVE THE FILE. Two very different situations, and returning false for both
        * was wrong — fixed 2026-08-18, the third refinement of #310 and the same class as the
@@ -229,7 +261,7 @@ function promotedState(sha) {
       if (!everHadIt.ok || !everHadIt.out.trim()) return false
       continue
     }
-    if (mainBlob.out.trim() === headBlob.out.trim()) continue // identical
+    if (mainBlob === headBlob) continue // identical
 
     // Differing. HEAD is only level-or-ahead if it CONTAINS main's last change to this path.
     const mainCommitForPath = tryGit(['log', '-1', '--format=%H', BASE, '--', file]).out.trim()
@@ -264,7 +296,7 @@ function promotedState(sha) {
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean)
-      .some((sha) => tryGit(['rev-parse', `${sha}:${file}`]).out.trim() === mainBlob.out.trim())
+      .some((sha) => blobAt(sha, file) === mainBlob)
     if (!everHeld) return false // main holds a change to this file that HEAD has never had
   }
   return true
