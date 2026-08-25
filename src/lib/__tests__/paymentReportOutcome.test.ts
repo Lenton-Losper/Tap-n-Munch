@@ -14,13 +14,17 @@ import {
 import {
   ALREADY_SETTLED_MESSAGE,
   SETTLE_ORDER_ALREADY_PAID,
+  UNCONFIRMED_CHECK_ACTION,
   UNCONFIRMED_CHECK_FAILED,
+  UNCONFIRMED_CHECK_IN_PROGRESS,
   UNCONFIRMED_EXPLANATION,
   UNCONFIRMED_INSTRUCTION,
   UNCONFIRMED_INTERRUPTED,
   UNCONFIRMED_NOT_REPORTED,
+  UNCONFIRMED_RETRY_ACTION,
   UNCONFIRMED_SETTLE_INSTRUCTION,
   UNCONFIRMED_STILL_UNRESOLVED,
+  UNCONFIRMED_TITLE,
 } from '../../constants/paymentCopy';
 
 describe('classifyFailureReport — the three outcomes are three different answers', () => {
@@ -118,6 +122,101 @@ describe('classifySuccessReportError — #326: ALREADY_PAID is not a failure', (
  * impossible to write that: every message is ONE complete, self-contained string. They deliberately
  * do not assert the wording, which is the owner's to sign.
  */
+/**
+ * THE SIGNED COPY, PINNED VERBATIM. Approved by the owner 2026-08-25.
+ *
+ * These are not style assertions — they are the record. The strings are the owner's, and three of
+ * them encode decisions that a well-meaning edit would quietly undo:
+ *
+ *   - UNCONFIRMED_EXPLANATION has NO "yet". "yet" implied the situation resolves itself; nothing
+ *     resolves these, because an order carrying a merchant reference is answered E04111 by the
+ *     stale-order cron and skipped forever.
+ *   - UNCONFIRMED_CHECK_FAILED blames reaching the PROVIDER, not "checking", so it cannot be read
+ *     as the payment having failed.
+ *   - UNCONFIRMED_NOT_REPORTED and UNCONFIRMED_INTERRUPTED both say the card MAY HAVE BEEN CHARGED.
+ *     That sentence is the point of #327. Its own assertion below exists so that shortening either
+ *     string goes red rather than silently dropping the warning.
+ *
+ * If one of these fails, the right fix is almost never to update the expectation. Signed copy
+ * changes with the owner.
+ */
+describe('payment copy — the signed strings, verbatim', () => {
+  it.each([
+    ['UNCONFIRMED_TITLE', UNCONFIRMED_TITLE, 'Not confirmed'],
+    [
+      'UNCONFIRMED_INSTRUCTION',
+      UNCONFIRMED_INSTRUCTION,
+      'Do not release this order. The payment has not been confirmed.',
+    ],
+    [
+      'UNCONFIRMED_EXPLANATION',
+      UNCONFIRMED_EXPLANATION,
+      'The card reader and the payment provider do not agree. Check the payment status before doing anything else.',
+    ],
+    ['UNCONFIRMED_CHECK_ACTION', UNCONFIRMED_CHECK_ACTION, 'Check payment status'],
+    ['UNCONFIRMED_CHECK_IN_PROGRESS', UNCONFIRMED_CHECK_IN_PROGRESS, 'Checking...'],
+    [
+      'UNCONFIRMED_STILL_UNRESOLVED',
+      UNCONFIRMED_STILL_UNRESOLVED,
+      'Still not confirmed. The payment provider has no answer for this order yet.',
+    ],
+    [
+      'UNCONFIRMED_CHECK_FAILED',
+      UNCONFIRMED_CHECK_FAILED,
+      'Could not reach the payment provider. Try the check again.',
+    ],
+    ['UNCONFIRMED_RETRY_ACTION', UNCONFIRMED_RETRY_ACTION, 'Take payment again'],
+    [
+      'UNCONFIRMED_NOT_REPORTED',
+      UNCONFIRMED_NOT_REPORTED,
+      'This payment attempt was not recorded. The card may have been charged. Check the payment status before taking payment again.',
+    ],
+    [
+      'UNCONFIRMED_INTERRUPTED',
+      UNCONFIRMED_INTERRUPTED,
+      'This payment was interrupted before the result was known. The card may have been charged. Check the payment status before taking payment again.',
+    ],
+    [
+      'UNCONFIRMED_SETTLE_INSTRUCTION',
+      UNCONFIRMED_SETTLE_INSTRUCTION,
+      'The payment could not be confirmed. Do not release these orders. Check the payment status on the order before taking payment again.',
+    ],
+    [
+      'SETTLE_ORDER_ALREADY_PAID',
+      SETTLE_ORDER_ALREADY_PAID,
+      'This payment did go through. Refresh the table to see what is still owed before taking any more payment.',
+    ],
+    [
+      'ALREADY_SETTLED_MESSAGE',
+      ALREADY_SETTLED_MESSAGE,
+      'This order is already paid. No further payment is needed.',
+    ],
+  ])('%s is exactly the signed text', (_name, actual, signed) => {
+    expect(actual).toBe(signed);
+  });
+
+  it('the two "may have been charged" warnings are present, in those words', () => {
+    // Owner decision 3. Asserted separately from the verbatim block so that the REASON for this
+    // sentence is visible at the point of failure, not just a long string diff.
+    expect(UNCONFIRMED_NOT_REPORTED).toContain('The card may have been charged.');
+    expect(UNCONFIRMED_INTERRUPTED).toContain('The card may have been charged.');
+  });
+
+  it('the explanation does not promise the problem resolves itself', () => {
+    // Owner decision 1. The stale-order cron does not clear these; nothing does.
+    expect(UNCONFIRMED_EXPLANATION).not.toMatch(/\byet\b/);
+  });
+
+  it('"Checking..." is three ASCII full stops, not U+2026', () => {
+    // Signed that way deliberately. A formatter "tidying" this is editing signed copy.
+    expect(UNCONFIRMED_CHECK_IN_PROGRESS).toBe('Checking...');
+    expect(UNCONFIRMED_CHECK_IN_PROGRESS).not.toContain('…');
+    expect([...UNCONFIRMED_CHECK_IN_PROGRESS].map(c => c.codePointAt(0))).toEqual([
+      67, 104, 101, 99, 107, 105, 110, 103, 46, 46, 46,
+    ]);
+  });
+});
+
 describe('payment copy — every message stands alone', () => {
   const messages = {
     UNCONFIRMED_INSTRUCTION,
