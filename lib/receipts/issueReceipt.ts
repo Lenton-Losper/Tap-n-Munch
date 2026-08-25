@@ -146,7 +146,38 @@ export function toLineItem(raw: unknown): ReceiptLineItem {
   const quantity =
     typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1
 
-  const lineTotalRaw = item.subtotal ?? item.lineTotal ?? item.line_total
+  /**
+   * GROSS, NOT EX-VAT. #250, ruled by the owner 2026-08-16 closing #165 as its duplicate:
+   * "make the receipt's `line_total` gross."
+   *
+   * THE TWO SHAPES, and why this ordering is right for both:
+   *
+   *  - A SERVER-PRICED line (`lib/orders/calculate-order-pricing.ts:192-198`) carries all three
+   *    figures: `subtotal` = applied.subtotal (EX-VAT under an inclusive rate), `tax`, and
+   *    `total` = applied.total (GROSS). Reading `subtotal` here is what produced #165's printed
+   *    receipt -- `1 x N$25.00 ... N$21.74` -- a gross unit price beside an ex-VAT line total,
+   *    which reads to a customer as an arithmetic error. `total` is the figure that belongs
+   *    under a column headed Total beside a gross Unit Price.
+   *
+   *  - A CART-SHAPED line that never went through the pricer has NO `total` key
+   *    (`contexts/cart-context.tsx`, `components/menu/item-detail-modal.tsx:174` store
+   *    `subtotal: calculatePrice()`), and there `subtotal` is the already
+   *    quantity-and-addon-inclusive charge -- itself gross. So the fallback lands on the gross
+   *    figure for that shape too.
+   *
+   * Both shapes therefore yield GROSS, which is the whole point: the column must not change
+   * meaning depending on which path built the line. The `subtotal` fallback is kept LAST rather
+   * than deleted, because deleting it would regress every cart-shaped line to 0 -- the
+   * always-0.00 bug the tests above this one exist to pin.
+   *
+   * This aligns the receipt with the TAX INVOICE, which has always stored the gross figure
+   * (`lib/documents/create-document.ts:73`) and keeps the ex-VAT split beside it. #250 established
+   * the invoice was the one already right.
+   *
+   * FUTURE RECEIPTS ONLY. Snapshots are frozen at issuance, so receipts already issued keep the
+   * ex-VAT figure -- see #251, which is why they cannot be re-presented on the other basis.
+   */
+  const lineTotalRaw = item.total ?? item.lineTotal ?? item.line_total ?? item.subtotal
   const unitPriceRaw =
     item.unitPrice ?? item.unit_price ?? item.price ?? item.basePrice ?? item.base_price
 
