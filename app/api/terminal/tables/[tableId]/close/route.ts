@@ -1,13 +1,8 @@
+import { guardTableClose } from '@/lib/tabs/pending-order-requests'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { closeTableSession } from '@/lib/session-manager'
-import {
-  blocksSettlement,
-  fetchPendingOrderRequests,
-  pendingOrderRequestValue,
-  summarisePendingForTab,
-} from '@/lib/tabs/pending-order-requests'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,66 +37,19 @@ export async function POST(
      * `tableId` arrives from the URL path, and a caller-controlled value inside a PostgREST `.or()`
      * expression is this project's #242 / #254 defect class.
      */
-    const { data: tabsAtTable, error: tabsError } = await supabase
-      .from('tabs')
-      .select('id')
-      .eq('restaurant_id', terminal.restaurantId)
-      .eq('table_id', tableId)
-      .in('status', ['open', 'ready_to_pay'])
-
-    if (tabsError) {
-      // Cannot establish which tabs are here, so cannot establish what is pending on them.
-      // An unreadable table is not an empty one.
-      console.error('[terminal/tables/close] tab lookup failed', tabsError)
-      return NextResponse.json(
-        {
-          error: 'Could not check this table for orders awaiting review. Try again.',
-          code: 'PENDING_REQUEST_CHECK_FAILED',
-        },
-        { status: 503 },
-      )
-    }
-
-    const pending = await fetchPendingOrderRequests(supabase, {
-      restaurantId: terminal.restaurantId,
-      tabIds: (tabsAtTable ?? []).map((t) => String(t.id)),
-      tableIds: [tableId],
-    })
-
     /**
-     * Summarised per tab AND once more for requests that name this TABLE and no tab at all.
-     * `summarisePendingForTab` claims a tab-less row for whichever table it names, so passing
-     * `null` as the tab id collects exactly the orphans — rows the per-tab pass cannot see.
+     * #120 — THE GUARD, shared with the staff dashboard's close route.
+     *
+     * It used to live inline here, and that is precisely why the dashboard's route went unguarded:
+     * two routes doing one job, with the rule written into only one of them. It is now in
+     * `lib/tabs/pending-order-requests.ts` and both call it.
      */
-    const summaries = [
-      ...(tabsAtTable ?? []).map((t) => summarisePendingForTab(pending, String(t.id), tableId)),
-      summarisePendingForTab(pending, null, tableId),
-    ]
-    const blocking = summaries.filter(blocksSettlement)
-
-    if (blocking.length > 0) {
-      const count = summaries.reduce((n, s) => n + s.count, 0)
-      const value = summaries.reduce((n, s) => n + s.value, 0)
-      const unknown = summaries.some((s) => s.unknown)
-      return NextResponse.json(
-        {
-          error: unknown
-            ? 'Could not check this table for orders awaiting review. Try again.'
-            : 'This table has orders still waiting for review. Accept or decline them before closing.',
-          code: unknown ? 'PENDING_REQUEST_CHECK_FAILED' : 'PENDING_ORDER_REQUESTS',
-          pending_request_count: count,
-          pending_requests_value: value,
-          pending_requests_unknown: unknown,
-          // The ids, so staff can be taken straight to them rather than hunting a list.
-          pending_request_ids: pending.rows.map((r) => String(r.id)),
-          pending_requests: pending.rows.map((r) => ({
-            id: String(r.id),
-            placed_at: r.placed_at,
-            value: pendingOrderRequestValue(r),
-          })),
-        },
-        { status: unknown ? 503 : 409 },
-      )
+    const guard = await guardTableClose(supabase, {
+      restaurantId: terminal.restaurantId,
+      tableId,
+    })
+    if (guard.blocked) {
+      return NextResponse.json(guard.body, { status: guard.status })
     }
 
     await closeTableSession({

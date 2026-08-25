@@ -8,7 +8,7 @@
  * Staging, for comparison: 10 open tabs, all >24h idle, 6 reaped, 4 left for staff (N$240).
  *
  * The activity signal is the same one the SQL function derives, and it has the same blind spot:
- * browsing is invisible. customer_sessions.last_seen_at is never written (see #338), so the newest
+ * browsing is invisible: customer_sessions had no activity column at all after #338 dropped the
  * evidence of life is the newest of tab created / ready-to-pay / any order timestamp / any request
  * timestamp / any session issued.
  */
@@ -71,11 +71,11 @@ async function main() {
     )
   }
 
-  const sessions: { tab_id: string; created_at: string | null; last_seen_at: string | null; expires_at: string | null }[] = []
+  const sessions: { tab_id: string; created_at: string | null; expires_at: string | null }[] = []
   for (const slice of chunk(tabIds, 50)) {
     sessions.push(
       ...(await all<(typeof sessions)[number]>((f, t) =>
-        db.from('customer_sessions').select('tab_id, created_at, last_seen_at, expires_at').in('tab_id', slice).range(f, t),
+        db.from('customer_sessions').select('tab_id, created_at, expires_at').in('tab_id', slice).range(f, t),
       )),
     )
   }
@@ -142,16 +142,9 @@ async function main() {
   console.log('  Each refusal writes a tab.abandoned_needs_attention audit row, so the refused set')
   console.log('  becomes a staff worklist rather than staying invisible.')
 
-  const movedLastSeen = sessions.filter(
-    (s) => s.last_seen_at && s.created_at && Math.abs(ms(s.last_seen_at) - ms(s.created_at)) > 1000,
-  )
-  console.log('')
-  console.log(`last_seen_at on these tabs: ${sessions.length} row(s), ${movedLastSeen.length} differ from created_at`)
-  console.log(
-    movedLastSeen.length === 0
-      ? '  => FROZEN AT INSERT on production too, as on staging (#338). Browsing stays invisible.'
-      : '  => something writes it on production. Worth knowing — it would let the threshold drop.',
-  )
+    // #338: the last_seen_at check that used to sit here is GONE with the column. It measured
+    // whether last_seen_at ever differed from created_at; the settled answer was NEVER, on staging
+    // and on production, and the column has been dropped. Nothing here re-derives it.
 
   console.log('\nPROBE_333_OK')
 }

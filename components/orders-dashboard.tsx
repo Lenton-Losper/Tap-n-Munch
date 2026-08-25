@@ -547,6 +547,10 @@ export function OrdersDashboard() {
   const [closeTableTargetNumber, setCloseTableTargetNumber] = useState<number | null>(null)
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
+  /** #120's residual — the ids of `accepting` claims blocking the table the user just tried to close. */
+  const [strandedClaimIds, setStrandedClaimIds] = useState<string[]>([])
+  const [strandedTableNumber, setStrandedTableNumber] = useState<number | null>(null)
+  const [releasingClaims, setReleasingClaims] = useState(false)
   const [emailReceiptTargetOrderId, setEmailReceiptTargetOrderId] = useState<string | null>(null)
   const [showEmailReceiptDialog, setShowEmailReceiptDialog] = useState(false)
   const [emailReceiptAddress, setEmailReceiptAddress] = useState('')
@@ -1712,6 +1716,27 @@ export function OrdersDashboard() {
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
+          /**
+           * #120's RESIDUAL — the escape hatch, offered only where it applies.
+           *
+           * The close route answers 409 PENDING_ORDER_REQUESTS with a `pending_requests` array
+           * carrying a STATUS per row. Only `accepting` rows may be released: they are the
+           * transient claim the accept route takes, and a dead worker can strand one forever
+           * (#215 — no reaper is possible until the claim records a timestamp).
+           *
+           * A `waiting_review` row is a REAL round a customer placed. Offering to release one
+           * would let staff dismiss it, which is #120's own bug from the other side — so the
+           * button appears only when a stranded claim is actually present.
+           */
+          const stranded = Array.isArray(data?.pending_requests)
+            ? (data.pending_requests as Array<{ id?: unknown; status?: unknown }>).filter(
+                (r) => String(r?.status ?? '') === 'accepting',
+              )
+            : []
+          if (stranded.length > 0) {
+            setStrandedClaimIds(stranded.map((r) => String(r.id)))
+            setStrandedTableNumber(tableNum)
+          }
         throw new Error(data?.error || 'Failed to close table')
       }
 
@@ -1732,6 +1757,52 @@ export function OrdersDashboard() {
       })
     } finally {
       setClosingTableNumber(null)
+    }
+  }
+
+  /**
+   * #120's RESIDUAL — release every stranded claim blocking this table, then let staff retry the
+   * close. One button for all of them: staff care about the table, not the row ids, and a claim
+   * stranded by a dead worker has no per-row decision to make.
+   *
+   * Each release is independently conditional server-side, so a claim the accept route finishes
+   * releasing mid-loop answers ALREADY_RESOLVED and is counted as resolved rather than failed —
+   * the row is no longer stranded either way, which is the outcome staff wanted.
+   */
+  const releaseStrandedClaims = async () => {
+    if (releasingClaims || strandedClaimIds.length === 0) return
+    setReleasingClaims(true)
+    let resolved = 0
+    let failed = 0
+    try {
+      for (const id of strandedClaimIds) {
+        try {
+          const res = await fetch(`/api/order-requests/${encodeURIComponent(id)}/release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ restaurantId: dashboardRestaurantId }),
+          })
+          const body = await res.json().catch(() => ({}) as Record<string, unknown>)
+          if (res.ok || (body as { code?: string }).code === 'ALREADY_RESOLVED') resolved += 1
+          else failed += 1
+        } catch {
+          failed += 1
+        }
+      }
+      toast({
+        title: failed === 0 ? 'Stuck requests released' : 'Some requests could not be released',
+        description:
+          failed === 0
+            ? `${resolved} request(s) are back in the review list. Table ${strandedTableNumber} can be closed now.`
+            : `${resolved} released, ${failed} could not be. Refresh and try again.`,
+        variant: failed === 0 ? undefined : 'destructive',
+      })
+      if (failed === 0) {
+        setStrandedClaimIds([])
+        setStrandedTableNumber(null)
+      }
+    } finally {
+      setReleasingClaims(false)
     }
   }
 
@@ -2763,6 +2834,49 @@ export function OrdersDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+        {/*
+          #120's RESIDUAL — the escape hatch for a table that cannot be closed.
+
+          Opens only when the close was refused AND at least one blocking row is `accepting`, the
+          transient claim. Never for `waiting_review`: that is a real round a customer placed, and
+          offering to dismiss one would be #120's bug from the other side.
+
+          The wording is signed (lib/customer-copy/stranded-claim-copy.ts) and reads as a repair
+          rather than a routine action, because that is what it is — see #215 for why no reaper
+          can do this automatically yet.
+        */}
+        <Dialog
+          open={strandedClaimIds.length > 0}
+          onOpenChange={(open) => {
+            if (!open && !releasingClaims) {
+              setStrandedClaimIds([])
+              setStrandedTableNumber(null)
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{STRANDED_CLAIM_COPY.releaseLabel}</DialogTitle>
+              <DialogDescription>{STRANDED_CLAIM_COPY.releaseBody}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={releasingClaims}
+                onClick={() => {
+                  setStrandedClaimIds([])
+                  setStrandedTableNumber(null)
+                }}
+              >
+                Cancel
+              </Button>
+              <Button onClick={releaseStrandedClaims} disabled={releasingClaims}>
+                {releasingClaims ? 'Releasing...' : STRANDED_CLAIM_COPY.releaseLabel}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
       {/* Close Table Confirmation Dialog */}
       <Dialog

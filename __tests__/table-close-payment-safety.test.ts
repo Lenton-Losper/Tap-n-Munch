@@ -51,6 +51,11 @@ function matches(row: OrderRow, filters: Array<[string, unknown]>): boolean {
   })
 }
 
+/** #120's guard reads these two. Empty by default: an unblocked close, exactly as before. */
+let tabsAtTable: Array<{ id: string }> = []
+let tabsReadError: { message: string } | null = null
+let pendingRequests: Array<Record<string, unknown>> = []
+
 function makeSupabaseMock() {
   return {
     from: (table: string) => {
@@ -108,6 +113,40 @@ function makeSupabaseMock() {
           },
         }
       }
+    /**
+     * #120 — this route now runs `guardTableClose` before closing, which reads `tabs` and
+     * `order_requests`. That is a NEW TABLE ACCESS on a route this suite mocks strictly, so
+     * without these two cases EVERY test here fails with `unexpected table tabs` — not because
+     * payment safety broke, but because the harness had never seen the query.
+     *
+     * TAUGHT, NOT SILENCED. `pendingRequests` defaults to empty, so the payment-safety tests run
+     * against an unblocked close as they always did; the test at the bottom fills it and asserts
+     * the close is REFUSED, so these cases are exercised both ways rather than being a green stub.
+     */
+    if (table === 'tabs') {
+      const b: Record<string, unknown> = {
+        select: () => b,
+        eq: () => b,
+        in: () => b,
+        then(resolve: (v: unknown) => void) {
+          resolve({ data: tabsAtTable, error: tabsReadError })
+        },
+      }
+      return b
+    }
+    if (table === 'order_requests') {
+      const b: Record<string, unknown> = {
+        select: () => b,
+        eq: () => b,
+        in: () => b,
+        range: () => b,
+        order: () => b,
+        then(resolve: (v: unknown) => void) {
+          resolve({ data: pendingRequests, error: null })
+        },
+      }
+      return b
+    }
       throw new Error(`unexpected table ${table}`)
     },
   }
@@ -142,6 +181,9 @@ describe('POST /api/tables/[tableNumber]/close -- must not fabricate payment', (
     readError = null
     updateError = null
     closeTableSession.mockClear()
+    tabsAtTable = []
+    tabsReadError = null
+    pendingRequests = []
   })
 
   it('does NOT mark a cron-cancelled order as paid', async () => {
@@ -285,5 +327,71 @@ describe('POST /api/tables/[tableNumber]/close -- must not fabricate payment', (
 
     const res = await closeTable()
     expect(res.status).toBe(500)
+  })
+})
+
+
+/**
+ * #120 — THE GUARD IS REACHED FROM THIS ROUTE, and these assertions are why the two mock cases
+ * above are not a permanent green stub.
+ *
+ * The dashboard's close was UNGUARDED until 2026-08-25 while the terminal's was not: two routes
+ * doing one job with the rule written into only one of them. It closed tables over undecided
+ * `order_requests`, which is the original #120 defect — the round is missing from the bill and
+ * re-inflates the tab once it is finally accepted.
+ */
+describe('POST /api/tables/[tableNumber]/close -- #120: it will not close over an undecided round', () => {
+  beforeEach(() => {
+    updateLog = []
+    readError = null
+    updateError = null
+    closeTableSession.mockClear()
+    tabsAtTable = []
+    tabsReadError = null
+    pendingRequests = []
+  })
+
+  it('REFUSES with 409 when a round is waiting for review, and does not close', async () => {
+    orders = []
+    tabsAtTable = [{ id: 'tab-1' }]
+    pendingRequests = [
+      { id: 'req-1', tab_id: 'tab-1', table_id: 'table-uuid-1', status: 'waiting_review', total: 60, placed_at: '2026-08-25T10:00:00Z' },
+    ]
+    const res = await closeTable()
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.code).toBe('PENDING_ORDER_REQUESTS')
+    // The close must not have happened at all.
+    expect(closeTableSession).not.toHaveBeenCalled()
+  })
+
+  it('the 409 names the blocking row AND its status, so a caller can offer the right action', async () => {
+    orders = []
+    tabsAtTable = [{ id: 'tab-1' }]
+    pendingRequests = [
+      { id: 'req-stranded', tab_id: 'tab-1', table_id: 'table-uuid-1', status: 'accepting', total: 40, placed_at: '2026-08-25T10:00:00Z' },
+    ]
+    const body = await (await closeTable()).json()
+    expect(body.pending_request_ids).toContain('req-stranded')
+    // Without the status a caller cannot tell a stranded claim from a real round, and offering the
+    // release button for a `waiting_review` row would be #120's bug from the other side.
+    expect(body.pending_requests[0].status).toBe('accepting')
+  })
+
+  it('FAILS CLOSED: an unreadable tabs list is not an empty one', async () => {
+    orders = []
+    tabsReadError = { message: 'connection reset' }
+    const res = await closeTable()
+    expect(res.status).toBe(503)
+    expect(closeTableSession).not.toHaveBeenCalled()
+  })
+
+  it('CONTROL: with nothing pending it still closes — the guard is not blocking everything', async () => {
+    orders = []
+    tabsAtTable = [{ id: 'tab-1' }]
+    pendingRequests = []
+    const res = await closeTable()
+    expect(res.status).toBe(200)
+    expect(closeTableSession).toHaveBeenCalled()
   })
 })

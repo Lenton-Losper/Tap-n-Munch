@@ -95,6 +95,56 @@ export const MENU_COPY = {
   payTableOrderReady: 'Your order is ready! A staff member will come to your table shortly.',
   payCounterOrderReady: 'your order is ready for collection at the counter.',
 
+  /**
+   * THE NINTH PAIR, signed 2026-08-25. It was `staffHasBeenNotifiedThey`, one key rendered on TWO
+   * surfaces, and it promised a waiter at both counter-service venues.
+   *
+   * It had never been seen by anyone: the cash "Ready to Pay" button raised 42501 on every press
+   * (#121), so the component took its error path and the banner never rendered. Fixing #121 made
+   * both surfaces reachable, which is why this pair had to land with it rather than after.
+   *
+   * `payCounterNotifiedShortly` from the 2026-08-25 sign-off is THIS string — the owner ruled to
+   * collapse them into one key rather than carry both.
+   */
+  payTableStaffHasBeenNotified: 'staff have been notified. someone will be with you shortly.',
+  payCounterStaffHasBeenNotified: 'the counter has been notified. collect your order when it is ready.',
+
+  /**
+   * #244, SIGNED 2026-08-25. The ONLY thing a customer is told when a receipt email does not go.
+   *
+   * It covers BOTH failure modes deliberately -- our own attempt ceiling and a provider failure --
+   * because from the customer's side they are the same event: the receipt did not arrive and a
+   * person can fix it. The two are distinguished in the STATUS CODE (429 refused vs 502 upstream)
+   * and in the log, which is where the difference is actionable.
+   *
+   * The owner's ruling, in their words: the ceiling is our business, not theirs. So no attempt
+   * count and no internal reason reaches this string, ever.
+   */
+  receiptCouldNotBeSent: 'we could not send this receipt. please ask a member of staff.',
+
+  /**
+   * THE REST OF THE GUEST RECEIPT-EMAIL ROUTE, signed 2026-08-25.
+   *
+   * That route takes NO SESSION TOKEN -- zero auth calls -- so every string it can return is
+   * readable by anyone holding an order id. It was answering with raw Supabase and provider text.
+   *
+   * `guestOrderNotFound` IS DELIBERATELY USED FOR TWO DIFFERENT CASES: the order does not exist,
+   * and the order exists but this caller may not see it. Different wording would be an ORACLE --
+   * it tells an unauthenticated caller whether an id is real. Same class as #279's countOnly. The
+   * STATUS CODES match for the same reason; equal strings behind a 404 and a 403 would leak the
+   * same fact through the code instead.
+   */
+  guestEmailInvalid: 'please enter a valid email address',
+  guestOrderNotFound: 'we could not find this order.',
+  receiptNotReadyUntilPaid: 'the receipt will be ready once this order is paid.',
+
+  /**
+   * The generic. Used wherever the real reason is internal and the customer can do nothing with
+   * it -- a missing `restaurantId` parameter, a Supabase error, a receipt that could not be
+   * issued. The real text goes to the log and the audit row, where it is actionable.
+   */
+  somethingWentWrongAskStaff: 'something went wrong. please ask a member of staff.',
+
   // ================================================================================================
   // MOVED FROM app/menu/** BY #334, 2026-08-24. NOT REWRITTEN.
   //
@@ -199,7 +249,6 @@ export const MENU_COPY = {
   // ---------------------------------------------------------------- order-confirmation/[orderId]
   backMenu: "Back to Menu",
   orderNotFound: "Order Not Found",
-  staffHasBeenNotifiedThey: "Staff has been notified. They will be with you shortly.",
 
   // ---------------------------------------------------------------- order-secure
   cartEmpty: "Cart is empty",

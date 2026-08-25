@@ -214,3 +214,100 @@ export function summarisePendingForTab(
 export function blocksSettlement(summary: PendingRequestSummary): boolean {
   return summary.unknown || summary.count > 0
 }
+
+/**
+ * THE CLOSE GUARD, in one place, because there are TWO close routes.
+ *
+ *   app/api/terminal/tables/[tableId]/close   the terminal
+ *   app/api/tables/[tableNumber]/close        the staff dashboard
+ *
+ * #120 guarded the first and not the second, and the gap survived because the rule was written
+ * INSIDE a route rather than beside the data it protects. The dashboard went on closing tables over
+ * undecided rounds — the exact "silently missing from the bill, then re-inflates a closed tab" case
+ * the issue was filed about — on the surface staff use most.
+ *
+ * Both routes now call this. They differ in how they authenticate and in how they find the table's
+ * id; they must not differ in what blocks a close.
+ *
+ * FAILS CLOSED, AND THE TWO FAILURES ARE DIFFERENT FACTS. An unreadable tabs list is not an empty
+ * one: it answers 503 with `PENDING_REQUEST_CHECK_FAILED` so a caller retries, rather than 200 with
+ * a table closed over money.
+ */
+export type CloseGuardVerdict =
+  | { blocked: false }
+  | { blocked: true; status: number; body: Record<string, unknown> }
+
+export async function guardTableClose(
+  supabase: {
+    from: (table: string) => any
+  },
+  params: { restaurantId: string; tableId: string },
+): Promise<CloseGuardVerdict> {
+  /**
+   * Scoped by restaurant AND table, both `.eq()` — parser-free. A caller-controlled value inside a
+   * PostgREST `.or()` expression is this project's #242 / #254 defect class.
+   */
+  const { data: tabsAtTable, error: tabsError } = await supabase
+    .from('tabs')
+    .select('id')
+    .eq('restaurant_id', params.restaurantId)
+    .eq('table_id', params.tableId)
+    .in('status', ['open', 'ready_to_pay'])
+
+  if (tabsError) {
+    console.error('[guardTableClose] tab lookup failed', tabsError)
+    return {
+      blocked: true,
+      status: 503,
+      body: {
+        error: 'Could not check this table for orders awaiting review. Try again.',
+        code: 'PENDING_REQUEST_CHECK_FAILED',
+      },
+    }
+  }
+
+  const pending = await fetchPendingOrderRequests(supabase as never, {
+    restaurantId: params.restaurantId,
+    tabIds: (tabsAtTable ?? []).map((t: { id: unknown }) => String(t.id)),
+    tableIds: [params.tableId],
+  })
+
+  /**
+   * Summarised per tab AND once more for requests that name this TABLE and no tab at all.
+   * `summarisePendingForTab` claims a tab-less row for whichever table it names, so passing `null`
+   * as the tab id collects exactly the orphans — rows the per-tab pass cannot see.
+   */
+  const summaries = [
+    ...(tabsAtTable ?? []).map((t: { id: unknown }) => summarisePendingForTab(pending, String(t.id), params.tableId)),
+    summarisePendingForTab(pending, null, params.tableId),
+  ]
+  if (!summaries.filter(blocksSettlement).length) return { blocked: false }
+
+  const count = summaries.reduce((n, s) => n + s.count, 0)
+  const value = summaries.reduce((n, s) => n + s.value, 0)
+  const unknown = summaries.some((s) => s.unknown)
+  return {
+    blocked: true,
+    status: unknown ? 503 : 409,
+    body: {
+      error: unknown
+        ? 'Could not check this table for orders awaiting review. Try again.'
+        : 'This table has orders still waiting for review. Accept or decline them before closing.',
+      code: unknown ? 'PENDING_REQUEST_CHECK_FAILED' : 'PENDING_ORDER_REQUESTS',
+      pending_request_count: count,
+      pending_requests_value: value,
+      pending_requests_unknown: unknown,
+      pending_request_ids: pending.rows.map((r) => String(r.id)),
+      pending_requests: pending.rows.map((r) => ({
+        id: String(r.id),
+        placed_at: r.placed_at,
+        value: pendingOrderRequestValue(r),
+        /**
+         * ONLY an `accepting` row may be offered the release action. A `waiting_review` row is a
+         * real round a customer placed; offering to dismiss one is #120's bug from the other side.
+         */
+        status: r.status,
+      })),
+    },
+  }
+}

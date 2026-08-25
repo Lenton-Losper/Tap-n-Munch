@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { closeTableSession } from '@/lib/session-manager'
+import { guardTableClose } from '@/lib/tabs/pending-order-requests'
 import { isAuthError, requireStaffPermission } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
 import { isPaidPaymentStatus } from '@/lib/payments/payment-integrity'
@@ -38,6 +39,27 @@ export async function POST(
 
     if (!tableRow?.id) {
       return NextResponse.json({ error: 'Table not found' }, { status: 404 })
+    }
+
+    /**
+     * #120 — THE SAME GUARD THE TERMINAL CARRIES, and it should have been here from the start.
+     *
+     * #120 guarded `app/api/terminal/tables/[tableId]/close` and left THIS route alone, so the
+     * staff dashboard went on closing tables over undecided `order_requests`. That is the original
+     * defect, unfixed, on the surface staff use most: the round is missing from the bill, and when
+     * it is finally accepted it re-inflates a tab that has already been paid and closed.
+     *
+     * The dashboard's Close button was also, accidentally, the only way out of a table the TERMINAL
+     * had blocked — but it is the wrong way out, because it closes OVER the round rather than
+     * releasing it. So this guard ships together with the dashboard's release button, never before
+     * it.
+     */
+    const guard = await guardTableClose(supabase, {
+      restaurantId: restaurantUuid,
+      tableId: tableRow.id,
+    })
+    if (guard.blocked) {
+      return NextResponse.json(guard.body, { status: guard.status })
     }
 
     const rpcResult = await closeTableSession({

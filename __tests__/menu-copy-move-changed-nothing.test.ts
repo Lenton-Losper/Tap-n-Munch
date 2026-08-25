@@ -148,7 +148,17 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     // ---- order-confirmation/[orderId]
     backMenu: "Back to Menu",
     orderNotFound: "Order Not Found",
-    staffHasBeenNotifiedThey: "Staff has been notified. They will be with you shortly.",
+    // SIGNED 2026-08-25 — the ninth pair. One key on two surfaces became a counter/table pair;
+    // payCounterNotifiedShortly from the same sign-off IS this string, collapsed in by ruling.
+    payTableStaffHasBeenNotified: 'staff have been notified. someone will be with you shortly.',
+    payCounterStaffHasBeenNotified: 'the counter has been notified. collect your order when it is ready.',
+    // SIGNED 2026-08-25 — #244. One sentence for both failure modes; the code carries the rest.
+    receiptCouldNotBeSent: 'we could not send this receipt. please ask a member of staff.',
+    // SIGNED 2026-08-25 — the rest of the guest receipt-email route.
+    guestEmailInvalid: 'please enter a valid email address',
+    guestOrderNotFound: 'we could not find this order.',
+    receiptNotReadyUntilPaid: 'the receipt will be ready once this order is paid.',
+    somethingWentWrongAskStaff: 'something went wrong. please ask a member of staff.',
     // ---- order-secure
     cartEmpty: "Cart is empty",
     continuePayment: "Continue to Payment",
