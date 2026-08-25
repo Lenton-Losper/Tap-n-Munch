@@ -7,13 +7,19 @@ import {
   HELD_ORPHAN_ACKNOWLEDGE,
   HELD_ORPHAN_BODY,
   HELD_ORPHAN_BODY_UNKNOWN_ORDER,
+  HELD_ORPHAN_NEEDS_A_PERSON,
   HELD_ORPHAN_TITLE,
 } from '../constants/paymentCopy';
 import {
   clearHeldOrphanPayments,
   getHeldOrphanPayments,
+  getTerminalToken,
+  setHeldOrphanPayments,
   type HeldOrphanPayment,
 } from '../lib/storage';
+import {runOrphanReportPass} from '../lib/orphanReporting';
+import {verifyTerminalPayment} from '../lib/api';
+import {recordWiretapEvent} from '../lib/wiretap';
 
 /**
  * #344 — tells the operator that a card payment was recovered and NOT applied to this order.
@@ -36,16 +42,50 @@ import {
 export default function HeldOrphanPaymentNotice() {
   const [held, setHeld] = useState<HeldOrphanPayment[]>([]);
 
-  // Re-read on focus, not only on mount: the hold is written by processPaymentIntent DURING a
-  // payment on this same screen, so a mount-only read would miss the one that just happened.
+  /**
+   * Re-read on focus, not only on mount: the hold is written by processPaymentIntent DURING a
+   * payment on this same screen, so a mount-only read would miss the one that just happened.
+   *
+   * AND REPORT BEFORE READING (#344, expanded scope). Every held record is reported to the server
+   * on each focus, and one the server acknowledges as settled is dropped — so a payment that
+   * resolves stops nagging without anyone pressing anything, and the notice only ever shows what is
+   * genuinely still outstanding. This IS the retry loop: no scheduler and no background task, just
+   * the screen staff are already on.
+   *
+   * The pass never throws and never blocks the payment in progress; a failed one leaves everything
+   * held for the next focus.
+   */
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      getHeldOrphanPayments().then(rows => {
+
+      const refresh = async () => {
+        try {
+          const token = await getTerminalToken();
+          if (token) {
+            await runOrphanReportPass({
+              getHeld: getHeldOrphanPayments,
+              setHeld: setHeldOrphanPayments,
+              verify: orderId => verifyTerminalPayment(orderId, token),
+              onOutcome: (row, outcome) =>
+                recordWiretapEvent('payment.orphan.reported', {
+                  orphanOrderId: row.orphanOrderId || '(none)',
+                  reason: row.reason,
+                  voucherNo: row.voucherNo ?? '(none)',
+                  outcome,
+                }),
+            });
+          }
+        } catch {
+          // Reporting is opportunistic. Whatever happened, fall through and show what is held.
+        }
+        const rows = await getHeldOrphanPayments();
         if (!cancelled) {
           setHeld(rows);
         }
-      });
+      };
+
+      refresh();
       return () => {
         cancelled = true;
       };
@@ -89,7 +129,14 @@ export default function HeldOrphanPaymentNotice() {
           ) : null}
           {row.orphanOrderId ? (
             <Text style={styles.detail}>Order {row.orphanOrderId}</Text>
-          ) : null}
+          ) : (
+            /*
+              Case 3 only. A case-2 record is reported to the server on every visit and clears
+              itself once that order settles; this one has no order to report against, so it will
+              never clear on its own and saying so is the difference between the two states.
+            */
+            <Text style={styles.detail}>{HELD_ORPHAN_NEEDS_A_PERSON}</Text>
+          )}
         </View>
       ))}
 

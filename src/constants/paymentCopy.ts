@@ -195,3 +195,15 @@ export const HELD_ORPHAN_BODY_UNKNOWN_ORDER =
  * implementation detail.
  */
 export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';
+
+/**
+ * REQUIREMENT — #344, the case-3 line, shown when the recovered payment names NO order. Additional
+ * to HELD_ORPHAN_BODY_UNKNOWN_ORDER, not a replacement for it.
+ *
+ * It must convey that this one CANNOT be resolved automatically and needs a person, because that is
+ * the material difference between case 2 and case 3: a case-2 record is reported to the server on
+ * every visit and disappears by itself once the order settles, and a case-3 record never will. It
+ * must not read as an error and must not suggest the money is lost.
+ */
+export const HELD_ORPHAN_NEEDS_A_PERSON =
+  'This one cannot be matched automatically and needs to be reconciled by hand.';

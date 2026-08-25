@@ -231,3 +231,25 @@ export async function clearHeldOrphanPayments(): Promise<void> {
     console.warn('[storage] failed to clear held orphaned payments', err);
   }
 }
+
+/**
+ * Write the held list back after a reporting pass (#344). Used to drop records the server has
+ * acknowledged while keeping the rest — never to clear the lot, which is what
+ * clearHeldOrphanPayments is for and which is an operator action, not an automatic one.
+ */
+export async function setHeldOrphanPayments(
+  rows: HeldOrphanPayment[],
+): Promise<void> {
+  try {
+    if (rows.length === 0) {
+      await EncryptedStorage.removeItem(HELD_ORPHAN_PAYMENT_STORAGE_KEY);
+      return;
+    }
+    await EncryptedStorage.setItem(
+      HELD_ORPHAN_PAYMENT_STORAGE_KEY,
+      JSON.stringify(rows),
+    );
+  } catch (err) {
+    console.warn('[storage] failed to write held orphaned payments', err);
+  }
+}
