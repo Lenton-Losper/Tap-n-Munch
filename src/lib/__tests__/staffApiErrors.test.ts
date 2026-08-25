@@ -15,10 +15,23 @@
  * Converted rather than moved out of `__tests__/`, because the assertions are worth having — this
  * is the copy staff read when a payment cannot be claimed, and it is easy to reword by accident.
  *
- * NOTE ON THE `ALREADY_PAID` CASE. Its expected string is pinned as it stands today. #342 proposes
- * removing that branch, because since #326 every path that could display it intercepts the code
- * first and shows the signed ALREADY_SETTLED_MESSAGE instead. When #342 lands this test SHOULD go
- * red — that is the test working, not breaking, and whoever lands it updates the expectation.
+ * THE `ALREADY_PAID` CASE — RESOLVED BY #342, 2026-08-25. An earlier version of this note told the
+ * next person to expect a red here and update the expectation. That has happened, and the note is
+ * replaced rather than deleted so the history of the decision is readable.
+ *
+ * It is no longer pinned to a literal. It asserts the SIGNED constant, and — on the owner's ruling
+ * — it also asserts that the old unsigned sentence 'This order was already paid.' is ABSENT.
+ *
+ * WHY AN ABSENCE ASSERTION AND NOT SIMPLY A CHANGED ONE. A deleted expectation protects nothing.
+ * An inverted one protects the change: it fails if anyone reintroduces the sentence, which is the
+ * actual risk this issue exists for. #342 is worth fixing precisely because dead display text gets
+ * resurrected by a later refactor, quietly reinstating "a paid order rendered as an error"; a suite
+ * that merely stopped mentioning the string would not notice that happening.
+ *
+ * There are now THREE assertions on this one code, and each guards a different way of getting it
+ * wrong: it must BE the signed constant, it must NOT be the old unsigned sentence, and it must NOT
+ * fall through to the generic 'Payment update failed' — which is what deleting the branch outright
+ * would have produced, for an order that is paid.
  */
 import {
   staffMessageForMarkPaidFailure,
@@ -72,6 +85,20 @@ describe('staffMessageForMarkPaidFailure', () => {
         code: 'ALREADY_PAID',
       }),
     ).toBe(ALREADY_SETTLED_MESSAGE);
+  });
+
+  it('ALREADY_PAID no longer returns the old UNSIGNED sentence (#342)', () => {
+    // The inverted assertion, on the owner's ruling. It exists to fail if someone reintroduces
+    // 'This order was already paid.' — the pre-#326 text that contradicted the signed copy and,
+    // on any build without PaymentScreen's interception, rendered a PAID order as an error. That
+    // is what #851 displayed. A test that simply stopped mentioning the string would let it back.
+    expect(
+      staffMessageForMarkPaidFailure({
+        status: 409,
+        message: 'x',
+        code: 'ALREADY_PAID',
+      }),
+    ).not.toBe('This order was already paid.');
   });
 
   it('ALREADY_PAID does NOT fall through to the generic failure text (#342)', () => {
