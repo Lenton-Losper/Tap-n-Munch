@@ -5,6 +5,7 @@ import { parseOptionalInt } from '@/lib/guest-orders/validation'
 import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
 import { sendReceiptEmail } from '@/lib/receipts/delivery/sendReceiptEmail'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 export const dynamic = 'force-dynamic'
 
@@ -101,9 +102,33 @@ export async function POST(
   const result = await sendReceiptEmail(receipt, email)
 
   if (result.status === 'failed') {
+    /**
+     * #244, RULED 2026-08-25. THE CUSTOMER IS TOLD ONE SENTENCE AND NOTHING ELSE.
+     *
+     * This route takes NO session token -- verified, zero auth calls -- so whatever goes in `error`
+     * is readable by anyone with an order id. It used to be `result.errorMessage`, which is raw
+     * provider text ("Resend rejected the receipt email") or, after the ceiling landed, our own
+     * attempt count. Neither is the customer's business.
+     *
+     * THE STATUS CODE CARRIES THE DISTINCTION, not the body:
+     *   attempt_ceiling  -> 429. We refused. Nothing upstream failed, so 502 was simply wrong.
+     *   anything else    -> 502. The provider was asked and did not send.
+     *
+     * Read from `result.failure`, a code, rather than by matching the message -- a route that
+     * branches on English breaks the next time the wording is edited.
+     *
+     * The real reason still reaches the log and the delivery row, which is where it is useful.
+     */
+    const refused = result.failure === 'attempt_ceiling'
+    console.error('[guest/receipt/email] send failed', {
+      orderId,
+      deliveryId: result.deliveryId,
+      failure: result.failure ?? 'unknown',
+      reason: result.errorMessage,
+    })
     return NextResponse.json(
-      { error: result.errorMessage || 'Failed to send receipt email', deliveryId: result.deliveryId },
-      { status: 502 },
+      { error: MENU_COPY.receiptCouldNotBeSent, deliveryId: result.deliveryId },
+      { status: refused ? 429 : 502 },
     )
   }
 

@@ -13,7 +13,8 @@
  *   - HOW MANY OF THOSE CARRY UNPAID MONEY  <- the number that decides the design, because
  *     close_table_session marks a tab settled/'manual_close', and doing that to an unpaid tab
  *     fabricates a settlement
- *   - whether last_seen_at is a real activity signal or frozen at insert
+ *   (#338 removed a fourth measurement from here — whether last_seen_at was a real activity signal.
+ *    It never was, on staging or production, and the column has since been dropped.)
  *
  * Marker: PROBE_333_OK
  */
@@ -88,7 +89,7 @@ async function probe(label, url, key) {
       ...(await all((f, t) =>
         db
           .from('customer_sessions')
-          .select('id, tab_id, created_at, last_seen_at, expires_at, active')
+          .select('id, tab_id, created_at, expires_at, active')
           .in('tab_id', slice)
           .range(f, t),
       )),
@@ -161,21 +162,9 @@ async function probe(label, url, key) {
   )
   console.log('  of those, with NO orders at all:  ' + staleNoOrders + '   (scanned, never ordered - nothing owed)')
 
-  // Is last_seen_at a real signal, or frozen at insert?
-  const moved = sessions.filter(
-    (s) =>
-      s.last_seen_at &&
-      s.created_at &&
-      Math.abs(new Date(s.last_seen_at).getTime() - new Date(s.created_at).getTime()) > 1000,
-  )
-  console.log(
-    '\nlast_seen_at: ' + sessions.length + ' session row(s) on open tabs, ' + moved.length + ' where it differs from created_at',
-  )
-  console.log(
-    moved.length === 0
-      ? '  => FROZEN AT INSERT. It looks like an activity signal and is not one.'
-      : '  => something updates it; it may be usable.',
-  )
+    // #338: the last_seen_at check that used to sit here is GONE with the column. It measured
+    // whether last_seen_at ever differed from created_at; the settled answer was NEVER, on staging
+    // and on production, and the column has been dropped. Nothing here re-derives it.
 
   // Sessions already past their 24h TTL but sitting on a still-open tab.
   const expired = sessions.filter((s) => s.expires_at && new Date(s.expires_at).getTime() < now)

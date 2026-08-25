@@ -60,6 +60,11 @@ export function serviceCopy(isCounterService: boolean) {
     tabReadyToPay: pick(MENU_COPY.payCounterTabReadyToPay, MENU_COPY.payTableTabReadyToPay),
     /** order confirmation */
     orderReady: pick(MENU_COPY.payCounterOrderReady, MENU_COPY.payTableOrderReady),
+    /** order confirmation AND the cash button's own success state -- two surfaces, one pair */
+    staffHasBeenNotified: pick(
+      MENU_COPY.payCounterStaffHasBeenNotified,
+      MENU_COPY.payTableStaffHasBeenNotified,
+    ),
     /** tab close (round one) */
     tabClosedBody: pick(MENU_COPY.tabClosedCounterBody, MENU_COPY.tabClosedTableBody),
   }
@@ -79,6 +84,7 @@ export const SERVICE_COPY_PAIRS: ReadonlyArray<keyof ServiceCopy> = [
   'pleaseAskForAssistance',
   'tabReadyToPay',
   'orderReady',
+  'staffHasBeenNotified',
   'tabClosedBody',
 ]
 

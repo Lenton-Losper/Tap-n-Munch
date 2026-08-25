@@ -46,10 +46,23 @@ function sameAddress(a: unknown, b: unknown): boolean {
   return String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase()
 }
 
+/**
+ * WHY THE CALLER GETS A CODE AND NOT A STRING TO MATCH ON.
+ *
+ * The owner ruled 2026-08-25 that a deliberate refusal answers 429 and a provider failure answers
+ * 502, and that neither may put the internal reason in a customer's body. A route cannot make that
+ * distinction from `errorMessage` without matching on English, which breaks the moment the wording
+ * is edited -- the exact fragility this module documents elsewhere.
+ */
+export type SendReceiptEmailFailure = 'attempt_ceiling' | 'provider_failed'
+
 export interface SendReceiptEmailResult {
   deliveryId: string
   status: 'sent' | 'failed'
+  /** The REAL reason, for logs and the audit row. Never for a customer response body. */
   errorMessage: string | null
+  /** Set whenever `status` is 'failed', so a caller can pick a status code without matching English. */
+  failure?: SendReceiptEmailFailure
   /**
    * True when no mail was handed to the provider because an identical send already succeeded
    * inside the dedup window. The caller's contract is unchanged — the receipt IS on its way to
@@ -121,6 +134,7 @@ export async function sendReceiptEmail(
     return {
       deliveryId: '',
       status: 'failed',
+      failure: 'attempt_ceiling',
       errorMessage: `Receipt email attempt ceiling reached (${RECEIPT_EMAIL_MAX_ATTEMPTS}) for this receipt`,
     }
   }

@@ -1,0 +1,112 @@
+-- @env: both
+--
+-- #338 — `customer_sessions.last_seen_at` ANSWERS PLAUSIBLY AND WRONGLY.
+--
+-- RULED 2026-08-25: DROP IT. The gate below was raised because two probes read this column and the
+-- owner's instruction named probes as qualifying. They were shown the two readers and ruled: drop
+-- the column, delete the last_seen_at blocks, KEEP both probes -- their default had over-applied,
+-- because the probes measure the reaper's inputs, which is work worth keeping.
+--
+-- ============================================================================================
+-- WHAT IS WRONG WITH IT
+-- ============================================================================================
+--
+-- The column exists, is `timestamptz`, defaults to `now()`, and is NEVER WRITTEN BY ANYTHING. So
+-- `SELECT last_seen_at` returns the moment the row was inserted, dressed as an answer to "when was
+-- this customer last active".
+--
+-- A missing column forces whoever needs the fact to go and find it. This one hands back a number
+-- that looks like the fact, carries no signal that it is stale, and will be believed.
+--
+-- Measured on staging 2026-08-24, over every session row attached to a currently-open tab:
+-- 8 rows, 0 where `last_seen_at` differs from `created_at`. Not "rarely updated" -- never.
+--
+-- WHAT MAKES IT DANGEROUS RATHER THAN MERELY DEAD is that the NAME HAS A WORKING PRECEDENT IN THE
+-- SAME SCHEMA. `restaurant_terminals.last_seen_at` IS maintained -- written by the heartbeat route
+-- and read by the 15-minute online check -- so this one reads as maintained by analogy. Every one
+-- of the 38 `last_seen_at` hits in application code is that other table. Not one is this one.
+--
+-- It is the mirror of the "written but never selected" class: here the column is SELECTED and
+-- NEVER WRITTEN, so no type error and no test can catch it.
+--
+-- ============================================================================================
+-- WHY NOT MAKE IT TRUE INSTEAD
+-- ============================================================================================
+--
+-- Because making it true means WRITING ON EVERY CUSTOMER READ. Every guest GET becomes a database
+-- write, on the busiest path the product has, for a signal #333's reaper already works without.
+-- That is a contention and cost decision in its own right, not something to smuggle in behind a
+-- column that happens to already exist.
+--
+-- IF A TRUE ACTIVITY SIGNAL IS EVER WANTED, IT GETS ADDED DELIBERATELY AND WITH A WRITE THROTTLE
+-- -- at most one touch per session per minute, so a customer scrolling a menu does not generate a
+-- write per frame -- NOT by reviving this column. Reviving it would inherit the exact ambiguity
+-- this migration removes: rows written before the throttle existed would still read as activity.
+--
+-- ============================================================================================
+-- WHAT DEPENDS ON IT
+-- ============================================================================================
+--
+-- Nothing in the database. Enumerated rather than assumed:
+--   * no view selects it            (no view over customer_sessions exists)
+--   * no function reads it          `reap_abandoned_tab` reads `max(s.created_at)` at
+--                                   20260824150000_reap_abandoned_tabs.sql:129 and updates
+--                                   `active`/`expires_at` at :180. It mentions `last_seen_at` only
+--                                   in its header PROSE, explaining this same finding.
+--   * no index, no constraint, no trigger, no default anything else depends on
+--   * no `%ROWTYPE` and no `SELECT *` over the table anywhere in supabase/
+--
+-- In application code, `lib/session-token.ts:85-95` selects an explicit column list that does not
+-- include it, and that is the only read path.
+--
+-- ============================================================================================
+-- THE GATE — READ THIS BEFORE APPLYING
+-- ============================================================================================
+--
+-- TWO PROBE SCRIPTS SELECT THIS COLUMN. They are the instruments that produced the 0-of-8 number
+-- above, and they read it for exactly one purpose: to demonstrate that it is frozen.
+--
+--   scripts/probe-333-abandoned-sessions.ts
+--   scripts/prod/probe-333-abandoned-tabs.ts
+--
+-- BOTH ARE CLEANED IN THE SAME COMMIT AS THIS FILE, by PLAIN DELETION of the ~6 lines each that
+-- touched the column -- not by drop-tolerance. Drop-tolerance was the right shape while the answer
+-- was unknown; once the column is gone there is nothing to tolerate, and a probe carrying a branch
+-- for a column that cannot exist is the next stale instrument.
+--
+-- WHAT WAS DELETED IS SMALL AND WHAT REMAINS IS NOT. Each probe lost one `last_seen_at` field from
+-- a select, one frozen-vs-created_at comparison, and its two-line verdict. Each keeps everything
+-- that matters: open tab counts, inactivity buckets, which signal was the newest evidence of life,
+-- how many a 4h rule would catch, and HOW MANY OF THOSE CARRY UNPAID MONEY -- the number #333's
+-- reaper design turns on. Deleting the files would have cost that; deleting the blocks costs
+-- nothing, because the finding is already recorded in this header, in #338, and in the issue.
+--
+-- THE SELECT LISTS HAD TO CHANGE, not just the comparisons. PostgREST fails the ENTIRE query on an
+-- unknown column, so leaving `last_seen_at` in either `.select()` would have broken both probes
+-- completely the moment this ran -- losing every measurement above, not just the dropped one.
+--
+-- After the drop, any FORGOTTEN reader fails loudly. PostgREST answers an unknown column with
+-- 42703 rather than a null, so there is no silent-wrong-answer mode here -- which is the whole
+-- argument for a DROP over a `COMMENT ON COLUMN`. A comment does not travel with the value into a
+-- query result; an error does.
+--
+-- FORWARD-ONLY. Rolling this back is one statement and it is written out at the bottom -- but note
+-- that a rollback restores the COLUMN, not the DATA, and the restored column would once again read
+-- as the row's insert time. There is nothing to preserve: every value in it today is a default.
+
+ALTER TABLE public.customer_sessions DROP COLUMN IF EXISTS last_seen_at;
+
+COMMENT ON TABLE public.customer_sessions IS
+  'One row per QR scan, keyed by token. `created_at` is the only activity signal this table '
+  'carries and it means "a token was issued", not "the customer is present" -- browsing is '
+  'invisible everywhere in this system. #338 dropped `last_seen_at`, which was never written by '
+  'anything and therefore always returned its own insert time while looking like presence. Do not '
+  're-add a presence column without a write throttle on the guest read paths that maintain it; an '
+  'unmaintained one is worse than none, because it is believed.';
+
+-- ROLLBACK, if something unenumerated turns out to need the column back:
+--
+--   ALTER TABLE public.customer_sessions
+--     ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();
+--
+-- It will be just as untrue as it was before. Fix the reader instead.

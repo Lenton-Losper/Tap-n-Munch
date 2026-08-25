@@ -325,7 +325,7 @@ export default function OrderConfirmationPage() {
       }
       cashNotifiedSlot={
         showCashReadyToPayNotified(order) ? (
-          <InfoBanner variant="notify">{MENU_COPY.staffHasBeenNotifiedThey}</InfoBanner>
+          <InfoBanner variant="notify">{copy.staffHasBeenNotified}</InfoBanner>
         ) : undefined
       }
       editSlot={

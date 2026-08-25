@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
+import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSessionToken } from '@/lib/fetch-with-session'
 import { heldSessionIds } from '@/lib/tab-storage'
 import { getCurrentSession } from '@/lib/session'
@@ -14,17 +15,24 @@ type Props = {
 }
 
 /**
- * #121. This string was a bare literal here, `NOTIFIED_MESSAGE`, identical to
- * `MENU_COPY.staffHasBeenNotifiedThey` which the order-confirmation page renders for the same
- * state. Two copies of one sentence, on two surfaces, one of them invisible to every copy gate —
- * `scripts/check-menu-copy-sourced.mjs` scans `app/menu`, and this file is under `components/`.
+ * SIGNED 2026-08-25 as a counter/table PAIR, so it can no longer be a module constant: the sentence
+ * depends on the venue. Both components below resolve it through `serviceCopy`, the same way the
+ * four screens under app/menu do.
  *
- * Pointed at the existing key rather than reworded: byte-identical, so nothing a customer reads
- * changes today. What changes is that when the owner splits this string counter/table — it
- * promises a waiter at two counter-service venues and that pairing is tracked on #121 — the split
- * reaches both surfaces instead of one.
+ * HOW IT WAS FOUND, because no gate could have found it. The sentence lived here as a bare literal,
+ * `NOTIFIED_MESSAGE`, byte-identical to the one the order-confirmation page rendered for the same
+ * state — two copies of one string on two surfaces, and THIS copy invisible to every copy gate,
+ * because `scripts/check-menu-copy-sourced.mjs` scans `app/menu` and this file is under
+ * `components/`. It surfaced only from enumerating what #121 made reachable.
+ *
+ * Neither copy had ever been seen by a customer: the cash button's write raised 42501 on every
+ * press, so the component always took its error path. Fixing #121 made both reachable at once,
+ * which is why the pair had to land WITH it and not after.
+ *
+ * Safe to call `useRestaurant` here: both exports render only from
+ * app/menu/[restaurantId]/order-confirmation/[orderId]/page.tsx, which sits under
+ * app/menu/[restaurantId]/layout.tsx where the provider lives.
  */
-const NOTIFIED_MESSAGE = MENU_COPY.staffHasBeenNotifiedThey
 
 /**
  * Customer CTA for cash orders: notify staff the customer is ready to pay.
@@ -43,6 +51,8 @@ const NOTIFIED_MESSAGE = MENU_COPY.staffHasBeenNotifiedThey
  * status code comes back, so the success path is reached only when the write actually landed.
  */
 export function ReadyToPayCashButton({ orderId, className }: Props) {
+  const { restaurant } = useRestaurant()
+  const copy = serviceCopy(deriveIsCounterService({ restaurant }))
   const [loading, setLoading] = useState(false)
   const [notified, setNotified] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +64,7 @@ export function ReadyToPayCashButton({ orderId, className }: Props) {
         role="status"
       >
         <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
-        {NOTIFIED_MESSAGE}
+        {copy.staffHasBeenNotified}
       </p>
     )
   }
@@ -123,13 +133,15 @@ export function ReadyToPayCashButton({ orderId, className }: Props) {
 }
 
 export function ReadyToPayCashNotified({ className }: { className?: string }) {
+  const { restaurant } = useRestaurant()
+  const copy = serviceCopy(deriveIsCounterService({ restaurant }))
   return (
     <p
       className={`flex items-center justify-center gap-2 text-sm font-sans font-medium text-green-700 dark:text-green-400 ${className ?? ''}`}
       role="status"
     >
       <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
-      {NOTIFIED_MESSAGE}
+      {copy.staffHasBeenNotified}
     </p>
   )
 }
