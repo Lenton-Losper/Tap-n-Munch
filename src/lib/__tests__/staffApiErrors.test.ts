@@ -26,6 +26,7 @@ import {
   staffMessageForRefundRecordFailure,
   staffMessageForSettleFailure,
 } from '../staffApiErrors';
+import {ALREADY_SETTLED_MESSAGE} from '../../constants/paymentCopy';
 
 describe('staffMessageForPinLock', () => {
   it('rounds a 60 second lockout to one minute, singular', () => {
@@ -60,14 +61,30 @@ describe('staffMessageForPinLock', () => {
 });
 
 describe('staffMessageForMarkPaidFailure', () => {
-  it('ALREADY_PAID', () => {
+  it('ALREADY_PAID returns the SIGNED settled message, not a second copy of it (#342)', () => {
+    // Asserted against the imported constant rather than a literal, deliberately. A literal here
+    // would be a third place the same sentence is written, and this test would then pass while the
+    // signed copy drifted away from it. paymentReportOutcome.test.ts pins the wording itself.
     expect(
       staffMessageForMarkPaidFailure({
         status: 409,
         message: 'x',
         code: 'ALREADY_PAID',
       }),
-    ).toBe('This order was already paid.');
+    ).toBe(ALREADY_SETTLED_MESSAGE);
+  });
+
+  it('ALREADY_PAID does NOT fall through to the generic failure text (#342)', () => {
+    // The reason the case was kept rather than deleted. Falling through would answer
+    // 'Payment update failed' for an order that IS paid — #326's defect, reintroduced behind the
+    // shadow and waiting for a refactor to make it visible again.
+    expect(
+      staffMessageForMarkPaidFailure({
+        status: 409,
+        message: 'x',
+        code: 'ALREADY_PAID',
+      }),
+    ).not.toBe('Payment update failed');
   });
 
   it('PAYMENT_CLAIM_CONFLICT says the order MAY already be paid', () => {

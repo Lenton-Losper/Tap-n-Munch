@@ -1,7 +1,12 @@
 /**
  * Staff-facing copy for payment-integrity API errors.
  * Kept free of React Native native modules so it can be unit-tested in Node.
+ *
+ * The one import below preserves that property deliberately: `constants/paymentCopy` is a pure
+ * string module with ZERO imports of its own. It is NOT `constants/index`, which throws at module
+ * load when NativeModules.RuntimeConfig is absent and would make this file un-loadable in Node.
  */
+import {ALREADY_SETTLED_MESSAGE} from '../constants/paymentCopy';
 
 export type StaffApiErrorFields = {
   status: number;
@@ -35,8 +40,28 @@ export function staffMessageForMarkPaidFailure(
   err: StaffApiErrorFields,
 ): string {
   switch (err.code) {
+    /**
+     * #342. This used to return its own sentence, 'This order was already paid.', written before
+     * #326 and never updated when the owner signed ALREADY_SETTLED_MESSAGE on 2026-08-25. Two
+     * strings for one fact, one of them signed and one not.
+     *
+     * IT RETURNS THE SIGNED CONSTANT RATHER THAN A COPY OF IT. A second literal of a signed
+     * sentence is how copy drifts: the two are edited on different days by different people and
+     * nothing compares them. There is now exactly one place that says this, and paymentCopy's own
+     * suite pins its wording.
+     *
+     * AND IT IS NOT DELETED, which is the part worth explaining. Falling through to `default`
+     * would answer 'Payment update failed' for an order that IS PAID -- reintroducing #326's exact
+     * defect at the one moment it would matter, i.e. if a future refactor ever reorders the
+     * interception in PaymentScreen and this text becomes reachable again. The whole premise of
+     * #342 is that shadowed is not the same as safe; a fallback that lies is the wrong thing to
+     * leave behind that shadow.
+     *
+     * Today nothing displays this. PaymentScreen intercepts ALREADY_PAID before it renders, at
+     * :437 and again at :642, and it is the only caller of the throwing completePayment.
+     */
     case 'ALREADY_PAID':
-      return 'This order was already paid.';
+      return ALREADY_SETTLED_MESSAGE;
     case 'PAYMENT_CLAIM_CONFLICT':
       return 'This payment could not be completed -- the order may already be paid. Refresh and check the order.';
     case 'AMOUNT_MISMATCH': {
