@@ -217,6 +217,47 @@ async function markOrdersPaidConfirmedByIds(
     return outcome
   }
 
+  /**
+   * #268. THE GATEWAY'S FIGURE, RECORDED ON THE SUCCESS PATH TOO.
+   *
+   * Until now `params.gatewayAmount` was used to GATE the write (the `verified` check above) and
+   * was written to the audit trail only on the FAILURE path, at `payment.verification_uncertain`.
+   * Every successful webhook therefore recorded `gatewayAmount: null` and
+   * `amountMeaning: 'order_total'` — mark-order-paid-confirmed.ts:144-145 — so the provider's own
+   * number, the one thing that made the payment auditable, survived only when it disagreed.
+   *
+   * IT CANNOT SIMPLY BE PASSED THROUGH, and that is the whole subtlety. This function's own
+   * docblock says it: a webhook event can name SEVERAL orders at once (a tab settle) and the
+   * gateway's single figure is for all of them together — which is why `verified` compares it once
+   * against the SUM. Handing that settlement-level figure to a PER-ORDER audit row would record
+   * "the gateway reported N$240 for this N$60 order" on four rows, and be wrong on all four. That
+   * is the #226 shape: an event amount is per-settle, never per-order.
+   *
+   * So the two cases are recorded differently, and honestly:
+   *
+   *   ONE order covered  -> the settlement IS this order, so `gatewayAmount` is this order's
+   *                         gateway figure and `amountMeaning` correctly becomes 'gateway_reported'.
+   *                         Exact, not approximate: GATEWAY_AMOUNT_TOLERANCE_CENTS is zero and
+   *                         `verified` is true to be here, so gatewayAmount === row.total.
+   *
+   *   MANY orders covered -> `gatewayAmount` stays null, because there is no per-order gateway
+   *                         figure and inventing one is worse than having none. The settlement's
+   *                         real numbers go into the audit metadata under names that say what they
+   *                         are, so the event remains reconstructable without any row claiming the
+   *                         figure is its own.
+   */
+  const singleOrderSettlement = orderRows.length === 1
+  const settlementAudit: Record<string, unknown> =
+    params.gatewayAmount === null
+      ? {}
+      : singleOrderSettlement
+        ? {}
+        : {
+            settlementGatewayAmount: params.gatewayAmount,
+            settlementExpectedAmount: expectedAmount,
+            settlementOrderCount: orderRows.length,
+          }
+
   for (const row of orderRows) {
     const orderId = String(row.id)
     const restaurantId = String(row.restaurant_id)
@@ -228,11 +269,12 @@ async function markOrdersPaidConfirmedByIds(
         restaurantId,
         reference: params.reference,
         amount: Number(row.total) || 0,
+        gatewayAmount: singleOrderSettlement ? params.gatewayAmount : null,
         paymentMethod: (row.payment_method as string) || 'card',
         source: params.source,
         extraAuditMetadata: recoveringAutoCancelled
-          ? { ...params.extraAuditMetadata, recoveredAfterAutoCancel: true }
-          : params.extraAuditMetadata,
+          ? { ...params.extraAuditMetadata, ...settlementAudit, recoveredAfterAutoCancel: true }
+          : { ...params.extraAuditMetadata, ...settlementAudit },
         fromPaymentStatuses: claimableStatusesForRecovery(row),
       })
 
