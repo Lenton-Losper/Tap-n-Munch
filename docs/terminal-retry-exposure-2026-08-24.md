@@ -1,6 +1,16 @@
-# URGENT — what a pre-fix APK does with `success: false`, and what the server does if it retries
+# RESOLVED — what a pre-fix APK does with `success: false`, and what the server does if it retries
 
-Written 2026-08-24. **Read the first two sections before touching the terminal repo.**
+Written 2026-08-24 as URGENT. **Answered 2026-08-25 — see §1 first; the rest is kept for reasoning.**
+
+**The urgency is withdrawn, and not because the risk was accepted.** It was measured, from both
+ends. The terminal does auto-retry its success callback (~2x per paid order, ~2s apart), but it
+reuses `merchant_order_no`, so it is idempotent — `distinctGatewayTransaction` false on 40+
+refusals in one day, zero probable double charges found. And there is no HTTP-layer retry at all.
+The double-charge loop this document was written to hunt **does not exist**. #328 is ordinary work.
+
+What the hunt DID turn up is worse than a retry loop and is now fixed: `completePayment` parsed
+only `canClose` and discarded the rest of the body, so **the server-side `success: false` fix was
+inert on every device in the field**. See the end of §1.
 
 The server now answers `success: false` for `outcome: 'left_pending_finatic_uncertain'`. That change
 is live. Devices in the field were written against the old contract, where that same case answered
@@ -165,7 +175,58 @@ So the duplicate-charge blind spot is **far smaller than the raw gap suggests**,
 
 ---
 
-## 1. WHAT TO LOOK FOR IN THE TERMINAL SOURCE
+## 1. ANSWERED 2026-08-25 — the dangerous shape does not exist. Read this instead of hunting.
+
+Two differently-shaped measurements agree, which is why this is closed rather than "probably fine":
+the PRODUCTION audit trail, and the terminal SOURCE at `feat/terminal-reconciled` bb17538.
+
+**THE TERMINAL DOES AUTO-RETRY ITS SUCCESS CALLBACK — and it is idempotent.**
+
+From production, 2026-08-25: the retry fires roughly **2x per paid order, ~2s apart**. It re-sends
+the identical payload, so the same `merchant_order_no`, which is why `distinctGatewayTransaction`
+was **false on 40+ refusals in one day** and why the duplicate-charge detector found **zero probable
+double charges**. A retry that reuses the gateway's order number cannot take a second payment; the
+gateway answers the second attempt about the first transaction.
+
+From the source, answering the three questions below in their own order:
+
+1. **Does any shared HTTP layer retry automatically? NO.** There is no HTTP client at all — no axios,
+   no react-query, no interceptors, no p-retry/async-retry, no backoff. Zero hits repo-wide for every
+   term this section lists. The only primitive is `terminalFetch`, a thin `fetch` wrapper whose sole
+   re-issue is a single 401 token refresh. The shape this section calls "the one to hunt hardest" is
+   absent.
+
+2. **Does the `!success` branch return, or re-call? It re-POSTs, but it never re-arms the reader.**
+   The one retry in the codebase is `completePaymentReliably` (`src/lib/api.ts:875`), which retries
+   `completePayment` exactly once. That is the ~2x seen in production. It is shape 2 in HTTP terms
+   and NOT in card-charging terms: `api.ts` never calls `processPaymentIntent` (grep: zero hits), so
+   no automatic path can take a second payment.
+
+3. **Does the operator retry re-send the same orderId, or start a new sale? SAME orderId.**
+   `PaymentScreen` is bound to one orderId for its whole life; "Try again" is a `reset()` to IDLE on
+   that same screen. The only sale-creating path is `POSCartScreen`, and since #328 that carries a
+   per-sale idempotency key, so even it returns the existing order.
+
+The `setTimeout`s in `PaymentScreen` (:295, :322) are the kiosk auto-return after SUCCESS, not
+retries.
+
+**WHAT THIS CHANGES.** #328 is **ordinary, not urgent** — the idempotency key is correctness work,
+not a live double-charge fix. The urgency in this document's title was based on the possibility that
+a pre-fix APK looped on `success: false`; it does not.
+
+**WHAT IT DOES NOT CHANGE — and this was the real defect.** `completePayment` parsed exactly one
+field: `const data = (await response.json()) as { canClose?: boolean }`. It threw the rest of the
+body away, so `outcome` never existed on the device at all, and
+`left_pending_finatic_uncertain` appeared nowhere in `src/`. **The server-side #329 fix — shipping
+`success: false` since 2026-08-24 — was INERT on every device in the field.** Nothing read `success`
+either. Fixed in 79cecf9 (#327), along with two live defects of the same shape: `corrected_to_paid`
+rendered as FAILED (the server found the money and the operator was told it failed), and an
+interrupted payment restored as `PAYMENT_FAILED`, asserting the money did not move in the one case
+where nobody knows.
+
+---
+
+## 1a. WHAT TO LOOK FOR IN THE TERMINAL SOURCE (the original hunt, kept for the reasoning)
 
 The question: **when the response is `success: false`, does the device show a terminal error state, or
 does it re-arm the reader?** A retry loop on a payment screen is a double-charge path.
