@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -121,7 +120,11 @@ export function ActiveOrderBanner() {
         setLastOrderLoaded(true)
         return
       }
-      setLastOrder({ id: String(data.id), ...data })
+      // Spread FIRST. `{ id: String(data.id), ...data }` put the raw id straight back over the
+      // normalized one, so the conversion never survived. Type-only today -- orders.id is a
+      // NOT NULL uuid and arrives typed `string`, so String(data.id) === data.id on every path --
+      // but the line now does what it reads as doing, whatever a future caller hands it.
+      setLastOrder({ ...data, id: String(data.id) })
       setLastOrderLoaded(true)
     }
 
