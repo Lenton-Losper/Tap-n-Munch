@@ -40,6 +40,57 @@ interface ApiErrorBody {
   sale_amount?: number | null;
   prior_refunded?: number | null;
   retry_after_seconds?: number | null;
+  /** #120 residual: the rows blocking a table close, one entry each. */
+  pending_requests?: unknown;
+}
+
+/**
+ * One order request standing between a table and its close (#120 residual).
+ *
+ * `status` IS THE ONLY FIELD THAT DECIDES WHETHER THE RELEASE ACTION MAY BE OFFERED, and its two
+ * values mean opposite things:
+ *
+ *   waiting_review  a REAL round a customer placed. Staff accept or decline it. Offering to
+ *                   release one would let staff dismiss a customer's order — #120's own bug from
+ *                   the other side.
+ *   accepting       the transient claim the accept route takes. If the worker died between the
+ *                   claim and its release the row is stranded, and nothing clears it: there is no
+ *                   reaper, and per #215 there cannot be one until the claim records a timestamp.
+ *
+ * OPTIONAL ON PURPOSE. Servers older than the field omit it, and an absent status must never be
+ * guessed at — see isReleasableStrandedRequest, which requires the exact string and therefore
+ * offers nothing at all when the field is missing.
+ */
+export type PendingOrderRequest = {
+  id: string;
+  placedAt?: string;
+  value?: number;
+  status?: string;
+};
+
+function parsePendingRequests(raw: unknown): PendingOrderRequest[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const rows: PendingOrderRequest[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const row = entry as Record<string, unknown>;
+    const id = typeof row.id === 'string' ? row.id : String(row.id ?? '');
+    if (!id) {
+      continue;
+    }
+    rows.push({
+      id,
+      placedAt: typeof row.placed_at === 'string' ? row.placed_at : undefined,
+      value: typeof row.value === 'number' ? row.value : undefined,
+      // Carried through verbatim, never defaulted — see the type's docblock.
+      status: typeof row.status === 'string' ? row.status : undefined,
+    });
+  }
+  return rows;
 }
 
 interface RefreshTokenResponse {
@@ -67,6 +118,8 @@ export class ApiRequestError extends Error {
   saleAmount?: number | null;
   priorRefunded?: number | null;
   retryAfterSeconds?: number | null;
+  /** #120 residual. Empty for every error that is not a blocked table close. */
+  pendingRequests: PendingOrderRequest[] = [];
 
   constructor(
     message: string,
@@ -79,6 +132,7 @@ export class ApiRequestError extends Error {
       saleAmount?: number | null;
       priorRefunded?: number | null;
       retryAfterSeconds?: number | null;
+      pendingRequests?: PendingOrderRequest[];
     },
   ) {
     super(message);
@@ -91,6 +145,7 @@ export class ApiRequestError extends Error {
     this.saleAmount = extras?.saleAmount;
     this.priorRefunded = extras?.priorRefunded;
     this.retryAfterSeconds = extras?.retryAfterSeconds;
+    this.pendingRequests = extras?.pendingRequests ?? [];
   }
 }
 
@@ -128,6 +183,7 @@ async function parseApiError(response: Response): Promise<ApiRequestError> {
     saleAmount: finiteOrNull(data.sale_amount),
     priorRefunded: finiteOrNull(data.prior_refunded),
     retryAfterSeconds,
+    pendingRequests: parsePendingRequests(data.pending_requests),
   });
 }
 
@@ -698,6 +754,70 @@ export async function authorizeTerminalAction(
   }
 
   return response.json() as Promise<{token_id: string; expires_at: string}>;
+}
+
+/**
+ * #120 residual — may this blocked row be offered the release action?
+ *
+ * `accepting` AND NOTHING ELSE. This predicate is the whole safety of the button, and it is
+ * written as an exact equality rather than "not waiting_review" deliberately: the dangerous
+ * direction is showing the action for a row that is a REAL customer order, so any value this
+ * client does not recognise — a status added later, or the field missing entirely because the
+ * server predates it — must fall on the side of showing nothing.
+ *
+ * Servers older than the field send no `status` at all, which is exactly the case an
+ * `!== 'waiting_review'` form would get wrong: undefined is not 'waiting_review', so the action
+ * would be offered for every blocked row on every old server.
+ */
+export function isReleasableStrandedRequest(row: PendingOrderRequest): boolean {
+  return row.status === 'accepting';
+}
+
+export type ReleaseStrandedRequestResult = {
+  released: boolean;
+  /** True when the row was already resolved by something else — still a success. */
+  alreadyResolved: boolean;
+};
+
+/**
+ * Release a stranded `accepting` claim back to `waiting_review` (#120 residual).
+ *
+ * ALREADY_RESOLVED IS TREATED AS SUCCESS, not as an error. It means the accept route finished its
+ * own release while this request was in flight — on a shared floor that is a routine race, two
+ * staff tapping the same stuck table. Either way the row is no longer stranded, which is the
+ * outcome staff wanted, and the web dashboard's handler counts it the same way so the two
+ * surfaces cannot disagree about what happened.
+ *
+ * NOT_A_STRANDED_CLAIM still throws. It means the row was not `accepting` when the server looked,
+ * so this client offered an action it should not have — a real disagreement worth surfacing rather
+ * than swallowing.
+ */
+export async function releaseStrandedRequest(
+  requestId: string,
+  token: string,
+): Promise<ReleaseStrandedRequestResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/order-requests/${encodeURIComponent(
+      requestId,
+    )}/release`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    const err = await parseApiError(response);
+    if (err.code === 'ALREADY_RESOLVED') {
+      return {released: false, alreadyResolved: true};
+    }
+    throw err;
+  }
+
+  return {released: true, alreadyResolved: false};
 }
 
 export async function closeTable(tableId: string, token: string): Promise<void> {

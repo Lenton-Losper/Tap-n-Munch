@@ -29,4 +29,12 @@ module.exports = {
     require.resolve('@react-native/jest-preset/jest/setup.js'),
     '<rootDir>/jest.setup.js',
   ],
+  /**
+   * #340's lesson, made structural. A non-test file sitting in `__tests__/` is DISCOVERED as a
+   * suite and reported as "must contain at least one test" — a permanent red that gets explained
+   * away in briefs rather than fixed, which is exactly what runStaffApiErrors.ts did for months.
+   * Shared harnesses now live in `__tests__/helpers/` and are ignored as suites, so adding one can
+   * never reintroduce that phantom failure.
+   */
+  testPathIgnorePatterns: ['/node_modules/', '/__tests__/helpers/'],
 };

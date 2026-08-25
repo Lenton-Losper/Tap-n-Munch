@@ -17,6 +17,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {Colors, Spacing, Typography} from '../constants/theme';
 import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
+import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
 import {
   ApiRequestError,
   AuthorizedUser,
@@ -24,6 +25,7 @@ import {
   getAuthorizedUsers,
   closeTable,
   completePaymentReliably,
+  type PendingOrderRequest,
   getTablesWithMeta,
   recordSaleEvent,
   settleTab,
@@ -76,6 +78,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
   const [closingTable, setClosingTable] = useState(false);
+  /** #120 residual: the rows the close route reported as blocking, and its own message. */
+  const [strandedRequests, setStrandedRequests] = useState<PendingOrderRequest[]>([]);
+  const [strandedMessage, setStrandedMessage] = useState('');
   const [settling, setSettling] = useState(false);
   const [cashSettling, setCashSettling] = useState(false);
   /**
@@ -209,7 +214,26 @@ export default function TableDetailScreen({route, navigation}: Props) {
       }
       await closeTable(table.id, token);
       navigation.navigate('MainTabs', {screen: 'Tables'});
-    } catch {
+    } catch (err) {
+      /**
+       * #120 residual. This used to answer "Failed to close table. Please close from dashboard."
+       * for EVERY failure, including the one case the terminal can actually fix — and the
+       * dashboard was the wrong escape hatch anyway, because it closed OVER the pending round
+       * instead of releasing it.
+       *
+       * The 409 names the blocking rows and, per row, whether each is a stranded `accepting` claim
+       * (releasable) or a real `waiting_review` round (not). Showing that is the difference
+       * between a dead end and an answer.
+       */
+      if (
+        err instanceof ApiRequestError &&
+        err.code === 'PENDING_ORDER_REQUESTS' &&
+        err.pendingRequests.length > 0
+      ) {
+        setStrandedRequests(err.pendingRequests);
+        setStrandedMessage(err.message);
+        return;
+      }
       Alert.alert(
         'Error',
         'Failed to close table. Please close from dashboard.',
@@ -917,6 +941,21 @@ export default function TableDetailScreen({route, navigation}: Props) {
           </View>
         </View>
       </Modal>
+
+      {/*
+        #120 residual. Rendered from the close route's own 409 rather than from anything this
+        screen guesses: the rows, and per row whether it is a stranded claim or a real round.
+      */}
+      <StrandedRequestPrompt
+        visible={strandedRequests.length > 0}
+        requests={strandedRequests}
+        message={strandedMessage}
+        onDismiss={() => setStrandedRequests([])}
+        onReleased={() => {
+          // The blocker is gone; the table state staff are looking at is now stale.
+          refreshTable();
+        }}
+      />
     </View>
   );
 }

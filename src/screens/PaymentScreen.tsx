@@ -16,6 +16,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
+import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   ApiRequestError,
@@ -28,6 +29,7 @@ import {
   resolvePaymentMethodsAvailability,
   verifyTerminalPayment,
   type CompletePaymentResult,
+  type PendingOrderRequest,
 } from '../lib/api';
 import {
   classifyFailureReport,
@@ -106,6 +108,9 @@ export default function PaymentScreen({route, navigation}: Props) {
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
+  /** #120 residual: rows blocking this close, and the close route's own message. */
+  const [strandedRequests, setStrandedRequests] = useState<PendingOrderRequest[]>([]);
+  const [strandedMessage, setStrandedMessage] = useState('');
   const [canCloseTable, setCanCloseTable] = useState(false);
   const [printState, setPrintState] = useState<
     'idle' | 'printing' | 'success' | 'failed'
@@ -886,7 +891,21 @@ export default function PaymentScreen({route, navigation}: Props) {
       }
       await closeTable(resolvedTableId, token);
       goToOrders();
-    } catch {
+    } catch (err) {
+      /**
+       * #120 residual, same dead end as TableDetailScreen. Note this branch does NOT call
+       * goToOrders(): navigating away is what made the old handler a dead end, because it took
+       * staff off the only screen that could show them why the close failed.
+       */
+      if (
+        err instanceof ApiRequestError &&
+        err.code === 'PENDING_ORDER_REQUESTS' &&
+        err.pendingRequests.length > 0
+      ) {
+        setStrandedRequests(err.pendingRequests);
+        setStrandedMessage(err.message);
+        return;
+      }
       Alert.alert(
         'Error',
         'Failed to close table. Please close from the dashboard.',
@@ -1547,6 +1566,22 @@ export default function PaymentScreen({route, navigation}: Props) {
           </LoadingButton>
         )}
       </View>
+
+      {/* #120 residual — same prompt as TableDetailScreen, same close route, same 409. */}
+      <StrandedRequestPrompt
+        visible={strandedRequests.length > 0}
+        requests={strandedRequests}
+        message={strandedMessage}
+        onDismiss={() => {
+          setStrandedRequests([]);
+          goToOrders();
+        }}
+        onReleased={() => {
+          // Do NOT auto-close here. The blocker is cleared, but closing the table is the
+          // operator's decision and they may have more to settle first.
+          setCanCloseTable(true);
+        }}
+      />
     </View>
   );
 }

@@ -35,46 +35,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-type FetchCall = {url: string; init: RequestInit};
-
-async function withApi<T>(
-  respondWith: {status: number; body: unknown},
-  run: (
-    api: typeof import('../api'),
-    calls: FetchCall[],
-  ) => Promise<T>,
-): Promise<T> {
-  let out!: T;
-  await jest.isolateModulesAsync(async () => {
-    const {NativeModules} = require('react-native');
-    NativeModules.RuntimeConfig = {
-      API_BASE_URL: 'https://example.invalid',
-      SUPABASE_URL: 'https://example.invalid',
-      SUPABASE_ANON_KEY: 'test',
-      ENV_NAME: 'test',
-    };
-
-    const calls: FetchCall[] = [];
-    (globalThis as {fetch?: unknown}).fetch = jest.fn(
-      async (url: string, init: RequestInit) => {
-        calls.push({url, init});
-        const text = JSON.stringify(respondWith.body);
-        return {
-          ok: respondWith.status >= 200 && respondWith.status < 300,
-          status: respondWith.status,
-          headers: {get: () => null},
-          json: async () => JSON.parse(text),
-          text: async () => text,
-          clone: () => ({text: async () => text}),
-        };
-      },
-    );
-
-    const api = require('../api') as typeof import('../api');
-    out = await run(api, calls);
-  });
-  return out;
-}
+import {withApi} from './helpers/apiHarness';
 
 describe('#328 — the idempotency key reaches the wire', () => {
   it('createPOSOrder sends the key as the x-idempotency-key HEADER', async () => {
