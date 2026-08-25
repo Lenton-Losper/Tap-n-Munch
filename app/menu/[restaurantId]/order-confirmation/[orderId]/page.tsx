@@ -22,6 +22,7 @@ import { InfoBanner } from '@/components/receipt/info-banner'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { OrderEditPanel } from '@/components/order-edit-panel'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
 
 type Order = {
   id: string
@@ -129,7 +130,9 @@ export default function OrderConfirmationPage() {
   const orderId = params.orderId as string
   const tableNumber = parseInt(searchParams.get('table') || '0')
   const terminalNotice = searchParams.get('notice') === 'terminal'
-  const { currency: restaurantCurrency } = useRestaurant()
+  const { restaurant, currency: restaurantCurrency } = useRestaurant()
+  /** #334 round two: "a staff member will come to your table" at a counter venue. */
+  const copy = serviceCopy(deriveIsCounterService({ restaurant }))
 
   const [order, setOrder] = useState<Order | null>(null)
   // The raw guest row as well as the mapped one. The edit panel needs fields the Order type
@@ -347,7 +350,7 @@ export default function OrderConfirmationPage() {
       orderReadyBanner={
         order.status === 'ready' ? (
           <InfoBanner variant="success">
-            {MENU_COPY.yourOrderReadyStaffMember}
+            {copy.orderReady}
           </InfoBanner>
         ) : undefined
       }

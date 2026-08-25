@@ -34,6 +34,7 @@ import { ORDER_PLACED_PARAM } from '@/lib/customer-copy/qr-redesign-copy'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { customerSafeError } from '@/lib/customer-copy/customer-safe-error'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { serviceCopy } from '@/lib/customer-copy/service-model'
 import { rememberPlacedOrder } from '@/lib/orders/last-placed-order'
 
 type PaymentChoice = 'cash' | 'card_manual' | 'other' | 'online'
@@ -76,6 +77,8 @@ export default function CartPage() {
    * definition, so it still forces the counter wording before a venue is configured.
    */
   const isCounterService = isKiosk || restaurant?.is_counter_service === true
+  /** Every service-model string on this page resolves here, not at the render site. */
+  const copy = serviceCopy(isCounterService)
   /**
    * Fail CLOSED. card_payments_available is derived in the database from the Finatic
    * credentials, and with #107 closed queryFinaticOrderPaid IS settlement -- it throws without
@@ -765,10 +768,10 @@ export default function CartPage() {
                         💵
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isCounterService ? MENU_COPY.payCounterCashLabel : MENU_COPY.payTableCashLabel}
+                        {copy.cashLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                          {isCounterService ? MENU_COPY.payCounterCashBody : MENU_COPY.payTableCashBody}
+                          {copy.cashBody}
                       </p>
                     </button>
                     )}
@@ -791,10 +794,10 @@ export default function CartPage() {
                         💳
                       </span>
                       <span className="ml-2 font-semibold text-foreground">
-                        {isCounterService ? MENU_COPY.payCounterCardLabel : MENU_COPY.payTableCardLabel}
+                        {copy.cardLabel}
                       </span>
                       <p className="mt-1 text-sm text-muted-foreground">
-                          {isCounterService ? MENU_COPY.payCounterCardBody : MENU_COPY.payTableCardBody}
+                          {copy.cardBody}
                       </p>
                     </button>
                     )}
@@ -817,7 +820,7 @@ export default function CartPage() {
                         🤝
                       </span>
                       <span className="ml-2 font-semibold text-foreground">Other</span>
-                      <p className="mt-1 text-sm text-muted-foreground">{MENU_COPY.staffWillAssistWithPayment}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{copy.assistWithPayment}</p>
                     </button>
                     )}
                   </div>

@@ -65,6 +65,36 @@ export const MENU_COPY = {
   tabClosedTableBody: 'someone is on their way. you cannot add more items.',
   tabClosedCounterBody: 'pay at the counter when you are ready. you cannot add more items.',
 
+  /**
+   * SERVICE-MODEL PAIRS, ROUND TWO. Counter variants signed off 2026-08-25; TABLE VARIANTS ARE
+   * THE EXISTING STRINGS, UNCHANGED -- they are renamed into the pair shape, not rewritten.
+   *
+   * The first round (the payCounter and payTable keys above) covered only the cart's chooser.
+   * These six were the same defect on four other surfaces: a counter-service customer being
+   * promised a waiter, a staff member, or someone arriving at their table.
+   *
+   * Every pair MUST be read through `serviceCopy()` in lib/customer-copy/service-model.ts. Reading
+   * a `payTable*` key directly is the bug this replaces -- it is how the flag goes decorative.
+   */
+  // tab page -- request-the-bill failed
+  payTableCouldNotNotifyStaff: 'Could not notify waiter',
+  payCounterCouldNotNotifyStaff: 'could not reach the counter',
+  // v2 landing -- a payment is already being processed for this table
+  payTablePleaseAskForAssistance: 'Please wait or ask your waiter for assistance.',
+  payCounterPleaseAskForAssistance: 'please ask at the counter for assistance.',
+  // tab page -- request-the-bill succeeded
+  payTableStaffNotified: 'A waiter has been notified and will assist you shortly.',
+  payCounterStaffNotified: 'the counter has been notified.',
+  // v2 landing -- the tab is ready to pay
+  payTableTabReadyToPay: 'Your tab is ready to pay — your waiter has been notified.',
+  payCounterTabReadyToPay: 'your tab is ready to pay at the counter.',
+  // cart -- how payment will happen
+  payTableAssistWithPayment: 'Staff will assist with payment at your table',
+  payCounterAssistWithPayment: 'pay at the counter when you are ready',
+  // order confirmation -- the order is ready
+  payTableOrderReady: 'Your order is ready! A staff member will come to your table shortly.',
+  payCounterOrderReady: 'your order is ready for collection at the counter.',
+
   // ================================================================================================
   // MOVED FROM app/menu/** BY #334, 2026-08-24. NOT REWRITTEN.
   //
@@ -111,7 +141,6 @@ export const MENU_COPY = {
   paymentMethod: "Payment method",
   placeOrder: "Place Order",
   scanQrCodeYourTable2: "Scan the QR code at your table to place an order.",
-  staffWillAssistWithPayment: "Staff will assist with payment at your table",
   tableRequired: "Table required",
   theseWereAddedDifferentPrices: "These were added at different prices, so we have kept them separate. Each keeps the price you were shown.",
   youNeedTabPlaceOrder: "You need a tab to place an order.",
@@ -171,7 +200,6 @@ export const MENU_COPY = {
   backMenu: "Back to Menu",
   orderNotFound: "Order Not Found",
   staffHasBeenNotifiedThey: "Staff has been notified. They will be with you shortly.",
-  yourOrderReadyStaffMember: "Your order is ready! A staff member will come to your table shortly.",
 
   // ---------------------------------------------------------------- order-secure
   cartEmpty: "Cart is empty",
@@ -222,7 +250,6 @@ export const MENU_COPY = {
   yourSessionHasEndedScan: "Your session has ended. Scan the QR code to start a new order.",
 
   // ---------------------------------------------------------------- tab
-  couldNotNotifyWaiter: "Could not notify waiter",
   couldNotUpdateName: "Could not update name",
   enterYourName: "Enter your name:",
   failedUpdateName: "Failed to update name",
@@ -234,7 +261,6 @@ export const MENU_COPY = {
   reviewYourTabBeforePaying: "Review your tab before paying",
   shareWithYourGroup: "— Share with your group",
   startJoinTabFromTable: "Start or join a tab from the table landing page.",
-  waiterHasBeenNotifiedWill: "A waiter has been notified and will assist you shortly.",
 
   // ---------------------------------------------------------------- v2
   accessDenied: "Access Denied",
@@ -265,7 +291,6 @@ export const MENU_COPY = {
   pleaseEnterYourName: "Please enter your name",
   pleaseScanValidQrCode: "Please scan a valid QR code to access this restaurant menu.",
   pleaseScanValidQrCode2: "Please scan a valid QR code.",
-  pleaseWaitAskYourWaiter: "Please wait or ask your waiter for assistance.",
   /** Used at 2 sites. */
   poweredByFlashtap: "Powered by FlashTap",
   /** Used at 2 sites. */
@@ -284,7 +309,6 @@ export const MENU_COPY = {
   /** Used at 2 sites. */
   welcomeTo: "Welcome to",
   yourTabPin: "Your tab PIN is",
-  yourTabReadyPayYour: "Your tab is ready to pay — your waiter has been notified.",
 } as const
 
 /**

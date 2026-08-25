@@ -38,6 +38,20 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     payTableCashBody: 'someone will come to your table to take payment',
     payTableCardLabel: 'pay by card',
     payTableCardBody: 'someone will bring a card machine to your table',
+    // SIGNED 2026-08-25 — round two of the service-model split. The payTable halves below are the
+    // EXISTING strings under new keys; only the payCounter halves are new wording.
+    payTableCouldNotNotifyStaff: 'Could not notify waiter',
+    payCounterCouldNotNotifyStaff: 'could not reach the counter',
+    payTablePleaseAskForAssistance: 'Please wait or ask your waiter for assistance.',
+    payCounterPleaseAskForAssistance: 'please ask at the counter for assistance.',
+    payTableStaffNotified: 'A waiter has been notified and will assist you shortly.',
+    payCounterStaffNotified: 'the counter has been notified.',
+    payTableTabReadyToPay: 'Your tab is ready to pay — your waiter has been notified.',
+    payCounterTabReadyToPay: 'your tab is ready to pay at the counter.',
+    payTableAssistWithPayment: 'Staff will assist with payment at your table',
+    payCounterAssistWithPayment: 'pay at the counter when you are ready',
+    payTableOrderReady: 'Your order is ready! A staff member will come to your table shortly.',
+    payCounterOrderReady: 'your order is ready for collection at the counter.',
     tabClosedTitle: 'tab closed',
     tabClosedTableBody: 'someone is on their way. you cannot add more items.',
     tabClosedCounterBody: 'pay at the counter when you are ready. you cannot add more items.',
@@ -83,7 +97,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     paymentMethod: "Payment method",
     placeOrder: "Place Order",
     scanQrCodeYourTable2: "Scan the QR code at your table to place an order.",
-    staffWillAssistWithPayment: "Staff will assist with payment at your table",
     tableRequired: "Table required",
     theseWereAddedDifferentPrices: "These were added at different prices, so we have kept them separate. Each keeps the price you were shown.",
     youNeedTabPlaceOrder: "You need a tab to place an order.",
@@ -136,7 +149,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     backMenu: "Back to Menu",
     orderNotFound: "Order Not Found",
     staffHasBeenNotifiedThey: "Staff has been notified. They will be with you shortly.",
-    yourOrderReadyStaffMember: "Your order is ready! A staff member will come to your table shortly.",
     // ---- order-secure
     cartEmpty: "Cart is empty",
     continuePayment: "Continue to Payment",
@@ -172,7 +184,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     yourName: "Your name",
     yourSessionHasEndedScan: "Your session has ended. Scan the QR code to start a new order.",
     // ---- tab
-    couldNotNotifyWaiter: "Could not notify waiter",
     couldNotUpdateName: "Could not update name",
     enterYourName: "Enter your name:",
     failedUpdateName: "Failed to update name",
@@ -184,7 +195,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     reviewYourTabBeforePaying: "Review your tab before paying",
     shareWithYourGroup: "— Share with your group",
     startJoinTabFromTable: "Start or join a tab from the table landing page.",
-    waiterHasBeenNotifiedWill: "A waiter has been notified and will assist you shortly.",
     // ---- v2
     accessDenied: "Access Denied",
     askPersonWhoCreatedTab: "Ask the person who created the tab for the 4-digit PIN.",
@@ -211,7 +221,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     pleaseEnterYourName: "Please enter your name",
     pleaseScanValidQrCode: "Please scan a valid QR code to access this restaurant menu.",
     pleaseScanValidQrCode2: "Please scan a valid QR code.",
-    pleaseWaitAskYourWaiter: "Please wait or ask your waiter for assistance.",
     poweredByFlashtap: "Powered by FlashTap",
     rejoinYourTab: "Rejoin your tab",
     restaurantIdMissingFromUrl: "Restaurant ID is missing from URL",
@@ -225,7 +234,6 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     viewReceipt: "View Receipt",
     welcomeTo: "Welcome to",
     yourTabPin: "Your tab PIN is",
-    yourTabReadyPayYour: "Your tab is ready to pay — your waiter has been notified.",
   }
 
   // The union, so wording parked in MENU_COPY_AWAITING_A_SURFACE is pinned exactly as hard as

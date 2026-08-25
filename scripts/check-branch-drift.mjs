@@ -40,93 +40,41 @@
 import { execFileSync } from 'node:child_process'
 
 /**
- * KNOWN-ABSENT AS OF 2026-08-17, so this can be BLOCKING from the day it lands.
+ * HAND-WRITTEN EXEMPTIONS. Currently NONE, and it should stay that way.
  *
- * A check that goes red on state that already exists gets `continue-on-error: true` bolted on
- * within a day and then it is decoration — which is how the migration drift check ended up
- * non-blocking in this same workflow. Baselining the existing gap means the job can only fail on
- * drift that is NEW, which is the recurrence this exists to prevent.
+ * This began as a 2026-08-17 baseline so the check could go BLOCKING on day one without going red
+ * on a gap that already existed — a check that fires on pre-existing state gets `continue-on-error`
+ * bolted on within a day, which is exactly how the migration drift check in this same workflow
+ * ended up decoration.
  *
- * Every entry is a commit on `main` that `cloudflare-staging` did not have on 2026-08-17. They
- * are still printed on every run, loudly. Removing one from this list is how you record that it
- * has been reconciled; the check reports stale entries so the list cannot rot into fiction.
+ * It is empty as of 2026-08-25. Every entry had been reconciled, the check said so itself through
+ * its own stale-entry reporting, and the two mechanical classifiers below now cover both cases that
+ * used to need a hand-written line:
  *
- * `07b4737` is the one to look at first: its cherry-pick conflicts in
- * `lib/orders/auto-cancel-stale-pos-orders.ts`, where staging's #268 and main's #223 disagree
- * about one line in the payments path. It needs an attended decision.
+ *   PROMOTED    main holds content HEAD gave it. Every promotion used to create an entry here,
+ *               because a cherry-pick necessarily has a different patch-id.
+ *   NO CONTENT  empty commits, which cannot be drift by construction.
+ *
+ * Entries are still printed loudly on every run, and the check reports stale ones so this cannot
+ * rot into fiction. If you are about to add one: a commit that needs a hand-written exemption is a
+ * commit somebody should read first. That friction is the feature.
  */
 const KNOWN_ABSENT = new Set([
-  // SHRUNK 2026-08-18 by the PROMOTED classifier (#310), from six entries to three.
+  // EMPTIED 2026-08-25, and that is the direction this list is only ever allowed to move.
   //
-  // Both promotion entries are gone -- 1591d12 and b30b7e5 now classify PROMOTED on their own
-  // evidence rather than on my say-so, which is what #310 was for. d57c659 went too: the check
-  // reported it as reconciled since the baseline was taken.
+  // The check reported all seven as reconciled ("remove from KNOWN_ABSENT: 56f70b8, f7ee138,
+  // b30b7e5, 77dbf76, 71fe6a3, 908516b, 865aa17") -- its own stale-entry mechanism working, which
+  // is what stops this list rotting into fiction. Every one of them is now present on
+  // cloudflare-staging by content, so an exemption for it would be an assertion that is no longer
+  // true.
   //
-  // These three remain, and each is a commit whose BEHAVIOUR is on HEAD under a different
-  // patch-id while the whole patch is not -- verified by reading the decisive line, not by
-  // trusting the patch. They are NOT promotions, so the classifier correctly leaves them here:
-  '56f70b8', // #254/?ref= — `paymentRefOrFilter` and `isWellFormedPaymentRef` are BYTE-IDENTICAL
-             //              on both branches; only the test file differs
-  'f7ee138', // #122 cross-tenant union — by-payment-ref route code is identical, comments differ
-
-  // ADDED 2026-08-19, and these two are a DIFFERENT case from the two above — worth stating
-  // because the distinction is the whole reason the PROMOTED classifier exists.
+  // The 2026-08-17 baseline existed so the check could go BLOCKING on day one without going red on
+  // a gap that already existed. That debt is paid. An empty list means the check now fails on any
+  // genuine drift at all, which is the state it was always meant to reach.
   //
-  // Both were classifying PROMOTED on their own evidence until today. They stopped because
-  // #310's classifier compares CURRENT blobs, and today's work edited files these commits
-  // touched — qr-redesign-copy.ts (the four signed-off strings), order-identity.ts (the stale
-  // "See staff" comment), order-confirmation-view.tsx (the Order #0 guard). Editing a file after
-  // a commit was promoted un-promotes that commit, because the blob no longer matches.
-  //
-  // The right question is "did HEAD ever hold this?", not "does HEAD hold it now". Until the
-  // classifier asks that, an entry here is the honest alternative to weakening the check.
-  //
-  // BEHAVIOUR VERIFIED PRESENT ON origin/cloudflare-staging before baselining, per this file's
-  // own instruction to read the decisive line:
-  //   b30b7e5 — all six distinctive modules present (tab-order-groups, tab-outstanding,
-  //             ready-to-pay-placement, resolve-order-member-names, shared-tab-client,
-  //             tab-flag-copy) and the signed-off copy constants present
-  //   77dbf76 — isDeadOrder / DEAD_ORDER_LIVE_WINDOW_MS / isStaleDeadOrder present in
-  //             customer-status.ts, hasAllocatedOrderNumber present in order-identity.ts
-  'b30b7e5', // QR customer redesign — un-promoted by later edits to files it touched
-  '77dbf76', // my-orders dead orders — same; staging carries it as 22fe0e4
-
-  // The MAIN-SIDE cherry-picks of two fixes authored on staging the same day. Their patches
-  // differ from the staging originals only because promoting them required resolving a conflict
-  // (main had no tests/e2e/ suite until aa7e7c8), so patch-id cannot match by construction.
-  // Every decisive line read on origin/cloudflare-staging before baselining:
-  //   71fe6a3 — hasAllocatedOrderNumber guard in order-confirmation-view, `order_number: null`
-  //             in the guest-orders mapper, and scripts/check-order-number-guard.ts present
-  //   908516b — `resolvedPaymentMethod = null` in the orders route, `{!isTabOrder && (` in the
-  //             confirmation view
-  //
-  // STRUCTURAL NOTE for whoever reads this next: every promotion from staging to main creates a
-  // new drift entry, because the cherry-pick necessarily has a different patch-id. That is worth
-  // fixing in the classifier rather than growing this list one promotion at a time.
-  '71fe6a3', // #315 Order #0 class fix — staging original is 188172f
-  '908516b', // #316/#317 tab payment method — staging original is ec50ac6
-  // 9fcb147 (#262 member key) REMOVED 2026-08-18. It was here because the only difference was
-  // __tests__/tab-member-key.test.ts, which staging held as a strict SUBSET of main's. Porting
-  // main's file reconciled the commit outright, so it no longer needs an exemption. The check
-  // reported it as stale itself, which is the mechanism working: an entry that stops being
-  // needed says so rather than sitting here forever.
-
-  // ADDED 2026-08-21 by wave 1 (main f04c01b -> 1811b0e, 76 commits). This is the STRUCTURAL NOTE
-  // above coming true, and it is the ONLY new drift the whole 76-commit promotion produced.
-  //
-  // 865aa17 is main's copy of staging's b915483b. It is a PARTIAL apply: b915483b carried three
-  // files and one of them, .github/workflows/staging.yml, was already on main, so the cherry-pick
-  // landed two files and its patch-id differs from the original by construction. Nothing is
-  // missing from staging — the direction is the opposite of what "main is ahead" usually means.
-  //
-  // DECISIVE LINES READ on origin/cloudflare-staging before baselining, per this file's own rule:
-  //   docs/promotion-constraints.md   — blob 66da8d5c on BOTH refs, byte-identical
-  //   scripts/check-branch-drift.mjs  — present, and staging's copy is a strict superset (it is
-  //                                     this file; staging is where it was written)
-  //
-  // RECONCILE WOULD BE WRONG HERE, which is why this is a baseline entry: cherry-picking 865aa17
-  // onto staging would try to re-add content staging already has and is the origin of.
-  '865aa17', // wave 1 partial apply of b915483b — both files present on staging, one identical
+  // If you are about to add an entry here: the two classifiers above (PROMOTED and NO CONTENT)
+  // handle the two cases that used to need one. A commit that needs a hand-written exemption is a
+  // commit somebody should read first -- that is the point of the friction.
 ])
 
 const BASE = process.argv[2] || process.env.DRIFT_BASE_REF || 'origin/main'
@@ -177,6 +125,86 @@ function describe(sha) {
   return { sha, short, date, subject }
 }
 
+/**
+ * EMPTY COMMITS — the generated marker commits that can never be reconciled.
+ *
+ * The `probe-302-305-production` workflow re-runs the redaction verifier after each production
+ * deploy and records the run with `git commit --allow-empty`. It commits to `main`, and `main` is
+ * the only branch it ever lands on, so every one of them reads as drift against staging FOREVER:
+ * you cannot cherry-pick your way out, because the next deploy writes another.
+ *
+ * Eighteen had accumulated by 2026-08-25, in a list of twenty. That is how a blocking check dies —
+ * not by being switched off, but by its output becoming something nobody reads. The two survivors
+ * were both false alarms for their own reasons (6db8a26 is empty too and carries no marker;
+ * 382389b tripped the `blobAt` bug below), which is the point: nobody was going to find that out
+ * while eighteen lines of noise sat on top of them.
+ *
+ * THE TEST IS "CHANGES NO FILE", NOT "MATCHES THE MARKER TEXT".
+ *
+ * A subject-line exclusion is the obvious fix and it is the wrong one: it would swallow a real
+ * commit that happened to carry the marker in its message, which is precisely the commit you would
+ * most want to hear about. This asks the question that actually decides it — does the commit change
+ * any file at all — and a commit that changes nothing cannot be content `main` has and staging
+ * lacks, BY CONSTRUCTION.
+ *
+ * So the exclusion cannot swallow a real commit even in principle: "touches a runtime file" and
+ * "touches no files" are mutually exclusive. `__tests__/branch-drift-empty-commit-rule.test.ts`
+ * pins that in both directions, including a marker-subject commit WITH a file in it, which must
+ * still be reported.
+ *
+ * `GENERATED_MARKER` is used for REPORTING ONLY — to say how many of the empty ones came from that
+ * workflow — and takes no part in the decision. Note also that 6db8a26, the tax-rate refusal probe,
+ * is empty too and carries NO marker: excluding by subject would have missed it and left the check
+ * red, which is the same bug from the other side.
+ */
+const GENERATED_MARKER = /\[probe-302-305-production\]/
+
+/** The files a commit touches. An empty array means an empty commit. */
+function touchedFiles(sha) {
+  return git(['show', '--name-only', '--format=', sha])
+    .split('\n')
+    .map((f) => f.trim())
+    .filter(Boolean)
+}
+
+/**
+ * True only for a commit that changes NO file. Deliberately independent of the subject line, so a
+ * marker commit carrying any file falls straight through to the normal classification below.
+ */
+function isEmptyCommit(sha) {
+  return touchedFiles(sha).length === 0
+}
+
+/**
+ * The blob sha for `file` at `ref`, or null if the ref does not have that path.
+ *
+ * THE SEVENTH LYING INSTRUMENT, found 2026-08-25. `promotedState` used
+ * `tryGit(['rev-parse', `${ref}:${file}`]).ok` to mean "the ref has this file", and it does not:
+ *
+ *     $ git rev-parse 'origin/main:app/table/[tableNumber]/page.tsx'   # deleted on main
+ *     origin/main:app/table/[tableNumber]/page.tsx
+ *     $ echo $?
+ *     0
+ *
+ * It EXITS ZERO and echoes the unresolved string back. So `.ok` was always true, the branch
+ * commented "not on BASE (a deletion); nothing of main's to lack" had NEVER ONCE EXECUTED, and the
+ * blob comparison below was comparing a path string against a real sha — so it always read
+ * "differing" and fell through to the expensive history walk.
+ *
+ * The visible cost: any commit that DELETES a file could never classify PROMOTED. 382389b (#118,
+ * which deletes the dead /table page) was reported as drift for that reason alone, while all three
+ * of its files are demonstrably reconciled on staging — the page absent on both refs, the test and
+ * middleware.ts byte-identical.
+ *
+ * Validated by SHAPE rather than by exit code, because the exit code is the thing that lied.
+ */
+function blobAt(ref, file) {
+  const r = tryGit(['rev-parse', `${ref}:${file}`])
+  if (!r.ok) return null
+  const out = r.out.trim()
+  return /^[0-9a-f]{40}$/.test(out) ? out : null
+}
+
 /** PRESENT = its patch reverse-applies, so the change is already here under another patch-id. */
 /**
  * PROMOTED (#310) — main holds content that HEAD gave it, which is not drift.
@@ -213,10 +241,10 @@ function promotedState(sha) {
   if (files.length === 0) return false
 
   for (const file of files) {
-    const mainBlob = tryGit(['rev-parse', `${BASE}:${file}`])
-    if (!mainBlob.ok) continue // not on BASE (a deletion); nothing of main's to lack
-    const headBlob = tryGit(['rev-parse', `${HEAD}:${file}`])
-    if (!headBlob.ok) {
+    const mainBlob = blobAt(BASE, file)
+    if (mainBlob === null) continue // not on BASE (a deletion); nothing of main's to lack
+    const headBlob = blobAt(HEAD, file)
+    if (headBlob === null) {
       /**
        * HEAD DOES NOT HAVE THE FILE. Two very different situations, and returning false for both
        * was wrong — fixed 2026-08-18, the third refinement of #310 and the same class as the
@@ -233,7 +261,7 @@ function promotedState(sha) {
       if (!everHadIt.ok || !everHadIt.out.trim()) return false
       continue
     }
-    if (mainBlob.out.trim() === headBlob.out.trim()) continue // identical
+    if (mainBlob === headBlob) continue // identical
 
     // Differing. HEAD is only level-or-ahead if it CONTAINS main's last change to this path.
     const mainCommitForPath = tryGit(['log', '-1', '--format=%H', BASE, '--', file]).out.trim()
@@ -268,7 +296,7 @@ function promotedState(sha) {
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean)
-      .some((sha) => tryGit(['rev-parse', `${sha}:${file}`]).out.trim() === mainBlob.out.trim())
+      .some((sha) => blobAt(sha, file) === mainBlob)
     if (!everHeld) return false // main holds a change to this file that HEAD has never had
   }
   return true
@@ -310,8 +338,11 @@ const headOnly = patchIdGap(HEAD, BASE).map(describe)
 // not depend on the working tree, so it holds even when the content pass has to skip.
 const classified = baseOnly.map((c) => ({
   ...c,
-  state: promotedState(c.sha) ? 'PROMOTED' : contentState(c.sha),
+  // NO CONTENT is evaluated FIRST, and needs neither the working tree nor the patch machinery:
+  // a commit that changes no file cannot be content HEAD lacks.
+  state: isEmptyCommit(c.sha) ? 'NO CONTENT' : promotedState(c.sha) ? 'PROMOTED' : contentState(c.sha),
 }))
+const emptyCommits = classified.filter((c) => c.state === 'NO CONTENT')
 const promoted = classified.filter((c) => c.state === 'PROMOTED')
 const portedAlready = classified.filter((c) => c.state === 'PRESENT')
 const genuinelyMissing = classified.filter(
@@ -324,6 +355,10 @@ if (headOnly.length > 5) console.log(`      ... and ${headOnly.length - 5} more`
 
 console.log('')
 console.log(`--- ${BASE} is ahead by ${baseOnly.length} commit(s) by patch-id`)
+const markerCount = emptyCommits.filter((c) => GENERATED_MARKER.test(c.subject)).length
+console.log(
+  `      ${emptyCommits.length} NO CONTENT (empty commits — ${markerCount} from the probe-302-305 workflow)`,
+)
 console.log(`      ${promoted.length} PROMOTED (main gained ${HEAD}'s own content; not drift)`)
 console.log(`      ${portedAlready.length} already present by content (ported under a different patch-id)`)
 console.log(`      ${genuinelyMissing.length} GENUINELY ABSENT`)

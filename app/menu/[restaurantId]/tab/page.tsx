@@ -32,6 +32,7 @@ import {
   paymentMethodWithdrawnCopy,
 } from '@/lib/customer-copy/payment-method-withdrawn'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
 
 type TabOrder = {
   id: string
@@ -69,7 +70,9 @@ export default function TabSummaryPage() {
 
   const storedTabId = resolveStoredTabId(tabIdFromUrl)
   const { sessionId, tabMembers, selfMemberKeys, tabStatus, refreshTab } = useTab()
-  const { currency, permissions, refresh } = useRestaurant()
+  const { restaurant, currency, permissions, refresh } = useRestaurant()
+  /** #334 round two: this page promised a WAITER on both outcomes of "request the bill". */
+  const copy = serviceCopy(deriveIsCounterService({ restaurant }))
   const [tabRecord, setTabRecord] = useState<TabRow | null>(null)
   const [orders, setOrders] = useState<TabOrder[]>([])
   /**
@@ -358,7 +361,7 @@ export default function TabSummaryPage() {
     } catch (err) {
       console.error('[TAB PAGE] ready to pay failed', err)
       toast({
-        title: MENU_COPY.couldNotNotifyWaiter,
+        title: copy.couldNotNotifyStaff,
         description: customerSafeError(err, MENU_COPY.pleaseTryAgain),
         variant: 'destructive',
       })
@@ -686,7 +689,7 @@ export default function TabSummaryPage() {
                 </p>
               )}
               <p className="font-sans text-xs text-green-600">
-                {MENU_COPY.waiterHasBeenNotifiedWill}
+                {copy.staffNotified}
               </p>
             </div>
           )}
