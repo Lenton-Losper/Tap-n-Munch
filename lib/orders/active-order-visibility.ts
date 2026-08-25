@@ -56,9 +56,26 @@ export function normalizeOrderStatusForDisplay(status: unknown): string {
   return s
 }
 
+/**
+ * A status that ENDS the order, asked on its own.
+ *
+ * Distinct from `!isActiveOrderStatus(...)`, and the difference matters wherever the answer gates
+ * an action rather than a render. `isActiveOrderStatus` is false for two very different things:
+ * a status that ended the order, and a status nothing here has ever heard of. A renderer is right
+ * to treat both as "do not show". A guard is not — refusing an action because the vocabulary grew
+ * is how a working path breaks on a status someone added elsewhere.
+ *
+ * So: ask THIS when you need "is it over", and `isActiveOrderStatus` when you need "should it be
+ * on screen".
+ */
+export function isTerminalOrderStatus(status: unknown): boolean {
+  const s = String(status || '').toLowerCase()
+  return (TERMINAL_ORDER_STATUSES as readonly string[]).includes(s)
+}
+
 export function isActiveOrderStatus(status: unknown): boolean {
   const s = String(status || '').toLowerCase()
-  if ((TERMINAL_ORDER_STATUSES as readonly string[]).includes(s)) return false
+  if (isTerminalOrderStatus(s)) return false
   return (ACTIVE_ORDER_STATUSES as readonly string[]).includes(s)
 }
 
