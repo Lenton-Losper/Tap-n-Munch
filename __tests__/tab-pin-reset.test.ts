@@ -20,6 +20,8 @@ type Row = Record<string, unknown>
 
 let tabRow: Row
 const auditInserts: Row[] = []
+/** #216: writes to restaurant_tables, kept apart from the tabs patch this suite inspects. */
+const tableUpdates: Row[] = []
 const tabUpdates: Row[] = []
 
 jest.mock('@/lib/terminal-auth', () => ({
@@ -59,6 +61,26 @@ function makeSupabase() {
             return { error: null }
           },
         }
+      }
+      /**
+       * #216 added a second table to this route: a successful join marks the table `occupied`,
+       * because a table holding a live tab that is not `'occupied'` is invisible on the payment
+       * terminal and staff cannot take payment on it.
+       *
+       * Recorded separately from the `tabs` builder so the reset-token assertions below — which
+       * inspect the tabs patch exactly — cannot be disturbed by a write that has nothing to do
+       * with #265.
+       */
+      if (table === 'restaurant_tables') {
+        const b: Record<string, unknown> = {
+          update: (row: Row) => {
+            tableUpdates.push(row)
+            return b
+          },
+          eq: () => b,
+          then: (resolve: (v: unknown) => unknown) => resolve({ error: null }),
+        }
+        return b
       }
       if (table !== 'tabs') throw new Error(`unexpected table ${table}`)
 
@@ -140,6 +162,7 @@ describe('#265 — POST /api/tabs/[tabId]/reset-pin', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     auditInserts.length = 0
+    tableUpdates.length = 0
     tabUpdates.length = 0
     tabRow = baseTab()
   })
@@ -192,6 +215,7 @@ describe('#265 — POST /api/tabs/[tabId]/join, resetToken branch', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     auditInserts.length = 0
+    tableUpdates.length = 0
     tabUpdates.length = 0
     tabRow = baseTab()
   })

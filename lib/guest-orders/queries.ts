@@ -10,6 +10,7 @@ import { normalizeOrderStatusForDisplay } from '@/lib/orders/active-order-visibi
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
 import { filterToCurrentSession } from './session-boundary'
+import { LIVE_REQUEST_STATUSES } from '@/lib/tabs/pending-order-requests'
 import type { GuestOrderRow } from './types'
 
 /**
@@ -21,8 +22,15 @@ import type { GuestOrderRow } from './types'
  * been accepted, has not been declined, and is emphatically not gone. Filtering it out at the
  * database is what let one request read "Waiting for Review" on its own page while being absent
  * from every list that should contain it (#219).
+ *
+ * MOVED to lib/tabs/pending-order-requests.ts (#120), which needed the same list for the terminal
+ * settle and close paths. Re-exported here rather than duplicated: the customer's "still my
+ * business" and the terminal's "still blocks the bill" must be the SAME set, or one surface will
+ * quietly stop counting a status the other still does.
+ *
+ * The import itself sits in the block at the top of this file; only the RATIONALE lives here,
+ * beside the queries that depend on it.
  */
-const LIVE_REQUEST_STATUSES = ['waiting_review', 'accepting'] as const
 
 export async function resolveGuestRestaurantId(restaurantIdInput: string): Promise<string> {
   return resolveRestaurantUuid(restaurantIdInput)

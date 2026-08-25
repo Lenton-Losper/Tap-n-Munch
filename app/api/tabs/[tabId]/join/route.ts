@@ -4,6 +4,7 @@ import { issueTokenForOpenTab } from '@/lib/session-token'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { generateTabPin } from '@/lib/tabs/generate-tab-pin'
 import { resolveTabPinPolicy } from '@/lib/tabs/pin-policy'
+import { markTableOccupied } from '@/lib/tables/mark-table-occupied'
 
 export const dynamic = 'force-dynamic'
 
@@ -218,6 +219,19 @@ export async function POST(
       tableId,
       restaurantUuid
     )
+
+    /**
+     * #216. This route NEVER touched `restaurant_tables` — zero occurrences before this line.
+     *
+     * It hands out a session token for a live tab exactly as tab creation does, so after it runs
+     * the table genuinely is occupied; the column just never said so. A table holding a live tab
+     * whose status is not `'occupied'` is invisible on the payment terminal, which gates its whole
+     * list on that column, and staff then cannot take payment there.
+     *
+     * Marked AFTER the token is issued, deliberately: if issuing throws, nothing has joined and
+     * the table should not be claimed.
+     */
+    await markTableOccupied(supabase, tableId, '[TABS join]')
 
     return NextResponse.json({
       success: true,

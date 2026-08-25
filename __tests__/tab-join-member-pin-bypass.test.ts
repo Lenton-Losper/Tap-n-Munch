@@ -36,6 +36,8 @@ type TabRow = Record<string, unknown>
 let tabRow: TabRow
 /** Every `update()` payload the route wrote, so the append behaviour can be asserted. */
 let updates: Array<Record<string, unknown>> = []
+/** #216: writes to restaurant_tables, kept out of `updates` so its counts stay exact. */
+let tableUpdates: Array<Record<string, unknown>> = []
 /** Set when the route issued a session token — the thing the bypass illegitimately handed out. */
 let issuedToken: string | null = null
 
@@ -53,6 +55,30 @@ jest.mock('@/lib/session-token', () => ({
 function makeClient() {
   return {
     from(table: string) {
+      /**
+       * #216 added a second table to this route: on a successful join it marks the table
+       * `occupied`, because a table holding a live tab that is not `'occupied'` is invisible on
+       * the payment terminal and staff cannot take payment on it.
+       *
+       * Recorded in its OWN array rather than in `updates`. The assertions below count `updates`
+       * exactly (`toEqual([])`, `toHaveLength(1)`) to pin the member-append behaviour, so letting
+       * an unrelated write share that array would make this suite fail for a reason that has
+       * nothing to do with the PIN bypass it exists to guard.
+       */
+      if (table === 'restaurant_tables') {
+        return {
+          update(row: Record<string, unknown>) {
+            const builder: Record<string, unknown> = {
+              eq: () => builder,
+              then: (resolve: (v: unknown) => unknown) => {
+                tableUpdates.push(row)
+                return resolve({ error: null })
+              },
+            }
+            return builder
+          },
+        }
+      }
       if (table !== 'tabs') throw new Error(`unexpected table: ${table}`)
       return {
         select() {
@@ -81,6 +107,7 @@ jest.mock('@/lib/supabase/server', () => ({
 
 beforeEach(() => {
   updates = []
+  tableUpdates = []
   issuedToken = null
   tabRow = {
     id: TAB_ID,
@@ -154,5 +181,31 @@ describe('POST /api/tabs/[tabId]/join — a known member session_id is not a cre
 
     expect(status).toBe(200)
     expect(updates).toHaveLength(1)
+  })
+})
+
+/**
+ * #216 — this route hands out a session token for a live tab exactly as tab CREATION does, but it
+ * never touched `restaurant_tables`. A table holding a live tab whose status is not `'occupied'` is
+ * invisible on the payment terminal, whose entire list is gated on that column by an inner join —
+ * so staff could not take payment at a table somebody had legitimately joined.
+ *
+ * These two cases sit in this file rather than in #216's own suite because the question is about
+ * WHEN this route marks the table, and the PIN refusals above are exactly the "when it must not"
+ * cases. They also make the mock branch added for #216 load-bearing instead of decorative.
+ */
+describe('POST /api/tabs/[tabId]/join — marks the table occupied, but only on a real join (#216)', () => {
+  it('marks the table occupied when the join succeeds', async () => {
+    const { status } = await join({ sessionId: 'sess-new-guest', displayName: 'Ada', pin: REAL_PIN })
+
+    expect(status).toBe(200)
+    expect(tableUpdates).toEqual([{ status: 'occupied' }])
+  })
+
+  it('marks NOTHING when the PIN is refused — a rejected stranger must not claim the table', async () => {
+    const { status } = await join({ sessionId: HARVESTED_SESSION_ID, pin: '0000' })
+
+    expect(status).toBe(403)
+    expect(tableUpdates).toEqual([])
   })
 })

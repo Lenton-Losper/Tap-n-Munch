@@ -15,6 +15,11 @@ import {
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
+import {
+  blocksSettlement,
+  fetchPendingOrderRequests,
+  summarisePendingForTab,
+} from '@/lib/tabs/pending-order-requests'
 
 export const dynamic = 'force-dynamic'
 
@@ -515,8 +520,26 @@ export async function POST(
       console.error('[terminal/tabs/settle] can_close check failed', remainingError)
     }
 
+    /**
+     * #120. `remaining` above reads `orders`, and a round staff have not Accepted yet is not in
+     * `orders` at all — so this check has always been blind to it. Settling every order on the tab
+     * therefore reported `can_close: true` while a round placed minutes earlier was still waiting
+     * for review; accepting it afterwards re-inflates a tab that has been paid and closed.
+     *
+     * Asked by tab AND by table for the reason given on fetchPendingOrderRequests: `tab_id` is
+     * nullable on that table.
+     */
+    const pendingRequests = await fetchPendingOrderRequests(supabase, {
+      restaurantId: terminal.restaurantId,
+      tabIds: [tabId],
+      tableIds: [tab.table_id],
+    })
+    const pendingForTab = summarisePendingForTab(pendingRequests, tabId, tab.table_id)
+
     const canClose =
-      !remainingError && (remaining ?? []).filter((o) => owesMoney(o.payment_status)).length === 0
+      !remainingError &&
+      (remaining ?? []).filter((o) => owesMoney(o.payment_status)).length === 0 &&
+      !blocksSettlement(pendingForTab)
 
     // Split statements + settled_at guard, both explained in full on the helper. This used to
     // be written out inline here, which is exactly how the single-order terminal payment route
