@@ -342,9 +342,33 @@ export async function processPaymentIntent(
   // Recover a prior orphaned callback before starting a new SALE (process death case).
   const priorOrphan = await consumeOrphanedIfAny();
   if (priorOrphan?.success) {
-    const orphanOrderId = // set on orphaned payload
-      undefined;
-    // Prefer applying orphan only when it matches this order (or order id unknown).
+    /**
+     * #343 — THE ORPHAN IS NOT CHECKED AGAINST THIS ORDER, AND IT SHOULD BE.
+     *
+     * This branch previously carried the vestige of that check: `const orphanOrderId = undefined`
+     * with the comment "Prefer applying orphan only when it matches this order (or order id
+     * unknown)". The variable was never assigned and never read — it silenced nothing and
+     * guarded nothing — so it is removed here and the INTENT is written down properly instead.
+     * Removing a dead `undefined` binding changes no behaviour; implementing the check would,
+     * which is why it is escalated rather than done. Authored 2026-07-29 in 10ac28f, a commit
+     * whose own message says "hold-for-signoff".
+     *
+     * THE GAP. A recovered orphaned SUCCESS is returned as the result for WHICHEVER order is on
+     * screen when the next payment is started. If the app died after the reader's callback for
+     * order A and staff then begin a payment on order B, B is reported paid carrying A's voucher,
+     * and A stays unpaid. The server's amount gate does not catch it: the amount sent is B's own
+     * total, so it matches B exactly.
+     *
+     * THE DATA FOR THE CHECK EXISTS BUT IS DISCARDED. PaymentNativeResult declares
+     * `orderId?: string`, and mapNativeSuccess drops it building PaymentResult — so the
+     * comparison the original comment asks for is impossible without also carrying that field
+     * through. Any fix is those two changes together, not one line here.
+     *
+     * NOT IMPLEMENTED HERE ON PURPOSE. What a recovered payment is allowed to settle is a ruling
+     * about what a payment MEANS, and #327's `left_pending_finatic_uncertain` is the standing
+     * example of why that belongs to the owner: an orphan whose order cannot be established is
+     * the same "cannot say" state, and guessing either way is a money decision.
+     */
     return priorOrphan;
   }
 
