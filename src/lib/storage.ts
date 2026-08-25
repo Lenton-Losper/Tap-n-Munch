@@ -232,21 +232,60 @@ export async function getHeldOrphanPayments(): Promise<HeldOrphanPayment[]> {
 }
 
 /**
- * Clear the held record(s). This is an OPERATOR action — "I have checked this" — never something
- * the app decides on its own, because the record is the only trace the transaction ever existed.
+ * The identity of ONE held record, and it is a VALUE identity rather than an index.
+ *
+ * WHY NOT AN INDEX. The reporting pass rewrites this list on every screen focus, dropping records
+ * the server has settled. An index captured when the notice rendered can therefore point at a
+ * DIFFERENT record by the time the operator presses the button — so acknowledging "the second one"
+ * would delete whichever record happened to be second a moment later. That is the same defect this
+ * whole change exists to remove, one level down.
+ *
+ * Held at the millisecond, plus the voucher, plus the order it named. Two genuinely distinct
+ * transactions cannot collide on all three.
  */
-export async function clearHeldOrphanPayments(): Promise<void> {
+export function heldOrphanIdentity(row: HeldOrphanPayment): string {
+  return [
+    row.heldAt,
+    row.voucherNo ?? '',
+    row.businessOrderNo ?? '',
+    row.orphanOrderId ?? '',
+  ].join('|');
+}
+
+/**
+ * ACKNOWLEDGE EXACTLY ONE HELD RECORD. This is an OPERATOR action — "I have checked this" — never
+ * something the app decides on its own, because the record is the only trace on this device that
+ * the transaction ever existed.
+ *
+ * IT REPLACED A WHOLE-STORE WIPE, AND THAT IS THE POINT. One button below a list of N records
+ * called removeItem on the key, so an operator who had genuinely checked one payment destroyed
+ * every held record — including a case-3 one, which is precisely the record that never comes back
+ * on its own because no order id exists to report it against. A card transaction deleted by a
+ * button captioned "I have checked this payment".
+ *
+ * Returns what it did rather than void, so the caller can tell "removed" from "it was already
+ * gone" instead of assuming.
+ */
+export async function acknowledgeHeldOrphanPayment(
+  identity: string,
+): Promise<{removed: number; remaining: number}> {
   try {
-    await EncryptedStorage.removeItem(HELD_ORPHAN_PAYMENT_STORAGE_KEY);
+    const existing = await getHeldOrphanPayments();
+    const keep = existing.filter(row => heldOrphanIdentity(row) !== identity);
+    await setHeldOrphanPayments(keep);
+    return {removed: existing.length - keep.length, remaining: keep.length};
   } catch (err) {
-    console.warn('[storage] failed to clear held orphaned payments', err);
+    console.warn('[storage] failed to acknowledge held orphaned payment', err);
+    return {removed: 0, remaining: -1};
   }
 }
 
 /**
  * Write the held list back after a reporting pass (#344). Used to drop records the server has
- * acknowledged while keeping the rest — never to clear the lot, which is what
- * clearHeldOrphanPayments is for and which is an operator action, not an automatic one.
+ * acknowledged while keeping the rest.
+ *
+ * There is no longer any way to clear the whole store in one call, deliberately: the operator
+ * action is acknowledgeHeldOrphanPayment, which removes exactly the record it was given.
  */
 export async function setHeldOrphanPayments(
   rows: HeldOrphanPayment[],

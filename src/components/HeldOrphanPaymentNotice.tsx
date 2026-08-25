@@ -11,9 +11,10 @@ import {
   HELD_ORPHAN_TITLE,
 } from '../constants/paymentCopy';
 import {
-  clearHeldOrphanPayments,
+  acknowledgeHeldOrphanPayment,
   getHeldOrphanPayments,
   getTerminalToken,
+  heldOrphanIdentity,
   setHeldOrphanPayments,
   type HeldOrphanPayment,
 } from '../lib/storage';
@@ -33,11 +34,19 @@ import {recordWiretapEvent} from '../lib/wiretap';
  * right now. Blocking that sale to report an unrelated one would make staff dismiss the message
  * reflexively, which is how a notice stops being read.
  *
- * ACKNOWLEDGING DELETES THE ONLY REMAINING RECORD. Native's consume is destructive, so this store
- * is the last copy of that transaction — which is why the action is worded as "I have checked
- * this" rather than "dismiss", and why nothing clears it automatically. Whether acknowledging
- * ought to require the payment be reconciled FIRST is a ruling, not an implementation detail, and
- * is open with the owner.
+ * ACKNOWLEDGING DELETES THE ONLY REMAINING RECORD ON THIS DEVICE, so the action is worded as "I
+ * have checked this" rather than "dismiss", and nothing clears it automatically.
+ *
+ * ONE BUTTON PER RECORD, AND THAT IS NOT A LAYOUT PREFERENCE. This card previously rendered N
+ * records above a SINGLE button that wiped the whole store. An operator who had checked one
+ * payment therefore destroyed every held record — including a case-3 one, which is exactly the
+ * record that can never come back on its own, since it names no order to report against. A card
+ * transaction deleted by a button captioned "I have checked this payment". Each record now carries
+ * its own action, and removal is by VALUE identity rather than list position, because the
+ * reporting pass rewrites this list underneath the render.
+ *
+ * Whether acknowledging ought to require the payment be reconciled FIRST is a ruling, not an
+ * implementation detail, and is open with the owner.
  */
 export default function HeldOrphanPaymentNotice() {
   const [held, setHeld] = useState<HeldOrphanPayment[]>([]);
@@ -96,9 +105,14 @@ export default function HeldOrphanPaymentNotice() {
     return null;
   }
 
-  const acknowledge = async () => {
-    await clearHeldOrphanPayments();
-    setHeld([]);
+  /**
+   * Acknowledge ONE record. Re-reads the store afterwards rather than filtering local state, so
+   * what the operator sees next is what is actually persisted — including anything the reporting
+   * pass resolved while this screen was open.
+   */
+  const acknowledgeOne = async (row: HeldOrphanPayment) => {
+    await acknowledgeHeldOrphanPayment(heldOrphanIdentity(row));
+    setHeld(await getHeldOrphanPayments());
   };
 
   return (
@@ -113,7 +127,7 @@ export default function HeldOrphanPaymentNotice() {
       </View>
 
       {held.map(row => (
-        <View key={`${row.heldAt}-${row.voucherNo ?? 'no-voucher'}`}>
+        <View key={heldOrphanIdentity(row)} style={styles.record}>
           <Text style={styles.body}>
             {row.reason === 'unknown_order'
               ? HELD_ORPHAN_BODY_UNKNOWN_ORDER
@@ -137,12 +151,15 @@ export default function HeldOrphanPaymentNotice() {
             */
             <Text style={styles.detail}>{HELD_ORPHAN_NEEDS_A_PERSON}</Text>
           )}
+          <Pressable
+            style={styles.ackButton}
+            onPress={() => {
+              void acknowledgeOne(row);
+            }}>
+            <Text style={styles.ackText}>{HELD_ORPHAN_ACKNOWLEDGE}</Text>
+          </Pressable>
         </View>
       ))}
-
-      <Pressable style={styles.ackButton} onPress={acknowledge}>
-        <Text style={styles.ackText}>{HELD_ORPHAN_ACKNOWLEDGE}</Text>
-      </Pressable>
     </View>
   );
 }
@@ -176,6 +193,17 @@ const styles = StyleSheet.create({
     ...Typography.tiny,
     color: Colors.textSecondary,
     marginTop: 2,
+  },
+  /**
+   * Each record is visually a unit with its own action, so it is unambiguous WHICH payment the
+   * button below it acknowledges. With one button under a stack of records that was guesswork.
+   */
+  record: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.amber,
+    paddingTop: Spacing.sm,
+    marginTop: Spacing.sm,
+    gap: Spacing.xs,
   },
   ackButton: {
     marginTop: Spacing.sm,

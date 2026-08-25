@@ -207,3 +207,60 @@ export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';
  */
 export const HELD_ORPHAN_NEEDS_A_PERSON =
   'This one cannot be matched automatically and needs to be reconciled by hand.';
+
+// ─── #346: the 42 seconds — what the operator sees while a card payment runs ───
+
+/**
+ * PROVISIONAL — NOT SIGNED OFF. Everything below carries the behaviour so the APK can be built and
+ * tested; the owner signs the wording.
+ *
+ * WHY THIS BLOCK EXISTS, because it must not be softened later by someone who does not know.
+ * Measured on production 2026-08-25: at Mingle, 61% of card sales that did not settle were rung up
+ * again within five minutes, against a 3% coincidence floor — twenty-one times. The median gap
+ * before staff re-rang was 42 seconds. At 42 seconds, 97.7% of payments that were going to succeed
+ * already had. So staff are not careless: they are reading the situation correctly, from a screen
+ * that told them nothing. The duplicate cash entry at Mingle and the N$180 rung on Finatic Cashier
+ * are both this.
+ *
+ * The old copy was the single line "● PROCESSING / Please wait..." — no elapsed time, no ceiling,
+ * no instruction, no cancel.
+ */
+
+/**
+ * REQUIREMENT — the pill BELOW the ceiling. Must show elapsed seconds from the first second, and
+ * must state the ceiling, because a bounded wait is a different experience from an open one. Must
+ * stay calm: at 12 seconds nothing is wrong.
+ */
+export const paymentProcessingElapsed = (elapsedS: number, ceilingS: number): string =>
+  `Processing payment — ${elapsedS}s. Usually done within ${ceilingS}s.`;
+
+/**
+ * REQUIREMENT — the heading once the ceiling passes. Must NOT say the payment failed: it may still
+ * succeed, and 1.8% of successful payments legitimately arrive after this point.
+ */
+export const PAYMENT_OVER_CEILING_TITLE = 'This payment is taking longer than usual';
+
+/**
+ * REQUIREMENT — the body, and the second sentence is the entire behavioural fix. It must tell staff
+ * NOT to ring the sale up again, in plain words, because re-ringing is the thing that produces
+ * duplicate charges and stranded orders. It must also say the card may already have been charged —
+ * the same rule that governs #327's strings 9 and 10 and must survive any future edit.
+ *
+ * It must NOT offer to cancel. We cannot cancel a card at the reader from here, and offering an
+ * action we cannot perform is worse than offering none.
+ */
+export const PAYMENT_OVER_CEILING_BODY =
+  'The card may already have been charged. Do not ring this sale up again. Check the payment status below, or follow the prompts on the card machine.';
+
+/** REQUIREMENT — the action. Idempotent: it asks the server what happened and charges nothing. */
+export const PAYMENT_CHECK_STATUS_LABEL = 'Check payment status';
+
+/**
+ * REQUIREMENT — shown when the HARD timeout fires and the terminal stops waiting for the reader.
+ *
+ * IT MUST NOT READ AS A FAILURE. Nothing failed; we stopped waiting. The card may have been
+ * charged, and the payment is still recorded and reported. Same rule as above: the "may have been
+ * charged" half is the point and must survive any edit.
+ */
+export const PAYMENT_TIMED_OUT_MESSAGE =
+  'The card machine did not report back in time. The card may still have been charged — this payment has been kept and will be checked. Do not ring this sale up again.';

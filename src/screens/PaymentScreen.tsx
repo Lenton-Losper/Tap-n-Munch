@@ -18,6 +18,7 @@ import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
 import HeldOrphanPaymentNotice from '../components/HeldOrphanPaymentNotice';
+import {PAYMENT_ADVISORY_CEILING_S} from '../constants';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   ApiRequestError,
@@ -47,6 +48,10 @@ import {
   UNCONFIRMED_RETRY_ACTION,
   UNCONFIRMED_STILL_UNRESOLVED,
   UNCONFIRMED_TITLE,
+  paymentProcessingElapsed,
+  PAYMENT_OVER_CEILING_TITLE,
+  PAYMENT_OVER_CEILING_BODY,
+  PAYMENT_CHECK_STATUS_LABEL,
 } from '../constants/paymentCopy';
 import {formatCurrency, getItemLineTotal} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
@@ -100,6 +105,15 @@ export default function PaymentScreen({route, navigation}: Props) {
   } = usePaymentStateMachine(orderId);
   /** #327. In-flight guard for the idempotent status check offered on the UNCONFIRMED screen. */
   const [checkingStatus, setCheckingStatus] = useState(false);
+  /**
+   * #346 — HOW LONG THIS PAYMENT HAS BEEN RUNNING. Ticks once a second while the payment is in
+   * flight and resets to 0 when it is not, so the pill can show elapsed time and a ceiling
+   * instead of an unbounded "please wait".
+   *
+   * The old screen showed no duration at all, which is why staff could not tell 3 seconds from 3
+   * minutes and re-rang the sale at a median of 42s. See paymentCopy's #346 block.
+   */
+  const [paymentElapsedS, setPaymentElapsedS] = useState(0);
   /**
    * #326. Set when this order was found ALREADY paid rather than paid by this attempt. The screen
    * is a success either way — the money is there — but saying so plainly beats a bare "Payment
@@ -934,6 +948,27 @@ export default function PaymentScreen({route, navigation}: Props) {
    */
   const paymentActionsBlocked =
     state === 'PAYMENT_IN_PROGRESS' || state === 'PAYMENT_UNCONFIRMED';
+
+  /**
+   * The tick. Deliberately a wall-clock delta rather than a counter incremented each interval:
+   * setInterval drifts and is throttled when the app is backgrounded, and this screen IS
+   * backgrounded for most of a card payment — WiseCashier is a separate activity on top of it. A
+   * counter would under-report exactly when the number matters most, on return from the reader.
+   */
+  useEffect(() => {
+    if (state !== 'PAYMENT_IN_PROGRESS') {
+      setPaymentElapsedS(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setPaymentElapsedS(0);
+    const id = setInterval(() => {
+      setPaymentElapsedS(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
+  const paymentOverCeiling = paymentElapsedS >= PAYMENT_ADVISORY_CEILING_S;
   const displayOrderNumber = order?.order_number ?? orderNumber;
   const displayPlacedAt = order?.placed_at ?? placedAt ?? new Date().toISOString();
   const items = order?.items ?? [];
@@ -1392,11 +1427,57 @@ export default function PaymentScreen({route, navigation}: Props) {
           <>
             <Text style={styles.sectionHeader}>Payment Status</Text>
 
-            {state === 'PAYMENT_IN_PROGRESS' && (
+            {/*
+              #346 — TWO STATES, NOT ONE. Below the ceiling this is a calm progress line with an
+              elapsed count and a stated bound. Past the ceiling it becomes an instruction, because
+              at that point the operator's next action decides whether the venue ends up with a
+              duplicate charge. The instruction NOT to ring the sale up again is the whole fix.
+
+              No cancel is offered anywhere here, deliberately: we cannot cancel a card at the
+              reader from this screen, and an action we cannot perform is worse than none.
+            */}
+            {state === 'PAYMENT_IN_PROGRESS' && !paymentOverCeiling && (
               <View style={styles.processingPill}>
                 <Text style={styles.processingText}>
-                  ● PROCESSING / Please wait...
+                  {'● '}
+                  {paymentProcessingElapsed(
+                    paymentElapsedS,
+                    PAYMENT_ADVISORY_CEILING_S,
+                  )}
                 </Text>
+              </View>
+            )}
+
+            {state === 'PAYMENT_IN_PROGRESS' && paymentOverCeiling && (
+              <View style={styles.overCeilingCard}>
+                <View style={styles.overCeilingHeader}>
+                  <MaterialCommunityIcons
+                    name="clock-alert-outline"
+                    size={20}
+                    color={Colors.amber}
+                  />
+                  <Text style={styles.overCeilingTitle}>
+                    {PAYMENT_OVER_CEILING_TITLE}
+                  </Text>
+                </View>
+                <Text style={styles.overCeilingBody}>
+                  {PAYMENT_OVER_CEILING_BODY}
+                </Text>
+                <Text style={styles.overCeilingElapsed}>
+                  {paymentElapsedS}s
+                </Text>
+                <LoadingButton
+                  style={styles.overCeilingButton}
+                  loading={checkingStatus}
+                  disabled={checkingStatus}
+                  onPress={handleCheckPaymentStatus}
+                  spinnerColor={Colors.white}>
+                  <Text style={styles.overCeilingButtonText}>
+                    {checkingStatus
+                      ? UNCONFIRMED_CHECK_IN_PROGRESS
+                      : PAYMENT_CHECK_STATUS_LABEL}
+                  </Text>
+                </LoadingButton>
               </View>
             )}
 
@@ -1907,6 +1988,52 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: '800',
     color: Colors.green,
+  },
+  /**
+   * #346 — the past-the-ceiling state. Amber and card-shaped rather than a pill, because it is no
+   * longer a status line: it carries an instruction and an action.
+   */
+  overCeilingCard: {
+    backgroundColor: Colors.amberLight,
+    borderWidth: 1,
+    borderColor: Colors.amber,
+    borderRadius: 12,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+  },
+  overCeilingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  overCeilingTitle: {
+    flex: 1,
+    ...Typography.body,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  overCeilingBody: {
+    ...Typography.small,
+    color: Colors.textPrimary,
+    lineHeight: 20,
+  },
+  /** The count keeps running past the ceiling — the wait is bounded, not over. */
+  overCeilingElapsed: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    fontVariant: ['tabular-nums'],
+  },
+  overCeilingButton: {
+    marginTop: Spacing.xs,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  overCeilingButtonText: {
+    color: Colors.white,
+    ...Typography.body,
+    fontWeight: '700',
   },
   processingPill: {
     backgroundColor: Colors.blueLight,

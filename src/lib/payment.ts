@@ -1,10 +1,11 @@
 import {NativeModules, Platform} from 'react-native';
-import {APP_VERSION} from '../constants';
+import {APP_VERSION, PAYMENT_RESULT_TIMEOUT_MS} from '../constants';
 import {
   markTerminalPaymentAttemptStarted,
   prepareTerminalPayment,
   verifyTerminalPayment,
 } from './api';
+import {PAYMENT_TIMED_OUT_MESSAGE} from '../constants/paymentCopy';
 import {getTerminalToken, holdOrphanPayment} from './storage';
 import {decideOrphanDisposition} from './orphanPaymentGuard';
 import {recordWiretapEvent} from './wiretap';
@@ -559,7 +560,82 @@ export async function processPaymentIntent(
 
     await notifyPaymentAttemptStarted(prepareOrderId, token, merchantOrderNo);
 
-    const result = await launchPromise;
+    /**
+     * #346 — THE PROMISE NOW HAS A CEILING. It never did: if WiseCashier never returned, this
+     * awaited forever and the screen sat on "PROCESSING / Please wait..." with no end.
+     *
+     * THE TIMEOUT MUST NOT ABANDON THE PAYMENT, and this is the whole difficulty. WiseCashier is a
+     * separate activity still holding the card; the reader can settle seconds after we stop
+     * waiting. Two consequences shape the code below:
+     *
+     *   1. The outcome is 'ambiguous', NEVER a failure. A failure would tell the server this sale
+     *      did not happen, and the server would act on that while the card was being charged. The
+     *      server's answer to ambiguous is to verify against Finatic, which is exactly right.
+     *
+     *   2. THE LATE RESULT IS CAUGHT, not dropped. Racing a promise does not cancel the loser: when
+     *      WiseCashier finally returns, launchPromise resolves into nothing and a real card
+     *      transaction disappears — the same class of loss as the destructive consume that ruling 4
+     *      removed. So on timeout we attach a handler that routes whatever arrives into the #344
+     *      held store, where the reporting pass will settle it against the order it names.
+     *
+     * Native's orphan store covers the case where the whole process dies; this covers the case
+     * where it does not. They are different failures and both need an owner.
+     */
+    const TIMED_OUT = Symbol('payment-result-timeout');
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const raced = await Promise.race([
+      launchPromise,
+      new Promise<typeof TIMED_OUT>(resolve => {
+        timeoutHandle = setTimeout(() => resolve(TIMED_OUT), PAYMENT_RESULT_TIMEOUT_MS);
+      }),
+    ]);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (raced === TIMED_OUT) {
+      recordWiretapEvent('payment.result.timeout', {
+        orderId,
+        businessOrderNo: merchantOrderNo,
+        waitedMs: String(PAYMENT_RESULT_TIMEOUT_MS),
+      });
+      // Catch the late arrival. Deliberately not awaited: this function returns now, and the
+      // handler outlives it for as long as the JS context does.
+      void launchPromise
+        .then(async late => {
+          const mapped = mapNativeSuccess({
+            ...late,
+            businessOrderNo: late.businessOrderNo || merchantOrderNo,
+          });
+          recordWiretapEvent('payment.result.late', {
+            orderId,
+            businessOrderNo: mapped.businessOrderNo ?? merchantOrderNo,
+            outcomeKind: mapped.outcomeKind ?? '(none)',
+            success: String(mapped.success),
+          });
+          // applyNonSuccess:false — nobody is waiting on this screen any more, so nothing may be
+          // applied to whatever the operator has moved on to. Held, reported, never dropped.
+          await applyOrHoldOrphan({...mapped, orderId}, '', {applyNonSuccess: false});
+        })
+        .catch(err => {
+          recordWiretapEvent('payment.result.late', {
+            orderId,
+            businessOrderNo: merchantOrderNo,
+            outcomeKind: '(threw)',
+            success: 'false',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+
+      return {
+        success: false,
+        outcomeKind: 'ambiguous',
+        businessOrderNo: merchantOrderNo,
+        error: PAYMENT_TIMED_OUT_MESSAGE,
+      };
+    }
+
+    const result = raced;
 
     // Native MainActivity only resolves on Finatic result "00" with a transaction ID.
     return mapNativeSuccess({
