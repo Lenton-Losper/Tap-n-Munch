@@ -14,8 +14,8 @@ promotions land. The order below is the order to walk, not the order things were
 |---|---|
 | Production web | `9edd9517` — verified 60/60 on flashtap.app, www.flashtap.app, riviera.flashtap.app |
 | Terminal on TMS | **vc92 / 1.91** unless you have pushed vc95 by the time you read this |
-| Terminal ready to push | **vc95 / 1.94** — `releases/production/flashtap-terminal-vc95-1.94-dd87c58.apk`, md5 `db516799a3e277949fc6419e90a22210` |
-| Superseded, do not push | vc93, vc94 |
+| Terminal ready to push | **vc96 / 1.95** — `releases/production/flashtap-terminal-vc96-1.95-df1a5e2.apk`, md5 `77a9ec58b946a06e92350ccb335f6ac9`. First NATIVE change of the sequence. |
+| Superseded, do not push | vc93, vc94, vc95 |
 
 **Two migrations are still unapplied and off main. You run these; nothing below depends on them
 except where noted.**
@@ -76,13 +76,15 @@ Same force-stop, but it has to land **after the reader returns and before JS han
 That window is short, so expect several attempts — this is the one state where "I tried and could
 not" is a fair outcome rather than a defect.
 
-Easier variant: force-stop during the payment as in B, then reopen and go to a **DIFFERENT order**.
+**Use this variant, not the narrow one:** force-stop during the payment as in B, then reopen and go
+to a **DIFFERENT order**.
 That is the exact sequence the defect needed — and the notice appearing there, rather than the other
 order being silently settled, IS the fix.
 
 ### D. A stuck "accepting" request (#120's residual) — staging only, ~15 seconds
 
-Do not do this on production. On staging, place an order so a row sits in `waiting_review`, then:
+Do not do this on production. **There is no UI path to this state** — the row must be set directly.
+On staging, place an order so a row sits in `waiting_review`, then:
 
 ```sql
 UPDATE order_requests SET status = 'accepting'
@@ -183,33 +185,61 @@ it since launch got "Something went wrong". Staff should now see the notificatio
 
 ---
 
-## 3. Terminal — vc95 / 1.94
+## 3. Terminal — walk vc92's screens, then vc93 → vc96
 
-**Push vc95 to TMS before this section.** Nothing here is testable until it is on a device.
+**Push vc96 to TMS before this section.** vc92 is what is on devices now; vc96 supersedes vc93, vc94
+and vc95 and needs no server change.
 
-### 3a. Payment result states — #327 / #326
+Ordered so the reachable things come first and the deliberately-hard ones last.
 
-**Reach it:** take a card payment — the everyday path should be unchanged. For the states that
-matter, **section 0B forces NOT CONFIRMED deterministically in ~30 seconds.**
+### 3a. #326 — a paid order must read as PAID  *(reachable, ~1 min)*
 
-- **NOT CONFIRMED** — the primary action is **"Check payment status"**, and the instruction to NOT
-  release the order sits ABOVE both actions. "Take payment again" is secondary and visibly so.
-- An **already-paid** order must render as a settled sale, never as a failure with a retry prompt.
-- An **interrupted** payment must say the card MAY have been charged — not that it failed.
+Pay an order our webhook fallback has ALREADY settled. Expect **"Payment successful"** with
+*"This order is already paid. No further payment is needed."*
 
-### 3b. Ready to Pay after a partial settle — #318
+**Not** FAILED, and **no retry prompt.** Before this, the server verified with Finatic, found the
+money, and told the operator the payment had failed.
 
-**Reach it:** open a tab with several orders, settle SOME of them, then look at the table again.
-"Ready to Pay" must still be there. It used to disappear after the first partial settle.
+### 3b. #318 — Ready to Pay survives a partial settle  *(reachable)*
 
-### 3c. The held-orphan notice — #344
+Open a tab with several orders, settle SOME, look at the table again. **"Ready to Pay" must still be
+there.** It used to disappear after the first partial settle.
 
-**Reach it: section 0C.** This is the one state where "I tried and could not" is a fair outcome —
-the window is genuinely short. The notice sits ABOVE the order card, is not a modal, and names the
-voucher.
+### 3c. #327 — the NOT CONFIRMED screen  *(force it: section 0B, ~30s)*
 
-**The strings here are NOT signed yet** — two are on hold pending a behaviour question. Treat
-anything you see as provisional.
+Expect: **Not confirmed** · the do-not-release instruction ABOVE both actions · **Check payment
+status** as the filled primary · **Take payment again** as underlined secondary · and the bottom
+**Process Payment** button DISABLED until the secondary is pressed.
+
+That last one matters — without it the biggest, most habitual button on the screen sits below a card
+whose primary action is "check", and would still charge a card.
+
+### 3d. #120 — the release button  *(staging only: section 0D)*
+
+Terminal → Tables → a table with `can_close` → **Close Table**. With a row staged in `accepting`,
+the close is refused and a modal lists **every** blocking row — but only the `accepting` one shows
+**Release stuck request**. Press it; the row returns to `waiting_review` and the table refreshes.
+
+**Walk the negative too:** a `waiting_review` row must appear in that list with **NO button**. That
+is the safety property, and it is the half a "does the button work" test cannot see.
+
+### 3e. #344 — the held-orphan notice  *(force it: section 0C)*
+
+Force-stop mid-payment, reopen, and start a payment **on a different order**. The notice appears
+above the order card, amber, naming the OTHER order and its voucher.
+
+**The vc95 half:** leave the device online and revisit the Payment screen. The notice **clears
+itself** once the server confirms that order settled. That self-clearing is invisible on vc94.
+
+### 3f. vc96's read/hold/clear — the one nobody would find by accident
+
+The observable is what happens on a **SECOND** failure: force-stop again *during* the recovery.
+
+- vc95 and earlier: the orphan is **gone for good.**
+- vc96: it is **still there on the next launch.**
+
+This cannot be seen without deliberately crashing twice, which is exactly why it is worth a line on
+this list. It is the difference between a card transaction being recoverable and being lost.
 
 ---
 
