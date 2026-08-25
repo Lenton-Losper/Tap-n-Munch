@@ -98,6 +98,21 @@ export async function POST(
             id: String(r.id),
             placed_at: r.placed_at,
             value: pendingOrderRequestValue(r),
+              /**
+               * #120's RESIDUAL. The status is here so the caller can tell the two blocking states
+               * apart, and it must not be dropped again:
+               *
+               *   waiting_review  a real round a customer placed. Staff ACCEPT or DECLINE it.
+               *   accepting       the transient claim the accept route takes. If the worker died
+               *                   between the claim and its release, this row is stranded, and
+               *                   nothing clears it -- there is no reaper, and per #215 there
+               *                   cannot be one until the claim records a timestamp.
+               *
+               * ONLY an `accepting` row may be offered the release action. Offering it for a
+               * `waiting_review` row would let staff dismiss a round a customer really placed,
+               * which is the #120 bug again from the other side.
+               */
+              status: r.status,
           })),
         },
         { status: unknown ? 503 : 409 },
