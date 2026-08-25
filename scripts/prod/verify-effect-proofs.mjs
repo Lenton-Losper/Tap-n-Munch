@@ -37,7 +37,7 @@ function secret(name) {
 function menuCopy() {
   const src = readFileSync('lib/customer-copy/menu-copy.ts', 'utf8')
   const out = {}
-  for (const m of src.matchAll(/^\s{2}(pay(?:Counter|Table)(?:Cash|Card)(?:Label|Body))\s*:\s*'([^']*)'/gm)) {
+  for (const m of src.matchAll(/^\s{2}(pay(?:Counter|Table)[A-Za-z]+)\s*:\s*'([^']*)'/gm)) {
     out[m[1]] = m[2]
   }
   return out
@@ -149,6 +149,46 @@ async function main() {
         'a counter venue and a table venue read DIFFERENT sentences',
         'otherwise is_counter_service does nothing',
       )
+    }
+
+    // ------------------------------------------------- ROUND TWO: the six pairs signed 2026-08-25
+    //
+    // Round one covered only the cart's payment chooser. These six are the strings on the tab
+    // page, the v2 landing, the cart's payment explanation and the order-confirmation ready line,
+    // checked the same way: against the venue rows production actually serves.
+    const PAIRS = [
+      ['CouldNotNotifyStaff', 'tab page: request-the-bill failed'],
+      ['PleaseAskForAssistance', 'v2 landing: a payment is already in progress'],
+      ['StaffNotified', 'tab page: request-the-bill succeeded'],
+      ['TabReadyToPay', 'v2 landing: the tab is ready to pay'],
+      ['AssistWithPayment', 'cart: how payment will happen'],
+      ['OrderReady', 'order confirmation: the order is ready'],
+    ]
+    const PROMISES_A_PERSON = /waiter|someone|staff member|at your table|come to your table|will be with you/i
+
+    console.log('\nPROOF 3 - ROUND TWO pairs, resolved for each production venue')
+    for (const [key, where] of PAIRS) {
+      const counter = COPY['payCounter' + key]
+      const table = COPY['payTable' + key]
+      check(Boolean(counter) && Boolean(table), key + ': both halves exist', where)
+      if (!counter || !table) continue
+      // Equality here would make is_counter_service decorative for this pair.
+      check(counter !== table, key + ': the two service models say DIFFERENT things')
+      check(!PROMISES_A_PERSON.test(counter), key + ': the COUNTER half promises no person', '"' + counter + '"')
+    }
+
+    console.log('\n  CONTROL - the TABLE halves are where a person is still promised.')
+    const promising = PAIRS.filter(([k]) => PROMISES_A_PERSON.test(COPY['payTable' + k] || ''))
+    check(
+      promising.length > 0,
+      'at least one TABLE half still promises a person',
+      promising.length + ' of ' + PAIRS.length + ' do - so the negative above is not vacuous',
+    )
+
+    console.log('\n  WHAT THE TWO LIVE COUNTER VENUES ACTUALLY READ:')
+    for (const r of rows.filter((x) => x.is_counter_service === true)) {
+      console.log('    ' + String(r.name) + ':')
+      for (const [key] of PAIRS) console.log('      ' + key.padEnd(24) + ' "' + COPY['payCounter' + key] + '"')
     }
 
     console.log(bad === 0 ? '\nEFFECT_PROOFS_COPY_OK' : `\n*** ${bad} CHECK(S) FAILED ***`)
