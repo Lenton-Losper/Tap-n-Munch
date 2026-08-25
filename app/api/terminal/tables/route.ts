@@ -14,6 +14,11 @@ import {
   buildMemberNameLookup,
   resolveOrderMemberName,
 } from '@/lib/tabs/resolve-order-member-names'
+import {
+  blocksSettlement,
+  fetchPendingOrderRequests,
+  summarisePendingForTab,
+} from '@/lib/tabs/pending-order-requests'
 
 export const dynamic = 'force-dynamic'
 
@@ -86,6 +91,18 @@ export async function GET(req: Request) {
       allOrderIds,
     )
 
+    /**
+     * #120. The rounds that are NOT in `orders` yet.
+     *
+     * Asked by tab AND by table, because `order_requests.tab_id` is nullable — see the note on
+     * fetchPendingOrderRequests. One read for the whole payload rather than one per table.
+     */
+    const pending = await fetchPendingOrderRequests(supabase, {
+      restaurantId: terminal.restaurantId,
+      tabIds: (tables ?? []).map((t: any) => t.tabs?.[0]?.id),
+      tableIds: (tables ?? []).map((t: any) => t.id),
+    })
+
     // One clock for the whole response, so two orders pushed at the same moment cannot be
     // reported on opposite sides of the timeout within a single payload.
     const now = new Date()
@@ -143,7 +160,22 @@ export async function GET(req: Request) {
       const unpaidTotal = unpaidOrders.reduce(
         (sum: number, o: any) => sum + Number(o.total), 0
       )
-      const canClose = unpaidOrders.length === 0
+
+      /**
+       * #120. A round that has not been Accepted is not in `orders` at all, so every number above
+       * is blind to it. `can_close` used to be computed from `unpaidOrders` alone, which is how
+       * staff could close a table over the top of a round placed five minutes earlier — leaving it
+       * to re-inflate a settled, closed tab the moment someone finally pressed Accept.
+       *
+       * The pending value is reported ALONGSIDE `unpaid_total`, never added into it. `unpaid_total`
+       * is what staff are about to charge, and nobody has agreed to make this food yet. Rolling it
+       * in would have the terminal take money for a round the kitchen may still decline.
+       *
+       * `blocksSettlement` treats a FAILED read as blocking, not as zero — the same fail-closed
+       * rule the settle route's own can_close check already learned (#104).
+       */
+      const pendingForTab = summarisePendingForTab(pending, tab.id, table.id)
+      const canClose = unpaidOrders.length === 0 && !blocksSettlement(pendingForTab)
 
       return {
         id: table.id,
@@ -170,6 +202,20 @@ export async function GET(req: Request) {
            * that ships in an APK.
            */
           ready_to_pay_at: tab.ready_to_pay_at ?? null,
+          /**
+           * #120. Surfaced so the device can SAY why the table will not close, instead of showing
+           * a disabled button with no cause. Adding these fields is inert on its own — the
+           * terminal must render them, and that ships in an APK. `can_close` above is not inert:
+           * it changes today, on the current build, and that is the half that actually protects
+           * the bill.
+           *
+           * `pending_requests_unknown` is deliberately its own field rather than being folded
+           * into the count. "I could not read the table" and "there are two rounds waiting" both
+           * block, but they are not the same thing to a human looking at a device.
+           */
+          pending_request_count: pendingForTab.count,
+          pending_requests_value: pendingForTab.value,
+          pending_requests_unknown: pendingForTab.unknown,
           orders,
         },
         can_close: canClose,
