@@ -717,6 +717,20 @@ export async function closeTable(tableId: string, token: string): Promise<void> 
   }
 }
 
+/**
+ * The payment route's 200 body, in full (#327).
+ *
+ * `outcome` is the discriminator and the field callers must branch on — pass it to
+ * classifyFailureReport in lib/paymentReportOutcome rather than interpreting it at the call site,
+ * so all three screens agree on what each value means.
+ */
+export type CompletePaymentResult = {
+  canClose: boolean;
+  success: boolean;
+  outcome?: string;
+  reason?: string;
+};
+
 export async function completePayment(
   orderId: string,
   token: string,
@@ -746,7 +760,7 @@ export async function completePayment(
      */
     noGatewayAttempt?: boolean;
   },
-): Promise<{canClose: boolean}> {
+): Promise<CompletePaymentResult> {
   // INSTRUMENTATION (vc84). Record what actually goes on the wire, before it goes.
   //
   // On 2026-08-09 the terminal classified a cancel correctly and the order still did not cancel,
@@ -822,8 +836,33 @@ export async function completePayment(
     );
   }
 
-  const data = (await response.json()) as {canClose?: boolean};
-  return {canClose: Boolean(data.canClose)};
+  /**
+   * #327. THIS USED TO PARSE `{canClose}` AND DISCARD THE REST OF THE BODY.
+   *
+   * The route answers three materially different facts on this same 200 — the payment was
+   * confirmed (`corrected_to_paid`), definitively not taken (`cancelled`), or CANNOT BE CONFIRMED
+   * (`left_pending_finatic_uncertain`) — and `outcome` is the only field that separates them. It
+   * was being thrown away here, one line from the screen that needed it, which is why order #868's
+   * unconfirmed payment reached the operator looking like every other result.
+   *
+   * `success` is carried too, but see paymentReportOutcome.ts: callers branch on `outcome` first,
+   * so this classifies correctly against both the pre-#329 server (which spelled the uncertain
+   * outcome `success: true`) and the current one.
+   */
+  const data = (await response.json()) as {
+    canClose?: boolean;
+    success?: boolean;
+    outcome?: string;
+    reason?: string;
+  };
+  return {
+    canClose: Boolean(data.canClose),
+    // Absent means an older server that only ever answered on the happy path; do not read the
+    // absence as false.
+    success: data.success !== false,
+    outcome: typeof data.outcome === 'string' ? data.outcome : undefined,
+    reason: typeof data.reason === 'string' ? data.reason : undefined,
+  };
 }
 
 /**
@@ -837,7 +876,7 @@ export async function completePaymentReliably(
   orderId: string,
   token: string,
   payload: Parameters<typeof completePayment>[2],
-): Promise<{canClose: boolean} | null> {
+): Promise<CompletePaymentResult | null> {
   try {
     return await completePayment(orderId, token, payload);
   } catch (firstErr) {

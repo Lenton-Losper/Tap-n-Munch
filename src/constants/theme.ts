@@ -12,6 +12,15 @@ export const Colors = {
   greenLight: '#F0FDF4',
   red: '#EF4444',
   redLight: '#FEF2F2',
+  /**
+   * #327. The colour of "we cannot say" — used only by the UNCONFIRMED payment state. Deliberately
+   * neither green nor red: an operator reading the colour alone must not be able to sort an
+   * unconfirmed payment into "done" or "declined", because those are the two answers it is
+   * specifically not. Darker than `orange` so the two do not read as the same status on a bright
+   * counter-top screen.
+   */
+  amber: '#D97706',
+  amberLight: '#FFFBEB',
 
   textPrimary: '#111827',
   textSecondary: '#6B7280',

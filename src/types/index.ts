@@ -6,11 +6,20 @@ export type OrderStatus =
   | 'completed'
   | 'cancelled';
 
+/**
+ * #327 adds PAYMENT_UNCONFIRMED as a THIRD terminal state, alongside SUCCESS and FAILED.
+ *
+ * Before it there were only two ways for a payment to end, so "the server cannot confirm this" had
+ * to be rendered as one of them, and it was rendered as the wrong one. A state meaning "we do not
+ * know" cannot be expressed as a shade of either "paid" or "declined" — that is the defect behind
+ * order #868, where N$33 of food was released on a payment that never cleared.
+ */
 export type PaymentState =
   | 'IDLE'
   | 'PAYMENT_IN_PROGRESS'
   | 'PAYMENT_SUCCESS'
-  | 'PAYMENT_FAILED';
+  | 'PAYMENT_FAILED'
+  | 'PAYMENT_UNCONFIRMED';
 
 export interface OrderItem {
   id: string;
@@ -116,6 +125,12 @@ export type PaymentAction =
   | {type: 'START_PAYMENT'; orderId: string; amount: number}
   | {type: 'PAYMENT_SUCCESS'; reference: string}
   | {type: 'PAYMENT_FAILED'; error: string}
+  /**
+   * #327. `detail` is a COMPLETE sentence chosen by the caller from constants/paymentCopy, never a
+   * fragment to be appended to something else — see #326's dangling em dash. Optional because the
+   * screen's own standing instruction is the load-bearing text; the detail only adds specifics.
+   */
+  | {type: 'PAYMENT_UNCONFIRMED'; detail?: string}
   | {type: 'RESET'}
   | {type: 'RESTORE'; payload: PaymentMachineState};
 

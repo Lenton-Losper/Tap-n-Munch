@@ -38,6 +38,12 @@ import {
   isClaimablePaymentStatus,
   selectClaimableOrdersForSettle,
 } from '../lib/paymentIntegrity';
+import {classifyFailureReport} from '../lib/paymentReportOutcome';
+import {
+  SETTLE_ORDER_ALREADY_PAID,
+  UNCONFIRMED_NOT_REPORTED,
+  UNCONFIRMED_SETTLE_INSTRUCTION,
+} from '../constants/paymentCopy';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TabOrder, TableWithTab} from '../types';
@@ -284,11 +290,31 @@ export default function TableDetailScreen({route, navigation}: Props) {
           paymentMethod: 'card',
           businessOrderNo: paymentResult.businessOrderNo,
         });
-        throw new Error(
-          completed
-            ? baseError
-            : `${baseError} — could not notify the system. Contact support before retrying.`,
-        );
+        /**
+         * #327 / #326. Same classification as PaymentScreen, and the same two defects fixed:
+         * `${baseError} — could not notify the system.` glued a lower-cased fragment onto a
+         * sentence that already ended in a full stop (#326), and an outcome the server explicitly
+         * could not confirm was thrown as a flat failure (#327).
+         *
+         * The tab-settle flow reports the failure and stops either way — it does NOT settle the
+         * tab, so no money is moved and no order is released by this branch. What changes is what
+         * staff are told, which is what decides whether the food goes out.
+         */
+        const classification = classifyFailureReport(completed);
+        if (classification === 'unknown') {
+          throw new Error(
+            completed
+              ? UNCONFIRMED_SETTLE_INSTRUCTION
+              : UNCONFIRMED_NOT_REPORTED,
+          );
+        }
+        if (classification === 'settled') {
+          // The server verified with Finatic and found the money, so this order is paid even
+          // though the settle stopped. Reporting that as a decline is how staff end up taking a
+          // second card payment for it.
+          throw new Error(SETTLE_ORDER_ALREADY_PAID);
+        }
+        throw new Error(baseError);
       }
 
       const settleResult = await settleTab(

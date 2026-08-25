@@ -3,6 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {StyleSheet, Text, View} from 'react-native';
 import {PAYMENT_STATE_STORAGE_KEY} from '../constants';
 import {
+  UNCONFIRMED_INTERRUPTED,
+  UNCONFIRMED_TITLE,
+} from '../constants/paymentCopy';
+import {
   PaymentAction,
   PaymentMachineState,
   PaymentState,
@@ -36,6 +40,20 @@ function paymentReducer(
         state: 'PAYMENT_FAILED',
         error: action.error,
       };
+    /**
+     * #327. Reuses `error` as the detail slot rather than adding a field: the machine is persisted
+     * to AsyncStorage and every extra key is one more thing a restored legacy payload can be
+     * missing. `reference` is cleared because there is, by definition, no confirmed payment to
+     * reference — leaving a stale one would let the success screen's reference line survive into a
+     * state that is explicitly NOT a success.
+     */
+    case 'PAYMENT_UNCONFIRMED':
+      return {
+        ...state,
+        state: 'PAYMENT_UNCONFIRMED',
+        reference: undefined,
+        error: action.detail,
+      };
     case 'RESET':
       return INITIAL_STATE;
     case 'RESTORE':
@@ -48,7 +66,19 @@ function paymentReducer(
 async function persistPaymentState(state: PaymentMachineState): Promise<void> {
   // Only crash-recover in-flight payments. Never persist SUCCESS/FAILED — otherwise
   // Sale → Charge for a new order hydrates a prior success and skips Finatic.
-  if (state.state !== 'PAYMENT_IN_PROGRESS') {
+  //
+  // PAYMENT_UNCONFIRMED IS THE ONE TERMINAL STATE WORTH PERSISTING (#327). Losing it on a restart
+  // loses the only thing standing between an unconfirmed payment and released food, and the
+  // reasons the other two are not persisted do not apply to it: a stale SUCCESS is dangerous
+  // because it claims money arrived, and a stale FAILED is noise, but a stale UNCONFIRMED merely
+  // repeats "check this before releasing", which is never the wrong instruction. The two guards
+  // that already contain a stale payload cover it unchanged — hydrate() drops any state whose
+  // orderId is not the one on screen, and POSCartScreen calls clearPersistedPaymentState() before
+  // every new charge.
+  if (
+    state.state !== 'PAYMENT_IN_PROGRESS' &&
+    state.state !== 'PAYMENT_UNCONFIRMED'
+  ) {
     await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
     return;
   }
@@ -101,15 +131,27 @@ export function usePaymentStateMachine(currentOrderId?: string) {
       }
 
       if (saved.state === 'PAYMENT_IN_PROGRESS') {
+        /**
+         * #327. THIS USED TO RESTORE AS `PAYMENT_FAILED` WITH "Payment was interrupted. Please
+         * retry." — the same defect as #868, on a path nobody had connected to it. An interrupted
+         * payment is the textbook UNKNOWN: the app died between launching the reader and hearing
+         * back, so the card may well have been charged. Calling that FAILED asserts the money did
+         * not move, and "Please retry" then invites a second charge on an order that may already
+         * be paid.
+         */
         dispatch({
           type: 'RESTORE',
           payload: {
             ...saved,
-            state: 'PAYMENT_FAILED',
-            error: 'Payment was interrupted. Please retry.',
+            state: 'PAYMENT_UNCONFIRMED',
+            reference: undefined,
+            error: UNCONFIRMED_INTERRUPTED,
           },
         });
-      } else if (saved.state === 'PAYMENT_FAILED') {
+      } else if (
+        saved.state === 'PAYMENT_FAILED' ||
+        saved.state === 'PAYMENT_UNCONFIRMED'
+      ) {
         // Legacy key may still hold FAILED; only restore for this order.
         dispatch({type: 'RESTORE', payload: saved});
       } else {
@@ -141,6 +183,11 @@ export function usePaymentStateMachine(currentOrderId?: string) {
     dispatch({type: 'PAYMENT_FAILED', error});
   }, []);
 
+  /** #327. `detail` must be one complete sentence, not a fragment to glue onto another. */
+  const paymentUnconfirmed = useCallback((detail?: string) => {
+    dispatch({type: 'PAYMENT_UNCONFIRMED', detail});
+  }, []);
+
   const reset = useCallback(() => {
     dispatch({type: 'RESET'});
   }, []);
@@ -151,6 +198,7 @@ export function usePaymentStateMachine(currentOrderId?: string) {
     startPayment,
     paymentSuccess,
     paymentFailed,
+    paymentUnconfirmed,
     reset,
   };
 }
@@ -166,6 +214,7 @@ const STATE_LABELS: Record<PaymentState, string> = {
   PAYMENT_IN_PROGRESS: 'Processing payment…',
   PAYMENT_SUCCESS: 'Payment successful',
   PAYMENT_FAILED: 'Payment failed',
+  PAYMENT_UNCONFIRMED: UNCONFIRMED_TITLE,
 };
 
 const STATE_COLORS: Record<PaymentState, string> = {
@@ -173,6 +222,9 @@ const STATE_COLORS: Record<PaymentState, string> = {
   PAYMENT_IN_PROGRESS: '#2563EB',
   PAYMENT_SUCCESS: '#059669',
   PAYMENT_FAILED: '#DC2626',
+  // Amber, deliberately neither the green nor the red. An operator reading the colour alone must
+  // not be able to sort this into "done" or "declined" — those are the two answers it is not.
+  PAYMENT_UNCONFIRMED: '#D97706',
 };
 
 export default function PaymentStateMachine({

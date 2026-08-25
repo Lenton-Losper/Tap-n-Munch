@@ -18,6 +18,7 @@ import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
+  ApiRequestError,
   closeTable,
   completePayment,
   completePaymentReliably,
@@ -25,7 +26,25 @@ import {
   getTerminalInfo,
   recordSaleEvent,
   resolvePaymentMethodsAvailability,
+  verifyTerminalPayment,
+  type CompletePaymentResult,
 } from '../lib/api';
+import {
+  classifyFailureReport,
+  classifySuccessReportError,
+} from '../lib/paymentReportOutcome';
+import {
+  ALREADY_SETTLED_MESSAGE,
+  UNCONFIRMED_CHECK_ACTION,
+  UNCONFIRMED_CHECK_FAILED,
+  UNCONFIRMED_CHECK_IN_PROGRESS,
+  UNCONFIRMED_EXPLANATION,
+  UNCONFIRMED_INSTRUCTION,
+  UNCONFIRMED_NOT_REPORTED,
+  UNCONFIRMED_RETRY_ACTION,
+  UNCONFIRMED_STILL_UNRESOLVED,
+  UNCONFIRMED_TITLE,
+} from '../constants/paymentCopy';
 import {formatCurrency, getItemLineTotal} from '../lib/currency';
 import {getPostPaymentAction} from '../lib/postPaymentAction';
 import {
@@ -73,8 +92,17 @@ export default function PaymentScreen({route, navigation}: Props) {
     startPayment,
     paymentSuccess,
     paymentFailed,
+    paymentUnconfirmed,
     reset,
   } = usePaymentStateMachine(orderId);
+  /** #327. In-flight guard for the idempotent status check offered on the UNCONFIRMED screen. */
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  /**
+   * #326. Set when this order was found ALREADY paid rather than paid by this attempt. The screen
+   * is a success either way — the money is there — but saying so plainly beats a bare "Payment
+   * successful" that hides the fact that this attempt was not what settled it.
+   */
+  const [alreadySettled, setAlreadySettled] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
@@ -380,14 +408,45 @@ export default function PaymentScreen({route, navigation}: Props) {
         recordFinaticSale?: boolean;
       },
     ) => {
-      const paymentResult = await completePayment(orderId, token, {
-        status: 'success',
-        reference: opts.reference,
-        voucherNo: opts.voucherNo,
-        businessOrderNo: opts.businessOrderNo,
-        amount: total,
-        paymentMethod: opts.paymentMethod,
-      });
+      /**
+       * #326. ALREADY_PAID IS A SETTLED ORDER, NOT A FAILED PAYMENT.
+       *
+       * The 409 means our own atomic claim refused a second `paid` write because the order is
+       * already paid — almost always because the webhook-signature fallback verified it from
+       * Finatic seconds earlier, which #107 makes the normal path rather than an edge case. On
+       * 2026-08-21 order #851's card had cleared (`trans_status 2`, N$51.00) and this exception
+       * still drove the screen to FAILED with "Contact support before retrying." — a retry prompt
+       * on a paid order.
+       *
+       * Only ALREADY_PAID is absorbed. Everything else still throws, so the outer catch's Finatic
+       * recovery is untouched: PAYMENT_CLAIM_CONFLICT in particular says the order "may" already be
+       * paid, and a maybe must not be rendered as a settled sale.
+       */
+      let paymentResult: CompletePaymentResult;
+      try {
+        paymentResult = await completePayment(orderId, token, {
+          status: 'success',
+          reference: opts.reference,
+          voucherNo: opts.voucherNo,
+          businessOrderNo: opts.businessOrderNo,
+          amount: total,
+          paymentMethod: opts.paymentMethod,
+        });
+      } catch (err) {
+        const code = err instanceof ApiRequestError ? err.code : undefined;
+        if (classifySuccessReportError(code) !== 'settled') {
+          throw err;
+        }
+        recordWiretapEvent('payment.exit', {
+          exit: 'already_paid_treated_as_settled',
+          reportsToServer: true,
+          note: '#326: order was already paid; rendering settled, not failed',
+        });
+        setAlreadySettled(true);
+        // canClose is unknowable from a 409 body. False is the safe default: it offers no close
+        // button rather than a wrong one, and the table can still be closed from the dashboard.
+        paymentResult = {canClose: false, success: true, outcome: 'already_paid'};
+      }
 
       if (
         opts.recordFinaticSale &&
@@ -527,18 +586,77 @@ export default function PaymentScreen({route, navigation}: Props) {
               }
             : {}),
         });
-        paymentFailed(
-          completed
-            ? baseError
-            : `${baseError} — could not notify the system. Contact support before retrying.`,
-        );
+        /**
+         * #327 / #326. BRANCH ON THE OUTCOME, NOT ON WHETHER THE REPORT LANDED.
+         *
+         * This used to do exactly one thing with `completed`: append
+         * `— could not notify the system. Contact support before retrying.` to whatever the device
+         * said when it was null, and show the device's own message otherwise. So all three server
+         * answers — money found, money definitively not taken, and CANNOT SAY — rendered as the
+         * same FAILED screen, and #326's dangling em dash came from gluing that fragment onto a
+         * device message that already ended in a full stop.
+         *
+         * `corrected_to_paid` reaching a FAILED screen was its own live defect: the server verified
+         * with Finatic, found the money, and the operator was told the payment failed.
+         */
+        const classification = classifyFailureReport(completed);
+        recordWiretapEvent('payment.report.classified', {
+          orderId,
+          outcome: completed?.outcome ?? '(none)',
+          success: completed ? completed.success : '(not reported)',
+          classification,
+        });
+
+        if (classification === 'settled') {
+          // The device was wrong and the server proved it. Money was taken; this is a sale.
+          setCanCloseTable(completed?.canClose ?? false);
+          setKioskAutoReturnPending(false);
+          paymentSuccess(failureReference);
+        } else if (classification === 'not_paid') {
+          // Definitively not taken and now resolved. A plain failure, and the only branch of the
+          // three where "Try again" is the right primary action.
+          paymentFailed(baseError);
+        } else {
+          // Unknown. One complete sentence, never a concatenation.
+          paymentUnconfirmed(completed ? baseError : UNCONFIRMED_NOT_REPORTED);
+        }
       }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Payment failed';
+
+      /**
+       * #326. THIS IS WHERE THE REPORTED SCREEN CAME FROM, and it must be handled before anything
+       * else in this catch runs.
+       *
+       * Order #851, 07:18: finishSuccessfulPayment threw ALREADY_PAID, the recovery below re-ran it,
+       * it threw ALREADY_PAID again, the inner catch appended NOT_REPORTED_SUFFIX to a message that
+       * already ended in a full stop, and the screen read
+       * "This order was already paid. — could not notify the system. Contact support before
+       * retrying." on an order whose card had cleared.
+       *
+       * Returning here also stops the second, worse half: everything below reports
+       * `status: 'failed'` to the server for an order that is PAID.
+       */
+      const settledCode = err instanceof ApiRequestError ? err.code : undefined;
+      if (classifySuccessReportError(settledCode) === 'settled') {
+        recordWiretapEvent('payment.exit', {
+          exit: 'outer_catch_already_paid',
+          reportsToServer: false,
+          note: '#326: already paid — settled, and NOT reported as a failure',
+        });
+        setAlreadySettled(true);
+        setCanCloseTable(false);
+        setKioskAutoReturnPending(false);
+        paymentSuccess(lastResult?.reference ?? unconfirmedFailureReference());
+        return;
+      }
+
       let finalMessage = message;
-      const NOT_REPORTED_SUFFIX =
-        ' — could not notify the system. Contact support before retrying.';
+      /** True when the server was never told this attempt happened — i.e. the result is unknown. */
+      let reportDelivered = false;
+      /** Set from the server's `outcome` when the report did land, so the classifier can see it. */
+      let reportResponse: CompletePaymentResult | null = null;
       // Always tell the backend — never leave a silent gap after a card attempt.
       try {
         const reportToken = token ?? (await getTerminalToken());
@@ -594,8 +712,10 @@ export default function PaymentScreen({route, navigation}: Props) {
                 }
               : {}),
           });
+          reportDelivered = completed != null;
+          reportResponse = completed;
           if (!completed) {
-            finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+            finalMessage = UNCONFIRMED_NOT_REPORTED;
           }
         } else {
           recordWiretapEvent('payment.exit', {
@@ -603,15 +723,14 @@ export default function PaymentScreen({route, navigation}: Props) {
             reportsToServer: false,
             threwWith: message,
           });
-          finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+          finalMessage = UNCONFIRMED_NOT_REPORTED;
         }
       } catch (reportErr) {
         console.warn(
           '[PaymentScreen] failed to report outer-catch payment outcome:',
           reportErr,
         );
-        // Last exit, and the only one where the server genuinely never hears. Staff see the
-        // "contact support" suffix; this makes it readable afterwards too.
+        // Last exit, and the only one where the server genuinely never hears.
         recordWiretapEvent('payment.exit', {
           exit: 'outer_catch_report_threw',
           reportsToServer: false,
@@ -619,9 +738,97 @@ export default function PaymentScreen({route, navigation}: Props) {
           reportError:
             reportErr instanceof Error ? reportErr.message : String(reportErr),
         });
-        finalMessage = `${message}${NOT_REPORTED_SUFFIX}`;
+        finalMessage = UNCONFIRMED_NOT_REPORTED;
       }
-      paymentFailed(finalMessage);
+
+      /**
+       * #327. Something threw mid-payment, so the device never established what happened. That is
+       * the definition of unknown, and the branch below is the only one that can promote it to a
+       * resolved state — and only on the server's own word.
+       *
+       * The pre-#327 code ended `paymentFailed(finalMessage)` unconditionally: every exception
+       * during a card payment was rendered as a definite decline, including the ones where the
+       * card had been charged and only the reporting failed.
+       */
+      const classification = reportDelivered
+        ? classifyFailureReport(reportResponse)
+        : 'unknown';
+      recordWiretapEvent('payment.report.classified', {
+        orderId,
+        exit: 'outer_catch',
+        outcome: reportResponse?.outcome ?? '(none)',
+        reportDelivered,
+        classification,
+      });
+
+      if (classification === 'settled') {
+        setCanCloseTable(reportResponse?.canClose ?? false);
+        setKioskAutoReturnPending(false);
+        paymentSuccess(unconfirmedFailureReference());
+      } else if (classification === 'not_paid') {
+        paymentFailed(finalMessage);
+      } else {
+        paymentUnconfirmed(finalMessage);
+      }
+    }
+  };
+
+  /**
+   * #327 — the PRIMARY action on the UNCONFIRMED screen. Asks the server what actually happened.
+   *
+   * IT IS IDEMPOTENT, which is why it is the primary action and why it is safe to press repeatedly.
+   * `POST /api/terminal/orders/[orderId]/verify-payment` takes no payment: it returns early if the
+   * order is already `paid`, otherwise it queries Finatic for the order's existing
+   * merchant_order_no and, only if Finatic says paid, settles through the same atomic
+   * markOrderPaidConfirmed claim the callback uses. Nothing new is charged and nothing is created.
+   *
+   * ONLY `paid === true` RESOLVES ANYTHING. `paid: false` is not "not paid" — E04111 means Finatic
+   * has no record, which is the exact ambiguity that put this order here, and the 2026-08-05 ruling
+   * is that E04111 alone must never authorise a cancel. So a negative answer leaves the screen
+   * unconfirmed rather than promoting it to FAILED.
+   */
+  const handleCheckPaymentStatus = async () => {
+    if (checkingStatus) {
+      return;
+    }
+    setCheckingStatus(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+      const verdict = await verifyTerminalPayment(orderId, token);
+      recordWiretapEvent('payment.status.checked', {
+        orderId,
+        ok: verdict.ok,
+        paid: verdict.paid,
+        source: verdict.source ?? '(none)',
+        status: verdict.status ?? '(none)',
+      });
+
+      if (verdict.paid) {
+        setAlreadySettled(true);
+        setCanCloseTable(false);
+        setKioskAutoReturnPending(false);
+        paymentSuccess(
+          verdict.transactionId ?? verdict.merchantOrderNo ?? orderId,
+        );
+        return;
+      }
+
+      // Still unresolved. Stay unconfirmed — the food still must not be released.
+      paymentUnconfirmed(UNCONFIRMED_STILL_UNRESOLVED);
+    } catch (err) {
+      console.warn('[PaymentScreen] verify-payment failed:', err);
+      recordWiretapEvent('payment.status.checked', {
+        orderId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // The CHECK failed, which says nothing about the payment. Still unconfirmed.
+      paymentUnconfirmed(UNCONFIRMED_CHECK_FAILED);
+    } finally {
+      setCheckingStatus(false);
     }
   };
 
@@ -695,6 +902,18 @@ export default function PaymentScreen({route, navigation}: Props) {
   };
 
   const {state, error} = machineState;
+  /**
+   * #327. The bottom bar's big "Process Payment" / "Confirm cash" button is disabled while a
+   * payment is UNCONFIRMED, not only while one is in progress.
+   *
+   * Without this the issue's ordering is defeated by the layout: the UNCONFIRMED card's own primary
+   * action is CHECK, but the screen's largest, most habitual button sits below it and would still
+   * charge a card for an order that may already be paid. Taking payment again stays reachable — it
+   * costs one deliberate tap on the card's secondary action, which resets to IDLE and re-enables
+   * this button.
+   */
+  const paymentActionsBlocked =
+    state === 'PAYMENT_IN_PROGRESS' || state === 'PAYMENT_UNCONFIRMED';
   const displayOrderNumber = order?.order_number ?? orderNumber;
   const displayPlacedAt = order?.placed_at ?? placedAt ?? new Date().toISOString();
   const items = order?.items ?? [];
@@ -720,6 +939,17 @@ export default function PaymentScreen({route, navigation}: Props) {
             />
             <Text style={styles.successTitle}>Payment successful</Text>
             <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
+
+            {/*
+              #326. Still a success screen — the money is there — but this attempt is not what put
+              it there. Saying so is what stops the operator wondering whether to take payment
+              again, which is the behaviour that turns a stale picture into a second charge.
+            */}
+            {alreadySettled ? (
+              <Text style={styles.alreadySettledNote}>
+                {ALREADY_SETTLED_MESSAGE}
+              </Text>
+            ) : null}
 
             {paymentMethod === 'cash' && tenderedAmount > 0 ? (
               <View style={styles.cashSuccessSummary}>
@@ -1144,6 +1374,69 @@ export default function PaymentScreen({route, navigation}: Props) {
               </View>
             )}
 
+            {/*
+              #327 — the UNCONFIRMED card. Deliberately NOT a variant of the FAILED card:
+
+              - the instruction comes FIRST and before any action, because "do not release this
+                order" is the only thing on this screen that prevents the #868 incident;
+              - the primary action is CHECK, not retry. Retry is present but visually secondary and
+                worded so it does not read as the obvious next tap;
+              - "Try again" here re-presents the card for THIS order id — this screen is bound to
+                one orderId for its whole life and no path from it creates a sale. Combined with
+                #328's per-sale idempotency key, a retry cannot strand a duplicate order.
+            */}
+            {state === 'PAYMENT_UNCONFIRMED' && (
+              <View style={styles.unconfirmedCard}>
+                <MaterialCommunityIcons
+                  name="help-circle"
+                  size={40}
+                  color={Colors.amber}
+                />
+                <Text style={styles.unconfirmedTitle}>{UNCONFIRMED_TITLE}</Text>
+                <Text style={styles.unconfirmedInstruction}>
+                  {UNCONFIRMED_INSTRUCTION}
+                </Text>
+                <Text style={styles.unconfirmedExplanation}>
+                  {UNCONFIRMED_EXPLANATION}
+                </Text>
+                {error ? (
+                  <Text style={styles.unconfirmedDetail}>{error}</Text>
+                ) : null}
+
+                <LoadingButton
+                  style={styles.unconfirmedPrimaryButton}
+                  loading={checkingStatus}
+                  disabled={checkingStatus}
+                  onPress={handleCheckPaymentStatus}
+                  spinnerColor={Colors.white}>
+                  <Text style={styles.unconfirmedPrimaryText}>
+                    {checkingStatus
+                      ? UNCONFIRMED_CHECK_IN_PROGRESS
+                      : UNCONFIRMED_CHECK_ACTION}
+                  </Text>
+                </LoadingButton>
+
+                <Pressable
+                  style={styles.unconfirmedSecondaryButton}
+                  disabled={checkingStatus}
+                  onPress={() => {
+                    reset();
+                    setTenderedText('');
+                    applyPaymentMethodAvailability(
+                      cardPaymentEnabled,
+                      cashPaymentEnabled,
+                    );
+                    if (cardPaymentEnabled && cashPaymentEnabled) {
+                      setPaymentMethod(null);
+                    }
+                  }}>
+                  <Text style={styles.unconfirmedSecondaryText}>
+                    {UNCONFIRMED_RETRY_ACTION}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+
             {state === 'PAYMENT_FAILED' && (
               <View style={styles.failedCard}>
                 <MaterialCommunityIcons
@@ -1202,10 +1495,10 @@ export default function PaymentScreen({route, navigation}: Props) {
           <LoadingButton
             style={[
               styles.processButton,
-              (!canConfirmCash || state === 'PAYMENT_IN_PROGRESS') &&
+              (!canConfirmCash || paymentActionsBlocked) &&
                 styles.buttonDisabled,
             ]}
-            disabled={!canConfirmCash || state === 'PAYMENT_IN_PROGRESS'}
+            disabled={!canConfirmCash || paymentActionsBlocked}
             loading={state === 'PAYMENT_IN_PROGRESS'}
             onPress={handleConfirmCash}
             spinnerColor={Colors.white}
@@ -1229,13 +1522,10 @@ export default function PaymentScreen({route, navigation}: Props) {
           <LoadingButton
             style={[
               styles.processButton,
-              (paymentMethod !== 'card' ||
-                state === 'PAYMENT_IN_PROGRESS') &&
+              (paymentMethod !== 'card' || paymentActionsBlocked) &&
                 styles.buttonDisabled,
             ]}
-            disabled={
-              paymentMethod !== 'card' || state === 'PAYMENT_IN_PROGRESS'
-            }
+            disabled={paymentMethod !== 'card' || paymentActionsBlocked}
             loading={state === 'PAYMENT_IN_PROGRESS'}
             onPress={handleProcessPayment}
             spinnerColor={Colors.white}
@@ -1720,6 +2010,79 @@ const styles = StyleSheet.create({
   outlinedRedText: {
     ...Typography.subheading,
     color: Colors.red,
+  },
+
+  /*
+   * #327 — UNCONFIRMED. The visual hierarchy is the fix as much as the wording is: the instruction
+   * is the largest text on the card, above the explanation and above both actions, and the CHECK
+   * action is the filled button while retry is a plain text link.
+   */
+  unconfirmedCard: {
+    backgroundColor: Colors.amberLight,
+    borderRadius: 12,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.amber,
+    gap: Spacing.xs,
+  },
+  unconfirmedTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.amber,
+    letterSpacing: 1,
+  },
+  /** The line that prevents the incident. Biggest, boldest, and first. */
+  unconfirmedInstruction: {
+    ...Typography.subheading,
+    color: Colors.textPrimary,
+    textAlign: 'center',
+    marginTop: Spacing.xs,
+  },
+  unconfirmedExplanation: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+  },
+  unconfirmedDetail: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.xs,
+  },
+  unconfirmedPrimaryButton: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.amber,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.lg,
+    minWidth: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unconfirmedPrimaryText: {
+    ...Typography.subheading,
+    color: Colors.white,
+  },
+  /** Secondary by construction: no fill, no border, no button shape. */
+  unconfirmedSecondaryButton: {
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    alignItems: 'center',
+  },
+  unconfirmedSecondaryText: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    textDecorationLine: 'underline',
+  },
+  /** #326 — shown on the SUCCESS card when the order was already settled before this attempt. */
+  alreadySettledNote: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.md,
   },
   bottomBar: {
     position: 'absolute',
