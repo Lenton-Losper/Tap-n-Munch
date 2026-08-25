@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic"
 import { useEffect, useState, Suspense, useCallback } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { getRestaurant } from '@/lib/supabase/restaurants'
+import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
 import { createFreshSession } from '@/lib/session'
 import { ActiveOrderBanner } from '@/components/ActiveOrderBanner'
 import OrderStatusBanner from '@/components/OrderStatusBanner'
@@ -179,7 +180,9 @@ export function MenuLandingPageV2Content({
   const [joinPinError, setJoinPinError] = useState<string | null>(null)
   const { clearCart } = useCart()
   const { createNewTab, joinExistingTab, joinTabWithPin, clearTab } = useTab()
-  const { currency } = useRestaurant()
+  const { restaurant: ctxRestaurant, currency } = useRestaurant()
+  /** #334 round two: the landing promised a waiter on the payment-in-progress notice. */
+  const copy = serviceCopy(deriveIsCounterService({ restaurant: ctxRestaurant }))
 
   useEffect(() => {
     console.log('[V2] page mounted, URL:', window.location.href)
@@ -1315,7 +1318,7 @@ export function MenuLandingPageV2Content({
                   {MENU_COPY.paymentBeingProcessedThisTable}
                 </p>
                 <p className="text-yellow-200/80 font-sans text-xs mt-1">
-                  {MENU_COPY.pleaseWaitAskYourWaiter}
+                  {copy.pleaseAskForAssistance}
                 </p>
               </div>
             )}
@@ -1360,7 +1363,7 @@ export function MenuLandingPageV2Content({
                   </p>
                   {myStoredTab.status === 'ready_to_pay' && (
                     <p className="font-sans text-xs text-amber-200/90 mt-2">
-                      {MENU_COPY.yourTabReadyPayYour}
+                      {copy.tabReadyToPay}
                     </p>
                   )}
                 </div>
