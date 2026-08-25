@@ -18,6 +18,7 @@ export type CancelBasis =
   | 'no_gateway_reference'
   | 'finatic_verified_not_paid'
   | 'terminal_pre_gateway'
+  | 'operator_duplicate_ruling'
 
 export const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
   no_gateway_reference:
@@ -29,6 +30,13 @@ export const CANCEL_BASIS_NOTE: Record<CancelBasis, string> = {
   terminal_pre_gateway:
     'The operator cancelled at the terminal before any gateway attempt existed for this order, so ' +
     'there was nothing to query and no charge is possible.',
+  operator_duplicate_ruling:
+    'A HUMAN RULED THIS A DUPLICATE. Not an automated decision and not a gateway finding -- the ' +
+    'venue reported that one payment was taken and rung up twice, and the owner ruled on that ' +
+    'report. The money WAS collected; what is being corrected is a second record of it. ' +
+    'Deliberately distinct from `no_gateway_reference`, which asserts NO CHARGE IS POSSIBLE -- ' +
+    'true of a card that never reached prepare-payment, and false here, where cash changed hands. ' +
+    'Recording this cancel under that basis would put a false statement in the audit trail.',
 }
 
 export type CancelWithTrailResult = {
