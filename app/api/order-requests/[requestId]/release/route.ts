@@ -30,9 +30,27 @@ export const dynamic = 'force-dynamic'
 export async function POST(req: Request, { params }: { params: Promise<{ requestId: string }> }) {
   try {
     const body = await req.json().catch(() => ({}) as Record<string, unknown>)
-    const restaurantUuid = await resolveRestaurantUuid(String((body as { restaurantId?: unknown }).restaurantId || ''))
-    if (!restaurantUuid) {
+    const rawRestaurantId = String((body as { restaurantId?: unknown }).restaurantId || '').trim()
+    /**
+     * VALIDATED BEFORE THE RESOLVE, not after. `resolveRestaurantUuid` THROWS on an empty input —
+     * `throw new Error('Restaurant id is required')` at restaurants.ts:79 — so a `!restaurantUuid`
+     * check placed after the call can never run: the throw reaches the outer catch and answers 500.
+     * Measured against production after deploying it: an empty body returned
+     * `500 {"error":"Restaurant id is required"}`, which is the resolver's message wearing the
+     * wrong status code, not this route's guard.
+     *
+     * Dead code shaped like a guard is worse than no guard: it reads as covered.
+     */
+    if (!rawRestaurantId) {
       return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+    }
+
+    let restaurantUuid: string
+    try {
+      restaurantUuid = await resolveRestaurantUuid(rawRestaurantId)
+    } catch {
+      // The resolver also throws `Restaurant not found for id=...`, which is a 404, not a 500.
+      return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
     }
 
     const auth = await requireStaffPermission(restaurantUuid, PERMISSIONS.TABLES_MANAGE, req)
