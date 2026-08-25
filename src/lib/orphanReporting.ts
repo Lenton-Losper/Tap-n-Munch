@@ -48,11 +48,27 @@ export type OrphanReportOutcome =
 /**
  * Can this held record be reported at all?
  *
- * CASE 3 CANNOT BE. A `verify-payment` call is addressed to an order id, and a case-3 orphan names
- * none — there is nothing to put in the URL. Reporting it needs a destination that does not exist
- * today (see the handoff: there is no table for a payment with no order). Until there is one, these
- * records are held and displayed and nothing more, which is why they are separated here rather than
- * being quietly attempted and failing.
+ * CASE 3 CANNOT BE, TODAY. A `verify-payment` call is addressed to an order id, and a case-3 orphan
+ * names none — there is nothing to put in the URL.
+ *
+ * THERE IS NO TABLE FOR A PAYMENT WITH NO ORDER, AND ONE SHOULD NOT BE BUILT. Measured on
+ * production 2026-08-25: of 1005 card attempts ever started, 1005 carry a
+ * `paycloud_merchant_order_no` and 0 do not. That is structural rather than luck — `launchPayment`
+ * takes `merchantOrderNo` as a REQUIRED parameter, sourced from prepare-payment, so THE READER
+ * CANNOT BE LAUNCHED WITHOUT ONE. An orphan can only exist for a payment that was launched;
+ * therefore every orphan carries a gateway reference; therefore case 3 collapses into case 2 at
+ * the server, which can look the order up by that reference. The residue is a population of zero
+ * with a reason to stay there.
+ *
+ * So the planned server work is a LOOKUP ENDPOINT, not a table: resolve
+ * `orders.paycloud_merchant_order_no = businessOrderNo` (partial UNIQUE index) and settle through
+ * the path that already works. If a genuinely unmatchable payment ever appears, an audit row plus
+ * a loud log is the right holding position until there is a second one.
+ *
+ * WHY THE CASE-3 BRANCH SURVIVES ANYWAY: the DEVICE cannot tell which case it is holding until the
+ * server answers, and a payload that arrives without a reference must still not be dropped. This
+ * predicate keeps such a record held and visible instead of attempting it against a URL that
+ * cannot be built.
  */
 export function isReportableHeldOrphan(row: HeldOrphanPayment): boolean {
   return row.orphanOrderId.trim().length > 0;
