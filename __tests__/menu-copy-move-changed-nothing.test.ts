@@ -154,6 +154,11 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     payCounterStaffHasBeenNotified: 'the counter has been notified. collect your order when it is ready.',
     // SIGNED 2026-08-25 — #244. One sentence for both failure modes; the code carries the rest.
     receiptCouldNotBeSent: 'we could not send this receipt. please ask a member of staff.',
+    // SIGNED 2026-08-25 — the rest of the guest receipt-email route.
+    guestEmailInvalid: 'please enter a valid email address',
+    guestOrderNotFound: 'we could not find this order.',
+    receiptNotReadyUntilPaid: 'the receipt will be ready once this order is paid.',
+    somethingWentWrongAskStaff: 'something went wrong. please ask a member of staff.',
     // ---- order-secure
     cartEmpty: "Cart is empty",
     continuePayment: "Continue to Payment",

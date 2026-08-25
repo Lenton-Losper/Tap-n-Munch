@@ -38,7 +38,7 @@ export async function POST(
   const email = typeof body?.email === 'string' ? body.email.trim() : ''
 
   if (!EMAIL_RE.test(email)) {
-    return NextResponse.json({ error: 'A valid email address is required' }, { status: 400 })
+    return NextResponse.json({ error: MENU_COPY.guestEmailInvalid }, { status: 400 })
   }
 
   const { searchParams } = new URL(req.url)
@@ -59,7 +59,7 @@ export async function POST(
   const sessionId = sessionIds[0] ?? null
 
   if (!restaurantId) {
-    return NextResponse.json({ error: 'restaurantId is required' }, { status: 400 })
+    return NextResponse.json({ error: MENU_COPY.somethingWentWrongAskStaff }, { status: 400 })
   }
 
   const supabase = createServerSupabaseClient()
@@ -74,21 +74,23 @@ export async function POST(
     .maybeSingle()
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+      // The real reason goes HERE, never into the body: this route takes no session token.
+      console.error('[guest/receipt/email] order lookup failed', { orderId, reason: error.message })
+    return NextResponse.json({ error: MENU_COPY.somethingWentWrongAskStaff }, { status: 500 })
   }
   if (!order) {
-    return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+    return NextResponse.json({ error: MENU_COPY.guestOrderNotFound }, { status: 404 })
   }
 
   const guestOrder = { ...order, id: String(order.id) } as GuestOrderRow
   if (!guestCanReceiveOrderDelivery(guestOrder, { restaurantId, tableNumber, sessionId, sessionIds })) {
     // Same answer as "no such order": a refusal must not confirm that an order exists at an id
     // the caller cannot otherwise see.
-    return NextResponse.json({ error: 'Order not accessible' }, { status: 404 })
+    return NextResponse.json({ error: MENU_COPY.guestOrderNotFound }, { status: 404 })
   }
 
   if (String(order.payment_status || '').toLowerCase() !== 'paid') {
-    return NextResponse.json({ error: 'Receipt is not available until the order is paid' }, { status: 400 })
+    return NextResponse.json({ error: MENU_COPY.receiptNotReadyUntilPaid }, { status: 400 })
   }
 
   let receipt
@@ -96,7 +98,8 @@ export async function POST(
     receipt = await issueReceiptForOrder(orderId)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to issue receipt'
-    return NextResponse.json({ error: message }, { status: 500 })
+      console.error('[guest/receipt/email] issueReceiptForOrder failed', { orderId, reason: message })
+    return NextResponse.json({ error: MENU_COPY.somethingWentWrongAskStaff }, { status: 500 })
   }
 
   const result = await sendReceiptEmail(receipt, email)

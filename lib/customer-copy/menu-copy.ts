@@ -122,6 +122,29 @@ export const MENU_COPY = {
    */
   receiptCouldNotBeSent: 'we could not send this receipt. please ask a member of staff.',
 
+  /**
+   * THE REST OF THE GUEST RECEIPT-EMAIL ROUTE, signed 2026-08-25.
+   *
+   * That route takes NO SESSION TOKEN -- zero auth calls -- so every string it can return is
+   * readable by anyone holding an order id. It was answering with raw Supabase and provider text.
+   *
+   * `guestOrderNotFound` IS DELIBERATELY USED FOR TWO DIFFERENT CASES: the order does not exist,
+   * and the order exists but this caller may not see it. Different wording would be an ORACLE --
+   * it tells an unauthenticated caller whether an id is real. Same class as #279's countOnly. The
+   * STATUS CODES match for the same reason; equal strings behind a 404 and a 403 would leak the
+   * same fact through the code instead.
+   */
+  guestEmailInvalid: 'please enter a valid email address',
+  guestOrderNotFound: 'we could not find this order.',
+  receiptNotReadyUntilPaid: 'the receipt will be ready once this order is paid.',
+
+  /**
+   * The generic. Used wherever the real reason is internal and the customer can do nothing with
+   * it -- a missing `restaurantId` parameter, a Supabase error, a receipt that could not be
+   * issued. The real text goes to the log and the audit row, where it is actionable.
+   */
+  somethingWentWrongAskStaff: 'something went wrong. please ask a member of staff.',
+
   // ================================================================================================
   // MOVED FROM app/menu/** BY #334, 2026-08-24. NOT REWRITTEN.
   //
