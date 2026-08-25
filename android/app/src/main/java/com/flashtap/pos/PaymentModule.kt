@@ -206,9 +206,94 @@ class PaymentModule(private val reactContext: ReactApplicationContext) :
   }
 
   /**
+   * #344 ruling 4 — READ WITHOUT DESTROYING.
+   *
+   * `consumeOrphanedPaymentResult` removes the record BEFORE the payload reaches JS, so a crash
+   * anywhere between the read and JS durably storing it loses a card transaction permanently.
+   * The window is milliseconds and it is not closable from the JS side, because by the time JS
+   * holds the payload the only copy is already gone.
+   *
+   * The sequence this enables is: read, report, acknowledge, then clear. Nothing is destroyed
+   * until JS says it has the payload somewhere that survives a restart.
+   *
+   * RETURNS `receiptToken`, WHICH IS THE POINT OF THE PAIR. Between a peek and its clear a NEW
+   * orphan can be persisted -- handleNullPromiseSaleResult overwrites this same key. An
+   * unconditional clear would destroy that newer one having never shown it to anyone. The token is
+   * the payload's own `savedAt`, and clearOrphanedPaymentResult clears only while it still
+   * matches: the same conditional-claim shape the stranded-request release uses server-side.
+   */
+  @ReactMethod
+  fun peekOrphanedPaymentResult(promise: Promise) {
+    try {
+      val raw =
+        reactContext
+          .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+          .getString(KEY_ORPHANED_RESULT, null)
+      if (raw.isNullOrBlank()) {
+        promise.resolve(null)
+        return
+      }
+      val json = JSONObject(raw)
+      val map = Arguments.createMap()
+      map.putString("outcome", json.optString("outcome", "ambiguous"))
+      map.putString("gatewayResult", json.optString("gatewayResult", ""))
+      map.putInt("androidResultCode", json.optInt("androidResultCode", 0))
+      map.putString("voucherNo", json.optString("voucherNo", ""))
+      map.putString("businessOrderNo", json.optString("businessOrderNo", ""))
+      map.putString("orderId", json.optString("orderId", ""))
+      map.putString("merchantOrderNo", json.optString("merchantOrderNo", ""))
+      map.putString("error", json.optString("error", ""))
+      map.putBoolean("orphaned", true)
+      map.putString("receiptToken", json.optLong("savedAt", 0L).toString())
+      Log.i(TAG, "peekOrphanedPaymentResult delivering orphaned SALE callback (NOT cleared)")
+      promise.resolve(map)
+    } catch (e: Exception) {
+      promise.reject("ORPHAN_READ_FAILED", e.message, e)
+    }
+  }
+
+  /**
+   * #344 ruling 4 — clear a peeked orphan, but ONLY the one that was peeked.
+   *
+   * Resolves true when the record was cleared, false when it had already been replaced by a newer
+   * orphan or was gone. False is not an error: it means this call correctly declined to destroy
+   * something nobody had been shown.
+   */
+  @ReactMethod
+  fun clearOrphanedPaymentResult(receiptToken: String, promise: Promise) {
+    try {
+      val prefs = reactContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+      val raw = prefs.getString(KEY_ORPHANED_RESULT, null)
+      if (raw.isNullOrBlank()) {
+        promise.resolve(false)
+        return
+      }
+      val current = JSONObject(raw).optLong("savedAt", 0L).toString()
+      if (current != receiptToken) {
+        Log.w(
+          TAG,
+          "clearOrphanedPaymentResult REFUSED: stored orphan savedAt=$current does not match " +
+            "receiptToken=$receiptToken -- a newer orphan arrived after the peek and is kept.",
+        )
+        promise.resolve(false)
+        return
+      }
+      prefs.edit().remove(KEY_ORPHANED_RESULT).apply()
+      Log.i(TAG, "clearOrphanedPaymentResult cleared orphan savedAt=$current")
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("ORPHAN_CLEAR_FAILED", e.message, e)
+    }
+  }
+
+  /**
    * JS recovery path when onActivityResult arrived with a null pendingPromise
    * (process death / bridge tear-down / double delivery). Returns one orphaned
    * SALE result map or null.
+   *
+   * DEPRECATED by #344 ruling 4 in favour of peek + clear, and kept only so that an older JS
+   * bundle running against a newer APK still finds the method. New code must not call it: it
+   * destroys the record before JS has it.
    */
   @ReactMethod
   fun consumeOrphanedPaymentResult(promise: Promise) {

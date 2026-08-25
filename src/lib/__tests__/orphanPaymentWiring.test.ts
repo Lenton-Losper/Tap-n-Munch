@@ -307,3 +307,120 @@ describe('#183 — site 2 still applies a MATCHING cancel', () => {
     );
   });
 });
+
+/**
+ * #344 RULING 4 — read, hold, THEN clear.
+ *
+ * The old destructive `consumeOrphanedPaymentResult` removed the record before the payload reached
+ * JS, so any crash between the read and JS storing it lost a card transaction permanently. The
+ * ordering below is the fix, and the ORDER is the assertion: a clear that happens before the hold
+ * is durable is the same bug with extra steps.
+ */
+async function runWithPeek(
+  orphan: Record<string, unknown>,
+  chargingOrderId: string,
+): Promise<{events: string[]; clearedWith: string[]}> {
+  let out!: {events: string[]; clearedWith: string[]};
+  await jest.isolateModulesAsync(async () => {
+    const {NativeModules, Platform} = require('react-native');
+    Platform.OS = 'android';
+    NativeModules.RuntimeConfig = {
+      API_BASE_URL: 'https://example.invalid',
+      SUPABASE_URL: 'https://example.invalid',
+      SUPABASE_ANON_KEY: 'test',
+      ENV_NAME: 'test',
+    };
+    const events: string[] = [];
+    const clearedWith: string[] = [];
+    let stored: string | null = null;
+    const encrypted = require('react-native-encrypted-storage')
+      .default as {getItem: jest.Mock; setItem: jest.Mock};
+    encrypted.getItem.mockImplementation(async (key: string) =>
+      key === 'flashtap_terminal_token' ? 'test-token' : stored,
+    );
+    encrypted.setItem.mockImplementation(async (_k: string, v: string) => {
+      events.push('hold');
+      stored = v;
+    });
+
+    let peeked = false;
+    NativeModules.PaymentModule = {
+      launchRefund: jest.fn(),
+      launchPayment: jest.fn(async () => {
+        throw new Error('not exercised');
+      }),
+      peekOrphanedPaymentResult: jest.fn(async () => {
+        if (peeked) {
+          return null;
+        }
+        peeked = true;
+        events.push('peek');
+        return orphan;
+      }),
+      clearOrphanedPaymentResult: jest.fn(async (token: string) => {
+        events.push('clear');
+        clearedWith.push(token);
+        return true;
+      }),
+    };
+
+    const payment = require('../payment') as typeof import('../payment');
+    try {
+      await payment.processPaymentIntent(50, chargingOrderId);
+    } catch {
+      // irrelevant to the ordering under test
+    }
+    out = {events, clearedWith};
+  });
+  return out;
+}
+
+describe('#344 ruling 4 — the native record outlives the read', () => {
+  it('clears AFTER the hold is written, never before', async () => {
+    const {events} = await runWithPeek(
+      {
+        outcome: 'success',
+        voucherNo: 'V-A',
+        orderId: A,
+        orphaned: true,
+        receiptToken: '1724580000000',
+      },
+      B,
+    );
+    // The whole ruling in one assertion.
+    expect(events.indexOf('peek')).toBeLessThan(events.indexOf('hold'));
+    expect(events.indexOf('hold')).toBeLessThan(events.indexOf('clear'));
+  });
+
+  it('clears the EXACT record it peeked, by token', async () => {
+    // Native refuses a mismatched token, so sending the wrong one would silently leak the record.
+    const {clearedWith} = await runWithPeek(
+      {
+        outcome: 'success',
+        voucherNo: 'V-A',
+        orderId: A,
+        orphaned: true,
+        receiptToken: '1724580000000',
+      },
+      B,
+    );
+    expect(clearedWith).toEqual(['1724580000000']);
+  });
+
+  it('still clears when the orphan is APPLIED, not held', async () => {
+    // Applied means this attempt owns the payload; leaving the native record would re-apply it.
+    const {events, clearedWith} = await runWithPeek(
+      {
+        outcome: 'success',
+        voucherNo: 'V-B',
+        orderId: B,
+        orphaned: true,
+        receiptToken: '1724580000001',
+      },
+      B,
+    );
+    expect(events).toContain('clear');
+    expect(events).not.toContain('hold');
+    expect(clearedWith).toEqual(['1724580000001']);
+  });
+});

@@ -42,6 +42,12 @@ export interface PaymentResult {
   /** Raw gateway result code (e.g. "N003") when the native side reported one. */
   gatewayResult?: string;
   /**
+   * #344 ruling 4. Set when this result came from a NON-DESTRUCTIVE peek, meaning the native
+   * record still exists and must be cleared once the payload is durably held. Absent when it
+   * came from the legacy destructive consume, where there is nothing left to clear.
+   */
+  receiptToken?: string;
+  /**
    * #344. The order this payment was launched FOR, as the native side recorded it at launch
    * (KEY_PENDING_ORDER). Carried so a recovered orphan can be compared against the order on
    * screen instead of being applied to whatever happens to be there. May be a comma-separated
@@ -59,6 +65,8 @@ interface PaymentNativeResult {
   orderId?: string;
   merchantOrderNo?: string;
   gatewayResult?: string;
+  /** #344 ruling 4. Present only on a peeked payload; identifies which orphan to clear. */
+  receiptToken?: string;
 }
 
 export interface RefundResult {
@@ -88,6 +96,14 @@ interface PaymentModuleType {
     originBusinessOrderNo: string,
   ) => Promise<RefundNativeResult>;
   consumeOrphanedPaymentResult?: () => Promise<PaymentNativeResult | null>;
+  /**
+   * #344 ruling 4. Non-destructive read; the payload carries a receiptToken for the paired
+   * clear. OPTIONAL because an APK older than vc96 does not have it — see consumeOrphanedIfAny,
+   * which falls back to the destructive consume rather than losing the orphan entirely.
+   */
+  peekOrphanedPaymentResult?: () => Promise<PaymentNativeResult | null>;
+  /** #344 ruling 4. Clears only while the stored payload still matches the token. */
+  clearOrphanedPaymentResult?: (receiptToken: string) => Promise<boolean>;
   /** INSTRUMENTATION (vc82) — see WiretapEntry. Optional: older installs will not have it. */
   readWiseCashierWiretap?: () => Promise<string>;
   clearWiseCashierWiretap?: () => Promise<boolean>;
@@ -254,12 +270,15 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
 
   // #344. Carried on BOTH exits: the orphan guard needs it whether or not a voucher came back.
   const orderId = String(result.orderId ?? '').trim() || undefined;
+  // #344 ruling 4. Rides through so releasePeekedOrphan can clear exactly this record.
+  const receiptToken = String(result.receiptToken ?? '').trim() || undefined;
 
   if (!voucherNo) {
     return {
       success: false,
       businessOrderNo,
       orderId,
+      receiptToken,
       orphaned: Boolean(result.orphaned),
       outcomeKind: result.orphaned ? 'orphaned_ambiguous' : 'ambiguous',
       error:
@@ -273,6 +292,7 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
     voucherNo,
     businessOrderNo,
     orderId,
+    receiptToken,
     reference: voucherNo,
     orphaned: Boolean(result.orphaned),
     outcomeKind: result.orphaned ? 'orphaned_success' : 'success',
@@ -299,6 +319,34 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
  * the same "a cancel cannot have charged" argument that justifies the live path's
  * no-gateway-attempt bypass applies unchanged here.
  */
+/**
+ * #344 ruling 4 — clear the native record for an orphan we have finished with.
+ *
+ * No-op when `receiptToken` is absent, which means the payload came from the legacy destructive
+ * consume and there is nothing left to clear. Never throws: failing to clear costs a duplicate
+ * read next time, and verify-payment plus the order-match guard both make a duplicate harmless,
+ * whereas throwing here would fail the payment in progress.
+ */
+async function releasePeekedOrphan(orphan: PaymentResult): Promise<void> {
+  if (!orphan.receiptToken || !PaymentModule?.clearOrphanedPaymentResult) {
+    return;
+  }
+  try {
+    const cleared = await PaymentModule.clearOrphanedPaymentResult(
+      orphan.receiptToken,
+    );
+    if (!cleared) {
+      // Native refused because a NEWER orphan replaced this one after the peek. Correct, and
+      // worth a line: the newer one is still there to be picked up on the next pass.
+      console.warn(
+        '[payment] orphan clear declined — a newer orphaned result arrived after the peek',
+      );
+    }
+  } catch (err) {
+    console.warn('[payment] failed to clear peeked orphan', err);
+  }
+}
+
 /**
  * #344 — apply a recovered orphan, or hold it. The single decision point for BOTH call sites.
  *
@@ -359,6 +407,11 @@ async function applyOrHoldOrphan(
   });
 
   if (!reason) {
+    /**
+     * #344 ruling 4. Applied, so this attempt now OWNS the payload — the caller settles the order
+     * with it. Clear the native record only now, and only this one.
+     */
+    await releasePeekedOrphan(orphan);
     return orphan;
   }
 
@@ -371,15 +424,41 @@ async function applyOrHoldOrphan(
     outcomeKind: orphan.outcomeKind,
     heldAt: new Date().toISOString(),
   });
+
+  /**
+   * #344 ruling 4 — CLEAR ONLY AFTER THE HOLD IS DURABLE. This ordering is the entire fix: the
+   * native record is the only copy until holdOrphanPayment returns, so clearing before it (which
+   * is what the old destructive consume did implicitly) loses a card transaction on any crash in
+   * between. Read, hold, then clear.
+   *
+   * If the hold silently failed — it is best-effort and cannot throw — the clear below still runs,
+   * because the alternative is re-reading the same orphan on every payment forever. That trade is
+   * deliberate and it is the one remaining lossy path; the storage write failing is the trigger,
+   * and it is logged.
+   */
+  await releasePeekedOrphan(orphan);
   return null;
 }
 
 export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
-  if (!PaymentModule?.consumeOrphanedPaymentResult) {
+  /**
+   * #344 ruling 4. PREFER THE NON-DESTRUCTIVE PEEK. The record is then cleared by
+   * releasePeekedOrphan only after the payload is durably held or applied, so a crash in between
+   * no longer loses a card transaction.
+   *
+   * The destructive consume remains as a FALLBACK, and deliberately so: a JS bundle can outlive
+   * the APK it shipped with, and on an older APK peek does not exist. Falling back reads the
+   * orphan with the old window rather than not reading it at all — the window is the bug, but
+   * silently ignoring the orphan would be a worse one.
+   */
+  const read =
+    PaymentModule?.peekOrphanedPaymentResult ??
+    PaymentModule?.consumeOrphanedPaymentResult;
+  if (!read) {
     return null;
   }
   try {
-    const orphaned = await PaymentModule.consumeOrphanedPaymentResult();
+    const orphaned = await read();
     if (!orphaned) {
       return null;
     }
@@ -393,6 +472,7 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
       undefined;
     // #344. The order native recorded at launch, so the guard can compare it.
     const orphanOrderId = String(orphaned.orderId ?? '').trim() || undefined;
+    const receiptToken = String(orphaned.receiptToken ?? '').trim() || undefined;
     if (orphaned.outcome === 'user_cancelled') {
       return {
         success: false,
@@ -400,6 +480,7 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
         outcomeKind: 'user_cancelled',
         businessOrderNo,
         orderId: orphanOrderId,
+        receiptToken,
         gatewayResult: orphaned.gatewayResult,
         error: orphaned.error || 'Payment was cancelled on the reader before the gateway was contacted',
       };
@@ -410,6 +491,7 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
       outcomeKind: 'orphaned_ambiguous',
       businessOrderNo,
       orderId: orphanOrderId,
+      receiptToken,
       error:
         orphaned.error ||
         'Payment callback was delivered without an active JS promise — outcome unconfirmed by device',
