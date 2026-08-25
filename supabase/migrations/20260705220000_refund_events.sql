@@ -1,3 +1,21 @@
+-- @env: staging
+--
+-- SCOPED TO STAGING, 2026-08-25. Applied on staging, absent on production -- verified:
+--
+--     STAGING     refund_events EXISTS, ledger has 20260705220000
+--     PRODUCTION  refund_events ABSENT, ledger does not
+--
+-- The header states where it IS, which is what the drift checker needs. Without one it defaults to
+-- `both`, so production reported it as missing and the 2026-08-24 promotion had to exclude it by
+-- hand alongside 20260705210000.
+--
+-- NOT a #170-style collision -- there is no competing definition of refund_events. This is simply
+-- staging-only work: the post-payment lifecycle ADR that 20260705210000 belongs to. If that ADR
+-- ships, this file goes to production WITH it and the scope is removed deliberately. It cannot go
+-- alone: it takes a NOT NULL FK to payments(id), and production's `payments` does not carry the
+-- shape this expects -- a dependency check on 2026-08-25 found `payments.order_id does not exist`
+-- there.
+
 -- Recovered 2026-08-05 from the staging migration ledger (issue #143). Applied to staging ad hoc
 -- and never committed. Reconstructed verbatim from the ledger. NOT yet applied to production.
 

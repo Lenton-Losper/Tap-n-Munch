@@ -1,3 +1,29 @@
+-- @env: staging
+--
+-- SCOPED TO STAGING, 2026-08-25, and for this file the scope is PERMANENT until #170 is resolved.
+--
+-- THIS MIGRATION MUST NOT REACH PRODUCTION. It creates `document_sequences` keyed on
+-- (restaurant_id, SEQUENCE_TYPE), and 20260705280000_business_documents.sql creates a table of the
+-- same name keyed on (restaurant_id, DOCUMENT_TYPE) with a CHECK on the allowed values. Production
+-- already carries the business_documents shape -- verified 2026-08-25:
+--
+--     PRODUCTION document_sequences: restaurant_id, document_type, current_number
+--     ledger contains 20260705280000, and NOT this file
+--     STAGING has both applied, which is how the collision stayed invisible
+--
+-- `CREATE TABLE IF NOT EXISTS` means applying this to production would SILENTLY DO NOTHING and then
+-- record a ledger row claiming a shape that is not there -- worse than failing, because the next
+-- reader trusts the ledger.
+--
+-- WHY THE HEADER RATHER THAN LEAVING IT BARE. With no `-- @env:` line the drift checker defaults to
+-- `both`, so a headerless file is REQUIRED on production and reported as missing. That forced the
+-- 2026-08-24 promotion to exclude it BY HAND, and a manual exclusion on every promotion is a thing
+-- that gets forgotten exactly once. Scoped, the checker reports it as out of scope and the exclusion
+-- is automatic.
+--
+-- Removing this scope is part of resolving #170 -- rewriting the table to the shipped shape, or
+-- deleting this file -- and is a deliberate act, not a tidy-up.
+
 -- Recovered 2026-08-05 from the staging migration ledger (issue #143). Applied to staging ad hoc
 -- and never committed, which the drift guard reported as undocumented drift. Reconstructed verbatim
 -- from supabase_migrations.schema_migrations.statements so this file says exactly what staging ran.
