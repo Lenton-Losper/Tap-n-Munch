@@ -307,9 +307,26 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
  * nothing here for me" and carry on with the payment in front of them, which is correct: the order
  * on screen still has not been paid.
  *
- * ONE DECISION POINT, TWO CALL SITES, on purpose. The two sites had drifted — one tested `.success`
- * and the other tested nothing — and a second copy of a rule about which order a card payment may
- * settle is a second place to get it wrong.
+ * ONE DECISION POINT ABOUT WHICH ORDER, TWO CALL SITES. The order-matching rule lives here so
+ * there is only one copy of it.
+ *
+ * `applyNonSuccess` IS NOT DRIFT BETWEEN THE SITES — IT IS THE DIFFERENCE BETWEEN THEM, and #183
+ * depends on it. Read this before "tidying" the two sites into one behaviour:
+ *
+ *   SITE 1, before the reader is launched (applyNonSuccess: false). A stale SUCCESS for this order
+ *     means the order was already paid, so it is applied. A stale CANCEL means the operator is
+ *     retrying, and the right answer is to fall through and launch the reader — returning "someone
+ *     cancelled earlier" as the outcome of a payment they just started would be wrong.
+ *
+ *   SITE 2, inside the catch after a launch (applyNonSuccess: true). An orphan naming THIS order
+ *     IS this attempt's result, whatever it says. Refusing to apply a matching `user_cancelled`
+ *     here is exactly the #183 defect: the cancel falls through to `orphaned_ambiguous`, the server
+ *     verifies against a gateway with no record, gets E04111, and the order strands. Native's own
+ *     comment says an orphaned USER CANCEL must not be reported as ambiguous.
+ *
+ * #344 RULING 5 — A NON-SUCCESS ORPHAN IS HELD, NEVER DROPPED. Where site 1 declines to apply one,
+ * it used to be consumed and discarded. "A failed orphan still tells us a payment attempt reached
+ * a reader and how it ended", so it is held with its outcome instead.
  *
  * HOLDING IS BEST EFFORT AND CANNOT THROW. If persistence fails the orphan is still not applied to
  * the wrong order, so the safety property survives even when the record does not. Throwing here
@@ -318,27 +335,40 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
 async function applyOrHoldOrphan(
   orphan: PaymentResult,
   currentOrderId: string,
+  opts: {applyNonSuccess: boolean},
 ): Promise<PaymentResult | null> {
   const decision = decideOrphanDisposition(orphan.orderId, currentOrderId);
 
+  // It names this order, but this site may not apply a non-success one. Held rather than dropped.
+  const withheldForOutcome =
+    decision.disposition === 'apply' && !orphan.success && !opts.applyNonSuccess;
+
+  const reason = withheldForOutcome
+    ? ('non_success_not_applied' as const)
+    : decision.disposition === 'hold'
+    ? decision.reason
+    : null;
+
   recordWiretapEvent('payment.orphan.decision', {
-    disposition: decision.disposition,
-    reason: decision.disposition === 'hold' ? decision.reason : '(applied)',
+    disposition: reason ? 'hold' : 'apply',
+    reason: reason ?? '(applied)',
     orphanOrderId: orphan.orderId ?? '(none)',
     currentOrderId,
     voucherNo: orphan.voucherNo ?? '(none)',
+    outcomeKind: orphan.outcomeKind ?? '(none)',
   });
 
-  if (decision.disposition === 'apply') {
+  if (!reason) {
     return orphan;
   }
 
   await holdOrphanPayment({
     orphanOrderId: orphan.orderId ?? '',
     seenWhileChargingOrderId: currentOrderId,
-    reason: decision.reason,
+    reason,
     voucherNo: orphan.voucherNo,
     businessOrderNo: orphan.businessOrderNo,
+    outcomeKind: orphan.outcomeKind,
     heldAt: new Date().toISOString(),
   });
   return null;
@@ -408,12 +438,15 @@ export async function processPaymentIntent(
   // order. Anything else is held, never discarded, and this payment proceeds normally.
   const priorOrphan = await consumeOrphanedIfAny();
   //
-  // The `.success` condition is PRESERVED from before #344. A non-success orphan was never
-  // applied here and still is not; changing that would alter the flow for cancels and ambiguous
-  // outcomes, which this ruling did not cover. That such an orphan is consumed and dropped is a
-  // separate concern, raised rather than fixed here.
-  if (priorOrphan?.success) {
-    const applied = await applyOrHoldOrphan(priorOrphan, orderId);
+  // #344 RULING 5. The `.success` gate is GONE. A non-success orphan is still never applied at
+  // this site (see applyOrHoldOrphan: applyNonSuccess is false here, because the operator is
+  // starting a fresh payment) — but it is now HELD with its outcome instead of being consumed and
+  // silently dropped, which is what this branch used to do to every cancel and every ambiguous
+  // result that reached a reader.
+  if (priorOrphan) {
+    const applied = await applyOrHoldOrphan(priorOrphan, orderId, {
+      applyNonSuccess: false,
+    });
     if (applied) {
       return applied;
     }
@@ -461,7 +494,12 @@ export async function processPaymentIntent(
     // line identically. Same three cases as site 1.
     const orphaned = await consumeOrphanedIfAny();
     if (orphaned) {
-      const applied = await applyOrHoldOrphan(orphaned, orderId);
+      // applyNonSuccess: TRUE here and false at site 1 — see applyOrHoldOrphan. A matching
+      // user_cancelled MUST be applied here or #183 returns: it falls through to ambiguous, the
+      // server verifies against a gateway with no record, and the order strands on E04111.
+      const applied = await applyOrHoldOrphan(orphaned, orderId, {
+        applyNonSuccess: true,
+      });
       if (applied) {
         return applied;
       }

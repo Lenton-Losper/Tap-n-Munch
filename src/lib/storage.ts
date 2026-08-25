@@ -183,7 +183,18 @@ export type HeldOrphanPayment = {
   orphanOrderId: string;
   /** The order that was on screen when it surfaced — what it was NOT applied to. */
   seenWhileChargingOrderId: string;
-  reason: 'different_order' | 'unknown_order';
+  /**
+   * Why it was not applied here. #344 rulings 2/3 give the first two; ruling 5 adds the third —
+   * an orphan that DOES name this order but did not succeed, which site 1 must not apply because
+   * the operator is starting a fresh payment, and which must no longer be dropped either.
+   */
+  reason: 'different_order' | 'unknown_order' | 'non_success_not_applied';
+  /**
+   * #344 ruling 5. The device-level outcome — user_cancelled, orphaned_ambiguous, and so on.
+   * "A failed orphan still tells us a payment attempt reached a reader and how it ended", so the
+   * status is part of the record rather than something only a success carries.
+   */
+  outcomeKind?: string;
   voucherNo?: string;
   businessOrderNo?: string;
   /** ISO timestamp of when it was held, so staff can tell one from another. */

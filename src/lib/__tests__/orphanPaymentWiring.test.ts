@@ -34,6 +34,8 @@ type Held = {
   orphanOrderId: string;
   seenWhileChargingOrderId: string;
   reason: string;
+  /** #344 ruling 5 — what the reader actually reported. */
+  outcomeKind?: string;
   voucherNo?: string;
 };
 
@@ -69,7 +71,16 @@ async function runWithOrphan(
         getItem: jest.Mock;
         setItem: jest.Mock;
       };
-    encrypted.getItem.mockImplementation(async () => stored);
+    /**
+     * KEY-AWARE ON PURPOSE. A blanket `getItem -> stored` also answers the TERMINAL TOKEN read, so
+     * getTerminalToken() returns null and processPaymentIntent early-returns "Session expired"
+     * before the try block — the catch, and therefore site 2, is never reached, and the test
+     * passes or fails for a reason nothing to do with orphans. Caught exactly that way: the #183
+     * assertion reported `confirmed_failure` until the token was supplied.
+     */
+    encrypted.getItem.mockImplementation(async (key: string) =>
+      key === 'flashtap_terminal_token' ? 'test-token' : stored,
+    );
     encrypted.setItem.mockImplementation(async (_k: string, v: string) => {
       stored = v;
     });
@@ -168,5 +179,131 @@ describe('#344 wiring — an orphan for THIS order still works', () => {
     );
     expect((result as {voucherNo?: string}).voucherNo).toBe('V-AB-222');
     expect(held).toEqual([]);
+  });
+});
+
+/**
+ * #344 RULING 5 — a non-success orphan is evidence, not rubbish.
+ *
+ * "A failed orphan still tells us a payment attempt reached a reader and how it ended." Site 1 used
+ * to consume every cancel and every ambiguous result and drop it on the floor. It still does not
+ * APPLY them — the operator is starting a fresh payment, and answering with someone's earlier
+ * cancel would be wrong — but it now holds them with their outcome.
+ */
+describe('#344 ruling 5 — a non-success orphan is held, not dropped', () => {
+  it('holds a user_cancelled orphan for THIS order, with its outcome', async () => {
+    const {result, held} = await runWithOrphan(
+      {outcome: 'user_cancelled', voucherNo: '', orderId: B, orphaned: true},
+      B,
+    );
+    // Not applied: the operator asked to take a payment, not to be told about an old cancel.
+    expect((result as {success?: boolean}).success).not.toBe(true);
+    // But recorded, with what actually happened at the reader.
+    expect(held).toHaveLength(1);
+    expect(held[0].reason).toBe('non_success_not_applied');
+    expect(held[0].outcomeKind).toBe('user_cancelled');
+  });
+
+  it('holds an ambiguous orphan rather than discarding it', async () => {
+    const {held} = await runWithOrphan(
+      {outcome: 'something_odd', voucherNo: '', orderId: B, orphaned: true},
+      B,
+    );
+    expect(held).toHaveLength(1);
+    expect(held[0].outcomeKind).toBe('orphaned_ambiguous');
+  });
+
+  it('still records the ORDER reason when it also names a different order', async () => {
+    // Both things are true; the order mismatch is the more important one to show staff.
+    const {held} = await runWithOrphan(
+      {outcome: 'user_cancelled', voucherNo: '', orderId: A, orphaned: true},
+      B,
+    );
+    expect(held[0].reason).toBe('different_order');
+    expect(held[0].outcomeKind).toBe('user_cancelled');
+  });
+});
+
+/**
+ * #183 MUST SURVIVE RULING 5, and this is the assertion that proves it.
+ *
+ * Site 2 is inside the catch, so an orphan naming THIS order IS this attempt's result — whatever
+ * it says. If a matching `user_cancelled` is not applied there, it falls through to
+ * `orphaned_ambiguous`, the server verifies against a gateway that has no record of it, gets
+ * E04111, and the order strands. That is #183 exactly, and native's own comment says an orphaned
+ * USER CANCEL must not be reported as ambiguous.
+ *
+ * So `applyNonSuccess` differs between the two sites BY DESIGN. Anyone unifying them will break
+ * this test, which is the point of it existing.
+ */
+async function runWithOrphanAtSiteTwoOnly(
+  orphan: Record<string, unknown>,
+  chargingOrderId: string,
+): Promise<unknown> {
+  let out: unknown;
+  await jest.isolateModulesAsync(async () => {
+    const {NativeModules, Platform} = require('react-native');
+    Platform.OS = 'android';
+    NativeModules.RuntimeConfig = {
+      API_BASE_URL: 'https://example.invalid',
+      SUPABASE_URL: 'https://example.invalid',
+      SUPABASE_ANON_KEY: 'test',
+      ENV_NAME: 'test',
+    };
+    const encrypted = require('react-native-encrypted-storage')
+      .default as {getItem: jest.Mock; setItem: jest.Mock};
+    let stored: string | null = null;
+    /**
+     * KEY-AWARE ON PURPOSE. A blanket `getItem -> stored` also answers the TERMINAL TOKEN read, so
+     * getTerminalToken() returns null and processPaymentIntent early-returns "Session expired"
+     * before the try block — the catch, and therefore site 2, is never reached, and the test
+     * passes or fails for a reason nothing to do with orphans. Caught exactly that way: the #183
+     * assertion reported `confirmed_failure` until the token was supplied.
+     */
+    encrypted.getItem.mockImplementation(async (key: string) =>
+      key === 'flashtap_terminal_token' ? 'test-token' : stored,
+    );
+    encrypted.setItem.mockImplementation(async (_k: string, v: string) => {
+      stored = v;
+    });
+
+    let call = 0;
+    NativeModules.PaymentModule = {
+      launchRefund: jest.fn(),
+      launchPayment: jest.fn(),
+      // Empty at site 1, present at site 2 — the shape of a callback that arrived DURING this
+      // attempt rather than one left over from an earlier sale.
+      consumeOrphanedPaymentResult: jest.fn(async () => {
+        call += 1;
+        return call === 1 ? null : orphan;
+      }),
+    };
+    const payment = require('../payment') as typeof import('../payment');
+    // prepare-payment reaches the network, which cannot resolve here, so the flow throws into the
+    // catch — which is precisely the path site 2 lives on.
+    out = await payment.processPaymentIntent(50, chargingOrderId);
+  });
+  return out;
+}
+
+describe('#183 — site 2 still applies a MATCHING cancel', () => {
+  it('returns user_cancelled rather than letting it become ambiguous', async () => {
+    const result = await runWithOrphanAtSiteTwoOnly(
+      {outcome: 'user_cancelled', voucherNo: '', orderId: B, orphaned: true},
+      B,
+    );
+    // The classification the server needs in order to cancel without a Finatic verify.
+    expect((result as {outcomeKind?: string}).outcomeKind).toBe('user_cancelled');
+  });
+
+  it('but still HOLDS a cancel that names a DIFFERENT order', async () => {
+    // Ruling 5 does not weaken #344: a mismatch is a mismatch whatever the outcome.
+    const result = await runWithOrphanAtSiteTwoOnly(
+      {outcome: 'user_cancelled', voucherNo: '', orderId: A, orphaned: true},
+      B,
+    );
+    expect((result as {outcomeKind?: string}).outcomeKind).not.toBe(
+      'user_cancelled',
+    );
   });
 });
