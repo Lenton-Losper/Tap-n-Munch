@@ -110,13 +110,21 @@ describe('anon `tabs` selects and `members` (#262)', () => {
   const v2 = read('app/menu/[restaurantId]/v2/page.tsx')
   const tabSession = read('lib/tab-session.ts')
 
-  it('the QR landing page asks PostgREST for no tabs columns at all beyond its stored-tab check', () => {
-    const selects = anonTabsSelects(v2)
-    // Sanity: the extractor must actually be finding something, or the assertion below is vacuous.
-    expect(selects.length).toBeGreaterThan(0)
-    for (const columns of selects) {
-      expect(columns).not.toContain('members')
-    }
+  it('the QR landing page asks PostgREST for NO tabs columns at all', () => {
+    // SUPERSEDED 2026-08-25 (#284). This used to require at least one anon `tabs` select to exist
+    // -- a sanity check that the extractor was finding something -- and then assert none of them
+    // named `members`. The stored-tab check it was guarding is gone: the landing now uses the tab
+    // it already fetched from GET /api/tabs/{id}/view.
+    //
+    // So the expectation INVERTS, from "some, and none of them leak members" to "none at all".
+    // The vacuity guard moves to the extractor itself below, which is the honest place for it.
+    expect(anonTabsSelects(v2)).toHaveLength(0)
+  })
+
+  it('the extractor still works, so the zero above means something', () => {
+    // Without this, deleting anonTabsSelects' body would make every assertion in this file pass.
+    const sample = "supabase.from('tabs').select('id, members, total')"
+    expect(anonTabsSelects(sample)).toEqual(['id, members, total'])
   })
 
   it('the landing page fetches its open-tab summary from the server route, not from PostgREST', () => {
@@ -124,14 +132,26 @@ describe('anon `tabs` selects and `members` (#262)', () => {
     expect(v2).toContain('member_count')
   })
 
-  it('fetchActiveTabForTable no longer selects members', () => {
-    const selects = anonTabsSelects(fnBody(tabSession, 'fetchActiveTabForTable'))
-    expect(selects).toHaveLength(1)
-    expect(selects[0]).not.toContain('members')
-    // Control: the rest of the column list is untouched, so this is a removal and not a rewrite.
-    for (const column of ['id', 'status', 'total', 'pin_required', 'settled_type']) {
-      expect(selects[0]).toContain(column)
-    }
+  it('NO customer path reads tabs through the browser anon client at all', () => {
+    // Stronger than the assertion this replaces. That one checked fetchActiveTabForTable did not
+    // select `members`; #284 removed the function outright, because while ANY anon read of `tabs`
+    // existed the SELECT grant had to stay -- and that grant has no restaurant scope, so any
+    // holder of the anon key could enumerate every open tab at every venue.
+    //
+    // Checking the column list of a query that should not exist is the weaker question.
+    // Matched as a DECLARATION, not as the bare name: the comment recording the removal mentions
+    // it, and `not.toContain('fetchActiveTabForTable')` would fail on that comment. A source-text
+    // assertion has to name where the text must not be.
+    expect(tabSession).not.toMatch(/(export\s+)?(async\s+)?function\s+fetchActiveTabForTable/)
+    expect(anonTabsSelects(tabSession)).toHaveLength(0)
+    expect(anonTabsSelects(v2)).toHaveLength(0)
+  })
+
+  it('and the landing validates its stored tab from the tab it already fetched', () => {
+    // The read that was removed asked the database to confirm something the server route had just
+    // returned. Control: the server route is still the source.
+    expect(v2).toContain('/api/tabs/')
+    expect(v2).toContain('fetchTabById')
   })
 
   it('fetchTabById no longer touches PostgREST at all — it reads the redacting seam', () => {

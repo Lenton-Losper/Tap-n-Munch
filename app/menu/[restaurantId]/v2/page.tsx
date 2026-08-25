@@ -445,19 +445,21 @@ export function MenuLandingPageV2Content({
         if (!tab || isTabSessionEndedStatus(tab.status)) {
           endTabSession(Boolean(storedId))
         } else if (tabStatus === 'open') {
-          const { data: openTabRow, error: openTabValidateError } = await supabase
-            .from('tabs')
-            .select('id, total, status')
-            .eq('id', storedId)
-            .eq('restaurant_id', restaurantUuid)
-            .eq('status', 'open')
-            .maybeSingle()
-
-          if (openTabValidateError) {
-            throw openTabValidateError
-          }
-
-          if (openTabRow) {
+          /**
+           * #284. This used to re-read `tabs` through the BROWSER ANON CLIENT to confirm the
+           * stored tab was still open at this restaurant -- facts `tab` above already carries,
+           * because fetchTabById fetches it from GET /api/tabs/{id}/view with the restaurantId,
+           * and that route scopes server-side. The re-read asked the database a question it had
+           * just been answered.
+           *
+           * It was the LAST customer-facing anon read of `tabs`, and while it existed the anon
+           * SELECT grant had to stay -- a grant with no restaurant scope, so any holder of the
+           * anon key could enumerate every open tab at every venue (measured: 39 tabs,
+           * N$1431, across three restaurants).
+           *
+           * Same principle as #279: send the answer, not the data it would be derived from.
+           */
+          if (tabStatus === 'open') {
             // #211/#221: persist the tab's OWN table, never the scanned one. This used to write
             // `tableNum`, so walking to another table silently re-pointed the stored tab at
             // wherever you last scanned -- which destroys the comparison below on the next load
@@ -465,12 +467,12 @@ export function MenuLandingPageV2Content({
             storedTabTable = tab?.table_number == null ? null : Number(tab.table_number)
             persistTabSession(storedId, storedTabTable ?? tableNum)
             setMyStoredTab({
-              id: String(openTabRow.id),
-              total: Number(openTabRow.total) || 0,
+              id: String(tab.id),
+              total: Number(tab.total) || 0,
               status: 'open',
               tableNumber: storedTabTable,
               // Same default the server applies: a tab is PIN-gated unless it explicitly is not.
-              pinRequired: (tab?.pin_required ?? openTabRow?.pin_required) !== false,
+              pinRequired: tab?.pin_required !== false,
             })
           } else {
             clearTabSession()
