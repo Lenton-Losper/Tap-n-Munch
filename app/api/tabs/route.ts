@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { issueTokenForOpenTab } from '@/lib/session-token'
 import { generateTabPin } from '@/lib/tabs/generate-tab-pin'
+import { markTableOccupied } from '@/lib/tables/mark-table-occupied'
 
 export const dynamic = 'force-dynamic'
 
@@ -346,6 +347,17 @@ export async function POST(req: Request) {
           restaurantUuid
         )
 
+        /**
+         * #216. THIS BRANCH RETURNS BEFORE THE CREATE PATH'S OCCUPIED WRITE, so a customer who
+         * arrived by the 23505 recovery join left the table un-marked — and a table holding a live
+         * tab that is not `'occupied'` is INVISIBLE on the payment terminal, whose entire list is
+         * gated on that column by an inner join.
+         *
+         * This is the reachable half of the defect. The create path at least attempted the write;
+         * this one never did, and it is precisely the path a second diner at a busy table takes.
+         */
+        await markTableOccupied(supabase, tableRow.id, '[TABS 23505-join]')
+
         console.log('[TABS] 23505 recovery — PIN verified, joined existing tab', existingTab.id)
 
         return NextResponse.json({
@@ -370,7 +382,16 @@ export async function POST(req: Request) {
 
     console.log('[TABS] tab created successfully', newTab)
 
-    await supabase.from('restaurant_tables').update({ status: 'occupied' }).eq('id', tableRow.id)
+    /**
+     * #216. This used to be a bare `await supabase...update(...)` with no destructure, so a
+     * PostgREST error — which arrives in the RESOLVED object, never as a throw — was silently
+     * discarded. A table left un-marked while holding a live tab is INVISIBLE on the payment
+     * terminal, which gates its whole list on this column.
+     *
+     * The failure is logged, not thrown: the customer already has a tab and a token by now, and
+     * taking that away to fix a staff-side visibility problem would be the worse trade.
+     */
+    await markTableOccupied(supabase, tableRow.id, '[TABS create]')
 
     console.log('[TOKEN-4] calling issueTokenForOpenTab')
     const sessionToken = await issueTokenForOpenTab(
