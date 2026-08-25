@@ -154,3 +154,44 @@ export const SETTLE_ORDER_ALREADY_PAID =
  */
 export const ALREADY_SETTLED_MESSAGE =
   'This order is already paid. No further payment is needed.';
+
+// ─── #344: a recovered payment that was NOT applied to this order ─────────
+
+/**
+ * PROVISIONAL — NOT SIGNED OFF. #344. Everything below this line is a placeholder written to carry
+ * the behaviour so the APK can be built and tested; the owner signs the wording, as they did for
+ * the #327/#326 set above on 2026-08-25.
+ *
+ * REQUIREMENT — the heading for a held payment. It must say a card payment was FOUND, and that it
+ * belongs to a DIFFERENT order than the one on screen. It must not read as an error in the payment
+ * the operator is taking right now — that payment is unaffected and may well have succeeded.
+ */
+export const HELD_ORPHAN_TITLE = 'A payment for another order was found';
+
+/**
+ * REQUIREMENT — the body. Three facts and nothing else: a card payment was recovered, it has NOT
+ * been applied to this order, and it has been KEPT so someone can check it. It must not invite the
+ * operator to retry anything, and it must not suggest the money is lost — it is not, which is the
+ * entire reason the record exists.
+ */
+export const HELD_ORPHAN_BODY =
+  'A card payment was recovered that belongs to a different order. It has not been applied here. It has been kept so it can be checked.';
+
+/**
+ * REQUIREMENT — the variant shown when the recovered payment names NO order at all. Same three
+ * facts, but it must say the order could not be identified rather than naming a different one.
+ * It must NOT imply the payment is invalid: unknown means unknown, not void.
+ */
+export const HELD_ORPHAN_BODY_UNKNOWN_ORDER =
+  'A card payment was recovered but the order it belongs to could not be identified. It has not been applied here. It has been kept so it can be checked.';
+
+/**
+ * REQUIREMENT — the acknowledge action. Pressing it DELETES the only remaining record of that
+ * transaction, so the label must convey that the operator has already checked it, not merely that
+ * they have read this message. "OK" or "Dismiss" would be wrong for that reason.
+ *
+ * WHAT ACKNOWLEDGING SHOULD REQUIRE IS AN OPEN QUESTION for the owner — see the handoff. Today it
+ * simply clears; whether it should demand the payment be reconciled first is a ruling, not an
+ * implementation detail.
+ */
+export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';

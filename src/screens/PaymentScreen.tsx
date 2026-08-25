@@ -17,6 +17,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import LoadingButton from '../components/LoadingButton';
 import {usePaymentStateMachine} from '../components/PaymentStateMachine';
 import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
+import HeldOrphanPaymentNotice from '../components/HeldOrphanPaymentNotice';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   ApiRequestError,
@@ -1199,6 +1200,12 @@ export default function PaymentScreen({route, navigation}: Props) {
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}>
+        {/*
+          #344. Above the order card, so it is read before the operator starts tapping. Renders
+          nothing when there is no held payment, which is almost always.
+        */}
+        <HeldOrphanPaymentNotice />
+
         <View style={styles.topCard}>
           <Text style={styles.tableLabel}>TABLE</Text>
           <Text style={styles.tableNumber}>{tableNumber}</Text>

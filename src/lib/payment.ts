@@ -5,7 +5,9 @@ import {
   prepareTerminalPayment,
   verifyTerminalPayment,
 } from './api';
-import {getTerminalToken} from './storage';
+import {getTerminalToken, holdOrphanPayment} from './storage';
+import {decideOrphanDisposition} from './orphanPaymentGuard';
+import {recordWiretapEvent} from './wiretap';
 
 export type PaymentOutcomeKind =
   | 'success'
@@ -39,6 +41,13 @@ export interface PaymentResult {
   orphaned?: boolean;
   /** Raw gateway result code (e.g. "N003") when the native side reported one. */
   gatewayResult?: string;
+  /**
+   * #344. The order this payment was launched FOR, as the native side recorded it at launch
+   * (KEY_PENDING_ORDER). Carried so a recovered orphan can be compared against the order on
+   * screen instead of being applied to whatever happens to be there. May be a comma-separated
+   * list for a tab settle, and is "" when native had no pending record.
+   */
+  orderId?: string;
 }
 
 interface PaymentNativeResult {
@@ -243,10 +252,14 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
     String(result.merchantOrderNo ?? '').trim() ||
     undefined;
 
+  // #344. Carried on BOTH exits: the orphan guard needs it whether or not a voucher came back.
+  const orderId = String(result.orderId ?? '').trim() || undefined;
+
   if (!voucherNo) {
     return {
       success: false,
       businessOrderNo,
+      orderId,
       orphaned: Boolean(result.orphaned),
       outcomeKind: result.orphaned ? 'orphaned_ambiguous' : 'ambiguous',
       error:
@@ -259,6 +272,7 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
     success: true,
     voucherNo,
     businessOrderNo,
+    orderId,
     reference: voucherNo,
     orphaned: Boolean(result.orphaned),
     outcomeKind: result.orphaned ? 'orphaned_success' : 'success',
@@ -285,6 +299,51 @@ function mapNativeSuccess(result: PaymentNativeResult): PaymentResult {
  * the same "a cancel cannot have charged" argument that justifies the live path's
  * no-gateway-attempt bypass applies unchanged here.
  */
+/**
+ * #344 — apply a recovered orphan, or hold it. The single decision point for BOTH call sites.
+ *
+ * Returns the orphan when it may be applied to `currentOrderId`, and null when it may not — in
+ * which case it has already been PERSISTED for someone to check. Callers treat null as "there was
+ * nothing here for me" and carry on with the payment in front of them, which is correct: the order
+ * on screen still has not been paid.
+ *
+ * ONE DECISION POINT, TWO CALL SITES, on purpose. The two sites had drifted — one tested `.success`
+ * and the other tested nothing — and a second copy of a rule about which order a card payment may
+ * settle is a second place to get it wrong.
+ *
+ * HOLDING IS BEST EFFORT AND CANNOT THROW. If persistence fails the orphan is still not applied to
+ * the wrong order, so the safety property survives even when the record does not. Throwing here
+ * would lose the CURRENT sale as well, turning a bookkeeping failure into a payment failure.
+ */
+async function applyOrHoldOrphan(
+  orphan: PaymentResult,
+  currentOrderId: string,
+): Promise<PaymentResult | null> {
+  const decision = decideOrphanDisposition(orphan.orderId, currentOrderId);
+
+  recordWiretapEvent('payment.orphan.decision', {
+    disposition: decision.disposition,
+    reason: decision.disposition === 'hold' ? decision.reason : '(applied)',
+    orphanOrderId: orphan.orderId ?? '(none)',
+    currentOrderId,
+    voucherNo: orphan.voucherNo ?? '(none)',
+  });
+
+  if (decision.disposition === 'apply') {
+    return orphan;
+  }
+
+  await holdOrphanPayment({
+    orphanOrderId: orphan.orderId ?? '',
+    seenWhileChargingOrderId: currentOrderId,
+    reason: decision.reason,
+    voucherNo: orphan.voucherNo,
+    businessOrderNo: orphan.businessOrderNo,
+    heldAt: new Date().toISOString(),
+  });
+  return null;
+}
+
 export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
   if (!PaymentModule?.consumeOrphanedPaymentResult) {
     return null;
@@ -302,12 +361,15 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
       String(orphaned.businessOrderNo ?? '').trim() ||
       String(orphaned.merchantOrderNo ?? '').trim() ||
       undefined;
+    // #344. The order native recorded at launch, so the guard can compare it.
+    const orphanOrderId = String(orphaned.orderId ?? '').trim() || undefined;
     if (orphaned.outcome === 'user_cancelled') {
       return {
         success: false,
         orphaned: true,
         outcomeKind: 'user_cancelled',
         businessOrderNo,
+        orderId: orphanOrderId,
         gatewayResult: orphaned.gatewayResult,
         error: orphaned.error || 'Payment was cancelled on the reader before the gateway was contacted',
       };
@@ -317,6 +379,7 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
       orphaned: true,
       outcomeKind: 'orphaned_ambiguous',
       businessOrderNo,
+      orderId: orphanOrderId,
       error:
         orphaned.error ||
         'Payment callback was delivered without an active JS promise — outcome unconfirmed by device',
@@ -340,36 +403,20 @@ export async function processPaymentIntent(
   }
 
   // Recover a prior orphaned callback before starting a new SALE (process death case).
+  //
+  // #344 SITE 1 OF 2. Guarded by applyOrHoldOrphan: an orphan is applied ONLY when it names this
+  // order. Anything else is held, never discarded, and this payment proceeds normally.
   const priorOrphan = await consumeOrphanedIfAny();
+  //
+  // The `.success` condition is PRESERVED from before #344. A non-success orphan was never
+  // applied here and still is not; changing that would alter the flow for cancels and ambiguous
+  // outcomes, which this ruling did not cover. That such an orphan is consumed and dropped is a
+  // separate concern, raised rather than fixed here.
   if (priorOrphan?.success) {
-    /**
-     * #343 — THE ORPHAN IS NOT CHECKED AGAINST THIS ORDER, AND IT SHOULD BE.
-     *
-     * This branch previously carried the vestige of that check: `const orphanOrderId = undefined`
-     * with the comment "Prefer applying orphan only when it matches this order (or order id
-     * unknown)". The variable was never assigned and never read — it silenced nothing and
-     * guarded nothing — so it is removed here and the INTENT is written down properly instead.
-     * Removing a dead `undefined` binding changes no behaviour; implementing the check would,
-     * which is why it is escalated rather than done. Authored 2026-07-29 in 10ac28f, a commit
-     * whose own message says "hold-for-signoff".
-     *
-     * THE GAP. A recovered orphaned SUCCESS is returned as the result for WHICHEVER order is on
-     * screen when the next payment is started. If the app died after the reader's callback for
-     * order A and staff then begin a payment on order B, B is reported paid carrying A's voucher,
-     * and A stays unpaid. The server's amount gate does not catch it: the amount sent is B's own
-     * total, so it matches B exactly.
-     *
-     * THE DATA FOR THE CHECK EXISTS BUT IS DISCARDED. PaymentNativeResult declares
-     * `orderId?: string`, and mapNativeSuccess drops it building PaymentResult — so the
-     * comparison the original comment asks for is impossible without also carrying that field
-     * through. Any fix is those two changes together, not one line here.
-     *
-     * NOT IMPLEMENTED HERE ON PURPOSE. What a recovered payment is allowed to settle is a ruling
-     * about what a payment MEANS, and #327's `left_pending_finatic_uncertain` is the standing
-     * example of why that belongs to the owner: an orphan whose order cannot be established is
-     * the same "cannot say" state, and guessing either way is a money decision.
-     */
-    return priorOrphan;
+    const applied = await applyOrHoldOrphan(priorOrphan, orderId);
+    if (applied) {
+      return applied;
+    }
   }
 
   try {
@@ -406,9 +453,18 @@ export async function processPaymentIntent(
     });
   } catch (error: unknown) {
     // After a lost Promise, the native side may have persisted an orphaned result.
+    //
+    // #344 SITE 2 OF 2, and it was the more exposed of the two: it returned the orphan with no
+    // order check AND no `.success` test at all. Being inside the catch for THIS order's payment
+    // makes an orphan found here MORE LIKELY to belong to this order — but likelihood is not the
+    // standard on a payment path, and an orphan left unconsumed by an earlier sale reaches this
+    // line identically. Same three cases as site 1.
     const orphaned = await consumeOrphanedIfAny();
     if (orphaned) {
-      return orphaned;
+      const applied = await applyOrHoldOrphan(orphaned, orderId);
+      if (applied) {
+        return applied;
+      }
     }
 
     const message =

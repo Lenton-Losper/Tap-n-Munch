@@ -22,6 +22,12 @@ export const MERCHANT_NO_STORAGE_KEY = 'flashtap_merchant_no';
 export const STORE_NO_STORAGE_KEY = 'flashtap_store_no';
 export const PAYMENT_STATE_STORAGE_KEY = 'flashtap_payment_state';
 /**
+ * #344. A recovered orphaned card payment that could NOT be applied to the order on screen,
+ * held until someone checks it. Never cleared by clearAllData: an unresolved card transaction
+ * must outlive a logout, which is a staff action and not a decision about money.
+ */
+export const HELD_ORPHAN_PAYMENT_STORAGE_KEY = 'flashtap_held_orphan_payment';
+/**
  * Developer toggle (Diagnostics): single source of truth for staff receipt printing
  * (auto-print, Print button, Reprint). Default off until hardware-verified.
  */
