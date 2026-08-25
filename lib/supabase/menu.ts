@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createServerSupabaseClient } from './server'
 import { supabase } from './client'
 import { resolveRestaurantUuid } from './restaurants'
@@ -212,7 +211,11 @@ export async function getSupabaseMenuItemsByCategory(
 
   for (const subcategory of subcategories || []) {
     subcategoryIds.add(subcategory.id)
-    const items = visibleItems.filter((item) => item.subcategory_id === subcategory.id)
+    // Annotated, not inferred: `visibleItems` comes from an untyped `.select('*')`, so it never
+    // recovers an element type and the parameter lands as an implicit any.
+    const items = visibleItems.filter(
+      (item: Record<string, any>) => item.subcategory_id === subcategory.id
+    )
     if (items.length === 0) continue
     grouped[subcategory.id] = {
       subcategory: {
@@ -225,7 +228,7 @@ export async function getSupabaseMenuItemsByCategory(
   }
 
   const uncategorizedItems = visibleItems.filter(
-    (item) => !item.subcategory_id || !subcategoryIds.has(item.subcategory_id)
+    (item: Record<string, any>) => !item.subcategory_id || !subcategoryIds.has(item.subcategory_id)
   )
   if (uncategorizedItems.length > 0) {
     grouped.__category_items__ = {
@@ -447,7 +450,26 @@ export async function createMenuItem(data: Record<string, any>) {
     return payload?.id
   }
 
-  const payload = {
+  /**
+   * ANNOTATED, AND THE COMPILER'S OWN SUGGESTION HERE WOULD LOSE DATA (#196).
+   *
+   * Stripping `@ts-nocheck` surfaced:
+   *
+   *   TS2551: Property 'sub_category_id' does not exist on type
+   *           '{ base_price; subcategory_id; status }'. Did you mean 'subcategory_id'?
+   *
+   * Taking that suggestion -- renaming the delete to `payload.subcategory_id` -- would remove the
+   * column the line above just populated, so every server-side createMenuItem would insert
+   * `subcategory_id = undefined` and silently orphan the item from its subcategory.
+   *
+   * The `??`-plus-`delete` pair is DELIBERATE NORMALISATION and is correct as written: callers
+   * really do send the other spelling (`components/menu/menu-item-form-modal.tsx` passes
+   * `sub_category_id`, and `app/api/admin/menu/items/route.ts` accepts all three), while the
+   * COLUMN is `subcategory_id`. The error exists only because spreading a `Record<string, any>`
+   * drops its index signature; restoring the annotation restores the signature and the delete
+   * typechecks without changing a byte of behaviour.
+   */
+  const payload: Record<string, any> = {
     ...data,
     base_price: Number(data.base_price ?? 0),
     subcategory_id: (data.sub_category_id ?? data.subcategory_id) || null,

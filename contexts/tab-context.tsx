@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
@@ -11,7 +10,7 @@ import {
   SESSION_TOKEN_STORAGE_KEY,
   ensureTabSessionId,
 } from '@/lib/tab-storage'
-import { isActiveTabStatus, shouldClearTabAfterSettlement } from '@/lib/tab-session'
+import { isActiveTabStatus, shouldClearTabAfterSettlement, type TabRow } from '@/lib/tab-session'
 import { fetchWithSession } from '@/lib/fetch-with-session'
 import { GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { handleSessionExpired } from '@/lib/handle-session-expired'
@@ -205,7 +204,14 @@ export function TabProvider({
       setTabStatus(status)
 
       if (
-        shouldClearTabAfterSettlement(data as { status?: string; settled_type?: string | null })
+        /*
+         * The old cast was too NARROW, not wrong. ESTABLISHED, not asserted: `data` is
+         * `body.tab` from GET /api/tabs/[tabId]/view, whose TAB_VIEW_COLUMNS begins with `id` --
+         * TabRow's only required field. (#196 described this value as coming from a Supabase
+         * select in this file; that was true of an older shape. It is an HTTP response now, and
+         * the guarantee comes from the route's column list.)
+         */
+        shouldClearTabAfterSettlement(data as TabRow)
       ) {
         console.log('[TAB CONTEXT] tab no longer active; clearing session', {
           tabId,
