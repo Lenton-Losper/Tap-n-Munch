@@ -312,14 +312,30 @@ export default function MyOrdersPage() {
         : new Date()
       const timeAgo = getTimeAgo(placedAt)
 
+      /*
+       * THE CARD IS INERT. It used to navigate to the bare `/order-confirmation` route with an
+       * `orderId` query param -- the PAYMENT page, which is a DIFFERENT page from the nested
+       * `/menu/[restaurantId]/order-confirmation/[orderId]` that the Edit action below uses. For
+       * an order that is accepted and being prepared, that page renders the heading "Payment
+       * Processing" and traps the customer: the only button on it leaves the page it is telling
+       * them to wait on. Digi Cofee order #24.
+       *
+       * There was nothing to navigate TO. My Orders already shows the status, the items, the
+       * totals and the time; the destination showed strictly less, and got it wrong. My Orders is
+       * the destination, not a step toward one.
+       *
+       * The cursor and hover-border classes went with the handler -- a card that highlights under
+       * the thumb is a promise that something happens.
+       *
+       * Deliberately a PLAIN block comment above the return rather than a JSX comment inside it:
+       * a JSX comment there is a second root node beside the div, which is a parse error, not a
+       * comment. That is what it was when first written.
+       */
       return (
         <div
           key={order.id}
           data-testid="my-orders-card"
-          className="bg-card border border-border p-6 cursor-pointer hover:border-foreground/30 transition"
-          onClick={() =>
-            router.push(`/order-confirmation?orderId=${order.id}${tableNumber ? `&table=${tableNumber}` : ''}`)
-          }
+          className="bg-card border border-border p-6"
         >
           {/* Order Header */}
           <div className="flex justify-between items-start mb-4">
