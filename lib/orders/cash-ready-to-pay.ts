@@ -11,17 +11,14 @@
  * refuses. #121 is the mirror of that — a button that is visible, accepted, and does nothing —
  * and the fix that makes it real is exactly the moment to stop the other version being possible.
  *
- * STATE OF PLAY, so nobody reads the paragraph above as a description of the code.
+ * BOTH IMPORT THIS. The page carried private copies of these predicates until the swap landed;
+ * they are gone, and its call sites use the imported names directly so a grep for
+ * `showCashReadyToPayButton` finds the screen as well as the route.
  *
- * THE ROUTE IMPORTS THIS. THE PAGE DOES NOT YET. `showReadyToPayCashButton` and
- * `showReadyToPayCashNotified` still live at `page.tsx:106-117` as a private copy, because that
- * file is under an active ship-alone fence and could not be edited in the same pass. The
- * relocation below is deliberately BYTE-FAITHFUL to that copy so the swap is a deletion and two
- * imports, with no behaviour to re-argue when the fence lifts.
- *
- * The one difference is named rather than hidden: `cashReadyToPayRefusal` adds a terminal-status
- * check the page's copy never had. It can only ever HIDE the button — on completed, cancelled and
- * declined orders, where pressing it does nothing today anyway — never show it somewhere new.
+ * The relocation was deliberately BYTE-FAITHFUL to the page's copy, with ONE difference, named
+ * rather than hidden: `cashReadyToPayRefusal` adds a terminal-status check the page's copy never
+ * had. It can only ever HIDE the button — on completed, cancelled and declined orders, where
+ * pressing it did nothing anyway — never show it somewhere new.
  *
  * The route MUST NOT be a superset of the button. It is a service-role write, reachable by anyone
  * who can construct a POST, so every condition the button applies has to be re-applied on the

@@ -28,6 +28,8 @@
  *   - `status` is NEVER written. The card sibling moves status to `ready_for_terminal`; copying
  *     that here would put a cash order in the card queue.
  */
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { POST } from '@/app/api/orders/[orderId]/ready-to-pay-cash/route'
 
 const ORDER_ID = '5fe2cd4e-37a9-489a-9a55-4b1d44df2b95'
@@ -277,5 +279,52 @@ describe('#121 missing order', () => {
     const res = await POST(req({ session_ids: [TAB_SESSION] }), { params })
     expect(res.status).toBe(404)
     expect(updatePayload).toBeNull()
+  })
+})
+
+/**
+ * #121, the second half — ONE eligibility rule, imported by BOTH sides.
+ *
+ * The route decides whether to ALLOW the write; the order-confirmation screen decides whether to
+ * SHOW the button. While those were two copies of one rule they could drift, and the failure drift
+ * produces is a button that is visible and then refuses — worse than either half alone.
+ *
+ * Asserted on the SOURCE, because rendering that page needs a Supabase client, a restaurant context
+ * and a router to answer a question about which module it imports. The risk of a source assertion
+ * is that it passes having found nothing, so the first case pins the file down; and comments are
+ * stripped before matching, because the comments there quote the OLD predicate names while
+ * explaining the move, and matching those would prove the opposite of what is intended.
+ */
+describe('#121 the button and the route share one rule', () => {
+  const PAGE = join(
+    process.cwd(),
+    'app',
+    'menu',
+    '[restaurantId]',
+    'order-confirmation',
+    '[orderId]',
+    'page.tsx',
+  )
+  const src: string = readFileSync(PAGE, 'utf8')
+  const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it('found the real page, so an empty scan cannot report green', () => {
+    expect(src.length).toBeGreaterThan(5000)
+    expect(codeOnly).toContain('ReadyToPayCashButton')
+  })
+
+  it('imports the shared module', () => {
+    expect(codeOnly).toContain("from '@/lib/orders/cash-ready-to-pay'")
+  })
+
+  it('keeps NO private copy of the predicates', () => {
+    expect(codeOnly).not.toMatch(/function\s+isCashPaymentOrder\s*\(/)
+    expect(codeOnly).not.toMatch(/function\s+showReadyToPayCashButton\s*\(/)
+    expect(codeOnly).not.toMatch(/function\s+showReadyToPayCashNotified\s*\(/)
+  })
+
+  it('calls the imported predicates at the render sites', () => {
+    expect(codeOnly).toContain('showCashReadyToPayButton(order)')
+    expect(codeOnly).toContain('showCashReadyToPayNotified(order)')
   })
 })

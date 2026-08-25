@@ -14,6 +14,10 @@ import {
 } from '@/components/ready-to-pay-terminal'
 import { ReadyToPayCashButton, ReadyToPayCashNotified } from '@/components/ready-to-pay-cash'
 import { perOrderReadyToPayAllowed } from '@/lib/tabs/ready-to-pay-placement'
+import {
+  showCashReadyToPayButton,
+  showCashReadyToPayNotified,
+} from '@/lib/orders/cash-ready-to-pay'
 import { getCurrentSession } from '@/lib/session'
 import { readTabSessionId, heldSessionIds } from '@/lib/tab-storage'
 import { OrderConfirmationView } from '@/components/receipt/order-confirmation-view'
@@ -94,27 +98,27 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
   }
 }
 
-function isCashPaymentOrder(order: Order): boolean {
-  const paymentStatus = String(order.payment_status || '').toLowerCase()
-  return (
-    String(order.payment_channel || '').toLowerCase() === 'cash' ||
-    String(order.payment_method || '').toLowerCase() === 'cash' ||
-    paymentStatus === 'cash_pending'
-  )
-}
-
-function showReadyToPayCashButton(order: Order): boolean {
-  const paymentStatus = String(order.payment_status || '').toLowerCase()
-  if (paymentStatus === 'paid' || paymentStatus === 'cancelled') return false
-  return (
-    isCashPaymentOrder(order) &&
-    (order.customer_ready_to_pay === false || order.customer_ready_to_pay == null)
-  )
-}
-
-function showReadyToPayCashNotified(order: Order): boolean {
-  return isCashPaymentOrder(order) && order.customer_ready_to_pay === true
-}
+/**
+ * #121. These three used to be private copies here. They are now imported from
+ * `lib/orders/cash-ready-to-pay.ts`, which is the SAME module
+ * `app/api/orders/[orderId]/ready-to-pay-cash/route.ts` asks before it allows the write.
+ *
+ * That is the whole reason for the move. While the button decided visibility from one copy of the
+ * rule and the server decided permission from another, the two could drift — and a button that is
+ * visible and then refuses is a worse failure than either half alone. #121 was the mirror of it: a
+ * button that was visible, reported success, and did nothing.
+ *
+ * ONE BEHAVIOUR CHANGE, named rather than buried. `cashReadyToPayRefusal` adds a terminal-status
+ * check the copy here never had, so the button no longer renders on a `completed`, `cancelled` or
+ * `declined` order. It can only ever HIDE the button — never show it somewhere new — and pressing
+ * it in those states did nothing anyway.
+ *
+ * It asks `isTerminalOrderStatus`, not `!isActiveOrderStatus`: `orders.status` DEFAULTS to `'new'`,
+ * which is not in ACTIVE_ORDER_STATUSES, so the obvious form of that guard would have hidden the
+ * button on every freshly created order.
+ */
+/* The call sites below use the imported names directly — no local alias, so a reader who greps
+   showCashReadyToPayButton finds this screen as well as the route. */
 
 function normalizeCurrency(raw?: string): string {
   const c = String(raw || 'NAD').trim()
@@ -315,12 +319,12 @@ export default function OrderConfirmationPage() {
         ) : undefined
       }
       cashReadySlot={
-        showReadyToPayCashButton(order) && perOrderSettlementAllowed ? (
+        showCashReadyToPayButton(order) && perOrderSettlementAllowed ? (
           <ReadyToPayCashButton orderId={order.id} />
         ) : undefined
       }
       cashNotifiedSlot={
-        showReadyToPayCashNotified(order) ? (
+        showCashReadyToPayNotified(order) ? (
           <InfoBanner variant="notify">{MENU_COPY.staffHasBeenNotifiedThey}</InfoBanner>
         ) : undefined
       }
