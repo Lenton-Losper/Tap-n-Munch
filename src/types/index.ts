@@ -90,8 +90,19 @@ export interface TableTab {
    * Set when the tab first became ready to pay; preserved across a partial
    * settle (some diners paid, some money still owed) so the client can tell
    * "still waiting on some of this tab" apart from "nobody has paid yet".
-   * Not yet returned by /api/terminal/tables — optional so older/current
-   * server responses degrade to undefined rather than crash.
+   *
+   * IT IS RETURNED BY /api/terminal/tables. This comment used to say "Not yet
+   * returned", which was already false: the route both SELECTS and maps the
+   * column (origin/main 141677a1, route.ts:56 and :204), and it reaches the
+   * screen intact because getTablesWithMeta (lib/api.ts:614-637) passes
+   * `data.tables` straight through with no whitelist mapper. The identical
+   * stale claim was corrected on TablesScreen.tsx:58-63 and left standing
+   * here, because the two sites were fixed separately — and read on its own
+   * this line says #318's chip shipped inert, which it did not.
+   *
+   * STILL OPTIONAL, but for the deploy rather than for the route: a worker
+   * rollout is gradual and can be rolled back, so a response that predates
+   * #341 must degrade to undefined rather than crash the chip.
    */
   ready_to_pay_at?: string | null;
 }
