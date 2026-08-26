@@ -305,6 +305,29 @@ describe('auth and failure — every non-2xx leaves the device holding', () => {
     expect(stored).toHaveLength(0)
   })
 
+  it('a NON-Response throw from auth is still 401, not 500', async () => {
+    /*
+     * FOUND ON PRODUCTION, NOT HERE, AND THE MOCK IS WHY.
+     *
+     * `requireTerminalAuth` throws a `Response` for a MISSING header, but for a malformed or
+     * expired token it calls jose's `jwtVerify`, which throws a JOSEError. The first version of
+     * this route had one outer catch that answered 500 for anything that was not a Response, so
+     * `Bearer not-a-real-token` returned 500 on all four production hostnames.
+     *
+     * That is not cosmetic: `terminalFetch` refreshes the token and retries on 401 and NOT on 500,
+     * so a device with an hour-old token would have been answered 500 forever and never recovered
+     * -- on the one flow whose purpose is releasing a card transaction that exists nowhere else.
+     *
+     * This suite could not have caught it, because it MOCKS terminal-auth (it must; jose is
+     * ESM-only and ts-jest cannot load it) and the mock threw the one shape the old code handled.
+     * So the mock is now made to throw the other shape too.
+     */
+    authThrows = new Error('JWSInvalid: Invalid Compact JWS') as unknown as Response
+    const res = await post(RECORD)
+    expect(res.status).toBe(401)
+    expect(stored).toHaveLength(0)
+  })
+
   it('403 without orders:update', async () => {
     terminalPermissions = ['orders:read']
     const res = await post(RECORD)
@@ -333,6 +356,7 @@ describe('auth and failure — every non-2xx leaves the device holding', () => {
       () => { readError = { message: 'down' } },
       () => { insertErrorOverride = { code: '23514', message: 'nope' } },
       () => { authThrows = new Response('{}', { status: 401 }) },
+      () => { authThrows = new Error('JWSInvalid') as unknown as Response },
     ]
     for (const arrange of failures) {
       stored = []

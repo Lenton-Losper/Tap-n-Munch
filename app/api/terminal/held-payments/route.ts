@@ -59,11 +59,44 @@ export const dynamic = 'force-dynamic'
  * may not resolve would add a trail entry nobody can follow back to anything.
  */
 export async function POST(req: Request) {
+  /*
+   * AUTH IS ITS OWN try/catch, AND A PRODUCTION PROBE IS WHY.
+   *
+   * `requireTerminalAuth` throws a `Response` for a MISSING Bearer header, but for a malformed or
+   * expired one it calls jose's `jwtVerify`, which throws a JOSEError — not a Response. The first
+   * version of this route had one outer catch that returned the Response if it was one and
+   * otherwise answered 500, so a junk token produced a 500. Measured against production
+   * immediately after deploy: 401 with no token, **500 with `Bearer not-a-real-token`**, on all
+   * four hostnames.
+   *
+   * WHY THAT IS NOT COSMETIC. `terminalFetch` refreshes the access token and retries on **401**
+   * (api.ts). It does not on 500. So a device whose hour-long token had expired would have been
+   * answered 500 forever, never refreshed, and never managed to acknowledge a held payment again
+   * until someone restarted the app — on the one flow whose whole purpose is releasing a card
+   * transaction that exists nowhere else.
+   *
+   * Every other terminal route defaults its catch to 401 for exactly this reason. Splitting the
+   * blocks is better than copying that default: an auth failure is 401 because it IS one, and a
+   * genuine server fault below still reports 500 instead of being disguised as an auth problem.
+   *
+   * THE UNIT TESTS COULD NOT HAVE FOUND THIS. The suite mocks `@/lib/terminal-auth` — it has to,
+   * since jose is ESM-only and ts-jest cannot load it — so the mock threw a `Response`, which is
+   * the one case the old code handled. The mock was right about the contract it was written for
+   * and blind to the one that actually ships.
+   */
+  let terminal: Awaited<ReturnType<typeof requireTerminalAuth>>
+  let supabase: ReturnType<typeof createServerSupabaseClient>
   try {
-    const terminal = await requireTerminalAuth(req)
-    const supabase = createServerSupabaseClient()
+    terminal = await requireTerminalAuth(req)
+    supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
+  } catch (err: unknown) {
+    if (err instanceof Response) return err
+    console.error('[terminal/held-payments] auth', err)
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
+  try {
     if (!terminal.permissions.includes('orders:update')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
     }
@@ -165,10 +198,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ stored: true, receiptId })
   } catch (err: unknown) {
     /*
-     * `requireTerminalAuth` and `validateTerminalRecord` THROW A `Response`, not an Error, and it
-     * already carries the right status and body. Returning it unchanged is the house pattern
-     * (heartbeat, me, authorize, attempt-started all do this); an `instanceof Error` check here
-     * would miss it entirely and turn every 401 into a 500.
+     * Everything past auth. A `Response` can still arrive here from a helper, and is returned
+     * unchanged; anything else is a genuine server fault and reports 500 rather than being
+     * disguised as an auth problem, which would send the device off to refresh a token that was
+     * never the issue.
      *
      * Whatever the status, the device reads a non-2xx as "not stored" -- which is true, because
      * nothing reached the insert.
