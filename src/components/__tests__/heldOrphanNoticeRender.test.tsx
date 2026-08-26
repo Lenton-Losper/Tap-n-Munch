@@ -75,13 +75,20 @@ let mockHeldRows: HeldOrphanPayment[] = [];
 /** The injected server call. Each test decides what the store answers, or holds it open. */
 const mockStoreHeldOrphanPayment = jest.fn();
 
+/**
+ * The device session. `null` models a terminal that is not activated, or whose token has been
+ * cleared. That is the case with a money consequence: a device with no session cannot have stored
+ * anything, so it must never be able to delete the record.
+ */
+let mockToken: string | null = 'terminal-token';
+
 jest.mock('../../lib/storage', () => {
   const actual = jest.requireActual('../../lib/storage');
   return {
     ...actual,
     // heldOrphanIdentity and the types stay REAL — the component keys its per-record UI state by
     // that function, so a stand-in would test the stand-in.
-    getTerminalToken: jest.fn(async () => 'terminal-token'),
+    getTerminalToken: jest.fn(async () => mockToken),
     getHeldOrphanPayments: jest.fn(async () => mockHeldRows),
     setHeldOrphanPayments: jest.fn(async () => undefined),
     acknowledgeHeldOrphanPayment: jest.fn(async (identity: string) => {
@@ -107,6 +114,8 @@ import HeldOrphanPaymentNotice from '../HeldOrphanPaymentNotice';
 import {
   HELD_ORPHAN_ACKNOWLEDGE,
   HELD_ORPHAN_BODY,
+  HELD_ORPHAN_BODY_UNKNOWN_ORDER,
+  HELD_ORPHAN_NEEDS_A_PERSON,
   HELD_ORPHAN_NOT_SAVED,
   HELD_ORPHAN_SAVING,
 } from '../../constants/paymentCopy';
@@ -169,6 +178,7 @@ describe('#344 ruling 3 — the acknowledge outcome reaches the screen', () => {
   beforeEach(() => {
     mockHeldRows = [row()];
     mockStoreHeldOrphanPayment.mockReset();
+    mockToken = 'terminal-token';
   });
 
   afterEach(async () => {
@@ -330,5 +340,159 @@ describe('#344 ruling 3 — the acknowledge outcome reaches the screen', () => {
     // per-record action replaced.
     expect(mockHeldRows).toHaveLength(1);
     expect(heldOrphanIdentity(mockHeldRows[0])).toBe(heldOrphanIdentity(other));
+  });
+});
+
+/**
+ * CASE 3 — the record that can never clear itself.
+ *
+ * WHY IT IS PINNED SEPARATELY AND BEFORE vc98 SHIPS. A case-2 record names an order, is reported to
+ * the server on every screen focus, and disappears by itself once that order settles. A case-3
+ * record names NO order, so `isReportableHeldOrphan` refuses it, `runOrphanReportPass` can never
+ * resolve it, and it sits on screen until a person acts. It is simultaneously the state most in
+ * need of being correct and the least likely for anyone to encounter on a device.
+ *
+ * TWO CONDITIONS, NOT ONE, AND THE COMPONENT KEYS THEM DIFFERENTLY. The BODY variant is chosen by
+ * `reason === 'unknown_order'`; the NEEDS_A_PERSON line is chosen by `orphanOrderId` being empty.
+ * They travel together in practice but they are separate branches in the render, so they are
+ * separate tests — pinning one would leave the other free to break.
+ *
+ * Every assertion compares against IMPORTED constants. Re-wording the copy cannot fail this file.
+ */
+describe('#344 case 3 — a held payment naming no order', () => {
+  let trees: renderer.ReactTestRenderer[] = [];
+
+  const caseThree = () =>
+    row({orphanOrderId: '', reason: 'unknown_order', voucherNo: undefined});
+
+  beforeEach(() => {
+    mockHeldRows = [caseThree()];
+    mockStoreHeldOrphanPayment.mockReset();
+    mockToken = 'terminal-token';
+  });
+
+  afterEach(async () => {
+    await renderer.act(async () => {
+      trees.forEach(tree => tree.unmount());
+    });
+    trees = [];
+  });
+
+  async function mountNotice(): Promise<renderer.ReactTestRenderer> {
+    let tree!: renderer.ReactTestRenderer;
+    await renderer.act(async () => {
+      tree = renderer.create(<HeldOrphanPaymentNotice />);
+    });
+    trees.push(tree);
+    await flush();
+    return tree;
+  }
+
+  it('shows the unknown-order body, not the different-order one', async () => {
+    const tree = await mountNotice();
+    const text = renderedText(tree.toJSON());
+
+    expect(text).toContain(HELD_ORPHAN_BODY_UNKNOWN_ORDER);
+    // The two bodies share a long tail, so the discriminating half is asserted directly:
+    // saying "belongs to a different order" about a payment whose order is unknown is a lie.
+    expect(text).not.toContain('belongs to a different order');
+  });
+
+  it('shows the needs-a-person line, because nothing will resolve this one', async () => {
+    const tree = await mountNotice();
+
+    expect(renderedText(tree.toJSON())).toContain(HELD_ORPHAN_NEEDS_A_PERSON);
+  });
+
+  it('omits the voucher line when there is no voucher', async () => {
+    const tree = await mountNotice();
+
+    // 'Voucher' is a bare label rendered beside the number, so its absence is the assertion.
+    expect(renderedText(tree.toJSON())).not.toContain('Voucher');
+  });
+
+  /**
+   * THE NEGATIVE CONTROLS. Without these, a component that rendered the case-3 line
+   * unconditionally — or dropped the voucher line entirely — would satisfy every test above.
+   */
+  it('a case-2 record shows the different-order body and NOT the case-3 line', async () => {
+    mockHeldRows = [row()];
+    const tree = await mountNotice();
+    const text = renderedText(tree.toJSON());
+
+    expect(text).toContain(HELD_ORPHAN_BODY);
+    expect(text).not.toContain(HELD_ORPHAN_BODY_UNKNOWN_ORDER);
+    expect(text).not.toContain(HELD_ORPHAN_NEEDS_A_PERSON);
+  });
+
+  it('a record WITH a voucher still shows it', async () => {
+    mockHeldRows = [row({voucherNo: 'V-123'})];
+    const tree = await mountNotice();
+    const text = renderedText(tree.toJSON());
+
+    expect(text).toContain('Voucher');
+    expect(text).toContain('V-123');
+  });
+});
+
+/**
+ * THE NO-SESSION PATH, and it is the one with a money consequence rather than a cosmetic one.
+ *
+ * `getTerminalToken()` returning null must take the SAME 'kept' branch as a failed store. A device
+ * with no session cannot have stored anything, so releasing here would delete the only remaining
+ * record of a card transaction on the strength of not being logged in — `consumeOrphanedPaymentResult`
+ * is destructive, so there is no third copy anywhere.
+ *
+ * VERIFIED PRESENT IN THE COMPONENT before this was written, not assumed:
+ * HeldOrphanPaymentNotice.tsx:144-157 is `token ? await storeAndReleaseHeldOrphan(...) : {outcome:
+ * 'kept' as const}`, so the release path is unreachable without a token.
+ *
+ * THE SHARPEST ASSERTION HERE IS THAT THE STORE IS NEVER CALLED. That the record survives could be
+ * explained by a store that happened to fail; that the call was never attempted can only be
+ * explained by the guard.
+ */
+describe('#344 ruling 3 — a device with no session cannot discard a record', () => {
+  let trees: renderer.ReactTestRenderer[] = [];
+
+  beforeEach(() => {
+    mockHeldRows = [row()];
+    mockStoreHeldOrphanPayment.mockReset();
+    mockToken = null;
+  });
+
+  afterEach(async () => {
+    await renderer.act(async () => {
+      trees.forEach(tree => tree.unmount());
+    });
+    trees = [];
+  });
+
+  it('keeps the record, says so, and never attempts the store', async () => {
+    let tree!: renderer.ReactTestRenderer;
+    await renderer.act(async () => {
+      tree = renderer.create(<HeldOrphanPaymentNotice />);
+    });
+    trees.push(tree);
+    await flush();
+
+    const buttons = tree.root.findAll(
+      node =>
+        typeof node.props?.onPress === 'function' &&
+        elementText(node.props.children).includes(HELD_ORPHAN_ACKNOWLEDGE),
+    );
+    expect(buttons).toHaveLength(1);
+    await renderer.act(async () => {
+      buttons[0].props.onPress();
+    });
+    await flush();
+
+    const text = renderedText(tree.toJSON());
+    // Told, not silently ignored: the same failure sentence a failed store produces.
+    expect(text).toContain(HELD_ORPHAN_NOT_SAVED);
+    // Still there.
+    expect(text).toContain(HELD_ORPHAN_BODY);
+    expect(mockHeldRows).toHaveLength(1);
+    // Never attempted. This is the assertion that can only be satisfied by the token guard.
+    expect(mockStoreHeldOrphanPayment).not.toHaveBeenCalled();
   });
 });
