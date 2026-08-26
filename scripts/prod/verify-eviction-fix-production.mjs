@@ -124,6 +124,22 @@ const runOnce = async () => {
     console.log('        A settled tab must still 410. Passing both is the only good outcome.')
     return false
   }
+  if (controlOk === null) {
+    // DO NOT claim the control passed. An earlier version of this file fell through to the
+    // success message here and asserted "and a settled tab still 410s" having tested nothing --
+    // the exact class of green-that-overclaims this script exists to avoid.
+    //
+    // The control is expected to be unrunnable on production: settling a tab DEACTIVATES its
+    // session, so validateSessionToken refuses at the `!session.active` check and never reaches
+    // the tab-status branch. That branch is covered on staging by
+    // verify-ready-to-pay-keeps-session-staging.ts, which mints a fixture and flips status
+    // directly, exercising all four ended statuses.
+    console.log('EVICTION_FIX_VERIFIED (main assertion only) — the session survives ready_to_pay.')
+    console.log('  CONTROL NOT RUN: no settled tab has a live session, so the settled->410 branch')
+    console.log('  was not exercised here. It is covered on staging by')
+    console.log('  verify-ready-to-pay-keeps-session-staging.ts. This run does not prove it.')
+    return true
+  }
   console.log('EVICTION_FIX_VERIFIED — the session survives ready_to_pay, and a settled tab still 410s.')
   return true
 }
