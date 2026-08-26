@@ -89,29 +89,38 @@ export async function GET(request: Request) {
         supabase
           .from('orders')
           .select(orderSelect)
-          .ilike('paycloud_merchant_order_no', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(10),
+          .ilike('paycloud_merchant_order_no', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(10),
+      ),
       excludeStressFixtures(
-        supabase.from('orders').select(orderSelect).ilike('payment_reference', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(10),
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('payment_reference', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(10),
+      ),
       excludeStressFixtures(
-        supabase.from('orders').select(orderSelect).ilike('payment_voucher_no', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(10),
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('payment_voucher_no', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(10),
+      ),
     ]
 
     if (/^\d{1,10}$/.test(query)) {
       orderQueries.push(
         excludeStressFixtures(
-          supabase.from('orders').select(orderSelect).eq('order_number', Number(query)),
-        )
-          .order('placed_at', { ascending: false })
-          .limit(10),
+          supabase
+            .from('orders')
+            .select(orderSelect)
+            .eq('order_number', Number(query))
+            .order('placed_at', { ascending: false })
+            .limit(10),
+        ),
       )
     }
 

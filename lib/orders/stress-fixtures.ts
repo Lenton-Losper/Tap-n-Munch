@@ -42,9 +42,14 @@
  * ============================================================================================
  *
  * Any query already scoped by `restaurant_id`, `id`, `tab_id` or `table_id` cannot reach a fixture
- * — a NULL never equals a uuid — and does NOT need this. Of 149 `.from('orders')` call sites in
- * app/ and lib/, 124 are scoped that way. Adding the exclusion there would be noise that makes the
- * 25 that DO need thinking about harder to find.
+ * — a NULL never equals a uuid — and does NOT need this. Of 149 order-table call sites in app/ and
+ * lib/, 124 are scoped that way. Adding the exclusion there would be noise that makes the 25 that
+ * DO need thinking about harder to find.
+ *
+ * (That sentence deliberately does not spell the query builder's method name. `check-orders-read-bounded`
+ * scans for it textually and cannot tell prose from code, so writing it here made this FILE a
+ * finding. Blinding a guard to fix a comment would be the wrong trade; rewording the comment costs
+ * nothing.)
  *
  * This is for the unscoped ones: platform-wide search, platform analytics, cross-venue reporting,
  * and every script under `scripts/`.

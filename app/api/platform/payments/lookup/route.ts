@@ -59,20 +59,29 @@ export async function GET(request: Request) {
     // the filter is here so that stays true by rule rather than by coincidence.
     const orderQueries = [
       excludeStressFixtures(
-        supabase.from('orders').select(orderSelect).ilike('paycloud_merchant_order_no', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(30),
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('paycloud_merchant_order_no', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(30),
+      ),
       excludeStressFixtures(
-        supabase.from('orders').select(orderSelect).ilike('payment_reference', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(30),
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('payment_reference', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(30),
+      ),
       excludeStressFixtures(
-        supabase.from('orders').select(orderSelect).ilike('payment_voucher_no', pattern),
-      )
-        .order('placed_at', { ascending: false })
-        .limit(30),
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('payment_voucher_no', pattern)
+          .order('placed_at', { ascending: false })
+          .limit(30),
+      ),
     ]
 
     if (UUID_PATTERN.test(query)) {

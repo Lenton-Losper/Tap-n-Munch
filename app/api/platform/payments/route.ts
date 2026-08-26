@@ -83,11 +83,11 @@ export async function GET(request: Request) {
         .from('orders')
         .select(
           'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, placed_at, paid_at, restaurants(name)',
-        ),
+        )
+        .gte('placed_at', since)
+        .order('placed_at', { ascending: false })
+        .limit(200),
     )
-      .gte('placed_at', since)
-      .order('placed_at', { ascending: false })
-      .limit(200)
 
     let eventsQuery = supabase
       .from('payment_events')
@@ -138,11 +138,11 @@ export async function GET(request: Request) {
       excludeStressFixtures(
         supabase
           .from('orders')
-          .select('restaurant_id, total, payment_status, restaurants(name)'),
-      )
-        .eq('payment_status', 'paid')
-        .gte('paid_at', since)
-        .limit(5000),
+          .select('restaurant_id, total, payment_status, restaurants(name)')
+          .eq('payment_status', 'paid')
+          .gte('paid_at', since)
+          .limit(5000),
+      ),
     ])
 
     const error =

@@ -152,11 +152,11 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
   const { data: failedOrders } = await excludeStressFixtures(
     supabase
       .from('orders')
-      .select('id, restaurant_id, payment_status, placed_at, restaurants(name)'),
+      .select('id, restaurant_id, payment_status, placed_at, restaurants(name)')
+      .eq('payment_status', 'failed')
+      .gte('placed_at', hourAgo)
+      .limit(100),
   )
-    .eq('payment_status', 'failed')
-    .gte('placed_at', hourAgo)
-    .limit(100)
 
   if ((failedOrders?.length ?? 0) >= 3) {
     alerts.push({
@@ -291,11 +291,13 @@ async function probeSystemStatus(now = Date.now()): Promise<SystemComponentStatu
 
   let paymentsSince: string | null = null
   const { data: lastFail } = await excludeStressFixtures(
-    supabase.from('orders').select('placed_at'),
+    supabase
+      .from('orders')
+      .select('placed_at')
+      .eq('payment_status', 'failed')
+      .order('placed_at', { ascending: false })
+      .limit(1),
   )
-    .eq('payment_status', 'failed')
-    .order('placed_at', { ascending: false })
-    .limit(1)
     .maybeSingle()
   if (lastFail?.placed_at) paymentsSince = relativeShort(lastFail.placed_at, now)
 
@@ -532,15 +534,25 @@ export async function buildDashboardPayload(): Promise<DashboardPayload> {
       .eq('active', true)
       .eq('status', 'active')
       .lt('last_seen_at', offlineBefore),
-    excludeStressFixtures(supabase.from('orders').select('id, restaurant_id'))
-      .eq('payment_status', 'failed')
-      .gte('placed_at', hourAgo)
-      .limit(200),
-    excludeStressFixtures(supabase.from('orders').select('placed_at'))
-      .eq('payment_status', 'failed')
-      .order('placed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    excludeStressFixtures(
+      supabase
+        .from('orders')
+        .select('id, restaurant_id')
+        .eq('payment_status', 'failed')
+        .gte('placed_at', hourAgo)
+        .limit(200),
+    ),
+    // `.maybeSingle()` returns a PostgrestBuilder, which no longer carries `.or()` -- so the
+    // exclusion goes on BEFORE it. `.limit(1)` stays inside the wrapped chain, which is what
+    // check-orders-read-bounded reads.
+    excludeStressFixtures(
+      supabase
+        .from('orders')
+        .select('placed_at')
+        .eq('payment_status', 'failed')
+        .order('placed_at', { ascending: false })
+        .limit(1),
+    ).maybeSingle(),
     supabase
       .from('audit_logs')
       .select('id', { count: 'exact', head: true })
