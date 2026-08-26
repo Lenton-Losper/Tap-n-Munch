@@ -255,6 +255,12 @@ async function notifyPaymentAttemptStarted(
       startedAt: result.startedAt,
     });
   } catch (err) {
+    // #156's shape. attempt-started is the E04111 discriminator; when it silently does not land,
+    // the auto-cancel cron loses the one signal that says a real charge was launched.
+    recordWiretapEvent('payment.attempt_started.failed', {
+      businessOrderNo,
+      error: err instanceof Error ? err.message : String(err),
+    });
     console.warn(
       '[payment] attempt-started failed (payment continues)',
       err instanceof Error ? err.message : err,
@@ -344,6 +350,11 @@ async function releasePeekedOrphan(orphan: PaymentResult): Promise<void> {
       );
     }
   } catch (err) {
+    // If the clear fails the SAME orphan is re-read on the next payment and re-evaluated against
+    // a different order -- so a silent failure here manufactures a false "different_order" hold.
+    recordWiretapEvent('payment.orphan.clear_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     console.warn('[payment] failed to clear peeked orphan', err);
   }
 }
@@ -425,6 +436,16 @@ async function applyOrHoldOrphan(
     outcomeKind: orphan.outcomeKind,
     heldAt: new Date().toISOString(),
   });
+
+  /**
+   * NOT GATED ON THE HOLD IN vc99, DELIBERATELY. A fix making this release conditional on the hold
+   * actually succeeding was written and REVERTED before shipping: its two-sided test would not go
+   * green (a failed hold still reached the native clear), and an unproven change on the money path
+   * must not reach 16 devices. It returns in vc100 once the test holds.
+   *
+   * What DID ship is the wiretap event in holdOrphanPayment: the loss is now visible from the
+   * server instead of a console line on a device. Still a loss -- but a dated, countable one.
+   */
 
   /**
    * #344 ruling 4 — CLEAR ONLY AFTER THE HOLD IS DURABLE. This ordering is the entire fix: the

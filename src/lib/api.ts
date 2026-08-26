@@ -4,7 +4,7 @@
  * Terminal routes: /api/terminal/*
  * Activation route: POST /api/terminals/activate
  */
-import {FLASHTAP_API_URL} from '../constants';
+import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
 import {recordWiretapEvent} from './wiretap';
 import {
   getRefreshToken,
@@ -1390,6 +1390,14 @@ export async function recordSaleEvent(
           business_order_no: params.businessOrderNo,
           transaction_id: params.transactionId,
           amount: params.amount,
+          /**
+           * #156. WITHOUT THIS THE LEDGER CANNOT DATE ITSELF TO A BUILD. Every one of the 490
+           * existing sale rows carries app_version NULL, because this payload never sent it --
+           * so when the ledger died on 2026-07-28 and 99.7% of August card payments had no row,
+           * the one query that would have bounded the cause in seconds ("which build stopped
+           * writing?") could not be asked of the data at all.
+           */
+          app_version: APP_VERSION,
         }),
       },
       token,
@@ -1407,6 +1415,31 @@ export async function recordSaleEvent(
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to record sale event';
+    /**
+     * #156. THIS FAILURE RAN AT 99.7% FOR A MONTH AND NOTHING COULD SEE IT.
+     *
+     * The ledger stopped on 2026-08-28 and the only trace was the console.error below -- on a
+     * device, in a restaurant, that nobody reads. Everything else was ruled out from the outside:
+     * the endpoint accepts this exact payload (probed, HTTP 200), auth works on these devices
+     * (1008 attempt_started rows over the same period), the call exists in every shipped release,
+     * and every order carries the voucher and business order number the gate requires. What could
+     * NOT be established from outside the device is which of two things happens here --
+     * terminalFetch throwing, or the caller's gate evaluating false so this is never reached.
+     *
+     * That is what this event answers. It is not hygiene; it is the missing instrument, and its
+     * absence is why five hypotheses had to be eliminated one at a time.
+     *
+     * Deliberately NOT rethrown: recording the ledger must never break the payment in progress.
+     * The event makes the failure queryable; it does not change what the customer experiences.
+     */
+    recordWiretapEvent('payment.sale_event.failed', {
+      orderIds: params.orderIds.join(','),
+      businessOrderNo: params.businessOrderNo,
+      transactionId: params.transactionId,
+      amount: params.amount,
+      appVersion: APP_VERSION,
+      error: message,
+    });
     console.error('[recordSaleEvent] Failed to record sale payment event', {
       orderIds: params.orderIds,
       businessOrderNo: params.businessOrderNo,

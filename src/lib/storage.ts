@@ -1,4 +1,5 @@
 import EncryptedStorage from 'react-native-encrypted-storage';
+import {recordWiretapEvent} from './wiretap';
 import {
   MERCHANT_NO_STORAGE_KEY,
   REFRESH_TOKEN_STORAGE_KEY,
@@ -201,11 +202,22 @@ export type HeldOrphanPayment = {
   heldAt: string;
 };
 
+/**
+ * Hold an orphaned payment durably. Best effort: it must never break the payment in progress,
+ * because throwing here would lose the CURRENT sale as well.
+ *
+ * THE LOSS IS NOW VISIBLE. The caller clears the native record regardless of whether this
+ * succeeded -- the one remaining lossy path -- and until vc99 the only trace was a console.warn on
+ * a device in a restaurant. That is precisely what let #156's ledger failure run at 99.7% for a
+ * month unnoticed. The wiretap event below makes it countable from the server.
+ *
+ * MAKING THE RELEASE CONDITIONAL ON THIS SUCCEEDING is the actual fix and is NOT in vc99: the
+ * two-sided test for it would not go green, and an unproven money-path change must not ship to 16
+ * devices. vc100.
+ */
 export async function holdOrphanPayment(
   record: HeldOrphanPayment,
 ): Promise<void> {
-  // Best effort by design: failing to persist must never break the payment in progress. The
-  // alternative is throwing inside a recovery path and losing the CURRENT sale as well.
   try {
     const existing = await getHeldOrphanPayments();
     // Appended, never overwritten — two stranded transactions are two facts, not one.
@@ -214,6 +226,17 @@ export async function holdOrphanPayment(
       JSON.stringify([...existing, record]),
     );
   } catch (err) {
+    try {
+      recordWiretapEvent('payment.orphan.hold_failed', {
+        orphanOrderId: record.orphanOrderId || '(none)',
+        voucherNo: record.voucherNo ?? '(none)',
+        businessOrderNo: record.businessOrderNo ?? '(none)',
+        reason: record.reason,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } catch {
+      // Reporting must not throw inside a payment path.
+    }
     console.warn('[storage] failed to hold orphaned payment', err);
   }
 }
@@ -301,6 +324,11 @@ export async function setHeldOrphanPayments(
       JSON.stringify(rows),
     );
   } catch (err) {
+    // Same class as the hold above: the in-memory list and the durable copy have diverged, and
+    // nothing downstream can tell. Queryable, not just printed.
+    recordWiretapEvent('payment.orphan.write_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     console.warn('[storage] failed to write held orphaned payments', err);
   }
 }
