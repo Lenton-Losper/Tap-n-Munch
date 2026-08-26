@@ -38,6 +38,16 @@ import {
 } from '@/lib/orders/customer-status'
 import { OrderEditBadges, OrderEditTotalDelta } from '@/components/order-edit-indicators'
 import { TAB_FLAG_COPY } from '@/lib/tabs/tab-flag-copy'
+/*
+ * PRODUCTION INCIDENT 2026-08-26. This import was missing and the three usages at :2860, :2861 and
+ * :2875 threw `ReferenceError: STRANDED_CLAIM_COPY is not defined`, taking the staff dashboard down.
+ *
+ * Introduced by 9a2c3165 (2026-08-25) and live across THREE production deploys before anyone saw
+ * it, because this file is `@ts-nocheck`: tsc skips it entirely, eslint's no-undef is off for TS on
+ * the assumption tsc owns it, and `check-nocheck-imports-resolve.mjs` verifies that named imports
+ * RESOLVE -- which is the one shape it cannot catch, since there was no import statement to inspect.
+ */
+import { STRANDED_CLAIM_COPY } from '@/lib/customer-copy/stranded-claim-copy'
 import {
   TAB_PENDING_REQUEST_COLUMNS,
   TAB_PENDING_REQUEST_STATUSES,
