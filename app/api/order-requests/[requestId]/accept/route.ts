@@ -69,9 +69,20 @@ export async function POST(
 
   // Atomic claim FIRST -- before createOrder() is ever called. Zero rows means another
   // Accept/Decline already won this request; return 409 without creating anything.
+  //
+  // `claimed_at` is written here (#215) because a claim with no recorded time is a claim no reaper
+  // can age: `placed_at` is the CUSTOMER's submission and a request may sit in review for hours,
+  // so a sweeper keyed on it would kill an Accept that started 200ms ago on an old request. This
+  // is the value lib/order-requests/reap-stranded-claims.ts measures staleness against.
+  //
+  // The database stamps it too, and its stamp WINS: order_requests_stamp_claimed_at() overwrites
+  // this on entry into 'accepting'. That is deliberate -- it removes worker clock skew from a
+  // destructive decision, and it covers the deploy window in which a worker older than the
+  // migration sends a bare { status: 'accepting' }. It is still written here so the call site
+  // says what it records rather than relying on a trigger nobody reading this file will see.
   const { data: claimed, error: claimError } = await supabase
     .from('order_requests')
-    .update({ status: 'accepting' })
+    .update({ status: 'accepting', claimed_at: new Date().toISOString() })
     .eq('id', requestId)
     .eq('status', 'waiting_review')
     .select('*')

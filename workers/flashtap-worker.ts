@@ -35,12 +35,15 @@ export default {
     // immediately unless a schedule's local send_time has been reached, so per-restaurant
     // send times cost nothing extra and a missed tick catches up on the next one.
     // negative-stock-balances (#146) and reap-abandoned-tabs (#333) self-limit the same way, to
-    // the first tick of each hour.
+    // the first tick of each hour. reap-stranded-claims (#215) deliberately does NOT: a claim
+    // stuck in `accepting` blocks settle and close since #120, so it is a till a venue cannot
+    // use — its threshold does the waiting instead of the tick.
     const cronRoutes = [
       'cleanup-stale-orders',
       'send-scheduled-reports',
       'negative-stock-balances',
       'reap-abandoned-tabs',
+      'reap-stranded-claims',
     ] as const
 
     const requestFor = (route: string) =>
