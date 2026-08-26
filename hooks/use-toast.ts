@@ -5,7 +5,27 @@ import * as React from 'react'
 
 import type { ToastActionElement, ToastProps } from '@/components/ui/toast'
 
-const TOAST_LIMIT = 1
+/**
+ * #208 — HOW MANY TOASTS ARE VISIBLE AT ONCE, app-wide.
+ *
+ * The ruling was that this number is decided BY the replacement, not fixed first in the stack being
+ * retired. The replacement is browse's add-to-cart confirmation, which is the most-repeated
+ * interaction in the product: a customer adds three items in a few seconds and got three
+ * confirmations, because the hand-rolled stack it replaces had NO limit at all.
+ *
+ * At 1 that becomes one confirmation, replaced twice — a behaviour regression on the busiest
+ * customer screen, and the reason this issue insisted the number be settled before the swap.
+ *
+ * 3 is the smallest number that keeps the old behaviour intelligible while BOUNDING what was
+ * previously unbounded. It is bounded because of the viewport, not out of taste: below `sm` the
+ * shared viewport is `fixed top-0 w-full` (components/ui/toast.tsx), so each toast is a
+ * full-width band across the top of a phone. An unbounded stack there covers the screen.
+ *
+ * IT IS APP-WIDE, INCLUDING app/(staff)/**. One module-level store feeds every `<Toaster />`, so
+ * there is no per-route limit to set. Staff toasts fire one per action, so the change is only
+ * reachable there when two actions land together — where showing both is the better answer anyway.
+ */
+const TOAST_LIMIT = 3
 const TOAST_REMOVE_DELAY = 1000000
 
 type ToasterToast = ToastProps & {

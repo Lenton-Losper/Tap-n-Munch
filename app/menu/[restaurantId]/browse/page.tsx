@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSupabaseCategories } from '@/lib/supabase/menu'
@@ -15,7 +15,7 @@ import OrderStatusBanner from '@/components/OrderStatusBanner'
 // -- see the note at its former render site for why deleting it would be a different change.
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, ArrowLeft, Users, ListChecks, CheckCircle2, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
+import { Search, ArrowLeft, Users, ListChecks, Loader2, Plus, Shield, Zap, Smartphone, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { restaurantLogoDisplayUrl } from '@/lib/restaurant-logo'
@@ -51,6 +51,7 @@ import {
   isRequiredVariantMissing,
 } from '@/lib/menu/variant-groups'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { useToast } from '@/hooks/use-toast'
 
 type MenuCategory = {
   id: string
@@ -291,18 +292,11 @@ export default function MenuBrowsePage() {
   const [allMenuLoadedOnce, setAllMenuLoadedOnce] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null)
-  const [toasts, setToasts] = useState<Array<{ id: number; name: string; leaving: boolean }>>([])
   const [selectedVariantGroupsByItem, setSelectedVariantGroupsByItem] = useState<
     Record<string, Record<string, string>>
   >({})
-  const toastTimersRef = useRef<number[]>([])
-
-  useEffect(() => {
-    return () => {
-      toastTimersRef.current.forEach((timerId) => window.clearTimeout(timerId))
-      toastTimersRef.current = []
-    }
-  }, [])
+  // #208 — the shared toast store. Replaces this file's own stack; see pushCartToast below.
+  const { toast } = useToast()
 
   useEffect(() => {
     if (!effectiveIsInTab || !effectiveTabId || !restaurantId) return
@@ -359,18 +353,25 @@ export default function MenuBrowsePage() {
     }
   }, [effectiveIsInTab, effectiveTabId])
 
+  /**
+   * #208 — the add-to-cart confirmation, on the SHARED toast store.
+   *
+   * This used to be a hand-rolled stack in this file: its own state, its own timers, and its own
+   * `pointer-events-none fixed ... z-[60]` viewport at the bottom of the render. It existed because
+   * until #204 no customer route had a toast viewport mounted at all. One does now, app-wide.
+   *
+   * THE REASON IS ACCESSIBILITY, not consistency. The hand-rolled version was a div with no
+   * `aria-live` region and no dismiss control: a screen reader got nothing, and the message could
+   * not be dismissed. Radix Toast provides both. The visual consistency — one presentation instead
+   * of a dark top-centre pill here and a light Radix card one tap away on the cart — is the
+   * secondary benefit.
+   *
+   * `TOAST_LIMIT` is 3, raised from 1 as part of this change. See hooks/use-toast.ts for why, and
+   * why the number belongs there rather than here.
+   */
   const pushCartToast = (name: string) => {
-    const id = Date.now() + Math.floor(Math.random() * 1000)
     const safeName = String(name || 'Item')
-    setToasts((prev) => [...prev, { id, name: safeName, leaving: false }])
-
-    const fadeTimer = window.setTimeout(() => {
-      setToasts((prev) => prev.map((toast) => (toast.id === id ? { ...toast, leaving: true } : toast)))
-    }, 1800)
-    const removeTimer = window.setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id))
-    }, 2000)
-    toastTimersRef.current.push(fadeTimer, removeTimer)
+    toast({ title: MENU_COPY.cartItemAdded.replace('{item}', safeName) })
   }
 
   /**
@@ -1321,22 +1322,6 @@ export default function MenuBrowsePage() {
           </button>
         </div>
       )}
-
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4 sm:top-4">
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={`transition-all duration-300 ${
-              toast.leaving ? 'translate-y-[-8px] opacity-0' : 'translate-y-0 opacity-100'
-            }`}
-          >
-            <div className="inline-flex items-center gap-2 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background shadow-lg">
-              <CheckCircle2 className="h-4 w-4 text-green-400 stroke-[2]" />
-              <span>{toast.name} added to cart</span>
-            </div>
-          </div>
-        ))}
-      </div>
 
     </div>
   )

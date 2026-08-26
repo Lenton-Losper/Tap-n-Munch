@@ -436,6 +436,14 @@ export const MENU_COPY = {
   // ---------------------------------------------------------- components/receipt/order-summary
   summaryServiceFee: "Service Fee",
 
+  // ---------------------------------------------------- app/menu/[restaurantId]/browse (#208)
+  /**
+   * The add-to-cart confirmation, moved off browse's hand-rolled toast stack and onto the shared
+   * one. `{item}` is the placeholder, the same shape `EDIT_COPY.holdSecondary` already uses, so the
+   * rendered sentence is byte-identical to the `{name} added to cart` it replaces.
+   */
+  cartItemAdded: "{item} added to cart",
+
   // ---------------------------------------------------------------- contexts/tab-context
   // Thrown, then rendered: the tab screens catch these and show `err.message`, so they are copy
   // even though they are written as Error messages.

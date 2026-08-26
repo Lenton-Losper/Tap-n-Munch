@@ -300,6 +300,12 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     confirmSecureFastContactless: "Secure • Fast • Contactless",
     // ---- components/receipt/order-summary.tsx
     summaryServiceFee: "Service Fee",
+    // ---- app/menu/[restaurantId]/browse/page.tsx (#208)
+    // A MOVE WITH A PLACEHOLDER, not a rewrite. The original was JSX -- `{toast.name} added to
+    // cart` -- so there was never a whole sentence to transcribe. `{item}` stands where the name
+    // stood and the rendered output is byte-identical, which
+    // __tests__/208-browse-uses-the-shared-toast.test.tsx asserts against the real page.
+    cartItemAdded: "{item} added to cart",
     // ---- contexts/tab-context.tsx
     tabIncorrectPin: "Incorrect PIN, please try again",
     tabNoOpenTabForThisTable: "No open tab found for this table",
