@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { resolvePlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { excludeStressFixtures } from '@/lib/orders/stress-fixtures'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,23 +54,23 @@ export async function GET(request: Request) {
     const orderSelect =
       'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, placed_at, paid_at, restaurants(name)'
 
+    // Unscoped by design -- a payment lookup spans every venue -- so each leg excludes the
+    // stress fixtures. A fixture carries none of these three references, so nothing changes today;
+    // the filter is here so that stays true by rule rather than by coincidence.
     const orderQueries = [
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('paycloud_merchant_order_no', pattern)
+      excludeStressFixtures(
+        supabase.from('orders').select(orderSelect).ilike('paycloud_merchant_order_no', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(30),
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('payment_reference', pattern)
+      excludeStressFixtures(
+        supabase.from('orders').select(orderSelect).ilike('payment_reference', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(30),
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('payment_voucher_no', pattern)
+      excludeStressFixtures(
+        supabase.from('orders').select(orderSelect).ilike('payment_voucher_no', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(30),
     ]

@@ -18,6 +18,8 @@
 import { config } from 'dotenv'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
+import { isStressFixtureOrder, countStressFixtures } from '../../lib/orders/stress-fixtures'
+
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
 const WINDOW_MIN = 10
 
@@ -34,7 +36,7 @@ async function main() {
   for (let f = 0; ; f += 1000) {
     const { data, error } = await db
       .from('orders')
-      .select('id,restaurant_id,order_number,total,status,payment_status,payment_method,payment_channel,channel,session_id,placed_at,paid_at,payment_checkout_url')
+      .select('id,restaurant_id,firebase_restaurant_id,order_number,total,status,payment_status,payment_method,payment_channel,channel,session_id,placed_at,paid_at,payment_checkout_url')
       .order('placed_at')
       .range(f, f + 999)
     if (error) throw new Error(error.message)
@@ -42,12 +44,25 @@ async function main() {
     if (!data || data.length < 1000) break
   }
 
-  // A QR order is one the CUSTOMER placed: channel is not 'pos'/'terminal'.
+  /*
+   * CORRECTED 2026-08-26. THIS SCRIPT'S FIRST RUN COUNTED 1358 QR ORDERS AND 891 QR CARD ORDERS.
+   * 1314 of them were stress fixtures from 2026-04-27 and the real figures are 44 and 15.
+   *
+   * The damage was not the size of the number, it was the CONTROL. Section 3 reported "only 43 of
+   * 1358 QR orders carry a session_id" and concluded the re-place scan was blind because session
+   * ids are mostly absent. They are not: 43 of the 44 real QR orders carry one, 97.7%. The scan is
+   * blind because production has forty-four QR orders. Same conclusion, wrong reason, and the wrong
+   * reason pointed at instrumentation work that would have fixed nothing.
+   *
+   * The exclusion is imported rather than written here, because a filter each script remembers to
+   * write is a filter some script forgets.
+   */
   const isQr = (o) => {
     const ch = String(o.channel ?? '').toLowerCase()
     return ch !== 'pos' && ch !== 'terminal'
   }
-  const qr = rows.filter(isQr)
+  console.log('stress fixtures excluded: ' + countStressFixtures(rows) + ' of ' + rows.length + ' rows read')
+  const qr = rows.filter((o) => isQr(o) && !isStressFixtureOrder(o))
   console.log('orders total ' + rows.length + '   customer-placed (QR/kiosk) ' + qr.length)
 
   const qrCard = qr.filter((o) => String(o.payment_method ?? '').toLowerCase() === 'card')
@@ -63,6 +78,20 @@ async function main() {
   console.log('\n' + '='.repeat(88))
   console.log('1. THE CUSTOMER WAIT — QR card order, placed_at to paid_at   (n=' + waits.length + ')')
   console.log('='.repeat(88))
+  /*
+   * READ THIS BEFORE READING THE PERCENTILES. They are not customer waits.
+   *
+   * Established 2026-08-26: ten of the fourteen paid QR card orders were stamped paid_at by the
+   * PRE-50f826f6 Close Table route, which bulk-wrote status/payment_status/paid_at/completed_at on
+   * every open order at a table with no payment guard. Their `payments` rows show the gateway
+   * completed 0.8-2.5 minutes after the order was placed; paid_at lands up to 129 minutes later,
+   * shared to the millisecond across orders on DIFFERENT tabs, mixing card and cash.
+   *
+   * So placed_at -> paid_at measures when a member of staff pressed Close Table. The customer's
+   * real wait, where it can be recovered at all, is placed_at -> payments.completed_at.
+   */
+  console.log('  *** THESE ARE NOT CUSTOMER WAITS. paid_at on 10 of these rows was written by the')
+  console.log('  *** pre-2026-07-30 Close Table route, not by settlement. docs/the-876-2026-08-26.md')
   if (waits.length) {
     console.log('  p50 ' + pct(50).toFixed(0) + 's   p75 ' + pct(75).toFixed(0) + 's   p90 ' + pct(90).toFixed(0) +
       's   p95 ' + pct(95).toFixed(0) + 's   max ' + waits[waits.length - 1].toFixed(0) + 's')

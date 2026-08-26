@@ -18,8 +18,9 @@
 import { config } from 'dotenv'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
+import { isStressFixtureOrder } from '../../lib/orders/stress-fixtures'
+
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
-const FIXTURE = /^restaurant_test_/
 const pad = (s, n) => String(s === null || s === undefined ? '-' : s).slice(0, n).padEnd(n)
 const H = (x) => { console.log('\n' + '='.repeat(100)); console.log(x); console.log('='.repeat(100)) }
 
@@ -42,9 +43,8 @@ async function main() {
     if (error) throw new Error(error.message)
     rows.push(...(data ?? [])); if (!data || data.length < 1000) break
   }
-  const isFixture = (o) => !o.restaurant_id && FIXTURE.test(String(o.firebase_restaurant_id ?? ''))
   const isQr = (o) => { const c = String(o.channel ?? '').toLowerCase(); return c !== 'pos' && c !== 'terminal' }
-  const real = rows.filter((o) => !isFixture(o))
+  const real = rows.filter((o) => !isStressFixtureOrder(o))
 
   H('1. THE SESSION-ID CONTROL, RECOMPUTED WITHOUT THE FIXTURES')
   for (const [label, pop] of [['as reported yesterday (fixtures INCLUDED)', rows.filter(isQr)],

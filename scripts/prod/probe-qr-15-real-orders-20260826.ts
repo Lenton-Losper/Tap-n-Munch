@@ -24,8 +24,9 @@
 import { config } from 'dotenv'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
+import { isStressFixtureOrder } from '../../lib/orders/stress-fixtures'
+
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
-const FIXTURE = /^restaurant_test_/
 const pad = (s, n) => String(s === null || s === undefined ? '-' : s).slice(0, n).padEnd(n)
 const t = (v) => (v ? String(v).slice(0, 19).replace('T', ' ') : '-')
 const H = (x) => { console.log('\n' + '='.repeat(100)); console.log(x); console.log('='.repeat(100)) }
@@ -49,8 +50,7 @@ async function main() {
 
   const isQr = (o) => { const c = String(o.channel ?? '').toLowerCase(); return c !== 'pos' && c !== 'terminal' }
   const isCard = (o) => String(o.payment_method ?? '').toLowerCase() === 'card'
-  const isFixture = (o) => !o.restaurant_id && FIXTURE.test(String(o.firebase_restaurant_id ?? ''))
-  const real = rows.filter((o) => isQr(o) && isCard(o) && !isFixture(o))
+  const real = rows.filter((o) => isQr(o) && isCard(o) && !isStressFixtureOrder(o))
     .sort((a, b) => String(a.placed_at).localeCompare(String(b.placed_at)))
 
   const pays = []

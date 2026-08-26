@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { resolvePlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 import { attachRestaurantNames } from '@/lib/platform/attach-restaurant-names'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { excludeStressFixtures } from '@/lib/orders/stress-fixtures'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,33 +72,44 @@ export async function GET(request: Request) {
         .ilike('terminal_name', pattern)
         .limit(10),
     ]
+    /*
+     * EVERY ORDER QUERY HERE IS UNSCOPED — platform search deliberately spans all venues — so every
+     * one of them carries the stress-fixture exclusion.
+     *
+     * THE order_number QUERY IS NOT HYPOTHETICAL. Measured on production 2026-08-26: searching
+     * order number 142 returned 8 fixtures in the top 10, and order number 1 returned 6 of 10. The
+     * fixtures occupy order_number 1..146 with up to 45 rows on a single number, and this query
+     * sorts by placed_at and takes 10 — so a platform admin looking up a real order was being
+     * handed debris in place of it. The three `ilike` queries are excluded today by value (a
+     * fixture carries no merchant order number, reference or voucher), but they get the filter too:
+     * "safe because of what the rows happen to contain" is not a property anyone maintains.
+     */
     const orderQueries = [
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('paycloud_merchant_order_no', pattern)
+      excludeStressFixtures(
+        supabase
+          .from('orders')
+          .select(orderSelect)
+          .ilike('paycloud_merchant_order_no', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(10),
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('payment_reference', pattern)
+      excludeStressFixtures(
+        supabase.from('orders').select(orderSelect).ilike('payment_reference', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(10),
-      supabase
-        .from('orders')
-        .select(orderSelect)
-        .ilike('payment_voucher_no', pattern)
+      excludeStressFixtures(
+        supabase.from('orders').select(orderSelect).ilike('payment_voucher_no', pattern),
+      )
         .order('placed_at', { ascending: false })
         .limit(10),
     ]
 
     if (/^\d{1,10}$/.test(query)) {
       orderQueries.push(
-        supabase
-          .from('orders')
-          .select(orderSelect)
-          .eq('order_number', Number(query))
+        excludeStressFixtures(
+          supabase.from('orders').select(orderSelect).eq('order_number', Number(query)),
+        )
           .order('placed_at', { ascending: false })
           .limit(10),
       )

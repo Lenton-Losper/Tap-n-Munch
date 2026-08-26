@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { resolvePlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { excludeStressFixtures } from '@/lib/orders/stress-fixtures'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,9 +55,15 @@ export async function GET(request: Request) {
     const loadOrderCounts = async () => {
       const rows: OrderCountRow[] = []
       for (let offset = 0; ; offset += PAGE_SIZE) {
-        const { data, error } = await supabase
-          .from('orders')
-          .select('id, placed_at')
+        /*
+         * The 14-day window happens to sit past the 2026-04-27 fixture block, so this count is
+         * right today. That is not a property worth relying on: it holds because the fixtures are
+         * old, and it stops holding the moment anyone re-runs the stress script or widens this to
+         * "all time". The exclusion states the intent instead of inheriting it from a date.
+         */
+        const { data, error } = await excludeStressFixtures(
+          supabase.from('orders').select('id, placed_at'),
+        )
           .gte('placed_at', fourteenDayStart.toISOString())
           .order('placed_at', { ascending: true })
           .range(offset, offset + PAGE_SIZE - 1)
@@ -72,9 +79,11 @@ export async function GET(request: Request) {
     const loadPaidOrders = async () => {
       const rows: PaidOrderRow[] = []
       for (let offset = 0; ; offset += PAGE_SIZE) {
-        const { data, error } = await supabase
-          .from('orders')
-          .select('restaurant_id, total, paid_at, restaurants(name)')
+        const { data, error } = await excludeStressFixtures(
+          supabase
+            .from('orders')
+            .select('restaurant_id, total, paid_at, restaurants(name)'),
+        )
           .eq('payment_status', 'paid')
           .gte('paid_at', thirtyDayStart.toISOString())
           .order('paid_at', { ascending: true })

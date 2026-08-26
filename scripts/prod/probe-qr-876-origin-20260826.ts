@@ -21,8 +21,9 @@
 import { config } from 'dotenv'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
+import { isStressFixtureOrder } from '../../lib/orders/stress-fixtures'
+
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
-const FIXTURE = /^restaurant_test_/
 const pad = (s, n) => String(s === null || s === undefined ? '-' : s).slice(0, n).padEnd(n)
 const H = (t) => { console.log('\n' + '='.repeat(100)); console.log(t); console.log('='.repeat(100)) }
 const tally = (list, f) => {
@@ -56,7 +57,6 @@ async function main() {
 
   const isQr = (o) => { const c = String(o.channel ?? '').toLowerCase(); return c !== 'pos' && c !== 'terminal' }
   const isCard = (o) => String(o.payment_method ?? '').toLowerCase() === 'card'
-  const isFixture = (o) => !o.restaurant_id && FIXTURE.test(String(o.firebase_restaurant_id ?? ''))
   const cohort = rows.filter((o) => isQr(o) && isCard(o) && o.payment_status === 'cancelled' && o.status === 'completed')
 
   // ------------------------------------------------------------- 1. the block
@@ -81,10 +81,10 @@ async function main() {
   // ------------------------------------------------------------- 2. are they #324's fixtures?
   H('2. ARE THE 876 #324 ORPHAN FIXTURES?')
   const nullRid = rows.filter((o) => !o.restaurant_id)
-  const fixtures = rows.filter(isFixture)
+  const fixtures = rows.filter(isStressFixtureOrder)
   console.log('  restaurant_id IS NULL, production-wide : ' + nullRid.length)
   console.log('  of those, firebase_restaurant_id restaurant_test_% (#324 scope): ' + fixtures.length)
-  console.log('  the 876 cohort, how many are in that scope: ' + cohort.filter(isFixture).length + ' of ' + cohort.length)
+  console.log('  the 876 cohort, how many are in that scope: ' + cohort.filter(isStressFixtureOrder).length + ' of ' + cohort.length)
   console.log('  the 876 cohort, how many have a restaurant_id at all: ' + cohort.filter((o) => o.restaurant_id).length)
   console.log('\n  cohort firebase_restaurant_id prefixes:')
   for (const [k, n] of tally(cohort, (o) => String(o.firebase_restaurant_id ?? 'NULL').slice(0, 26)).slice(0, 8)) {
@@ -99,7 +99,7 @@ async function main() {
 
   // ------------------------------------------------------------- 3. real QR traffic
   H('3. QR CARD TRAFFIC WITH THE FIXTURES EXCLUDED')
-  const realQrCard = rows.filter((o) => isQr(o) && isCard(o) && !isFixture(o))
+  const realQrCard = rows.filter((o) => isQr(o) && isCard(o) && !isStressFixtureOrder(o))
   console.log('  QR card orders, fixtures excluded: ' + realQrCard.length + '   (the 891 figure was ' +
     rows.filter((o) => isQr(o) && isCard(o)).length + ')')
   for (const [k, n] of tally(realQrCard, (o) => o.payment_status + ' | ' + o.status)) console.log('    ' + pad(k, 30) + String(n).padStart(4))
@@ -107,7 +107,7 @@ async function main() {
   for (const [k, n] of tally(realQrCard, (o) => vname.get(o.restaurant_id) ?? String(o.restaurant_id))) console.log('    ' + pad(k, 30) + String(n).padStart(4))
   console.log('\n  by payment_channel: ' + tally(realQrCard, (o) => o.payment_channel).map(([k, n]) => k + '=' + n).join('  '))
 
-  const realQr = rows.filter((o) => isQr(o) && !isFixture(o))
+  const realQr = rows.filter((o) => isQr(o) && !isStressFixtureOrder(o))
   console.log('\n  ALL QR orders, fixtures excluded: ' + realQr.length +
     '   (the 1358 figure the customer-wait script used was ' + rows.filter(isQr).length + ')')
   console.log('  by payment_method: ' + tally(realQr, (o) => o.payment_method).map(([k, n]) => k + '=' + n).join('  '))
