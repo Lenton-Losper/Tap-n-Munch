@@ -90,15 +90,23 @@ function makeClient() {
         in: chain,
         gte: chain,
         is: chain,
+        not: chain,
+        limit: chain,
+        order: chain,
         update: chain,
         maybeSingle: async () => {
           if (table === 'order_requests') return { data: requestRow, error: null }
           return { data: null, error: null }
         },
         single: async () => ({ data: null, error: null }),
-        // `.from('orders').select('*', { count: 'exact', head: true }).eq(...)` is awaited
-        // directly for the order-number counter.
-        then: (resolve: (r: unknown) => unknown) => Promise.resolve(resolve({ count: 4, error: null })),
+        // The order-number read is awaited directly. #127 changed its shape: it was
+        // `.select('*', { count: 'exact', head: true }).eq(...)` returning a COUNT, and it is now
+        // `.select('order_number').eq(...).not(...).order(...).limit(1)` returning the highest
+        // ROW. `.not`, `.limit` and `.order` above exist for the same reason — without them the
+        // fake throws a TypeError inside createOrder, the route returns 500, and three pricing
+        // assertions fail in a way that looks like a pricing regression.
+        then: (resolve: (r: unknown) => unknown) =>
+          Promise.resolve(resolve({ data: [{ order_number: 4 }], error: null })),
         insert: (row: Record<string, unknown>) => {
           if (table === 'orders') insertedOrder = row
           return {

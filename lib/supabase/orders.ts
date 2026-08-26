@@ -12,43 +12,21 @@ export type Order = Record<string, unknown> & {
   restaurant_id: string
 }
 
-// CREATE ORDER
-export async function createSupabaseOrder(data: {
-  restaurant_id: string
-  firebase_restaurant_id?: string
-  table_id?: string
-  tab_id?: string
-  order_number?: number
-  table_number: number
-  session_id: string
-  member_session_id?: string
-  status?: string
-  payment_status?: string
-  payment_method: string
-  payment_channel?: string
-  subtotal: number
-  tax?: number
-  total: number
-  items: any[]
-  order_instructions?: string
-  tab_settlement_for_tab_id?: string
-  paycloud_merchant_order_no?: string
-  payment_checkout_url?: string
-}) {
-  const supabase = createServerSupabaseClient()
-  const { data: order, error } = await supabase
-    .from('orders')
-    .insert({
-      ...data,
-      status: data.status || 'pending',
-      payment_status: data.payment_status || 'pending',
-      placed_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-  if (error) throw error
-  return order
-}
+/*
+ * CREATE ORDER — DELETED, #127.
+ *
+ * `createSupabaseOrder` was a third way to insert an `orders` row, and it took `order_number?:
+ * number` as an OPTIONAL parameter it never filled in. A caller that omitted it created an order
+ * with a NULL number — the producer side of the "Order #0" family that
+ * scripts/check-order-number-guard.ts exists to catch on the render side.
+ *
+ * No caller, anywhere: app/, lib/, components/, hooks/, scripts/ and __tests__/ all checked
+ * before removal.
+ *
+ * Orders are created by lib/orders/create-order.ts, which allocates through
+ * lib/orders/order-number.ts. That is the only path, and scripts/check-order-number-allocation.ts
+ * now fails the build if a second one appears.
+ */
 
 // GET ORDER BY ID
 export async function getSupabaseOrder(orderId: string) {
@@ -337,21 +315,20 @@ function subscribeRestaurantOrders(
   }
 }
 
-// GET ORDER NUMBER (next sequential number)
-export async function getNextSupabaseOrderNumber(restaurantId: string): Promise<number> {
-  const scope = await resolveOrderRestaurantScope(restaurantId)
-  const supabase = createServerSupabaseClient()
-  const { count, error } = await supabase
-    .from('orders')
-    .select('*', { count: 'exact', head: true })
-    .eq('restaurant_id', scope.restaurantId)
-  if (error) throw error
-  return (count || 0) + 1
-}
-
-export async function getNextOrderNumber(restaurantId: string) {
-  return getNextSupabaseOrderNumber(restaurantId)
-}
+/*
+ * GET ORDER NUMBER — DELETED, #127.
+ *
+ * `getNextSupabaseOrderNumber` and its alias `getNextOrderNumber` were a THIRD copy of
+ * `SELECT count(*) + 1`, and the most dangerous one: it counted by `restaurant_id` while both
+ * live allocators counted by `firebase_restaurant_id`, so a caller picking this one would have
+ * been numbering against a different scope than the unique index constrains.
+ *
+ * Neither had a caller. Verified across app/, lib/, components/, hooks/, scripts/ AND __tests__/
+ * before removal — "no consumer" has meant "no consumer outside the test suite" here before, and
+ * a test importer is what actually breaks.
+ *
+ * Allocation now lives in lib/orders/order-number.ts, which is the only place that may issue one.
+ */
 
 export async function createOrder(orderData: any): Promise<string> {
   const response = await fetch('/api/orders', {

@@ -5,6 +5,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { createOrder } from '@/lib/orders/create-order'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import { nextKioskOrderNumber, kioskOrderLabel as buildKioskOrderLabel } from '@/lib/orders/order-number'
 import { createPaymentRequest, paycloudWireMerchantOrderNo } from '@/payments/paycloud'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 
@@ -215,17 +216,13 @@ export async function POST(
   }
 
   // Kiosk order numbering (daily counter), same as the old direct-creation path.
+  //
+  // #127: max+1 over today's kiosk rows, not count+1, shared with app/api/orders/route.ts so the
+  // two cannot drift. The race on this counter remains OPEN — no unique index covers it — and
+  // lib/orders/order-number.ts states that rather than implying it.
   let kioskOrderNumber: number | undefined
   if (request.channel === 'kiosk') {
-    const today = new Date().toISOString().split('T')[0]
-    const { count: kioskCount } = await supabase
-      .from('orders')
-      .select('id', { count: 'exact', head: true })
-      .eq('restaurant_id', request.restaurant_id)
-      .eq('channel', 'kiosk')
-      .gte('placed_at', `${today}T00:00:00Z`)
-
-    kioskOrderNumber = (kioskCount ?? 0) + 1
+    kioskOrderNumber = await nextKioskOrderNumber(supabase, request.restaurant_id)
     await supabase.from('orders').update({ kiosk_order_number: kioskOrderNumber }).eq('id', orderId)
   }
 
@@ -302,6 +299,8 @@ export async function POST(
     orderNumber: result.orderNumber,
     checkoutUrl,
     merchantOrderNo,
-    ...(kioskOrderNumber != null ? { kioskOrderNumber, kioskOrderLabel: `K-${String(kioskOrderNumber).padStart(3, '0')}` } : {}),
+    ...(kioskOrderNumber != null
+      ? { kioskOrderNumber, kioskOrderLabel: buildKioskOrderLabel(kioskOrderNumber) }
+      : {}),
   })
 }

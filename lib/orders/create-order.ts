@@ -1,5 +1,6 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { calculateOrderPricing } from '@/lib/orders/calculate-order-pricing'
+import { insertWithOrderNumber } from '@/lib/orders/order-number'
 
 export interface CreateOrderParams {
   restaurantId: string        // UUID
@@ -61,14 +62,6 @@ export interface CreateOrderResult {
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
   const supabase = createServerSupabaseClient()
 
-  // Get next order number scoped to restaurant
-  const { count } = await supabase
-    .from('orders')
-    .select('*', { count: 'exact', head: true })
-    .eq('firebase_restaurant_id', params.firebaseRestaurantId)
-
-  const orderNumber = (count || 0) + 1
-
   // Two pricing modes, and which one applies is the caller's explicit choice.
   //
   // Default (POS/terminal): re-price from the catalog and IGNORE the caller's numbers. There
@@ -101,36 +94,53 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     pricing = computed
   }
 
-  const { data: newOrder, error: orderError } = await supabase
-    .from('orders')
-    .insert({
-      restaurant_id: params.restaurantId,
-      firebase_restaurant_id: params.firebaseRestaurantId,
-      table_number: params.tableNumber,
-      table_id: params.tableId,
-      session_id: params.sessionId,
-      member_session_id: params.memberSessionId,
-      payment_method: params.paymentMethod,
-      payment_channel: params.paymentChannel,
-      payment_status: params.paymentStatus,
-      status: 'pending',
-      subtotal: pricing.subtotal,
-      tax: pricing.tax,
-      total: pricing.total,
-      items: pricing.items,
-      order_instructions: params.orderInstructions,
-      tab_id: params.tabId,
-      tab_settlement_for_tab_id: params.tabSettlementForTabId,
-      order_number: orderNumber,
-      channel: params.channel,
-      customer_name: params.customerName,
-      placed_at: new Date().toISOString(),
-      idempotency_key: params.idempotencyKey,
-      is_closed: params.isClosed ?? false,
-      source_request_id: params.sourceRequestId ?? null,
-    })
-    .select('id, restaurant_id, order_number, payment_status')
-    .single()
+  /*
+   * #127. THE NUMBER IS ALLOCATED INSIDE THE RETRY, AND NOTHING ELSE IS.
+   *
+   * Pricing has already run above and must not run again: on the Accept leg it is the figure the
+   * customer was quoted, and on the POS leg re-running it would take a second pricing pass that
+   * `preauthorizedPricing`'s contract forbids. So the callback below is the INSERT only, and it
+   * closes over `pricing` deliberately.
+   *
+   * The `{ data, error }` that comes back is the last attempt's, in supabase-js's own shape, so
+   * the idempotency-key handling underneath is untouched — that 23505 is not a number collision
+   * and never enters the retry.
+   */
+  const { data: newOrder, error: orderError } = await insertWithOrderNumber(
+    supabase,
+    params.firebaseRestaurantId,
+    (orderNumber) =>
+      supabase
+        .from('orders')
+        .insert({
+          restaurant_id: params.restaurantId,
+          firebase_restaurant_id: params.firebaseRestaurantId,
+          table_number: params.tableNumber,
+          table_id: params.tableId,
+          session_id: params.sessionId,
+          member_session_id: params.memberSessionId,
+          payment_method: params.paymentMethod,
+          payment_channel: params.paymentChannel,
+          payment_status: params.paymentStatus,
+          status: 'pending',
+          subtotal: pricing.subtotal,
+          tax: pricing.tax,
+          total: pricing.total,
+          items: pricing.items,
+          order_instructions: params.orderInstructions,
+          tab_id: params.tabId,
+          tab_settlement_for_tab_id: params.tabSettlementForTabId,
+          order_number: orderNumber,
+          channel: params.channel,
+          customer_name: params.customerName,
+          placed_at: new Date().toISOString(),
+          idempotency_key: params.idempotencyKey,
+          is_closed: params.isClosed ?? false,
+          source_request_id: params.sourceRequestId ?? null,
+        })
+        .select('id, restaurant_id, order_number, payment_status')
+        .single(),
+  )
 
   if (orderError) {
     // Handle idempotency duplicate
@@ -149,7 +159,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         }
       }
     }
-    throw new Error(orderError.message)
+    throw new Error(orderError.message ?? 'Order insert failed with no message')
   }
 
   if (!newOrder?.restaurant_id) {

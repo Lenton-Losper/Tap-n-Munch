@@ -641,6 +641,12 @@ jobs:
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
 
+      # #127, the WRITE side of the same column. count(*)+1 was the allocator in five places and
+      # two of them had no caller at all, which is how a sixth copy gets written. Static: no
+      # credentials, no database. BLOCKING - the tree is clean as of 2026-08-26.
+      - name: Every order number is issued by lib/orders/order-number.ts
+        run: npx tsx scripts/check-order-number-allocation.ts
+
       # Static: no credentials, no database. BLOCKING - the tree is clean as of 2026-08-20, so
       # this can only fail on something NEW. Self-tests its own detectors before reporting.
       - name: Every session-restaurant lookup goes through resolveSessionRestaurantId
