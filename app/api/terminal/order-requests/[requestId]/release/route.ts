@@ -51,6 +51,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ request
 
     return NextResponse.json({ success: true, id: result.id, status: result.status })
   } catch (err) {
+    /*
+     * A THROWN `Response` IS RETURNED UNCHANGED, and this route was the only terminal caller that
+     * did not do it. `requireTerminalAuth` and `validateTerminalRecord` throw a `Response` already
+     * carrying the right status — 401 for a missing or invalid token, 403 for a terminal that is
+     * not active. Without this line every one of those became a 500 whose body was the Response
+     * object stringified, so even the ORDINARY missing-header case was mis-reported.
+     *
+     * The device reads 401 as "refresh the token and retry" and 500 as nothing it can act on, so
+     * this is the difference between a terminal recovering from an expired token and a terminal
+     * that cannot release a stranded claim until someone restarts the app.
+     *
+     * `err instanceof Error` does NOT catch a Response — it is not an Error subclass — which is
+     * why the existing line below silently produced 'Failed to release request'.
+     */
+    if (err instanceof Response) return err
     const message = err instanceof Error ? err.message : 'Failed to release request'
     console.error('[terminal/order-requests/release] failed', message)
     return NextResponse.json({ error: message }, { status: 500 })
