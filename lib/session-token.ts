@@ -1,4 +1,5 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { isTabSessionEndedStatus } from '@/lib/tab-status'
 
 type SupabaseServerClient = ReturnType<typeof createServerSupabaseClient>
 
@@ -77,6 +78,15 @@ export async function validateSessionToken(token: string): Promise<{
   tabId?: string
   tableId?: string
   restaurantId?: string
+  /**
+   * The tab's status, as this function already read it through the `tabs!inner` join.
+   *
+   * RETURNED RATHER THAN RE-QUERIED so callers that need to branch on it -- the guest edit route
+   * refuses an addition to a tab that is no longer `open` (#301) -- use the SAME row this
+   * validation used. A second `select` would be a second point in time, and the two could disagree
+   * across a settle landing between them.
+   */
+  tabStatus?: string
 }> {
   const supabase = createServerSupabaseClient()
 
@@ -108,8 +118,31 @@ export async function validateSessionToken(token: string): Promise<{
     return { valid: false, reason: 'Session has expired' }
   }
 
+  /**
+   * ASKING TO PAY MUST NOT END THE SESSION. RULED 2026-08-26.
+   *
+   * This used to read `tab.status !== 'open'`, which made `ready_to_pay` an invalid session — so
+   * the moment a customer tapped Settle and chose a method, `/api/tabs/[tabId]/ready-to-pay` set
+   * `tabs.status = 'ready_to_pay'` and their OWN button invalidated their session. The /tab screen
+   * polls every 5s through `fetchWithSession`, which calls `handleSessionExpired` itself on a 410,
+   * so within one tick the token, the tab id, the table and the CART were cleared and the phone was
+   * replaced onto /session-ended. They had paid nothing.
+   *
+   * Measured on production: the two customer_sessions on the tab stuck in ready_to_pay were
+   * `active`, unexpired, and version-correct. Every other validity condition passed. The only
+   * failing one was the status the customer had just set.
+   *
+   * `ready_to_pay` is a REQUEST for staff to come and take money. Requested is not paid, and paid
+   * is not closed. `ACTIVE_TAB_STATUSES` has said `['open', 'ready_to_pay']` all along — this
+   * function simply did not use the vocabulary, and hard-coded a narrower one.
+   *
+   * NOW A DENYLIST: only settled / closed / completed / cancelled end a session. See
+   * `isTabSessionEndedStatus` for why an unrecognised status must not evict a customer mid-meal.
+   * Cross-tenant safety on this path is the session VERSION check immediately below and the
+   * restaurant scoping around it — never the status.
+   */
   const tab = Array.isArray(session.tabs) ? session.tabs[0] : session.tabs
-  if (!tab || tab.status !== 'open') {
+  if (!tab || isTabSessionEndedStatus(tab.status)) {
     return { valid: false, reason: 'Tab is no longer open' }
   }
 
@@ -126,5 +159,6 @@ export async function validateSessionToken(token: string): Promise<{
     tabId: session.tab_id,
     tableId: session.table_id,
     restaurantId: session.restaurant_id,
+    tabStatus: String(tab.status ?? ''),
   }
 }

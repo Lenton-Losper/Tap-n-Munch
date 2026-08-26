@@ -6,6 +6,8 @@ export async function requireSessionToken(req: Request): Promise<{
   tabId?: string
   tableId?: string
   restaurantId?: string
+  /** Passed through from validateSessionToken's own join -- see the note there on why. */
+  tabStatus?: string
 }> {
   const token = req.headers.get('x-session-token')
 
@@ -36,6 +38,7 @@ export async function requireSessionToken(req: Request): Promise<{
     tabId: validation.tabId,
     tableId: validation.tableId,
     restaurantId: validation.restaurantId,
+    tabStatus: validation.tabStatus,
   }
 }
 

@@ -1,14 +1,20 @@
 import { supabase } from '@/lib/supabase/client'
 import { fetchGuestOrdersBySession } from '@/lib/guest-orders/client'
 import { clearTabSession, readStoredTabId, readStoredTableNumber, readTabSessionId } from '@/lib/tab-storage'
-import { ACTIVE_TAB_STATUSES, isActiveTabStatus } from '@/lib/tab-status'
+import {
+  ACTIVE_TAB_STATUSES,
+  isActiveTabStatus,
+  isTabSessionEndedStatus,
+} from '@/lib/tab-status'
 // Type only -- erased at compile time. lib/tab-member-key.ts reads the service-role secret and
 // must never be pulled into a client bundle as a value import.
 import type { PublicTabMember } from '@/lib/tab-member-key'
 
 // Defined in lib/tab-status.ts (no imports, so server code can use it) and re-exported here
 // so the existing `from '@/lib/tab-session'` import sites are unchanged.
-export { ACTIVE_TAB_STATUSES, isActiveTabStatus }
+// Re-exported so every existing import site keeps working. The definitions live in
+// lib/tab-status.ts because server code cannot import this module (browser client at import time).
+export { ACTIVE_TAB_STATUSES, isActiveTabStatus, isTabSessionEndedStatus }
 
 export type TabRow = {
   id: string
@@ -45,10 +51,6 @@ export type TabRow = {
 }
 
 /** Tab no longer accepts orders (staff closed table or settlement finished). */
-export function isTabSessionEndedStatus(status: string | null | undefined): boolean {
-  const s = String(status || '').toLowerCase()
-  return s === 'settled' || s === 'closed' || s === 'completed' || s === 'cancelled'
-}
 
 export function shouldShowTabPaymentThanks(tab: TabRow | null | undefined): boolean {
   if (!tab) return false

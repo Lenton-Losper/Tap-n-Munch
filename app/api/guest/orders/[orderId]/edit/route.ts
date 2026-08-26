@@ -247,7 +247,15 @@ async function prepare(
   req: Request,
   orderId: string,
   parsed: ParsedBody,
-): Promise<{ supabase: SupabaseLike; restaurantUuid: string; target: LoadedTarget } | NextResponse> {
+): Promise<
+  | {
+      supabase: SupabaseLike
+      restaurantUuid: string
+      target: LoadedTarget
+      tabStatus: string | null
+    }
+  | NextResponse
+> {
   if (!orderId) {
     return NextResponse.json({ error: 'orderId is required' }, { status: 400 })
   }
@@ -297,6 +305,8 @@ async function prepare(
    * Ownership still decides WHICH order: the token proves who you are and that your session is
    * live; `sessionOwnsRow` above proves the order is yours. Creator-only mutation is preserved.
    */
+  // null means THIS ORDER HAS NO TAB, which is not the same as a tab whose status is unknown.
+  let tabStatus: string | null = null
   const tabId = String((target.row as Record<string, unknown>).tab_id ?? '').trim()
   if (tabId) {
     const guard = await requireSessionToken(req)
@@ -306,9 +316,12 @@ async function prepare(
       tabId,
     })
     if (mismatch) return mismatch
+
+    // Carried out so the ADDITIONS block can refuse on it without a second read. See the note there.
+    tabStatus = String(guard.tabStatus ?? '')
   }
 
-  return { supabase, restaurantUuid, target }
+  return { supabase, restaurantUuid, target, tabStatus }
 }
 
 /** Re-read after a losing write so the caller is told what actually happened, not a guess. */
@@ -376,7 +389,7 @@ export async function POST(req: Request, { params }: RouteParams) {
     const parsed = await parseBody(req)
     const prepared = await prepare(req, String(orderId || '').trim(), parsed)
     if (prepared instanceof NextResponse) return prepared
-    const { supabase, restaurantUuid, target } = prepared
+    const { supabase, restaurantUuid, target, tabStatus } = prepared
 
     const nowMs = Date.now()
     const reason = refusalFor(target, parsed.sessionIds, nowMs)
@@ -464,7 +477,7 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     const parsed = await parseBody(req)
     const prepared = await prepare(req, String(orderId || '').trim(), parsed)
     if (prepared instanceof NextResponse) return prepared
-    const { supabase, restaurantUuid, target } = prepared
+    const { supabase, restaurantUuid, target, tabStatus } = prepared
 
     if (!parsed.lockToken) {
       return NextResponse.json({ error: 'lockToken is required' }, { status: 400 })
@@ -554,6 +567,48 @@ export async function PATCH(req: Request, { params }: RouteParams) {
      * here — see lib/orders/apply-edit-additions.ts for which four, which three are ported, and
      * why the fourth does not apply to a tab.
      */
+    /**
+     * #301 — AN ADDITION MAY NOT LAND ON A TAB THAT IS NO LONGER OPEN, and this is now where that
+     * is decided.
+     *
+     * IT USED TO BE A SIDE EFFECT OF THE SESSION GUARD. `validateSessionToken` treated any tab whose
+     * status was not `open` as an invalid SESSION, so an addition to a `ready_to_pay` tab was
+     * refused because the customer was declared logged out. That also evicted every customer who
+     * merely pressed Settle — ruled 2026-08-26: requested is not paid, paid is not closed, and
+     * `ready_to_pay` is a live session.
+     *
+     * SCOPED TO ADDITIONS, NOT TO EVERY EDIT, and the distinction is the whole reason this sits
+     * here rather than beside the session check. A REDUCTION on a ready_to_pay tab is DELIBERATELY
+     * allowed: the route then clears `ready_to_pay_at` and `payment_preference` and reopens the
+     * tab, so staff settle the new figure instead of the old one. That behaviour predates this
+     * change and is pinned by `order-edit-route.test.ts`. Refusing every edit would have broken it
+     * — a customer who removed an item after asking to pay would have left staff queued to charge
+     * them for it.
+     *
+     * So: adding is refused, reducing is allowed and re-queues the tab. Both were true before; only
+     * the mechanism moved.
+     *
+     * READS THE STATUS THE SESSION GUARD ALREADY JOINED rather than re-selecting it. A second read
+     * would be a second point in time, and the two could disagree across a settle landing between
+     * them.
+     *
+     * STILL 410 with the same body, because that contract is pinned by
+     * `edit-additions-refused-on-a-tab-that-is-not-open.test.ts`. Safe here where it would not be
+     * elsewhere: `lib/guest-orders/client.ts:213` calls this route with a plain `fetch`, NOT
+     * `fetchWithSession`, so the 410 refuses the addition without running `handleSessionExpired`.
+     * Do not reuse this status on a route that goes through that helper — that is exactly the
+     * eviction this change removes.
+     */
+    if (hasAdditions && tabStatus !== null && tabStatus.toLowerCase() !== 'open') {
+      return NextResponse.json(
+        {
+          error: 'Your dining session has ended. Please scan the QR code to start a new order.',
+          reason: 'tab_not_open',
+        },
+        { status: 410 },
+      )
+    }
+
     if (hasAdditions) {
       const added = await applyEditAdditions({
         supabase,
