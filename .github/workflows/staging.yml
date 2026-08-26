@@ -162,6 +162,88 @@ jobs:
           STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
+  apply-held-payments:
+    # #344 ruling 3. The endpoint 404s until this table exists, and a 404 is correctly read by the
+    # terminal as "not stored" -- so until this job has run, every acknowledge on every device
+    # keeps its record. That is safe, and it is also the endpoint doing nothing.
+    #
+    # APPLY BEFORE DEPLOY, not after. The drift gate compares the migration ledger against the
+    # files, so a deploy that ships the route before the table is applied fails the gate on the
+    # NEXT push rather than this one -- which is the confusing order to debug.
+    if: contains(github.event.head_commit.message, '[apply-held-payments]')
+    runs-on: ubuntu-latest
+    name: Apply held_payments migration (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Apply 20260826120000_held_payments on staging
+        run: |
+          set -euo pipefail
+          MIG=supabase/migrations/20260826120000_held_payments.sql
+          VER=20260826120000
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            npx supabase db query --db-url "$DB_URL" -f "$MIG"
+            npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            echo "APPLY_HELD_PAYMENTS_STAGING_OK (db-url)"
+            exit 0
+          fi
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+            # `db query` does NOT record the ledger row, so the drift gate would fail on the next
+            # push having applied the SQL successfully. `migration repair` is what records it.
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            echo "APPLY_HELD_PAYMENTS_STAGING_OK (password)"
+            exit 0
+          fi
+          echo "ERROR: No way to apply DDL. Add STAGING_DATABASE_URL or STAGING_SUPABASE_DB_PASSWORD,"
+          echo "or paste supabase/migrations/20260826120000_held_payments.sql into the staging SQL editor"
+          echo "and push again with [verify-held-payments] alone."
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+  verify-held-payments:
+    # THE ONLY PLACE `held_payments_idempotency_unique` IS ACTUALLY CHECKED. The 24 unit tests
+    # enforce uniqueness in a mock that was written to enforce it; disabling the route's read-first
+    # branch leaves all 24 green, because the 23505 path produces identical behaviour. So the
+    # two-sided property rests on the constraint, and only a live database can say it is there.
+    #
+    # `needs: deploy` -- it POSTs through the deployed worker, not through a local import.
+    if: contains(github.event.head_commit.message, '[verify-held-payments]')
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: Verify held-payments store-and-release (#344 ruling 3)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Same record twice -> one row, one receiptId
+        env:
+          STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/verify-held-payments-staging.ts
+
   probe-tenant-isolation:
     if: contains(github.event.head_commit.message, '[probe-tenant-isolation]')
     runs-on: ubuntu-latest
