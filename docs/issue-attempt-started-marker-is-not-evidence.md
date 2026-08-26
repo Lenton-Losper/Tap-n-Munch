@@ -3,6 +3,36 @@
 **Status:** open. Blocks any rule that treats marker absence as "no payment was attempted".
 **Measured:** 2026-08-04, production (`ihlmmpmolnpchzgwyhgh`), read-only.
 
+> ## Correction, 2026-08-26 (#158)
+>
+> **Everything below the "Claim" heading is a 2026-08-04 measurement and is preserved as one. One
+> sentence of it is now false and one conclusion has to change.**
+>
+> **False:** "`payment.attempt_started` has never been written in production." It has, since
+> 2026-08-06 — the day after the branch this document blocked was removed. Re-measured on
+> production 2026-08-26: **1,009 rows, exactly one per order**, across four venues, every one
+> `source: 'terminal_app'` from APK 1.75 / 1.78 / 1.85 / 1.89 / 1.97. The endpoint is live and
+> terminals call it. The "0 of 496 paid orders carry it" table below describes a window that
+> closed; today 893 of 945 paid POS orders (94.5%) carry one.
+>
+> **Still true, and now the load-bearing reason:** absence proves nothing about the world.
+> `notifyPaymentAttemptStarted` races a 2 s timeout, swallows every failure, and `launchPayment`
+> is started first — a card can be charged with no marker ever written. That is a property of the
+> design, not of the adoption rate, so no amount of rollout retires it. **The rule at the bottom of
+> this document stands unchanged.**
+>
+> **What has to change:** the recommendation that presence may safely *spare* an order. That was
+> offered on the reasoning that the asymmetry would become usable once the marker was adopted.
+> Adoption arrived and the asymmetry did not, because the marker turns out not to discriminate at
+> all. POS orders placed on/after 2026-08-06 carry it: **paid 94.5% (893/945), cancelled 74.3%
+> (107/144), stale-pending backlog 100% (7/7)**. It is *more* common on stuck orders than on paid
+> ones. A spare-gate built on it would spare 7 of the 7 orders currently stuck and change nothing.
+> **Do not build it.**
+>
+> The marker keeps its place for a different reason: `orders.payment_attempt_started_at` is the
+> only payment-duration telemetry that exists, and #158 used it to replace the ~57 s median this
+> repo previously had to take on faith (real measured p50 is 14.9 s over 894 settled payments).
+
 ## Claim
 
 **Marker absence proves nothing.** `payment.attempt_started` has never been written in

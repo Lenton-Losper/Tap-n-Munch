@@ -19,6 +19,29 @@ import {
   type CancelBasis,
 } from './cancel-order-with-trail'
 
+/**
+ * How long a POS order may sit at payment_status='pending' before it becomes a CANDIDATE.
+ *
+ * THIS DECIDES CANDIDACY ONLY, NEVER AN OUTCOME. Every branch below except "no merchant order
+ * number" re-verifies against Finatic before doing anything. That is what makes the value safe,
+ * and it is the property to preserve: the moment any rule cancels on elapsed time alone, this
+ * number starts deciding money.
+ *
+ * NOW MEASURED, 2026-08-26 on production. The 2026-08-05 audit had to take a ~57 s median on
+ * faith because "no transaction-duration telemetry exists anywhere". It exists now:
+ * orders.payment_attempt_started_at -> paid_at, written by the same marker whose absence that
+ * audit was reasoning about. Over 894 real settled POS payments:
+ *
+ *   p50 14.9 s   p75 19.6 s   p90 25.9 s   p95 32.4 s   p99 54.7 s   max 283.8 s
+ *
+ * So 120 s is ~8x the median and ~2.2x the p99 -- a far wider margin than the ~2.1x the audit
+ * assumed, and the "thin margin" concern recorded there does not survive the measurement.
+ *
+ * THE TAIL IS REAL THOUGH. 3 of those 894 settled AFTER 120 s (0.3%), the slowest at 283.8 s.
+ * They came to no harm because Finatic was asked. Under a cancel-on-elapsed-time rule those
+ * three would have been three cancelled real payments in three weeks, which is the concrete
+ * cost of the change this docblock warns against.
+ */
 export const STALE_POS_TIMEOUT_MS = 2 * 60 * 1000
 
 /** Defensive throttle, not a documented Finatic limit -- caps outbound calls in one run. */
@@ -553,8 +576,13 @@ export async function autoCancelStalePosOrders(
   const rows = candidates as StaleOrderCandidate[]
   // The `payment.attempt_started` lookup that used to live here fed the removed E04111 cancel
   // gate (see the catch block below) and has no other consumer, so it goes with it rather than
-  // sitting dead. PR2 should reintroduce it in the opposite direction: marker PRESENT means a
-  // launch definitely happened, so SPARE that order from cancellation. Never the reverse.
+  // sitting dead.
+  //
+  // It is NOT coming back. The note that used to sit here told PR2 to reintroduce it inverted --
+  // marker PRESENT spares the order -- on the reasoning that the gate was only useless because
+  // nothing wrote the marker. Terminals write it now (1,009 rows since 2026-08-06) and it is
+  // still useless: 7 of the 7 currently stuck orders carry one, against 94.5% of paid orders, so
+  // it spares everything and distinguishes nothing. Full measurement in the catch block below.
   const noAttempt = rows.filter((o) => !String(o.paycloud_merchant_order_no || '').trim())
   const withAttempt = rows.filter((o) => String(o.paycloud_merchant_order_no || '').trim())
 
@@ -761,19 +789,51 @@ export async function autoCancelStalePosOrders(
       // REMOVED 2026-08-05: a branch here cancelled with reason 'no_payment_attempt_made' when
       // Finatic answered E04111 AND no `payment.attempt_started` marker existed.
       //
-      // The gate is empty in production: `payment.attempt_started` has been written ZERO times,
-      // all time. So `!attemptStartedIds.has(orderId)` was true for 100% of orders and the rule
-      // reduced to "E04111 -> cancel" on a SINGLE observation. E04111 is time-dependent --
-      // order #149 returned it at 13:58:48 and was confirmed PAID on the same reference at
-      // 13:59:10 -- so that is a mass-cancel of real payments. Measured blast radius at removal
-      // time: 6 stale POS orders worth N$335 would have been cancelled on the first tick.
+      // WHY IT WAS REMOVED, as measured on 2026-08-05: the gate was empty. `payment.attempt_started`
+      // had been written zero times in production, so `!attemptStartedIds.has(orderId)` was true for
+      // 100% of orders and the rule reduced to "E04111 -> cancel" on a SINGLE observation. E04111 is
+      // time-dependent -- order #149 returned it at 13:58:48 and was confirmed PAID on the same
+      // reference at 13:59:10 -- so that is a mass-cancel of real payments. Blast radius at removal
+      // time: 6 stale POS orders worth N$335 on the first tick.
       //
-      // Marker ABSENCE carries no information and must never authorise a cancel. Marker
-      // PRESENCE is sound as a one-way guard and may be used to SPARE an order -- that
-      // asymmetry is what PR2 should build on. The endpoint,
-      // lib/payments/mark-payment-attempt-started.ts and migration
-      // 20260728113000_orders_payment_attempt_started are deliberately kept for exactly that.
-      // See docs/issue-attempt-started-marker-is-not-evidence.md.
+      // ------------------------------------------------------------------------------------------
+      // THE "ZERO TIMES" HALF EXPIRED ON 2026-08-06 AND THIS COMMENT DID NOT. Corrected 2026-08-26.
+      //
+      // The marker is populated and has been since the day after the removal. Measured on
+      // production 2026-08-26: 1,009 `payment.attempt_started` rows, exactly one per order,
+      // 2026-08-06 through today, across four venues, every one `source: 'terminal_app'` from APK
+      // 1.75/1.78/1.85/1.89/1.97. The endpoint is live and terminals call it.
+      //
+      // THE REMOVAL IS STILL CORRECT. Only its evidence changed, and the replacement is stronger
+      // because it does not expire:
+      //
+      //   1. Absence still proves nothing about the world. The terminal's
+      //      notifyPaymentAttemptStarted races a 2 s timeout and swallows every failure, and
+      //      launchPayment is started FIRST -- so a card can be charged with no marker ever
+      //      written. That is correct for a payment path and disqualifying for evidence. No
+      //      amount of adoption fixes it.
+      //   2. The marker is now measured NOT to discriminate. POS orders placed on/after
+      //      2026-08-06: paid carry it 94.5% of the time (893/945), cancelled 74.3% (107/144),
+      //      and the stale-pending backlog 100% (7/7). Marker presence is *more* common on stuck
+      //      orders than on paid ones. It separates neither population from the other.
+      //
+      // SO DO NOT BUILD PR2's "marker PRESENT spares the order" GATE. Earlier notes here and in
+      // docs/stale-pending-inventory-2026-08-21.md recommended it on the assumption that adoption
+      // would make the asymmetry usable. Adoption arrived; the asymmetry did not. All 7 orders in
+      // today's stuck backlog carry a marker, so a spare-gate spares 7 of 7 and changes nothing --
+      // it would be pure decoration in front of the decision that actually matters.
+      //
+      // What PR2 still needs is unchanged and is NOT about this marker: persistence across a long
+      // window (the payment.verification_skipped rows below are that record -- 93 observations each
+      // spanning four days on the current 7), a same-run positive control, and a volume circuit
+      // breaker. See docs/issue-attempt-started-marker-is-not-evidence.md, whose headline claim
+      // carries the same expired measurement and the same correction.
+      //
+      // mark-payment-attempt-started.ts and migration 20260728113000_orders_payment_attempt_started
+      // stay, but for their own sake, not for this gate: payment_attempt_started_at is the only
+      // payment-duration telemetry that exists. It is what makes STALE_POS_TIMEOUT_MS checkable
+      // against real data -- see the constant's docblock.
+      // ------------------------------------------------------------------------------------------
 
       /**
        * #153 -- THREE CONDITIONS, NOT ONE. This comment used to read "Finatic unreachable,

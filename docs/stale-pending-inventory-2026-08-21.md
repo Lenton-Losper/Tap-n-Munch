@@ -178,10 +178,21 @@ That pass — "PR2" — was never built. It is the missing piece:
 - **E04111 observed once means nothing. E04111 observed repeatedly over 15 days means something.**
   Order 819 has been pending since 2026-08-06. The removal note's counterexample flipped in 22
   seconds; nothing flips after two weeks.
-- The guard to build it on is already specified: **marker presence spares, marker absence decides
+- ~~The guard to build it on is already specified: **marker presence spares, marker absence decides
   nothing.** Since the marker is now actually being written — it was written zero times when the
   gate was removed, and all ten of these carry it — that asymmetry has become usable in a way it was
-  not on 2026-08-05.
+  not on 2026-08-05.~~
+
+  **Withdrawn 2026-08-26 (#158).** The premise is right — the marker is written now, 1,009 rows
+  since 2026-08-06 — but the conclusion does not follow, and the sentence "all ten of these carry
+  it" is itself the counter-example that was misread as support. A spare-gate is only worth
+  building if some orders lack the marker; **all** of the stuck ones carry it. Measured across POS
+  orders placed on/after 2026-08-06: paid 94.5% marked, cancelled 74.3%, stale-pending 100%. The
+  marker is *more* common on stuck orders than on paid ones, so it separates nothing in either
+  direction and a spare-gate would spare 100% of the backlog. **Marker absence deciding nothing
+  still stands** — for the design reason (a 2 s swallowed timeout, launch started first), which
+  adoption cannot retire. Persistence, a positive control and a volume circuit breaker are what PR2
+  actually needs; none of them involve this marker.
 
 ### And the upstream cause, already diagnosed
 
