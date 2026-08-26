@@ -186,13 +186,23 @@ export const HELD_ORPHAN_BODY_UNKNOWN_ORDER =
   'A card payment was recovered but the order it belongs to could not be identified. It has not been applied here. It has been kept so it can be checked.';
 
 /**
- * REQUIREMENT — the acknowledge action. Pressing it DELETES the only remaining record of that
- * transaction, so the label must convey that the operator has already checked it, not merely that
- * they have read this message. "OK" or "Dismiss" would be wrong for that reason.
+ * REQUIREMENT — the acknowledge action. It disposes of the record of a real card transaction, so
+ * the label must convey that the operator has dealt with it, not merely that they have read this
+ * message. "OK" or "Dismiss" would be wrong for that reason, and that much is unchanged.
  *
- * WHAT ACKNOWLEDGING SHOULD REQUIRE IS AN OPEN QUESTION for the owner — see the handoff. Today it
- * simply clears; whether it should demand the payment be reconciled first is a ruling, not an
- * implementation detail.
+ * WHAT PRESSING IT DOES CHANGED WITH RULING 3, AND THIS COMMENT DESCRIBED THE OLD BEHAVIOUR. It
+ * read "Pressing it DELETES the only remaining record of that transaction", and "WHAT
+ * ACKNOWLEDGING SHOULD REQUIRE IS AN OPEN QUESTION for the owner … Today it simply clears".
+ * Both are now false. Ruling 3 (2026-08-26) answered the question — a durable write IS the
+ * acknowledgement — and storeAndReleaseHeldOrphan (lib/heldOrphanStore.ts:172-215) stores FIRST,
+ * removing the local record only after the server has it (:203-209). So this no longer deletes the
+ * last copy of anything, and a store that fails leaves the record untouched and on screen.
+ *
+ * THE STRING ITSELF IS NOW UNDER QUESTION AND IS NOT TO BE EDITED HERE. The label asserts
+ * something the OPERATOR did, while the action performs a SERVER WRITE that can fail — which is
+ * why HELD_ORPHAN_NOT_SAVED has to explain the gap afterwards. Raised with the owner 2026-08-26;
+ * the wording is their call. This constant is one of the FIVE still provisional under the banner
+ * at :161, which governs every string from there down to the signed banner at :212.
  */
 export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';
 
