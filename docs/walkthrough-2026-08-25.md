@@ -144,6 +144,23 @@ must be present. That is the test — before this fix a searching customer saw o
 during a total outage, which is an affirmative claim about what the restaurant sells, made when we
 do not know.
 
+### 1c½. Receipt line totals are GROSS now — #250
+
+**The one on this list a customer complained about.** Order and pay for a VAT-inclusive item; a
+**N$25.00 item at 15%** is the exact case that produced the physical P5 receipt of 2026-08-05.
+
+| Where | Must read |
+|---|---|
+| Customer → My Orders → Receipt | `1 x N$25.00 … N$25.00` — **NOT** N$21.74 |
+| Paper reprint from the P5 | the same line — this is the surface that caused the complaint |
+| Totals block, unchanged | Subtotal N$21.74 · VAT N$3.26 · **Total N$25.00** |
+
+Lines now sum to **Total**, not Subtotal — which is what makes the receipt agree with the TAX
+INVOICE, the document that was already right.
+
+**A receipt issued BEFORE this deploy still shows the old figure.** That is expected, not a failed
+deploy — the snapshot is frozen at issuance. It is tracked as #251.
+
 ### 1d. Receipt email — #244
 
 **Reach it:** from a paid order's receipt screen, email a receipt to yourself.
@@ -259,6 +276,8 @@ a finding.**
 | **`PENDING COPY`, `TODO`, or a placeholder** | any customer screen | A gate blocks these from shipping. One on screen means it got past the gate. |
 | **A tappable / highlighting order card** | My Orders | It navigated to a page that said "Payment Processing" for an accepted order and trapped you there. |
 | **`Table 0`** | Order History, My Orders | 2,143 of 3,501 production orders carry `table_number = 0`. It should read `—`. |
+| **A line total BELOW its own unit price** — e.g. `1 x N$25.00 … N$21.74` | receipt, screen or paper | #250. A gross unit price beside an ex-VAT line total reads to a customer as an arithmetic error, and it is why this was reported. |
+| **A line total of `0.00`** | receipt | The regression the #250 fix had to avoid: deleting `subtotal` rather than DEMOTING it zeroes every cart-shaped line. A mutation proves it — `Received: 0`. |
 | **An attempt count or provider text** — e.g. "Resend rejected…", "ceiling reached (10)" | receipt-email failure | That route takes NO session token. Anything in the body is readable by anyone holding an order id. |
 | **A raw database or provider error** | any customer-facing error | Default-deny: only allowlisted sentences reach a customer. Raw text means something bypassed it. |
 | **"No items found" as the ONLY thing on screen** | browse, during a total outage | An affirmative claim about what the restaurant sells, made when we do not know. |
@@ -291,6 +310,37 @@ above.
   migration only withdraws an anon grant that nothing reads any more.
 - **#245's staging half** — blocked on a staging DB credential. Production is verified: four of five
   inline CHECK constraints present, the fifth table does not exist there.
+
+---
+
+## 5. What the agents finished but is NOT in a build or on production yet
+
+Both agents completed their runs. These are done and waiting on you, not in progress.
+
+**Terminal — six things need your ruling before another build is worth making:**
+
+- ruling 3's endpoint contract, re-keyed to `businessOrderNo`
+- `HELD_ORPHAN_ACKNOWLEDGE` — under ruling 3 there is no button on the normal path. The real
+  question is whether the unreportable residue should have a dismiss at all.
+- `HELD_ORPHAN_NEEDS_A_PERSON` — needs REPLACING, not rewording: in that state nobody can
+  reconcile it, because there is no identifier to look anything up by.
+- the three provisional strings that stand unless behaviour moves under them
+
+**Web — six ruling packets, no code, all with a recommendation:**
+
+| | The finding that changes the question |
+|---|---|
+| #229 | `price_modifier` are DELTAS, legacy `variants` are ABSOLUTES, and the normalizer reads only `price`. The naive widening prices five drinks' default size at **N$0.00**. |
+| #228 | Downstream of #229. Server enforcement would start REFUSING orders accepted today. |
+| #237 | Issuance is idempotent, so it is a RACE — a second attempt never corrects the first. Live on the recovery paths; the happy path is **unproven**, not false. |
+| #304 | #244's ceiling is essentially option C, which was never the part that mattered — 10 is still 10 addresses of the attacker's choosing. |
+| #258 | The QR leg's cron CANCELS on a 10-minute clock **without asking Finatic**, while the POS sweeper queries the gateway on that same field. |
+| #259 | Option B is HALF done: the webhook is parser-free but `paymentRefOrFilter` still validates, so two readers now DISAGREE about the same reference. |
+
+**Blocked on you specifically:** #222 (one question — does the refusal name the Release action),
+#314 (a secret only you can add), #178 (needs that secret).
+
+**Five already fixed and uncredited** — candidates to close on sight: #243, #239, #234, #260, #301.
 
 ---
 

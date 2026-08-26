@@ -2,6 +2,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { checkPaycloudHealth } from '@/payments/paycloud'
 import { RECOVERED_AFTER_AUTO_CANCEL_ACTION } from '@/lib/payments/e04111-recovery'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { excludeStressFixtures } from '@/lib/orders/stress-fixtures'
 
 export const TERMINAL_OFFLINE_MS = 15 * 60 * 1000
 export const DASHBOARD_POLL_INTERVAL_MS = 30_000
@@ -145,12 +146,17 @@ export async function computePlatformAlerts(): Promise<PlatformAlert[]> {
     })
   }
 
-  const { data: failedOrders } = await supabase
-    .from('orders')
-    .select('id, restaurant_id, payment_status, placed_at, restaurants(name)')
-    .eq('payment_status', 'failed')
-    .gte('placed_at', hourAgo)
-    .limit(100)
+  // Platform-wide, so it excludes the stress fixtures. No fixture is 'failed', so this changes
+  // nothing today; it is here so that remains a rule rather than a coincidence of the 2026-04-27
+  // run's column values.
+  const { data: failedOrders } = await excludeStressFixtures(
+    supabase
+      .from('orders')
+      .select('id, restaurant_id, payment_status, placed_at, restaurants(name)')
+      .eq('payment_status', 'failed')
+      .gte('placed_at', hourAgo)
+      .limit(100),
+  )
 
   if ((failedOrders?.length ?? 0) >= 3) {
     alerts.push({
@@ -284,12 +290,14 @@ async function probeSystemStatus(now = Date.now()): Promise<SystemComponentStatu
   })
 
   let paymentsSince: string | null = null
-  const { data: lastFail } = await supabase
-    .from('orders')
-    .select('placed_at')
-    .eq('payment_status', 'failed')
-    .order('placed_at', { ascending: false })
-    .limit(1)
+  const { data: lastFail } = await excludeStressFixtures(
+    supabase
+      .from('orders')
+      .select('placed_at')
+      .eq('payment_status', 'failed')
+      .order('placed_at', { ascending: false })
+      .limit(1),
+  )
     .maybeSingle()
   if (lastFail?.placed_at) paymentsSince = relativeShort(lastFail.placed_at, now)
 
@@ -526,19 +534,25 @@ export async function buildDashboardPayload(): Promise<DashboardPayload> {
       .eq('active', true)
       .eq('status', 'active')
       .lt('last_seen_at', offlineBefore),
-    supabase
-      .from('orders')
-      .select('id, restaurant_id')
-      .eq('payment_status', 'failed')
-      .gte('placed_at', hourAgo)
-      .limit(200),
-    supabase
-      .from('orders')
-      .select('placed_at')
-      .eq('payment_status', 'failed')
-      .order('placed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    excludeStressFixtures(
+      supabase
+        .from('orders')
+        .select('id, restaurant_id')
+        .eq('payment_status', 'failed')
+        .gte('placed_at', hourAgo)
+        .limit(200),
+    ),
+    // `.maybeSingle()` returns a PostgrestBuilder, which no longer carries `.or()` -- so the
+    // exclusion goes on BEFORE it. `.limit(1)` stays inside the wrapped chain, which is what
+    // check-orders-read-bounded reads.
+    excludeStressFixtures(
+      supabase
+        .from('orders')
+        .select('placed_at')
+        .eq('payment_status', 'failed')
+        .order('placed_at', { ascending: false })
+        .limit(1),
+    ).maybeSingle(),
     supabase
       .from('audit_logs')
       .select('id', { count: 'exact', head: true })

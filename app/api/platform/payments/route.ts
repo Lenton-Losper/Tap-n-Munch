@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { resolvePlatformAdmin } from '@/lib/permissions/assert-platform-admin'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { excludeStressFixtures } from '@/lib/orders/stress-fixtures'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,14 +75,19 @@ export async function GET(request: Request) {
 
     const supabase = createServerSupabaseClient()
 
-    let ordersQuery = supabase
-      .from('orders')
-      .select(
-        'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, placed_at, paid_at, restaurants(name)',
-      )
-      .gte('placed_at', since)
-      .order('placed_at', { ascending: false })
-      .limit(200)
+    // `restaurantId` is OPTIONAL here, so this is unscoped whenever the operator has not picked a
+    // venue -- which is the default view. The exclusion goes on unconditionally rather than inside
+    // the `if (restaurantId)` below, because the unscoped case is the one that can see a fixture.
+    let ordersQuery = excludeStressFixtures(
+      supabase
+        .from('orders')
+        .select(
+          'id, restaurant_id, order_number, status, payment_status, payment_method, total, paycloud_merchant_order_no, payment_reference, payment_voucher_no, placed_at, paid_at, restaurants(name)',
+        )
+        .gte('placed_at', since)
+        .order('placed_at', { ascending: false })
+        .limit(200),
+    )
 
     let eventsQuery = supabase
       .from('payment_events')
@@ -105,29 +111,38 @@ export async function GET(request: Request) {
       eventsResult,
       spendOrdersResult,
     ] = await Promise.all([
-      supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
+      /*
+       * These five counts span every venue, so each carries the stress-fixture exclusion. All five
+       * are excluded today by VALUE as well -- a fixture is never 'paid', never 'failed', never
+       * 'cancelled' in `status`, and carries no paid_at -- but that is a fact about the rows the
+       * stress script happened to write, not a rule anyone is holding to. The filter says what is
+       * meant, so a future stress run with different values cannot quietly re-enter these numbers.
+       */
+      excludeStressFixtures(
+        supabase.from('orders').select('id', { count: 'exact', head: true }),
+      )
         .eq('payment_status', 'paid')
         .gte('paid_at', today),
-      supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
+      excludeStressFixtures(
+        supabase.from('orders').select('id', { count: 'exact', head: true }),
+      )
         .eq('payment_status', 'failed')
         .gte('placed_at', today),
-      supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
+      excludeStressFixtures(
+        supabase.from('orders').select('id', { count: 'exact', head: true }),
+      )
         .in('status', ['canceled', 'cancelled'])
         .gte('placed_at', today),
       ordersQuery,
       eventsQuery,
-      supabase
-        .from('orders')
-        .select('restaurant_id, total, payment_status, restaurants(name)')
-        .eq('payment_status', 'paid')
-        .gte('paid_at', since)
-        .limit(5000),
+      excludeStressFixtures(
+        supabase
+          .from('orders')
+          .select('restaurant_id, total, payment_status, restaurants(name)')
+          .eq('payment_status', 'paid')
+          .gte('paid_at', since)
+          .limit(5000),
+      ),
     ])
 
     const error =
