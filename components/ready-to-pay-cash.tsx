@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import { useRestaurant } from '@/contexts/restaurant-context'
 import { getSessionToken } from '@/lib/fetch-with-session'
 import { heldSessionIds } from '@/lib/tab-storage'
@@ -116,17 +117,17 @@ export function ReadyToPayCashButton({ orderId, className }: Props) {
               throw new Error(
                 typeof (data as { error?: unknown }).error === 'string'
                   ? String((data as { error?: unknown }).error)
-                  : 'Request failed',
+                  : MENU_COPY.readyToPayRequestFailed,
               )
             }
             setNotified(true)
           } catch {
-            setError('Something went wrong. Please try again.')
+            setError(MENU_COPY.readyToPaySomethingWentWrongTryAgain)
             setLoading(false)
           }
         }}
       >
-        {loading ? 'Sending…' : 'Ready to Pay'}
+        {loading ? 'Sending…' : MENU_COPY.readyToPayButton}
       </Button>
     </div>
   )

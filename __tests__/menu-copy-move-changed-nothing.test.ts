@@ -2,6 +2,7 @@ import {
   MENU_COPY,
   MENU_COPY_NOT_PROSE,
   MENU_COPY_AWAITING_A_SURFACE,
+  MENU_INTERNAL_MESSAGES,
 } from '@/lib/customer-copy/menu-copy'
 
 /**
@@ -244,6 +245,67 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     viewReceipt: "View Receipt",
     welcomeTo: "Welcome to",
     yourTabPin: "Your tab PIN is",
+
+    // ==============================================================================================
+    // #334 ROUND TWO -- components/ and contexts/, the customer-reachable half of the shared tree.
+    //
+    // Same discipline as round one: transcribed from the component BEFORE the move, em dashes and
+    // bullets included. Round one is the reason this matters -- the file that started #334 is
+    // `ActiveOrderBanner.tsx`, and it was outside the gate until now.
+    // ==============================================================================================
+
+    // ---- components/ActiveOrderBanner.tsx
+    bannerOrderReceivedTapWhenReady: "Order received — tap below when ready for card machine",
+    bannerOrderReceivedAwaitingPayment: "Order received - Awaiting payment",
+    bannerWaiterNotifiedCardMachineOnWay: "Waiter notified — card machine on the way",
+    bannerOrderReceivedPayAtCounter: "Order received - Pay at counter",
+    bannerOrderAcceptedBeingPrepared: "Order accepted - Being prepared",
+    bannerOrderReadyForCollection: "Your order is ready for collection",
+    bannerPaymentConfirmedThankYou: "Payment confirmed - Thank you!",
+    bannerOrderInProgress: "Order in progress",
+    bannerViewReceipt: "View Receipt →",
+    // ---- components/menu/cart-item-note.tsx
+    noteAddANote: "Add a note",
+    noteForThisItem: "Note for this item",
+    notePlaceholder: "e.g. no sugar",
+    // ---- components/menu/item-detail-modal.tsx
+    itemSpecialInstructions: "Special Instructions",
+    itemSpecialInstructionsPlaceholder: "Any special requests? (e.g., no onions, extra sauce)",
+    itemIncreaseQuantity: "Increase quantity",
+    itemAddToCart: "Add to Cart",
+    // ---- components/order-edit-panel.tsx
+    editCouldNotOpenOrder: "Could not open this order for editing",
+    editCouldNotSaveChanges: "Could not save your changes",
+    editNotesForTheKitchen: "Notes for the kitchen",
+    editSaveChanges: "Save changes",
+    // ---- components/ready-to-pay-cash.tsx + components/ready-to-pay-terminal.tsx
+    readyToPayButton: "Ready to Pay",
+    readyToPayRequestFailed: "Request failed",
+    readyToPaySomethingWentWrongTryAgain: "Something went wrong. Please try again.",
+    readyToPaySomethingWentWrong: "Something went wrong",
+    readyToPayWaiterNotifiedCardMachine: "Waiter has been notified — the card machine is on its way",
+    readyToPaySessionNotFound: "Session not found — open this page from the same device you ordered on.",
+    // ---- components/receipt/order-confirmation-view.tsx
+    confirmOrderPlaced: "Order Placed!",
+    confirmHaveYourCardReady: "Please have your card ready. Staff will bring the card machine to your table.",
+    confirmStaffWillAssistAtTable: "Staff will assist you with payment at your table.",
+    confirmPaymentMethod: "Payment Method",
+    confirmPaymentStatus: "Payment Status",
+    confirmWaiterWillBringYourBill: "A waiter will bring your bill when your order is ready.",
+    confirmTapReadyToPay: "Tap 'Ready to Pay' below when you would like the card machine brought to your table.",
+    confirmCompletePaymentSecureLink: "Complete payment using the secure link if you have not already.",
+    confirmWaiterNotifiedCardMachineComing: "Waiter has been notified — card machine coming soon.",
+    confirmThankYou: "Thank you!",
+    confirmWeAppreciateYourSupport: "We appreciate your support",
+    confirmSecureFastContactless: "Secure • Fast • Contactless",
+    // ---- components/receipt/order-summary.tsx
+    summaryServiceFee: "Service Fee",
+    // ---- contexts/tab-context.tsx
+    tabIncorrectPin: "Incorrect PIN, please try again",
+    tabNoOpenTabForThisTable: "No open tab found for this table",
+    tabJoinedButNoIdReturned: "Tab was joined but no tab ID was returned",
+    tabCreatedButNoIdReturned: "Tab was created but no tab ID was returned",
+    tabFailedToNotifyWaiter: "Failed to notify waiter",
   }
 
   // The union, so wording parked in MENU_COPY_AWAITING_A_SURFACE is pinned exactly as hard as
@@ -258,6 +320,25 @@ describe('every moved string is byte-identical to the literal it replaced', () =
     // Without this, a key added without a pin is silently unprotected — which is the same
     // opt-in-enforcement hole that let a bare literal escape sign-off in the first place.
     expect(Object.keys(ALL_COPY).sort()).toEqual(Object.keys(ORIGINALS).sort())
+  })
+})
+
+describe('the React invariants are pinned, and stay out of the sign-off surface', () => {
+  it('holds the two provider guards, byte-identical', () => {
+    expect(MENU_INTERNAL_MESSAGES).toEqual({
+      useCartOutsideProvider: 'useCart must be used within a CartProvider',
+      useTabOutsideProvider: 'useTab must be used within a TabProvider',
+    })
+  })
+
+  it('none of them leaks into MENU_COPY', () => {
+    // The point of the separate export: the owner's sign-off surface stays customer-only. A
+    // developer invariant sitting among wording someone has to read and approve is noise in
+    // exactly the place that must not have any.
+    const copy = Object.values(MENU_COPY) as string[]
+    for (const message of Object.values(MENU_INTERNAL_MESSAGES)) {
+      expect(copy).not.toContain(message)
+    }
   })
 })
 

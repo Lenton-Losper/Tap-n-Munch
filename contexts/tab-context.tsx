@@ -19,6 +19,7 @@ import { TabActionRefused } from '@/lib/tabs/tab-action-refused'
 // owns `tab_session_id` in sessionStorage. Nothing syncs them and an order carries whichever the
 // placing screen held, so both have to be offered when asking which member row is the caller's.
 import { getCurrentSession } from '@/lib/session'
+import { MENU_COPY, MENU_INTERNAL_MESSAGES } from '@/lib/customer-copy/menu-copy'
 
 // The keys and the mint now live in lib/tab-storage.ts, which is also where non-context callers
 // read them from. Two copies of "which id is this customer" is how the two halves come to disagree
@@ -375,14 +376,14 @@ export function TabProvider({
     const data = await response.json().catch(() => ({}))
 
     if (response.status === 403) {
-      throw new Error('Incorrect PIN, please try again')
+      throw new Error(MENU_COPY.tabIncorrectPin)
     }
     if (response.status === 404) {
-      throw new Error('No open tab found for this table')
+      throw new Error(MENU_COPY.tabNoOpenTabForThisTable)
     }
     if (response.status === 410) {
       handleSessionExpired(rid)
-      throw new Error('Your dining session has ended')
+      throw new Error(MENU_COPY.yourDiningSessionHasEnded)
     }
     if (!response.ok) {
       throw new Error(data?.error || `Failed to join tab (${response.status})`)
@@ -395,7 +396,7 @@ export function TabProvider({
 
     const joinedTabId = String(data?.tabId || '').trim()
     if (!joinedTabId) {
-      throw new Error('Tab was joined but no tab ID was returned')
+      throw new Error(MENU_COPY.tabJoinedButNoIdReturned)
     }
 
     persistTabId(joinedTabId, tableNum)
@@ -442,7 +443,7 @@ export function TabProvider({
     console.log('[TAB CONTEXT] joinExistingTab sessionToken', data?.sessionToken)
     if (response.status === 410) {
       handleSessionExpired(rid)
-      throw new Error('Your dining session has ended')
+      throw new Error(MENU_COPY.yourDiningSessionHasEnded)
     }
     if (!response.ok) {
       throw new Error(data?.error || `Failed to join tab (${response.status})`)
@@ -511,7 +512,7 @@ export function TabProvider({
 
     if (response.status === 410) {
       handleSessionExpired(rid)
-      throw new Error('Your dining session has ended')
+      throw new Error(MENU_COPY.yourDiningSessionHasEnded)
     }
 
     if (!response.ok) {
@@ -534,7 +535,7 @@ export function TabProvider({
 
     const newTabId = String(data?.tabId || '').trim()
     if (!newTabId) {
-      throw new Error('Tab was created but no tab ID was returned')
+      throw new Error(MENU_COPY.tabCreatedButNoIdReturned)
     }
 
     console.log('[TAB CONTEXT] createNewTab success', newTabId)
@@ -546,7 +547,7 @@ export function TabProvider({
   }
 
   const markTabReadyToPay = async () => {
-    if (!tabId || !restaurantId) throw new Error('No active tab')
+    if (!tabId || !restaurantId) throw new Error(MENU_COPY.noActiveTab)
     if (tabStatus === 'ready_to_pay') {
       return
     }
@@ -560,7 +561,7 @@ export function TabProvider({
       }
     )
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data?.error || 'Failed to notify waiter')
+    if (!res.ok) throw new Error(data?.error || MENU_COPY.tabFailedToNotifyWaiter)
     setTabStatus('ready_to_pay')
     await loadTab()
   }
@@ -596,6 +597,6 @@ export function TabProvider({
 
 export function useTab() {
   const context = useContext(TabContext)
-  if (!context) throw new Error('useTab must be used within a TabProvider')
+  if (!context) throw new Error(MENU_INTERNAL_MESSAGES.useTabOutsideProvider)
   return context
 }

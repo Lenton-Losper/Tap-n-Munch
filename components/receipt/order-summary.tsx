@@ -1,6 +1,7 @@
 import { chargedLineAmount, formatCurrency, type ReceiptLineItem } from './receipt-types'
 import { cn } from '@/lib/utils'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 export type OrderSummaryProps = {
   items: ReceiptLineItem[]
@@ -26,7 +27,7 @@ export function OrderSummary({
 
   return (
     <div className={cn('text-left', className)}>
-      <h3 className="text-base font-bold text-[#111827] mb-4">Order Summary</h3>
+      <h3 className="text-base font-bold text-[#111827] mb-4">{MENU_COPY.orderSummary}</h3>
       <ul className="space-y-3">
         {items.map((item, index) => (
           <li key={`${item.name}-${index}`} className="flex items-center gap-3">
@@ -57,7 +58,7 @@ export function OrderSummary({
           </div>
           {serviceFee != null && serviceFee > 0 ? (
             <div className="flex justify-between text-[#6B7280]">
-              <span>Service Fee</span>
+              <span>{MENU_COPY.summaryServiceFee}</span>
               <span className="text-[#111827] tabular-nums">{formatCurrency(serviceFee, currency)}</span>
             </div>
           ) : null}

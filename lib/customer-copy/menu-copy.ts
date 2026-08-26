@@ -358,6 +358,92 @@ export const MENU_COPY = {
   /** Used at 2 sites. */
   welcomeTo: "Welcome to",
   yourTabPin: "Your tab PIN is",
+
+  // ================================================================================================
+  // #334 ROUND TWO -- THE SHARED CUSTOMER COMPONENTS AND CONTEXTS
+  //
+  // The first round covered app/menu/** only, which left the file that STARTED this issue outside
+  // the gate: `ActiveOrderBanner.tsx` is a component, not a screen, and its bare literal is the one
+  // that escaped sign-off. The gate now also scans every file under components/ and contexts/ that a
+  // customer screen can reach.
+  //
+  // Same rule as round one and it is the important one: MOVED, NOT REWRITTEN. Every value here is
+  // byte-identical to the literal it replaced and pinned by
+  // __tests__/menu-copy-move-changed-nothing.test.ts. Nothing below has been through wording
+  // sign-off -- these were already live, and moving them is what makes them visible.
+  //
+  // FLAGGED FOR THE OWNER, NOT CHANGED: several of these assert that a person is coming to a table
+  // ("Waiter notified", "A waiter will bring your bill", "Staff will bring the card machine"), at
+  // venues that may have no table staff at all. That is the same class the payCounter*/payTable*
+  // pairs above exist to fix, and the same answer applies -- each needs a signed counter variant.
+  // Wiring them through `isCounterService` is a wording decision, so they are moved as they are.
+  // ================================================================================================
+
+  // ---------------------------------------------------------------- components/ActiveOrderBanner
+  bannerOrderReceivedTapWhenReady: "Order received — tap below when ready for card machine",
+  bannerOrderReceivedAwaitingPayment: "Order received - Awaiting payment",
+  bannerWaiterNotifiedCardMachineOnWay: "Waiter notified — card machine on the way",
+  bannerOrderReceivedPayAtCounter: "Order received - Pay at counter",
+  /** Used at 2 sites in the banner: the status map, and the in-progress fallback. */
+  bannerOrderAcceptedBeingPrepared: "Order accepted - Being prepared",
+  bannerOrderReadyForCollection: "Your order is ready for collection",
+  bannerPaymentConfirmedThankYou: "Payment confirmed - Thank you!",
+  bannerOrderInProgress: "Order in progress",
+  bannerViewReceipt: "View Receipt →",
+
+  // ---------------------------------------------------------------- components/menu/cart-item-note
+  noteAddANote: "Add a note",
+  noteForThisItem: "Note for this item",
+  notePlaceholder: "e.g. no sugar",
+
+  // ------------------------------------------------------------ components/menu/item-detail-modal
+  itemSpecialInstructions: "Special Instructions",
+  itemSpecialInstructionsPlaceholder: "Any special requests? (e.g., no onions, extra sauce)",
+  /** An aria-label. Read aloud rather than seen, which makes it copy, not markup. */
+  itemIncreaseQuantity: "Increase quantity",
+  itemAddToCart: "Add to Cart",
+
+  // ---------------------------------------------------------------- components/order-edit-panel
+  editCouldNotOpenOrder: "Could not open this order for editing",
+  editCouldNotSaveChanges: "Could not save your changes",
+  editNotesForTheKitchen: "Notes for the kitchen",
+  editSaveChanges: "Save changes",
+
+  // ------------------------------- components/ready-to-pay-cash + components/ready-to-pay-terminal
+  // Both components render these; one key each, because two screens showing the same sentence
+  // sharing one key is the rule the first round set.
+  readyToPayButton: "Ready to Pay",
+  readyToPayRequestFailed: "Request failed",
+  readyToPaySomethingWentWrongTryAgain: "Something went wrong. Please try again.",
+  readyToPaySomethingWentWrong: "Something went wrong",
+  readyToPayWaiterNotifiedCardMachine: "Waiter has been notified — the card machine is on its way",
+  readyToPaySessionNotFound: "Session not found — open this page from the same device you ordered on.",
+
+  // ---------------------------------------------- components/receipt/order-confirmation-view
+  confirmOrderPlaced: "Order Placed!",
+  confirmHaveYourCardReady: "Please have your card ready. Staff will bring the card machine to your table.",
+  confirmStaffWillAssistAtTable: "Staff will assist you with payment at your table.",
+  confirmPaymentMethod: "Payment Method",
+  confirmPaymentStatus: "Payment Status",
+  confirmWaiterWillBringYourBill: "A waiter will bring your bill when your order is ready.",
+  confirmTapReadyToPay: "Tap 'Ready to Pay' below when you would like the card machine brought to your table.",
+  confirmCompletePaymentSecureLink: "Complete payment using the secure link if you have not already.",
+  confirmWaiterNotifiedCardMachineComing: "Waiter has been notified — card machine coming soon.",
+  confirmThankYou: "Thank you!",
+  confirmWeAppreciateYourSupport: "We appreciate your support",
+  confirmSecureFastContactless: "Secure • Fast • Contactless",
+
+  // ---------------------------------------------------------- components/receipt/order-summary
+  summaryServiceFee: "Service Fee",
+
+  // ---------------------------------------------------------------- contexts/tab-context
+  // Thrown, then rendered: the tab screens catch these and show `err.message`, so they are copy
+  // even though they are written as Error messages.
+  tabIncorrectPin: "Incorrect PIN, please try again",
+  tabNoOpenTabForThisTable: "No open tab found for this table",
+  tabJoinedButNoIdReturned: "Tab was joined but no tab ID was returned",
+  tabCreatedButNoIdReturned: "Tab was created but no tab ID was returned",
+  tabFailedToNotifyWaiter: "Failed to notify waiter",
 } as const
 
 /**
@@ -394,3 +480,24 @@ export const MENU_COPY_NOT_PROSE: readonly string[] = [
   'Failed to place order',
   'No order ID returned',
 ] as const
+
+/**
+ * REACT INVARIANTS. NOT CUSTOMER COPY, AND DELIBERATELY NOT IN `MENU_COPY`.
+ *
+ * These are the "you called this hook outside its provider" guards. A customer cannot read either
+ * one: reaching them means the component tree is wrong and the screen does not render at all.
+ *
+ * They are here because #334's rule is about WHERE A LITERAL LIVES, and the gate cannot tell this
+ * sentence from `'Incorrect PIN, please try again'` two files away -- both are English prose thrown
+ * from a customer context. It should not try to: a rule that guesses at intent is the kind that
+ * decays. So the gate stays literal-minded and these move out of the component, into the module
+ * whose job is to hold strings that were taken out of components.
+ *
+ * They are kept OUT of `MENU_COPY` so the owner's sign-off surface stays customer-only. A developer
+ * invariant sitting among wording someone has to read and approve is noise in exactly the place
+ * that must not have any.
+ */
+export const MENU_INTERNAL_MESSAGES = {
+  useCartOutsideProvider: 'useCart must be used within a CartProvider',
+  useTabOutsideProvider: 'useTab must be used within a TabProvider',
+} as const
