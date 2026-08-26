@@ -62,6 +62,13 @@ export function subscribeOrderRequestsRealtime(
   callbacks: {
     onInitial: (requests: OrderRequest[]) => void
     onChange: (payload: OrderRequestRealtimePayload) => void
+    /**
+     * The channel's own `.subscribe()` status. #350: this channel carries the QR order requests —
+     * the first place a customer's order appears to staff — and its statuses used to go nowhere at
+     * all, `.subscribe()` being called with no callback. Mirrors
+     * `subscribeRestaurantOrdersRealtime`.
+     */
+    onStatus?: (status: string) => void
   },
   scopeOverride?: OrderRestaurantScope | null,
 ) {
@@ -113,7 +120,9 @@ export function subscribeOrderRequestsRealtime(
       },
     )
 
-    nextChannel.subscribe()
+    nextChannel.subscribe((status: string) => {
+      callbacks.onStatus?.(status)
+    })
 
     if (cancelled) {
       supabase.removeChannel(nextChannel)
