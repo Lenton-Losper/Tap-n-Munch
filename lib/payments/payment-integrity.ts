@@ -219,6 +219,10 @@ export const OWES_MONEY_PAYMENT_STATUSES = [
   // the paragraph above describes: it would drop out of the tab's unpaid total and let
   // can_close report true over genuine debt.
   'amount_mismatch_hold',
+  // #153. Same reasoning, different cause: nothing has been collected and no gateway answer is
+  // obtainable, so the restaurant is still owed. See
+  // VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS.
+  'verification_unavailable_hold',
 ] as const
 
 export function owesMoney(status: unknown): boolean {
@@ -262,8 +266,42 @@ export function owesMoney(status: unknown): boolean {
  */
 export const AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS = 'amount_mismatch_hold'
 
+/**
+ * #153 — the UNVERIFIABLE quarantine. The venue has no Finatic credentials, so the gateway
+ * cannot be asked about this order's reference. Not now, and not on any future run: nothing
+ * external will change, because the missing thing is ours.
+ *
+ * WHY IT EXISTS AT ALL. The stale-POS sweep collapsed three conditions into one branch —
+ * unreachable, errored, and credentials missing — and answered all three with "leave it pending
+ * and retry next run". For the first two that is right; they are transient. For the third it is a
+ * permanent loop: measured on production 2026-08-26, seven orders had been re-probed 93 times
+ * each over four days and none had moved. An order in that loop is not merely unresolved, it is
+ * INVISIBLE — `pending` is also what an order the sweep has not reached yet looks like, so no
+ * query can separate "stuck forever" from "arrived a minute ago".
+ *
+ * WHY NOT CANCEL. Because the gateway cannot be asked, this order's charge status is UNKNOWN, not
+ * absent. Digi Cofee order #19 is the recorded precedent: resolved by hand on 2026-08-05 with a
+ * cancellation_reason that states in terms "this is NOT a confirmation that no charge occurred"
+ * and "if a charge is later found, this order must be treated as recoverable". The terminal-
+ * initiated flow charges through the WiseCashier device, whose merchant is determined by the
+ * physical reader and is not recorded here — so an empty credentials column does not prove the
+ * card was never charged. Auto-cancelling on that is exactly the FNB ChowNow incident.
+ *
+ * WHY NOT CASH-SETTLEABLE, which membership of OWES_MONEY would otherwise imply. Same reason: a
+ * charge may exist. Offering staff a cash button collects the order a second time. Resolution is
+ * a human decision until the charge question is settled — as it was for #19.
+ *
+ * IT IS NOT A DEAD END. `releaseHeldVerificationUnavailable` in auto-cancel-stale-pos-orders.ts
+ * returns a held order to `pending` the moment its venue HAS credentials, and the ordinary sweep
+ * then verifies it normally. So the state lasts exactly as long as its cause. That matters
+ * because the live shape of this defect is a venue onboarded before its credentials are entered:
+ * 8 of 11 venues on production have none today.
+ */
+export const VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS = 'verification_unavailable_hold'
+
 export const HELD_FOR_REVIEW_PAYMENT_STATUSES = [
   AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS,
+  VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS,
 ] as const
 
 export function isHeldForReviewPaymentStatus(status: unknown): boolean {

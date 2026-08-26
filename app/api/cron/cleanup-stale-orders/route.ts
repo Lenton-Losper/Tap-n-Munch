@@ -61,6 +61,27 @@ async function runCleanup(req: Request) {
   if (pos.e04111Ids.length > 0) {
     console.warn('[CLEANUP-STALE-ORDERS] POS skipped with E04111 (gateway has no record yet):', pos.e04111Ids.length, pos.e04111Ids)
   }
+  /**
+   * #153. Reported SEPARATELY from the skip count above, which is the point of the change: an
+   * order held here is one that will NOT be retried, and folding it into "retrying next run"
+   * would restore the exact ambiguity the issue is about. console.error rather than warn -- these
+   * need a human, and the issue's closing observation is that ninety-two identical log lines are
+   * not an alert.
+   */
+  if (pos.heldVerificationUnavailableCount > 0) {
+    console.error(
+      '[CLEANUP-STALE-ORDERS] POS held, UNVERIFIABLE (restaurant has no Finatic credentials -- needs manual resolution, NOT cancelled):',
+      pos.heldVerificationUnavailableCount,
+      pos.heldVerificationUnavailableIds,
+    )
+  }
+  if (pos.releasedVerificationUnavailableCount > 0) {
+    console.log(
+      '[CLEANUP-STALE-ORDERS] POS released from unverifiable hold (credentials now configured, verification resumed):',
+      pos.releasedVerificationUnavailableCount,
+      pos.releasedVerificationUnavailableIds,
+    )
+  }
 
   const hostedFallback = { expiredCount: 0, closedTabCount: 0 }
   let hosted: { expiredCount: number; closedTabCount: number } = hostedFallback
@@ -121,6 +142,12 @@ async function runCleanup(req: Request) {
     posSkippedUncertain: pos.skippedUncertainCount,
     posDeferredRecentlyProbed: pos.deferredRecentlyProbedIds.length,
     posSkippedUncertainIds: pos.skippedUncertainIds,
+    // #153. The terminus of the retry loop, and its exit. Named in the response so a run can be
+    // audited from one curl instead of from worker logs nobody reads.
+    posHeldVerificationUnavailable: pos.heldVerificationUnavailableCount,
+    posHeldVerificationUnavailableIds: pos.heldVerificationUnavailableIds,
+    posReleasedVerificationUnavailable: pos.releasedVerificationUnavailableCount,
+    posReleasedVerificationUnavailableIds: pos.releasedVerificationUnavailableIds,
     hostedExpired: hosted.expiredCount,
     hostedClosedTabs: hosted.closedTabCount,
     reconcile,

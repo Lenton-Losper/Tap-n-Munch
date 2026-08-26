@@ -5,6 +5,7 @@ import {
   GATEWAY_AMOUNT_TOLERANCE_CENTS,
 } from '@/lib/payments/payment-integrity'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import {
   finaticErrorCode,
   isFinaticMerchantOrderInvalidError,
@@ -300,6 +301,19 @@ export async function handleTerminalPaymentFailed(
           // E04111 = "Finatic has no record of this reference yet", which is a very
           // different situation from an unreachable gateway even though both land here.
           isE04111: isFinaticMerchantOrderInvalidError(err),
+          /**
+           * #153 — RECORDED, NOT ACTED ON. This path's behaviour is unchanged and deliberately
+           * so: leaving the order pending is already the safe outcome here, and the
+           * left_pending_finatic_uncertain guard is a ruled decision that this issue does not
+           * reopen.
+           *
+           * What was missing is that the DATABASE could not tell the third condition apart from
+           * the other two. Digi Cofee order #28 carries five of these rows from 2026-08-26, all
+           * of them credentials-missing, and the only way to know that today is to string-match
+           * `metadata.reason` — which is how this was in fact established. One boolean makes the
+           * class countable.
+           */
+          credentialsMissing: isMissingFinaticCredentialsError(err),
           businessOrderNo: merchantOrderNo,
           reference: params.reference || null,
           amount: params.amount ?? null,

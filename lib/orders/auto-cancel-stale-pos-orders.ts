@@ -1,5 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import {
   isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
@@ -9,6 +10,7 @@ import {
   AMOUNT_MISMATCH_HOLD_PAYMENT_STATUS,
   amountsMatch,
   GATEWAY_AMOUNT_TOLERANCE_CENTS,
+  VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS,
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import {
@@ -42,6 +44,23 @@ export const SKIP_REPROBE_INTERVAL_MS = 60 * 60 * 1000
 
 /** audit_logs.action written when an order is probed and no confident answer comes back. */
 export const VERIFICATION_SKIPPED_ACTION = 'payment.verification_skipped'
+
+/**
+ * #153. audit_logs.action written when an order is moved OUT of the retry loop because the venue
+ * has no Finatic credentials, so the question can never be answered.
+ *
+ * A distinct action, not a `payment.verification_skipped` row with a flag. The skip action means
+ * "asked, no confident answer, will ask again"; this one means "will not ask again". Counting
+ * them together is what made 743 rows over 18 orders look like activity instead of a stall.
+ */
+export const VERIFICATION_UNAVAILABLE_HELD_ACTION = 'payment.verification_unavailable_held'
+
+/**
+ * #153. audit_logs.action written when a held order is returned to the sweep because its venue
+ * now HAS credentials. The hold's exit, recorded, so a status that changed by itself is
+ * explicable from the row rather than from this file.
+ */
+export const VERIFICATION_UNAVAILABLE_RELEASED_ACTION = 'payment.verification_unavailable_released'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -80,6 +99,21 @@ export type AutoCancelStalePosOrdersResult = {
    */
   heldForAmountReviewCount: number
   heldForAmountReviewIds: string[]
+  /**
+   * #153. Orders taken OUT of the retry loop because the venue has no Finatic credentials, so no
+   * future run could answer the question either. Not cancelled -- moved to a distinct
+   * payment_status and left for a human. A strict NON-subset of skippedUncertainIds: an order
+   * counted here was NOT skipped, because skipping is what this replaces.
+   */
+  heldVerificationUnavailableCount: number
+  heldVerificationUnavailableIds: string[]
+  /**
+   * #153. Previously held orders returned to `pending` because their venue now HAS credentials,
+   * so the ordinary sweep can verify them again. The hold's exit; see
+   * releaseHeldVerificationUnavailable.
+   */
+  releasedVerificationUnavailableCount: number
+  releasedVerificationUnavailableIds: string[]
 }
 
 /**
@@ -144,6 +178,179 @@ async function holdForAmountReview(
   if (auditError) throw new Error(`holdForAmountReview audit: ${auditError.message}`)
 
   return true
+}
+
+/**
+ * #153 quarantine. The venue has no Finatic credentials, so this order's reference cannot be
+ * queried -- not on this run and not on any future one.
+ *
+ * SHAPED EXACTLY LIKE holdForAmountReview ABOVE, deliberately, because it is the same problem
+ * one cause along: an outcome that leaves the order `pending` is an ABSENCE, indistinguishable
+ * from an order the sweep has not reached yet, and it is re-probed forever. Moving the order to a
+ * distinct payment_status makes it queryable, puts it on the staff surfaces that read
+ * payment_status, and drops it out of the sweep's `payment_status = 'pending'` filter for free --
+ * which is what actually terminates the loop.
+ *
+ * WHAT IT DOES NOT DO IS CANCEL. Nothing here establishes that no charge exists. The device-side
+ * WiseCashier flow charges under the reader's own merchant, which this system never records, so
+ * an empty credentials column is not evidence of an uncharged card. The recorded precedent is
+ * Digi Cofee #19, resolved by hand with a cancellation_reason that says so explicitly.
+ *
+ * A FAILED AUDIT INSERT THROWS, matching holdForAmountReview: a status moved with no record is
+ * the invisible-change defect this exists to end, so it must not pass quietly. The throw lands in
+ * the caller's catch, which skips the order -- the previous behaviour -- rather than losing it.
+ *
+ * The `.eq('payment_status', 'pending')` re-assertion is the same concurrency guard the other two
+ * writers use: a live terminal callback that resolved the order first wins, and this writes
+ * nothing.
+ */
+async function holdForVerificationUnavailable(
+  supabase: Supabase,
+  params: {
+    orderId: string
+    restaurantId: string
+    merchantOrderNo: string
+    orderTotal: number
+    observationCount: number
+  },
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('orders')
+    .update({ payment_status: VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS })
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .eq('payment_status', 'pending')
+    .select('id')
+
+  if (error) throw error
+  if (!data || data.length === 0) return false
+
+  const { error: auditError } = await supabase.from('audit_logs').insert({
+    restaurant_id: params.restaurantId,
+    entity_type: 'order',
+    entity_id: params.orderId,
+    action: VERIFICATION_UNAVAILABLE_HELD_ACTION,
+    metadata: {
+      source: 'auto_cancel_cron',
+      businessOrderNo: params.merchantOrderNo,
+      orderTotal: params.orderTotal,
+      // How many times this order had already been probed to no effect before the loop was
+      // noticed. On production this reached 93 for orders in the sibling E04111 case.
+      priorSkipCount: params.observationCount,
+      chargeStatus: 'unknown',
+      reason:
+        'This restaurant has no Finatic merchant/store credentials, so the gateway cannot be ' +
+        'asked about this order and no future run could answer either. Taken out of the retry ' +
+        'loop. NOT cancelled: an absent credential is not evidence that no card was charged -- ' +
+        'the device-side flow charges under the reader\'s own merchant, which is not recorded ' +
+        'here. Returns to the sweep automatically once credentials are configured.',
+    },
+  })
+  if (auditError) throw new Error(`holdForVerificationUnavailable audit: ${auditError.message}`)
+
+  return true
+}
+
+/**
+ * #153. The hold's EXIT. Returns held orders to `pending` once their venue has credentials, so
+ * the ordinary sweep verifies them on the same run.
+ *
+ * WITHOUT THIS the fix trades a forever-retry for a forever-hold, which is the same defect with a
+ * better name. The live shape of #153 is not a credential CHANGE (that is #152) but a venue
+ * onboarded before its credentials are entered -- 8 of 11 production venues have none today, and
+ * Chownow Nedbank is sitting in that state right now with zero orders. For that venue the hold
+ * must end by itself the day ops fills the fields in, without anyone knowing these rows exist.
+ *
+ * SAFE BY CONSTRUCTION. It only ever moves HOLD -> pending, which is where the order came from,
+ * and the guard `.eq('payment_status', HOLD)` means it can only affect a row this function's
+ * counterpart put there. It writes no money column and makes no decision about a charge; the
+ * decision is handed back to the sweep, which will now genuinely be able to ask.
+ *
+ * BEST-EFFORT, and the caller must treat a throw as "released nothing". A failure here has to
+ * leave the run behaving exactly as it did before this function existed.
+ */
+async function releaseHeldVerificationUnavailable(
+  supabase: Supabase,
+  restaurantId?: string,
+): Promise<string[]> {
+  let query = supabase
+    .from('orders')
+    .select('id, restaurant_id, total, paycloud_merchant_order_no')
+    .eq('payment_status', VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS)
+  if (restaurantId) query = query.eq('restaurant_id', restaurantId)
+
+  const held = await fetchAllRows<StaleOrderCandidate>(query, {
+    label: 'releaseHeldVerificationUnavailable',
+  })
+  if (held.length === 0) return []
+
+  // One credential lookup per RESTAURANT, not per order. The lookup is cached, but a venue with a
+  // long backlog of held orders should not be able to turn a release pass into N reads.
+  const credentialsNow = new Map<string, boolean>()
+  for (const rid of new Set(held.map((o) => String(o.restaurant_id)))) {
+    try {
+      await getRestaurantFinaticCredentials(rid)
+      credentialsNow.set(rid, true)
+    } catch (err) {
+      /**
+       * ANY throw means "do not release", and the two reasons are worth keeping apart in the log
+       * even though they take the same action.
+       *
+       * A MISSING-credentials throw is the ordinary case: the hold's cause still holds, so the
+       * order stays held and nothing is written. Any OTHER throw -- a failed cache/DB read -- is
+       * an UNKNOWN, and unknown must not release either: handing the order back to the sweep on
+       * the strength of a read that failed would let it be cancelled on a Finatic answer that
+       * could not really have been obtained. Staying held is the outcome that costs nothing.
+       */
+      credentialsNow.set(rid, false)
+      if (!isMissingFinaticCredentialsError(err)) {
+        console.error(
+          `[releaseHeldVerificationUnavailable] credential read failed for restaurant ${rid}; leaving its orders held:`,
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
+  }
+
+  const released: string[] = []
+  for (const order of held) {
+    const orderId = String(order.id)
+    const orderRestaurantId = String(order.restaurant_id)
+    if (!credentialsNow.get(orderRestaurantId)) continue
+
+    const { data, error } = await supabase
+      .from('orders')
+      .update({ payment_status: 'pending' })
+      .eq('id', orderId)
+      .eq('restaurant_id', orderRestaurantId)
+      .eq('payment_status', VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS)
+      .select('id')
+    if (error) throw error
+    if (!data || data.length === 0) continue
+
+    const { error: auditError } = await supabase.from('audit_logs').insert({
+      restaurant_id: orderRestaurantId,
+      entity_type: 'order',
+      entity_id: orderId,
+      action: VERIFICATION_UNAVAILABLE_RELEASED_ACTION,
+      metadata: {
+        source: 'auto_cancel_cron',
+        businessOrderNo: order.paycloud_merchant_order_no ?? null,
+        orderTotal: order.total ?? null,
+        reason:
+          'The restaurant now has Finatic credentials, so this order can be verified again. ' +
+          'Returned to payment_status=pending for the ordinary sweep. No money column was ' +
+          'written and no conclusion about a charge was drawn.',
+      },
+    })
+    if (auditError) {
+      throw new Error(`releaseHeldVerificationUnavailable audit: ${auditError.message}`)
+    }
+
+    released.push(orderId)
+  }
+
+  return released
 }
 
 // The cancel action, the basis vocabulary and its notes live in the shared helper now,
@@ -283,6 +490,43 @@ export async function autoCancelStalePosOrders(
     e04111Ids: [],
     heldForAmountReviewCount: 0,
     heldForAmountReviewIds: [],
+    heldVerificationUnavailableCount: 0,
+    heldVerificationUnavailableIds: [],
+    releasedVerificationUnavailableCount: 0,
+    releasedVerificationUnavailableIds: [],
+  }
+
+  /**
+   * #153. The release pass runs FIRST, and before the `candidates.length === 0` early return
+   * below -- both positions are load-bearing.
+   *
+   * Running first means a released order re-enters the candidate query on THIS run rather than
+   * waiting two minutes. Running before the early return means the pass still happens on a run
+   * with no stale candidates at all, which is the ordinary case for a quiet venue and would
+   * otherwise leave its held orders held indefinitely.
+   *
+   * GATED ON verifyWithFinatic. The terminal's inline lazy-cleanup call must stay on the free,
+   * no-network branch, and releasing an order into a sweep that will not verify it is pointless
+   * anyway.
+   *
+   * THE CATCH IS THE POINT. A failure here must leave the run behaving exactly as it did before
+   * this existed: nothing released, everything else unchanged.
+   */
+  if (verifyWithFinatic) {
+    try {
+      const released = await releaseHeldVerificationUnavailable(supabase, restaurantId)
+      result.releasedVerificationUnavailableIds.push(...released)
+      if (released.length > 0) {
+        console.log(
+          `[autoCancelStalePosOrders] released ${released.length} order(s) from verification-unavailable hold (credentials now configured)`,
+        )
+      }
+    } catch (releaseErr) {
+      console.error(
+        '[autoCancelStalePosOrders] verification-unavailable release pass failed; nothing released:',
+        releaseErr,
+      )
+    }
   }
 
   let candidateQuery = supabase
@@ -304,7 +548,7 @@ export async function autoCancelStalePosOrders(
     total: number
     paycloud_merchant_order_no: string | null
   }>(candidateQuery, { label: 'autoCancelStalePosOrders' })
-  if (candidates.length === 0) return result
+  if (candidates.length === 0) return finalise(result)
 
   const rows = candidates as StaleOrderCandidate[]
   // The `payment.attempt_started` lookup that used to live here fed the removed E04111 cancel
@@ -317,8 +561,7 @@ export async function autoCancelStalePosOrders(
   result.cancelledIds.push(...(await cancelByIds(supabase, noAttempt.map((o) => o.id))))
 
   if (!verifyWithFinatic || withAttempt.length === 0) {
-    result.cancelledCount = result.cancelledIds.length
-    return result
+    return finalise(result)
   }
 
   /**
@@ -532,7 +775,61 @@ export async function autoCancelStalePosOrders(
       // 20260728113000_orders_payment_attempt_started are deliberately kept for exactly that.
       // See docs/issue-attempt-started-marker-is-not-evidence.md.
 
-      // Finatic unreachable, errored, or credentials missing -- no confident answer.
+      /**
+       * #153 -- THREE CONDITIONS, NOT ONE. This comment used to read "Finatic unreachable,
+       * errored, or credentials missing -- no confident answer", and answered all three the same
+       * way: leave `pending`, retry next run.
+       *
+       * For unreachable and errored that is right. Both are transient; the next run may well get
+       * an answer, and never defaulting to a cancel on an inconclusive check is the rule the FNB
+       * ChowNow incident wrote.
+       *
+       * For CREDENTIALS MISSING it is a permanent loop. The retry is waiting on something
+       * external to change, and nothing external is involved -- the venue simply has no Finatic
+       * merchant/store pair, so the query cannot be formed, this run or any run. Measured on
+       * production 2026-08-26: the sibling E04111 case had reached 93 re-probes per order across
+       * four days with nothing resolved, and the credentials case's one realised instance (Digi
+       * Cofee #19) sat `pending` for nine days until a human cancelled it by hand.
+       *
+       * So it is discriminated HERE, first, before the skip is written. What follows is unchanged
+       * for the other two.
+       */
+      if (isMissingFinaticCredentialsError(err)) {
+        console.warn(
+          `[autoCancelStalePosOrders] order ${orderId}: restaurant ${orderRestaurantId} has no Finatic ` +
+            'credentials -- the gateway cannot be asked, now or ever. Holding for review instead of ' +
+            'retrying forever. NOT cancelled: charge status is unknown, not absent.',
+        )
+        /**
+         * WE ARE ALREADY INSIDE THE CATCH, so a throw from the hold has nowhere to land and would
+         * abandon the remaining orders in the run. holdForVerificationUnavailable throws
+         * deliberately when its audit insert fails -- a status moved with no record is the defect,
+         * not the fix -- so that throw is caught here and the order FALLS THROUGH to the skip path
+         * below. Degrading to the previous behaviour for one order is the correct failure mode;
+         * losing the rest of the sweep is not.
+         */
+        try {
+          const held = await holdForVerificationUnavailable(supabase, {
+            orderId,
+            restaurantId: orderRestaurantId,
+            merchantOrderNo,
+            orderTotal: Number(order.total),
+            observationCount: priorSkipCounts.get(orderId) ?? 0,
+          })
+          if (held) result.heldVerificationUnavailableIds.push(orderId)
+          // NOT pushed to skippedUncertainIds. A held order was not skipped -- it was taken out of
+          // the loop, which is the whole distinction, and counting it as a skip would keep it in
+          // the number the cron logs as "retrying next run".
+          continue
+        } catch (holdErr) {
+          console.error(
+            `[autoCancelStalePosOrders] could not hold order ${orderId} for verification-unavailable review; falling back to the skip path:`,
+            holdErr,
+          )
+        }
+      }
+
+      // Finatic unreachable or errored -- no confident answer, but a future run may get one.
       // Never default to cancelling here; leave payment_status='pending' and retry next run.
       const e04111 = isFinaticMerchantOrderInvalidError(err)
       console.error(
@@ -589,9 +886,22 @@ export async function autoCancelStalePosOrders(
     }
   }
 
+  return finalise(result)
+}
+
+/**
+ * Every count is derived from its id list, in ONE place, and every `return result` goes through
+ * here. The counts were previously assigned at the last return only, so the two early returns
+ * above reported zero for fields whose id lists were non-empty -- harmless while the only such
+ * field was populated after them, and a live wrong number the moment #153 added a field populated
+ * BEFORE them (the release pass runs first).
+ */
+function finalise(result: AutoCancelStalePosOrdersResult): AutoCancelStalePosOrdersResult {
   result.cancelledCount = result.cancelledIds.length
   result.correctedToPaidCount = result.correctedToPaidIds.length
   result.heldForAmountReviewCount = result.heldForAmountReviewIds.length
   result.skippedUncertainCount = result.skippedUncertainIds.length
+  result.heldVerificationUnavailableCount = result.heldVerificationUnavailableIds.length
+  result.releasedVerificationUnavailableCount = result.releasedVerificationUnavailableIds.length
   return result
 }
