@@ -209,31 +209,41 @@ export const HELD_ORPHAN_NEEDS_A_PERSON =
   'This one cannot be matched automatically and needs to be reconciled by hand.';
 
 /**
- * PROVISIONAL — NOT SIGNED OFF. #344 ruling 3. Two strings, and they are NEW: they did not exist
- * when the owner signed the #346 set, because before ruling 3 acknowledging could not fail.
+ * SIGNED COPY — approved by the owner 2026-08-26. Both strings below. #344 ruling 3.
+ *
+ * They are NEW rather than a revision: they did not exist when the #346 set was signed earlier the
+ * same day, because before ruling 3 acknowledging could not fail. Storing is now what releases a
+ * record, so storing can now not happen, and the operator has to be told.
  *
  * REQUIREMENT — shown on the acknowledge button while the record is being stored. It must say that
- * something is being saved, not merely that the app is busy, because what the operator is waiting
+ * something is being SAVED, not merely that the app is busy, because what the operator is waiting
  * for is the record existing somewhere other than this device.
  *
- * THREE ASCII FULL STOPS, matching UNCONFIRMED_CHECK_IN_PROGRESS. Not U+2026.
+ * THREE ASCII FULL STOPS, matching UNCONFIRMED_CHECK_IN_PROGRESS. Not U+2026. If a formatter
+ * rewrites it, fix the formatter.
  */
 export const HELD_ORPHAN_SAVING = 'Saving...';
 
 /**
- * PROVISIONAL — NOT SIGNED OFF. #344 ruling 3.
+ * SIGNED COPY — approved by the owner 2026-08-26. #344 ruling 3.
  *
  * REQUIREMENT — shown when the store did NOT succeed, so the record was kept. This is the string
  * that stops the button being a silent no-op, and it has three things to convey: nothing was
  * deleted, the payment is still safe on this device, and trying again later is the action.
  *
- * IT MUST NOT SUGGEST THE PAYMENT ITSELF FAILED. Nothing about the card transaction changed; a save
- * did not go through. Conflating the two is the same family of defect as #327's
- * UNCONFIRMED_CHECK_FAILED, which is why this string names the SAVING as what did not happen.
+ * OWNER DECISION 1, 2026-08-26 — IT NAMES THE SAVING AS WHAT FAILED, NOT THE PAYMENT. Nothing about
+ * the card transaction changed; a save did not go through. Conflating those two is the same family
+ * of defect as #327's UNCONFIRMED_CHECK_FAILED, which says "could not reach the payment provider"
+ * rather than "could not check" for exactly this reason. Do not reword this string in a way that
+ * makes the PAYMENT the subject of the failure.
  *
- * IT MUST NOT OFFER A WAY TO CLEAR THE RECORD ANYWAY. Ruling 1 is that a durable write is the
- * acknowledgement; an override would be the discard this whole issue exists to remove, wearing a
- * confirmation dialog.
+ * OWNER DECISION 2, 2026-08-26 — IT OFFERS NO OVERRIDE, AND NOBODY MAY ADD ONE. In the owner's
+ * words: *an override is the discard we removed wearing a confirmation dialog.* Ruling 1 is that a
+ * durable write IS the acknowledgement; a "clear anyway" button would let an operator delete the
+ * only remaining record of a card transaction on the strength of having read a message, which is
+ * precisely the behaviour #344 exists to end. `heldOrphanCopy.test.ts` pins this — the string may
+ * not acquire an escape hatch, and no held-orphan constant may read like a second, destructive
+ * action.
  */
 export const HELD_ORPHAN_NOT_SAVED =
   'This payment could not be saved yet, so it has been kept here. Nothing was lost. Try again when the terminal is back online.';
