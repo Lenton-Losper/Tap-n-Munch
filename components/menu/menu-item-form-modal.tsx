@@ -1056,6 +1056,7 @@ function MenuItemFormContent({
               ) : null}
               <MenuItemInventoryTab
                 trackInventory={trackInventory}
+                menuItemName={itemForm.name}
                 rows={ingredientRows}
                 onRowsChange={setIngredientRows}
                 stockItems={stockItems}

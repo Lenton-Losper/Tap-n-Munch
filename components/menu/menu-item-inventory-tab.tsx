@@ -9,6 +9,31 @@ import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-
 import { SearchableStockItemSelectField } from '@/components/stock/searchable-stock-item-select-field'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption, StockItemOptionWithLevel } from '@/lib/stock/queries'
+import {
+  findRecipeQuantityWarnings,
+  type RecipeQuantityWarningCode,
+} from '@/lib/recipes/quantity-sanity'
+
+/**
+ * PLACEHOLDER COPY — not for release. Every string below needs writing by whoever owns merchant
+ * wording; what each one has to convey is stated next to it.
+ *
+ * The field label must say that the number is per single unit sold. The warnings must be
+ * readable as questions, not accusations: each one is a heuristic, the merchant may well be
+ * right, and none of them stops a save.
+ */
+const QUANTITY_FIELD_LABEL_PLACEHOLDER = 'Quantity [PLACEHOLDER: say "per one sold"]'
+
+const QUANTITY_WARNING_PLACEHOLDER: Record<RecipeQuantityWarningCode, string> = {
+  // Convey: this is exactly what you have in stock. Did you mean how much ONE sale uses?
+  // Selling one would take the whole lot.
+  equals_on_hand: '[PLACEHOLDER: quantity equals the amount on hand — per-sale amount intended?]',
+  // Convey: this is more than you have, so the first sale takes the balance below zero.
+  exceeds_on_hand: '[PLACEHOLDER: quantity is more than the amount on hand — first sale goes negative]',
+  // Convey: this ingredient is the same thing as the item being sold, so one sale should
+  // normally use one — unless the stock item is counted in smaller pieces.
+  one_to_one_not_single: '[PLACEHOLDER: ingredient is the item itself — expected 1 per sale?]',
+}
 
 export type MenuItemIngredientRow = {
   key: string
@@ -35,6 +60,7 @@ export function toIngredientRowsFromLoaded(
 
 export function MenuItemInventoryTab({
   trackInventory,
+  menuItemName = '',
   rows,
   onRowsChange,
   stockItems,
@@ -44,6 +70,8 @@ export function MenuItemInventoryTab({
   disabled = false,
 }: {
   trackInventory: boolean
+  /** Used only to spot a recipe whose single ingredient IS the item being sold. */
+  menuItemName?: string
   rows: MenuItemIngredientRow[]
   onRowsChange: (rows: MenuItemIngredientRow[]) => void
   stockItems: StockItemOptionWithLevel[]
@@ -74,6 +102,30 @@ export function MenuItemInventoryTab({
       unitId: stockItem?.unit_id ?? '',
     })
   }
+
+  // Advisory only — nothing here blocks a save. See lib/recipes/quantity-sanity.ts for what the
+  // signals are and the production evidence behind them.
+  //
+  // Only the two balance-derived signals can fire on this surface, and that is by construction:
+  // a stock item present in the loaded list always has a balance, and one absent from it has
+  // neither a balance nor a name. The names are still passed so that the call stays correct if
+  // that ever stops being true, but blanking either of them today fails no test — which was
+  // verified by mutation rather than assumed. The name-based fallback earns its keep on the
+  // standalone recipe editor, which knows names and does not load balances.
+  const quantityWarningByStockItem = useMemo(() => {
+    const found = findRecipeQuantityWarnings(
+      menuItemName,
+      rows.map((row) => ({
+        stockItemId: row.stockItemId,
+        quantity: row.quantity,
+        stockItemName: stockItemById.get(row.stockItemId)?.name ?? null,
+        // `undefined` rather than 0 when the item is not in the loaded list, so an unknown
+        // balance suppresses the balance signals instead of reading as an empty shelf.
+        currentStock: stockItemById.get(row.stockItemId)?.currentStock,
+      })),
+    )
+    return new Map(found.map((warning) => [warning.stockItemId, warning]))
+  }, [menuItemName, rows, stockItemById])
 
   const completeness = useMemo(() => {
     if (!trackInventory) return null
@@ -142,7 +194,12 @@ export function MenuItemInventoryTab({
                   label="Ingredient"
                 />
                 <div className="space-y-1.5">
-                  <Label htmlFor={`ingredient-qty-${row.key}`}>Quantity</Label>
+                  {/* PLACEHOLDER LABEL — must convey that this number is the amount consumed by
+                      selling ONE of this menu item, not how many are in stock. The bare word
+                      "Quantity" is what let a delivery count be typed here nine times. */}
+                  <Label htmlFor={`ingredient-qty-${row.key}`}>
+                    {QUANTITY_FIELD_LABEL_PLACEHOLDER}
+                  </Label>
                   <Input
                     id={`ingredient-qty-${row.key}`}
                     type="number"
@@ -152,7 +209,24 @@ export function MenuItemInventoryTab({
                     onChange={(event) => updateRow(row.key, { quantity: event.target.value })}
                     className="border-[#E9E9E7] bg-white"
                     disabled={disabled}
+                    aria-describedby={
+                      quantityWarningByStockItem.has(row.stockItemId)
+                        ? `ingredient-qty-warning-${row.key}`
+                        : undefined
+                    }
                   />
+                  {quantityWarningByStockItem.has(row.stockItemId) ? (
+                    <p
+                      id={`ingredient-qty-warning-${row.key}`}
+                      role="status"
+                      className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800"
+                    >
+                      {/* PLACEHOLDER — see QUANTITY_WARNING_PLACEHOLDER. */}
+                      {QUANTITY_WARNING_PLACEHOLDER[
+                        quantityWarningByStockItem.get(row.stockItemId)!.code
+                      ]}
+                    </p>
+                  ) : null}
                 </div>
                 <MeasurementUnitSelectField
                   measurementUnits={measurementUnits}
