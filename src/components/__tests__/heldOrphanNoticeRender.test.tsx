@@ -16,10 +16,14 @@
  * one believing it duplicated the other.
  *
  * WHY THE FAILURE BRANCH SPECIFICALLY. It is what stops the button being a silent no-op, which is
- * the property ruling 3 exists to create — press "I have checked this payment", nothing is stored,
- * the record stays, and without this line the only reading available to the operator is that the
+ * the property ruling 3 exists to create — the operator sends the record for checking, nothing is
+ * stored, the record stays, and without this line the only reading available to them is that the
  * terminal is broken. It also fires ONLY when a store fails, so ordinary use on a device will not
  * surface a regression either.
+ *
+ * The label is deliberately NOT quoted in this file. Every assertion locates the button by the
+ * IMPORTED constant, which is why this suite survived HELD_ORPHAN_ACKNOWLEDGE being re-signed on
+ * 2026-08-26 without one line changing. Quoting copy in prose is how a comment goes stale.
  *
  * NO NETWORK, ON PURPOSE. The store function is injected by mocking lib/api, the same shape
  * heldOrphanStoreAndRelease.test.ts uses for its deps. lib/heldOrphanStore is deliberately NOT

@@ -118,7 +118,11 @@ describe('HELD_ORPHAN_NOT_SAVED — signed 2026-08-26', () => {
  */
 describe('there is exactly one action a held record offers', () => {
   it('the acknowledge is the only held-orphan action label', () => {
-    expect(HELD_ORPHAN_ACKNOWLEDGE).toBe('I have checked this payment');
+    // SIGNED 2026-08-26, REPLACING 'I have checked this payment'. The old label asserted what the
+    // OPERATOR DID while the button attempts a server write that can fail, so HELD_ORPHAN_NOT_SAVED
+    // had to contradict a claim they had already made. Naming the action makes "could not be saved"
+    // read as that action failing. The forbidden list below is what stops it coming back.
+    expect(HELD_ORPHAN_ACKNOWLEDGE).toBe('Send for checking');
   });
 
   it('no held-orphan constant reads like a second, destructive action', () => {
@@ -132,7 +136,26 @@ describe('there is exactly one action a held record offers', () => {
     expect(heldStrings.length).toBeGreaterThanOrEqual(6);
 
     for (const [name, text] of heldStrings) {
-      for (const phrase of ['clear anyway', 'delete', 'discard', 'remove anyway', 'override']) {
+      for (const phrase of [
+        'clear anyway',
+        'delete',
+        'discard',
+        'remove anyway',
+        'override',
+        /*
+         * ADDED 2026-08-26 WITH THE SIGNED ACKNOWLEDGE. Per the owner, a label reading "I have
+         * checked", "dismiss" or "clear" is the discard we removed wearing a different word: each
+         * one puts the operator's having READ something in the place of the durable write that
+         * ruling 1 makes the only acknowledgement.
+         *
+         * 'clear' subsumes 'clear anyway' above. The narrower phrase is kept deliberately rather
+         * than tidied away -- it is the one the owner named in decision 2, and a failure quoting
+         * it points at that decision directly.
+         */
+        'i have checked',
+        'dismiss',
+        'clear',
+      ]) {
         expect([name, text.toLowerCase().includes(phrase)]).toEqual([name, false]);
       }
     }

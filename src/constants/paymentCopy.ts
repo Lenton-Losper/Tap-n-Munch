@@ -158,9 +158,13 @@ export const ALREADY_SETTLED_MESSAGE =
 // ─── #344: a recovered payment that was NOT applied to this order ─────────
 
 /**
- * PROVISIONAL — NOT SIGNED OFF. #344. Everything below this line is a placeholder written to carry
- * the behaviour so the APK can be built and tested; the owner signs the wording, as they did for
- * the #327/#326 set above on 2026-08-25.
+ * SIGNED COPY — approved by the owner 2026-08-26. #344. All five strings from here down to the
+ * next signed banner: TITLE, BODY, BODY_UNKNOWN_ORDER, ACKNOWLEDGE, NEEDS_A_PERSON.
+ *
+ * This block was PROVISIONAL until 2026-08-26 and said so. Four of the five were signed at their
+ * existing values, unchanged byte-for-byte; ACKNOWLEDGE was REPLACED — see the reasoning on that
+ * constant. They are not to be edited without the owner, on the same terms as the #327/#326 set
+ * signed on 2026-08-25.
  *
  * REQUIREMENT — the heading for a held payment. It must say a card payment was FOUND, and that it
  * belongs to a DIFFERENT order than the one on screen. It must not read as an error in the payment
@@ -186,25 +190,28 @@ export const HELD_ORPHAN_BODY_UNKNOWN_ORDER =
   'A card payment was recovered but the order it belongs to could not be identified. It has not been applied here. It has been kept so it can be checked.';
 
 /**
- * REQUIREMENT — the acknowledge action. It disposes of the record of a real card transaction, so
- * the label must convey that the operator has dealt with it, not merely that they have read this
- * message. "OK" or "Dismiss" would be wrong for that reason, and that much is unchanged.
+ * REQUIREMENT — the acknowledge action. It must name the ACTION the button performs, in the
+ * operator's terms, and must not read as a claim the operator is making. "OK" or "Dismiss" remain
+ * wrong: this disposes of the record of a real card transaction, not a message to be read past.
  *
- * WHAT PRESSING IT DOES CHANGED WITH RULING 3, AND THIS COMMENT DESCRIBED THE OLD BEHAVIOUR. It
- * read "Pressing it DELETES the only remaining record of that transaction", and "WHAT
- * ACKNOWLEDGING SHOULD REQUIRE IS AN OPEN QUESTION for the owner … Today it simply clears".
- * Both are now false. Ruling 3 (2026-08-26) answered the question — a durable write IS the
- * acknowledgement — and storeAndReleaseHeldOrphan (lib/heldOrphanStore.ts:172-215) stores FIRST,
- * removing the local record only after the server has it (:203-209). So this no longer deletes the
- * last copy of anything, and a store that fails leaves the record untouched and on screen.
+ * REPLACED 2026-08-26, AND THE OLD LABEL IS NOT TO BE "RESTORED" AS CLEARER. It read "I have
+ * checked this payment", which asserted what the OPERATOR DID while the button attempts a SERVER
+ * WRITE THAT CAN FAIL. When that write fails, HELD_ORPHAN_NOT_SAVED then had to contradict a claim
+ * the operator had, in their own reading, already made — the message landed as the terminal
+ * disputing them rather than as one action not going through. In the owner's words: naming the
+ * action makes "could not be saved" read as THAT ACTION failing.
  *
- * THE STRING ITSELF IS NOW UNDER QUESTION AND IS NOT TO BE EDITED HERE. The label asserts
- * something the OPERATOR did, while the action performs a SERVER WRITE that can fail — which is
- * why HELD_ORPHAN_NOT_SAVED has to explain the gap afterwards. Raised with the owner 2026-08-26;
- * the wording is their call. This constant is one of the FIVE still provisional under the banner
- * at :161, which governs every string from there down to the signed banner at :212.
+ * WHAT PRESSING IT DOES, so this comment cannot drift from the code again. Ruling 3 (2026-08-26):
+ * a durable write IS the acknowledgement. storeAndReleaseHeldOrphan (lib/heldOrphanStore.ts:172-215)
+ * stores FIRST and removes the local record only after the server has it (:203-209). It therefore
+ * no longer deletes the last copy of anything, and a store that fails leaves the record untouched
+ * and on screen — which is the whole reason the label had to stop claiming the checking was done.
+ *
+ * PINNED AGAINST THE OLD WORDING. heldOrphanCopy.test.ts asserts this exact value AND forbids
+ * "I have checked", "dismiss" and "clear" across every held-orphan string: per the owner, any of
+ * those is the discard we removed wearing a different word.
  */
-export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';
+export const HELD_ORPHAN_ACKNOWLEDGE = 'Send for checking';
 
 /**
  * REQUIREMENT — #344, the case-3 line, shown when the recovered payment names NO order. Additional

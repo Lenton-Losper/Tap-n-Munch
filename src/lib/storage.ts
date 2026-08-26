@@ -253,7 +253,7 @@ export function heldOrphanIdentity(row: HeldOrphanPayment): string {
 }
 
 /**
- * ACKNOWLEDGE EXACTLY ONE HELD RECORD. This is an OPERATOR action — "I have checked this" — never
+ * ACKNOWLEDGE EXACTLY ONE HELD RECORD. This is an OPERATOR action — "Send for checking" — never
  * something the app decides on its own, because the record is the only trace on this device that
  * the transaction ever existed.
  *
@@ -261,7 +261,8 @@ export function heldOrphanIdentity(row: HeldOrphanPayment): string {
  * called removeItem on the key, so an operator who had genuinely checked one payment destroyed
  * every held record — including a case-3 one, which is precisely the record that never comes back
  * on its own because no order id exists to report it against. A card transaction deleted by a
- * button captioned "I have checked this payment".
+ * button then captioned "I have checked this payment" — the label the owner replaced on
+ * 2026-08-26, quoted here as the historical record of the defect rather than as current copy.
  *
  * Returns what it did rather than void, so the caller can tell "removed" from "it was already
  * gone" instead of assuming.
