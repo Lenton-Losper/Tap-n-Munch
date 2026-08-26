@@ -912,7 +912,7 @@ function MenuItemFormContent({
                  * system can work them out, and it must NOT read as a save failure.
                  */
                 <p className="text-xs text-amber-600" data-testid="variant-group-unconvertible">
-                  {`PLACEHOLDER (#229): not shown to customers — ${variantGroupWrite.unconvertible.join(', ')}`}
+                  {`${variantGroupWrite.unconvertible.join(', ')}: this group is saved but customers aren't seeing it. its options are priced as an amount to add, not the full price. type the full price for each option to show it. Nothing is lost and nothing changes for the customer until you do.`}
                 </p>
               )}
               {itemForm.variantGroups.length === 0 ? (

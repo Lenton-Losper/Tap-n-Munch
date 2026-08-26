@@ -1,7 +1,7 @@
 /**
- * THE FEED-CONNECTION INDICATOR'S LABELS. #350. **NOT SIGNED OFF — PLACEHOLDERS.**
+ * THE FEED-CONNECTION INDICATOR'S LABELS. #350. **SIGNED OFF BY THE OWNER 2026-08-26.**
  *
- * Every string below is a `PENDING COPY - ...` marker awaiting the owner's wording. They are here,
+ * The strings below are the approved wording. They are here,
  * in a module of their own rather than inline in `components/orders-dashboard.tsx`, for two
  * reasons:
  *
@@ -15,7 +15,7 @@
  *     the same file — so it lives here, still marked, still greppable, and pinned by
  *     `__tests__/350-feed-connection-copy-pending.test.ts` until a human replaces it.
  *
- * WHAT EACH STRING HAS TO CONVEY (this is the brief for whoever writes them, not the wording):
+ * WHAT EACH STRING HAS TO CONVEY — kept because it is the rule any REPLACEMENT must satisfy:
  *
  *  - `live`        — a STATEMENT OF FACT: orders are arriving on this screen as they happen.
  *                    No instruction. Nothing for staff to do.
@@ -33,7 +33,13 @@
  * to read as a standalone statement, not as a fragment that only makes sense beside an icon.
  */
 export const FEED_CONNECTION_COPY = {
-  live: 'PENDING COPY - feed live',
-  reconnecting: 'PENDING COPY - feed reconnecting',
-  offline: 'PENDING COPY - feed offline, list refreshing slowly',
+  live: 'orders are arriving here as they happen',
+  reconnecting: 'reconnecting - the list may be a moment behind',
+  /**
+   * The only imperative in the set. Two state facts -- not receiving new orders, the list is slow
+   * -- then the consequence staff must understand (orders may be MISSING, not merely late), then
+   * one instruction. Do not add a second imperative here; the sound indicator's rule applies.
+   */
+  offline:
+    'not receiving new orders. this list is refreshing slowly and orders may be missing. check the connection or reload.',
 } as const
