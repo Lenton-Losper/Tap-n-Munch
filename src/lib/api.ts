@@ -22,6 +22,10 @@ import {
   TableWithTab,
 } from '../types';
 import {mapRowToOrder} from './orderMapper';
+import type {
+  HeldOrphanStoreRequest,
+  HeldOrphanStoreResponse,
+} from './heldOrphanStore';
 import {Sdk6ReceiptLine} from './wiseSdk6Printer';
 import {
   isPinLockedError as pinLockedFromFields,
@@ -1163,6 +1167,56 @@ export async function verifyTerminalPayment(
   }
 
   return response.json() as Promise<VerifyTerminalPaymentResult>;
+}
+
+/**
+ * #344 RULING 3 — store a held orphan payment durably on the server. The write IS the
+ * acknowledgement; the release rule lives in `heldOrphanStore.ts` and reads what this returns.
+ *
+ * RETURNS THE STATUS INSTEAD OF THROWING ON A NON-2xx, WHICH IS THE POINT. Ruling 3 makes 409 an
+ * ACKNOWLEDGEMENT — the record is already stored — so a 409 has to reach the classifier as a status
+ * rather than arrive as an exception indistinguishable from a 500. Every other terminal call in this
+ * file throws on !ok because for them a non-2xx is uniformly a failure; here it is not.
+ *
+ * 401/403 STILL THROW, via throwIfUnauthorized, because an expired session must drive the same
+ * re-auth as everywhere else. The caller treats the throw as 'not stored', which is correct: we
+ * never reached a server that would write anything.
+ *
+ * THE RESPONSE IS NARROWED TO TWO FIELDS ON PURPOSE (ruling 4). Whatever else the server sends is
+ * dropped here rather than passed inward, so a reconciliation field cannot quietly acquire a reader.
+ */
+export async function storeHeldOrphanPayment(
+  body: HeldOrphanStoreRequest,
+  token: string,
+): Promise<{status: number; body: HeldOrphanStoreResponse | null}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/held-payments`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  let parsed: HeldOrphanStoreResponse | null = null;
+  try {
+    const raw = (await response.json()) as Partial<HeldOrphanStoreResponse>;
+    // Narrowed field by field. `stored` is only true when the server said the boolean true, never
+    // when it sent a truthy string, because this is the value that deletes a card transaction.
+    parsed = {
+      stored: raw?.stored === true,
+      receiptId: typeof raw?.receiptId === 'string' ? raw.receiptId : '',
+    };
+  } catch {
+    // A 409 may legitimately carry no body, and an error page is not JSON. Either way the status
+    // is what the classifier reads.
+    parsed = null;
+  }
+
+  return {status: response.status, body: parsed};
 }
 
 // ─── Authorization / Payment events ───────────────────────────────────────

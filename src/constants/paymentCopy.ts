@@ -208,11 +208,55 @@ export const HELD_ORPHAN_ACKNOWLEDGE = 'I have checked this payment';
 export const HELD_ORPHAN_NEEDS_A_PERSON =
   'This one cannot be matched automatically and needs to be reconciled by hand.';
 
+/**
+ * PROVISIONAL — NOT SIGNED OFF. #344 ruling 3. Two strings, and they are NEW: they did not exist
+ * when the owner signed the #346 set, because before ruling 3 acknowledging could not fail.
+ *
+ * REQUIREMENT — shown on the acknowledge button while the record is being stored. It must say that
+ * something is being saved, not merely that the app is busy, because what the operator is waiting
+ * for is the record existing somewhere other than this device.
+ *
+ * THREE ASCII FULL STOPS, matching UNCONFIRMED_CHECK_IN_PROGRESS. Not U+2026.
+ */
+export const HELD_ORPHAN_SAVING = 'Saving...';
+
+/**
+ * PROVISIONAL — NOT SIGNED OFF. #344 ruling 3.
+ *
+ * REQUIREMENT — shown when the store did NOT succeed, so the record was kept. This is the string
+ * that stops the button being a silent no-op, and it has three things to convey: nothing was
+ * deleted, the payment is still safe on this device, and trying again later is the action.
+ *
+ * IT MUST NOT SUGGEST THE PAYMENT ITSELF FAILED. Nothing about the card transaction changed; a save
+ * did not go through. Conflating the two is the same family of defect as #327's
+ * UNCONFIRMED_CHECK_FAILED, which is why this string names the SAVING as what did not happen.
+ *
+ * IT MUST NOT OFFER A WAY TO CLEAR THE RECORD ANYWAY. Ruling 1 is that a durable write is the
+ * acknowledgement; an override would be the discard this whole issue exists to remove, wearing a
+ * confirmation dialog.
+ */
+export const HELD_ORPHAN_NOT_SAVED =
+  'This payment could not be saved yet, so it has been kept here. Nothing was lost. Try again when the terminal is back online.';
+
 // ─── #346: the 42 seconds — what the operator sees while a card payment runs ───
 
 /**
- * PROVISIONAL — NOT SIGNED OFF. Everything below carries the behaviour so the APK can be built and
- * tested; the owner signs the wording.
+ * SIGNED COPY — approved by the owner 2026-08-26. All five strings below.
+ *
+ * TWO LOAD-BEARING HALVES ARE PINNED BY THE OWNER AND ARE NOT EDITORIAL. "The card may
+ * already/still have been charged" and "Do not ring this sale up again" appear in both
+ * PAYMENT_OVER_CEILING_BODY and PAYMENT_TIMED_OUT_MESSAGE. In the owner's words: *anyone editing
+ * them out is reintroducing the defect.* They are the same rule that governs #327's
+ * UNCONFIRMED_NOT_REPORTED and UNCONFIRMED_INTERRUPTED. Do not shorten either string by removing
+ * either half.
+ *
+ * OWNER DECISION, 2026-08-26 — NO EM DASH ON A PAYMENT SCREEN. The signed PAYMENT_TIMED_OUT_MESSAGE
+ * splits what was one em-dash clause into two sentences, and the elapsed pill uses a plain ASCII
+ * hyphen. The reasoning, recorded so it is not undone by a formatter or a tidy-up: *an em dash on a
+ * payment screen is exactly the concatenation shape #326 was.* #326's defect was
+ * `${baseError} — could not notify the system.` — two independent messages glued with a floating
+ * dash because no single place owned the sentence. Every string here is one complete message, and
+ * no dash joins two of them. If a tool rewrites the hyphen to '—' or '–', fix the tool.
  *
  * WHY THIS BLOCK EXISTS, because it must not be softened later by someone who does not know.
  * Measured on production 2026-08-25: at Mingle, 61% of card sales that did not settle were rung up
@@ -230,9 +274,11 @@ export const HELD_ORPHAN_NEEDS_A_PERSON =
  * REQUIREMENT — the pill BELOW the ceiling. Must show elapsed seconds from the first second, and
  * must state the ceiling, because a bounded wait is a different experience from an open one. Must
  * stay calm: at 12 seconds nothing is wrong.
+ *
+ * ASCII HYPHEN, NOT AN EM DASH. Signed that way — see the owner decision at the top of this block.
  */
 export const paymentProcessingElapsed = (elapsedS: number, ceilingS: number): string =>
-  `Processing payment — ${elapsedS}s. Usually done within ${ceilingS}s.`;
+  `Processing payment - ${elapsedS}s. Usually done within ${ceilingS}s.`;
 
 /**
  * REQUIREMENT — the heading once the ceiling passes. Must NOT say the payment failed: it may still
@@ -261,6 +307,11 @@ export const PAYMENT_CHECK_STATUS_LABEL = 'Check payment status';
  * IT MUST NOT READ AS A FAILURE. Nothing failed; we stopped waiting. The card may have been
  * charged, and the payment is still recorded and reported. Same rule as above: the "may have been
  * charged" half is the point and must survive any edit.
+ *
+ * FOUR SENTENCES, NOT THREE WITH A DASH. The draft read "...may still have been charged — this
+ * payment has been kept and will be checked." The owner split it: an em dash joining two
+ * independent clauses on a payment screen is #326's concatenation shape, and this is the one
+ * message on the terminal where a reader skimming past a dash loses the instruction.
  */
 export const PAYMENT_TIMED_OUT_MESSAGE =
-  'The card machine did not report back in time. The card may still have been charged — this payment has been kept and will be checked. Do not ring this sale up again.';
+  'The card machine did not report back in time. The card may still have been charged. This payment has been kept and will be checked. Do not ring this sale up again.';

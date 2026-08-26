@@ -13,6 +13,11 @@ import {
 } from '../paymentReportOutcome';
 import {
   ALREADY_SETTLED_MESSAGE,
+  PAYMENT_CHECK_STATUS_LABEL,
+  PAYMENT_OVER_CEILING_BODY,
+  PAYMENT_OVER_CEILING_TITLE,
+  PAYMENT_TIMED_OUT_MESSAGE,
+  paymentProcessingElapsed,
   SETTLE_ORDER_ALREADY_PAID,
   UNCONFIRMED_CHECK_ACTION,
   UNCONFIRMED_CHECK_FAILED,
@@ -228,6 +233,11 @@ describe('payment copy — every message stands alone', () => {
     UNCONFIRMED_SETTLE_INSTRUCTION,
     SETTLE_ORDER_ALREADY_PAID,
     ALREADY_SETTLED_MESSAGE,
+    // Signed 2026-08-26. They join this set on the day they were signed, deliberately: the
+    // stand-alone property is what "one complete message" MEANS, and copy that is signed but not
+    // pinned is copy a formatter can quietly rewrite.
+    PAYMENT_OVER_CEILING_BODY,
+    PAYMENT_TIMED_OUT_MESSAGE,
   };
 
   it.each(Object.entries(messages))(
@@ -249,4 +259,109 @@ describe('payment copy — every message stands alone', () => {
       expect(text).not.toMatch(/\.\s*—/);
     },
   );
+});
+
+/**
+ * #346 — THE SIGNED SET, AND THE TWO HALVES THE OWNER PINNED.
+ *
+ * These are not style assertions. On 2026-08-26 the owner signed the five strings and said of two
+ * clauses: *anyone editing them out is reintroducing the defect.* A comment saying so is advice; a
+ * test saying so is a gate. Both clauses exist because staff who are told nothing re-ring the sale —
+ * 61% of Mingle's non-settling card sales within five minutes, median gap 42s — and a re-ring is a
+ * second charge on a card that may already have been debited.
+ *
+ * Kept as exact substrings rather than whole-string equality on purpose: the sentences AROUND them
+ * may be reworded with the owner, and a test that forbids all rewording would be ignored the first
+ * time it was in the way. What may not happen is these two disappearing.
+ */
+describe('#346 signed copy — the load-bearing halves survive', () => {
+  const carriesBothHalves = {
+    PAYMENT_OVER_CEILING_BODY,
+    PAYMENT_TIMED_OUT_MESSAGE,
+  };
+
+  it.each(Object.entries(carriesBothHalves))(
+    '%s still warns the card may have been charged',
+    (_name, text) => {
+      // "may already have been charged" / "may still have been charged" — the shared stem is what
+      // is pinned, so either adverb passes and dropping the clause does not.
+      expect(text).toMatch(/may (already |still )?have been charged/);
+    },
+  );
+
+  it.each(Object.entries(carriesBothHalves))(
+    '%s still says not to ring the sale up again',
+    (_name, text) => {
+      expect(text).toContain('Do not ring this sale up again.');
+    },
+  );
+
+  it('the over-ceiling heading does not claim the payment failed', () => {
+    // 1.8% of payments that succeed arrive after the 45s ceiling. A heading that says "failed"
+    // would be wrong about one sale in fifty-five, and wrong in the direction that produces a
+    // second charge.
+    expect(PAYMENT_OVER_CEILING_TITLE).toBe(
+      'This payment is taking longer than usual',
+    );
+    expect(PAYMENT_OVER_CEILING_TITLE.toLowerCase()).not.toContain('fail');
+    expect(PAYMENT_OVER_CEILING_TITLE.toLowerCase()).not.toContain('declin');
+  });
+
+  it('the timed-out message does not read as a failure either', () => {
+    expect(PAYMENT_TIMED_OUT_MESSAGE.toLowerCase()).not.toContain('fail');
+    expect(PAYMENT_TIMED_OUT_MESSAGE.toLowerCase()).not.toContain('declin');
+  });
+
+  it('no signed #346 string offers to cancel', () => {
+    // We cannot cancel a card at the reader from here. Offering an action we cannot perform is
+    // worse than offering none, and this is the one screen where an operator would believe it.
+    for (const text of [
+      PAYMENT_OVER_CEILING_TITLE,
+      PAYMENT_OVER_CEILING_BODY,
+      PAYMENT_CHECK_STATUS_LABEL,
+      PAYMENT_TIMED_OUT_MESSAGE,
+      paymentProcessingElapsed(12, 45),
+    ]) {
+      expect(text.toLowerCase()).not.toContain('cancel');
+    }
+  });
+});
+
+/**
+ * OWNER DECISION 2026-08-26 — NO EM DASH ON A PAYMENT SCREEN, in the owner's words *exactly the
+ * concatenation shape #326 was.*
+ *
+ * The existing 'carries no dangling join' property forbids a dash immediately after a full stop.
+ * This one is stricter and applies to the #346 set: no U+2014 or U+2013 ANYWHERE. The draft
+ * PAYMENT_TIMED_OUT_MESSAGE held one mid-sentence, which the earlier property would have passed,
+ * and the elapsed pill held one that no test covered at all.
+ */
+describe('#346 signed copy — no em dash anywhere', () => {
+  const signed = {
+    PAYMENT_OVER_CEILING_TITLE,
+    PAYMENT_OVER_CEILING_BODY,
+    PAYMENT_CHECK_STATUS_LABEL,
+    PAYMENT_TIMED_OUT_MESSAGE,
+    paymentProcessingElapsed: paymentProcessingElapsed(12, 45),
+  };
+
+  it.each(Object.entries(signed))('%s holds no em or en dash', (_name, text) => {
+    expect(text).not.toContain('—');
+    expect(text).not.toContain('–');
+  });
+
+  it('the elapsed pill separates label from value with an ASCII hyphen', () => {
+    // Signed as typed by the owner: "Processing payment - 12s. Usually done within 45s."
+    expect(paymentProcessingElapsed(12, 45)).toBe(
+      'Processing payment - 12s. Usually done within 45s.',
+    );
+  });
+
+  it('the elapsed pill states BOTH the elapsed time and the ceiling', () => {
+    // A bounded wait is a different experience from an open one, and the ceiling is the half that
+    // bounds it. An elapsed counter alone would still be a screen that never says when to worry.
+    const text = paymentProcessingElapsed(7, 45);
+    expect(text).toContain('7s');
+    expect(text).toContain('45s');
+  });
 });

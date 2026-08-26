@@ -8,6 +8,8 @@ import {
   HELD_ORPHAN_BODY,
   HELD_ORPHAN_BODY_UNKNOWN_ORDER,
   HELD_ORPHAN_NEEDS_A_PERSON,
+  HELD_ORPHAN_NOT_SAVED,
+  HELD_ORPHAN_SAVING,
   HELD_ORPHAN_TITLE,
 } from '../constants/paymentCopy';
 import {
@@ -19,7 +21,8 @@ import {
   type HeldOrphanPayment,
 } from '../lib/storage';
 import {runOrphanReportPass} from '../lib/orphanReporting';
-import {verifyTerminalPayment} from '../lib/api';
+import {storeAndReleaseHeldOrphan} from '../lib/heldOrphanStore';
+import {storeHeldOrphanPayment, verifyTerminalPayment} from '../lib/api';
 import {recordWiretapEvent} from '../lib/wiretap';
 
 /**
@@ -37,6 +40,12 @@ import {recordWiretapEvent} from '../lib/wiretap';
  * ACKNOWLEDGING DELETES THE ONLY REMAINING RECORD ON THIS DEVICE, so the action is worded as "I
  * have checked this" rather than "dismiss", and nothing clears it automatically.
  *
+ * AND AS OF RULING 3 IT NO LONGER DELETES ANYTHING UNTIL THE SERVER HAS THE RECORD. Pressing the
+ * button stores the held payment durably and releases the local copy only on that write, or on a
+ * 409 saying the write already happened. Anything else keeps the record and says so. The rule lives
+ * in heldOrphanStore.ts, not here — this component decides when to ask, never what counts as an
+ * acknowledgement.
+ *
  * ONE BUTTON PER RECORD, AND THAT IS NOT A LAYOUT PREFERENCE. This card previously rendered N
  * records above a SINGLE button that wiped the whole store. An operator who had checked one
  * payment therefore destroyed every held record — including a case-3 one, which is exactly the
@@ -45,11 +54,22 @@ import {recordWiretapEvent} from '../lib/wiretap';
  * its own action, and removal is by VALUE identity rather than list position, because the
  * reporting pass rewrites this list underneath the render.
  *
- * Whether acknowledging ought to require the payment be reconciled FIRST is a ruling, not an
- * implementation detail, and is open with the owner.
+ * WHAT ACKNOWLEDGING REQUIRES WAS RULED ON 2026-08-26 AND IS NOT RECONCILIATION. The owner: "A
+ * durable write IS the acknowledgement. Stored means released. Reconciliation is a separate concern
+ * and the device never waits on it." Requiring reconciliation would have left a case-3 record —
+ * one naming no order — unclearable forever, since nothing can reconcile a payment with no order to
+ * reconcile it against.
  */
 export default function HeldOrphanPaymentNotice() {
   const [held, setHeld] = useState<HeldOrphanPayment[]>([]);
+  /**
+   * Per-record UI state, keyed by the same VALUE identity the list is keyed by — never by index,
+   * for the reason spelled out on heldOrphanIdentity: the reporting pass rewrites this list
+   * underneath the render, so an index captured at press time can address a different record.
+   *
+   * 'saving' disables the button; 'failed' renders HELD_ORPHAN_NOT_SAVED beneath it.
+   */
+  const [busy, setBusy] = useState<Record<string, 'saving' | 'failed'>>({});
 
   /**
    * Re-read on focus, not only on mount: the hold is written by processPaymentIntent DURING a
@@ -106,12 +126,45 @@ export default function HeldOrphanPaymentNotice() {
   }
 
   /**
-   * Acknowledge ONE record. Re-reads the store afterwards rather than filtering local state, so
-   * what the operator sees next is what is actually persisted — including anything the reporting
-   * pass resolved while this screen was open.
+   * Acknowledge ONE record: STORE IT, THEN RELEASE IT — ruling 3, and never the other order.
+   *
+   * Re-reads the store afterwards rather than filtering local state, so what the operator sees next
+   * is what is actually persisted — including anything the reporting pass resolved while this
+   * screen was open.
+   *
+   * NO TOKEN IS NOT AN ACKNOWLEDGEMENT. A device with no session cannot have stored anything, so it
+   * takes the same 'failed' branch as a network error rather than falling through to a local
+   * delete. This is the branch a `getTerminalToken()` returning null would otherwise skip past.
    */
   const acknowledgeOne = async (row: HeldOrphanPayment) => {
-    await acknowledgeHeldOrphanPayment(heldOrphanIdentity(row));
+    const key = heldOrphanIdentity(row);
+    setBusy(prev => ({...prev, [key]: 'saving'}));
+
+    const token = await getTerminalToken();
+    const {outcome} = token
+      ? await storeAndReleaseHeldOrphan(row, {
+          store: body => storeHeldOrphanPayment(body, token),
+          release: r => acknowledgeHeldOrphanPayment(heldOrphanIdentity(r)).then(() => undefined),
+          onOutcome: (r, result, status) =>
+            recordWiretapEvent('payment.orphan.acknowledged', {
+              orphanOrderId: r.orphanOrderId || '(none)',
+              voucherNo: r.voucherNo ?? '(none)',
+              businessOrderNo: r.businessOrderNo ?? '(none)',
+              outcome: result,
+              status,
+            }),
+        })
+      : {outcome: 'kept' as const};
+
+    setBusy(prev => {
+      const next = {...prev};
+      if (outcome === 'released') {
+        delete next[key];
+      } else {
+        next[key] = 'failed';
+      }
+      return next;
+    });
     setHeld(await getHeldOrphanPayments());
   };
 
@@ -152,12 +205,32 @@ export default function HeldOrphanPaymentNotice() {
             <Text style={styles.detail}>{HELD_ORPHAN_NEEDS_A_PERSON}</Text>
           )}
           <Pressable
-            style={styles.ackButton}
+            style={[
+              styles.ackButton,
+              busy[heldOrphanIdentity(row)] === 'saving' && styles.ackButtonBusy,
+            ]}
+            // Disabled only while the store is in flight. A record that FAILED to save stays
+            // pressable on purpose: retrying is the whole action available to the operator, and a
+            // button that greys itself out after one failure would leave them with nothing to do.
+            disabled={busy[heldOrphanIdentity(row)] === 'saving'}
             onPress={() => {
               void acknowledgeOne(row);
             }}>
-            <Text style={styles.ackText}>{HELD_ORPHAN_ACKNOWLEDGE}</Text>
+            <Text style={styles.ackText}>
+              {busy[heldOrphanIdentity(row)] === 'saving'
+                ? HELD_ORPHAN_SAVING
+                : HELD_ORPHAN_ACKNOWLEDGE}
+            </Text>
           </Pressable>
+          {/*
+            The button did nothing, so it has to say so. Without this the operator presses "I have
+            checked this payment", the record stays on screen, and the only reading available to
+            them is that the terminal is broken — which is how a person ends up pressing it
+            repeatedly, or deciding the notice can be ignored.
+          */}
+          {busy[heldOrphanIdentity(row)] === 'failed' ? (
+            <Text style={styles.notSaved}>{HELD_ORPHAN_NOT_SAVED}</Text>
+          ) : null}
         </View>
       ))}
     </View>
@@ -218,5 +291,18 @@ const styles = StyleSheet.create({
     ...Typography.small,
     color: Colors.amber,
     fontWeight: '600',
+  },
+  ackButtonBusy: {
+    opacity: 0.55,
+  },
+  /**
+   * Deliberately the same weight as the body rather than an error red. Nothing about the PAYMENT
+   * went wrong — a save did not go through — and colouring it as an error is the conflation
+   * UNCONFIRMED_CHECK_FAILED exists to prevent, one screen over.
+   */
+  notSaved: {
+    ...Typography.small,
+    color: Colors.textPrimary,
+    marginTop: Spacing.xs,
   },
 });
