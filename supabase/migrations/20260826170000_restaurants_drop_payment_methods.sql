@@ -1,5 +1,13 @@
 -- #349 — DROP restaurants.payment_methods, a dead second copy of the real gate.
 --
+-- RENUMBERED 20260826160000 -> 20260826170000 on 2026-08-26, before either branch merged.
+-- #215's order_requests_claimed_at migration was authored the same evening on another branch
+-- and drew the SAME version prefix. That is #280 firing for real: the drift guard identifies a
+-- migration by its numeric prefix alone, so the ledger would have recorded 20260826160000 once,
+-- gone green, and left ONE OF THE TWO PERMANENTLY UNAPPLIED with nothing reporting it.
+-- Renaming an unpushed file costs nothing; the same discovery after merge means working out
+-- which of two identically-numbered migrations actually ran against production.
+--
 -- WHY A DROP RATHER THAN A COMMENT. This column has no reader anywhere in the application. It is
 -- still populated, still queryable, and disagrees with the column that actually governs behaviour
 -- at 10 of 11 venues — at FNB ChowNow the two are exact opposites (dead column says {cash}, the
