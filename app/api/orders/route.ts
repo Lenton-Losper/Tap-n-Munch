@@ -10,6 +10,11 @@ import { calculateOrderPricing, UnmatchedMenuItemError } from '@/lib/orders/calc
 import { validateOrderQuantities } from '@/lib/orders/quantity-limits'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import { recordPaymentStatusChange } from '@/lib/orders/record-payment-status-change'
+import {
+  insertWithOrderNumber,
+  nextKioskOrderNumber,
+  kioskOrderLabel as buildKioskOrderLabel,
+} from '@/lib/orders/order-number'
 
 export const dynamic = 'force-dynamic'
 
@@ -483,13 +488,6 @@ export async function POST(req: Request) {
     // --- Legacy direct-order path (channels other than table/kiosk; terminal/POS uses its
     // own route and never reaches here). Unchanged. ---
 
-    // Get next order number
-    const { count } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('firebase_restaurant_id', orderRestaurantScope.firebaseRestaurantId)
-
-    const orderNumber = (count || 0) + 1
     const itemsWithRouting = await enrichOrderItemsWithRouteTo(supabase, items)
 
     const pricing = await calculateOrderPricing(supabase, restaurantUuid, itemsWithRouting)
@@ -509,36 +507,47 @@ export async function POST(req: Request) {
       })
     }
 
-    // Create order in Supabase
+    // Create order in Supabase.
+    //
+    // #127: the number is allocated by insertWithOrderNumber (max+1, retried on the unique
+    // index's 23505) rather than by count(*)+1 here. Only the insert is inside the retry —
+    // pricing and item enrichment above run once. `orderNumber` comes back out for the payment
+    // description and the response body below.
     const t2 = performance.now()
-    const { data: newOrder, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        restaurant_id: restaurantUuid,
-        firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
-        table_number: normalizedTableNumber,
-        table_id: tableUuid,
-        session_id: sessionId,
-        member_session_id: memberSessionId,
-        payment_method: resolvedPaymentMethod,
-        payment_channel: resolvedPaymentChannel,
-        payment_status: paymentStatus,
-        status: 'pending',
-        subtotal: pricing.subtotal,
-        tax: pricing.tax,
-        total: pricing.total,
-        items: pricing.items,
-        order_instructions: orderInstructions || null,
-        tab_id: normalizedTabId || null,
-        tab_settlement_for_tab_id: tabSettlementForTabId || null,
-        order_number: orderNumber,
-        channel,
-        customer_name: customerName,
-        placed_at: new Date().toISOString(),
-        idempotency_key: idempotencyKey,
-      })
-      .select('id, restaurant_id, order_number, payment_status, total')
-      .single()
+    const {
+      data: newOrder,
+      error: orderError,
+      orderNumber,
+    } = await insertWithOrderNumber(supabase, orderRestaurantScope.firebaseRestaurantId, (allocated) =>
+      supabase
+        .from('orders')
+        .insert({
+          restaurant_id: restaurantUuid,
+          firebase_restaurant_id: orderRestaurantScope.firebaseRestaurantId,
+          table_number: normalizedTableNumber,
+          table_id: tableUuid,
+          session_id: sessionId,
+          member_session_id: memberSessionId,
+          payment_method: resolvedPaymentMethod,
+          payment_channel: resolvedPaymentChannel,
+          payment_status: paymentStatus,
+          status: 'pending',
+          subtotal: pricing.subtotal,
+          tax: pricing.tax,
+          total: pricing.total,
+          items: pricing.items,
+          order_instructions: orderInstructions || null,
+          tab_id: normalizedTabId || null,
+          tab_settlement_for_tab_id: tabSettlementForTabId || null,
+          order_number: allocated,
+          channel,
+          customer_name: customerName,
+          placed_at: new Date().toISOString(),
+          idempotency_key: idempotencyKey,
+        })
+        .select('id, restaurant_id, order_number, payment_status, total')
+        .single(),
+    )
     console.log(`[ORDERS TIMING] order insert: ${(performance.now() - t2).toFixed(0)}ms`)
 
     if (orderError) {
@@ -564,7 +573,7 @@ export async function POST(req: Request) {
             ...(existingKioskNumber != null && Number.isFinite(existingKioskNumber)
               ? {
                   kioskOrderNumber: existingKioskNumber,
-                  kioskOrderLabel: `K-${String(existingKioskNumber).padStart(3, '0')}`,
+                  kioskOrderLabel: buildKioskOrderLabel(existingKioskNumber),
                 }
               : {}),
           })
@@ -585,22 +594,17 @@ export async function POST(req: Request) {
     let kioskOrderLabel: string | undefined
 
     if (channel === 'kiosk') {
-      const today = new Date().toISOString().split('T')[0]
-      const { count: kioskCount } = await supabase
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('restaurant_id', restaurantUuid)
-        .eq('channel', 'kiosk')
-        .gte('placed_at', `${today}T00:00:00Z`)
-
-      const kioskNumber = (kioskCount ?? 0) + 1
+      // #127: max+1 over today's kiosk rows, not count+1. The RACE on this counter is still
+      // open — there is no unique index covering it — and lib/orders/order-number.ts says so
+      // in full rather than leaving the reader to infer it from the missing retry.
+      const kioskNumber = await nextKioskOrderNumber(supabase, restaurantUuid)
       await supabase
         .from('orders')
         .update({ kiosk_order_number: kioskNumber })
         .eq('id', orderId)
 
       kioskOrderNumber = kioskNumber
-      kioskOrderLabel = `K-${String(kioskNumber).padStart(3, '0')}`
+      kioskOrderLabel = buildKioskOrderLabel(kioskNumber)
     }
 
     const t3 = performance.now()

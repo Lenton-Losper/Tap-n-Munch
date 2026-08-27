@@ -10,9 +10,26 @@ import { Label } from '@/components/ui/label'
 import { MeasurementUnitSelectField } from '@/components/stock/measurement-unit-select-field'
 import { StockItemSelectField } from '@/components/stock/stock-item-select-field'
 import { removeRecipeLinkAction, saveRecipeAction } from '@/lib/recipes/actions'
+import {
+  findRecipeQuantityWarnings,
+  type RecipeQuantityWarningCode,
+} from '@/lib/recipes/quantity-sanity'
 import type { RecipeEditorData } from '@/lib/recipes/queries'
 import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
+
+/**
+ * PLACEHOLDER COPY — not for release, and deliberately identical in meaning to the strings in
+ * components/menu/menu-item-inventory-tab.tsx. Both surfaces edit the same field and must say
+ * the same thing; whoever writes the real wording should write it once and share it.
+ */
+const QUANTITY_FIELD_LABEL_PLACEHOLDER = 'Quantity [PLACEHOLDER: say "per one sold"]'
+
+const QUANTITY_WARNING_PLACEHOLDER: Record<RecipeQuantityWarningCode, string> = {
+  equals_on_hand: '[PLACEHOLDER: quantity equals the amount on hand — per-sale amount intended?]',
+  exceeds_on_hand: '[PLACEHOLDER: quantity is more than the amount on hand — first sale goes negative]',
+  one_to_one_not_single: '[PLACEHOLDER: ingredient is the item itself — expected 1 per sale?]',
+}
 
 type IngredientRow = {
   key: string
@@ -92,6 +109,23 @@ export function RecipeEditorForm({
     () => new Map(stockItems.map((item) => [item.id, item])),
     [stockItems],
   )
+
+  // Advisory only — nothing here blocks a save. This surface does NOT load ledger balances, so
+  // only the name-based fallback signal can fire: a single-ingredient recipe whose one ingredient
+  // is the menu item itself, carrying a quantity other than 1. Balances are deliberately left as
+  // undefined rather than 0 — reading "not loaded here" as "empty shelf" would warn on every row.
+  const quantityWarningByStockItem = useMemo(() => {
+    const found = findRecipeQuantityWarnings(
+      data.menuItemName,
+      rows.map((row) => ({
+        stockItemId: row.stockItemId,
+        quantity: row.quantity,
+        stockItemName: stockItemById.get(row.stockItemId)?.name ?? null,
+        currentStock: undefined,
+      })),
+    )
+    return new Map(found.map((warning) => [warning.stockItemId, warning]))
+  }, [data.menuItemName, rows, stockItemById])
 
   const updateRow = (key: string, patch: Partial<IngredientRow>) => {
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)))
@@ -203,7 +237,9 @@ export function RecipeEditorForm({
                 label="Stock item"
               />
               <div className="space-y-1.5">
-                <Label htmlFor={`quantity-${row.key}`}>Quantity</Label>
+                {/* PLACEHOLDER LABEL — must convey that this number is the amount consumed by
+                    selling ONE of this menu item, not how many are in stock. */}
+                <Label htmlFor={`quantity-${row.key}`}>{QUANTITY_FIELD_LABEL_PLACEHOLDER}</Label>
                 <Input
                   id={`quantity-${row.key}`}
                   type="number"
@@ -213,7 +249,23 @@ export function RecipeEditorForm({
                   onChange={(event) => updateRow(row.key, { quantity: event.target.value })}
                   className="border-[#E9E9E7] bg-white"
                   disabled={!canEdit}
+                  aria-describedby={
+                    quantityWarningByStockItem.has(row.stockItemId)
+                      ? `quantity-warning-${row.key}`
+                      : undefined
+                  }
                 />
+                {quantityWarningByStockItem.has(row.stockItemId) ? (
+                  <p
+                    id={`quantity-warning-${row.key}`}
+                    role="status"
+                    className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800"
+                  >
+                    {QUANTITY_WARNING_PLACEHOLDER[
+                      quantityWarningByStockItem.get(row.stockItemId)!.code
+                    ]}
+                  </p>
+                ) : null}
               </div>
               <MeasurementUnitSelectField
                 measurementUnits={measurementUnits}

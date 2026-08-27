@@ -62,12 +62,20 @@ function makeClient() {
         select: chain,
         eq: chain,
         in: chain,
+        not: chain,
+        limit: chain,
         order: chain,
         /*
          * Every read in this path ends by awaiting the builder itself:
-         *   orders     -> .select('*', { count: 'exact', head: true }).eq(...)  (order number)
+         *   orders     -> .select('order_number').eq(...).not(...).order(...).limit(1)
          *   menu_items -> .select(...).eq(...).in(...)                          (pricing)
          *   tax_rates  -> .select(...).eq(...).order(...)                       (pricing)
+         *
+         * #127 changed the first of those: the order number was `count(*) + 1` and is now
+         * `max(order_number) + 1` with a retry, so this fake answers with a ROW rather than a
+         * count. `.not` and `.limit` are here for the same reason — a fake that is missing a
+         * method the code now calls fails the whole suite with a TypeError, which reads like a
+         * broken change rather than an out-of-date double.
          */
         then: (resolve: (r: unknown) => unknown) => {
           if (table === 'menu_items') {
@@ -76,7 +84,7 @@ function makeClient() {
           if (table === 'tax_rates') {
             return Promise.resolve(resolve({ data: [], error: null }))
           }
-          return Promise.resolve(resolve({ count: 41, error: null }))
+          return Promise.resolve(resolve({ data: [{ order_number: 41 }], error: null }))
         },
         insert: (row: Record<string, unknown>) => {
           if (table === 'orders') insertedOrder = row

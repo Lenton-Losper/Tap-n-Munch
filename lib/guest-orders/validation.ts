@@ -79,19 +79,44 @@ export function guestCanAccessOrder(
  * `receipt_documents` row for an order that had none, stamping today's numbering context onto
  * an older sale.
  *
- * So delivery requires what a READ of an OPEN order requires: the restaurant, plus either the
- * table the order sits at or a session id it was placed under. Concretely, the same predicate
- * with the terminal-state short-circuit removed.
+ * WHY THERE IS NO TABLE BRANCH — #304, and this is the second narrowing, not the first.
+ *
+ * QRA-19 left this predicate at "restaurant, PLUS the table the order sits at OR a session id it
+ * was placed under" — the OPEN-order read rule. #304 is the owner-filed issue saying that is
+ * still not enough for a DELIVERY, and it is right: a table number is not a secret. It is printed
+ * on the QR code, it is in every menu URL, and it is a small integer, so "walk 0..N at a
+ * restaurant id you read off a poster" is the whole attack. Measured on the deployed handler,
+ * against an UNPAID order so nothing could be issued or mailed:
+ *
+ *   POST .../receipt/email?restaurantId=<real>&table_number=<the order's>  -> 400 "not paid yet"
+ *   POST .../receipt/email?restaurantId=<real>&table_number=<any other>    -> 404
+ *   POST .../receipt/email?restaurantId=<real>                             -> 404
+ *
+ * A 400 is only reachable AFTER this predicate returns true. So the table number, alone, was the
+ * difference between a refusal and a send to an address the caller chose.
+ *
+ * So delivery now requires OWNERSHIP: the restaurant, plus a session id the order was actually
+ * placed under (either column — see ownsOrder). `tableNumber` is not a parameter, deliberately.
+ * A caller that still passes one gets a compile error rather than a silent no-op, which is the
+ * point: the next person to wire a delivery route must not be able to hand this function a table
+ * number and believe it authorised anything.
+ *
+ * WHAT THIS IS NOT. It is not a session TOKEN, and it does not answer #304's lifecycle question
+ * (a live token would refuse the customer who has paid and left, which is exactly when they want
+ * the receipt). A session id is a bearer value the client supplies. What it buys over a table
+ * number is entropy and non-publication: the ids the only caller of this route ever presents are
+ * `sess_<crypto.randomUUID()>` (lib/session.ts). Options A (signed one-time link) and B (send only
+ * to an address recorded against the order, which needs a `customer_email` column that #234
+ * established does not exist) both remain open on #304, and both compose with this.
  *
  * `guestCanAccessOrder` is deliberately left exactly as it is. Narrowing its table branch is
  * #279, it is sequenced behind a measurement, and `__tests__/owns-order-both-columns.test.ts`
  * pins the current behaviour by name — "recorded, not endorsed". A recorded decision is a
- * ruling already made, so this adds a stricter sibling rather than editing it.
+ * ruling already made, so this stays a stricter sibling rather than editing it.
  */
 export function guestCanReceiveOrderDelivery(
   order: GuestOrderRow,
   params: {
-    tableNumber?: number | null
     sessionId?: string | null
     sessionIds?: Array<string | null | undefined>
     restaurantId?: string | null
@@ -101,11 +126,6 @@ export function guestCanReceiveOrderDelivery(
   const wantRestaurant = String(params.restaurantId || '').trim()
   if (!wantRestaurant || !orderRestaurant || wantRestaurant !== orderRestaurant) {
     return false
-  }
-
-  const table = params.tableNumber
-  if (table != null && Number.isFinite(table) && Number(order.table_number) === table) {
-    return true
   }
 
   return ownsOrder(order, [params.sessionId, ...(params.sessionIds ?? [])])
