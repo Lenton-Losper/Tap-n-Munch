@@ -98,6 +98,37 @@ export const UNCONFIRMED_CHECK_FAILED =
   'Could not reach the payment provider. Try the check again.';
 
 /**
+ * #354 — SIGNED COPY, owner-approved 2026-08-27. Verbatim; do not reword.
+ *
+ * THE FOURTH STATE. E04111 "Merchant order number is invalid" is neither a failure to check nor an
+ * unresolved payment — it is Finatic saying NO SUCH ORDER, which is the correct answer when the
+ * operator stopped the reader before it ever contacted the gateway. The provider was reached and it
+ * answered. Observed live on production, Mingle order #698 (a venue WITH credentials):
+ * attempt_started 22:15:12, K026 operator cancel 22:15:17, then E04111 at 22:15:28 and AGAIN at
+ * 22:15:48 because the operator pressed Check twice.
+ *
+ *   provider unreachable   -> wait and check again
+ *   not configured         -> this will not resolve by trying again
+ *   confirmed unpaid       -> no money taken, take payment again
+ *   never started (E04111) -> nothing charged, nothing to check, take payment again
+ *
+ * THE WORD CHOICES WERE RULED ON AND ARE LOAD-BEARING:
+ *   "never started"       not "not found" — "not found" invites the fear that something was lost.
+ *   "nothing was charged" stated flatly, because it is the one CERTAIN fact in the whole set.
+ *   "nothing to check"    kills the retry loop. Checking again returns the same E04111 forever.
+ *
+ * It is the only one of the four ending in a plain "take payment again" with NO caution, because
+ * there is no double-charge risk in re-charging something that was never created. Do not add one,
+ * and do not copy the "may already have been charged" half in from its neighbours — here it would
+ * be false, and it is the sentence that makes the other three frightening on purpose.
+ *
+ * THE SCREEN MUST NOT OFFER A CHECK ON THIS BRANCH. The string says there is nothing to check, so
+ * rendering a Check button beside it would contradict the copy and rebuild the loop by hand.
+ */
+export const UNCONFIRMED_NEVER_STARTED =
+  "This payment was never started. The card machine was stopped before it reached the payment provider, so nothing was charged and there is nothing to check. Take payment again when you're ready.";
+
+/**
  * REQUIREMENT — the SECONDARY action's label. #327: retry is secondary, and it re-presents the card
  * for the SAME order — it never creates a new sale. The label must not invite a casual second tap.
  */

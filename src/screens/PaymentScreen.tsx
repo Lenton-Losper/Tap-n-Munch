@@ -38,15 +38,19 @@ import {
   classifySuccessReportError,
 } from '../lib/paymentReportOutcome';
 import {
+  isUnclassifiedNotPaid,
+  unconfirmedMessageForVerdict,
+} from '../lib/paymentVerdict';
+import {
   ALREADY_SETTLED_MESSAGE,
   UNCONFIRMED_CHECK_ACTION,
   UNCONFIRMED_CHECK_FAILED,
   UNCONFIRMED_CHECK_IN_PROGRESS,
+  UNCONFIRMED_NEVER_STARTED,
   UNCONFIRMED_EXPLANATION,
   UNCONFIRMED_INSTRUCTION,
   UNCONFIRMED_NOT_REPORTED,
   UNCONFIRMED_RETRY_ACTION,
-  UNCONFIRMED_STILL_UNRESOLVED,
   UNCONFIRMED_TITLE,
   paymentProcessingElapsed,
   PAYMENT_OVER_CEILING_TITLE,
@@ -836,8 +840,36 @@ export default function PaymentScreen({route, navigation}: Props) {
         return;
       }
 
-      // Still unresolved. Stay unconfirmed — the food still must not be released.
-      paymentUnconfirmed(UNCONFIRMED_STILL_UNRESOLVED);
+      /**
+       * #354 — E04111 IS A FOURTH STATE, and it is the one reassuring answer of the four.
+       *
+       * The provider WAS reached and it answered "no such order", which is the correct answer when
+       * the reader was stopped before it ever contacted the gateway. Nothing was charged and there
+       * is nothing to check, so this branch carries its own signed copy and the card below drops
+       * the Check button rather than offering the retry that returns E04111 forever.
+       *
+       * Anything else coming back not-paid keeps the existing wording: `paid: false` also covers an
+       * order with no merchant order number, which is NOT "never started". See lib/paymentVerdict —
+       * when we cannot tell, the safe default is the unresolved copy, never the reassuring one.
+       */
+      if (isUnclassifiedNotPaid(verdict)) {
+        /**
+         * THE INSTRUMENT. The branch above cannot fire until the server sends `isE04111`, and a fix
+         * that ships inert while everyone believes it landed is this repo's most repeated defect.
+         * So the first device on this build answers the question the code cannot — whether the
+         * field arrives, and what the server does send alongside it. Same approach as #156.
+         */
+        recordWiretapEvent('payment.verify.unclassified_not_paid', {
+          orderId,
+          source: verdict.source ?? '(none)',
+          status: verdict.status ?? '(none)',
+          hasError: verdict.error != null,
+        });
+      }
+
+      // Stay unconfirmed either way — the food still must not be released. Which of the two
+      // messages is shown is decided by lib/paymentVerdict, where it can be tested.
+      paymentUnconfirmed(unconfirmedMessageForVerdict(verdict));
     } catch (err) {
       console.warn('[PaymentScreen] verify-payment failed:', err);
       recordWiretapEvent('payment.status.checked', {
@@ -936,6 +968,18 @@ export default function PaymentScreen({route, navigation}: Props) {
   };
 
   const {state, error} = machineState;
+  /**
+   * #354 — the UNCONFIRMED card must not offer a Check on the "never started" branch. The signed
+   * string says there is nothing to check, and offering it anyway rebuilds by hand the loop that
+   * copy exists to kill: E04111 returns E04111 forever.
+   *
+   * DERIVED FROM THE MESSAGE RATHER THAN A NEW PIECE OF STATE, on purpose. The message is already
+   * the one thing the state machine carries for this card, and a separate flag would need clearing
+   * at all seven reset()/startPayment() sites — six correct ones and, eventually, a missed one that
+   * leaves a stale flag suppressing the Check button on an unrelated payment. This is an exact
+   * comparison against a constant in this same module, not a match on prose.
+   */
+  const neverStarted = error === UNCONFIRMED_NEVER_STARTED;
   /**
    * #327. The bottom bar's big "Process Payment" / "Confirm cash" button is disabled while a
    * payment is UNCONFIRMED, not only while one is in progress.
@@ -1510,18 +1554,28 @@ export default function PaymentScreen({route, navigation}: Props) {
                   <Text style={styles.unconfirmedDetail}>{error}</Text>
                 ) : null}
 
-                <LoadingButton
-                  style={styles.unconfirmedPrimaryButton}
-                  loading={checkingStatus}
-                  disabled={checkingStatus}
-                  onPress={handleCheckPaymentStatus}
-                  spinnerColor={Colors.white}>
-                  <Text style={styles.unconfirmedPrimaryText}>
-                    {checkingStatus
-                      ? UNCONFIRMED_CHECK_IN_PROGRESS
-                      : UNCONFIRMED_CHECK_ACTION}
-                  </Text>
-                </LoadingButton>
+                {/*
+                  #354 — NO CHECK ON THE "NEVER STARTED" BRANCH. The signed string ends "there is
+                  nothing to check"; a Check button beside it would contradict the copy and rebuild
+                  the loop it exists to kill, since E04111 answers E04111 every time. "Take payment
+                  again" below stays, and is the correct and only action here — re-charging
+                  something that was never created carries no double-charge risk, which is why this
+                  is the one state of the four whose closing sentence has no caution attached.
+                */}
+                {neverStarted ? null : (
+                  <LoadingButton
+                    style={styles.unconfirmedPrimaryButton}
+                    loading={checkingStatus}
+                    disabled={checkingStatus}
+                    onPress={handleCheckPaymentStatus}
+                    spinnerColor={Colors.white}>
+                    <Text style={styles.unconfirmedPrimaryText}>
+                      {checkingStatus
+                        ? UNCONFIRMED_CHECK_IN_PROGRESS
+                        : UNCONFIRMED_CHECK_ACTION}
+                    </Text>
+                  </LoadingButton>
+                )}
 
                 <Pressable
                   style={styles.unconfirmedSecondaryButton}
