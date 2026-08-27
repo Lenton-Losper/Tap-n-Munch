@@ -67,11 +67,17 @@ function renderedText(json: unknown): string[] {
  * is chosen by deciding which native module exists before the screen is first required. React
  * and the test renderer are required INSIDE the isolated registry as well — pulling them from
  * the outer one puts two copies of React in play and every hook call throws.
+ *
+ * BOTH SHAPES ARE RETURNED BECAUSE BOTH ARE NEEDED. `text` is right for "does this long sentence
+ * appear". `lines` — one entry per rendered string, in tree order — is the only safe way to assert
+ * a SHORT value like the transport name: `text.toContain('sdk4')` passes on any build, because
+ * 'sdk4' is a substring of `wangpos.sdk4.base.service.BinderPoolService`, which the section
+ * alongside it renders regardless. The #163 assertions below pin the value to its own label.
  */
 async function renderDiagnosticsWith(opts: {
   transport: 'sdk4' | 'sdk6';
   matchCount: number;
-}): Promise<string> {
+}): Promise<{text: string; lines: string[]}> {
   let texts: string[] = [];
   await jest.isolateModulesAsync(async () => {
     const React = require('react');
@@ -121,12 +127,26 @@ async function renderDiagnosticsWith(opts: {
     });
     texts = renderedText(tree!.toJSON());
   });
-  return texts.join('\n');
+  return {text: texts.join('\n'), lines: texts};
+}
+
+/**
+ * The value rendered immediately after `label`, or null when the label is absent.
+ *
+ * ADJACENCY IS THE ASSERTION. renderedText walks the tree depth-first, so a `<Text>label</Text>`
+ * followed by a `<Text>{value}</Text>` lands as two consecutive entries. Checking the pair means
+ * a stray occurrence of the value elsewhere on a very busy screen cannot satisfy the test — which
+ * matters here, since what #162 and #163 both ask for is that a technician can READ THIS VALUE OFF
+ * THIS ROW, not merely that the string exists somewhere in the tree.
+ */
+function valueAfterLabel(lines: string[], label: string): string | null {
+  const i = lines.indexOf(label);
+  return i < 0 || i + 1 >= lines.length ? null : lines[i + 1];
 }
 
 describe('#164 printer service resolution copy', () => {
   it('names the SDK4 binder-pool action, not initPosSdk, on an SDK4 build', async () => {
-    const rendered = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
+    const {text: rendered} = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
 
     expect(rendered).toContain(PROBED_ACTION.sdk4);
     expect(rendered).not.toContain('WisePosSdk.initPosSdk');
@@ -134,7 +154,7 @@ describe('#164 printer service resolution copy', () => {
   });
 
   it('still names initPosSdk and the USDK action on an SDK6 build', async () => {
-    const rendered = await renderDiagnosticsWith({transport: 'sdk6', matchCount: 1});
+    const {text: rendered} = await renderDiagnosticsWith({transport: 'sdk6', matchCount: 1});
 
     expect(rendered).toContain('WisePosSdk.initPosSdk');
     expect(rendered).toContain(PROBED_ACTION.sdk6);
@@ -142,7 +162,7 @@ describe('#164 printer service resolution copy', () => {
   });
 
   it('does not assert where the fault lies when resolution succeeds', async () => {
-    const rendered = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
+    const {text: rendered} = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
 
     // The probe establishes that the SDK can bind. It cannot establish that a fault exists,
     // let alone that it is elsewhere.
@@ -151,10 +171,46 @@ describe('#164 printer service resolution copy', () => {
   });
 
   it('derives the zero-match verdict against the action actually probed', async () => {
-    const rendered = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 0});
+    const {text: rendered} = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 0});
 
     expect(rendered).toContain(
       `ZERO — nothing answers ${PROBED_ACTION.sdk4} for this app`,
     );
+  });
+});
+
+/**
+ * #163 — the Device / session rows must actually SHOW the values they exist to show.
+ *
+ * Both #162 and #163 are "a value is computed and nothing renders it" bugs, and both were fixed in
+ * the screen but left unguarded. Measured before writing these: replacing
+ * `{ACTIVE_PRINTER_TRANSPORT}` with a literal `{"unknown"}` — i.e. restoring #163 exactly — left
+ * all 15 screen tests GREEN. The rule was covered; the row was not.
+ *
+ * That is the same gap #230 had on TablesScreen, and the same one the #344 wiring suite exists to
+ * close on payment.ts. It is the defect this repo ships most often.
+ */
+describe('#163 / #162 — Device / session renders what a technician needs to read', () => {
+  it('renders the ACTIVE transport on an SDK4 build', async () => {
+    const {lines} = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
+
+    // Adjacency, not substring: 'sdk4' also occurs inside the probed action string.
+    expect(valueAfterLabel(lines, 'Printer transport')).toBe('sdk4');
+  });
+
+  it('renders the ACTIVE transport on an SDK6 build', async () => {
+    // The other side. A row hardcoded to 'sdk4' would satisfy the assertion above.
+    const {lines} = await renderDiagnosticsWith({transport: 'sdk6', matchCount: 1});
+
+    expect(valueAfterLabel(lines, 'Printer transport')).toBe('sdk6');
+  });
+
+  it('renders the bridged build commit rather than "unknown" (#162)', async () => {
+    const {lines} = await renderDiagnosticsWith({transport: 'sdk4', matchCount: 1});
+
+    // #149's whole point: an installed build can name its own source. The value comes from
+    // RuntimeConfig.GIT_SHA, which RuntimeConfigModule.getConstants() bridges from BuildConfig —
+    // stubbed as 'testsha' above. Rendering 'unknown' here is the defect #162 reported.
+    expect(valueAfterLabel(lines, 'Build commit')).toBe('testsha');
   });
 });
