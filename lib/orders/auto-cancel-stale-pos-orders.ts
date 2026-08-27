@@ -209,7 +209,7 @@ export const SWEEP_ACTIONABLE_CHANNEL = 'pos'
  * The `.eq('payment_status', 'pending')` re-assertion is the same concurrency guard cancelByIds
  * uses: a live terminal callback that resolved the order first wins, and this writes nothing.
  */
-async function holdForAmountReview(
+export async function holdForAmountReview(
   supabase: Supabase,
   params: {
     orderId: string
@@ -218,6 +218,12 @@ async function holdForAmountReview(
     gatewayAmount: number | null
     orderTotal: number
     transactionId: string | null
+    /**
+     * Which writer held it. DEFAULTS TO THE CRON'S OWN TAG, unchanged byte for byte, because
+     * production audit rows already carry that value and a second writer must not retroactively
+     * relabel them. `lib/orders/clear-held-for-review.ts` passes its own.
+     */
+    source?: string
   },
 ): Promise<boolean> {
   const { data, error } = await supabase
@@ -237,7 +243,7 @@ async function holdForAmountReview(
     entity_id: params.orderId,
     action: 'payment_amount_mismatch_held',
     metadata: {
-      source: 'auto_cancel_cron_finatic_verified',
+      source: params.source ?? 'auto_cancel_cron_finatic_verified',
       merchantOrderNo: params.merchantOrderNo,
       transactionId: params.transactionId,
       // BOTH figures, named unambiguously. `gatewayAmount: null` means Finatic confirmed the
