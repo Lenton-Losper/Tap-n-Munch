@@ -34,7 +34,14 @@
  *
  * A checker that cannot see that is not usable: it cries wolf on correct code, and the habit of
  * ignoring it is what lets a real finding through. So this resolves the assignment target and
- * searches the whole file for a bound applied to that binding.
+ * looks for a bound applied to that binding.
+ *
+ * WITHIN THAT BINDING'S REGION, not the whole file -- corrected 2026-08-27, and the original
+ * whole-file search is what this paragraph used to describe. `let query` is the commonest name for
+ * a Supabase builder here (thirteen files declare one, two declare it twice), so one `query.limit()`
+ * anywhere in a file exempted EVERY chain in it assigned to a `query`. A planted unbounded read of
+ * `orders` was reported as bounded because a different builder, in a different function, was
+ * bounded. The region now runs from the declaration to the next declaration of the same name.
  */
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
@@ -178,16 +185,51 @@ function findingsFor(rel: string, source: string): Finding[] {
         continue
 
       // Bounded by a later call on the binding this chain was assigned to.
+      //
+      // SCOPED TO THIS BINDING'S REGION, NOT THE WHOLE FILE. Until 2026-08-27 both tests below ran
+      // against `source`, so ANY `query.limit(...)` anywhere in the file exempted EVERY chain
+      // assigned to a binding called `query`. `let query` is the single most common name for a
+      // Supabase builder -- thirteen files in this repo declare one, and two declare it twice --
+      // so the collision is the expected case, not a corner. Verified by mutation:
+      //
+      //     export async function zzBounded(supabase: any) {
+      //       let query = supabase.from('orders').select('id, total')
+      //       query = query.limit(50)                                    <- this one
+      //       return await query
+      //     }
+      //     export async function zzUnbounded(supabase: any) {
+      //       let query = supabase.from('orders').select('id, total')    <- exempted THIS one
+      //       return await query
+      //     }
+      //
+      // passed GREEN. Renaming the second binding turned it RED at the right line, so the gate was
+      // alive and the shared name was the whole hole. An unbounded read of `orders` was reported as
+      // bounded because a DIFFERENT builder, in a different function, was bounded.
+      //
+      // The region runs from this declaration to the next declaration of the same name, or to end
+      // of file. That is deliberately coarser than real lexical scope -- it does not parse blocks --
+      // but it is correct in the direction that matters: a binding can never be exempted by a
+      // bound applied to a LATER redeclaration of its name, and a single-declaration file is
+      // unaffected, which is every one of the eleven other files.
       const assigned = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(lines[start])
       if (assigned) {
         const name = assigned[1]
+        const redeclared = new RegExp(`(?:const|let|var)\\s+${name}\\s*=`)
+        let endLine = lines.length
+        for (let j = start + 1; j < lines.length; j += 1) {
+          if (redeclared.test(lines[j])) {
+            endLine = j
+            break
+          }
+        }
+        const scope = lines.slice(start, endLine).join('\n')
         const laterBound = new RegExp(
           `\\b${name}\\s*\\.\\s*(range|limit)\\(|\\b${name}\\s*=\\s*${name}\\s*\\.\\s*(range|limit)\\(`,
         )
-        if (laterBound.test(source)) continue
+        if (laterBound.test(scope)) continue
         if (
           PAGINATION_HELPERS.some((h) =>
-            new RegExp(`\\b${h}\\s*(?:<[^(]*>)?\\s*\\(\\s*${name}\\b`).test(source),
+            new RegExp(`\\b${h}\\s*(?:<[^(]*>)?\\s*\\(\\s*${name}\\b`).test(scope),
           )
         )
           continue
@@ -252,6 +294,38 @@ const MUST_CATCH: [string, string][] = [
       .eq('restaurant_id', restaurantId)
     const { data } = await query`,
   ],
+  [
+    // THE 2026-08-27 HOLE. `laterBound` searched the WHOLE FILE, so the bound in the first
+    // function exempted the unbounded builder in the second. `let query` is the commonest name for
+    // a Supabase builder here -- thirteen files declare one -- so two in a file is the expected
+    // case, not a corner. Only the SECOND read may be reported: flagging the first would mean the
+    // fix had over-corrected into ignoring a real bound.
+    'two builders sharing a name, only the second unbounded',
+    `export async function bounded(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      query = query.limit(50)
+      return await query
+    }
+    export async function unbounded(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      return await query
+    }`,
+  ],
+  [
+    // The same collision the other way round: the UNBOUNDED one first. Before the fix this was
+    // also green, and it is the likelier way the pair gets written -- someone copies a working
+    // paginated read and drops the bound from the copy.
+    'two builders sharing a name, the FIRST unbounded',
+    `export async function unbounded(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      return await query
+    }
+    export async function bounded(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      query = query.limit(50)
+      return await query
+    }`,
+  ],
 ]
 
 const MUST_IGNORE: [string, string][] = [
@@ -290,6 +364,35 @@ const MUST_IGNORE: [string, string][] = [
       .from('orders')
       .update({ status: 'ready' })
       .eq('restaurant_id', restaurantId)`,
+  ],
+  [
+    // FALSE-POSITIVE GUARD for the 2026-08-27 scoping change. Narrowing an exemption can only ADD
+    // findings, so the risk is the other direction: two builders sharing a name where BOTH are
+    // properly bounded must stay silent. Without this, "scope the search" could be satisfied by a
+    // rule that stops finding the bound at all -- which would go red on eleven correct files.
+    'two builders sharing a name, BOTH bounded',
+    `export async function first(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      query = query.limit(50)
+      return await query
+    }
+    export async function second(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      query = query.range(0, 99)
+      return await query
+    }`,
+  ],
+  [
+    // The same guard for the helper arm, which was scoped in the same edit.
+    'two builders sharing a name, both routed through the paginating helper',
+    `export async function first(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      return await fetchAllRows(query)
+    }
+    export async function second(supabase) {
+      let query = supabase.from('orders').select('id, total')
+      return await fetchAllRows(query)
+    }`,
   ],
 ]
 
