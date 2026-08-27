@@ -16,6 +16,7 @@
  * the operator something, the hard timeout is when to stop waiting for the promise.
  */
 import { config } from 'dotenv'
+import { excludeStressFixtures } from '../../lib/orders/stress-fixtures'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
@@ -31,12 +32,20 @@ async function main() {
 
   const rows = []
   for (let f = 0; ; f += 1000) {
-    const { data, error } = await db
-      .from('orders')
-      .select('restaurant_id,order_number,total,payment_status,payment_method,payment_attempt_started_at,paid_at,placed_at')
-      .not('payment_attempt_started_at', 'is', null)
-      .order('payment_attempt_started_at')
-      .range(f, f + 999)
+    // #324 — exclude the stress fixtures. Measured read-only on production 2026-08-27, the
+    // `payment_attempt_started_at IS NOT NULL` filter reaches 0 fixtures of 1,011 rows, because no
+    // seeded row ever started a card attempt. That is a property of TODAY'S FILTER, not of the
+    // table: drop the `.not(...)` for any reason and 1,314 rows arrive with a null attempt time
+    // and a zero total, and every duration percentile below moves. The exclusion is what makes the
+    // clean number a fact rather than a coincidence.
+    const { data, error } = await excludeStressFixtures(
+      db
+        .from('orders')
+        .select('restaurant_id,order_number,total,payment_status,payment_method,payment_attempt_started_at,paid_at,placed_at')
+        .not('payment_attempt_started_at', 'is', null)
+        .order('payment_attempt_started_at')
+        .range(f, f + 999),
+    )
     if (error) throw new Error(error.message)
     rows.push(...(data ?? []))
     if (!data || data.length < 1000) break

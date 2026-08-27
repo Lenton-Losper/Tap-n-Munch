@@ -29,6 +29,7 @@
  * money.
  */
 import { config } from 'dotenv'
+import { excludeStressFixtures } from '../../lib/orders/stress-fixtures'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
@@ -57,9 +58,16 @@ async function main() {
 
   const orders = []
   for (let f = 0; ; f += 1000) {
-    const { data, error } = await db.from('orders')
-      .select('id,tab_id,restaurant_id,total,payment_status,payment_method,paid_at,placed_at,status')
-      .not('tab_id', 'is', null).order('placed_at').range(f, f + 999)
+    // #324 — exclude the stress fixtures. `tab_id IS NOT NULL` already keeps all 1,314 of them out
+    // (every seeded row has a NULL tab_id; measured 0 of 37 on production 2026-08-27), so this
+    // changes no number today. It is here because the `owed(tabId)` sum below is a MONEY figure,
+    // and a money figure whose correctness rests on an unrelated filter's side effect is one
+    // refactor away from being wrong with nothing to say so.
+    const { data, error } = await excludeStressFixtures(
+      db.from('orders')
+        .select('id,tab_id,restaurant_id,total,payment_status,payment_method,paid_at,placed_at,status')
+        .not('tab_id', 'is', null).order('placed_at').range(f, f + 999),
+    )
     if (error) throw new Error('orders: ' + error.message)
     orders.push(...(data ?? [])); if (!data || data.length < 1000) break
   }

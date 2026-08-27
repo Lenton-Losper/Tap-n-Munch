@@ -19,8 +19,21 @@
  *       proof it cannot double-sound across people; several is not proof that it does, and the
  *       report must say which of those it is rather than inventing a number.
  */
+/**
+ * #324 — the Q1 sample now excludes the stress fixtures.
+ *
+ * It reads the 1,000 most recent orders and reports a by-channel distribution. Measured
+ * read-only on production 2026-08-27 that window happens to contain ZERO fixtures: the 1,314
+ * seeded rows were placed 2026-04-27..2026-06-16 and real trade has since pushed them past
+ * position 1,000. So this file was reporting a correct distribution FOR THE WRONG REASON — it was
+ * saved by an ORDER BY, and the day the sample widens or trade slows it stops being saved.
+ *
+ * Note what a fixture would have done to THIS question specifically: all 1,314 carry
+ * `channel = 'table'`, which is the exact bucket Q1 is asking about.
+ */
 // @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
+import { excludeStressFixtures } from '../lib/orders/stress-fixtures'
 
 const PRODUCTION_REF = 'ihlmmpmolnpchzgwyhgh'
 const url = process.env.SUPABASE_URL || ''
@@ -40,11 +53,13 @@ async function main() {
   // ---------------------------------------------------------------- Q1
   console.log('\n  Q1  WHICH TABLE DOES A NEW CUSTOMER ORDER LAND IN?\n')
 
-  const { data: orders, error: oErr } = await admin
-    .from('orders')
-    .select('id, channel, status, source_request_id, placed_at')
-    .order('placed_at', { ascending: false })
-    .limit(1000)
+  const { data: orders, error: oErr } = await excludeStressFixtures(
+    admin
+      .from('orders')
+      .select('id, channel, status, source_request_id, placed_at')
+      .order('placed_at', { ascending: false })
+      .limit(1000),
+  )
   if (oErr) throw new Error(`orders read: ${oErr.message}`)
 
   const byChannel = new Map<string, number>()
