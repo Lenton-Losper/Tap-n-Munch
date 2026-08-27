@@ -125,23 +125,115 @@ export function getDefaultGroupSelection(item: VariantItem): Record<string, stri
   return result
 }
 
+/** A price-typed option a selection actually landed on. */
+export type ResolvedVariantPrice = {
+  /** The group the option belongs to -- 'Size' on today's rows, but never assumed to be. */
+  groupName: string
+  /** The option label, i.e. exactly what the customer tapped. */
+  label: string
+  /** ABSOLUTE, not a modifier. See getItemDisplayPrice. */
+  price: number
+}
+
+/**
+ * THE one place a variant selection turns into money (#117).
+ *
+ * This used to be inlined in `getItemDisplayPrice` and nowhere else, which meant only the
+ * BROWSER could answer "what does this selection cost". `lib/orders/calculate-order-pricing.ts`
+ * never read `variants`/`variant_groups` at all, so the server repriced every line from
+ * `base_price` + additive `sizes` and threw the customer's variant away -- and because these
+ * rows carry `sizes: []`, the charge landed on `base_price` whatever was picked. Measured
+ * against production 2026-08-27: FNB ChowNow / Riviera `Cappucinno`, base 45, options
+ * Large 45 / Small 35 -- a customer choosing Small was billed 4500 cents against the 3500 shown.
+ *
+ * It returns the MATCH rather than the price so a caller can tell "the selection resolved to an
+ * option that happens to cost base_price" from "nothing matched". `getItemDisplayPrice` could
+ * not: both came back as `item.base_price`, so no caller could ever notice a dropped selection.
+ *
+ * First price-typed match wins, exactly as before -- this is a refactor of the existing rule,
+ * not a new one.
+ */
+export function findSelectedVariantPrice(
+  item: VariantItem,
+  selection: Record<string, string>
+): ResolvedVariantPrice | null {
+  for (const group of getVariantGroups(item)) {
+    if (group.type !== 'price') continue
+    for (const option of group.options) {
+      if (typeof option === 'string') continue
+      const label = String(option.label || '')
+      if (label === String(selection[group.name] || '')) {
+        return { groupName: group.name, label, price: Number(option.price) }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * The same resolution keyed on the option LABEL alone, for a line that carries a bare size
+ * string and no selection map.
+ *
+ * That shape is not hypothetical: `item-detail-modal` mirrors a priced variant choice into
+ * `selected_size`, the cart sends it as `size`, and a line hydrated out of localStorage from an
+ * older build can carry the size and nothing else. Consulted ONLY after a real `menu_items.sizes`
+ * entry has failed to match, so an item with genuine additive sizes is unaffected.
+ */
+export function findVariantPriceByOptionLabel(
+  item: VariantItem,
+  label: string
+): ResolvedVariantPrice | null {
+  const wanted = String(label || '').trim()
+  if (!wanted) return null
+  for (const group of getVariantGroups(item)) {
+    if (group.type !== 'price') continue
+    for (const option of group.options) {
+      if (typeof option === 'string') continue
+      const optionLabel = String(option.label || '')
+      if (optionLabel === wanted) {
+        return { groupName: group.name, label: optionLabel, price: Number(option.price) }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Price-typed groups the selection answered with something that is NOT one of their options.
+ *
+ * This is the instrument for #117, and it exists because the old one was an accident: the pricer
+ * warned "requested size not found" only when the group happened to be called `Size`, because the
+ * only thing that reached the server was `selected_size` and the modal hardcoded that key. A
+ * group named `Volume` diverged with nothing logged at all.
+ *
+ * Judged PER GROUP, so a second price group left unpriced by the first-match rule above is not
+ * reported as unmatched -- it was matched, it just did not win.
+ */
+export function findUnpricedVariantSelections(
+  item: VariantItem,
+  selection: Record<string, string>
+): Array<{ groupName: string; label: string }> {
+  const unpriced: Array<{ groupName: string; label: string }> = []
+  for (const group of getVariantGroups(item)) {
+    if (group.type !== 'price') continue
+    const chosen = String(selection[group.name] || '').trim()
+    if (!chosen) continue
+    const matched = group.options.some(
+      (option) => typeof option !== 'string' && String(option.label || '') === chosen
+    )
+    if (!matched) unpriced.push({ groupName: group.name, label: chosen })
+  }
+  return unpriced
+}
+
 /**
  * The price a selection resolves to. A 'price' option REPLACES the base price rather than
  * modifying it (that is how the menu editor writes them), which is why an unresolved variant
  * does not merely lose a modifier -- it silently reverts a N$45 Large to its N$20 base.
  */
 export function getItemDisplayPrice(item: VariantItem, selection: Record<string, string>): number {
-  const variantGroups = getVariantGroups(item)
-  for (const group of variantGroups) {
-    if (group.type !== 'price') continue
-    for (const option of group.options) {
-      if (typeof option === 'string') continue
-      if (String(option.label || '') === String(selection[group.name] || '')) {
-        return Number(option.price)
-      }
-    }
-  }
-  return item.base_price
+  const matched = findSelectedVariantPrice(item, selection)
+  return matched ? matched.price : item.base_price
 }
 
 export function isRequiredVariantMissing(
