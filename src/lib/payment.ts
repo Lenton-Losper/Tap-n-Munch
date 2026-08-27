@@ -427,7 +427,7 @@ async function applyOrHoldOrphan(
     return orphan;
   }
 
-  await holdOrphanPayment({
+  const held = await holdOrphanPayment({
     orphanOrderId: orphan.orderId ?? '',
     seenWhileChargingOrderId: currentOrderId,
     reason,
@@ -438,26 +438,34 @@ async function applyOrHoldOrphan(
   });
 
   /**
-   * NOT GATED ON THE HOLD IN vc99, DELIBERATELY. A fix making this release conditional on the hold
-   * actually succeeding was written and REVERTED before shipping: its two-sided test would not go
-   * green (a failed hold still reached the native clear), and an unproven change on the money path
-   * must not reach 16 devices. It returns in vc100 once the test holds.
+   * #344 ruling 4 — CLEAR ONLY AFTER THE HOLD IS DURABLE, AND ONLY IF IT IS. The ordering is half
+   * the fix and the condition is the other half: the native record is the only copy of this
+   * payload until holdOrphanPayment returns true, so clearing before it (what the old destructive
+   * consume did implicitly) or clearing despite it (vc99) loses a card transaction outright.
+   * Read, hold, then clear — and if the hold did not stick, do not clear at all.
    *
-   * What DID ship is the wiretap event in holdOrphanPayment: the loss is now visible from the
-   * server instead of a console line on a device. Still a loss -- but a dated, countable one.
+   * THE vc99 TRADE IS REVERSED HERE. It cleared regardless, reasoning that the alternative was
+   * re-reading the same orphan on every payment forever. That cost is real but it is BOUNDED and
+   * VISIBLE — the orphan is re-evaluated against each new order, held again (the retry usually
+   * wins on the next attempt), and never applied to the wrong one, because decideOrphanDisposition
+   * still guards every read. Dropping the record is unbounded and invisible: the money is simply
+   * gone, and the only trace was a console line on a device in a restaurant.
+   *
+   * A duplicate read costs a duplicate hold. A dropped read costs a customer's payment.
    */
+  if (!held) {
+    recordWiretapEvent('payment.orphan.clear_skipped_hold_failed', {
+      orphanOrderId: orphan.orderId ?? '(none)',
+      currentOrderId,
+      voucherNo: orphan.voucherNo ?? '(none)',
+      reason,
+    });
+    console.warn(
+      '[payment] hold failed — leaving the native orphan record in place',
+    );
+    return null;
+  }
 
-  /**
-   * #344 ruling 4 — CLEAR ONLY AFTER THE HOLD IS DURABLE. This ordering is the entire fix: the
-   * native record is the only copy until holdOrphanPayment returns, so clearing before it (which
-   * is what the old destructive consume did implicitly) loses a card transaction on any crash in
-   * between. Read, hold, then clear.
-   *
-   * If the hold silently failed — it is best-effort and cannot throw — the clear below still runs,
-   * because the alternative is re-reading the same orphan on every payment forever. That trade is
-   * deliberate and it is the one remaining lossy path; the storage write failing is the trigger,
-   * and it is logged.
-   */
   await releasePeekedOrphan(orphan);
   return null;
 }

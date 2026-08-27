@@ -203,42 +203,70 @@ export type HeldOrphanPayment = {
 };
 
 /**
+ * How many times a hold is attempted before it is declared failed, and the gap between attempts.
+ *
+ * BOUNDED, AND SMALL, ON PURPOSE. This runs on the payment path with an operator standing at a
+ * reader, so the whole budget has to stay well inside the time a card transaction already takes.
+ * Three attempts 50ms apart costs at most 100ms of extra latency in the failing case and nothing
+ * at all in the normal one — the right trade when the alternative is a dropped card payment.
+ */
+const HOLD_ORPHAN_ATTEMPTS = 3;
+const HOLD_ORPHAN_RETRY_MS = 50;
+
+/**
  * Hold an orphaned payment durably. Best effort: it must never break the payment in progress,
  * because throwing here would lose the CURRENT sale as well.
  *
- * THE LOSS IS NOW VISIBLE. The caller clears the native record regardless of whether this
- * succeeded -- the one remaining lossy path -- and until vc99 the only trace was a console.warn on
- * a device in a restaurant. That is precisely what let #156's ledger failure run at 99.7% for a
- * month unnoticed. The wiretap event below makes it countable from the server.
+ * IT REPORTS WHETHER THE RECORD IS DURABLE, AND THE CALLER IS REQUIRED TO CARE. This is the vc100
+ * half of #344 ruling 4. Until vc99 it returned void and the caller cleared the native record
+ * regardless, so a failed write dropped a real card transaction whose only other copy was the
+ * record being cleared. Its own docblock called that "the one remaining lossy path" and justified
+ * it because the failure "is logged" — to a console on a device in a restaurant that nobody reads.
  *
- * MAKING THE RELEASE CONDITIONAL ON THIS SUCCEEDING is the actual fix and is NOT in vc99: the
- * two-sided test for it would not go green, and an unproven money-path change must not ship to 16
- * devices. vc100.
+ * `false` means the payload now exists ONLY in the native record, so that record must be left
+ * alone. See applyOrHoldOrphan, the one caller that can act on it.
+ *
+ * STILL CANNOT THROW. A bookkeeping failure must not become a payment failure; the caller learns
+ * about it from the return value, never from an exception.
  */
 export async function holdOrphanPayment(
   record: HeldOrphanPayment,
-): Promise<void> {
-  try {
-    const existing = await getHeldOrphanPayments();
-    // Appended, never overwritten — two stranded transactions are two facts, not one.
-    await EncryptedStorage.setItem(
-      HELD_ORPHAN_PAYMENT_STORAGE_KEY,
-      JSON.stringify([...existing, record]),
-    );
-  } catch (err) {
+): Promise<boolean> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= HOLD_ORPHAN_ATTEMPTS; attempt += 1) {
     try {
-      recordWiretapEvent('payment.orphan.hold_failed', {
-        orphanOrderId: record.orphanOrderId || '(none)',
-        voucherNo: record.voucherNo ?? '(none)',
-        businessOrderNo: record.businessOrderNo ?? '(none)',
-        reason: record.reason,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } catch {
-      // Reporting must not throw inside a payment path.
+      const existing = await getHeldOrphanPayments();
+      // Appended, never overwritten — two stranded transactions are two facts, not one.
+      await EncryptedStorage.setItem(
+        HELD_ORPHAN_PAYMENT_STORAGE_KEY,
+        JSON.stringify([...existing, record]),
+      );
+      return true;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < HOLD_ORPHAN_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, HOLD_ORPHAN_RETRY_MS));
+      }
     }
-    console.warn('[storage] failed to hold orphaned payment', err);
   }
+
+  try {
+    recordWiretapEvent('payment.orphan.hold_failed', {
+      orphanOrderId: record.orphanOrderId || '(none)',
+      voucherNo: record.voucherNo ?? '(none)',
+      businessOrderNo: record.businessOrderNo ?? '(none)',
+      reason: record.reason,
+      attempts: HOLD_ORPHAN_ATTEMPTS,
+      error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    });
+  } catch {
+    // Reporting must not throw inside a payment path.
+  }
+  console.warn(
+    '[storage] failed to hold orphaned payment after retries',
+    lastErr,
+  );
+  return false;
 }
 
 export async function getHeldOrphanPayments(): Promise<HeldOrphanPayment[]> {

@@ -29,6 +29,34 @@
  */
 const {NativeModules} = require('react-native');
 
+/**
+ * THE INVALID HOSTS ABOVE ARE NOT ENOUGH ON THEIR OWN — this is what makes them deterministic.
+ *
+ * `example.invalid` cannot resolve, so a stray fetch normally fails in about 100ms. But DNS is the
+ * machine's, not ours: when the host's resolver stalls (this machine has an observed intermittent
+ * happy-eyeballs/ETIMEDOUT condition) the same call hangs for tens of seconds instead of failing.
+ * Every test that reaches the network then blows Jest's 5s default timeout AT ONCE, and the suite
+ * reports as many failures as it has tests, with no assertion text — so it reads exactly like a
+ * logic error in whatever was last changed.
+ *
+ * THAT IS NOT HYPOTHETICAL AND IT HAS ALREADY COST A SHIPPED FIX. orphanPaymentWiring.test.ts fails
+ * 13/13 that way; the #344 hold-release fix was diagnosed as "its two-sided test would not go
+ * green" and reverted out of vc99 on the strength of one such red. Reproduced deliberately by
+ * stubbing a hanging fetch: identical signature, "Exceeded timeout of 5000 ms" on all 13.
+ *
+ * So the failure is made instant and local rather than left to the resolver. This is the SAME
+ * intent the header states — a real fetch must fail fast and visibly — with the timing removed.
+ * Additive like everything else here: a suite that wants its own fetch just assigns one.
+ */
+global.fetch = jest.fn(async (input) => {
+  throw Object.assign(
+    new TypeError(
+      `fetch failed (jest.setup.js: no network in tests) for ${String(input)}`,
+    ),
+    {cause: {code: 'ENOTFOUND'}},
+  );
+});
+
 NativeModules.RuntimeConfig = {
   API_BASE_URL: 'https://example.invalid',
   SUPABASE_URL: 'https://example.invalid',

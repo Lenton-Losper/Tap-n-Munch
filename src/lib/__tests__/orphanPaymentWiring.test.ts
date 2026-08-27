@@ -316,11 +316,29 @@ describe('#183 — site 2 still applies a MATCHING cancel', () => {
  * ordering below is the fix, and the ORDER is the assertion: a clear that happens before the hold
  * is durable is the same bug with extra steps.
  */
+const HELD_KEY = 'flashtap_held_orphan_payment';
+
 async function runWithPeek(
   orphan: Record<string, unknown>,
   chargingOrderId: string,
-): Promise<{events: string[]; clearedWith: string[]}> {
-  let out!: {events: string[]; clearedWith: string[]};
+  /**
+   * How many of the FIRST hold attempts throw, simulating a storage write that will not stick.
+   * The write is broken at the EncryptedStorage boundary, so the real holdOrphanPayment — its real
+   * retry, its real return value — is what runs. Nothing here reimplements hold or release.
+   */
+  opts: {failHoldAttempts?: number} = {},
+): Promise<{
+  events: string[];
+  clearedWith: string[];
+  holdAttempts: number;
+  stored: string | null;
+}> {
+  let out!: {
+    events: string[];
+    clearedWith: string[];
+    holdAttempts: number;
+    stored: string | null;
+  };
   await jest.isolateModulesAsync(async () => {
     const {NativeModules, Platform} = require('react-native');
     Platform.OS = 'android';
@@ -333,12 +351,22 @@ async function runWithPeek(
     const events: string[] = [];
     const clearedWith: string[] = [];
     let stored: string | null = null;
+    let holdAttempts = 0;
+    const failHoldAttempts = opts.failHoldAttempts ?? 0;
     const encrypted = require('react-native-encrypted-storage')
       .default as {getItem: jest.Mock; setItem: jest.Mock};
     encrypted.getItem.mockImplementation(async (key: string) =>
       key === 'flashtap_terminal_token' ? 'test-token' : stored,
     );
-    encrypted.setItem.mockImplementation(async (_k: string, v: string) => {
+    encrypted.setItem.mockImplementation(async (k: string, v: string) => {
+      // KEY-AWARE for the same reason getItem is: only the held-orphan write is the hold.
+      if (k !== HELD_KEY) {
+        return;
+      }
+      holdAttempts += 1;
+      if (holdAttempts <= failHoldAttempts) {
+        throw new Error('simulated encrypted-storage write failure');
+      }
       events.push('hold');
       stored = v;
     });
@@ -370,7 +398,7 @@ async function runWithPeek(
     } catch {
       // irrelevant to the ordering under test
     }
-    out = {events, clearedWith};
+    out = {events, clearedWith, holdAttempts, stored};
   });
   return out;
 }
@@ -422,5 +450,80 @@ describe('#344 ruling 4 — the native record outlives the read', () => {
     expect(events).toContain('clear');
     expect(events).not.toContain('hold');
     expect(clearedWith).toEqual(['1724580000001']);
+  });
+});
+
+/**
+ * vc100 — THE CLEAR IS CONDITIONAL ON THE HOLD, not merely ordered after it.
+ *
+ * vc99 shipped the ordering (peek, hold, clear) but cleared UNCONDITIONALLY: holdOrphanPayment
+ * returned void and swallowed its own error, so a failed write cleared the native record that was
+ * the payload's only other copy and the card transaction was gone. Its docblock called this "the
+ * one remaining lossy path" and accepted it because the failure "is logged" — to a console on a
+ * device in a restaurant.
+ *
+ * BOTH SIDES ARE ASSERTED, AND THAT IS THE POINT. A suite that only checked the failure case would
+ * pass against a build that never clears at all — which re-reads the same orphan on every payment
+ * forever, the exact failure vc99's trade was chosen to avoid. So: a failed hold must not clear,
+ * AND a successful hold must clear exactly once.
+ *
+ * The write is broken at the storage boundary and the assertions read what the REAL
+ * holdOrphanPayment and releasePeekedOrphan did. An earlier attempt at this test stood up two
+ * jest.fn()s in place of that pair; it passed, and went on passing when the fix was removed,
+ * because it only ever exercised its own copy of the logic.
+ */
+const ORPHAN_FOR_A = {
+  outcome: 'success',
+  voucherNo: 'V-A',
+  orderId: A,
+  orphaned: true,
+  receiptToken: '1724580000000',
+};
+
+describe('vc100 — a hold that did not stick must not clear the native record', () => {
+  it('does NOT clear when every hold attempt fails', async () => {
+    const {events, clearedWith, stored} = await runWithPeek(
+      ORPHAN_FOR_A,
+      B,
+      {failHoldAttempts: Infinity},
+    );
+    // The whole fix in one assertion: the only surviving copy is left where it is.
+    expect(events).not.toContain('clear');
+    expect(clearedWith).toEqual([]);
+    // And nothing was persisted, so the native record really was the last copy.
+    expect(stored).toBeNull();
+  });
+
+  it('tries the hold a bounded number of times before giving up', async () => {
+    const {holdAttempts} = await runWithPeek(ORPHAN_FOR_A, B, {
+      failHoldAttempts: Infinity,
+    });
+    // Bounded: a payment path cannot retry forever with an operator at the reader.
+    expect(holdAttempts).toBe(3);
+  });
+
+  it('recovers when an early attempt fails and a later one succeeds', async () => {
+    // The retry is not decoration — it must actually convert a transient failure into a hold.
+    const {events, clearedWith, holdAttempts, stored} = await runWithPeek(
+      ORPHAN_FOR_A,
+      B,
+      {failHoldAttempts: 2},
+    );
+    expect(holdAttempts).toBe(3);
+    expect(events).toContain('hold');
+    expect(stored).not.toBeNull();
+    // Durable now, so the native record is correctly released.
+    expect(clearedWith).toEqual(['1724580000000']);
+  });
+
+  it('clears EXACTLY ONCE when the hold succeeds first time', async () => {
+    // The other side. Without this, "never clear" would satisfy the test above.
+    const {events, clearedWith, holdAttempts} = await runWithPeek(
+      ORPHAN_FOR_A,
+      B,
+    );
+    expect(holdAttempts).toBe(1);
+    expect(events.filter(e => e === 'clear')).toHaveLength(1);
+    expect(clearedWith).toEqual(['1724580000000']);
   });
 });
