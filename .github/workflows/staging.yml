@@ -244,6 +244,79 @@ jobs:
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
         run: npx tsx scripts/verify-held-payments-staging.ts
 
+  apply-waiter-led-service:
+    # ADR-005. FOUR migrations, and the API that depends on them is INERT until they run:
+    #   * POST /api/terminal/tables/:id/open fails on tabs.opened_by_user_id
+    #   * POST /api/terminal/rounds answers 502 LINES_NOT_WRITTEN, because order_lines is missing
+    #   * GET /api/terminal/tables?view=floor reports every owner as null
+    #
+    # None of that loses data and all of it looks like a broken feature, which is the worst way for
+    # a waiter to meet it on a P5 at 08:00.
+    #
+    # APPLY BEFORE DEPLOY, for the reason the held_payments job gives above.
+    #
+    # ORDER IS LOAD-BEARING. order_line_events carries a foreign key to order_lines, so 131000 MUST
+    # run before 131100. The list below is in dependency order; do not sort it, do not parallelise
+    # it, and do not "tidy" it into a matrix.
+    if: contains(github.event.head_commit.message, '[apply-waiter-led-service]')
+    runs-on: ubuntu-latest
+    name: Apply waiter-led service migrations (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Apply ADR-005 migrations on staging
+        run: |
+          set -euo pipefail
+          MIGS="supabase/migrations/20260827131000_order_lines.sql
+          supabase/migrations/20260827131100_order_line_events.sql
+          supabase/migrations/20260827131200_table_assignments.sql
+          supabase/migrations/20260827131300_tabs_opened_by_user_id.sql"
+
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            for MIG in $MIGS; do
+              VER="$(basename "$MIG" | cut -d_ -f1)"
+              echo "--- applying $VER ($MIG)"
+              npx supabase db query --db-url "$DB_URL" -f "$MIG"
+              npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            done
+            echo "APPLY_WAITER_LED_SERVICE_STAGING_OK (db-url)"
+            exit 0
+          fi
+
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            for MIG in $MIGS; do
+              VER="$(basename "$MIG" | cut -d_ -f1)"
+              echo "--- applying $VER ($MIG)"
+              npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+              # `db query` does NOT record the ledger row, so the drift gate would report these as
+              # unapplied having applied them. `migration repair` is what records it.
+              npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            done
+            echo "APPLY_WAITER_LED_SERVICE_STAGING_OK (password)"
+            exit 0
+          fi
+
+          echo "ERROR: No way to apply DDL. Add STAGING_DATABASE_URL or STAGING_SUPABASE_DB_PASSWORD,"
+          echo "or paste these four files into the staging SQL editor IN THIS ORDER:"
+          echo "$MIGS"
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
   probe-tenant-isolation:
     if: contains(github.event.head_commit.message, '[probe-tenant-isolation]')
     runs-on: ubuntu-latest
