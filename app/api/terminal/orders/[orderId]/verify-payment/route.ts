@@ -7,7 +7,11 @@ import {
   VERIFY_PAYMENT_OUTCOME_CODES,
   VERIFY_PAYMENT_STAFF_MESSAGE,
 } from '@/lib/payments/verify-payment-outcome'
-import { queryFinaticOrderPaid } from '@/lib/payments/query-finatic-order-paid'
+import {
+  queryFinaticOrderPaid,
+  isFinaticMerchantOrderInvalidError,
+  finaticErrorCode,
+} from '@/lib/payments/query-finatic-order-paid'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
@@ -149,11 +153,92 @@ export async function POST(
       )
     }
 
-    const result = await queryFinaticOrderPaid({
-      merchantOrderNo,
-      merchantNo,
-      storeNo,
-    })
+    /**
+     * #354 — E04111 IS A FOURTH STATE, AND IT WAS BEING REPORTED AS THE MOST ALARMING ONE.
+     *
+     * `queryPaymentOrder` throws on any non-success gateway code, so an E04111 ("no record of this
+     * merchant order number") fell all the way to the outer catch and came back as HTTP 502
+     * `payment_provider_unreachable` — "we could not complete the check". That is wrong in both
+     * directions at once: the provider WAS reached, answered immediately and answered clearly, and
+     * the staff message told an operator to retry a check whose answer will not change by retrying.
+     *
+     * It is the same conflation #153 fixed one level up (unreachable vs unconfigured), surviving
+     * in a state nobody had separated out. Measured 2026-08-27: every one of the six stranded
+     * Mingle orders answers E04111, and the positive control on the same credentials answers
+     * `paid=true` in the same run — so the gateway is emphatically reachable.
+     *
+     * WHAT IT MAPS TO, AND WHY NOT SOMETHING STRONGER. `NOT_CONFIRMED`, HTTP 200, `verified: true`.
+     * E04111 means "not registered at the gateway YET" and it is TIME-DEPENDENT: order #149
+     * answered E04111 and was confirmed PAID on the same reference 22 seconds later. So it must
+     * never be presented as a final "not paid", and the signed NOT_CONFIRMED copy says exactly the
+     * right thing — "no confirmation yet. this can still change - check again shortly. do not take
+     * a second payment on the strength of this."
+     *
+     * `isE04111` IS THE POINT OF THIS CHANGE. The terminal cannot distinguish this state from an
+     * ordinary not-paid on the wire, and it must never match on provider prose — the same rule
+     * that keeps the cancel codes on `result` rather than `resultMsg`. It is a computed boolean the
+     * server already puts in its own audit metadata, so this surfaces an existing fact rather than
+     * inventing a concept. vc103 ships the terminal's mapping INERT, waiting for this field.
+     *
+     * Additive for a fielded build: an old APK reads `paid`/`applied` and behaves as it does today.
+     * What changes is that it stops being told the provider is unreachable when it isn't.
+     */
+    let result: Awaited<ReturnType<typeof queryFinaticOrderPaid>>
+    try {
+      result = await queryFinaticOrderPaid({ merchantOrderNo, merchantNo, storeNo })
+    } catch (queryErr) {
+      if (!isFinaticMerchantOrderInvalidError(queryErr)) throw queryErr
+
+      const gatewayCode = finaticErrorCode(queryErr) ?? 'E04111'
+      console.log('[terminal/verify-payment] E04111 — gateway has no record of this reference', {
+        orderId,
+        terminalId: terminal.terminalId,
+        merchantOrderNo,
+        gatewayCode,
+      })
+
+      /**
+       * The audit row is what makes the PERSISTENCE ruling possible later: two observations at
+       * least 24h apart are required before an E04111 may authorise a cancel, and they are read
+       * back from exactly these rows, keyed on `businessOrderNo`. Best-effort — a failed audit
+       * write must not turn a clean answer into a 502.
+       */
+      const { error: e04AuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: terminal.restaurantId,
+        action: 'payment.verification_uncertain',
+        entity_type: 'order',
+        entity_id: orderId,
+        metadata: {
+          reason: `PayCloud query failed: ${gatewayCode}`,
+          outcome: 'left_pending_finatic_uncertain',
+          isE04111: true,
+          gatewayCode,
+          businessOrderNo: merchantOrderNo,
+          terminalId: terminal.terminalId,
+          credentialsMissing: false,
+        },
+      })
+      if (e04AuditError) {
+        console.error('[terminal/verify-payment] E04111 audit failed:', e04AuditError)
+      }
+
+      return NextResponse.json({
+        ok: true,
+        paid: false,
+        applied: false,
+        outcome: 'left_pending_finatic_uncertain',
+        // The gateway answered. That is what separates this from the outer catch's 502.
+        verified: true,
+        isE04111: true,
+        gatewayCode,
+        code: VERIFY_PAYMENT_OUTCOME_CODES.NOT_CONFIRMED,
+        staffMessage: VERIFY_PAYMENT_STAFF_MESSAGE[VERIFY_PAYMENT_OUTCOME_CODES.NOT_CONFIRMED],
+        source: 'finatic',
+        merchantOrderNo,
+        transactionId: null,
+        status: 'no_gateway_record',
+      })
+    }
 
     console.log('[terminal/verify-payment]', {
       orderId,
