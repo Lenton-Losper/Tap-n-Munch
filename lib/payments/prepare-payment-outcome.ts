@@ -32,18 +32,14 @@
  * they did, new builds branch on `outcome`.
  *
  * ============================================================================================
- * THE STRINGS BELOW ARE PLACEHOLDERS AND MUST BE REPLACED BEFORE THIS SHIPS TO A DEVICE.
+ * THE STRINGS BELOW ARE SIGNED, 2026-08-27. Pinned by
+ * __tests__/payment-outcome-copy-signed-off.test.ts.
  * ============================================================================================
  *
- * They carry the `PENDING COPY` marker deliberately, so scripts/check-no-pending-copy.mjs blocks
- * the production deploy until each one has been signed off. That gate is production-only by design
- * — staging is where a marked placeholder is supposed to live while the wording is settled. Do not
- * delete a marker to get a deploy through; get the wording and replace the string.
- *
- * NOTE FOR WHOEVER SIGNS THESE OFF: lib/payments/verify-payment-outcome.ts holds three sibling
- * strings for the verification side. They spell the marker `[COPY PENDING: ...]`, which
- * check-no-pending-copy.mjs does not match, so they can reach production unsigned. That is a
- * separate finding and is deliberately not changed here.
+ * The sibling finding this header used to record is CLOSED: verify-payment-outcome.ts spelled its
+ * placeholders `[COPY PENDING: ...]`, which check-no-pending-copy.mjs did not match, and three
+ * unsigned staff strings sat on production for days as a result. The gate now matches both word
+ * orders and all six strings are signed.
  */
 
 export const PREPARE_PAYMENT_OUTCOME_CODES = {
@@ -87,18 +83,24 @@ export const PREPARE_PAYMENT_OUTCOME_CODES = {
 export type PreparePaymentOutcomeCode =
   (typeof PREPARE_PAYMENT_OUTCOME_CODES)[keyof typeof PREPARE_PAYMENT_OUTCOME_CODES]
 
-/** PLACEHOLDER COPY — replace with the owner-signed strings. See the block comment above. */
+/**
+ * SIGNED OFF by the owner 2026-08-27, verbatim. Do not reword, re-wrap or re-punctuate.
+ *
+ * Pinned character-for-character by `__tests__/payment-outcome-copy-signed-off.test.ts`. Each
+ * of the three tells staff a DIFFERENT thing to do — take payment another way / look at this
+ * order / wait and retry — and collapsing any two removes the instruction that ends the loop that
+ * produced this issue.
+ */
 export const PREPARE_PAYMENT_STAFF_MESSAGE: Record<PreparePaymentOutcomeCode, string> = {
   [PREPARE_PAYMENT_OUTCOME_CODES.CARD_NOT_AVAILABLE_HERE]:
-    'PENDING COPY: prepare_card_not_available_here — card payment is not set up at this venue, ' +
-    'this is a setup problem and not a payment failure, retrying will not help, take payment ' +
-    'another way',
+    'card payments are not set up at this venue. this will not resolve by trying again. take ' +
+    'payment another way and let whoever set up the venue know.',
   [PREPARE_PAYMENT_OUTCOME_CODES.PREPARE_FAILED]:
-    'PENDING COPY: prepare_failed — this order cannot be prepared for a card payment, nothing ' +
-    'has been charged, the order needs looking at rather than retrying',
+    'this order cannot take a card payment right now. nothing has been charged. it needs looking ' +
+    'at rather than retrying.',
   [PREPARE_PAYMENT_OUTCOME_CODES.READINESS_UNKNOWN]:
-    'PENDING COPY: prepare_readiness_unknown — we could not check whether card payment is ' +
-    'available here, nothing was allocated and no card was presented, try again shortly',
+    'we could not check whether card payment is available here. nothing was started and no card ' +
+    'was presented. try again shortly.',
 }
 
 /** audit_logs.action written when prepare-payment refuses because the venue cannot settle a card. */

@@ -49,6 +49,139 @@ export function isFinaticMerchantOrderInvalidError(error: unknown): boolean {
   return code === 'E04111' || message.includes('E04111')
 }
 
+/**
+ * ============================================================================================
+ * THE PERSISTENCE RULING. Owner ruling, 2026-08-27.
+ * ============================================================================================
+ *
+ * READ THIS TOGETHER WITH THE BLOCK ABOVE. There are two rules about E04111 and they do not
+ * contradict each other; each bounds the other, and the boundary is TIME.
+ *
+ *   ABOVE  a single E04111 observation is never a terminal answer, so it can never authorise a
+ *          cancel. Order #149 flipped from verification_uncertain to completed on the SAME
+ *          reference in 22 seconds.
+ *   HERE   an E04111 that has PERSISTED for 72 hours or more, seen at least twice at least 24
+ *          hours apart, and confirmed by a fresh query at the moment of the write, DOES
+ *          authorise a cancel.
+ *
+ * WHY BOTH ARE TRUE. "Not registered at the gateway YET" is a statement about a race between our
+ * write and theirs. #149 bounds how long that race can plausibly run: 22 seconds. Three days is
+ * four orders of magnitude beyond it. A reference the gateway has never heard of after 72 hours is
+ * not still settling -- it is a reference that was minted here and never presented there, which is
+ * exactly what happens when staff ring an order up and the customer walks away.
+ *
+ * WHY 72 HOURS AND NOT "OLD ENOUGH". The threshold has to be a number in the code, because the
+ * alternative is an operator deciding case by case what counts as old -- and six of these were
+ * cleared by hand on 2026-08-27 precisely because no rule existed and they had sat for 14 days.
+ * The next six would have waited too. 72h preserves #149's case entirely and by an enormous
+ * margin.
+ *
+ * THE THREE CONDITIONS ARE CONJUNCTIVE AND EACH ONE CARRIES ITS OWN WEIGHT:
+ *
+ *   1. AGE IS MEASURED FROM THE PAYMENT ATTEMPT (`orders.payment_attempt_started_at`), never
+ *      from `now()` minus a guess and never from `placed_at`. The attempt is the moment the
+ *      reference was handed to the reader; that is the clock the gateway's race runs on. An order
+ *      placed a week ago whose card was presented ten minutes ago is TEN MINUTES old for this
+ *      purpose, and must not be cancelled.
+ *
+ *   2. TWO OBSERVATIONS AT LEAST 24 HOURS APART. One observation, however old the order, is a
+ *      single sample of a system that has been shown to change its answer. Two separated by a day
+ *      is evidence of a settled state rather than a moment. This is CHEAP to require because
+ *      `payment.verification_uncertain` audit rows already carry `isE04111` and `businessOrderNo`
+ *      -- measured 2026-08-27, the six live cases carried 103 to 106 observations each, spanning
+ *      14 days. Requiring two costs nothing and rules out a class of mistake entirely.
+ *
+ *   3. A FRESH QUERY AT THE MOMENT OF THE WRITE. Never a verdict read from an earlier sweep. The
+ *      caller must re-query in the same run as the cancel; a probe written minutes ago describes a
+ *      world that has since moved, and this codebase has already shipped a verification that
+ *      measured inside an async window and reported a state that was true for 80 seconds.
+ *
+ * WHAT THIS IS NOT. It is NOT `paid === false`. `queryFinaticOrderPaid` never returns for an
+ * E04111 -- the call THROWS -- so a caller branching on `paid === false` will never reach this
+ * rule, and a caller that treats a thrown E04111 as "not paid" is cancelling on an answer that
+ * means "I have never heard of this reference". That is the third state, and it is the whole
+ * reason this function exists rather than a boolean.
+ */
+export const E04111_PERSISTENCE_CANCEL_MS = 72 * 60 * 60 * 1000
+export const E04111_MIN_OBSERVATION_SEPARATION_MS = 24 * 60 * 60 * 1000
+
+export type E04111PersistenceVerdict = {
+  /** True ONLY when every condition holds. Anything else, including uncertainty, is false. */
+  authorisesCancel: boolean
+  /** Machine-readable reason, recorded on the audit row. */
+  reason:
+    | 'persisted_beyond_threshold'
+    | 'too_recent'
+    | 'insufficient_observations'
+    | 'observations_too_close_together'
+    | 'no_attempt_timestamp'
+    | 'not_reconfirmed_now'
+  /** Milliseconds from the payment attempt to now. Recorded on the audit row. */
+  ageMs: number | null
+  observationCount: number
+  observationSpanMs: number | null
+}
+
+/**
+ * Decide whether a persistent E04111 authorises cancelling this order.
+ *
+ * Deliberately PURE and deliberately separate from the query: the decision is a ruling and has to
+ * be testable without a gateway, and the caller has to be able to record exactly why it fired.
+ *
+ * `reconfirmedNow` is the caller's assertion that it has just re-queried and got E04111 again, in
+ * this run. It is a parameter rather than something inferred, so that a caller which has NOT
+ * re-queried cannot accidentally satisfy condition 3 by omission.
+ */
+export function e04111PersistenceAuthorisesCancel(params: {
+  attemptStartedAt: string | Date | null | undefined
+  /** Timestamps of previously RECORDED E04111 observations for this reference. */
+  observedAt: Array<string | Date>
+  reconfirmedNow: boolean
+  now: Date
+}): E04111PersistenceVerdict {
+  const { attemptStartedAt, observedAt, reconfirmedNow, now } = params
+
+  const attempt = attemptStartedAt ? new Date(attemptStartedAt) : null
+  if (!attempt || Number.isNaN(attempt.getTime())) {
+    // No attempt timestamp means no clock to measure the race on. Refuse -- do not fall back to
+    // placed_at, which can predate the card being presented by days.
+    return {
+      authorisesCancel: false,
+      reason: 'no_attempt_timestamp',
+      ageMs: null,
+      observationCount: observedAt.length,
+      observationSpanMs: null,
+    }
+  }
+
+  const ageMs = now.getTime() - attempt.getTime()
+  const times = observedAt
+    .map((t) => new Date(t).getTime())
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b)
+  const observationSpanMs = times.length >= 2 ? times[times.length - 1] - times[0] : null
+
+  const base = {
+    ageMs,
+    observationCount: times.length,
+    observationSpanMs,
+  }
+
+  // Condition 3 first: without a fresh confirmation nothing else matters, and checking it first
+  // means the reason recorded is the one a reader can act on.
+  if (!reconfirmedNow) return { ...base, authorisesCancel: false, reason: 'not_reconfirmed_now' }
+  if (ageMs < E04111_PERSISTENCE_CANCEL_MS) {
+    return { ...base, authorisesCancel: false, reason: 'too_recent' }
+  }
+  if (times.length < 2) {
+    return { ...base, authorisesCancel: false, reason: 'insufficient_observations' }
+  }
+  if ((observationSpanMs ?? 0) < E04111_MIN_OBSERVATION_SEPARATION_MS) {
+    return { ...base, authorisesCancel: false, reason: 'observations_too_close_together' }
+  }
+  return { ...base, authorisesCancel: true, reason: 'persisted_beyond_threshold' }
+}
+
 /** Structural gateway code off a thrown PaycloudRequestError, for logs and audits. */
 export function finaticErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null

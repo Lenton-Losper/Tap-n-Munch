@@ -18,16 +18,16 @@
  *
  * THE AUDIENCE IS MIXED, AND THAT CONSTRAINS THE COPY. The same screen is shown to a customer
  * holding a phone at a table and to a staff member whose dashboard layout threw. So it cannot say
- * "your order" and it cannot say "the till"; app/(staff)/error.tsx keeps the signed staff wording
- * for the case where the audience IS known, and this one has to work for either reader. That is
- * why none of the staff copy is reused verbatim below even though the sentence "We have been sent
- * the details automatically." would read correctly here -- reusing a string signed for one surface
- * on a different surface is the owner's call, not this file's.
+ * "your order" and it cannot say "the till"; app/(staff)/error.tsx keeps its own signed staff
+ * wording for the case where the audience IS known, and this one has to work for either reader.
  *
- * COPY IS NOT SIGNED. Every user-visible string below carries a `PENDING COPY` marker and is
- * therefore blocked from the production deploy by scripts/check-no-pending-copy.mjs. That is the
- * intended state, not an oversight: what is genuinely new here is wording, and wording is a
- * ruling. See PENDING_ROOT_BOUNDARY_COPY for what each string has to convey.
+ * ONE SENTENCE IS DELIBERATELY SHARED WITH THE STAFF BOUNDARY: "we have been sent the details
+ * automatically." The owner signed it for this surface on 2026-08-27 as audience-neutral. Reusing
+ * a string signed for one surface on another is a ruling, and it was made -- not an inference
+ * drawn here.
+ *
+ * COPY IS SIGNED, 2026-08-27, verbatim. Pinned character-for-character by
+ * __tests__/348-root-boundary-copy-signed-off.test.ts. Do not reword, re-wrap or re-punctuate.
  *
  * REPORTING. This posts to /api/crash-reports, the UNAUTHENTICATED intake (#348 half 1), and
  * explicitly does not look a staff token up: a customer on the QR surface has no Supabase auth
@@ -45,46 +45,42 @@ import {
 export const ROOT_ERROR_BOUNDARY_ID = 'app/error.tsx'
 
 /**
- * Placeholders, not wording. Each entry names what the final string has to convey; none of it is
- * a draft to be tidied up into the real thing.
+ * SIGNED OFF by the owner 2026-08-27, verbatim.
  *
- * The constraint the signer is working under, recorded so it does not have to be rediscovered:
- * this screen is shown to BOTH a customer at a table and a staff member whose dashboard layout
- * threw, so it cannot name an order, a payment, a till or a dashboard.
+ * The constraint the signer worked under, kept so it does not have to be rediscovered by whoever
+ * proposes the next reword: this screen is shown to BOTH a customer at a table and a staff member
+ * whose dashboard layout threw, so it cannot name an order, a payment, a till or a dashboard.
  */
-export const PENDING_ROOT_BOUNDARY_COPY = {
-  /** Must convey: this screen has stopped working. Neutral as to who is reading it. */
-  title: 'PENDING COPY: root_boundary_title — this screen has stopped working',
+export const ROOT_BOUNDARY_COPY = {
+  /** Neutral as to who is reading it. */
+  title: 'this screen has stopped working',
 
   /**
-   * Must convey: nothing has been lost and nothing has been charged twice; the failure is this
-   * screen, not the order or the payment behind it. Must NOT name a till, a dashboard or a card
-   * machine -- a customer has none of those -- and must not promise an order exists, because a
-   * crash on the menu means there may be no order at all.
+   * The failure is this screen, not the order or the payment behind it. Names no till, dashboard
+   * or card machine -- a customer has none of those -- and does not promise an order exists,
+   * because a crash on the menu means there may be no order at all.
    */
   body:
-    'PENDING COPY: root_boundary_body — the failure is this screen and nothing behind it; ' +
-    'nothing has been lost and nothing has been charged twice',
+    'it is this screen that failed, not anything behind it. nothing has been lost and nothing ' +
+    'has been charged twice.',
 
-  /** Must convey: load the page again. It is a button, so it has to read as one. */
-  action: 'PENDING COPY: root_boundary_action — load this page again',
-
-  /**
-   * Must convey: if it keeps happening, ask a member of staff -- the one recovery route a
-   * customer at a table actually has -- AND the factual claim that the details have already been
-   * sent to us without anyone filing anything. That second half must not be written unless it is
-   * true; it is true because of the reportBoundaryError call below, and if that call is ever
-   * removed this string has to go with it.
-   */
-  sub:
-    'PENDING COPY: root_boundary_sub — if it keeps happening ask a member of staff; the details ' +
-    'have already been sent to us automatically',
+  /** A button, so it reads as one. */
+  action: 'load this page again',
 
   /**
-   * Must convey: the label for the short code beneath, which is what someone reads out to us.
-   * Rendered as `<label> <code>`, so it needs whatever punctuation that requires.
+   * Two halves. The first is the only recovery route a customer at a table actually has.
+   *
+   * The second — 'we have been sent the details automatically.' — is the staff boundary's signed
+   * sentence, and the owner signed it for THIS surface on 2026-08-27 as audience-neutral. It is a
+   * FACTUAL CLAIM and it is true only because of the `reportBoundaryError` call below, which
+   * posts to the unauthenticated crash intake. **If that call is ever removed, this half of the
+   * string must go with it** — a page telling a customer their crash was reported when nothing
+   * was sent is worse than saying nothing.
    */
-  referenceLabel: 'PENDING COPY: root_boundary_reference_label — label for the code below',
+  sub: 'if it keeps happening, ask a member of staff. we have been sent the details automatically.',
+
+  /** Rendered as `<label> <code>`; the code is what someone reads out to us. */
+  referenceLabel: 'Reference:',
 } as const
 
 export default function RootError({
@@ -142,11 +138,11 @@ export default function RootError({
     <div className="flex min-h-[60vh] items-center justify-center px-4 py-12">
       <div className="w-full max-w-lg rounded-2xl border border-[#E5E3DE] bg-white p-8 text-center shadow-sm">
         <h1 className="text-xl font-semibold text-[#37352F]">
-          {PENDING_ROOT_BOUNDARY_COPY.title}
+          {ROOT_BOUNDARY_COPY.title}
         </h1>
 
         <p className="mt-4 text-sm leading-relaxed text-[#6B675F]">
-          {PENDING_ROOT_BOUNDARY_COPY.body}
+          {ROOT_BOUNDARY_COPY.body}
         </p>
 
         <button
@@ -154,15 +150,15 @@ export default function RootError({
           onClick={reload}
           className="mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-[#37352F] px-5 text-sm font-medium text-white transition-colors hover:bg-[#4A4740]"
         >
-          {PENDING_ROOT_BOUNDARY_COPY.action}
+          {ROOT_BOUNDARY_COPY.action}
         </button>
 
         <p className="mt-6 text-sm leading-relaxed text-[#6B675F]">
-          {PENDING_ROOT_BOUNDARY_COPY.sub}
+          {ROOT_BOUNDARY_COPY.sub}
         </p>
 
         <p className="mt-4 font-mono text-xs text-[#9B968C]">
-          {PENDING_ROOT_BOUNDARY_COPY.referenceLabel} {reference}
+          {ROOT_BOUNDARY_COPY.referenceLabel} {reference}
         </p>
       </div>
     </div>

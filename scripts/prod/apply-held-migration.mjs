@@ -155,6 +155,41 @@ const PRECONDITIONS = {
     ]
     return { out, ok: existing[0].n === 0 }
   },
+  /**
+   * #127's unique order-number index. The precondition is the whole point: CREATE UNIQUE INDEX
+   * aborts on the first duplicate, and the migration's own header states the two populations that
+   * had to be cleared first (#324's 941 fixture rows, and the 4 real duplicates renumbered).
+   *
+   * The count/max invariant is checked as well as the duplicate count, because they fail
+   * differently: duplicates block the CREATE, while a count != max means the OLD `count(*)+1`
+   * allocator would immediately issue a number that is already taken. Production runs
+   * `max(order_number)+1` today, so that is belt and braces -- but a venue that cannot take an
+   * order is the worst outcome available here, and it is cheap to refuse instead.
+   */
+  '20260826107000': async (c) => {
+    const { rows: dup } = await c.query(
+      `SELECT count(*)::int AS n FROM (
+         SELECT firebase_restaurant_id, order_number FROM orders
+          WHERE firebase_restaurant_id IS NOT NULL AND order_number IS NOT NULL
+          GROUP BY 1,2 HAVING count(*)>1) d`,
+    )
+    const { rows: inv } = await c.query(
+      `SELECT count(*)::int AS venues_out_of_step FROM (
+         SELECT restaurant_id, count(*) AS rows, count(DISTINCT order_number) AS distinct_nums
+           FROM orders WHERE restaurant_id IS NOT NULL AND order_number IS NOT NULL
+          GROUP BY 1) v WHERE v.rows <> v.distinct_nums`,
+    )
+    const { rows: idx } = await c.query(
+      `SELECT count(*)::int AS n FROM pg_indexes
+        WHERE tablename='orders' AND indexname='orders_firebase_restaurant_id_order_number_key'`,
+    )
+    const out = [
+      `  duplicate (firebase_id, order_number) groups ... ${dup[0].n}   <- must be 0`,
+      `  venues where rows <> distinct numbers .......... ${inv[0].venues_out_of_step}   <- must be 0`,
+      `  index already present .......................... ${idx[0].n === 1 ? 'yes' : 'no'}`,
+    ]
+    return { out, ok: dup[0].n === 0 && inv[0].venues_out_of_step === 0 }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,

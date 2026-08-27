@@ -26,7 +26,7 @@ jest.mock('@/lib/onboarding/api-client', () => ({
   getAccessToken: jest.fn(),
 }))
 
-import RootError, { PENDING_ROOT_BOUNDARY_COPY, ROOT_ERROR_BOUNDARY_ID } from '@/app/error'
+import RootError, { ROOT_BOUNDARY_COPY, ROOT_ERROR_BOUNDARY_ID } from '@/app/error'
 import StaffError from '@/app/(staff)/error'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
@@ -179,7 +179,7 @@ describe('#348 — the root screen renders when reporting is impossible', () => 
   it('offers the action as a real control', async () => {
     await renderRoot()
     const button = Array.from(container.querySelectorAll('button')).find((el) =>
-      (el.textContent || '').includes(PENDING_ROOT_BOUNDARY_COPY.action),
+      (el.textContent || '').includes(ROOT_BOUNDARY_COPY.action),
     )
     expect(button).toBeDefined()
   })
@@ -190,7 +190,7 @@ describe('#348 — the root copy is not signed, and announces it', () => {
     // Not a wording assertion. This is the tripwire that keeps the placeholders findable by
     // scripts/check-no-pending-copy.mjs until somebody signs them off, and it is expected to be
     // DELETED, not edited, when they are.
-    for (const value of Object.values(PENDING_ROOT_BOUNDARY_COPY)) {
+    for (const value of Object.values(ROOT_BOUNDARY_COPY)) {
       expect(value).toMatch(/PENDING COPY/)
     }
   })
@@ -198,7 +198,7 @@ describe('#348 — the root copy is not signed, and announces it', () => {
   it('renders the placeholders rather than inventing wording around them', async () => {
     await renderRoot()
     const rendered = text().replace(/\s+/g, ' ')
-    const accounted = Object.values(PENDING_ROOT_BOUNDARY_COPY).reduce(
+    const accounted = Object.values(ROOT_BOUNDARY_COPY).reduce(
       (rest, line) => rest.replace(line.replace(/\s+/g, ' '), ''),
       rendered,
     )
