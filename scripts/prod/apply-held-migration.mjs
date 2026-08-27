@@ -133,6 +133,108 @@ const PRECONDITIONS = {
     // The count is advisory -- receipts keep being issued -- so it is printed, not enforced.
     return { out, ok: col[0]?.data_type === 'jsonb' }
   },
+  /**
+   * #156's cron_runs heartbeat table. CREATE TABLE IF NOT EXISTS — additive, and dropping it
+   * removes visibility without breaking a caller. The preconditions therefore check the two things
+   * that would make creating it WRONG rather than merely redundant.
+   */
+  '20260827120000': async (c) => {
+    const { rows: existing } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.tables
+        WHERE table_schema='public' AND table_name='cron_runs'`,
+    )
+    // If something already owns this name, IF NOT EXISTS would silently adopt a table with the
+    // wrong shape and every later insert would fail on a column that is not there.
+    const { rows: cols } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='cron_runs'`,
+    )
+    const out = [
+      `  public.cron_runs already exists .... ${existing[0].n === 1 ? 'YES' : 'no'}`,
+      `  columns on it ..................... ${cols[0].n}   <- must be 0 unless we created it`,
+    ]
+    return { out, ok: existing[0].n === 0 }
+  },
+  /**
+   * #127's unique order-number index. The precondition is the whole point: CREATE UNIQUE INDEX
+   * aborts on the first duplicate, and the migration's own header states the two populations that
+   * had to be cleared first (#324's 941 fixture rows, and the 4 real duplicates renumbered).
+   *
+   * The count/max invariant is checked as well as the duplicate count, because they fail
+   * differently: duplicates block the CREATE, while a count != max means the OLD `count(*)+1`
+   * allocator would immediately issue a number that is already taken. Production runs
+   * `max(order_number)+1` today, so that is belt and braces -- but a venue that cannot take an
+   * order is the worst outcome available here, and it is cheap to refuse instead.
+   */
+  '20260826107000': async (c) => {
+    const { rows: dup } = await c.query(
+      `SELECT count(*)::int AS n FROM (
+         SELECT firebase_restaurant_id, order_number FROM orders
+          WHERE firebase_restaurant_id IS NOT NULL AND order_number IS NOT NULL
+          GROUP BY 1,2 HAVING count(*)>1) d`,
+    )
+    const { rows: inv } = await c.query(
+      `SELECT count(*)::int AS venues_out_of_step FROM (
+         SELECT restaurant_id, count(*) AS rows, count(DISTINCT order_number) AS distinct_nums
+           FROM orders WHERE restaurant_id IS NOT NULL AND order_number IS NOT NULL
+          GROUP BY 1) v WHERE v.rows <> v.distinct_nums`,
+    )
+    const { rows: idx } = await c.query(
+      `SELECT count(*)::int AS n FROM pg_indexes
+        WHERE tablename='orders' AND indexname='orders_firebase_restaurant_id_order_number_key'`,
+    )
+    const out = [
+      `  duplicate (firebase_id, order_number) groups ... ${dup[0].n}   <- must be 0`,
+      `  venues where rows <> distinct numbers .......... ${inv[0].venues_out_of_step}   <- must be 0`,
+      `  index already present .......................... ${idx[0].n === 1 ? 'yes' : 'no'}`,
+    ]
+    return { out, ok: dup[0].n === 0 && inv[0].venues_out_of_step === 0 }
+  },
+  /**
+   * #159's nine Mingle recipe quantities. This WRITES DATA at a live trading venue, so the
+   * preconditions are about whether the world still looks like the audit that justified it.
+   *
+   * THE OWNER'S CONDITION, verbatim: "confirm all nine are still on untracked items at the moment
+   * you write - if any has been re-tracked since the measurement, stop."
+   *
+   * That is the one that matters. The whole safety argument is that these nine sit on menu items
+   * with `track_inventory = false`, so no deduction path reads them and correcting them moves no
+   * balance. If somebody has re-enabled tracking on one since 2026-08-26, the correction stops
+   * being a no-op and becomes a live change to a venue's stock behaviour mid-service -- which is a
+   * different decision, taken by a different person, on a different day.
+   */
+  '20260826105000': async (c) => {
+    const MINGLE = '131c39d1-b816-407d-8c5f-e628fc38967e'
+    const NAMES = ['Wedge biscuits','Powerade','Sausage roll','popcorn','Mckane dry lemon',
+                   'Mckane Lemonade','Mckane soda water','Mckane tonic water','Single brownie']
+    const { rows: mis } = await c.query(
+      `SELECT count(*)::int AS n FROM recipe_items ri
+         JOIN recipes rc ON rc.id=ri.recipe_id
+         JOIN stock_items si ON si.id=ri.stock_item_id
+        WHERE rc.restaurant_id=$1 AND si.name = ANY($2) AND ri.quantity <> 1`, [MINGLE, NAMES])
+    const { rows: multi } = await c.query(
+      `SELECT count(*)::int AS n FROM recipe_items ri
+         JOIN recipes rc ON rc.id=ri.recipe_id
+         JOIN stock_items si ON si.id=ri.stock_item_id
+        WHERE rc.restaurant_id=$1 AND si.name = ANY($2)
+          AND (SELECT count(*) FROM recipe_items x WHERE x.recipe_id=rc.id) <> 1`, [MINGLE, NAMES])
+    // THE OWNER'S STOP CONDITION. Any of the nine on a TRACKED menu item means the no-op argument
+    // no longer holds.
+    const { rows: tracked } = await c.query(
+      `SELECT count(*)::int AS n, coalesce(string_agg(DISTINCT mi.name, ', '), '') AS which
+         FROM recipe_items ri
+         JOIN recipes rc ON rc.id=ri.recipe_id
+         JOIN stock_items si ON si.id=ri.stock_item_id
+         JOIN menu_items mi ON mi.id=rc.menu_item_id
+        WHERE rc.restaurant_id=$1 AND si.name = ANY($2) AND mi.track_inventory IS TRUE`,
+      [MINGLE, NAMES])
+    const out = [
+      `  of the nine, still NOT 1 .......... ${mis[0].n}   <- the rows this will correct`,
+      `  recipes that gained an ingredient . ${multi[0].n}   <- the UPDATE skips these by design`,
+      `  ON A TRACKED MENU ITEM ............ ${tracked[0].n}   <- MUST be 0${tracked[0].which ? '  (' + tracked[0].which + ')' : ''}`,
+    ]
+    return { out, ok: tracked[0].n === 0 }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,

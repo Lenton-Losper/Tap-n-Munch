@@ -172,3 +172,87 @@ describe('production refuses to promote from a red staging', () => {
     expect(String(wf.jobs['deploy']?.if ?? '')).toContain("needs.staging-health.result == 'skipped'")
   })
 })
+
+/**
+ * A GATE THAT RUNS NOWHERE — found 2026-08-27 auditing every `scripts/check-*`.
+ *
+ * `scripts/check-orders-fixture-excluded.ts` was written as a blocking gate (6e1195d8, #324) and
+ * added to no workflow. It ran nowhere for its entire life, and THREE separate documents said
+ * otherwise: its own docblock ("Static ... Blocking in CI"), and a COMMENT ON in
+ * supabase/migrations/20260827116000_orders_is_stress_fixture.sql -- deployed to the database --
+ * reading "CI enforces it via scripts/check-orders-fixture-excluded.ts".
+ *
+ * The gate itself is sound: it self-tests its detectors, and it goes RED naming the offending line
+ * on an unscoped `count: 'exact'` over `orders`. Nothing was wrong with it except that no CI step
+ * named it. That is the strongest form of decoration there is, and the documentation asserting it
+ * ran made it worse rather than better -- an all-clear nobody thinks to question.
+ *
+ * So the wiring is now pinned. Grepping a YAML file for a script name is a weak test in general,
+ * but the failure being guarded is exactly "the script exists and nothing invokes it", which is
+ * the one thing such a test detects and the only thing it needs to.
+ */
+describe('every static orders gate is actually invoked by a workflow', () => {
+  /**
+   * Each of these was found unwired, or wired on one branch only, in the 2026-08-27 audit:
+   *
+   *   check-orders-fixture-excluded.ts        ran in NO workflow (#324)
+   *   check-nocheck-undefined-identifiers.mjs ran in NO workflow -- and it was built in response
+   *                                           to the 2026-08-26 staff-dashboard outage, so the
+   *                                           outage class it exists for stayed unguarded
+   *   check-migration-version-unique.mjs      production only, while the collision it detects is
+   *                                           authored on branches, i.e. on staging (#280)
+   *
+   * They are pinned together because the failure is one failure: a gate is written, it works, and
+   * nothing invokes it. That is invisible to every other test in this repo -- each of these gates
+   * passes its own tests perfectly while running nowhere.
+   */
+  const GATES = [
+    'scripts/check-orders-read-bounded.ts',
+    'scripts/check-orders-fixture-excluded.ts',
+    'scripts/check-nocheck-undefined-identifiers.mjs',
+    'scripts/check-migration-version-unique.mjs',
+    // Added 2026-08-27. Ran in no workflow, and could not fail even if it had: one boolean per
+    // FILE, catch bodies read from raw source so a COMMENTED-OUT guard counted, and zero callers
+    // printing an all-clear at exit 0.
+    'scripts/check-terminal-auth-catch.ts',
+  ]
+
+  const runsIn = (file: string): string[] =>
+    Object.values(loadWorkflow(file).jobs).flatMap((j) => stepsOf(j).map((s) => s.run ?? ''))
+
+  it.each(GATES)('production-worker.yml runs %s', (script) => {
+    expect(runsIn('production-worker.yml').some((r) => r.includes(script))).toBe(true)
+  })
+
+  it.each(GATES)('staging.yml runs %s', (script) => {
+    expect(runsIn('staging.yml').some((r) => r.includes(script))).toBe(true)
+  })
+
+  it('runs the fixture gate in a job the deploy actually waits for', () => {
+    // CONTROL, and the half a grep would miss. A step in a job nothing `needs:` blocks nothing --
+    // wired and still decorative, the same defect wearing a workflow step.
+    const wf = loadWorkflow('production-worker.yml')
+    const owning = Object.entries(wf.jobs).find(([, j]) =>
+      stepsOf(j).some((s) => (s.run ?? '').includes('scripts/check-orders-fixture-excluded.ts')),
+    )
+    expect(owning).toBeDefined()
+    const needs = wf.jobs['deploy']?.needs
+    const asArray = Array.isArray(needs) ? needs : [needs]
+    expect(asArray).toContain(owning![0])
+  })
+
+  it('does not let the fixture gate swallow its own exit code', () => {
+    // `continue-on-error: true` is how the migration drift check in this same workflow became
+    // decoration -- see the note in scripts/check-branch-drift.mjs. A gate that reports without
+    // blocking is a report, and must not be mistaken for a gate.
+    const wf = loadWorkflow('production-worker.yml')
+    for (const job of Object.values(wf.jobs)) {
+      for (const step of stepsOf(job)) {
+        if ((step.run ?? '').includes('scripts/check-orders-fixture-excluded.ts')) {
+          expect((step as { 'continue-on-error'?: boolean })['continue-on-error']).toBeFalsy()
+          expect(step.run).not.toMatch(/\|\|\s*true|;\s*true|set \+e/)
+        }
+      }
+    }
+  })
+})

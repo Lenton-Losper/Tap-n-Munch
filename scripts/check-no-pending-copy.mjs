@@ -49,7 +49,23 @@ const SEARCH_DIRS = ['app', 'components', 'lib', 'hooks', 'contexts', 'types', '
 const SKIP_DIR_NAMES = new Set(['node_modules', '.next', '__tests__', 'tests', '__mocks__'])
 const EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs']
 
-const MARKER = /PENDING COPY/
+/**
+ * BOTH WORD ORDERS, AND THAT IS NOT PEDANTRY.
+ *
+ * Found 2026-08-27. `lib/payments/verify-payment-outcome.ts` carries three staff-facing
+ * placeholders spelled `[COPY PENDING: ...]`. `/PENDING COPY/` does not match that, so this gate
+ * reported OK while all three sat on `main` — live on production — for days.
+ *
+ * That is the same defect the gate exists to prevent, arriving through the one route the original
+ * could not see: not a file it did not scan, but a spelling it did not know. A checker that
+ * recognises exactly one phrasing of the convention is a checker that enforces the phrasing rather
+ * than the convention, and whoever writes the next placeholder has no way to know which of two
+ * natural word orders is the load-bearing one.
+ *
+ * So: match either order, and any separator between the words. `--list` output is what people use
+ * to build a sign-off list, and a placeholder missing from that list is a placeholder nobody signs.
+ */
+const MARKER = /\b(?:PENDING[\s_-]*COPY|COPY[\s_-]*PENDING)\b/i
 
 function walk(dir, out = []) {
   let entries

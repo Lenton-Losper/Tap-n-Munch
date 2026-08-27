@@ -29,8 +29,22 @@
  * menu_items those lines point at. Selects only. No writes, no fixture, production is not a test
  * environment.
  */
+/**
+ * #324 — the `order_number = 10` lookup now excludes the stress fixtures, and it needed to.
+ *
+ * `order_number` IS NOT A NARROWING FILTER on this table. The 1,314 seeded fixtures occupy order
+ * numbers 1..146 with up to 45 rows on a single number, all with `restaurant_id IS NULL`.
+ * Measured read-only on production 2026-08-27: `order_number = 10` matches SIX rows, and TWO of
+ * them are fixtures. This file prints `orders numbered 10 : N` and then dumps each one's VAT
+ * split, so a third of what it showed was a `total = 0` seeded row.
+ *
+ * It is the same defect that put 8 fixtures in a page of 10 on the platform order search
+ * (fixed at 6c777e3d), arriving through the same door: a lookup that reads like an identity and
+ * is not one.
+ */
 // @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
+import { excludeStressFixtures } from '../lib/orders/stress-fixtures'
 
 const PRODUCTION_REF = 'ihlmmpmolnpchzgwyhgh'
 const url = process.env.SUPABASE_URL || ''
@@ -50,12 +64,14 @@ async function main() {
   if (ctlErr) throw new Error(`control read failed: ${ctlErr.message}`)
   console.log(`  [control] orders readable and non-empty : ${ctl?.length ? 'YES' : 'NO — nothing below means anything'}`)
 
-  const { data: orders, error } = await admin
-    .from('orders')
-    .select('id, order_number, restaurant_id, table_number, status, payment_status, payment_method, subtotal, tax, total, items, placed_at')
-    .eq('order_number', 10)
-    .order('placed_at', { ascending: false })
-    .limit(5)
+  const { data: orders, error } = await excludeStressFixtures(
+    admin
+      .from('orders')
+      .select('id, order_number, restaurant_id, table_number, status, payment_status, payment_method, subtotal, tax, total, items, placed_at')
+      .eq('order_number', 10)
+      .order('placed_at', { ascending: false })
+      .limit(5),
+  )
   if (error) throw new Error(`order read failed: ${error.message}`)
   if (!orders?.length) {
     console.log('  no order with order_number = 10 — nothing to analyse')

@@ -1,11 +1,22 @@
-import { createClient } from '@supabase/supabase-js'
+/**
+ * Apply baseline RLS policies through the `exec_sql` RPC.
+ *
+ * The production `service_role` key was a string literal in this file until 2026-08-27. It now
+ * comes from the environment via scripts/lib/require-service-role-client.ts, which STOPS if the
+ * variable is absent rather than continuing with an empty key. See that file for the reasoning.
+ *
+ * This script WRITES (it alters tables and replaces policies), so it names the environment it is
+ * about to act on before doing anything.
+ *
+ * Usage:
+ *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npx tsx scripts/fixRLS.ts
+ */
+import { requireServiceRoleClient } from './lib/require-service-role-client'
 
-const supabase = createClient(
-  'https://ihlmmpmolnpchzgwyhgh.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlobG1tcG1vbG5wY2h6Z3d5aGdoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Njg3NDcwMCwiZXhwIjoyMDkyNDUwNzAwfQ.lTlLVVazNXYuLz0YNnhERkyZG9m9G7FOAStj5Xm5WnM'
-)
+const { client: supabase, environment, projectRef } = requireServiceRoleClient()
 
 async function fixRLS() {
+  console.log(`fixRLS: applying policies to ${environment} (${projectRef})`)
   // Enable RLS and add policy so users can read their own row
   const { error } = await supabase.rpc('exec_sql', {
     sql: `

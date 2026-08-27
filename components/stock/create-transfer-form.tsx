@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/select'
 import { OrganizationStockItemSelectField } from '@/components/stock/organization-stock-item-select-field'
 import { createTransferAction } from '@/lib/stock/transfer-actions'
+import { isTransferableBetween } from '@/lib/stock/transfer-item-configuration'
 import type { OrganizationRestaurantOption, OrganizationStockItemOption } from '@/lib/stock/transfer-queries'
 
 type LineRow = {
@@ -47,6 +48,42 @@ export function CreateTransferForm({
   const [isPending, startTransition] = useTransition()
 
   const destination = destinations.find((d) => d.id === toRestaurantId) ?? null
+
+  /**
+   * CHANGING THE DESTINATION RE-ASKS THE QUESTION THE PICKER ONLY ASKED ONCE.
+   *
+   * `OrganizationStockItemSelectField` blocks an item that is not configured at both ends AT THE
+   * MOMENT IT IS PICKED. It cannot block one that became impossible AFTERWARDS, and the
+   * destination is free to move after rows are filled in: pick an item mapped at destination B,
+   * switch the destination to C where it is not mapped, and the row keeps a selection that
+   * `dispatch_transfer` will reject with
+   * `organization_stock_item % has no active stock_items mapping at destination restaurant %`.
+   * Nothing between the picker and that exception looked at the pair again -- `handleSubmit`
+   * filters on "has an id and a positive quantity" only, and `create_transfer` validates that the
+   * two restaurants share an organisation but never that the ITEMS are mapped at both ends.
+   *
+   * So the selection is dropped rather than carried forward. The row returns to the picker, which
+   * lists the same item with its existing "Not configured at {location}" affordance and its
+   * existing tap-to-configure path -- one tap both re-selects the item and closes the gap that
+   * made it impossible. No wording is introduced here on purpose: the recovery path is one the
+   * component already owns.
+   *
+   * Rows with no selection yet, and rows whose item IS mapped at the new destination, are left
+   * exactly as they are, quantity included.
+   */
+  const changeDestination = (nextToRestaurantId: string) => {
+    setToRestaurantId(nextToRestaurantId)
+    setRows((current) =>
+      current.map((row) => {
+        if (!row.organizationStockItemId) return row
+        const orgItem = orgItems.find((item) => item.id === row.organizationStockItemId)
+        if (orgItem && isTransferableBetween(orgItem, sourceRestaurantId, nextToRestaurantId)) {
+          return row
+        }
+        return { ...row, organizationStockItemId: '' }
+      }),
+    )
+  }
 
   const updateRow = (key: string, patch: Partial<LineRow>) => {
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)))
@@ -118,7 +155,7 @@ export function CreateTransferForm({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="to-restaurant">To</Label>
-            <Select value={toRestaurantId} onValueChange={setToRestaurantId}>
+            <Select value={toRestaurantId} onValueChange={changeDestination}>
               <SelectTrigger id="to-restaurant" className="w-full border-[#E9E9E7] bg-white">
                 <SelectValue placeholder="Choose destination" />
               </SelectTrigger>

@@ -111,16 +111,41 @@ async function main() {
 
   // ---- 3
   console.log('3. referencing rows, per table:')
-  const CLEANABLE = new Set(['order_items'])
-  for (const [table, column] of [
-    ['order_items', 'order_id'],
-    ['payments', 'order_id'],
-    ['receipts', 'order_id'],
+  /**
+   * CORRECTED 2026-08-27. The list below named three tables that cannot reference an order, and
+   * the script rightly REFUSED rather than proceeding: it could not check them, and "could not
+   * check" is not "clean".
+   *
+   * Verified against production's own catalogue rather than by reading code:
+   *
+   *   order_items   DOES NOT EXIST. Line items are a jsonb column on `orders` itself, so they are
+   *                 deleted with the row and there is no orphan to make. Nothing to clean, which
+   *                 is why CLEANABLE is now empty.
+   *   receipts      DOES NOT EXIST. The receipt table is `receipt_documents`, already listed.
+   *   payments      EXISTS but has NO order_id column.
+   *
+   * The only real FOREIGN KEYS to public.orders(id) are `order_requests.accepted_order_id` and
+   * `receipt_documents.order_id`, both NO ACTION, and both already checked here. The remaining
+   * entries are SOFT references -- text/array columns with no FK -- which is exactly why they have
+   * to be checked by hand: the database will not stop the delete, so this script must.
+   */
+  const CLEANABLE = new Set<string>()
+  const REFERENCES = [
     ['receipt_documents', 'order_id'],
-    ['audit_logs', 'entity_id'],
     ['order_requests', 'accepted_order_id'],
+    ['audit_logs', 'entity_id'],
     ['stock_movements', 'reference_id'],
-  ] as const) {
+  ] as const
+  /**
+   * A table that has vanished must be a HARD failure, not a silent skip. The previous list went
+   * stale without anyone noticing, and a check that quietly passes because its subject no longer
+   * exists is the same defect as a gate that exits 0 having scanned nothing.
+   */
+  for (const [table] of REFERENCES) {
+    const { error } = await db.from(table).select('id').limit(1)
+    if (error) failures.push(`reference table ${table} is not readable: ${error.message}`)
+  }
+  for (const [table, column] of REFERENCES) {
     let n = 0
     for (let i = 0; i < ids.length; i += 100) {
       const { data, error } = await db.from(table).select('id').in(column, ids.slice(i, i + 100)).limit(1000)
@@ -159,20 +184,23 @@ async function main() {
   console.log('All preconditions hold.')
   if (!confirmed) {
     console.log('')
-    console.log(`DRY RUN — would delete ${ids.length} order(s) and their order_items.`)
+    console.log(`DRY RUN — would delete ${ids.length} order(s). No child table exists to clean.`)
     console.log('Re-run with --confirm to apply.')
     return
   }
 
-  // order_items first: the FK direction means an orphaned child is possible.
-  let itemsDeleted = 0
-  for (let i = 0; i < ids.length; i += 100) {
-    const slice = ids.slice(i, i + 100)
-    const { data, error } = await db.from('order_items').delete().in('order_id', slice).select('id')
-    if (error) throw new Error(`order_items delete failed after ${itemsDeleted}: ${error.message}`)
-    itemsDeleted += (data ?? []).length
-  }
-  console.log(`deleted order_items: ${itemsDeleted}`)
+  /**
+   * NO CHILD DELETE. Corrected 2026-08-27, after this step aborted the run at 0 rows.
+   *
+   * There is no `order_items` table on production and there never has been on this schema -- line
+   * items are a jsonb column on `orders` itself, so they are removed with the row and no orphan is
+   * possible. The only real foreign keys to `orders(id)` are `order_requests.accepted_order_id`
+   * and `receipt_documents.order_id`, both checked above and both zero.
+   *
+   * The abort was the script behaving correctly: it refused to continue when a write it expected
+   * to make could not be made. Deleting the parent while believing a child delete had succeeded
+   * would have been the bad outcome.
+   */
 
   let deleted = 0
   for (let i = 0; i < ids.length; i += 100) {

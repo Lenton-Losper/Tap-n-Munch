@@ -25,8 +25,28 @@
  *
  * STRICTLY READ-ONLY. Selects only, no fixture, no writes.
  */
+/**
+ * #324 — THE THREE `orders` COUNTS BELOW NOW EXCLUDE THE STRESS FIXTURES, AND ONE OF THEM WAS
+ * REPORTING A NUMBER THAT WAS 96.8% DEBRIS.
+ *
+ * Measured read-only on production 2026-08-27, this file's own three counts:
+ *
+ *     orders total          3522 raw ->  2208 real   (1314 fixtures, 37.3%)
+ *     orders table_closed   1358 raw ->    44 real   (1314 fixtures, 96.8%)
+ *     orders is_closed      3520 raw ->  2206 real   (1314 fixtures, 37.3%)
+ *
+ * The middle line is the point. `table_closed = true` was being reported as 1,358 when the marker
+ * is actually carried by FORTY-FOUR real orders, because every one of the 1,314 seeded fixtures
+ * carries it. 1358 is the same poisoned denominator that made `measure-customer-wait` conclude
+ * "only 43 of 1358 QR orders carry a session_id" and blame the instrumentation; on the real
+ * population it is 43 of 44.
+ *
+ * That is not a rounding error in a background statistic -- question 1 above is "is this marker
+ * widely enough carried to build the fix on?", and 1,358 and 44 are different answers to it.
+ */
 // @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
+import { excludeStressFixtures } from '../lib/orders/stress-fixtures'
 
 const PRODUCTION_REF = 'ihlmmpmolnpchzgwyhgh'
 const url = process.env.SUPABASE_URL || ''
@@ -46,14 +66,21 @@ async function main() {
   // 1. the marker that already exists on orders
   const counts = {}
   for (const [label, q] of [
-    ['orders total', admin.from('orders').select('id', { count: 'exact', head: true })],
     [
-      'orders table_closed = true',
-      admin.from('orders').select('id', { count: 'exact', head: true }).eq('table_closed', true),
+      'orders total (real)',
+      excludeStressFixtures(admin.from('orders').select('id', { count: 'exact', head: true })),
     ],
     [
-      'orders is_closed = true',
-      admin.from('orders').select('id', { count: 'exact', head: true }).eq('is_closed', true),
+      'orders table_closed = true (real)',
+      excludeStressFixtures(
+        admin.from('orders').select('id', { count: 'exact', head: true }).eq('table_closed', true),
+      ),
+    ],
+    [
+      'orders is_closed = true (real)',
+      excludeStressFixtures(
+        admin.from('orders').select('id', { count: 'exact', head: true }).eq('is_closed', true),
+      ),
     ],
     ['order_requests total', admin.from('order_requests').select('id', { count: 'exact', head: true })],
   ]) {

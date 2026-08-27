@@ -329,11 +329,19 @@ describe('every moved string is byte-identical to the literal it replaced', () =
   })
 })
 
-describe('the React invariants are pinned, and stay out of the sign-off surface', () => {
-  it('holds the two provider guards, byte-identical', () => {
+describe('the non-rendered messages are pinned, and stay out of the sign-off surface', () => {
+  it('holds every internal message, byte-identical', () => {
+    // EXHAUSTIVE by `toEqual`, deliberately: a string added here without a pin is unprotected, and
+    // an unprotected string in the module that exists to hold moved strings is the same
+    // opt-in-enforcement hole #334 was filed about. Adding an entry means adding it here too.
     expect(MENU_INTERNAL_MESSAGES).toEqual({
       useCartOutsideProvider: 'useCart must be used within a CartProvider',
       useTabOutsideProvider: 'useTab must be used within a TabProvider',
+      // Moved verbatim from hooks/useActiveOrders.ts on 2026-08-27 when the #334 gate was widened
+      // to hooks/ and saw it for the first time. Not customer copy: neither consumer of the hook's
+      // `error` renders it (ActiveOrderBanner console.errors it; menu-order-status-tracker uses it
+      // as a boolean), so it needs no sign-off. See the comment on the key itself.
+      activeOrdersLoadFailed: 'Failed to load active orders',
     })
   })
 

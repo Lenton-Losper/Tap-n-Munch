@@ -24,6 +24,7 @@
  * apart.
  */
 import { config } from 'dotenv'
+import { isStressFixtureOrder } from '../../lib/orders/stress-fixtures'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
@@ -40,20 +41,43 @@ async function main() {
   const { data: venues } = await db.from('restaurants').select('id,name')
   const vname = new Map((venues ?? []).map((v) => [v.id, v.name]))
 
-  const COLS = 'id,restaurant_id,order_number,table_number,tab_id,session_id,status,payment_status,' +
+  // `firebase_restaurant_id` is here for #324's predicate, and it has to be: the predicate answers
+  // "not a fixture" for any row that did not select it, which is the reassuring answer and the
+  // silent one. Nothing below reads the column directly.
+  const COLS = 'id,restaurant_id,firebase_restaurant_id,order_number,table_number,tab_id,session_id,status,payment_status,' +
     'payment_method,payment_channel,channel,total,is_closed,table_closed,placed_at,accepted_at,' +
     'completed_at,paid_at,cancelled_at,cancellation_reason,payment_attempt_started_at,' +
     'payment_attempt_source,payment_provider,payment_reference,paycloud_merchant_order_no,' +
     'paycloud_transaction_id,payment_trans_no,payment_voucher_no,payment_checkout_url,updated_at'
 
-  const rows = []
+  const raw = []
   for (let f = 0; ; f += 1000) {
     const { data, error } = await db.from('orders').select(COLS).order('placed_at').range(f, f + 999)
     if (error) throw new Error(error.message)
-    rows.push(...(data ?? []))
+    raw.push(...(data ?? []))
     if (!data || data.length < 1000) break
   }
-  console.log('orders read: ' + rows.length)
+
+  /**
+   * #324 — THIS PROBE IS WHERE THE 876 CAME FROM, SO IT REPORTS BOTH POPULATIONS BY NAME.
+   *
+   * Every partition below is over the WHOLE table, and 37.3% of that table is stress fixtures:
+   * 1,314 rows seeded on 2026-04-27, `restaurant_id IS NULL`, `total = 0`, never paid — of which
+   * 876 carry `payment_status = 'cancelled'` with `status = 'completed'`, and all 1,314 carry
+   * `channel = 'table'` and so are counted as QR by `isQr()` below.
+   *
+   * That is the entire "876 of 891 QR card orders are in a contradictory state" finding. The real
+   * QR card population is fifteen orders and none of them is in that state.
+   *
+   * The split is printed rather than silently filtered, because this file is the reproduction that
+   * the wrong figure is cited from: a run that simply reported the smaller correct number would
+   * read as the earlier one having been imagined.
+   */
+  const fixtures = raw.filter(isStressFixtureOrder)
+  const rows = raw.filter((o) => !isStressFixtureOrder(o))
+  console.log('orders read (raw)        : ' + raw.length)
+  console.log('#324 stress fixtures     : ' + fixtures.length + '   <- excluded from everything below')
+  console.log('orders read (real)       : ' + rows.length)
 
   const isQr = (o) => { const c = String(o.channel ?? '').toLowerCase(); return c !== 'pos' && c !== 'terminal' }
   const isCard = (o) => String(o.payment_method ?? '').toLowerCase() === 'card'

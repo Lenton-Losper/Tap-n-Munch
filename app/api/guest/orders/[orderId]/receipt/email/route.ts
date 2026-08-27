@@ -32,9 +32,33 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
  * difference between a refusal and this restaurant mailing a stranger's itemised receipt to an
  * address the caller typed.
  *
- * This route still takes NO session token. That is #304's open half: a live token would refuse
- * the customer who paid, left, and had their table closed, which is exactly when they want the
- * receipt. Ownership is what is enforceable without inventing that lifecycle.
+ * #304 SECOND NARROWING -- THE RECIPIENT IS BOUND. The address is still typed by the caller on the
+ * FIRST send, because there is nowhere else to get it: #234 established there is no
+ * `customer_email` column and there is none at HEAD. But once this receipt has been delivered to an
+ * address, that is the only address it may be delivered to (sendReceiptEmail GATE 3, opt-in, set
+ * only by this route). That removes the attacker's CHOICE of recipient for every send after the
+ * first, which is the property the issue names as the difference between exfiltration and nuisance.
+ *
+ * MEASURED ON PRODUCTION 2026-08-27, read-only, at deployed b270378a -- a dated measurement, not a
+ * standing claim (Rule 20). Of 88 receipt_deliveries rows, 85 are PRINT and 3 are EMAIL. Those 3
+ * span 3 distinct receipt documents and ONE distinct destination address, which is the developer's
+ * own; no receipt has ever been emailed to more than one address, and 1807 of the 1810 receipt
+ * documents have never been emailed at all. So the exfiltration signature is absent and this has
+ * never been exercised against a customer -- which sets the urgency, not the correctness.
+ *
+ * RE-DERIVE IT rather than trusting the paragraph above: the PRINT and document totals move with
+ * live traffic (they moved by 3 between two runs twenty minutes apart), and only the EMAIL figures
+ * were stable. `scripts/measure-304-receipt-email-exposure.ts` is that measurement, read-only, and
+ * it refuses to report a finding when its own controls fail -- because a query that reads nothing
+ * produces the same "zero" as a clean result.
+ *
+ * STILL OPEN, AND OWED A RULING. This route takes NO session token, and requiring one would refuse
+ * every legitimate caller today: the ONLY guest surface that calls it is
+ * `app/menu/[restaurantId]/kiosk-success/page.tsx`, the kiosk flow holds no
+ * `flashtap_session_token` (nothing under `app/menu/[restaurantId]/kiosk*` reads or writes that
+ * key -- tokens are minted on the QR/tab flow in `v2/page.tsx`), and that page sends this request
+ * with a bare `fetch`, not `fetchWithSession`. So #304 option A is not a drop-in; it needs the
+ * kiosk flow bound to a tab, or a one-time signed delivery link. Neither is decided.
  *
  * The session id is read from BOTH `session_id` and repeated `session_id` params, because the
  * app mints two ids in different storages and an order carries whichever the placing screen
@@ -114,7 +138,16 @@ export async function POST(
     return NextResponse.json({ error: MENU_COPY.somethingWentWrongAskStaff }, { status: 500 })
   }
 
-  const result = await sendReceiptEmail(receipt, email)
+  /**
+   * #304 — `bindRecipientToFirstDelivery` IS SET HERE AND NOWHERE ELSE.
+   *
+   * This is the route with no session token. The two staff routes
+   * (`app/api/orders/[orderId]/receipt/email`, `app/api/terminal/receipts/[orderId]/email`) do not
+   * pass it and are unchanged: staff mailing one receipt to two addresses is the job.
+   *
+   * Reverting this fix is deleting this one argument.
+   */
+  const result = await sendReceiptEmail(receipt, email, { bindRecipientToFirstDelivery: true })
 
   if (result.status === 'failed') {
     /**
@@ -134,7 +167,15 @@ export async function POST(
      *
      * The real reason still reaches the log and the delivery row, which is where it is useful.
      */
-    const refused = result.failure === 'attempt_ceiling'
+    /**
+     * #304 joins `recipient_not_bound` to the SAME 429 the ceiling already uses, rather than
+     * inventing a third status. The 2026-08-25 ruling is that a deliberate refusal answers 429 and
+     * a provider failure answers 502; a bound recipient is a deliberate refusal, so it belongs on
+     * the side that already exists. Whether a refusal of this shape deserves its own status is a
+     * wording-and-contract decision and is flagged on #304, not answered here.
+     */
+    const refused =
+      result.failure === 'attempt_ceiling' || result.failure === 'recipient_not_bound'
     console.error('[guest/receipt/email] send failed', {
       orderId,
       deliveryId: result.deliveryId,

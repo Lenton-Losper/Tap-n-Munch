@@ -7,6 +7,7 @@ import {
 } from '@/lib/guest-orders/client'
 import { isActiveOrderStatus } from '@/lib/orders/active-order-visibility'
 import { heldSessionIds } from '@/lib/tab-storage'
+import { MENU_INTERNAL_MESSAGES } from '@/lib/customer-copy/menu-copy'
 
 /** Ignore banner orders older than this (stale visits / previous days). */
 const BANNER_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -142,7 +143,7 @@ export function useActiveOrders(
         setError(null)
       } catch (err: any) {
         if (cancelled) return
-        setError(err?.message || 'Failed to load active orders')
+        setError(err?.message || MENU_INTERNAL_MESSAGES.activeOrdersLoadFailed)
         setActiveOrder(null)
         setLoading(false)
       }

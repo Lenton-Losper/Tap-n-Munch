@@ -134,7 +134,144 @@ function writeCallRanges(src: string): Array<[number, number]> {
   return ranges
 }
 
+/**
+ * RULE 3 — THE VALUE WRITTEN TO AN ALLOCATED COLUMN, JUDGED PER CALL SITE.
+ *
+ * ============================================================================================
+ * WHY RULE 2 WAS NOT ENOUGH, found 2026-08-27 by mutation
+ * ============================================================================================
+ *
+ * Rule 2 is guarded by `if (!importsAllocator)` — a FILE-LEVEL signal for a defect that is
+ * PER CALL SITE. One import statement anywhere in a file disables it for every write in that file.
+ *
+ * Planting a hand-rolled second allocator in `lib/orders/create-order.ts`:
+ *
+ *     supabase.from('orders').insert({ restaurant_id, order_number: (last?.order_number ?? 0) + 1 })
+ *
+ * produced: "OK — 603 files scanned, every order number is issued by lib/orders/order-number.ts."
+ * Rule 1 missed it too (its pattern needs a `count`-shaped name), so BOTH rules passed over the
+ * exact defect the file's title forbids.
+ *
+ * FOUR files hold that blanket exemption, and they are the worst four to be blind in:
+ *   app/api/orders/route.ts   <- named in this script's OWN docblock as having held TWO of the
+ *                                five historical count(*)+1 allocators
+ *   app/api/order-requests/[requestId]/accept/route.ts
+ *   lib/orders/create-order.ts
+ *   lib/supabase/orders.ts
+ * A sixth allocator written inside any of them could not fail this gate.
+ *
+ * ============================================================================================
+ * WHY THE EXEMPTION IS NARROWED RATHER THAN DELETED
+ * ============================================================================================
+ *
+ * Deleting `if (!importsAllocator)` was the obvious fix and it is wrong: it produces FOUR findings
+ * on a correct tree, because those files legitimately write the number the allocator handed them.
+ * All four write a BARE IDENTIFIER —
+ *
+ *     order_number: orderNumber          lib/orders/create-order.ts:133
+ *     order_number: allocated            app/api/orders/route.ts:542
+ *     kiosk_order_number: kioskNumber    app/api/orders/route.ts:603
+ *     kiosk_order_number: kioskOrderNumber
+ *                                        app/api/order-requests/[requestId]/accept/route.ts:226
+ *
+ * — which is what passing an allocated value through looks like. A gate that opens with four false
+ * positives on correct code is one somebody switches off, and this repo has already recorded that
+ * failure twice.
+ *
+ * So the discriminator is PROVENANCE, not location: a value that is handed to the write is fine; a
+ * value the write DERIVES for itself is a second allocator regardless of what the file imports.
+ * Deriving is the whole defect — count(*)+1 and max+1 both drop or collide when a row leaves the
+ * table, which is why the allocator retries on the unique index's 23505 instead.
+ *
+ * Kept deliberately narrow: arithmetic, a row count, a length, a max. Anything subtler than this is
+ * a value someone computed elsewhere and passed in, which rule 1 and the allocator's own retry
+ * already cover, and widening further would start flagging the four correct sites above.
+ */
+const DERIVED_VALUE = /\+\s*1\b|\.length\b|\bcount\b|\bmax\s*\(/i
+
+/**
+ * The value expression for `column:` inside a write body — up to the comma that ends the property,
+ * ignoring commas nested inside parens, brackets or braces.
+ */
+function valueExpressionFor(body: string, column: string): { value: string; index: number } | null {
+  const key = new RegExp(`(^|[{,\\s])${column}\\s*:`)
+  const m = key.exec(body)
+  if (!m) return null
+  const start = m.index + m[0].length
+  let depth = 0
+  let i = start
+  for (; i < body.length; i += 1) {
+    const c = body[i]
+    if (c === '(' || c === '[' || c === '{') depth += 1
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) break
+      depth -= 1
+    } else if (c === ',' && depth === 0) break
+  }
+  return { value: body.slice(start, i), index: m.index }
+}
+
+/**
+ * SELF-TEST — this script had none, over 603 files and two rules of pure regex.
+ *
+ * If any pattern here stops matching, the script reports "OK — every order number is issued by
+ * lib/orders/order-number.ts" over a codebase full of offenders and nothing notices. That is the
+ * failure mode the sibling gates check-orders-read-bounded.ts and check-session-restaurant-
+ * resolver.ts were each given a self-test to prevent; the lesson had not been applied here.
+ *
+ * These drive the REAL `valueExpressionFor` and the REAL `DERIVED_VALUE`, not a copy. The
+ * must-ignore half is the load-bearing half: it is the four correct call sites, verbatim, and it is
+ * what stops a future widening of DERIVED_VALUE from turning this gate into four false positives on
+ * a correct tree.
+ */
+function selfTest(): void {
+  const derived = (body: string, column = 'order_number') => {
+    const e = valueExpressionFor(body, column)
+    return e !== null && DERIVED_VALUE.test(e.value)
+  }
+
+  const MUST_CATCH: Array<[string, string]> = [
+    ['the 2026-08-27 mutation that got past rule 2', '{ restaurant_id: r, order_number: (last?.order_number ?? 0) + 1 }'],
+    ['count(*)+1, the shape of all five historical allocators', '{ order_number: (count || 0) + 1 }'],
+    ['a length-derived sequence', '{ order_number: existing.length + 1 }'],
+    ['max()+1 written inline', '{ order_number: max(rows) + 1 }'],
+    ['the kiosk counter, same defect', '{ kiosk_order_number: (c ?? 0) + 1 }'],
+  ]
+  for (const [why, body] of MUST_CATCH) {
+    const column = body.includes('kiosk_order_number') ? 'kiosk_order_number' : 'order_number'
+    if (!derived(body, column)) {
+      console.error(`SELF-TEST FAILED: no longer catches ${why}\n  ${body}`)
+      process.exit(2)
+    }
+  }
+
+  // FALSE-POSITIVE GUARD: the four real call sites on this tree, which pass the allocator's own
+  // value through and MUST stay green. See the rule 3 docblock.
+  const MUST_IGNORE: Array<[string, string]> = [
+    ['lib/orders/create-order.ts:133', '{ tab_id: t, order_number: orderNumber, channel: c }'],
+    ['app/api/orders/route.ts:542', '{ total: p.total, order_number: allocated, channel }'],
+    ['app/api/orders/route.ts:603', '{ kiosk_order_number: kioskNumber }'],
+    ['accept/route.ts:226', '{ kiosk_order_number: kioskOrderNumber }'],
+  ]
+  for (const [where, body] of MUST_IGNORE) {
+    const column = body.includes('kiosk_order_number') ? 'kiosk_order_number' : 'order_number'
+    if (derived(body, column)) {
+      console.error(`SELF-TEST FAILED: now flags a correct pass-through at ${where}\n  ${body}`)
+      process.exit(2)
+    }
+  }
+
+  // The value extractor must stop at the property's own comma, or every write body reads as one
+  // expression and a `+ 1` anywhere in it would flag the wrong column.
+  const e = valueExpressionFor('{ order_number: allocated, total: subtotal + 1 }', 'order_number')
+  if (e === null || e.value.trim() !== 'allocated') {
+    console.error(`SELF-TEST FAILED: value extraction crossed a property boundary — got ${JSON.stringify(e?.value)}`)
+    process.exit(2)
+  }
+}
+
 function main() {
+  selfTest()
   const files: string[] = []
   for (const dir of SEARCH_DIRS) walk(join(ROOT, dir), files)
 
@@ -162,6 +299,22 @@ function main() {
         })
       }
     })
+
+    // ---- rule 3: runs on EVERY file, including the four that import the allocator
+    for (const [start, end] of writeCallRanges(src)) {
+      const body = src.slice(start, end)
+      for (const column of ALLOCATED_COLUMNS) {
+        const expr = valueExpressionFor(body, column)
+        if (expr && DERIVED_VALUE.test(expr.value)) {
+          findings.push({
+            file: rel,
+            line: lineOf(start + expr.index),
+            text: `${column}:${expr.value.trim()}`,
+            why: 'derives the number in the write itself — a second allocator, whatever the file imports',
+          })
+        }
+      }
+    }
 
     // ---- rule 2
     if (!importsAllocator) {

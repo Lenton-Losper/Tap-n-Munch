@@ -52,11 +52,41 @@ const EXTS = ['.ts', '.tsx']
 const ALLOWED_FILES = new Set(['lib/orders/order-identity.ts'])
 
 /**
- * Offenders that predate this scan and are NOT order NUMBERS despite matching the shape --
- * `table_number`, `kiosk_order_number` and friends have no allocation rule and 0 is not special.
- * Kept as an explicit list rather than a clever regex so that adding one is a visible decision.
+ * THE ALLOWED-SUFFIX LIST IS GONE, AND NOTHING REPLACED IT. Removed 2026-08-27.
+ *
+ * It read:
+ *
+ *     const ALLOWED_SUFFIXES = ['table_number', 'kiosk_order_number', 'merchant_order_no', 'orderNumberInput']
+ *     ...
+ *     if (ALLOWED_SUFFIXES.some((s) => line.includes(s))) return
+ *
+ * Those identifiers are genuinely not order numbers -- they have no allocation rule and 0 is not
+ * special for them -- but the mechanism SKIPPED THE WHOLE LINE. One allowed word anywhere on a
+ * line discarded everything else on it. Verified by mutation:
+ *
+ *     const zzB = order.order_number != null && row.table_number      passed GREEN
+ *
+ * The left half is exactly the shape that put "Order #0" in front of a customer on 2026-08-19. The
+ * right half is an unrelated mention of a table number, and it silently acted as a suppression
+ * token -- a one-word opt-out of the money-path guard that nobody would recognise as one while
+ * writing it.
+ *
+ * WHY NOTHING REPLACED IT, which is the part worth reading. The first fix here masked each allowed
+ * identifier out of the line instead of skipping the line. That was WRONG -- not incorrect, but
+ * DEAD: neutering the masking step changed no outcome, on the 608-file tree or on a single
+ * self-test case. The `\b` in every pattern below already does the whole job, because `_` is a word
+ * character:
+ *
+ *     \border_number   does NOT match inside  kiosk_order_number   (no boundary after `_`)
+ *     \border_number   does NOT match inside  supplier_order_number  -- and never will, so the
+ *                                                                      list needed no maintenance
+ *     \borderNumber\b  does NOT match inside  orderNumberInput
+ *
+ * A list that cannot change any verdict is the decoration this whole audit is about, so it is
+ * deleted rather than kept for comfort. What USED to be the list is now pinned in the self-test's
+ * must-ignore half, where it is load-bearing: drop a `\b` from any pattern and `kiosk_order_number`
+ * starts matching and the self-test fails. That is a real guard; the masking was not.
  */
-const ALLOWED_SUFFIXES = ['table_number', 'kiosk_order_number', 'merchant_order_no', 'orderNumberInput']
 
 type Finding = { file: string; line: number; text: string }
 
@@ -102,12 +132,102 @@ const PATTERNS: Array<{ re: RegExp; why: string }> = [
     why: "typeof check on an order number — admits 0",
   },
   {
-    re: /\bNumber\(\s*[\w.?[\]'"]*\b(?:order_number|orderNumber)\b\s*(?:\|\||\?\?)/,
-    why: 'coerces an order number with a fallback — Number(\'\') is 0',
+    /**
+     * THE FALLBACK MAY SIT EITHER SIDE OF THE CLOSING PAREN, and until 2026-08-27 only one side
+     * was matched. `Number(x || 0)` was caught; `Number(x) || 0` was not, though the two are the
+     * same defect and produce the same 0. Verified by mutation:
+     *
+     *     const zzA = Number(order.order_number) || 0     passed GREEN
+     *
+     * #296 happened to be written the caught way. Which side of the paren the author puts the
+     * fallback on is a style choice, and a guard that enforces a style rather than the rule leaves
+     * the other spelling open -- the same defect that let `[COPY PENDING:` past the placeholder
+     * gate for days.
+     *
+     * `[^)]*` cannot cross a `)`, so the subject must be inside the same call: a line reading
+     * `Number(total); ... order_number || 0` does not match.
+     */
+    re: /\bNumber\([^)]*\b(?:order_number|orderNumber)\b[^)]*(?:\)\s*)?(?:\|\||\?\?)/,
+    why: "coerces an order number with a fallback — Number('') is 0, either side of the paren",
+  },
+  {
+    /**
+     * THE SAME COMPARISON WRITTEN THE OTHER WAY ROUND. `null !== order.order_number` passed GREEN
+     * on 2026-08-27 because every pattern above requires the order number to be the LEFT operand.
+     * A Yoda condition is ordinary style, not an evasion attempt, which is precisely why it has to
+     * be covered -- the author has no way to know one operand order is load-bearing.
+     *
+     * Requires the literal FIRST, so an assignment like `order_number: null` is not a comparison
+     * and does not match.
+     */
+    re: /\b(?:null|undefined)\s*(?:!==?|===?)\s*[\w.?[\]'"]*\b(?:order_number|orderNumber)\b/,
+    why: 'compares null/undefined to an order number (reversed operands) — admits 0',
   },
 ]
 
+/**
+ * The whole per-line decision, so the self-test drives THIS rather than a copy of it.
+ * Returns the reason, or null when the line is clean.
+ */
+export function violationOn(line: string): string | null {
+  for (const { re, why } of PATTERNS) if (re.test(line)) return why
+  return null
+}
+
+/**
+ * SELF-TEST — this script had none, over 608 files judged entirely by regex.
+ *
+ * If a pattern stopped matching, it would print "OK — every order-number test goes through
+ * hasAllocatedOrderNumber()" across a codebase full of them, and a fourth "Order #0" would reach
+ * production exactly as the first three did. This gate exists because a comment could not fail a
+ * build; a regex nothing checks is the same thing one layer down.
+ *
+ * Both halves drive the real `violationOn`. The MUST-IGNORE half is the load-bearing one: masking
+ * replaced a whole-line skip, and the widened `Number(...)` and reversed-operand patterns each
+ * bought coverage at some false-positive risk. Every entry below is a shape that occurs in this
+ * repo and must stay green.
+ */
+function selfTest(): void {
+  const MUST_CATCH: Array<[string, string]> = [
+    ['#296, the caught spelling', 'const n = Number(row.order_number || 0)'],
+    ['#296, the spelling that evaded until 2026-08-27', 'const n = Number(row.order_number) || 0'],
+    ['the ?? variant, outside the paren', 'const n = Number(o.order_number) ?? 0'],
+    ['2026-08-19, a real customer saw Order #0', 'if (orderNumber != null) {'],
+    ['strict form', 'if (order.order_number !== undefined) {'],
+    ['typeof, admits 0', "if (typeof order.order_number === 'number') {"],
+    ['reversed operands, evaded until 2026-08-27', 'if (null !== order.order_number) {'],
+    ['a real violation sharing a line with an allowed word', 'const ok = order.order_number != null && row.table_number'],
+  ]
+  for (const [why, line] of MUST_CATCH) {
+    if (!violationOn(line)) {
+      console.error(`SELF-TEST FAILED: no longer catches ${why}\n  ${line}`)
+      process.exit(2)
+    }
+  }
+
+  const MUST_IGNORE: Array<[string, string]> = [
+    ['the sanctioned helper', 'if (hasAllocatedOrderNumber({ order_number })) {'],
+    ['the label built on it', 'const label = orderIdentityLabel(order)'],
+    ['an assignment, not a comparison', 'await supabase.from("orders").insert({ order_number: null })'],
+    ['a table number, which has no allocation rule', 'if (row.table_number != null) {'],
+    ['the kiosk counter, which CONTAINS order_number', 'if (o.kiosk_order_number != null) {'],
+    ['a merchant reference', 'if (p.merchant_order_no != null) {'],
+    ['a form input, which CONTAINS orderNumber', 'if (orderNumberInput !== undefined) {'],
+    ['coercion with no fallback at all', 'const n = Number(order.order_number)'],
+    ['a fallback on a different column entirely', 'const t = Number(order.total) || 0'],
+    ['an unrelated Number() sharing the line', 'const t = Number(total); const s = order_status || 0'],
+  ]
+  for (const [why, line] of MUST_IGNORE) {
+    const hit = violationOn(line)
+    if (hit) {
+      console.error(`SELF-TEST FAILED: now flags ${why}\n  ${line}\n  reported: ${hit}`)
+      process.exit(2)
+    }
+  }
+}
+
 function main() {
+  selfTest()
   const files: string[] = []
   for (const dir of SEARCH_DIRS) walk(join(ROOT, dir), files)
 
@@ -119,13 +239,8 @@ function main() {
 
     const lines = stripComments(readFileSync(file, 'utf8')).split('\n')
     lines.forEach((line, i) => {
-      if (ALLOWED_SUFFIXES.some((s) => line.includes(s))) return
-      for (const { re, why } of PATTERNS) {
-        if (re.test(line)) {
-          findings.push({ file: rel, line: i + 1, text: `${line.trim()}   <- ${why}` })
-          return
-        }
-      }
+      const why = violationOn(line)
+      if (why) findings.push({ file: rel, line: i + 1, text: `${line.trim()}   <- ${why}` })
     })
   }
 

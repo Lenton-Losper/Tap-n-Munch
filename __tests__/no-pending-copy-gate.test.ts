@@ -54,6 +54,47 @@ describe('the PENDING COPY gate', () => {
     expect(out).toContain('PENDING COPY — Location')
   })
 
+  it('FAILS on the OTHER word order — `COPY PENDING` — which it was blind to until 2026-08-27', () => {
+    // THE REAL MISS, not a hypothetical. `lib/payments/verify-payment-outcome.ts` carried three
+    // staff-facing placeholders spelled `[COPY PENDING: ...]`. `/PENDING COPY/` does not match
+    // that, so this gate reported OK while all three sat on `main`, live on production.
+    //
+    // Nobody read them — the terminal's `VerifyTerminalPaymentResult` type has no field for the
+    // message, so the client discards it — but that is luck, not the gate working. Adding one
+    // field to that type puts a placeholder on a payment screen.
+    //
+    // A checker that recognises exactly one phrasing enforces the phrasing, not the convention.
+    const root = fixture({
+      'components/thing.tsx': `export const COPY = { label: '[COPY PENDING: staff needs wording here]' }\n`,
+    })
+    const { status, out } = runGate(root)
+    expect(status).toBe(1)
+    expect(out).toContain('components/thing.tsx')
+    expect(out).toContain('COPY PENDING')
+  })
+
+  it('FAILS on the separators a placeholder actually gets written with', () => {
+    // `PENDING_COPY` and `pending copy` are the same intent. The gate should not turn on casing
+    // or on which punctuation somebody reached for.
+    for (const marker of ['PENDING_COPY: label', 'pending copy - label', 'Copy Pending: label']) {
+      const root = fixture({ 'components/t.tsx': `export const C = '${marker}'\n` })
+      expect(runGate(root).status).toBe(1)
+    }
+  })
+
+  it('does NOT fire on the two words merely appearing near each other', () => {
+    // The widened pattern must still be a MARKER check, not a word-proximity check. "pending" and
+    // "copy" are both ordinary English and appear in real code; only the adjacent pair is the
+    // convention. Without this, widening the regex would trade a false negative for a false
+    // positive and the gate would get switched off.
+    const root = fixture({
+      'lib/thing.ts': `// returns a copy of every pending order, so the caller can sort it\nexport const pendingOrdersCopy = () => []\n`,
+    })
+    const { status, out } = runGate(root)
+    expect(status).toBe(0)
+    expect(out).toContain('OK')
+  })
+
   it('PASSES once the string is signed off', () => {
     const root = fixture({
       'components/thing.tsx': `export const COPY = { label: 'Location' }\n`,

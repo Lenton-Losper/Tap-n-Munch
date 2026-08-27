@@ -14,6 +14,7 @@
  * staff waited before deciding the app was stuck. That number, not the count, is the design input.
  */
 import { config } from 'dotenv'
+import { excludeStressFixtures } from '../../lib/orders/stress-fixtures'
 config({ path: 'C:/Users/223125318/Desktop/mvp/restaurant-menu-screen/.env.local', override: true })
 
 const PROD_REF = 'ihlmmpmolnpchzgwyhgh'
@@ -31,12 +32,25 @@ async function main() {
   const since = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString()
   const orders = []
   for (let f = 0; ; f += 1000) {
-    const { data, error } = await db
-      .from('orders')
-      .select('id,restaurant_id,order_number,total,status,payment_status,payment_method,payment_channel,channel,placed_at,payment_reference,payment_voucher_no,paycloud_merchant_order_no,cancelled_at')
-      .gte('placed_at', since)
-      .order('placed_at')
-      .range(f, f + 999)
+    // #324 — exclude the stress fixtures. The 60-day window above currently keeps them out on its
+    // own (they were placed 2026-04-27..2026-06-16; measured 0 of 2,188 on 2026-08-27), but that
+    // is the window's accident, not this measurement's guard, and it expires the moment anyone
+    // widens `since` to look further back.
+    //
+    // THIS SCRIPT IS THE WORST PLACE TO RELY ON THAT ACCIDENT. Its `stranded()` predicate is
+    // "not cash, no payment reference, no voucher, payment_status pending or cancelled" — which
+    // all 876 `payment_status = 'cancelled'` fixtures satisfy exactly — and its re-ring definition
+    // pairs orders on EQUAL TOTAL at the same venue. Every fixture has `total = 0` and a NULL
+    // restaurant_id, so they would all land in one venue bucket sharing one total: a combinatorial
+    // explosion of fake re-rings, reported as the headline count.
+    const { data, error } = await excludeStressFixtures(
+      db
+        .from('orders')
+        .select('id,restaurant_id,order_number,total,status,payment_status,payment_method,payment_channel,channel,placed_at,payment_reference,payment_voucher_no,paycloud_merchant_order_no,cancelled_at')
+        .gte('placed_at', since)
+        .order('placed_at')
+        .range(f, f + 999),
+    )
     if (error) throw new Error(error.message)
     orders.push(...(data ?? []))
     if (!data || data.length < 1000) break

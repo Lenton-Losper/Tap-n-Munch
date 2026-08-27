@@ -5,11 +5,16 @@
  *
  *   app/menu/**                the customer's screens, scanned whole
  *   components/ + contexts/    ONLY the files a customer screen can reach, derived from the import
- *                              graph at run time by reachableFromMenu() -- never listed
+ *   + hooks/                   graph at run time by reachableFromMenu() -- never listed
  *
  * The first version scanned app/menu/** alone, which left `components/ActiveOrderBanner.tsx`
  * outside the gate -- the very file whose bare literal started this issue. A screen is not where
  * copy lives; a component is.
+ *
+ * The second version scanned components/ + contexts/, which left `hooks/` outside it -- and a
+ * customer sentence planted in `hooks/useTabSessionEndedRedirect.ts`, imported by the browse and
+ * cart screens, passed GREEN on 2026-08-27. Same mistake, one directory over: a component is not
+ * the only thing a screen renders through. See SHARED_DIRS.
  *
  * WHY THIS EXISTS. `scripts/check-no-pending-copy.mjs` catches a placeholder that someone
  * remembered to mark. It cannot catch a string that never carried a marker and never lived in a
@@ -57,10 +62,27 @@ const JSON_OUT = process.argv.includes('--json')
 /** The customer's screens. Scanned whole — everything under here is a menu route. */
 const SCAN_DIR = 'app/menu'
 /**
- * Shared directories, of which only the CUSTOMER-RENDERING part is in scope. Membership is derived
- * (see reachableFromMenu), never listed. See the header for why.
+ * Shared directories, of which only the CUSTOMER-RENDERING part is in scope. WHICH FILES are in
+ * scope is derived (see reachableFromMenu), never listed; this list bounds WHERE the derivation is
+ * allowed to look. See the header for why.
+ *
+ * `hooks` added 2026-08-27 after a mutation test: a customer sentence written into
+ * `hooks/useTabSessionEndedRedirect.ts` — imported by both the browse and cart screens — passed
+ * this gate GREEN. The import graph had already reached the file; the final prefix filter in
+ * reachableFromMenu threw it away again. That is the identical error to the one in the header,
+ * one directory over: the first version missed `components/` because a screen is not where copy
+ * lives, and this version missed `hooks/` because a component is not the only thing a screen
+ * renders through. A hook that returns a message is as customer-facing as a component that
+ * renders one.
+ *
+ * WHY THIS LIST IS NOT SIMPLY DELETED, which is the obvious "derive everything" fix: the walk
+ * reaches `lib/` too, and `lib/customer-copy` is the SANCTIONED HOME for every customer string.
+ * Dropping the bound would fire this gate on the one place copy is supposed to live — a false
+ * positive on every correct string in the repo, which is how a gate gets switched off. The bound
+ * stays; it earns each directory by being reachable AND not being the destination the gate is
+ * pushing copy towards.
  */
-const SHARED_DIRS = ['components', 'contexts']
+const SHARED_DIRS = ['components', 'contexts', 'hooks']
 const EXTS = ['.tsx', '.ts']
 
 const NL = String.fromCharCode(10)

@@ -54,7 +54,33 @@ function sameAddress(a: unknown, b: unknown): boolean {
  * distinction from `errorMessage` without matching on English, which breaks the moment the wording
  * is edited -- the exact fragility this module documents elsewhere.
  */
-export type SendReceiptEmailFailure = 'attempt_ceiling' | 'provider_failed'
+export type SendReceiptEmailFailure = 'attempt_ceiling' | 'provider_failed' | 'recipient_not_bound'
+
+/**
+ * #304 — PER-CALLER POLICY, because the three callers do not have the same authority.
+ *
+ * Two of the three are staff: `app/api/orders/[orderId]/receipt/email` is behind
+ * requireStaffPermission and `app/api/terminal/receipts/[orderId]/email` behind a terminal JWT. A
+ * member of staff mailing one receipt to a customer and again to the venue's bookkeeper is the job,
+ * not an attack, and nothing here should stop them.
+ *
+ * The third, `app/api/guest/orders/[orderId]/receipt/email`, takes NO session token. That is #304.
+ *
+ * SO THE GATE LIVES HERE AND IS OPT-IN, rather than living in the guest route. This module already
+ * states why the LIMITS belong here — "a limit enforced per route is a limit the next route
+ * forgets" — and that argument is about the implementation, not about who it binds. Keeping the
+ * policy in the shared module means the next person wiring a delivery route reads it; making it a
+ * parameter means the authenticated callers are not silently narrowed by a fix aimed at the
+ * unauthenticated one. Default off: this is additive, and reverting it is one argument at one call
+ * site.
+ */
+export interface SendReceiptEmailOptions {
+  /**
+   * When true, this receipt may only be emailed to the address it was FIRST SUCCESSFULLY delivered
+   * to. See GATE 3. Set by the unauthenticated guest route and by nothing else.
+   */
+  bindRecipientToFirstDelivery?: boolean
+}
 
 export interface SendReceiptEmailResult {
   deliveryId: string
@@ -81,6 +107,7 @@ export interface SendReceiptEmailResult {
 export async function sendReceiptEmail(
   receipt: ReceiptDocument,
   to: string,
+  options: SendReceiptEmailOptions = {},
 ): Promise<SendReceiptEmailResult> {
   const supabase = createServerSupabaseClient()
 
@@ -136,6 +163,87 @@ export async function sendReceiptEmail(
       status: 'failed',
       failure: 'attempt_ceiling',
       errorMessage: `Receipt email attempt ceiling reached (${RECEIPT_EMAIL_MAX_ATTEMPTS}) for this receipt`,
+    }
+  }
+
+  /**
+   * #304 GATE 3 — THE RECIPIENT IS BOUND, and this is the half of #304 that #244's ceiling does not
+   * reach. OPT-IN: only the unauthenticated guest route sets it. See SendReceiptEmailOptions.
+   *
+   * WHAT #244 LEFT OPEN. The ceiling bounds HOW MANY sends a receipt can produce; it says nothing
+   * about WHERE they go. Ten is still ten addresses of an attacker's choosing, and one is enough —
+   * an email cannot be recalled. The owner's own framing on #304 is that the choice of recipient is
+   * the property that makes this exfiltration rather than nuisance.
+   *
+   * THE RULE. Once this receipt has been successfully emailed to an address, that is the only
+   * address it may be emailed to. The FIRST DELIVERED address wins; every later request must match
+   * it, case- and whitespace-insensitively, by the same `sameAddress` the dedup uses.
+   *
+   * WHY `status = 'sent'` AND NOT EVERY ATTEMPT. Binding on failed attempts would hand an attacker
+   * a denial of service: one attempt to an address that bounces would pin the receipt there and
+   * lock the real customer out of their own receipt for ever. A binding drawn only from deliveries
+   * that actually happened cannot be established by a request that did not.
+   *
+   * WHAT THIS IS AND IS NOT. It is #304 option B — "send only to an address recorded against the
+   * order" — implemented against the ONLY store that records one today. #234 established there is
+   * no `customer_email` column, and there is none at HEAD (measured 2026-08-27: `customer_email`
+   * appears in this repo three times, all of them comments, one of them the note above). So the
+   * address is recorded on first use, which is the shape the #304 ruling recommended for Q2. It is
+   * NOT option A: this route still takes no session token, and that remains #304's open half.
+   *
+   * FAILS CLOSED. A read error throws, like the ceiling above and unlike the dedup below. The dedup
+   * fails open because its worst outcome is one duplicate email to an address already chosen; this
+   * gate's worst outcome is a receipt going somewhere it has never been, so it must not be
+   * defeatable by making a read fail.
+   *
+   * THE COST, STATED. A customer who mistypes their address on the first send is bound to the typo
+   * and cannot email that receipt again — the mail went somewhere, so the gate cannot tell that
+   * from an attacker's second address. They can still download the PDF; the kiosk receipt screen
+   * offers that beside the email field. Flagged on #304 as part of the ruling owed.
+   */
+  if (options.bindRecipientToFirstDelivery) {
+    const { data: firstDelivered, error: bindError } = await supabase
+      .from('receipt_deliveries')
+      .select('destination, requested_at')
+      .eq('receipt_document_id', receipt.id)
+      .eq('method', 'EMAIL')
+      .eq('status', 'sent')
+      .order('requested_at', { ascending: true })
+      .limit(1)
+
+    if (bindError) {
+      throw new Error(
+        `sendReceiptEmail: failed to read the bound recipient: ${bindError.message}`,
+      )
+    }
+
+    const boundAddress = firstDelivered?.[0]?.destination
+    if (boundAddress && !sameAddress(boundAddress, to)) {
+      /**
+       * NEITHER ADDRESS IS LOGGED. The bound one is a customer's, and this refusal is reachable by
+       * anyone who can call the guest route — echoing it to a log that a support flow might quote
+       * back would turn the gate into the disclosure it exists to prevent. The receipt identifies
+       * the row well enough to investigate.
+       */
+      console.error(
+        '[sendReceiptEmail] refusing: this receipt is bound to the address it was first delivered to (#304)',
+        {
+          receiptDocumentId: receipt.id,
+          documentNumber: receipt.document_number,
+          priorAttempts: priorAttempts ?? 0,
+        },
+      )
+      /**
+       * A DIAGNOSTIC, NOT COPY — the same register as the ceiling's, and for the same reason: all
+       * three routes put `errorMessage` into an API error body and one of them answers an
+       * unauthenticated caller. It names no address.
+       */
+      return {
+        deliveryId: '',
+        status: 'failed',
+        failure: 'recipient_not_bound',
+        errorMessage: 'This receipt is bound to the address it was first delivered to',
+      }
     }
   }
 

@@ -148,11 +148,54 @@ jobs:
       # produced false positives in earlier drafts.
       - name: Every read of orders is ranged, narrowed, or paginated
         run: npx tsx scripts/check-orders-read-bounded.ts
+      # #324: production's `orders` is 37% stress fixtures (1,314 of 3,522), and a cross-venue
+      # count or sum that does not exclude them is wrong by up to 37% while reporting no error.
+      # Two acted-on figures already came from this -- the "876 broken QR orders" and #281's "282
+      # duplicate order-number pairs", the latter of which scoped #127's unique index away from
+      # production.
+      #
+      # WIRED 2026-08-27. It was written as a blocking gate on 2026-08-27 (6e1195d8) and never
+      # added to a workflow, so it ran nowhere for its whole life. THREE places asserted otherwise:
+      # its own docblock says "Blocking in CI", and the COMMENT ON in
+      # supabase/migrations/20260827116000_orders_is_stress_fixture.sql -- deployed to the database
+      # -- says "CI enforces it via scripts/check-orders-fixture-excluded.ts". A gate nobody runs
+      # is the strongest kind of decoration, and one that three documents swear is running is worse
+      # than none, because it stops anybody looking. Verified two-sided before wiring: exit 0 on
+      # this tree (715 files scanned), exit 1 naming the line on an unscoped `count: 'exact'`.
+      # Static, no credentials, no database, and it self-tests its detectors before reporting.
+      - name: Cross-venue measurements over orders exclude the stress fixtures
+        run: npx tsx scripts/check-orders-fixture-excluded.ts
+      # WIRED 2026-08-27. Guards the terminal's ability to RECOVER: requireTerminalAuth normalises
+      # every auth failure to a Response, and terminalFetch refreshes and retries on 401 only. A
+      # handler that swallows the thrown Response turns the ordinary hourly token expiry into its
+      # own default status, which the device cannot act on -- measured on production 2026-08-26 as
+      # `Bearer not-a-real-token -> 500` on all four hostnames, on routes including the
+      # "Check payment status" button.
+      #
+      # It ran in no workflow, and until today it could not fail: one boolean per FILE (a good GET
+      # vouched for a bad POST), catch bodies read from RAW source (a guard COMMENTED OUT still
+      # counted), and zero callers printed an all-clear at exit 0. All three are fixed and each is
+      # mutation-verified both ways. Static, no credentials, no database.
+      - name: Terminal auth handlers return a thrown auth Response unchanged
+        run: npx tsx scripts/check-terminal-auth-catch.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
       - name: No new @ts-nocheck files
         run: node scripts/check-ts-nocheck-baseline.mjs
+      # WIRED 2026-08-27. This gate was written in response to a PRODUCTION OUTAGE -- on
+      # 2026-08-26 flashtap.app/dashboard served "Application error: a client-side exception has
+      # occurred" to staff mid-service, because components/orders-dashboard.tsx used
+      # STRANDED_CLAIM_COPY three times and imported it nowhere. It shipped in 9a2c3165 and rode
+      # SIX production deploys first, because tsc skips @ts-nocheck files, eslint's no-undef is off
+      # for TS, and check-nocheck-imports-resolve inspects imports -- and there was no import.
+      #
+      # The gate built to close that gap was then added to no workflow, so the outage class it
+      # exists for was still unguarded. Verified two-sided before wiring: an undefined identifier
+      # planted in lib/table-session.ts is reported at the exact line with exit 1; the clean tree
+      # exits 0. Runs eslint's real scope analyser with one rule on the files tsc refuses to read.
+      - name: Every identifier in a @ts-nocheck file is bound
+        run: node scripts/check-nocheck-undefined-identifiers.mjs
       # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
       # when the column already exists — the migration succeeds and the
       # constraint is never created, so the ledger and the database disagree in

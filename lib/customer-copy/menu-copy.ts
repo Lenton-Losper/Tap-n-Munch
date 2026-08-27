@@ -508,4 +508,21 @@ export const MENU_COPY_NOT_PROSE: readonly string[] = [
 export const MENU_INTERNAL_MESSAGES = {
   useCartOutsideProvider: 'useCart must be used within a CartProvider',
   useTabOutsideProvider: 'useTab must be used within a TabProvider',
+  /**
+   * Moved verbatim out of `hooks/useActiveOrders.ts` on 2026-08-27, when widening the #334 gate to
+   * `hooks/` made it visible for the first time. It is the `err?.message` fallback for the hook's
+   * `error` state.
+   *
+   * IT IS NOT CUSTOMER COPY, and that is a structural finding rather than a judgement about the
+   * sentence. Both consumers of `error` were read on 2026-08-27 and NEITHER renders it as text:
+   *   components/ActiveOrderBanner.tsx:154        `if (error) { console.error(...) }`  — console only
+   *   components/menu/menu-order-status-tracker.tsx:288  `if (error) return null`      — a boolean
+   * So no customer can read it, it needs no sign-off, and it is kept out of `MENU_COPY` so the
+   * owner's sign-off surface stays customer-only.
+   *
+   * If a screen ever RENDERS this hook's `error`, this stops being true and the string needs
+   * signing — move it to `MENU_COPY` at that moment, the same way
+   * `MENU_COPY_AWAITING_A_SURFACE` documents the reverse trip.
+   */
+  activeOrdersLoadFailed: 'Failed to load active orders',
 } as const

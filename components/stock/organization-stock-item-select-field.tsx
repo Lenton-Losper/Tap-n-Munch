@@ -7,6 +7,7 @@ import {
   ConfigureCanonicalItemDialog,
   type ConfigureCanonicalItemTarget,
 } from '@/components/stock/configure-canonical-item-dialog'
+import { unconfiguredTransferEnd } from '@/lib/stock/transfer-item-configuration'
 import type { OrganizationStockItemOption } from '@/lib/stock/transfer-queries'
 
 export function OrganizationStockItemSelectField({
@@ -45,27 +46,27 @@ export function OrganizationStockItemSelectField({
   }, [query, orgItems])
 
   const missingLocationFor = (item: OrganizationStockItemOption): ConfigureCanonicalItemTarget | null => {
-    if (!item.configuredRestaurantIds.includes(sourceRestaurantId)) {
-      return {
-        organizationStockItemId: item.id,
-        itemName: item.name,
-        baseUnitId: item.baseUnitId,
-        baseUnitLabel: item.baseUnitLabel,
-        restaurantId: sourceRestaurantId,
-        restaurantName: sourceRestaurantName,
-      }
+    // The destination is only offered to the shared predicate when its NAME is also known,
+    // because the target this builds must be able to name the location it wants configured.
+    // A destination we cannot name is reported as "nothing missing" rather than as an
+    // unnameable gap -- which is the behaviour this had before the predicate was extracted.
+    const nameableDestinationId =
+      destinationRestaurantId && destinationRestaurantName ? destinationRestaurantId : null
+    const end = unconfiguredTransferEnd(item, sourceRestaurantId, nameableDestinationId)
+    if (end === null) return null
+
+    const missingAt =
+      end === 'SOURCE'
+        ? { restaurantId: sourceRestaurantId, restaurantName: sourceRestaurantName }
+        : { restaurantId: destinationRestaurantId as string, restaurantName: destinationRestaurantName as string }
+
+    return {
+      organizationStockItemId: item.id,
+      itemName: item.name,
+      baseUnitId: item.baseUnitId,
+      baseUnitLabel: item.baseUnitLabel,
+      ...missingAt,
     }
-    if (destinationRestaurantId && destinationRestaurantName && !item.configuredRestaurantIds.includes(destinationRestaurantId)) {
-      return {
-        organizationStockItemId: item.id,
-        itemName: item.name,
-        baseUnitId: item.baseUnitId,
-        baseUnitLabel: item.baseUnitLabel,
-        restaurantId: destinationRestaurantId,
-        restaurantName: destinationRestaurantName,
-      }
-    }
-    return null
   }
 
   const handlePick = (item: OrganizationStockItemOption) => {

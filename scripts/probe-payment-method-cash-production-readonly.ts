@@ -33,8 +33,27 @@
  *   channel = 'pos'      -> created by the terminal, which hardcodes paymentMethod: 'card'. These
  *                           should not appear as cash at all; if they do, that is its own finding.
  */
+/**
+ * ============================================================================================
+ * #324 — EVERY COUNT AND THE SAMPLE NOW EXCLUDE THE STRESS FIXTURES
+ * ============================================================================================
+ *
+ * This file's numbers were the payment-method distribution of the WHOLE table, and on production
+ * 37.3% of that table is seeded debris: 1,314 rows from one 2026-04-27 run, `restaurant_id IS
+ * NULL`, `total = 0`, never paid. They are not neutral to THIS question — measured 2026-08-27,
+ * 438 of them carry `payment_method = 'cash'` and 876 carry `'card'`, all with `tab_id IS NULL`.
+ *
+ * So the headline ratio "how much cash did nobody choose" was being computed against a
+ * denominator of 3,522 instead of 2,208, with 438 invented cash rows on the numerator's side of
+ * the direct/tab split. Both halves moved, in opposite directions.
+ *
+ * The `.not('tab_id','is',null)` legs happened to be clean already (a fixture's tab_id is NULL),
+ * but that is a property of today's filters, not of the data, and it is exactly the reasoning
+ * #324 exists to stop relying on.
+ */
 // @ts-nocheck
 import { createClient } from '@supabase/supabase-js'
+import { excludeStressFixtures } from '../lib/orders/stress-fixtures'
 
 const PRODUCTION_REF = 'ihlmmpmolnpchzgwyhgh'
 const url = process.env.SUPABASE_URL || ''
@@ -45,7 +64,7 @@ if (!url.includes(PRODUCTION_REF)) {
 const admin = createClient(url, key, { auth: { persistSession: false } })
 
 const countOf = async (build: (q: any) => any) => {
-  let q = admin.from('orders').select('id', { count: 'exact', head: true })
+  let q = excludeStressFixtures(admin.from('orders').select('id', { count: 'exact', head: true }))
   q = build(q)
   const { count, error } = await q
   if (error) throw new Error(`count failed: ${error.message}`)
@@ -63,11 +82,13 @@ async function main() {
   }
 
   // ---------------------------------------------------------------- the whole distribution
-  const { data: sample, error: sErr } = await admin
-    .from('orders')
-    .select('payment_method, payment_status, tab_id, channel, placed_at')
-    .order('placed_at', { ascending: false })
-    .limit(5000)
+  const { data: sample, error: sErr } = await excludeStressFixtures(
+    admin
+      .from('orders')
+      .select('payment_method, payment_status, tab_id, channel, placed_at')
+      .order('placed_at', { ascending: false })
+      .limit(5000),
+  )
   if (sErr) throw new Error(`sample read failed: ${sErr.message}`)
 
   const byMethod = new Map<string, number>()
@@ -105,13 +126,15 @@ async function main() {
   console.log(`        ^ the badge DERIVED from the invented method: 'cash' && no channel -> cash_pending`)
 
   // ---------------------------------------------------------------- is it still happening?
-  const { data: recent } = await admin
-    .from('orders')
-    .select('id, placed_at, payment_status, channel')
-    .eq('payment_method', 'cash')
-    .not('tab_id', 'is', null)
-    .order('placed_at', { ascending: false })
-    .limit(5)
+  const { data: recent } = await excludeStressFixtures(
+    admin
+      .from('orders')
+      .select('id, placed_at, payment_status, channel')
+      .eq('payment_method', 'cash')
+      .not('tab_id', 'is', null)
+      .order('placed_at', { ascending: false })
+      .limit(5),
+  )
   console.log('\n  MOST RECENT tab orders stamped cash:')
   for (const r of recent ?? []) {
     console.log(`      ${r.placed_at}   ${String(r.channel).padEnd(8)} ${r.payment_status}`)

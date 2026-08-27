@@ -11,12 +11,26 @@
  * JSON encoding, fetch, response read -- is individually guarded, and the function resolves with
  * an outcome record instead of rejecting. Callers must still not await it on the render path.
  *
- * Intake is POST /api/bug-reports (staff-authenticated, writes bug_reports for the ops inbox).
+ * TWO INTAKES, and which one a boundary uses is the boundary's decision.
+ *
+ *   /api/bug-reports    staff-authenticated, writes bug_reports, lands in the ops inbox next to
+ *                       the reports a human typed. The right destination when there IS a staff
+ *                       session, because the row is attributed to a venue and a user.
+ *   /api/crash-reports  unauthenticated, writes crash_reports. The only possible destination on
+ *                       the customer QR surface, where there is no account to have a session for.
+ *
+ * The staff boundary uses the first with the second as a FALLBACK, which closes a hole this file
+ * previously had: a dead session is one of the things that can put a staff member on the error
+ * screen, and an unauthenticated POST to /api/bug-reports is a 500 -- so the crash that a session
+ * expiry caused was the one crash that reported nowhere, while the screen said otherwise.
  */
 import { getAccessToken } from '@/lib/onboarding/api-client'
 
 /** The intake route. Exported so a test can assert the destination rather than restate it. */
 export const BUG_REPORT_INTAKE_PATH = '/api/bug-reports'
+
+/** The unauthenticated intake. #348, half 1. */
+export const CRASH_REPORT_INTAKE_PATH = '/api/crash-reports'
 
 /**
  * `area` is free text on bug_reports and renders as the badge in /admin/bug-reports triage.
@@ -47,6 +61,30 @@ export type BoundaryReportOutcome = {
   authenticated: boolean
   /** Set when no POST was issued, and why. */
   skipped?: 'duplicate' | 'no-fetch' | 'threw'
+  /** Where the first POST was aimed. */
+  intakePath?: string
+  /** True when the primary intake failed and the unauthenticated one was tried instead. */
+  fellBack?: boolean
+}
+
+export type BoundaryReportOptions = {
+  /** Defaults to BUG_REPORT_INTAKE_PATH. */
+  intakePath?: string
+  /**
+   * Whether to look a staff bearer token up and attach it. Defaults to true.
+   *
+   * The customer boundary passes false, and not as an optimisation: getAccessToken() reaches into
+   * the Supabase BROWSER auth client, and a customer on the QR surface has no account there. On
+   * that surface the lookup can only fail, and asking is how a staff credential would end up
+   * attached to a report from a page that has nothing to do with staff.
+   */
+  authenticate?: boolean
+  /**
+   * Tried once, unauthenticated, when the primary intake does not answer 2xx. Nothing is retried
+   * against the SAME path -- this is for "that intake cannot accept this caller", not for flaky
+   * networks, and a boundary is the wrong place to run a retry loop.
+   */
+  fallbackPath?: string
 }
 
 /**
@@ -103,6 +141,39 @@ function describeFailure(context: BoundaryErrorContext): string {
 }
 
 /**
+ * The wire shape for one intake.
+ *
+ * The two intakes want different bodies because they write different tables. bug_reports has no
+ * column for a stack or a digest, so describeFailure folds everything into prose; crash_reports
+ * has a column per field, so nothing is folded and the fields stay queryable. Choosing on the
+ * PATH rather than on a flag means a caller cannot aim at one intake while sending the other's
+ * body.
+ *
+ * `pageUrl` is sent whole and reduced server-side rather than here. The customer surface puts
+ * real material in the query string (`?name=`, `?tabId=`, the gateway's return payload), and the
+ * enforcement point for that has to be the one an arbitrary caller cannot skip -- see
+ * lib/crash-reports/crash-report-intake.ts, which keeps the path and discards the rest.
+ */
+function buildIntakeBody(intakePath: string, context: BoundaryErrorContext): string {
+  if (intakePath === BUG_REPORT_INTAKE_PATH) {
+    return JSON.stringify({
+      description: describeFailure(context),
+      area: BOUNDARY_REPORT_AREA,
+      pageUrl: context.pageUrl,
+    })
+  }
+  return JSON.stringify({
+    boundary: context.boundary,
+    reference: context.reference,
+    digest: context.digest,
+    name: context.name,
+    message: context.message,
+    stack: context.stack,
+    pageUrl: context.pageUrl,
+  })
+}
+
+/**
  * Files the crash. Resolves an outcome; never rejects, and never throws synchronously.
  *
  * Note the token is attached only when one is available, but the POST goes out either way. The
@@ -111,11 +182,14 @@ function describeFailure(context: BoundaryErrorContext): string {
  */
 export async function reportBoundaryError(
   context: BoundaryErrorContext,
+  options: BoundaryReportOptions = {},
 ): Promise<BoundaryReportOutcome> {
+  const intakePath = options.intakePath || BUG_REPORT_INTAKE_PATH
   const outcome: BoundaryReportOutcome = {
     attempted: false,
     delivered: false,
     authenticated: false,
+    intakePath,
   }
 
   try {
@@ -132,28 +206,53 @@ export async function reportBoundaryError(
     }
 
     // A dead or expiring session is one of the things that can put us on this screen, so the
-    // token lookup is treated as allowed to fail rather than as a precondition.
+    // token lookup is treated as allowed to fail rather than as a precondition. The customer
+    // boundary skips it entirely -- see BoundaryReportOptions.authenticate.
     let token: string | null = null
-    try {
-      token = await getAccessToken()
-    } catch {
-      token = null
+    if (options.authenticate !== false) {
+      try {
+        token = await getAccessToken()
+      } catch {
+        token = null
+      }
     }
     outcome.authenticated = Boolean(token)
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (token) headers.Authorization = `Bearer ${token}`
 
-    const body = JSON.stringify({
-      description: describeFailure(context),
-      area: BOUNDARY_REPORT_AREA,
-      pageUrl: context.pageUrl,
-    })
-
     // keepalive: the signed action reloads the page, and an in-flight report would otherwise be
     // cancelled by the navigation the venue is being told to perform.
-    const response = await fetchAndMark(outcome, headers, body)
+    const response = await fetchAndMark(
+      outcome,
+      intakePath,
+      headers,
+      buildIntakeBody(intakePath, context),
+    )
     outcome.delivered = Boolean(response && response.ok)
+
+    /**
+     * ONE fallback, at a DIFFERENT path, and only on a non-2xx answer.
+     *
+     * The case this is for is specific: the staff intake refused this caller -- no session, or an
+     * expired one -- which is a 500 rather than a throw, and is one of the ways a staff member
+     * ends up on this screen in the first place. Retrying the same path would be pointless; the
+     * unauthenticated intake can accept what the authenticated one cannot.
+     *
+     * A THROWN primary is deliberately NOT retried: that is the transport failing (offline, DNS,
+     * the page being torn down), and the fallback shares the transport. Retrying it would cost a
+     * second failing request on a screen that is already the failure path.
+     */
+    if (!outcome.delivered && options.fallbackPath && options.fallbackPath !== intakePath) {
+      outcome.fellBack = true
+      const fallback = await fetchAndMark(
+        outcome,
+        options.fallbackPath,
+        { 'Content-Type': 'application/json' },
+        buildIntakeBody(options.fallbackPath, context),
+      )
+      outcome.delivered = Boolean(fallback && fallback.ok)
+    }
   } catch {
     // Swallowed on purpose. See the header comment: a throw here costs the venue the whole
     // explained error screen. `outcome` still records how far we got.
@@ -169,10 +268,11 @@ export async function reportBoundaryError(
  */
 async function fetchAndMark(
   outcome: BoundaryReportOutcome,
+  path: string,
   headers: Record<string, string>,
   body: string,
 ): Promise<Response | null> {
-  const request = fetch(BUG_REPORT_INTAKE_PATH, {
+  const request = fetch(path, {
     method: 'POST',
     headers,
     body,

@@ -16,12 +16,13 @@
  * would make future terminal behaviour depend on string matching.
  *
  * ============================================================================================
- * THE STRINGS BELOW ARE PLACEHOLDERS AND MUST BE REPLACED BEFORE THIS SHIPS TO A DEVICE.
+ * THE STRINGS BELOW ARE SIGNED, 2026-08-27. Pinned by
+ * __tests__/payment-outcome-copy-signed-off.test.ts.
  * ============================================================================================
  *
- * Owner-signed copy for these three states exists and is being supplied separately; it is not
- * invented here. Each placeholder is followed by what its replacement has to convey. They are
- * deliberately ugly so that an unreplaced one is obvious on a screen rather than plausible.
+ * The per-state comments below record what each string must CONVEY. They are kept after signing on
+ * purpose: they are the constraint the next proposed reword has to satisfy, and they are why a
+ * reword is a decision rather than an edit.
  */
 
 export const VERIFY_PAYMENT_OUTCOME_CODES = {
@@ -60,12 +61,29 @@ export const VERIFY_PAYMENT_OUTCOME_CODES = {
 export type VerifyPaymentOutcomeCode =
   (typeof VERIFY_PAYMENT_OUTCOME_CODES)[keyof typeof VERIFY_PAYMENT_OUTCOME_CODES]
 
-/** PLACEHOLDER COPY — replace with the owner-signed strings. See the block comment above. */
+/**
+ * SIGNED OFF by the owner 2026-08-27, verbatim. Do not reword, re-wrap or re-punctuate.
+ *
+ * These three spent days on production unsigned, spelled `[COPY PENDING: ...]`, which the
+ * placeholder gate's `/PENDING COPY/` marker did not match. Nobody read them only because the
+ * terminal's `VerifyTerminalPaymentResult` type has no field for the message. The gate now matches
+ * both word orders.
+ *
+ * THE LAST CLAUSE OF CREDENTIALS_NOT_CONFIGURED IS PINNED SEPARATELY, at the owner's instruction:
+ * 'do not take payment again until someone confirms'. It is the load-bearing half and it is
+ * exactly the kind of clause that gets shortened out of a message that already feels long. Without
+ * it the string reads as "we can't check, retrying won't help" — which a staff member facing an
+ * unpaid-looking order resolves by charging the card a second time. See
+ * `__tests__/payment-outcome-copy-signed-off.test.ts`.
+ */
 export const VERIFY_PAYMENT_STAFF_MESSAGE: Record<VerifyPaymentOutcomeCode, string> = {
   [VERIFY_PAYMENT_OUTCOME_CODES.NOT_CONFIRMED]:
-    '[COPY PENDING: payment_not_confirmed — no confirmation yet, may still change, check again]',
+    'no confirmation yet. this can still change - check again shortly. do not take a second ' +
+    'payment on the strength of this.',
   [VERIFY_PAYMENT_OUTCOME_CODES.PROVIDER_UNREACHABLE]:
-    '[COPY PENDING: payment_provider_unreachable — check could not be completed, state unknown, try again]',
+    'we could not complete the check. the payment status is unknown, not failed. try again shortly.',
   [VERIFY_PAYMENT_OUTCOME_CODES.CREDENTIALS_NOT_CONFIGURED]:
-    '[COPY PENDING: payment_credentials_not_configured — setup problem not a network one, retrying will not help, the card may still have been charged]',
+    'card payments are not set up at this venue, so we cannot check what happened. retrying will ' +
+    'not help. the card may still have been charged on the machine - do not take payment again ' +
+    'until someone confirms.',
 }
