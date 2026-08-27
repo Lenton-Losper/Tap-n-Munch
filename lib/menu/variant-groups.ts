@@ -310,9 +310,23 @@ function writeOptionLabel(option: unknown): string {
 }
 
 /** The option's ABSOLUTE price, or null when it does not carry one. Never derived. */
+/**
+ * ABSENT AND ZERO ARE DIFFERENT, and telling them apart is what makes a free option possible.
+ *
+ * `Number(null)` is 0 and `Number('')` is 0, so coercing first collapses "the venue left this
+ * blank" into "the venue said it costs nothing". That did not matter while the caller used
+ * `price > 0`, because both became null anyway — the old filter was masking this. The moment zero
+ * became a legitimate price (#360, free flavour options) the collapse turned into a real defect:
+ * #229's blank Cappucinno row started being written as a FREE size.
+ *
+ * So the raw value is inspected BEFORE coercion. Only an explicit finite number — including 0 —
+ * counts as a price.
+ */
 function writeOptionAbsolutePrice(option: unknown): number | null {
   if (!option || typeof option !== 'object') return null
-  const price = Number((option as { price?: unknown }).price)
+  const raw = (option as { price?: unknown }).price
+  if (raw === null || raw === undefined || raw === '') return null
+  const price = Number(raw)
   return Number.isFinite(price) ? price : null
 }
 
@@ -341,12 +355,58 @@ function writeOptionAbsolutePrice(option: unknown): number | null {
  */
 export type WritableVariantOption = { label: string; price: number | null }
 
-/** A blank placeholder if it has no label, a real option if it has both, otherwise dropped. */
+/**
+ * THE DISCRIMINATOR IS THE LABEL, NOT THE PRICE. Owner ruling, 2026-08-27 (#360).
+ *
+ * WHAT WAS WRONG. `price > 0` decided whether an option was real, so an option priced at ZERO was
+ * discarded on the way in. Five Mingle items — Flavoured dalgona, Flavoured ice coffee, Milkshake,
+ * 500ml Radler, Clausthaler — carry flavour lists where every option is `{name, price: 0}`,
+ * because a flavour choice is free. The venue entered its menu correctly and the software silently
+ * threw it away, so customers were offered NO choices at all on five live items.
+ *
+ * The owner's words: *"Mingle entered their menu correctly and the software silently discarded it.
+ * That is the defect — not their data."*
+ *
+ * WHY THE PRICE CANNOT BE THE DISCRIMINATOR, which is the real constraint. #229 needs a half-filled
+ * row NOT to ship: Cappucinno carries a blank third option the venue can fill in, and if a blank
+ * row were saved as a priced one it would put a FREE size in front of customers. Price cannot
+ * separate "free on purpose" from "not filled in yet" — both are absent-or-zero. The LABEL can:
+ *
+ *     label present, price 0        -> SAVE IT. A free option, deliberately.
+ *     label blank,   price blank    -> DROP. An unfilled row.
+ *     label blank,   price present  -> DROP, and name it in `unconvertible` so the venue is told.
+ *
+ * A label is something a person typed. Its presence is the intent that a zero cannot express.
+ *
+ * The blank-placeholder path is unchanged and still keyed on the empty label, so #229's third
+ * Cappucinno row is still written blank and still cannot be selected, chosen by default or charged
+ * — `normalizeVariantGroups` tests the label first and throws it away.
+ */
 function writePriceOption(option: unknown): WritableVariantOption | null {
   const label = writeOptionLabel(option)
   const price = writeOptionAbsolutePrice(option)
-  const usablePrice = price !== null && price > 0 ? price : null
-  if (label === '') return { label: '', price: usablePrice }
+  // Zero is a real price now. Only a missing or non-finite price is absent.
+  const usablePrice = price !== null && price >= 0 ? price : null
+
+  if (label === '') {
+    // No label: a placeholder row, never a saved option. It is kept ONLY when it is entirely
+    // blank; a price with no label is a half-filled row the venue must finish or remove, and
+    // saving it would be inventing an unnamed option nobody can choose.
+    return usablePrice === null ? { label: '', price: null } : null
+  }
+
+  /**
+   * LABELLED WITH NO PRICE IS STILL DROPPED, and now for a sharper reason than before.
+   *
+   * `normalizeVariantGroups` reads a missing price as `Number(null)` — which is 0, and now that
+   * zero is a LEGITIMATE free option, a stored `{label: 'Medium', price: null}` would be
+   * indistinguishable from a deliberate free Medium. Before this change the reader would have
+   * shown a free Medium by accident; after it, it shows one and we cannot tell whether that was
+   * intended.
+   *
+   * So an explicit finite number — including 0 — is what makes an option free. An ABSENT price on
+   * a labelled row is still not enough, and dropping it keeps "free" a thing somebody chose.
+   */
   return usablePrice === null ? null : { label, price: usablePrice }
 }
 
