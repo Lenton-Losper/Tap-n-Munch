@@ -66,6 +66,37 @@ export function collisionsIn(names) {
   return bad.sort((a, b) => a.version.localeCompare(b.version))
 }
 
+/**
+ * `.sql` FILES THIS DETECTOR CANNOT READ A VERSION FROM — reported rather than skipped.
+ *
+ * Found 2026-08-27 by mutation. `VERSION` demands exactly fourteen digits;
+ * `check-migration-drift.mjs:85` reads the same filename with `/^(\d+)_/`, ANY number of digits.
+ * So the two gates disagree about what a migration's version is, and the disagreement is silent.
+ *
+ * Dropping `2026082616000_probe_a.sql` and `2026082616000_probe_b.sql` — thirteen digits, one
+ * fat-fingered keystroke, the collision #280 exists to catch — into the real migrations directory
+ * produced:
+ *
+ *     MIGRATION VERSION CHECK: OK — 153 migration(s), every version maps to one filename.
+ *
+ * Both halves of that sentence are false, and the COUNT is the worse half: `total` was computed
+ * from every `.sql` in the directory while the detector had examined only the parseable ones, so
+ * the number vouched for two files it never looked at. An all-clear carrying a tally reads as
+ * "I checked 153 things", and here it meant "I checked 151 and counted 153".
+ *
+ * A version this gate cannot read is a defect on its own terms — Supabase's own naming requires
+ * the timestamp — so this fails rather than warns. Widening `VERSION` to `\d+` to match the drift
+ * guard would be the wrong repair: it would make the pair above parse, and quietly bless a
+ * malformed migration name instead of reporting it.
+ *
+ * SCOPED TO `.sql` DELIBERATELY, and the self-test pins it: `README.md`, `.gitkeep` and any
+ * subdirectory must never fire this. A gate that fails on the directory's own README is one
+ * somebody switches off.
+ */
+export function unparsableIn(names) {
+  return names.filter((n) => n.endsWith('.sql') && !VERSION.test(n)).sort()
+}
+
 function collisions(dir) {
   if (!existsSync(dir)) {
     throw new Error(`migration directory not found: ${dir}`)
@@ -95,14 +126,44 @@ function selfTest() {
     console.error('SELF-TEST FAILED: one filename repeated was counted as a collision.')
     process.exit(2)
   }
+  // The unreadable-version arm, driven through the REAL function for the same reason as above.
+  const unreadable = unparsableIn([
+    '2026082616000_probe_a.sql', // thirteen digits -- the mutation that got past this gate
+    '20260826160000_fine.sql',
+    'README.md', // FALSE-POSITIVE GUARD: not a migration, must never fire
+    '.gitkeep', // FALSE-POSITIVE GUARD: same
+  ])
+  if (unreadable.length !== 1 || unreadable[0] !== '2026082616000_probe_a.sql') {
+    console.error('SELF-TEST FAILED: the detector no longer reports a .sql file it cannot read a version from.')
+    process.exit(2)
+  }
 }
 
 selfTest()
 
+const entries = existsSync(ROOT) ? readdirSync(ROOT) : []
+const unreadable = unparsableIn(entries)
+if (unreadable.length > 0) {
+  console.error('MIGRATION VERSION CHECK: FAILED — a .sql file whose version this gate cannot read.\n')
+  for (const n of unreadable) console.error(`      ${n}`)
+  console.error(
+    '\nA version prefix is fourteen digits followed by an underscore. These do not match, so this',
+    '\ngate SKIPS them -- while check-migration-drift.mjs reads the same names with /^(\\d+)_/ and',
+    '\naccepts any digit count. The two gates would disagree about what these migrations are',
+    '\nversioned as, and a collision between them would be invisible here. Rename to the fourteen-',
+    '\ndigit form, and never renumber one that has already run against a database.',
+  )
+  process.exit(1)
+}
+
 const found = collisions(ROOT)
 if (found.length === 0) {
-  const total = readdirSync(ROOT).filter((n) => n.endsWith('.sql')).length
-  console.log(`MIGRATION VERSION CHECK: OK — ${total} migration(s), every version maps to one filename.`)
+  // Counted from what the DETECTOR read, never from the raw directory listing. The two differed
+  // before 2026-08-27, and the difference was the whole defect: an all-clear that tallies files it
+  // never examined is worse than one that gives no number at all, because the number is what makes
+  // it believed.
+  const checked = entries.filter((n) => n.endsWith('.sql') && VERSION.test(n)).length
+  console.log(`MIGRATION VERSION CHECK: OK — ${checked} migration(s) read, every version maps to one filename.`)
   process.exit(0)
 }
 
