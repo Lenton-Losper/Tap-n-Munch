@@ -38,7 +38,7 @@
 -- here does not change. An event that was recorded wrongly is corrected by recording the
 -- correcting event, which is also what happened in the kitchen.
 --
--- actor_staff_id IS NULLABLE, and that is not laziness. A 'system' actor -- the void cascade when
+-- actor_user_id IS NULLABLE, and that is not laziness. A 'system' actor -- the void cascade when
 -- an order is cancelled -- has no staff member behind it, and refusing that row would mean losing
 -- the record of a cancellation to preserve a constraint about attribution. The FK is
 -- ON DELETE SET NULL for the same reason: a staff member who leaves in November must not take
@@ -66,12 +66,17 @@ CREATE TABLE IF NOT EXISTS public.order_line_events (
   -- NULL for 'system', and nullable for the others too -- see the header. An unattributed event is
   -- still evidence that the transition happened.
   --
-  -- FK TARGET TO CONFIRM AT BUILD TIME: staff_members is the table carrying role 'waiter' and
-  -- 'kitchen', so it is the right identity here. But the staff PIN that already drives cash
-  -- attribution could not be located in the migration history, and if that path resolves to a
-  -- DIFFERENT identity, this column must move to match it. Two parallel notions of "who did this"
-  -- is the defect; a wrong-but-single one is recoverable.
-  actor_staff_id uuid REFERENCES public.staff_members(id) ON DELETE SET NULL,
+  -- FK TARGET CONFIRMED 2026-08-27, AND IT IS NOT staff_members.
+  --
+  -- The terminal PIN path resolves to a users.id and nothing else: POST /api/terminal/authorize
+  -- takes a user_id, checks membership in restaurant_users, checks permission through
+  -- authorize(userId, ...), and verifies the PIN against
+  -- terminal_authorization_credentials.user_id -> users(id).
+  --
+  -- staff_members is a separate, email-keyed table that the PIN flow never touches. Pointing this
+  -- column there would have created exactly the defect the earlier draft warned about: two
+  -- parallel notions of "who did this", joinable to each other by nothing.
+  actor_user_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
 
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
@@ -82,8 +87,8 @@ COMMENT ON TABLE public.order_line_events IS
 COMMENT ON COLUMN public.order_line_events.from_state IS
   'NULL on the creation event. Not a ''created'' sentinel -- that is not a state a line can be in, and adding it would corrupt the vocabulary shared with order_lines.state.';
 
-COMMENT ON COLUMN public.order_line_events.actor_staff_id IS
-  'Nullable on purpose: a ''system'' cascade has no person behind it, and an unattributed event is still evidence the transition happened. ON DELETE SET NULL so a staff member leaving does not take the audit trail with them.';
+COMMENT ON COLUMN public.order_line_events.actor_user_id IS
+  'users.id -- the identity the terminal PIN flow actually produces (terminal_authorization_credentials.user_id), NOT staff_members.id. Nullable on purpose: a ''system'' cascade has no person behind it, and an unattributed event is still evidence the transition happened. ON DELETE SET NULL so someone leaving does not take the audit trail with them.';
 
 -- The audit read: this line's history, oldest first.
 CREATE INDEX IF NOT EXISTS order_line_events_line_idx
@@ -92,8 +97,8 @@ CREATE INDEX IF NOT EXISTS order_line_events_line_idx
 -- "What did this person do on this shift" -- the question tip disputes and bump disputes both
 -- reduce to. Partial: the system rows have no actor and would only bloat it.
 CREATE INDEX IF NOT EXISTS order_line_events_actor_idx
-  ON public.order_line_events (restaurant_id, actor_staff_id, occurred_at DESC)
-  WHERE actor_staff_id IS NOT NULL;
+  ON public.order_line_events (restaurant_id, actor_user_id, occurred_at DESC)
+  WHERE actor_user_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- RLS: staff with orders:read may read. Every write is service role. Nothing may update or delete.

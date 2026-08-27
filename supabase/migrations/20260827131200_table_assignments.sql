@@ -25,7 +25,7 @@
 --   THIS TABLE            -- who is responsible for this table right now, and who has been.
 --                            Mutable over time. An OPERATIONS fact.
 --
---   tabs.opened_by_staff_id -- who served this tab. Snapshotted once at open, immutable
+--   tabs.opened_by_user_id -- who served this tab. Snapshotted once at open, immutable
 --                            thereafter (20260827131300). A MONEY fact.
 --
 -- Collapsing them into one is exactly the bug described above. They are allowed to disagree, and
@@ -66,11 +66,11 @@ CREATE TABLE IF NOT EXISTS public.table_assignments (
   -- The waiter. NOT NULL: an assignment to nobody is not an assignment, it is a released table,
   -- which is represented by released_at rather than by a null owner.
   --
-  -- FK TARGET TO CONFIRM AT BUILD TIME: staff_members carries role 'waiter', so it is the right
-  -- identity. But the staff PIN driving cash attribution today could not be located in the
-  -- migration history, and if that path resolves to a different identity, this column moves to
-  -- match it rather than standing up a second parallel notion of "who served".
-  staff_id uuid NOT NULL REFERENCES public.staff_members(id) ON DELETE RESTRICT,
+  -- FK TARGET CONFIRMED 2026-08-27: users.id, not staff_members.id. The PIN a waiter types is
+  -- verified against terminal_authorization_credentials.user_id with membership checked in
+  -- restaurant_users, so users.id is the only identity a terminal can actually produce. See
+  -- 20260827131100 for the same correction and the reasoning behind it.
+  waiter_user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE RESTRICT,
 
   assigned_at timestamptz NOT NULL DEFAULT now(),
 
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS public.table_assignments (
 
   -- Who made the assignment -- a manager assigning sections, or the waiter claiming the table.
   -- Nullable: a system-seeded assignment has nobody behind it.
-  assigned_by uuid REFERENCES public.staff_members(id) ON DELETE SET NULL,
+  assigned_by_user_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
 
   -- A release cannot precede the assignment it releases.
   CONSTRAINT table_assignments_interval_ordered
@@ -87,13 +87,13 @@ CREATE TABLE IF NOT EXISTS public.table_assignments (
 );
 
 COMMENT ON TABLE public.table_assignments IS
-  'ADR-005 §3: who owns a table, over time. Open interval -- the current assignment is the row with released_at IS NULL. Deliberately NOT the tip anchor: tips follow tabs.opened_by_staff_id, so that a shift handover cannot retroactively reassign money already earned.';
+  'ADR-005 §3: who owns a table, over time. Open interval -- the current assignment is the row with released_at IS NULL. Deliberately NOT the tip anchor: tips follow tabs.opened_by_user_id, so that a shift handover cannot retroactively reassign money already earned.';
 
 COMMENT ON COLUMN public.table_assignments.released_at IS
   'NULL means current. There is no ''active'' flag on purpose -- a flag and a timestamp can contradict each other, and then neither can be trusted.';
 
-COMMENT ON COLUMN public.table_assignments.staff_id IS
-  'ON DELETE RESTRICT, unlike the audit tables: deleting a staff member who currently holds tables should fail loudly and be resolved by releasing them, not by silently orphaning live assignments mid-service.';
+COMMENT ON COLUMN public.table_assignments.waiter_user_id IS
+  'users.id -- the identity the terminal PIN flow produces, NOT staff_members.id. ON DELETE RESTRICT, unlike the audit tables: deleting someone who currently holds tables should fail loudly and be resolved by releasing them, not by silently orphaning live assignments mid-service.';
 
 -- ONE OPEN ASSIGNMENT PER TABLE. The invariant the open-interval representation depends on --
 -- without it, two overlapping unreleased rows make "who has table 12" ambiguous and there is no
@@ -103,8 +103,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS table_assignments_one_open_per_table_idx
   WHERE released_at IS NULL;
 
 -- "Which tables are mine right now" -- the waiter's home screen on the P5.
-CREATE INDEX IF NOT EXISTS table_assignments_open_by_staff_idx
-  ON public.table_assignments (restaurant_id, staff_id)
+CREATE INDEX IF NOT EXISTS table_assignments_open_by_waiter_idx
+  ON public.table_assignments (restaurant_id, waiter_user_id)
   WHERE released_at IS NULL;
 
 -- "Who had table 12 last Tuesday" -- the history read this table exists for.

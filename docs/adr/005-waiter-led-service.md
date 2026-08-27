@@ -84,7 +84,7 @@ order_line_events
   from_state       text null      -- null on creation
   to_state         text not null
   actor_kind       text not null  -- 'station' | 'terminal' | 'system'
-  actor_staff_id   uuid null      -> staff_members(id)
+  actor_user_id   uuid null      -> users(id)
   occurred_at      timestamptz not null default now()
 ```
 
@@ -138,17 +138,17 @@ table_assignments
   id            uuid pk
   restaurant_id uuid not null
   table_id      uuid not null -> restaurant_tables(id)
-  staff_id      uuid not null -> staff_members(id)   -- role 'waiter'
+  waiter_user_id uuid not null -> users(id)  -- the PIN identity
   assigned_at   timestamptz not null default now()
   released_at   timestamptz null
-  assigned_by   uuid null -> staff_members(id)
+  assigned_by_user_id uuid null -> users(id)
 ```
 
 Current owner is the row with `released_at IS NULL`. The history answers "who
 had table 12 last Tuesday" the first time anyone asks.
 
 ```
-tabs.opened_by_staff_id  uuid null -> staff_members(id)
+tabs.opened_by_user_id  uuid null -> users(id)
 ```
 
 Snapshotted when a waiter opens the tab, and immutable thereafter. This is
@@ -212,11 +212,11 @@ tab_tips
   restaurant_id uuid not null
   tab_id        uuid not null -> tabs(id)
   amount        numeric not null
-  staff_id      uuid not null -> staff_members(id)  -- snapshot of
-                               -- tabs.opened_by_staff_id at creation
+  user_id       uuid not null -> users(id)  -- snapshot of
+                               -- tabs.opened_by_user_id at creation
   state         text not null  -- 'intended' | 'captured' | 'abandoned'
   created_at    timestamptz not null default now()
-  created_by    uuid null -> staff_members(id)
+  created_by    uuid null -> users(id)
   captured_at   timestamptz null
 ```
 
@@ -226,7 +226,7 @@ Against the four rulings:
    for a payment method. Split settlement divides the *bill*; the tip stays
    whole and attached to the tab. Apportioning it across legs for a card
    receipt is done at render time and never stored.
-2. **`staff_id` is the tab's opening owner, snapshotted.** A shift change
+2. **`user_id` is the tab's opening owner, snapshotted.** A shift change
    mid-meal does not hand the tip to whoever is standing there at settle.
 3. **`intended` exists before the payment succeeds.** The tip is part of the
    settlement *intent*, not of its outcome, so a failed payment retries

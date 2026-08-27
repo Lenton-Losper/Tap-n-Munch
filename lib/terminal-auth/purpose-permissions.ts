@@ -7,6 +7,17 @@ export const TERMINAL_AUTHORIZATION_PURPOSES = {
   // but when the terminal does supply one it is verified through this same purpose, so the
   // staff member credited with taking the cash is one who could actually process a payment.
   cash_settlement: PERMISSIONS.PAYMENTS_PROCESS,
+  // ADR-005 §3. A waiter opening a table proves who they are through the SAME PIN machinery as
+  // every other privileged terminal action -- lockout, membership, permission, audit -- rather
+  // than a second identity path invented for service.
+  //
+  // The permission is ORDERS_UPDATE and not TABLES_MANAGE: opening a table is the first step of
+  // taking an order, and gating it on table administration would mean a waiter who can ring up
+  // food cannot start the tab to ring it up onto.
+  //
+  // THE IDENTITY THIS PRODUCES IS A users.id. It is what lands in tabs.opened_by_user_id and
+  // table_assignments.waiter_user_id, and it is why those columns do not reference staff_members.
+  service_session: PERMISSIONS.ORDERS_UPDATE,
 } as const satisfies Record<string, Permission>
 
 export type TerminalAuthorizationPurpose = keyof typeof TERMINAL_AUTHORIZATION_PURPOSES

@@ -40,16 +40,23 @@
 --
 -- NO BACKFILL of existing tabs. There is no waiter to backfill them with.
 
+-- FK TARGET CONFIRMED 2026-08-27: users.id, not staff_members.id -- the terminal PIN flow resolves
+-- to a users.id via terminal_authorization_credentials.user_id. See 20260827131100.
+--
+-- NO INLINE CHECK ON THIS ADD COLUMN, deliberately: `IF NOT EXISTS` makes the action idempotent
+-- WITH its constraint, so on a database where the column already exists the constraint would
+-- silently never be created while the migration reported success (#212). There is no CHECK to add
+-- here, and none should be added later this way.
 ALTER TABLE public.tabs
-  ADD COLUMN IF NOT EXISTS opened_by_staff_id uuid
-    REFERENCES public.staff_members(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS opened_by_user_id uuid
+    REFERENCES public.users(id) ON DELETE SET NULL;
 
-COMMENT ON COLUMN public.tabs.opened_by_staff_id IS
-  'ADR-005 §6: the waiter who opened this tab, snapshotted at creation and never updated. The tip anchor. Deliberately NOT resolved through table_assignments at settle time -- a shift handover would otherwise move an earned tip to whoever was standing there. NULL for customer-opened (QR) tabs, which is a fact rather than a gap.';
+COMMENT ON COLUMN public.tabs.opened_by_user_id IS
+  'ADR-005 §6: the waiter who opened this tab, snapshotted at creation and never updated. The tip anchor. users.id, the identity the terminal PIN flow produces. Deliberately NOT resolved through table_assignments at settle time -- a shift handover would otherwise move an earned tip to whoever was standing there. NULL for customer-opened (QR) tabs, which is a fact rather than a gap.';
 
 -- "Which tabs did this waiter open" -- per-waiter tip and service reporting (ADR-005 §6 ruling 4).
 -- Partial: every pre-existing tab and every QR tab is null, and none of them are ever the answer
 -- to this question.
-CREATE INDEX IF NOT EXISTS tabs_opened_by_staff_idx
-  ON public.tabs (restaurant_id, opened_by_staff_id, created_at DESC)
-  WHERE opened_by_staff_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS tabs_opened_by_user_idx
+  ON public.tabs (restaurant_id, opened_by_user_id, created_at DESC)
+  WHERE opened_by_user_id IS NOT NULL;
