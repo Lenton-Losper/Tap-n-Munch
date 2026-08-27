@@ -79,6 +79,12 @@ type OrderFixture = {
   total: number
   status: string
   payment_status: string
+  /**
+   * Part of what makes an order a CONTROL, not a detail. A cash order can carry a gateway
+   * reference from an abandoned card attempt, and the gateway has no record of it -- which is
+   * how the picker came to choose one at Riviera and refuse every candidate there forever.
+   */
+  payment_method?: string | null
   channel: string | null
   placed_at: string | null
   table_number: number | null
@@ -372,8 +378,34 @@ const CONTROL = order({
   status: 'completed',
   paid_at: '2026-08-27T11:00:00.000Z',
   paycloud_merchant_order_no: 'FT-CONTROL',
+  /**
+   * CARD, and that is not decoration. Found in production 2026-08-27: the control selected on
+   * "paid + has a gateway reference" and never checked the method, so at Riviera it picked order
+   * #12 -- paid in CASH but carrying an FT reference from a card attempt that was abandoned. The
+   * gateway had never heard of it, answered E04111, and the control failed, refusing every
+   * candidate at that venue forever while a good known-paid card order sat one row below.
+   */
+  payment_method: 'card',
   // The HARD case, on purpose: paid while carrying neither marker, which is exactly the shape a
   // never-reached-the-gateway order has locally. Three such orders exist at FNB ChowNow.
+  payment_reference: null,
+  payment_voucher_no: null,
+})
+
+/**
+ * The Riviera shape, reproduced: paid, carries a gateway reference, and is CASH. It must never be
+ * chosen as a control -- the gateway has no record of a card that was never presented.
+ */
+const CASH_WITH_REFERENCE = order({
+  id: 'o-912',
+  order_number: 912,
+  total: 20,
+  payment_status: 'paid',
+  status: 'completed',
+  payment_method: 'cash',
+  // MORE RECENT than CONTROL, so "most recent first" would pick it if the method were ignored.
+  paid_at: '2026-08-27T12:00:00.000Z',
+  paycloud_merchant_order_no: 'FT-CASH-NEVER-CHARGED',
   payment_reference: null,
   payment_voucher_no: null,
 })
@@ -400,6 +432,54 @@ beforeEach(() => {
 })
 
 describe('the positive control', () => {
+  /**
+   * THE CONTROL'S SUBJECT, which is a different question from whether a control exists.
+   *
+   * FOUND IN PRODUCTION 2026-08-27. The picker selected on "paid + carries a gateway reference"
+   * and never checked `payment_method`. At Riviera the most recent such order was paid in CASH
+   * while carrying an FT reference from a card attempt that was abandoned mid-flow. The gateway
+   * had never heard of that reference, answered E04111, the control failed, and EVERY candidate at
+   * that venue was refused as `skipped_control_failed` -- permanently, because that cash order
+   * stays the most recent. A good known-paid card order sat one row below it the whole time.
+   *
+   * Measured against the live gateway on the same credentials in one run:
+   *     #12  cash, FT17870967741284193  ->  E04111, no record
+   *     #6   card, FT17865507287746658  ->  paid=true, status=2, N$20
+   *
+   * A guard that cannot pass is indistinguishable from a guard doing its job. Having a positive
+   * control is not enough if the control's subject guarantees the wrong answer.
+   */
+  it('never picks a CASH order as the control, even when it is the most recent one with a reference', async () => {
+    // CASH_WITH_REFERENCE is paid LATER than CONTROL, so "most recent first" reaches it first.
+    const env = makeSupabase([...theSix(), CONTROL, CASH_WITH_REFERENCE])
+    const asked: string[] = []
+    const summary = await clearHeldForReview(env.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: async ({ merchantOrderNo }) => {
+        asked.push(merchantOrderNo)
+        // The cash order's reference behaves as production does: no record of it.
+        if (merchantOrderNo === 'FT-CASH-NEVER-CHARGED') throw e04111Error()
+        if (merchantOrderNo === 'FT-CONTROL') {
+          return finatic({ paid: true, status: 'paid', amount: 40, merchantOrderNo })
+        }
+        return finatic({ paid: false, statusRecognised: true, status: 'failed', merchantOrderNo })
+      },
+    })
+
+    // THE DECISIVE ASSERTION: the gateway was never asked about the cash order's reference.
+    expect(asked).not.toContain('FT-CASH-NEVER-CHARGED')
+    expect(asked).toContain('FT-CONTROL')
+
+    // And because the control was the card order, the run reached a real verdict instead of
+    // refusing everything as skipped_control_failed.
+    expect(summary.venues[0].control.verdict).toBe('passed')
+    expect(summary.cancelledIds).toHaveLength(6)
+
+    // The cash order is not a candidate either -- it is paid, so nothing may touch it.
+    expect(env.orders.find((o) => o.id === CASH_WITH_REFERENCE.id)!.payment_status).toBe('paid')
+  })
+
   /**
    * THE ONE THAT MATTERS. Same six orders, same gateway verdict for every one of them, and the ONLY
    * difference between the two runs is what the control answered.
@@ -1408,10 +1488,10 @@ describe('the vocabulary', () => {
     }
   })
 
-  it('marks the four unsigned strings and ONLY those four', () => {
+  it('marks NOTHING as unsigned — all thirty are signed, and the mechanism survives', () => {
     /**
-     * WAS "every string is unsigned". The owner signed twenty-six of them on 2026-08-27; the four
-     * E04111 persistence refusals were written afterwards and are not signed.
+     * WAS "the four E04111 refusals are unsigned". The owner signed those four later the same day,
+     * so this fired -- twice in one file's lifetime, which is a tripwire working, not churn.
      *
      * THIS ASSERTS BOTH DIRECTIONS, which is the only version worth having. "The four are marked"
      * on its own passes just as happily when a fifth string quietly loses its sign-off, and "no
@@ -1427,20 +1507,32 @@ describe('the vocabulary', () => {
         expect(line).not.toContain(CLEAR_HELD_PENDING_COPY_MARKER)
       }
     }
-    // Exactly four, and they are the four named. Not "at least".
+    // Nothing unsigned, and the declared list agrees. Not "at least".
     expect(unsignedClearHeldStrings()).toHaveLength(CLEAR_HELD_UNSIGNED_OUTCOMES.length)
-    expect(CLEAR_HELD_UNSIGNED_OUTCOMES).toHaveLength(4)
+    expect(CLEAR_HELD_UNSIGNED_OUTCOMES).toHaveLength(0)
+    // The marker CONSTANT must outlive the placeholders, or the next unsigned string has no way
+    // to announce itself.
+    expect(CLEAR_HELD_PENDING_COPY_MARKER).toBe('PENDING COPY:')
   })
 
-  it('gives each of the four refusals its own name, its own line and its own audit reason', () => {
+  it('gives each E04111 refusal its own name, its own line and its own audit reason', () => {
     /**
      * FOUR DISTINCT STAFF SITUATIONS, NOT ONE "skipped". Three of them resolve by waiting and
      * `no_attempt_timestamp` never does, so a staff member reading a merged line would wait for
      * something that is not coming. Distinctness is the property, so distinctness is the assertion.
      */
-    const lines = CLEAR_HELD_UNSIGNED_OUTCOMES.map((o) => CLEAR_HELD_OUTCOME_COPY[o])
-    const reasons = CLEAR_HELD_UNSIGNED_OUTCOMES.map((o) => CLEAR_HELD_OUTCOME_AUDIT_REASON[o])
-    expect(new Set(CLEAR_HELD_UNSIGNED_OUTCOMES).size).toBe(4)
+    // Named explicitly rather than read off CLEAR_HELD_UNSIGNED_OUTCOMES, which is now empty --
+    // deriving the list from "what is unsigned" made this assertion vanish the moment they were
+    // signed, taking the distinctness property with it silently.
+    const E04111_REFUSALS = [
+      'skipped_e04111_too_recent',
+      'skipped_e04111_insufficient_observations',
+      'skipped_e04111_observations_too_close_together',
+      'skipped_e04111_no_attempt_timestamp',
+    ] as const
+    const lines = E04111_REFUSALS.map((o) => CLEAR_HELD_OUTCOME_COPY[o])
+    const reasons = E04111_REFUSALS.map((o) => CLEAR_HELD_OUTCOME_AUDIT_REASON[o])
+    expect(new Set(E04111_REFUSALS).size).toBe(4)
     expect(new Set(lines).size).toBe(4)
     expect(new Set(reasons).size).toBe(4)
 

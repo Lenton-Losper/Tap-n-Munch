@@ -228,7 +228,7 @@ function trimmed(value: unknown): string {
  * every E04111 refuses with `no_attempt_timestamp`, which fails SAFE and therefore silently.
  */
 const ORDER_COLUMNS =
-  'id, restaurant_id, order_number, total, status, payment_status, channel, placed_at, table_number, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paid_at, payment_attempt_started_at'
+  'id, restaurant_id, order_number, total, status, payment_status, payment_method, channel, placed_at, table_number, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paid_at, payment_attempt_started_at'
 
 type OrderRow = {
   id: string
@@ -240,6 +240,8 @@ type OrderRow = {
   channel: string | null
   placed_at: string | null
   table_number: number | null
+  /** Selected so the control's own row can be ASSERTED to be a card order, not merely filtered. */
+  payment_method?: string | null
   paycloud_merchant_order_no: string | null
   payment_reference: string | null
   payment_voucher_no: string | null
@@ -319,6 +321,30 @@ async function readHeldOrders(
  * PAID is a fishing expedition, and it converts the guard into a formality: given enough candidates
  * something eventually answers, and the run proceeds on a query path that has already been shown to
  * be unreliable.
+ *
+ * ============================================================================================
+ * IT MUST BE A CARD ORDER. Found in production 2026-08-27, and it made the guard useless.
+ * ============================================================================================
+ *
+ * This selected on `payment_status = 'paid'` plus "has a gateway reference" and never looked at
+ * `payment_method`. At Riviera the most recent order matching that is **order #12, paid in CASH**
+ * — a card payment was prepared (which mints the `FT` reference), then the bill was settled in
+ * cash. The reference exists; the card was never charged. So Finatic has never heard of it and
+ * answers E04111, correctly.
+ *
+ * Measured, both against the live gateway on the same credentials in the same run:
+ *
+ *     #12  cash, FT17870967741284193  ->  E04111, no record
+ *     #6   card, FT17865507287746658  ->  paid=true, status=2, N$20
+ *
+ * So the control failed, every candidate was refused as `skipped_control_failed`, and the button
+ * could never clear anything at Riviera — while a perfectly good known-paid card order sat one row
+ * further down. A guard that cannot pass is indistinguishable from a guard doing its job, which is
+ * the exact failure this whole surface was built to avoid; having a positive control is not enough
+ * if the control's SUBJECT guarantees the wrong answer.
+ *
+ * `payment_method = 'card'` is therefore part of what makes an order a control at all, not a
+ * refinement of the ordering.
  */
 async function pickControl(
   supabase: Supabase,
@@ -329,6 +355,9 @@ async function pickControl(
     .select(ORDER_COLUMNS)
     .eq('restaurant_id', restaurantId)
     .eq('payment_status', 'paid')
+    // See the block above: a CASH order can carry a gateway reference and the gateway will never
+    // have heard of it. Without this the control asks about a payment that was never made.
+    .eq('payment_method', 'card')
     .not('paycloud_merchant_order_no', 'is', null)
     .order('paid_at', { ascending: false, nullsFirst: false })
     .limit(50)
