@@ -1,10 +1,20 @@
 /**
  * #156 — detect a card payment that was taken and never reached the ledger.
  *
- * WHY THIS EXISTS, AND WHY IT IS SERVER-SIDE. The `payment_events` ledger stopped on 2026-07-28 and
- * nobody noticed for a month: 99.7% of August card payments (1018 of 1021) have no SALE row. The
- * only trace of each failure was a `console.error` inside `recordSaleEvent` — on a terminal, in a
- * restaurant, that nobody reads.
+ * WHY THIS EXISTS, AND WHY IT IS SERVER-SIDE. The `payment_events` ledger all but stopped on
+ * 2026-07-28 and nobody noticed for a month: 99.7% of August card payments (1018 of 1021) have no
+ * SALE row. The only trace of each failure was a `console.error` inside `recordSaleEvent` — on a
+ * terminal, in a restaurant, that nobody reads.
+ *
+ * CORRECTED 2026-08-27, measured against production. "Stopped" is the wrong word and it points the
+ * investigation in the wrong direction. Since 2026-07-29 the writer has succeeded **3 times out of
+ * 1,215 card payments — 0.25%** (FNB ChowNow on 20 and 25 August, Mingle on 3 August; a fourth row
+ * on 26 August is a hand-written repair, not a device write, and must be excluded from any re-count).
+ *
+ * That rules out the entire class of cause we were implicitly hunting. A removed call site, a bad
+ * base URL, a dropped auth header or a deleted route fails 100% of the time. Something that
+ * succeeds 0.25% of the time is a race, a timeout, or a condition that is almost never met — so the
+ * 28 July change wants re-reading for what made a reliable path CONDITIONAL, not for what removed it.
  *
  * THE LESSON THAT SHAPES THIS FILE: an instrument that reports to the device is not an instrument
  * for the operator. vc99 added a wiretap event to that failure path, and it is still not enough —

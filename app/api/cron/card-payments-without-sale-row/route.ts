@@ -11,11 +11,17 @@ export const dynamic = 'force-dynamic'
 /**
  * #156 — scheduled detection of card payments that never reached the ledger.
  *
- * THE INCIDENT THIS EXISTS FOR. `payment_events` stopped receiving SALE rows on 2026-07-28. By the
- * time anyone looked, 1018 of August's 1021 card payments had none — 99.7% — and the
+ * THE INCIDENT THIS EXISTS FOR. `payment_events` all but stopped receiving SALE rows on 2026-07-28.
+ * By the time anyone looked, 1018 of August's 1021 card payments had none — 99.7% — and the
  * duplicate-charge detector, which reads that table, had been reporting "zero duplicates" off an
  * empty ledger for a month. Nobody was lying to anyone; the instrument was measuring its own
  * absence.
+ *
+ * CORRECTED 2026-08-27: **intermittent, not stopped — 3 successes in 1,215 card payments (0.25%)
+ * since 29 July.** The writer is still there and still occasionally works, which is why this route
+ * reports a RATIO and not a boolean: 3 of 4 missing is a broken writer, 3 of 400 is three incidents,
+ * and the distinction is the whole diagnostic value. See the sweep's own docblock for why that also
+ * rules out every all-or-nothing cause.
  *
  * WHY THIS ASKS FROM THE SERVER SIDE. The device already knew. `recordSaleEvent` catches its own
  * failure and writes a `console.error` — on a terminal, in a restaurant. vc99 added a wiretap
