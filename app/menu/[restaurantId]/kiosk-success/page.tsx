@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { CheckCircle2, Download, Mail } from 'lucide-react'
-import { getCurrentSession } from '@/lib/session'
 import { heldSessionIds } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
@@ -68,11 +67,24 @@ export default function KioskSuccessPage() {
     }
   }, [orderId, isPaid, tableNumber, restaurantId])
 
+  /**
+   * #304. EVERY id this browser holds, one repeated `session_id` param each -- `append`, not
+   * `set`, and `heldSessionIds()` rather than `getCurrentSession()` alone.
+   *
+   * The email route now authorises a delivery on OWNERSHIP only; the table number no longer
+   * admits anyone, because it is printed on the QR code. Ownership is decided by `ownsOrder`,
+   * which matches EVERY id the client holds against BOTH `session_id` and `member_session_id` --
+   * the app mints two ids in different storages (lib/session.ts and lib/tab-storage.ts) and an
+   * order carries whichever the placing screen held. Presenting one of the two was the #278 class
+   * of bug, and it was already the asymmetry on this page: the poll above uses heldSessionIds()
+   * while this query used only one of them.
+   *
+   * This widens what the CLIENT presents, never what the SERVER accepts.
+   */
   const receiptQuery = () => {
     const qs = new URLSearchParams({ restaurantId })
     if (Number.isFinite(tableNumber)) qs.set('table_number', String(tableNumber))
-    const sessionId = getCurrentSession()
-    if (sessionId) qs.set('session_id', sessionId)
+    for (const id of heldSessionIds()) qs.append('session_id', id)
     return qs.toString()
   }
 

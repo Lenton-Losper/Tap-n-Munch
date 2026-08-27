@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { guestCanReceiveOrderDelivery } from '@/lib/guest-orders/validation'
-import { parseOptionalInt } from '@/lib/guest-orders/validation'
 import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
 import { sendReceiptEmail } from '@/lib/receipts/delivery/sendReceiptEmail'
 import type { GuestOrderRow } from '@/lib/guest-orders/types'
@@ -21,9 +20,21 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
  * the order UUID and nothing else. It also forces `issueReceiptForOrder`, which ALLOCATES a
  * document number for an order that had no receipt yet.
  *
- * Now gated on `guestCanReceiveOrderDelivery`: restaurant, PLUS the table the order sits at or a
- * session id it was placed under. See that function for why the read helper was left alone
- * (#279 is a recorded decision with a test pinning it) rather than tightened in place.
+ * Now gated on `guestCanReceiveOrderDelivery`: restaurant, PLUS a session id the order was
+ * actually placed under. See that function for why the read helper was left alone (#279 is a
+ * recorded decision with a test pinning it) rather than tightened in place.
+ *
+ * #304 -- THE TABLE NUMBER IS NOT READ HERE, AND THAT IS THE FIX. QRA-19 left the gate admitting
+ * on the table the order sits at, and a table number is printed on the QR code, appears in every
+ * menu URL, and is a small integer. Proven on the deployed handler against an UNPAID order, so
+ * nothing could be issued or mailed: correct table_number -> 400 "not paid yet" (past the gate),
+ * any other table_number -> 404, restaurant scope alone -> 404. The table number alone was the
+ * difference between a refusal and this restaurant mailing a stranger's itemised receipt to an
+ * address the caller typed.
+ *
+ * This route still takes NO session token. That is #304's open half: a live token would refuse
+ * the customer who paid, left, and had their table closed, which is exactly when they want the
+ * receipt. Ownership is what is enforceable without inventing that lifecycle.
  *
  * The session id is read from BOTH `session_id` and repeated `session_id` params, because the
  * app mints two ids in different storages and an order carries whichever the placing screen
@@ -47,7 +58,8 @@ export async function POST(
     searchParams.get('restaurant_id')?.trim() ||
     (typeof body?.restaurantId === 'string' ? body.restaurantId.trim() : '') ||
     (typeof body?.restaurant_id === 'string' ? body.restaurant_id.trim() : '')
-  const tableNumber = parseOptionalInt(searchParams.get('table_number')) ?? parseOptionalInt(body?.table_number)
+  // No table_number is parsed. #304: it is not an authority for a delivery, and reading it here
+  // would only invite it back into the gate below.
   // getAll, not get: the client sends one repeated param per id it holds (see ownsOrder).
   const sessionIds = [
     ...searchParams.getAll('session_id'),
@@ -83,7 +95,7 @@ export async function POST(
   }
 
   const guestOrder = { ...order, id: String(order.id) } as GuestOrderRow
-  if (!guestCanReceiveOrderDelivery(guestOrder, { restaurantId, tableNumber, sessionId, sessionIds })) {
+  if (!guestCanReceiveOrderDelivery(guestOrder, { restaurantId, sessionId, sessionIds })) {
     // Same answer as "no such order": a refusal must not confirm that an order exists at an id
     // the caller cannot otherwise see.
     return NextResponse.json({ error: MENU_COPY.guestOrderNotFound }, { status: 404 })

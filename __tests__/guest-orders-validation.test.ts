@@ -86,14 +86,27 @@ describe('paymentRefOrFilter', () => {
 })
 
 /**
- * QRA-19. The delivery predicate is the read predicate with the terminal-state short-circuit
- * removed. It exists because POST /api/guest/orders/[orderId]/receipt/email is not a read: it
- * takes an attacker-chosen address and has the restaurant mail that customer's itemised receipt
- * to it, and it forces receipt issuance (which allocates a document number) on the way.
+ * QRA-19, then #304. The delivery predicate exists because
+ * POST /api/guest/orders/[orderId]/receipt/email is not a read: it takes an attacker-chosen
+ * address and has the restaurant mail that customer's itemised receipt to it, and it forces
+ * receipt issuance (which allocates a document number) on the way.
  *
- * The pair of cases that matter are the first two: guestCanAccessOrder says YES to a paid order
- * on restaurant scope alone, and guestCanReceiveOrderDelivery says NO to exactly the same call.
- * If those two ever agree again, the exposure is back.
+ * TWO CASES CARRY THIS BLOCK.
+ *
+ * 1. guestCanAccessOrder says YES to a paid order on restaurant scope alone and
+ *    guestCanReceiveOrderDelivery says NO to exactly the same call (QRA-19). If those two ever
+ *    agree again, the original exposure is back.
+ *
+ * 2. The correct table number, alone, is REFUSED (#304). QRA-19 left a table branch here, and a
+ *    table number is not a secret -- it is printed on the QR code and sits in every menu URL, so
+ *    it authorised any diner who could read the table, or anyone willing to walk 0..N. Measured
+ *    on the deployed handler before the fix, against an UNPAID order so nothing could be issued
+ *    or mailed: correct table_number -> 400 "not paid yet", which is past the gate; any other
+ *    table_number, and restaurant scope alone -> 404.
+ *
+ * The `tableNumber` key is gone from the parameter type, so the #304 case is asserted through
+ * `as never` -- the compiler refuses it and this pins the RUNTIME answer too, for a caller that
+ * reaches this function without going through tsc.
  */
 describe('guestCanReceiveOrderDelivery', () => {
   const paidOrder: GuestOrderRow = {
@@ -129,16 +142,55 @@ describe('guestCanReceiveOrderDelivery', () => {
     ).toBe(true)
   })
 
-  it('allows the table the order sits at', () => {
+  /**
+   * #304. THE CASE THE ISSUE IS ABOUT. This used to be `.toBe(true)` under the name "allows the
+   * table the order sits at", and that assertion was the exposure: the caller supplies both the
+   * table number and the destination address, and neither is a secret.
+   *
+   * Cast because `tableNumber` is deliberately not in the parameter type any more -- a caller
+   * that passes one now fails to compile. This asserts the other half: that if one reaches the
+   * function anyway, it authorises nothing.
+   */
+  it('refuses the correct table number, presented alone (#304)', () => {
     expect(
-      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-a', tableNumber: 5 }),
-    ).toBe(true)
+      guestCanReceiveOrderDelivery(paidOrder, {
+        restaurantId: 'rest-a',
+        tableNumber: 5,
+      } as never),
+    ).toBe(false)
   })
 
-  it('refuses a different table', () => {
+  it('refuses a different table (#304: every table number is refused)', () => {
     expect(
-      guestCanReceiveOrderDelivery(paidOrder, { restaurantId: 'rest-a', tableNumber: 6 }),
+      guestCanReceiveOrderDelivery(paidOrder, {
+        restaurantId: 'rest-a',
+        tableNumber: 6,
+      } as never),
     ).toBe(false)
+  })
+
+  /**
+   * The regression this fix could plausibly cause, pinned as a case rather than assumed.
+   *
+   * The only client that calls the route is the kiosk success screen, and it presents EVERY id
+   * the browser holds (`heldSessionIds()`), one repeated `session_id` param each. Kiosk orders
+   * carry a `sess_<uuid>` id in both columns -- verified on production, 8 of 8 -- so the customer
+   * who just paid still reaches their own receipt with the table branch gone.
+   */
+  it('still allows the kiosk customer, who presents every id the browser holds', () => {
+    const kioskOrder = {
+      ...paidOrder,
+      table_number: 1001,
+      session_id: 'sess_2ad27ff6-f25a-4e13-bf99-cde48a6f1a22',
+      member_session_id: 'sess_2ad27ff6-f25a-4e13-bf99-cde48a6f1a22',
+    }
+    expect(
+      guestCanReceiveOrderDelivery(kioskOrder, {
+        restaurantId: 'rest-a',
+        sessionId: 'sess_2ad27ff6-f25a-4e13-bf99-cde48a6f1a22',
+        sessionIds: ['sess_2ad27ff6-f25a-4e13-bf99-cde48a6f1a22', 'session_1756_abc'],
+      }),
+    ).toBe(true)
   })
 
   it('refuses a different restaurant even with the right session id', () => {
