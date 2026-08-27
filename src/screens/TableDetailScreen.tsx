@@ -40,6 +40,11 @@ import {
   isClaimablePaymentStatus,
   selectClaimableOrdersForSettle,
 } from '../lib/paymentIntegrity';
+import {
+  canConfirmPin,
+  preselectFor,
+  showsSkipOnly,
+} from '../lib/cashAttributionPicker';
 import {classifyFailureReport} from '../lib/paymentReportOutcome';
 import {
   SETTLE_ORDER_ALREADY_PAID,
@@ -544,10 +549,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
       }
       const users = await getAuthorizedUsers('cash_settlement', token);
       setStaffList(users);
-      // Single eligible person: pre-select so it is one tap to the keypad.
-      if (users.length === 1) {
-        setPinStaff(users[0]);
-      }
+      // Single eligible person: pre-select so it is one tap to the keypad. The rule lives in
+      // lib/cashAttributionPicker so the suite that claims to cover it actually does (#148).
+      setPinStaff(preselectFor(users));
     } catch {
       setStaffLoadFailed(true);
       setStaffList([]);
@@ -850,7 +854,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
             {staffLoading ? (
               <ActivityIndicator style={styles.pinLoader} color={Colors.primary} />
-            ) : (staffList?.length ?? 0) === 0 ? (
+            ) : showsSkipOnly(staffList) ? (
               // No staff have a PIN, or the list would not load. Either way attribution is
               // impossible right now — say so and keep Skip reachable, because cash must
               // never become untakeable over a list.
@@ -921,10 +925,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
                 <LoadingButton
                   style={[
                     styles.cashButton,
-                    (pinBusy || pinValue.length !== 4 || !pinStaff) &&
+                    !canConfirmPin(pinStaff, pinValue, pinBusy) &&
                       styles.buttonDisabled,
                   ]}
-                  disabled={pinBusy || pinValue.length !== 4 || !pinStaff}
+                  disabled={!canConfirmPin(pinStaff, pinValue, pinBusy)}
                   loading={pinBusy}
                   onPress={submitPinAndTakeCash}
                   spinnerColor={Colors.white}>
