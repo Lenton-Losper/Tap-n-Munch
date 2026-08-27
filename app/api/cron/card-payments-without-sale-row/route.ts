@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireCronSecret } from '@/lib/api/require-cron-secret'
+import { recordCronRun } from '@/lib/cron/record-cron-run'
 import {
   reportCardPaymentsWithoutSaleRow,
   SALE_ROW_GRACE_MINUTES,
@@ -58,8 +59,27 @@ async function runScan(req: Request) {
     return NextResponse.json({ success: true, skipped: 'not the top of the hour' })
   }
 
+  const supabase = createServerSupabaseClient()
+
   try {
-    const report = await reportCardPaymentsWithoutSaleRow(createServerSupabaseClient())
+    const report = await reportCardPaymentsWithoutSaleRow(supabase)
+
+    /**
+     * THE HEARTBEAT GOES HERE, BEFORE THE BRANCHES, so that EVERY completed scan writes one --
+     * including the scan that found nothing. Putting it inside the `missing > 0` branch would
+     * reproduce the exact defect this route was built to detect: a silence that could mean either
+     * "healthy" or "not running", with no way to tell them apart.
+     */
+    await recordCronRun(supabase, {
+      job: 'card-payments-without-sale-row',
+      scanned: report.scanned,
+      findings: report.missing,
+      detail: {
+        missingRatio: report.missingRatio,
+        graceMinutes: SALE_ROW_GRACE_MINUTES,
+        worst: report.worst ?? null,
+      },
+    })
 
     if (report.scanned === 0) {
       // NOT an all-clear. No card payments in the window means nothing was testable -- saying
@@ -88,6 +108,17 @@ async function runScan(req: Request) {
     return NextResponse.json({ success: true, ...report })
   } catch (error) {
     console.error('[SALE-ROW-GAP] scan failed', error)
+    /**
+     * A FAILED scan is also a run, and recording it with `findings: null` is what keeps the three
+     * states apart: null = could not complete, 0 = looked and found nothing, absent = never ran.
+     * Without this row a crashing sweep is indistinguishable from a healthy quiet one.
+     */
+    await recordCronRun(supabase, {
+      job: 'card-payments-without-sale-row',
+      scanned: 0,
+      findings: null,
+      detail: { error: error instanceof Error ? error.message : 'scan failed' },
+    })
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'scan failed' },
       { status: 500 },
