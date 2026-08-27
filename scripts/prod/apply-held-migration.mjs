@@ -235,6 +235,29 @@ const PRECONDITIONS = {
     ]
     return { out, ok: tracked[0].n === 0 }
   },
+  /**
+   * #193's vocabulary record. COMMENT ONLY -- no constraint added, altered or dropped. The
+   * precondition therefore checks that what the comment ASSERTS is still true, because a comment
+   * that misstates a constraint is worse than none: it is an authoritative-looking claim the next
+   * reader trusts instead of measuring.
+   */
+  '20260827121000': async (c) => {
+    const { rows: def } = await c.query(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+        WHERE conrelid='public.restaurant_terminals'::regclass AND contype='c'
+          AND pg_get_constraintdef(oid) ILIKE '%status%'`,
+    )
+    const d = def[0]?.d ?? ''
+    const four = ['active', 'inactive', 'revoked', 'pending'].every((v) => d.includes(`'${v}'`))
+    const absent = !d.includes('maintenance') && !d.includes('pending_update')
+    return {
+      out: [
+        `  live CHECK holds all four values ... ${four ? 'yes' : 'NO'}`,
+        `  newer vocabulary absent ........... ${absent ? 'yes' : 'NO -- the comment would be wrong'}`,
+      ],
+      ok: four && absent,
+    }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,
