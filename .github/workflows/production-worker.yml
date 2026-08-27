@@ -148,6 +148,23 @@ jobs:
       # produced false positives in earlier drafts.
       - name: Every read of orders is ranged, narrowed, or paginated
         run: npx tsx scripts/check-orders-read-bounded.ts
+      # #324: production's `orders` is 37% stress fixtures (1,314 of 3,522), and a cross-venue
+      # count or sum that does not exclude them is wrong by up to 37% while reporting no error.
+      # Two acted-on figures already came from this -- the "876 broken QR orders" and #281's "282
+      # duplicate order-number pairs", the latter of which scoped #127's unique index away from
+      # production.
+      #
+      # WIRED 2026-08-27. It was written as a blocking gate on 2026-08-27 (6e1195d8) and never
+      # added to a workflow, so it ran nowhere for its whole life. THREE places asserted otherwise:
+      # its own docblock says "Blocking in CI", and the COMMENT ON in
+      # supabase/migrations/20260827116000_orders_is_stress_fixture.sql -- deployed to the database
+      # -- says "CI enforces it via scripts/check-orders-fixture-excluded.ts". A gate nobody runs
+      # is the strongest kind of decoration, and one that three documents swear is running is worse
+      # than none, because it stops anybody looking. Verified two-sided before wiring: exit 0 on
+      # this tree (715 files scanned), exit 1 naming the line on an unscoped `count: 'exact'`.
+      # Static, no credentials, no database, and it self-tests its detectors before reporting.
+      - name: Cross-venue measurements over orders exclude the stress fixtures
+        run: npx tsx scripts/check-orders-fixture-excluded.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.

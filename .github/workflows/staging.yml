@@ -657,6 +657,13 @@ jobs:
       # produced false positives in earlier drafts.
       - name: Every read of orders is ranged, narrowed, or paginated
         run: npx tsx scripts/check-orders-read-bounded.ts
+      # #324, WIRED 2026-08-27 -- see the fuller note in production-worker.yml. Written as a
+      # blocking gate and added to no workflow, while its own docblock and a deployed COMMENT ON
+      # both stated that CI enforced it. Static, no credentials, no database. It belongs on staging
+      # as well as production so an offending query is caught where it is written rather than at
+      # the promotion, which is the whole reason the sibling read-bounded gate runs in both.
+      - name: Cross-venue measurements over orders exclude the stress fixtures
+        run: npx tsx scripts/check-orders-fixture-excluded.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
