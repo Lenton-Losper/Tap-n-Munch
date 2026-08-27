@@ -64,8 +64,73 @@ const EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs']
  *
  * So: match either order, and any separator between the words. `--list` output is what people use
  * to build a sign-off list, and a placeholder missing from that list is a placeholder nobody signs.
+ *
+ * ============================================================================================
+ * AND A THIRD SPELLING, FOUND THE SAME DAY — ON PRODUCTION, BY THE OWNER.
+ * ============================================================================================
+ *
+ * `components/menu/menu-item-inventory-tab.tsx` and `components/recipes/recipe-editor-form.tsx`
+ * rendered `Quantity [PLACEHOLDER: say "per one sold"]` to a live venue. Four strings, duplicated
+ * across both files, eight renders. This gate had never heard of the word.
+ *
+ * The commit that widened the word ORDER above said, in as many words, that a checker recognising
+ * one phrasing enforces the phrasing rather than the convention — and then fixed the phrasing it
+ * had found and stopped. This is the sweep that should have followed.
+ *
+ * ============================================================================================
+ * THE MARKER IS A SHAPE, NOT A WORD. That distinction is the whole design.
+ * ============================================================================================
+ *
+ * A sweep of every marker word anyone might use — TODO, TBD, FIXME, XXX, DRAFT, HACK, WIP, TEMP,
+ * LOREM, TBA, REVISIT — across shippable string literals found:
+ *
+ *     PLACEHOLDER   28 hits, EVERY ONE a Tailwind `placeholder:text-…` class or a React
+ *                   `placeholder=` prop
+ *     DRAFT         24 hits, EVERY ONE `status === 'draft'`, a real document status
+ *     NOT SIGNED    13 hits, EVERY ONE the string 'Not signed in'
+ *     TODO/TBD/FIXME/XXX/HACK/WIP/TEMP/LOREM   ZERO
+ *
+ * So matching the WORD would fire on sixty-five correct lines and be switched off inside a week —
+ * which is how a gate dies, and worse than not having it. What every real marker has in common is
+ * a SHAPE: the word wearing a colon or brackets, announcing that the text beside it is a note to a
+ * human rather than something a customer should read.
+ *
+ * Two shapes, and nothing else:
+ *   1. `[WORD: ...]` or `[WORD ...]` — a bracketed marker, colon optional
+ *   2. `WORD COPY` / `COPY WORD` — the pair form, either order, any separator
+ *
+ * `placeholder:text-white` does not match: `placeholder:` is not bracketed and `text-white` is not
+ * `COPY`. `status === 'draft'` does not match: no bracket, no pair. Verified by the fixtures in
+ * __tests__/no-pending-copy-gate.test.ts, which include both as explicit false-positive guards.
  */
-const MARKER = /\b(?:PENDING[\s_-]*COPY|COPY[\s_-]*PENDING)\b/i
+const MARKER_WORDS = 'PENDING|COPY|PLACEHOLDER|TODO|TBD|TBA|FIXME|XXX|DRAFT|HACK|WIP|LOREM'
+
+/**
+ * THE BRACKETED FORM IS CASE-SENSITIVE, AND THAT IS THE WHOLE DISCRIMINATOR.
+ *
+ * A first cut matched brackets case-insensitively and immediately fired on two innocent lines the
+ * hand-written controls had not imagined:
+ *
+ *     components/ui/select.tsx          data-[placeholder]:text-muted-foreground   Tailwind variant
+ *     lib/reports/generate-pdf-lib.ts   new Blob([copy], { type: … })              ordinary JS
+ *
+ * Real markers are SHOUTED — `[PLACEHOLDER:`, `[TODO:`, `[TBD]` — because the convention exists to
+ * catch a reader's eye. Lowercase `[placeholder]` and `[copy]` are code. Requiring upper case
+ * separates them exactly, with no allowlist to maintain and nothing for anyone to opt out of.
+ *
+ * The PAIR form stays case-insensitive: "Pending Copy" in a sentence-cased constant is still a
+ * marker, and no legitimate line pairs those two words adjacently.
+ */
+const MARKER_BRACKETED = new RegExp(
+  `\\[\\s*(?:${MARKER_WORDS})(?:[\\s_-]*(?:${MARKER_WORDS}))?\\s*[:\\]]`,
+)
+const MARKER_PAIR = new RegExp(
+  `\\b(?:(?:${MARKER_WORDS})[\\s_-]+COPY|COPY[\\s_-]+(?:${MARKER_WORDS}))\\b`,
+  'i',
+)
+const MARKER = {
+  test: (value) => MARKER_BRACKETED.test(value) || MARKER_PAIR.test(value),
+}
 
 function walk(dir, out = []) {
   let entries
