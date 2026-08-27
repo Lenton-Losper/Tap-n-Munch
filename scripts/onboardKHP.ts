@@ -1,14 +1,31 @@
-import { createClient } from '@supabase/supabase-js'
-
-const SUPABASE_URL = 'https://ihlmmpmolnpchzgwyhgh.supabase.co'
-const SERVICE_ROLE_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlobG1tcG1vbG5wY2h6Z3d5aGdoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Njg3NDcwMCwiZXhwIjoyMDkyNDUwNzAwfQ.lTlLVVazNXYuLz0YNnhERkyZG9m9G7FOAStj5Xm5WnM'
+/**
+ * Onboard the KHP venue: create the owner auth user, the restaurant, and seed its menu.
+ *
+ * THIS SCRIPT DELETES BEFORE IT CREATES. It removes any existing auth user with this email and any
+ * restaurant named KHP, along with that restaurant's categories, items and user rows.
+ *
+ * TWO CREDENTIALS WERE STRING LITERALS IN THIS FILE UNTIL 2026-08-27: the production
+ * `service_role` JWT, and the owner account's plaintext password. Both now come from the
+ * environment, and both stop the script if absent -- see scripts/lib/require-service-role-client.ts
+ * for the reasoning. The password is included because it is the same containment problem: a
+ * credential in a tracked file, copied onward by whoever writes the next onboarding script.
+ *
+ * Usage:
+ *   SUPABASE_URL=...  SUPABASE_SERVICE_ROLE_KEY=...  KHP_OWNER_PASSWORD=...  \
+ *     npx tsx scripts/onboardKHP.ts
+ */
+import { requireEnv, requireServiceRoleClient } from './lib/require-service-role-client'
 
 const EMAIL = 'flashtapapp2@gmail.com'
-const PASSWORD = '!Shadoey01'
 const RESTAURANT_NAME = 'KHP'
 
-const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+const { client: supabase, environment, projectRef } = requireServiceRoleClient()
+
+/**
+ * Read before any destructive call, so a missing password fails BEFORE the cleanup deletes an
+ * existing user and restaurant. Reading it lazily would leave the venue deleted and not recreated.
+ */
+const PASSWORD = requireEnv('KHP_OWNER_PASSWORD')
 
 type CategorySeed = { name: string; display_order: number }
 type ItemSeed = { category: string; name: string; description: string; base_price: number }
@@ -156,6 +173,7 @@ async function cleanupExistingRestaurantByName() {
 }
 
 async function onboard() {
+  console.log(`onboardKHP: targeting ${environment} (${projectRef})`)
   await cleanupExistingUser()
   await cleanupExistingRestaurantByName()
 
