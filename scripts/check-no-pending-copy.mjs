@@ -105,6 +105,24 @@ function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
+/**
+ * A line that DEFINES the marker is not a placeholder — it is the mechanism.
+ *
+ * `lib/orders/clear-held-for-review-copy.ts` exports `CLEAR_HELD_PENDING_COPY_MARKER` so its own
+ * suite can assert which outcomes are still unsigned. The gate counted that declaration as a
+ * finding, so the outstanding count read one higher than the number of strings anybody could sign,
+ * and it could never reach zero: removing the "placeholder" would remove the mechanism.
+ *
+ * DELIBERATELY NARROW. It exempts a `const NAME = 'PENDING COPY:'` declaration whose value is the
+ * marker AND NOTHING ELSE. A declaration carrying any trailing text — `'PENDING COPY: fix me'` —
+ * is a placeholder wearing a constant's clothes and still fires. Widening this to "any line with
+ * const" would be an opt-out anyone could reach for, which is the failure mode
+ * check-order-number-guard's ALLOWED_SUFFIXES had: one unrelated word disabled the rule.
+ */
+function isMarkerDeclaration(line) {
+  return /^\s*(?:export\s+)?const\s+[A-Z0-9_]+\s*=\s*(['"`])PENDING[\s_-]*COPY:?\1\s*;?\s*$/i.test(line)
+}
+
 const hits = []
 for (const d of SEARCH_DIRS) {
   for (const file of walk(join(ROOT, d))) {
@@ -118,7 +136,7 @@ for (const d of SEARCH_DIRS) {
       if (MARKER.test(l)) strippedLines.add(l.trim())
     })
     raw.split('\n').forEach((line, i) => {
-      if (MARKER.test(line) && strippedLines.has(line.trim())) {
+      if (MARKER.test(line) && strippedLines.has(line.trim()) && !isMarkerDeclaration(line)) {
         hits.push({ file: relative(ROOT, file).split(sep).join('/'), line: i + 1, text: line.trim() })
       }
     })

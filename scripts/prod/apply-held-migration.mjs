@@ -236,44 +236,83 @@ const PRECONDITIONS = {
     return { out, ok: tracked[0].n === 0 }
   },
   /**
-   * #348's crash_reports table. REQUIRED BY CODE BEING PROMOTED -- /api/crash-reports writes here,
-   * so promoting the route without the table ships a boundary that tells a customer their crash
-   * was reported while every insert fails. The drift gate caught exactly that.
+   * #193's vocabulary record. COMMENT ONLY -- no constraint added, altered or dropped. The
+   * precondition therefore checks that what the comment ASSERTS is still true, because a comment
+   * that misstates a constraint is worse than none: it is an authoritative-looking claim the next
+   * reader trusts instead of measuring.
    */
-  '20260827117000': async (c) => {
-    const { rows: exists } = await c.query(
-      `SELECT count(*)::int AS n FROM information_schema.tables
-        WHERE table_schema='public' AND table_name='crash_reports'`,
+  '20260827121000': async (c) => {
+    const { rows: def } = await c.query(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+        WHERE conrelid='public.restaurant_terminals'::regclass AND contype='c'
+          AND pg_get_constraintdef(oid) ILIKE '%status%'`,
     )
+    const d = def[0]?.d ?? ''
+    const four = ['active', 'inactive', 'revoked', 'pending'].every((v) => d.includes(`'${v}'`))
+    const absent = !d.includes('maintenance') && !d.includes('pending_update')
     return {
-      out: [`  public.crash_reports already exists ... ${exists[0].n === 1 ? 'YES' : 'no'}`],
-      ok: exists[0].n === 0,
+      out: [
+        `  live CHECK holds all four values ... ${four ? 'yes' : 'NO'}`,
+        `  newer vocabulary absent ........... ${absent ? 'yes' : 'NO -- the comment would be wrong'}`,
+      ],
+      ok: four && absent,
     }
   },
   /**
-   * #324's is_stress_fixture. GENERATED ALWAYS AS STORED, derived from columns that already exist,
-   * nothing reads it yet. Additive and reversible.
+   * #229 — variant groups become the working mechanism for five FNB ChowNow drinks.
    *
-   * NOTE FOR WHOEVER READS THE COLUMN COMMENT: it states 1,314 fixture rows as at 2026-08-27 and
-   * that is now HISTORY, not current state -- the rows were deleted the same day. The column
-   * evaluates FALSE on every row today. The comment is kept because it explains why the column
-   * exists; it should not be read as a live count.
+   * THE ONE THING THAT MUST NOT HAPPEN is a price changing without the venue doing it, and the
+   * migration carries its own precondition and postcondition for that inside the transaction. What
+   * is checked HERE is the thing those cannot see: that the five rows still look like the ones the
+   * proof was built against.
    */
-  '20260827116000': async (c) => {
-    const { rows: col } = await c.query(
-      `SELECT count(*)::int AS n FROM information_schema.columns
-        WHERE table_name='orders' AND column_name='is_stress_fixture'`,
-    )
-    const { rows: match } = await c.query(
-      `SELECT count(*)::int AS n FROM orders
-        WHERE restaurant_id IS NULL AND COALESCE(firebase_restaurant_id,'') LIKE 'restaurant_test_%'`,
+  '20260827122000': async (c) => {
+    const { rows: r } = await c.query(
+      `SELECT count(*)::int AS five,
+              count(*) FILTER (WHERE variants IS NOT NULL AND variants::text <> '[]')::int AS with_legacy
+         FROM menu_items
+        WHERE name IN ('Americano','Caffè Latte','Cappucinno','Flat White','Red Cappuccino')
+          AND variant_groups IS NOT NULL AND variant_groups::text <> '[]'`,
     )
     return {
       out: [
-        `  column already exists ............. ${col[0].n === 1 ? 'YES' : 'no'}`,
-        `  rows the predicate matches today .. ${match[0].n}   (0 is expected - #324's delete ran)`,
+        `  rows carrying BOTH shapes ......... ${r[0].five}   <- must be 5`,
+        `  of those, legacy still populated .. ${r[0].with_legacy}   <- must be 5; it is the source`,
       ],
-      ok: col[0].n === 0,
+      ok: r[0].five === 5 && r[0].with_legacy === 5,
+    }
+  },
+  /**
+   * #336 — dedupe organization_stock_items and add the unique index.
+   *
+   * It DELETES a row, so the precondition is about the duplicate still being the one that was
+   * measured. The migration refuses internally on unit disagreement or an active/active collision;
+   * this refuses earlier if the population has moved at all.
+   */
+  '20260827115000': async (c) => {
+    const { rows: dup } = await c.query(
+      `SELECT count(*)::int AS groups FROM (
+         SELECT organization_id, lower(btrim(name)) FROM organization_stock_items
+          GROUP BY 1,2 HAVING count(*) > 1) d`,
+    )
+    /**
+     * Scoped to an index over the NAME, not to "any unique index" -- my first version matched
+     * `organization_stock_items_pkey` and refused, because every primary key IS a unique index.
+     * The check has to name the thing it is looking for.
+     */
+    const { rows: idx } = await c.query(
+      `SELECT count(*)::int AS n FROM pg_indexes
+        WHERE tablename='organization_stock_items'
+          AND indexdef ILIKE '%unique%' AND indexdef ILIKE '%name%'`,
+    )
+    const { rows: tot } = await c.query(`SELECT count(*)::int AS n FROM organization_stock_items`)
+    return {
+      out: [
+        `  duplicate name groups ............. ${dup[0].groups}   <- measured as 1 (Powerade)`,
+        `  organization_stock_items rows ..... ${tot[0].n}   <- measured as 52`,
+        `  unique index already present ...... ${idx[0].n ? 'YES' : 'no'}`,
+      ],
+      ok: dup[0].groups === 1 && idx[0].n === 0,
     }
   },
   '20260826170000': async (c) => {

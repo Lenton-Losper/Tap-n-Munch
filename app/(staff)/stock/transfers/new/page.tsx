@@ -36,6 +36,25 @@ export default async function NewTransferPage() {
   }
 
   const [destinations, orgItems] = await Promise.all([
+    /**
+     * THE SESSION CLIENT HERE IS THE RULING, NOT AN OVERSIGHT — DO NOT SWAP IT.
+     *
+     * `restaurants` RLS is `id IN (SELECT user_restaurant_ids()) OR owner_id = auth.uid()` with no
+     * organisation path, so this returns only the locations the caller personally belongs to, and
+     * for most callers that is the empty list. The owner ruled on it: "a permission to create
+     * cross-location transfers is not a permission to see every location in the organisation."
+     *
+     * The elevated alternative exists (`resolveVisibleLocations`, lib/organizations/queries.ts) and
+     * is gated on `authorizeOrganization(..., 'view_all_locations')` — organisation-OWNER only.
+     * `canCreateForOrg` above is a DIFFERENT organisation permission and must not be used to reach
+     * it; `canCreateHere` is a per-restaurant permission and is weaker still.
+     *
+     * What the empty result MEANS is explained to the user by CreateTransferForm — see the
+     * NO_DESTINATIONS_COPY_PENDING block there, which also carries the production measurement.
+     *
+     * The sibling call is deliberately NOT symmetrical: getOrganizationStockItemsWithConfig takes
+     * no client because it uses the service-role one, for the reasons in its own comment.
+     */
     getOrganizationRestaurants(supabase, organizationId, restaurantId),
     getOrganizationStockItemsWithConfig(organizationId),
   ])

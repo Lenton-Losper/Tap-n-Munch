@@ -349,6 +349,19 @@ describe('#117 — what must NOT move', () => {
   })
 
   it('a MALFORMED variant_groups row stays inert — this does not activate #200', async () => {
+    /*
+     * #229 NOTE, 2026-08-27. This case KEEPS its intent and must not be deleted, but read what
+     * it pins carefully: a DELTA-PRICED group stays inert, permanently and by design. What has
+     * changed around it is that the fixture below is no longer a description of production.
+     * supabase/migrations/20260827122000_issue229_variant_groups_from_legacy_variants.sql
+     * replaces this row's group with absolute-priced options taken from the legacy column, so
+     * once that migration is applied Caffè Latte is priced from its GROUP and the answer is
+     * still 4500 — proved end to end in
+     * __tests__/229-migrated-groups-charge-the-same-price.test.ts.
+     *
+     * So this remains the guard against a delta ever being read as an absolute. It stopped
+     * being a statement about what FNB ChowNow's rows contain.
+     */
     // Caffè Latte carries a `variant_groups` group with no `type` and `price_modifier` options.
     // The customer is shown the LEGACY column, so the server must price from that too. If this
     // ever returns 3500 for 350ml (35 base + 0 modifier for the group's own 250ml default) or

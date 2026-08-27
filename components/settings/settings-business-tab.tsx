@@ -30,6 +30,44 @@ import {
   type LocationsPageData,
 } from '@/lib/organizations/actions'
 
+/**
+ * THIS LIST IS NOT ALWAYS THE BUSINESS'S LIST, AND IT USED TO SAY OTHERWISE.
+ *
+ * `getLocationsPageDataAction` takes the elevated read only for an organisation OWNER
+ * (`resolveVisibleLocations`, gated on `authorizeOrganization(..., 'view_all_locations')`). Everyone
+ * else gets the SESSION-client read, which `restaurants` RLS narrows to their own
+ * `restaurant_users` memberships — there is no organisation path in that policy.
+ *
+ * So a location manager in a three-location business opened this tab and saw one card, under a
+ * heading that says "Every location shares this business". Nothing on the screen distinguished
+ * "your business has one location" from "you are attached to one of its locations". Measured on
+ * production 2026-08-27: Gosto Investment CC has three locations and six staff users, five of whom
+ * belong to exactly one; all five hold `settings:read` and reach this tab.
+ *
+ * THE SCOPING IS THE RULING, NOT THE DEFECT — the owner's words on the sibling case in
+ * components/stock/create-transfer-form.tsx: "a permission to create cross-location transfers is
+ * not a permission to see every location in the organisation." The fix is to say so, not to widen.
+ *
+ * WHY THIS NOTE IS SAFE TO SHOW WHENEVER THE READ WAS SCOPED, including to the sole manager of a
+ * genuinely single-location business: it qualifies the list without claiming anything is missing.
+ * It must stay that way — see the copy requirement below. (The transfer picker's zero-row message
+ * cannot be written that way and therefore still owes a second string; noted there.)
+ */
+const SCOPED_LIST_COPY_PENDING = {
+  /**
+   * Placeholder, not drafted copy. MUST CONVEY, once signed off:
+   *   1. this list shows the locations the reader is attached to, not necessarily every location in
+   *      the business;
+   *   2. if the business has others, the reader has not been given access to them;
+   *   3. who to ask — a manager or the business owner.
+   * MUST NOT assert that other locations DO exist (this renders for single-location businesses too),
+   * MUST NOT read as an error or a failed load, and MUST NOT imply the reader has lost access to
+   * something they previously had.
+   */
+  note:
+    'This shows the locations you are attached to. If your business has others, you have not been given access to them - ask a manager or the business owner.',
+}
+
 function locationTypeLabel(locationType: string): string {
   return locationType
     .toLowerCase()
@@ -113,6 +151,11 @@ export function SettingsBusinessTab() {
         </div>
       ) : (
         <div className="space-y-3">
+          {pageData.listIsScopedToCallerMemberships ? (
+            <p className="rounded-lg border border-[#E9E9E7] bg-[#FAFAF8] px-3 py-2 text-sm text-muted-foreground">
+              {SCOPED_LIST_COPY_PENDING.note}
+            </p>
+          ) : null}
           {pageData.locations.map((location) => (
             <div
               key={location.id}

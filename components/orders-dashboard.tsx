@@ -17,6 +17,7 @@ import {
   type HeldForReviewCandidate,
   type HeldForReviewRow,
 } from '@/lib/orders/held-for-review'
+import type { ClearHeldSummary } from '@/lib/orders/clear-held-for-review-outcomes'
 import {
   subscribeOrderRequestsRealtime,
   getWaitingOrderRequests,
@@ -690,6 +691,19 @@ export function OrdersDashboard() {
   const [heldForReviewRows, setHeldForReviewRows] = useState<HeldForReviewRow[]>([])
   const [heldForReviewLoading, setHeldForReviewLoading] = useState(true)
   const [heldForReviewError, setHeldForReviewError] = useState<string | null>(null)
+  /**
+   * The "clear all" run. `heldClearError` is a SEPARATE piece of state from `heldClearSummary` for
+   * the same reason `heldForReviewError` is separate from the rows: a request that never ran and a
+   * run in which nothing needed doing must not render alike.
+   *
+   * `heldClearNonce` re-triggers the held-for-review read after a run, so the rows a run resolved
+   * leave the screen without waiting for the next realtime order event — a cancelled order is
+   * `is_closed`, so it may not produce one at all.
+   */
+  const [heldClearRunning, setHeldClearRunning] = useState(false)
+  const [heldClearSummary, setHeldClearSummary] = useState<ClearHeldSummary | null>(null)
+  const [heldClearError, setHeldClearError] = useState<string | null>(null)
+  const [heldClearNonce, setHeldClearNonce] = useState(0)
 
   const tabInfoScopeId = orderScope?.restaurantId ?? ''
   const [tabInfoScopeKey, setTabInfoScopeKey] = useState(tabInfoScopeId)
@@ -1112,7 +1126,46 @@ export function OrdersDashboard() {
     return () => {
       cancelled = true
     }
-  }, [dashboardRestaurantId, orderScope, allOrders])
+  }, [dashboardRestaurantId, orderScope, allOrders, heldClearNonce])
+
+  /**
+   * "Clear all" — one press, one server run. Everything that decides anything is on the server; this
+   * handler exists only to (a) stop a double-submit while a run is in flight, (b) keep the failed
+   * REQUEST distinguishable from a completed run, and (c) refresh the list afterwards.
+   *
+   * NO ORDER IDS ARE SENT. The route takes none, deliberately: a list posted from here would be the
+   * list this screen last polled, and the whole guard is that every order is re-queried against the
+   * gateway immediately before its own write, in the same run. See the route's header.
+   */
+  const handleClearHeldForReview = async () => {
+    if (heldClearRunning) return
+    setHeldClearRunning(true)
+    setHeldClearError(null)
+    try {
+      const token = await getAccessToken()
+      const response = await fetch('/api/admin/orders/held-for-review/clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data?.success !== true || !data?.summary) {
+        throw new Error(String(data?.error || 'clear_run_failed'))
+      }
+      setHeldClearSummary(data.summary as ClearHeldSummary)
+      setHeldClearNonce((n) => n + 1)
+    } catch (err) {
+      console.error('[HELD-FOR-REVIEW] clear run failed', err)
+      // The SUMMARY is deliberately left as it was rather than cleared. Wiping the last run's
+      // per-order results because a later request failed would delete the only record the staff
+      // member has of what happened.
+      setHeldClearError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setHeldClearRunning(false)
+    }
+  }
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   /* eslint-disable react-hooks/set-state-in-effect -- subscription lifecycle guards; React Query refactor out of scope */
@@ -2362,6 +2415,17 @@ export function OrdersDashboard() {
           loading={heldForReviewLoading}
           error={heldForReviewError}
           currency={restaurant?.currency || 'N$'}
+          onClearAll={handleClearHeldForReview}
+          /*
+            Hiding the control is a courtesy, never the gate: the route re-checks `orders:update`
+            server-side and 403s regardless. `permissionsLoaded` is required because
+            hasPermission() answers false while they are still loading, and a control that appears
+            a second late reads as broken — better to render nothing until the answer is real.
+          */
+          canClearAll={permissionsLoaded && hasPermission(PERMISSIONS.ORDERS_UPDATE)}
+          clearing={heldClearRunning}
+          clearSummary={heldClearSummary}
+          clearError={heldClearError}
         />
         {activeTab === 'waiting_review' ? (
           orderRequests.length === 0 ? (
