@@ -97,11 +97,34 @@ function queryChains(source: string): { start: number; text: string }[] {
   for (let i = 0; i < lines.length; i++) {
     if (!/\.from\(\s*['"]restaurant_users['"]\s*\)/.test(lines[i])) continue
     // A chain ends at the first line that does not continue it.
+    //
+    // A COMMENT LINE INSIDE A CHAIN IS STILL THE CHAIN. Fixed 2026-08-27. A `//` part-way down a
+    // builder matches neither `^\s*\.` nor `^\s*\)`, so it terminated the walk and everything below
+    // it became invisible -- shape A went unrecognised for that call site. Explaining WHY a query
+    // is shaped a certain way is the most natural thing to do in the middle of a builder, and it
+    // silently disabled the check.
+    //
+    // This is the SAME BUG the sibling scan already hit and already fixed: see the note in
+    // scripts/check-orders-read-bounded.ts's chainFrom(), where a comment between `.from('orders')`
+    // and `.update(...)` made an UPDATE read as an unbounded SELECT. Its remedy is reused here
+    // rather than a second approach invented -- skip the comment lines so the chain keeps walking.
+    //
+    // The comment's TEXT is replaced with a blank rather than absorbed. The sibling scan pushes the
+    // raw comment line, which is harmless there but would not be here: this detector matches on
+    // `.eq('user_id'` and `.is('deleted_at'` appearing in the joined chain text, so a comment
+    // MENTIONING those -- exactly what a comment explaining a soft-delete filter contains -- could
+    // make a legitimate authorization check read as shape A. Blanking keeps the chain contiguous
+    // without letting prose vote on the verdict.
     const parts: string[] = [lines[i]]
     for (let j = i + 1; j < lines.length && j < i + 15; j++) {
-      const next = lines[j]
+      let k = j
+      while (k < lines.length && /^\s*(\/\/|\/\*|\*)/.test(lines[k])) k++
+      const next = lines[k]
+      if (next === undefined) break
       if (!/^\s*\./.test(next) && !/^\s*\)/.test(next)) break
+      for (let c = j; c < k; c++) parts.push(' ')
       parts.push(next)
+      j = k
     }
     chains.push({ start: i + 1, text: parts.join(' ') })
   }
@@ -165,6 +188,31 @@ const SELF_TEST_MUST_CATCH: [string, string][] = [
     'shape B -- legacy owner fallback',
     `await supabase.from('restaurants').select('id').eq('owner_id', userId).limit(1)`,
   ],
+  [
+    /**
+     * A COMMENT INSIDE THE CHAIN IS STILL THE CHAIN. Added 2026-08-27.
+     *
+     * `queryChains` ended a chain at the first line matching neither `^\s*\.` nor `^\s*\)`, so a
+     * `//` line part-way down terminated the walk: everything below it was invisible and shape A
+     * went unrecognised. Explaining WHY a query is written a certain way is the most natural thing
+     * to do in the middle of a builder, and it silently disabled the check for that call site.
+     *
+     * This is not a new discovery. `scripts/check-orders-read-bounded.ts` hit the identical bug --
+     * its own comment records a comment between `.from('orders')` and `.update(...)` causing an
+     * UPDATE to be read as an unbounded SELECT -- and fixed it by skipping comment lines and
+     * ABSORBING them so the chain text stays contiguous. That fix is reused here verbatim in
+     * shape rather than reinvented.
+     */
+    'shape A with a comment part-way down the chain',
+    `const { data } = await supabase
+      .from('restaurant_users')
+      .select('restaurant_id')
+      .eq('user_id', userId)
+      // the soft-delete filter matters: a removed membership must not resolve
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()`,
+  ],
 ]
 
 const SELF_TEST_MUST_IGNORE: [string, string][] = [
@@ -184,6 +232,27 @@ const SELF_TEST_MUST_IGNORE: [string, string][] = [
       .select('restaurant_id, role')
       .eq('user_id', userId)
       .is('deleted_at', null)`,
+  ],
+  [
+    /**
+     * FALSE-POSITIVE GUARD for the comment-absorption fix above, and the reason comment text is
+     * BLANKED rather than joined into the chain.
+     *
+     * This is a legitimate authorization check -- it names a known `restaurant_id`, so it is not
+     * resolving anything. But its comment mentions the soft-delete filter and the user lookup,
+     * which are the very tokens shape A matches on. If the walker joined comment text into the
+     * chain, this correct call site would be reported as a resolver. Widening a chain walker to
+     * see through comments trades a false negative for a false positive unless the prose is
+     * excluded from the match, and this pins that it is.
+     */
+    'authorization check whose COMMENT mentions the resolver shape',
+    `const { data } = await supabase
+      .from('restaurant_users')
+      .select('role')
+      // unlike the resolver we do not .is('deleted_at', null) then .limit(1) on user_id alone
+      .eq('user_id', userId)
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle()`,
   ],
 ]
 
