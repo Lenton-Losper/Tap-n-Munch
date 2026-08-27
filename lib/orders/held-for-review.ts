@@ -127,6 +127,23 @@ export const HELD_FOR_REVIEW_CAUSE_COPY: Readonly<Record<string, HeldForReviewCo
       'Card payments are not set up at this venue, so we cannot ask the payment provider what ' +
       'happened. A card may still have been charged on the machine.',
   },
+  /**
+   * SIGNED OFF 2026-08-27, verbatim, after six of these surfaced on a live venue's dashboard
+   * rendering as `COPY NOT SIGNED (stranded_pending)` in front of staff.
+   *
+   * 'Nothing was taken.' is the load-bearing sentence and is pinned character-for-character. It is
+   * the opposite of `verification_unavailable_hold`'s 'A card may still have been charged on the
+   * machine.', and the two must never converge: one row tells staff to go and check the terminal
+   * roll before acting, this one tells them they may act without checking anything. A reword that
+   * softens this into "the payment may not have completed" hands back the guess the sentence
+   * exists to remove.
+   */
+  [STRANDED_PENDING_CAUSE]: {
+    label: 'Payment never confirmed',
+    why:
+      'The card machine reported a problem and the payment provider has no record of this order. ' +
+      'Nothing was taken. Decide whether to take payment again or cancel it.',
+  },
 }
 
 /**

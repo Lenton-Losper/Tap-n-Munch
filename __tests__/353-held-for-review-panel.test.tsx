@@ -190,13 +190,36 @@ describe('#353 the populated panel', () => {
     ).toBe('R3.00')
   })
 
-  it('a stranded row is visibly unsigned rather than plausibly worded', async () => {
+  it('a stranded row renders the SIGNED wording, through the DOM staff actually read', async () => {
+    // Inverted 2026-08-27. The previous assertion — that this row shows the unsigned marker — was
+    // a deliberate tripwire, and it fired the moment the copy was signed. That is why it is
+    // rewritten here rather than deleted.
+    //
+    // Asserted through the rendered row, not off the constant, because the constant being right
+    // and the panel rendering it are two different claims: six of these reached a live venue's
+    // dashboard reading `COPY NOT SIGNED (stranded_pending)`, which is what a correct constant
+    // with a wrong render looks like from the outside.
     await mount(
       <HeldForReviewPanel rows={everyCause()} loading={false} />,
     )
     const stranded = rows().find((r) => r.getAttribute('data-cause') === 'stranded_pending')!
-    expect(stranded.getAttribute('data-copy-signed')).toBe('false')
-    expect(stranded.textContent).toContain(UNSIGNED_COPY_MARKER)
+    expect(stranded.getAttribute('data-copy-signed')).toBe('true')
+    expect(stranded.textContent).not.toContain(UNSIGNED_COPY_MARKER)
+    expect(stranded.textContent).toContain('Payment never confirmed')
+    expect(stranded.textContent).toContain('Nothing was taken.')
+  })
+
+  it('NO row on the panel shows an unsigned marker, whatever the cause', async () => {
+    // The class assertion the per-cause tests cannot make. `everyCause()` builds one row per cause
+    // the dashboard can produce, so this fails the day a fourth hold cause is added without
+    // wording — before it reaches a venue, rather than after.
+    await mount(
+      <HeldForReviewPanel rows={everyCause()} loading={false} />,
+    )
+    for (const row of rows()) {
+      expect(row.textContent).not.toContain(UNSIGNED_COPY_MARKER)
+      expect(row.getAttribute('data-copy-signed')).toBe('true')
+    }
   })
 
   it('the signed rows are marked signed', async () => {

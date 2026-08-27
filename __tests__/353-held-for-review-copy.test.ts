@@ -114,8 +114,45 @@ describe('#353 the hold-status array is consumed, never counted', () => {
     }
   })
 
-  it('the only unsigned cause reaching the surface today is the stranded one', () => {
-    expect(unsignedCauses()).toEqual([STRANDED_PENDING_CAUSE])
+  it('EVERY cause the dashboard can render now has signed copy', () => {
+    // Was `toEqual([STRANDED_PENDING_CAUSE])` — a tripwire for the moment the owner signed it. It
+    // fired on 2026-08-27, correctly, and is replaced rather than deleted: an empty list is the
+    // claim that matters now, and it is the one that will fail the day someone adds a fourth hold
+    // cause without wording. That is the whole reason this function exists in the code instead of
+    // as a note in a report.
+    expect(unsignedCauses()).toEqual([])
+  })
+
+  it('pins the SIGNED stranded_pending wording character for character', () => {
+    // Signed 2026-08-27 after six of these surfaced on a live venue's dashboard reading
+    // `COPY NOT SIGNED (stranded_pending)` in front of staff. Exact-string, not "contains the
+    // gist": a reword is a second sign-off, and accepting any sentence about an unconfirmed
+    // payment would let one through without it.
+    const copy = heldForReviewCopy(STRANDED_PENDING_CAUSE)
+    expect(copy.label).toBe('Payment never confirmed')
+    expect(copy.why).toBe(
+      'The card machine reported a problem and the payment provider has no record of this order. ' +
+        'Nothing was taken. Decide whether to take payment again or cancel it.',
+    )
+  })
+
+  it('keeps the three hold causes telling three DIFFERENT stories about the money', () => {
+    // The load-bearing property, and the one a shared default would quietly destroy.
+    //   amount_mismatch      -> nothing taken FROM THIS ORDER (a payment did arrive, for the wrong amount)
+    //   verification_unavail -> a card MAY have been charged; go and check the roll
+    //   stranded_pending     -> nothing was taken; act without checking
+    // Each sentence licenses a different action. If any two converge, staff are back to guessing.
+    expect(heldForReviewCopy('amount_mismatch_hold').why).toContain(
+      'Nothing has been taken from this order yet.',
+    )
+    expect(heldForReviewCopy('verification_unavailable_hold').why).toContain(
+      'A card may still have been charged on the machine.',
+    )
+    expect(heldForReviewCopy(STRANDED_PENDING_CAUSE).why).toContain('Nothing was taken.')
+
+    // ...and the two opposite claims never appear on the same row.
+    const stranded = heldForReviewCopy(STRANDED_PENDING_CAUSE).why
+    expect(stranded).not.toContain('may still have been charged')
   })
 
   it('a held order is classified by whatever the array holds, not by a hardcoded name', () => {
@@ -135,9 +172,12 @@ describe('#353 an unmapped cause reads as unknown, never as fine', () => {
     expect(copy.why.toLowerCase()).not.toContain('nothing has been taken')
   })
 
-  it('the stranded cause is marked unsigned until the owner signs it', () => {
-    expect(heldForReviewCopy(STRANDED_PENDING_CAUSE).label).toContain(UNSIGNED_COPY_MARKER)
-    expect(heldForReviewCopy(STRANDED_PENDING_CAUSE).why).toContain(UNSIGNED_COPY_MARKER)
+  it('the stranded cause no longer carries the marker — it is signed', () => {
+    // Inverted 2026-08-27 when the owner signed it. The unsigned-fallback MECHANISM is still
+    // asserted directly above, against a cause that genuinely has no copy, so retiring this
+    // tripwire costs no coverage of the behaviour it was really protecting.
+    expect(heldForReviewCopy(STRANDED_PENDING_CAUSE).label).not.toContain(UNSIGNED_COPY_MARKER)
+    expect(heldForReviewCopy(STRANDED_PENDING_CAUSE).why).not.toContain(UNSIGNED_COPY_MARKER)
   })
 
   it('signed copy never carries the marker', () => {
