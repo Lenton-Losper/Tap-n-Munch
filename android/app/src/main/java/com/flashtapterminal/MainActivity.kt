@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import com.facebook.react.bridge.Arguments
 import com.flashtap.pos.PaymentModule
+import com.flashtap.pos.WiseCashierCodes
 import com.flashtap.pos.WisePosSdkBootstrap
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -15,73 +16,22 @@ import org.json.JSONObject
 class MainActivity : ReactActivity() {
 
   companion object {
-    // Gateway result codes confirmed (via the 2026-07-28 Finatic-UAT NAD 11.99 staging
-    // decline investigation) to mean a clean card decline with no charge. Only add a code
-    // here once it's been confirmed against real gateway behavior — everything else stays
-    // PAYMENT_AMBIGUOUS and goes through Finatic verify, per the existing safe-default
-    // policy (see the REFUND path below, which deliberately declines to guess DECLINE vs
-    // FAILED for codes it hasn't confirmed).
-    private val KNOWN_DECLINE_CODES = setOf("N003")
-
     /**
-     * Gateway result codes that mean THE OPERATOR ABORTED before the gateway was contacted.
+     * The three result-code tables now live in com.flashtap.pos.WiseCashierCodes, unchanged.
      *
-     * WiseCashier does not use RESULT_CANCELED. Its failure return is
-     * AppInvokeUtilKt.onAppInvokeFail, which is hardcoded:
+     * MOVED SO THEY COULD BE TESTED. As `private val`s on this companion they were unreachable
+     * from junit — an Android Activity cannot be constructed there — so the constants that decide
+     * whether an order skips Finatic verification had no test at all. They are plain data with no
+     * Android dependencies, and WiseCashierCodesTest now pins the safety properties: that K026 is
+     * the only code permitted to bypass, that the doc's five NEVER codes are excluded, and that no
+     * code carrying staff display text can also bypass.
      *
-     *     intent.putExtra("result",    exceptionCode)
-     *     intent.putExtra("resultMsg", exceptionMsg)
-     *     intent.putExtra("version",   "A01")
-     *     activity.setResult(-1, intent)   // RESULT_OK, unconditionally
-     *
-     * so EVERY failure — cancel, timeout, flat battery — arrives as RESULT_OK and is
-     * distinguished only by `result`. Confirmed on a UAT P5 on 2026-08-09 (vc82 wiretap):
-     * resultCode -1, result=K026, resultMsg="[K026]Manual cancellation by operator".
-     *
-     * NARROW ON PURPOSE. K026 is one of 22 codes in TransactionExceptionMapper, and several
-     * of its siblings must NEVER take the no-gateway-attempt bypass:
-     *   K027 "Transaction timeout ... check transaction status before making another payment"
-     *   K017 "Transaction processing"
-     *   K036 / K037 auto-reversal succeeded / FAILED — a reversal implies an authorisation
-     *   K009 "Unknown Transaction Exception"
-     * Those arrive on this identical path and must keep falling through to Finatic verify.
-     * See docs/wisecashier-result-codes.md for the full table. Do not widen this set without
-     * device evidence for the specific code being added.
-     *
-     * Matched on the CODE, never on resultMsg: resultMsg is composed by
-     * CommonException.getExceptionMessage() as '[' + code + ']' + a LOCALISED string resource
-     * (string/exception_manual_cancel), so its text changes with device language.
-     *
-     * K026 means operator abort and nothing else — all 14 of its raise sites in WiseCashier
-     * 2.1.6.42 are cancel/back handlers or a card-read abort, every one of them before
-     * authorisation. It is never a decline.
+     * These aliases keep the call sites below reading exactly as they did. See
+     * docs/wisecashier-result-codes.md for the full recovered table and the reasoning per code.
      */
-    private val USER_CANCEL_RESULT_CODES = setOf("K026")
-
-    /**
-     * #182: staff-facing text for the pre-transaction WiseCashier failure codes that are
-     * actionable at the till, replacing the generic "Payment result was not a confirmed
-     * success" message with something a staff member can act on (e.g. "flat battery" instead
-     * of a raw K029). English text is WiseCashier's own -- recovered from
-     * TransactionExceptionMapper's string resources, see docs/wisecashier-result-codes.md.
-     * Not new copy: transcribed vendor text, not authored here.
-     *
-     * DISPLAY TEXT ONLY. None of these six may take the USER_CANCEL_RESULT_CODES bypass --
-     * they all stay in the "Bypass: no" group in the doc and fall through to the same
-     * PAYMENT_AMBIGUOUS branch as before, still going through Finatic verify. Every message
-     * built from this map keeps the trailing "(gateway result=$resultExtra)" suffix intact,
-     * because src/lib/payment.ts's extractGatewayResult() regexes it back out for the audit
-     * reference, and the ambiguous-classification regex in the same file also matches on
-     * message text as a fallback -- changing wording must never break either.
-     */
-    private val STAFF_FAILURE_MESSAGES = mapOf(
-      "K025" to "Need Sign In",
-      "K029" to "Battery too low to trade. Please charge your device first.",
-      "K030" to "The remote card reader is not connected!",
-      "K031" to "Please settle first",
-      "K032" to "Please load emv parameters",
-      "K033" to "Key Not Injected",
-    )
+    private val KNOWN_DECLINE_CODES = WiseCashierCodes.KNOWN_DECLINE_CODES
+    private val USER_CANCEL_RESULT_CODES = WiseCashierCodes.USER_CANCEL_RESULT_CODES
+    private val STAFF_FAILURE_MESSAGES = WiseCashierCodes.STAFF_FAILURE_MESSAGES
   }
 
   override fun getMainComponentName(): String = "FlashTapTerminal"
