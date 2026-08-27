@@ -20,6 +20,7 @@ import {
 import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
 import {
   buildVariantDisplayName,
+  findSelectedVariantPrice,
   getDefaultGroupSelection,
   getItemDisplayPrice,
   getVariantGroups,
@@ -155,12 +156,29 @@ export function ItemDetailModal({
   const handleAddToCart = () => {
     /*
      * The legacy `selected_size` shim, carried over from the quick-add path this replaced.
-     * A variant "Size" group is not an `item.sizes` entry, but the cart, the ticket and line
-     * identity all read selected_size, so a variant Size is mirrored into it at a zero
+     * A variant price group is not an `item.sizes` entry, but the cart, the ticket and line
+     * identity all read selected_size, so the priced choice is mirrored into it at a zero
      * modifier -- the price is already carried by base_price. A real `has_sizes` radio wins
      * where an item somehow has both.
+     *
+     * THIS USED TO READ `selectedVariants.Size`, AND THAT LITERAL WAS THE SILENT HALF OF #117.
+     *
+     * Every production row that synthesises a group happens to name it `Size` -- getVariantGroups
+     * hardcodes that name when it builds one out of the legacy `variants` column -- so the key
+     * matched, `selected_size` was populated, and the server's "requested size not found" warning
+     * fired. That warning is the only reason the mispricing was ever noticed. A group named
+     * anything else (a venue writing `variant_groups` with a `Volume` group) left this null, and
+     * a null size means nothing to mismatch and nothing logged: the same wrong bill with the one
+     * signal removed. Fixing the pricer alone would have taken the loud case away and left that.
+     *
+     * So the mirror is derived from the choice that actually PRICED the line, via the same
+     * resolver the price came from, and carries whatever that group is called. On every row live
+     * today this is identical to the old expression -- the group IS called `Size` -- which is
+     * exactly what makes the old code look correct.
      */
-    const variantSizeName = showVariantChooser ? selectedVariants.Size || null : null
+    const variantSizeName = showVariantChooser
+      ? findSelectedVariantPrice(item, selectedVariants)?.label || null
+      : null
     const effectiveSelectedSize =
       selectedSize ?? (variantSizeName ? { name: variantSizeName, price_modifier: 0 } : null)
 

@@ -47,8 +47,9 @@ export default {
       // #156. Detection only, self-limited to the first tick of each hour. It asks the one
       // question the device cannot answer about itself: the server knows it marked an order paid
       // by card, so it can see whether the ledger row that should have followed ever arrived.
-      // The ledger died on 2026-07-28 and nothing noticed for a month because the only trace was
-      // a console.error on a terminal in a restaurant.
+      // The ledger all but died on 2026-07-28 and nothing noticed for a month because the only
+      // trace was a console.error on a terminal in a restaurant. (Corrected 2026-08-27: it is
+      // intermittent, not dead — 3 successes in 1,215 card payments since 29 July.)
       'card-payments-without-sale-row',
     ] as const
 

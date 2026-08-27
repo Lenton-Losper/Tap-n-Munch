@@ -111,6 +111,28 @@ const PRECONDITIONS = {
     // If any row differs, something DID write it and the issue's premise is wrong. Refuse.
     return { out, ok: r.differs === 0 }
   },
+  /**
+   * #251's data-dictionary comment. NOT destructive -- it touches no rows and `COMMENT ... IS NULL`
+   * reverses it. The preconditions therefore check that the thing being DESCRIBED is still true,
+   * because a comment that misstates the data is worse than no comment: it is an authoritative
+   * -looking claim that the next reader will trust instead of measuring.
+   */
+  '20260827111000': async (c) => {
+    const { rows: col } = await c.query(
+      `SELECT data_type FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='receipt_documents' AND column_name='snapshot_json'`,
+    )
+    const { rows: cnt } = await c.query(
+      `SELECT count(*)::int AS issued FROM receipt_documents WHERE issued_at <= '2026-08-26 23:59:59+00'`,
+    )
+    const out = [
+      `  snapshot_json type ................ ${col[0]?.data_type ?? 'MISSING'}   <- must be jsonb`,
+      `  receipts issued up to 2026-08-26 .. ${cnt[0].issued}   <- comment claims 1805`,
+    ]
+    // The type is load-bearing: the comment tells the reader the column holds two JSON line shapes.
+    // The count is advisory -- receipts keep being issued -- so it is printed, not enforced.
+    return { out, ok: col[0]?.data_type === 'jsonb' }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,

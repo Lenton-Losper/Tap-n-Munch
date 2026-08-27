@@ -6,13 +6,18 @@ import { Label } from '@/components/ui/label'
 import { useToast } from '@/hooks/use-toast'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
-  FEATURE_FLAG_KEYS,
-  type FeatureFlagKey,
+  OPERATOR_FEATURE_FLAG_KEYS,
+  type OperatorFeatureFlagKey,
   type FeatureFlagsState,
 } from './constants'
 
-export const FEATURE_FLAG_LABELS: Record<FeatureFlagKey, string> = {
-  kitchen_enabled: 'Kitchen Display System',
+/**
+ * Labels for the flags that are RENDERED. Keyed by `OperatorFeatureFlagKey`, not
+ * `FeatureFlagKey`, so a flag listed in `UNBUILT_FEATURE_FLAG_KEYS` cannot carry a label here —
+ * which is the point of #351: the label was a promise of a named product ("Kitchen Display
+ * System") for a flag nothing reads. Only switches that do something get a name.
+ */
+export const FEATURE_FLAG_LABELS: Record<OperatorFeatureFlagKey, string> = {
   inventory_enabled: 'Inventory Management',
   analytics_enabled: 'Analytics',
   split_bill_enabled: 'Split Bill',
@@ -33,9 +38,9 @@ interface FeatureFlagsPanelProps {
 export function FeatureFlagsPanel({ restaurantId, initialFeatures }: FeatureFlagsPanelProps) {
   const { toast } = useToast()
   const [features, setFeatures] = useState<FeatureFlagsState>(initialFeatures)
-  const [toggling, setToggling] = useState<FeatureFlagKey | null>(null)
+  const [toggling, setToggling] = useState<OperatorFeatureFlagKey | null>(null)
 
-  const toggle = async (feature: FeatureFlagKey, value: boolean) => {
+  const toggle = async (feature: OperatorFeatureFlagKey, value: boolean) => {
     setToggling(feature)
     setFeatures((prev) => ({ ...prev, [feature]: value }))
 
@@ -65,7 +70,7 @@ export function FeatureFlagsPanel({ restaurantId, initialFeatures }: FeatureFlag
 
   return (
     <div className="space-y-3">
-      {FEATURE_FLAG_KEYS.map((key) => (
+      {OPERATOR_FEATURE_FLAG_KEYS.map((key) => (
         <div
           key={key}
           className="flex items-center justify-between gap-4 rounded-lg border border-[#E9E9E7] p-4"

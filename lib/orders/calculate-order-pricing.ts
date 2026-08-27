@@ -4,6 +4,11 @@ import type { TaxRateOption } from '@/lib/tax-rates/format'
 import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
 import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 import { listNames } from '@/lib/orders/list-names'
+import {
+  findSelectedVariantPrice,
+  findUnpricedVariantSelections,
+  findVariantPriceByOptionLabel,
+} from '@/lib/menu/variant-groups'
 
 type MenuItemPricingRow = {
   id: string
@@ -17,6 +22,18 @@ type MenuItemPricingRow = {
   base_price: number
   sizes: Array<{ name?: string; price_modifier?: number }>
   addons: Array<{ name?: string; price?: number }>
+  /**
+   * #117. BOTH variant columns, and both for the same reason: they are what
+   * `lib/menu/variant-groups.ts` reads to decide what the CUSTOMER was shown, and the server has
+   * to price the same thing. Neither is interpreted here -- `getVariantGroups()` owns the
+   * precedence between them (stored groups first, the legacy column only when those normalise to
+   * nothing), so the two sides cannot drift into disagreeing about which one is in force.
+   *
+   * Read-only in every sense: nothing here writes, migrates or reshapes either column. #229's
+   * question of what the stored shape SHOULD be is untouched by this.
+   */
+  variants?: unknown
+  variant_groups?: unknown
   tax_rate_id: string | null
   status?: string | null
 }
@@ -135,6 +152,29 @@ function extractSizeName(item: Record<string, unknown>): string | null {
   return null
 }
 
+/**
+ * The customer's variant choices as `{ group: option }`.
+ *
+ * Both spellings occur and both are live: the cart posts `selectedVariants`
+ * (app/menu/[restaurantId]/cart/page.tsx), a line read back out of `orders.items` keeps that,
+ * and a browser cart line uses `selected_variants`. `lib/orders/line-configuration.ts` already
+ * accepts both for exactly this reason.
+ *
+ * Values are narrowed to strings, taking the first entry of an array. Non-string values are
+ * dropped rather than coerced: `String({})` would produce a label that can never match an option
+ * and would then be reported as an unpriced selection, i.e. a fabricated fault.
+ */
+function extractVariantSelection(item: Record<string, unknown>): Record<string, string> {
+  const raw = item.selectedVariants ?? item.selected_variants
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const selection: Record<string, string> = {}
+  for (const [group, value] of Object.entries(raw as Record<string, unknown>)) {
+    const first = Array.isArray(value) ? value[0] : value
+    if (typeof first === 'string' && first.trim()) selection[group] = first.trim()
+  }
+  return selection
+}
+
 function extractAddonNames(item: Record<string, unknown>): string[] {
   const raw = item.addons ?? item.selectedAddons ?? item.selected_addons
   if (!Array.isArray(raw)) return []
@@ -151,11 +191,18 @@ function extractAddonNames(item: Record<string, unknown>): string[] {
 }
 
 /**
- * Prices one line item against a resolved menu_items row: base_price + matched size/addon
- * modifiers (only modifiers found by name in the catalog row ever contribute to the price --
- * unmatched names are dropped, never trusted from the client), then VAT per the resolved rate.
- * Inclusive rates keep the charged amount equal to base_price*qty (today's behavior) and back
- * out the VAT portion for reporting; exclusive rates add VAT on top of base_price*qty.
+ * Prices one line item against a resolved menu_items row: the variant option the customer chose
+ * (an ABSOLUTE price, REPLACING base_price) or base_price where none was chosen, then matched
+ * size/addon modifiers ADDED to it (only modifiers found by name in the catalog row ever
+ * contribute -- unmatched names are dropped, never trusted from the client), then VAT per the
+ * resolved rate. Inclusive rates keep the charged amount equal to unit*qty (today's behavior) and
+ * back out the VAT portion for reporting; exclusive rates add VAT on top of unit*qty.
+ *
+ * THE ORDER IS THE WHOLE POINT (#117). A variant option is a REPLACEMENT and a size is a DELTA,
+ * so the replacement has to land before the delta or the two compose into a number nobody was
+ * ever shown. The client's own amount is still discarded: what is honoured is the catalog's
+ * price for the option the client NAMED, which is not the same thing as trusting a figure it
+ * sent.
  */
 function priceCatalogLine(
   item: Record<string, unknown>,
@@ -168,11 +215,48 @@ function priceCatalogLine(
   let unitPrice = Number(menuItem.base_price) || 0
 
   const sizeName = extractSizeName(item)
+  const matchedSize = sizeName ? (menuItem.sizes || []).find((s) => s?.name === sizeName) : undefined
+
+  /*
+   * #117. Resolved through the SAME lib/menu/variant-groups.ts the customer's screen used, so
+   * the charge is the figure that was on the button rather than a second opinion about it.
+   *
+   * The selection map is preferred because it is keyed by GROUP NAME and therefore works whatever
+   * the group is called. The bare size string is a fallback for a line that carries no map --
+   * an older cart line out of localStorage, or any client that only sends `size` -- and it is
+   * consulted only after a real `menu_items.sizes` entry has failed to match, so an item with
+   * genuine additive sizes prices exactly as it did before this existed.
+   */
+  const variantSelection = extractVariantSelection(item)
+  let matchedVariant = findSelectedVariantPrice(menuItem, variantSelection)
+  if (!matchedVariant && sizeName && !matchedSize) {
+    matchedVariant = findVariantPriceByOptionLabel(menuItem, sizeName)
+  }
+  if (matchedVariant && Number.isFinite(matchedVariant.price)) {
+    unitPrice = matchedVariant.price
+  }
+
+  /*
+   * The instrument, and it is deliberately NOT the size warning below.
+   *
+   * Before #117 the only signal that a variant had been dropped was "requested size ... not
+   * found", which needed the group to be named `Size` to fire at all -- so the loud rows were the
+   * ones that happened to be named right and everything else diverged in silence. This fires on
+   * the group's own terms.
+   */
+  for (const unpriced of findUnpricedVariantSelections(menuItem, variantSelection)) {
+    warnings.push(
+      `menu item ${menuItem.id}: requested "${unpriced.groupName}" option "${unpriced.label}" not found, pricing from base`,
+    )
+  }
+
   if (sizeName) {
-    const matchedSize = (menuItem.sizes || []).find((s) => s?.name === sizeName)
     if (matchedSize) {
       unitPrice += Number(matchedSize.price_modifier) || 0
-    } else {
+    } else if (!(matchedVariant && matchedVariant.label === sizeName)) {
+      // Suppressed when the variant resolution already consumed this exact label: the modal
+      // MIRRORS a priced variant choice into selected_size, so warning here would report a
+      // correctly priced line as a fault on every sized drink.
       warnings.push(`menu item ${menuItem.id}: requested size "${sizeName}" not found, ignoring`)
     }
   }
@@ -231,7 +315,10 @@ export async function calculateOrderPricing(
     menuItemIds.length > 0
       ? supabase
           .from('menu_items')
-          .select('id, name, base_price, sizes, addons, tax_rate_id, status')
+          // #117: `variants, variant_groups` are LOAD-BEARING here, not decoration. Drop either
+          // and getVariantGroups() sees an item with no variants, every selection resolves to
+          // nothing, and the line silently reprices to base_price -- which is the defect.
+          .select('id, name, base_price, sizes, addons, variants, variant_groups, tax_rate_id, status')
           .eq('restaurant_id', restaurantId)
           .in('id', menuItemIds)
       : Promise.resolve({ data: [] as MenuItemPricingRow[], error: null }),
