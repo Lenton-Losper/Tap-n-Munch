@@ -50,6 +50,32 @@ export const CLEAR_HELD_OUTCOMES = [
    * is a contradiction, and a contradiction is not a licence to cancel.
    */
   'skipped_gateway_no_record_but_marker_present',
+  /**
+   * ============================================================================================
+   * THE FOUR E04111 PERSISTENCE REFUSALS. Owner ruling 2026-08-27, implemented by
+   * `e04111PersistenceAuthorisesCancel` in lib/payments/query-finatic-order-paid.ts.
+   * ============================================================================================
+   *
+   * FOUR NAMES AND NOT ONE, because they are four different staff situations with four different
+   * next actions, and collapsing them into a single "skipped" is precisely the defect the rest of
+   * this vocabulary exists to avoid. An order that is 20 hours old will clear itself by waiting; an
+   * order with no `payment_attempt_started_at` never will, and somebody has to look at it.
+   *
+   * All four leave the order EXACTLY as it was. None of them is evidence that a card was not
+   * charged — they are statements about what this run was allowed to conclude, not about the money.
+   */
+  /** E04111 confirmed live, but under 72h since `orders.payment_attempt_started_at`. #149's race. */
+  'skipped_e04111_too_recent',
+  /** Old enough, but fewer than two recorded prior E04111 observations for this reference. */
+  'skipped_e04111_insufficient_observations',
+  /** Two or more observations, but they span less than 24h — one moment sampled twice. */
+  'skipped_e04111_observations_too_close_together',
+  /**
+   * The order carries no usable `payment_attempt_started_at`, so there is no clock to measure the
+   * gateway's race on. REFUSES rather than falling back to `placed_at`, which can predate the card
+   * being presented by days.
+   */
+  'skipped_e04111_no_attempt_timestamp',
   /** The gateway answered with a trans_status this codebase does not recognise. Unknown is not unpaid. */
   'skipped_gateway_status_unrecognised',
   /**

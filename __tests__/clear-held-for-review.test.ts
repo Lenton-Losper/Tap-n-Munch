@@ -31,8 +31,13 @@ import {
 import {
   CLEAR_HELD_OUTCOME_COPY,
   CLEAR_HELD_PENDING_COPY_MARKER,
+  CLEAR_HELD_UNSIGNED_OUTCOMES,
   unsignedClearHeldStrings,
 } from '@/lib/orders/clear-held-for-review-copy'
+import {
+  E04111_MIN_OBSERVATION_SEPARATION_MS,
+  E04111_PERSISTENCE_CANCEL_MS,
+} from '@/lib/payments/query-finatic-order-paid'
 import { ORDER_CANCELLED_ACTION } from '@/lib/orders/cancel-order-with-trail'
 import { MissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import type { FinaticOrderPaidResult } from '@/lib/payments/query-finatic-order-paid'
@@ -62,6 +67,9 @@ const OTHER_RESTAURANT = 'rest-somewhere-else'
 const LONG_AGO = '2026-08-14T09:00:00.000Z'
 const NOW = new Date('2026-08-27T12:00:00.000Z').getTime()
 
+const HOUR = 60 * 60 * 1000
+const iso = (ms: number) => new Date(ms).toISOString()
+
 type Row = Record<string, unknown>
 
 type OrderFixture = {
@@ -78,6 +86,7 @@ type OrderFixture = {
   payment_reference: string | null
   payment_voucher_no: string | null
   paid_at: string | null
+  payment_attempt_started_at: string | null
   tab_id?: string | null
   cancelled_at?: string | null
   cancellation_reason?: string | null
@@ -97,11 +106,61 @@ function order(partial: Partial<OrderFixture> & { id: string }): OrderFixture {
     payment_reference: null,
     payment_voucher_no: null,
     paid_at: null,
+    /**
+     * THE DEFAULT SATISFIES THE E04111 PERSISTENCE RULING, and it has to be said out loud because
+     * it is load-bearing for every test in this file that is NOT about the ruling.
+     *
+     * The six live rows this fixture models were 13 days past their payment attempt when the owner
+     * pressed the button. Every existing test here — the control, the markers, the concurrency
+     * guards — asks a question that only arises AFTER the age gate has been passed, so the default
+     * fixture passes it, exactly as the real six do. The tests that are about the gate itself
+     * override this field and the observation history together, in
+     * `the E04111 persistence ruling`.
+     */
+    payment_attempt_started_at: LONG_AGO,
     tab_id: null,
     cancelled_at: null,
     cancellation_reason: null,
     ...partial,
   }
+}
+
+/**
+ * The recorded E04111 observations for one reference, as `audit_logs` rows.
+ *
+ * SHAPED LIKE THE REAL WRITERS. `autoCancelStalePosOrders` writes `payment.verification_skipped`
+ * and `handleTerminalPaymentFailed` writes `payment.verification_uncertain`; both carry
+ * `metadata.businessOrderNo` and `metadata.isE04111`, which is the pair the action queries on. The
+ * ACTION deliberately does not filter by `action`, so these rows use both names to prove that.
+ */
+function observation(
+  merchantOrderNo: string,
+  atMs: number,
+  overrides: Row = {},
+): Row {
+  return {
+    restaurant_id: RESTAURANT,
+    entity_type: 'order',
+    action: 'payment.verification_skipped',
+    created_at: iso(atMs),
+    metadata: { businessOrderNo: merchantOrderNo, isE04111: true, ...overrides },
+  }
+}
+
+/**
+ * The default history: two observations 13 days apart, ending yesterday — the shape the six live
+ * cases have (103 to 106 rows each spanning 14 days, measured 2026-08-27), reduced to the two the
+ * ruling actually requires.
+ */
+function defaultObservations(orders: OrderFixture[]): Row[] {
+  const rows: Row[] = []
+  for (const o of orders) {
+    const ref = o.paycloud_merchant_order_no
+    if (!ref) continue
+    rows.push(observation(ref, NOW - 13 * 24 * HOUR))
+    rows.push(observation(ref, NOW - 24 * HOUR, { isE04111: true }))
+  }
+  return rows
 }
 
 /** The six live rows the owner is going to press this button on: Mingle, N$315 total. */
@@ -122,9 +181,28 @@ type UpdateCall = { table: string; patch: Row; filters: Array<[string, unknown]>
  * `.eq('payment_status','pending')` was actually in the statement. A guard that is present in the
  * source and absent from the call is invisible to every assertion about outcomes.
  */
-function makeSupabase(orders: OrderFixture[]) {
+/**
+ * `metadata->>businessOrderNo` -> the value on a fixture row.
+ *
+ * The action filters the observation read with PostgREST's JSON-path equality, and a double that
+ * ignored the path would return EVERY observation for EVERY reference — which is the difference
+ * between "this reference has persisted" and "some reference somewhere has". That is the exact
+ * class of false green this suite exists to refuse, so the double resolves the path for real.
+ */
+function jsonPathValue(row: Row, column: string): unknown {
+  const arrow = column.indexOf('->>')
+  if (arrow === -1) return row[column]
+  const base = column.slice(0, arrow)
+  const key = column.slice(arrow + 3).replace(/^['"]|['"]$/g, '')
+  const container = row[base]
+  if (!container || typeof container !== 'object') return undefined
+  return (container as Row)[key]
+}
+
+function makeSupabase(orders: OrderFixture[], observations?: Row[]) {
   const audits: Row[] = []
   const updates: UpdateCall[] = []
+  const observationRows = observations ?? defaultObservations(orders)
 
   const client = {
     from(table: string) {
@@ -134,6 +212,21 @@ function makeSupabase(orders: OrderFixture[]) {
       const notNulls: string[] = []
       let op: 'select' | 'update' = 'select'
       let patch: Row = {}
+      /**
+       * THE COLUMN LIST FROM `.select(...)`, HONOURED.
+       *
+       * A double that hands back the whole fixture row whatever was selected is blind to the one
+       * defect that cannot be seen any other way: a column the code READS off the row but never
+       * ASKS the database for. #306 shipped exactly that — the route wrote `customer_edited_at` and
+       * never selected it — and tsc, the unit tests and the reviewer were all blind, because in
+       * TypeScript the field is declared and in a permissive double it is present.
+       *
+       * Here it would be worse than inert. `payment_attempt_started_at` missing from ORDER_COLUMNS
+       * makes every E04111 read `undefined`, every verdict refuse with `no_attempt_timestamp`, and
+       * the button quietly stop clearing anything — a failure that is SAFE, and therefore silent.
+       * Projecting the row to what was actually selected is what makes that a red test.
+       */
+      let selected: string[] | null = null
       let limitN: number | null = null
       let orderBy: { col: string; ascending: boolean } | null = null
       const chain: Record<string, unknown> = {}
@@ -161,7 +254,22 @@ function makeSupabase(orders: OrderFixture[]) {
       }
 
       const resolve = () => {
-        if (table === 'audit_logs') return { data: [], error: null }
+        if (table === 'audit_logs') {
+          if (op === 'update') return { data: [], error: null }
+          let rows = observationRows.filter((r) =>
+            eqs.every(([col, val]) => String(jsonPathValue(r, col) ?? '') === String(val)),
+          )
+          if (orderBy) {
+            const { col, ascending } = orderBy
+            rows = [...rows].sort((a, b) => {
+              const av = String(jsonPathValue(a, col) ?? '')
+              const bv = String(jsonPathValue(b, col) ?? '')
+              return ascending ? av.localeCompare(bv) : bv.localeCompare(av)
+            })
+          }
+          if (limitN !== null) rows = rows.slice(0, limitN)
+          return { data: rows.map((r) => ({ ...r })), error: null }
+        }
         if (table === 'tabs') return { data: [], error: null }
         if (op === 'update') {
           const hit = matching()
@@ -169,10 +277,23 @@ function makeSupabase(orders: OrderFixture[]) {
           for (const row of hit) Object.assign(row, patch)
           return { data: hit.map((row) => ({ ...row })), error: null }
         }
-        return { data: matching().map((row) => ({ ...row })), error: null }
+        return { data: matching().map((row) => project(row as unknown as Row)), error: null }
       }
 
-      chain.select = () => self()
+      /** A read returns the SELECTED columns and no others. See `selected` above for why. */
+      const project = (row: Row): Row => {
+        if (!selected) return { ...row }
+        const out: Row = {}
+        for (const col of selected) out[col] = row[col]
+        return out
+      }
+
+      chain.select = (cols?: string) => {
+        if (typeof cols === 'string' && cols.trim() !== '' && cols.trim() !== '*') {
+          selected = cols.split(',').map((c) => c.trim()).filter(Boolean)
+        }
+        return self()
+      }
       chain.insert = (row: Row) => {
         if (table === 'audit_logs') audits.push(row)
         return Promise.resolve({ data: null, error: null })
@@ -879,6 +1000,388 @@ describe('scope', () => {
   })
 })
 
+/**
+ * ==================================================================================================
+ * THE E04111 PERSISTENCE RULING — owner, 2026-08-27.
+ * ==================================================================================================
+ *
+ * The ruling itself is implemented once, in `e04111PersistenceAuthorisesCancel`, and has eleven
+ * two-sided tests of its own in __tests__/e04111-persistence-ruling.test.ts. NOTHING HERE RE-TESTS
+ * THE ARITHMETIC. What is tested here is the thing those tests cannot see: that THIS ACTION calls
+ * it, feeds it the right three inputs, and does what it says — including on the rows.
+ *
+ * A helper with perfect tests that no caller consults is a fix that shipped inert, and this repo has
+ * done exactly that before (#306 wrote `customer_edited_at` and never selected it; tsc and the unit
+ * tests were both blind). So every assertion below reads the stored fixture, not the summary.
+ *
+ * EVERY TEST IN THIS BLOCK IS TWO-SIDED OR PAIRED WITH ONE. "It did not cancel" is not a result on
+ * its own — a run that cancels nothing because the gateway double is broken looks identical. The
+ * first test runs the two cases through the SAME fixture with the SAME answers and the same control,
+ * varying only the clock.
+ */
+describe('the E04111 persistence ruling', () => {
+  const controlPasses = async ({ merchantOrderNo }: { merchantOrderNo: string }) => {
+    if (merchantOrderNo === 'FT-CONTROL') {
+      return finatic({ paid: true, status: 'paid', amount: 40, merchantOrderNo })
+    }
+    throw e04111Error()
+  }
+
+  /** Two observations, 13 days apart, ending yesterday — the six live cases' shape. */
+  const persistentHistory = (ref: string) => [
+    observation(ref, NOW - 14 * 24 * HOUR),
+    observation(ref, NOW - 24 * HOUR),
+  ]
+
+  it('THE PAIR: a 20-hour-old E04111 is not cancelled, a 14-day-old one with two observations 14 days apart is', async () => {
+    /**
+     * THE ONLY DIFFERENCE BETWEEN THESE TWO RUNS IS `payment_attempt_started_at`. Same gateway
+     * answer (E04111, thrown, every time), same passing control, same markerless order, same
+     * observation history — thirteen days of it, so the observation conditions hold in BOTH runs
+     * and the age is the sole variable.
+     *
+     * Order #149 is why: it answered E04111 at 13:58:48 and was confirmed PAID on the same
+     * reference at 13:59:10. Cancelling the young one is cancelling a card that is still settling.
+     */
+    const young = order({
+      id: 'o-young',
+      order_number: 20,
+      payment_attempt_started_at: iso(NOW - 20 * HOUR),
+    })
+    const a = makeSupabase([young, CONTROL], persistentHistory('FT-o-young'))
+    const summaryA = await clearHeldForReview(a.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+
+    expect(summaryA.venues[0].control.verdict).toBe('passed')
+    expect(outcomesById(summaryA)['o-young']).toBe('skipped_e04111_too_recent')
+    expect(summaryA.cancelledIds).toEqual([])
+    // THE ROW. Not the summary.
+    const youngRow = a.orders.find((o) => o.id === 'o-young')!
+    expect(youngRow.payment_status).toBe('pending')
+    expect(youngRow.status).toBe('completed')
+    expect(youngRow.cancelled_at).toBeNull()
+    expect(youngRow.cancellation_reason).toBeNull()
+
+    // --- the other side, so "nothing was cancelled" is a decision and not a broken double -----
+    const old = order({
+      id: 'o-old',
+      order_number: 21,
+      payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR),
+    })
+    const b = makeSupabase([old, CONTROL], persistentHistory('FT-o-old'))
+    const summaryB = await clearHeldForReview(b.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+
+    expect(outcomesById(summaryB)['o-old']).toBe('cancelled')
+    expect(summaryB.cancelledIds).toEqual(['o-old'])
+    const oldRow = b.orders.find((o) => o.id === 'o-old')!
+    expect(oldRow.payment_status).toBe('cancelled')
+    expect(oldRow.status).toBe('cancelled')
+    expect(oldRow.cancelled_at).not.toBeNull()
+  })
+
+  it('measures the age from payment_attempt_started_at and NEVER falls back to placed_at', async () => {
+    /**
+     * THE DISTINCTION THE RULING NAMES FIRST. An order placed a week ago whose card was presented
+     * ten minutes ago is TEN MINUTES old for this purpose. `placed_at` stays at LONG_AGO — thirteen
+     * days — in both fixtures, so a fallback to it would cancel both, and only the attempt clock
+     * separates them.
+     */
+    const recentAttempt = order({
+      id: 'o-old-order-new-card',
+      order_number: 22,
+      placed_at: LONG_AGO,
+      payment_attempt_started_at: iso(NOW - 10 * 60 * 1000),
+    })
+    const s = makeSupabase([recentAttempt, CONTROL], persistentHistory('FT-o-old-order-new-card'))
+    const summary = await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(summary)['o-old-order-new-card']).toBe('skipped_e04111_too_recent')
+    expect(s.orders.find((o) => o.id === 'o-old-order-new-card')!.payment_status).toBe('pending')
+
+    // A missing timestamp REFUSES rather than falling back — its own outcome, not `too_recent`.
+    const noAttempt = order({
+      id: 'o-no-attempt',
+      order_number: 23,
+      placed_at: LONG_AGO,
+      payment_attempt_started_at: null,
+    })
+    const t = makeSupabase([noAttempt, CONTROL], persistentHistory('FT-o-no-attempt'))
+    const summaryT = await clearHeldForReview(t.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(summaryT)['o-no-attempt']).toBe('skipped_e04111_no_attempt_timestamp')
+    expect(t.orders.find((o) => o.id === 'o-no-attempt')!.payment_status).toBe('pending')
+  })
+
+  it('refuses on too few observations, and on two that are too close together, under their own names', async () => {
+    const ancient = (id: string) =>
+      order({ id, order_number: 24, payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR) })
+
+    // --- none at all ---------------------------------------------------------------------
+    const none = makeSupabase([ancient('o-none'), CONTROL], [])
+    const sNone = await clearHeldForReview(none.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(sNone)['o-none']).toBe('skipped_e04111_insufficient_observations')
+    expect(none.orders.find((o) => o.id === 'o-none')!.payment_status).toBe('pending')
+
+    // --- exactly one ---------------------------------------------------------------------
+    const one = makeSupabase(
+      [ancient('o-one'), CONTROL],
+      [observation('FT-o-one', NOW - 10 * 24 * HOUR)],
+    )
+    const sOne = await clearHeldForReview(one.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(sOne)['o-one']).toBe('skipped_e04111_insufficient_observations')
+    expect(one.orders.find((o) => o.id === 'o-one')!.payment_status).toBe('pending')
+
+    // --- two, six hours apart: one moment sampled twice ----------------------------------
+    const close = makeSupabase(
+      [ancient('o-close'), CONTROL],
+      [
+        observation('FT-o-close', NOW - 10 * 24 * HOUR),
+        observation('FT-o-close', NOW - 10 * 24 * HOUR + 6 * HOUR),
+      ],
+    )
+    const sClose = await clearHeldForReview(close.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(sClose)['o-close']).toBe('skipped_e04111_observations_too_close_together')
+    expect(close.orders.find((o) => o.id === 'o-close')!.payment_status).toBe('pending')
+
+    // --- and the positive control on all three: the SAME order with a 24h span DOES cancel
+    const wide = makeSupabase(
+      [ancient('o-wide'), CONTROL],
+      [
+        observation('FT-o-wide', NOW - 10 * 24 * HOUR),
+        observation('FT-o-wide', NOW - 10 * 24 * HOUR + E04111_MIN_OBSERVATION_SEPARATION_MS),
+      ],
+    )
+    const sWide = await clearHeldForReview(wide.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(sWide)['o-wide']).toBe('cancelled')
+    expect(wide.orders.find((o) => o.id === 'o-wide')!.payment_status).toBe('cancelled')
+  })
+
+  it('counts observations for THIS reference only, and only the ones marked isE04111', async () => {
+    /**
+     * KEYED ON `metadata->>businessOrderNo`, NOT ON THE ORDER ID, and filtered on
+     * `metadata->>isE04111`. Both halves matter and both are two-sided in one run:
+     *
+     *   o-mine  has two E04111 observations on ITS OWN reference       -> cancelled
+     *   o-other has two on somebody else's reference, plus two of its  -> refused, and the outcome
+     *           own that are NOT E04111                                   names the count as the reason
+     *
+     * A double that ignored the JSON path would give both orders the same history and both would
+     * cancel. That is the false green this asserts against.
+     */
+    const mine = order({
+      id: 'o-mine',
+      order_number: 25,
+      payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR),
+    })
+    const other = order({
+      id: 'o-other',
+      order_number: 26,
+      payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR),
+    })
+    const s = makeSupabase(
+      [mine, other, CONTROL],
+      [
+        ...persistentHistory('FT-o-mine'),
+        // o-other's own rows, recorded for a DIFFERENT reason: the gateway was unreachable, not
+        // E04111. Same order, same table, same age, and they must not count.
+        observation('FT-o-other', NOW - 14 * 24 * HOUR, { isE04111: false }),
+        observation('FT-o-other', NOW - 24 * HOUR, { isE04111: false }),
+      ],
+    )
+    const summary = await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    const byId = outcomesById(summary)
+    expect(byId['o-mine']).toBe('cancelled')
+    expect(byId['o-other']).toBe('skipped_e04111_insufficient_observations')
+    expect(s.orders.find((o) => o.id === 'o-mine')!.payment_status).toBe('cancelled')
+    expect(s.orders.find((o) => o.id === 'o-other')!.payment_status).toBe('pending')
+  })
+
+  it('records the cancel as authorised BY THE PERSISTENCE RULE, with the numbers it was decided on', async () => {
+    /**
+     * THE AUDIT ROW IS THE DELIVERABLE HERE, not a side effect. Reconstructing this run later, a
+     * reader must be able to tell an E04111 persistence cancel from a `paid=false` cancel WITHOUT
+     * inferring it — they are different evidence, and `queryFinaticOrderPaid` never returns
+     * `paid: false` for an E04111 at all: the call throws. Rule 20 applies to a row as much as to a
+     * comment, so the age, the count and the span are recorded as measurements alongside the
+     * thresholds they were compared against.
+     */
+    const o = order({
+      id: 'o-audited',
+      order_number: 27,
+      payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR),
+    })
+    const s = makeSupabase([o, CONTROL], persistentHistory('FT-o-audited'))
+    await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+
+    const metadata = auditsFor(s.audits, ORDER_CANCELLED_ACTION, 'o-audited')[0].metadata as Row
+    expect(metadata.basis).toBe('e04111_no_attempt_reached_gateway')
+    expect(metadata.gatewayCode).toBe('E04111')
+    // WHICH RULE FIRED, in the row, in words as well as in a token.
+    expect(metadata.authorisedBy).toBe('e04111_persistence_rule')
+    expect(String(metadata.authorisedByNote)).toContain('NOT on a paid=false answer')
+
+    const p = metadata.e04111Persistence as Row
+    expect(p.reason).toBe('persisted_beyond_threshold')
+    expect(p.authorisesCancel).toBe(true)
+    expect(p.attemptStartedAt).toBe(iso(NOW - 14 * 24 * HOUR))
+    expect(p.ageMs).toBe(14 * 24 * HOUR)
+    expect(p.ageHours).toBe(14 * 24)
+    expect(p.observationCount).toBe(2)
+    expect(p.observationSpanMs).toBe(13 * 24 * HOUR)
+    expect(p.observationSpanHours).toBe(13 * 24)
+    expect(p.reconfirmedNow).toBe(true)
+    expect(typeof p.reconfirmedAt).toBe('string')
+    // The thresholds it was compared against, so the row stays readable when they change.
+    expect(p.thresholdMs).toBe(E04111_PERSISTENCE_CANCEL_MS)
+    expect(p.minObservationSeparationMs).toBe(E04111_MIN_OBSERVATION_SEPARATION_MS)
+  })
+
+  it('records a refusal with its own numbers too, so a staff question can be answered from the row', async () => {
+    const o = order({
+      id: 'o-refused',
+      order_number: 28,
+      payment_attempt_started_at: iso(NOW - 20 * HOUR),
+    })
+    const s = makeSupabase([o, CONTROL], persistentHistory('FT-o-refused'))
+    await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+
+    // Not cancelled, and not silently: a skip row exists and it says why.
+    expect(auditsFor(s.audits, ORDER_CANCELLED_ACTION, 'o-refused')).toHaveLength(0)
+    const skip = auditsFor(s.audits, HELD_CLEAR_SKIPPED_ACTION, 'o-refused')[0]
+    const metadata = skip.metadata as Row
+    expect(metadata.outcome).toBe('skipped_e04111_too_recent')
+    // The FRESH gateway code, never 'NOT_ASKED': the order WAS asked about, in this run.
+    expect(metadata.gatewayCode).toBe('E04111')
+    expect(metadata.gatewayAskedAt).toEqual(expect.any(String))
+    const p = metadata.e04111Persistence as Row
+    expect(p.reason).toBe('too_recent')
+    expect(p.authorisesCancel).toBe(false)
+    expect(p.ageHours).toBe(20)
+    expect(p.observationCount).toBe(2)
+    expect(String(metadata.reason)).toContain('72h')
+  })
+
+  it('leaves the READ failure refusing, never cancelling', async () => {
+    /**
+     * The observation read is not the money path and must not be able to abort a run — but the
+     * direction it fails in is the whole question. An unrelated read failure that produced an empty
+     * history and then CANCELLED would be the worst possible shape: a broken instrument authorising
+     * a write. Empty history means the second condition cannot hold, so it refuses.
+     *
+     * Driven by handing the action a client whose audit_logs SELECT throws, which is what a
+     * PostgREST error looks like from inside `readE04111Observations`.
+     */
+    const o = order({
+      id: 'o-readfail',
+      order_number: 29,
+      payment_attempt_started_at: iso(NOW - 14 * 24 * HOUR),
+    })
+    const s = makeSupabase([o, CONTROL], persistentHistory('FT-o-readfail'))
+    const inner = s.client as unknown as { from: (t: string) => Record<string, unknown> }
+    const realFrom = inner.from.bind(inner)
+    const broken = {
+      from(table: string) {
+        const chain = realFrom(table)
+        if (table !== 'audit_logs') return chain
+        // Only the SELECT path breaks. `.insert()` still records, so the skip is still audited.
+        const select = chain.select as () => Record<string, unknown>
+        chain.select = () => {
+          const c = select()
+          c.then = (_ok: unknown, fail: (e: unknown) => unknown) =>
+            Promise.reject(new Error('audit_logs read exploded')).catch(fail as never)
+          return c
+        }
+        return chain
+      },
+    }
+    const summary = await clearHeldForReview(broken as never, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+    expect(outcomesById(summary)['o-readfail']).toBe('skipped_e04111_insufficient_observations')
+    expect(s.orders.find((o2) => o2.id === 'o-readfail')!.payment_status).toBe('pending')
+    expect(summary.cancelledIds).toEqual([])
+  })
+
+  it('still refuses a young order even when everything else about the run is perfect', async () => {
+    /**
+     * THE PERMISSIVENESS TEST, stated as the whole run rather than as one branch. Six orders, all
+     * markerless, all answering E04111, all with a passing markerless control and a full
+     * observation history — the exact shape that WOULD have cancelled all six before the ruling —
+     * differing only in that their cards were presented this morning.
+     *
+     * Not one row moves, and every one of them is named.
+     */
+    const six = theSix().map((o) => ({ ...o, payment_attempt_started_at: iso(NOW - 3 * HOUR) }))
+    const history = six.flatMap((o) => persistentHistory(o.paycloud_merchant_order_no!))
+    const s = makeSupabase([...six, CONTROL], history)
+    const summary = await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: controlPasses,
+    })
+
+    expect(summary.venues[0].control.verdict).toBe('passed')
+    expect(summary.cancelledIds).toEqual([])
+    for (const row of s.orders.filter((o) => o.id !== CONTROL.id)) {
+      expect(row.payment_status).toBe('pending')
+      expect(row.status).toBe('completed')
+      expect(row.cancelled_at).toBeNull()
+    }
+    for (const outcome of summary.outcomes) {
+      expect(outcome.outcome).toBe('skipped_e04111_too_recent')
+      expect(outcome.wrote).toBe(false)
+      // ASKED, and the code recorded — this is not the "we never got that far" shape.
+      expect(outcome.gatewayCode).toBe('E04111')
+      expect(outcome.gatewayAskedAt).not.toBeNull()
+    }
+    expect(auditsFor(s.audits, HELD_CLEAR_SKIPPED_ACTION)).toHaveLength(6)
+    expect(auditsFor(s.audits, ORDER_CANCELLED_ACTION)).toHaveLength(0)
+  })
+})
+
 describe('the vocabulary', () => {
   it('has a staff line and an audit reason for every outcome, with no gaps', () => {
     for (const outcome of CLEAR_HELD_OUTCOMES) {
@@ -905,15 +1408,53 @@ describe('the vocabulary', () => {
     }
   })
 
-  it('marks EVERY staff-facing string as unsigned, because not one has been signed off', () => {
-    const unsigned = unsignedClearHeldStrings()
+  it('marks the four unsigned strings and ONLY those four', () => {
+    /**
+     * WAS "every string is unsigned". The owner signed twenty-six of them on 2026-08-27; the four
+     * E04111 persistence refusals were written afterwards and are not signed.
+     *
+     * THIS ASSERTS BOTH DIRECTIONS, which is the only version worth having. "The four are marked"
+     * on its own passes just as happily when a fifth string quietly loses its sign-off, and "no
+     * string is marked" passes when somebody deletes a marker to get the production gate green —
+     * the precise failure `check-no-pending-copy` exists to prevent. The intended set is written
+     * down in `CLEAR_HELD_UNSIGNED_OUTCOMES` and the strings are checked against it.
+     */
     for (const outcome of CLEAR_HELD_OUTCOMES) {
-      expect(CLEAR_HELD_OUTCOME_COPY[outcome as ClearHeldOutcome]).toContain(
-        CLEAR_HELD_PENDING_COPY_MARKER,
-      )
+      const line = CLEAR_HELD_OUTCOME_COPY[outcome as ClearHeldOutcome]
+      if (CLEAR_HELD_UNSIGNED_OUTCOMES.includes(outcome as ClearHeldOutcome)) {
+        expect(line.startsWith(CLEAR_HELD_PENDING_COPY_MARKER)).toBe(true)
+      } else {
+        expect(line).not.toContain(CLEAR_HELD_PENDING_COPY_MARKER)
+      }
     }
-    // The count is not pinned — it will change as strings are signed. What is pinned is that
-    // nothing has escaped the marker.
-    expect(unsigned.length).toBeGreaterThanOrEqual(CLEAR_HELD_OUTCOMES.length)
+    // Exactly four, and they are the four named. Not "at least".
+    expect(unsignedClearHeldStrings()).toHaveLength(CLEAR_HELD_UNSIGNED_OUTCOMES.length)
+    expect(CLEAR_HELD_UNSIGNED_OUTCOMES).toHaveLength(4)
+  })
+
+  it('gives each of the four refusals its own name, its own line and its own audit reason', () => {
+    /**
+     * FOUR DISTINCT STAFF SITUATIONS, NOT ONE "skipped". Three of them resolve by waiting and
+     * `no_attempt_timestamp` never does, so a staff member reading a merged line would wait for
+     * something that is not coming. Distinctness is the property, so distinctness is the assertion.
+     */
+    const lines = CLEAR_HELD_UNSIGNED_OUTCOMES.map((o) => CLEAR_HELD_OUTCOME_COPY[o])
+    const reasons = CLEAR_HELD_UNSIGNED_OUTCOMES.map((o) => CLEAR_HELD_OUTCOME_AUDIT_REASON[o])
+    expect(new Set(CLEAR_HELD_UNSIGNED_OUTCOMES).size).toBe(4)
+    expect(new Set(lines).size).toBe(4)
+    expect(new Set(reasons).size).toBe(4)
+
+    // The one that does NOT resolve by waiting must not tell anyone to run the check again.
+    const stuck = CLEAR_HELD_OUTCOME_COPY.skipped_e04111_no_attempt_timestamp
+    expect(stuck).toContain('Someone needs to look at this one.')
+    expect(stuck).not.toMatch(/run the check again/i)
+    // The three that DO resolve by waiting must all say so, or the staff member invents an action.
+    for (const outcome of [
+      'skipped_e04111_too_recent',
+      'skipped_e04111_insufficient_observations',
+      'skipped_e04111_observations_too_close_together',
+    ] as const) {
+      expect(CLEAR_HELD_OUTCOME_COPY[outcome]).toMatch(/run the check again/i)
+    }
   })
 })

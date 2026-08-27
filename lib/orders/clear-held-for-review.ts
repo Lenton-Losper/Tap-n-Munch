@@ -44,6 +44,24 @@
  *      they are recorded under DIFFERENT bases so the audit trail says which rule fired — see
  *      `decideFromGateway`.
  *
+ *   3b. AN E04111 IS NOT ONE OF THEM UNTIL IT HAS PERSISTED. Owner ruling, 2026-08-27, implemented
+ *      once in `e04111PersistenceAuthorisesCancel` and applied here: 72h since
+ *      `orders.payment_attempt_started_at`, two recorded observations at least 24h apart, AND a
+ *      fresh query in this run. All three, conjunctively, or the order is left exactly as it is
+ *      under one of four named refusals.
+ *
+ *      THIS BRANCH IS THE ONE THAT WOULD HAVE BEEN TOO PERMISSIVE. Cancelling on a live E04111
+ *      alone is a decision taken on a single sample of a system that was MEASURED changing its
+ *      answer in 22 seconds — order #149 answered E04111 at 13:58:48 and was confirmed PAID on the
+ *      same reference at 13:59:10. The 2026-08-05 ruling ("a single E04111 is never terminal") and
+ *      the 2026-08-27 ruling ("a persistent one is") do not contradict each other; each bounds the
+ *      other, and the boundary is TIME. Read both in lib/payments/query-finatic-order-paid.ts.
+ *
+ *      The cancel's audit row says which of the two rules authorised it — `authorisedBy:
+ *      'e04111_persistence_rule'` — with the age, the observation count and the span it was decided
+ *      on. An E04111 cancel is NEVER a `paid=false` answer: that call throws rather than returning,
+ *      so no such answer exists for these orders, and the row says so in words.
+ *
  *   4. ANYTHING PAID IS NEVER CANCELLED. It goes through `markOrderPaidConfirmed`, the single
  *      writer for "this order is confirmed paid", so it lands in the identical state with the
  *      identical trail as a live terminal callback.
@@ -94,9 +112,13 @@ import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import {
+  E04111_MIN_OBSERVATION_SEPARATION_MS,
+  E04111_PERSISTENCE_CANCEL_MS,
+  e04111PersistenceAuthorisesCancel,
   finaticErrorCode,
   isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
+  type E04111PersistenceVerdict,
 } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import {
@@ -196,9 +218,17 @@ function trimmed(value: unknown): string {
   return String(value ?? '').trim()
 }
 
-/** The columns every decision below reads. Selected once, re-selected on the fresh read. */
+/**
+ * The columns every decision below reads. Selected once, re-selected on the fresh read.
+ *
+ * `payment_attempt_started_at` IS SELECTED BECAUSE THE E04111 RULING IS MEASURED FROM IT, and a
+ * column that is written but never selected is a fix that ships inert — this repo has already done
+ * exactly that once, with `customer_edited_at` on the #306 route, where tsc and the unit tests were
+ * both blind to it. If it is not in this list the age test reads `undefined` for every order and
+ * every E04111 refuses with `no_attempt_timestamp`, which fails SAFE and therefore silently.
+ */
 const ORDER_COLUMNS =
-  'id, restaurant_id, order_number, total, status, payment_status, channel, placed_at, table_number, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paid_at'
+  'id, restaurant_id, order_number, total, status, payment_status, channel, placed_at, table_number, paycloud_merchant_order_no, payment_reference, payment_voucher_no, paid_at, payment_attempt_started_at'
 
 type OrderRow = {
   id: string
@@ -214,6 +244,7 @@ type OrderRow = {
   payment_reference: string | null
   payment_voucher_no: string | null
   paid_at: string | null
+  payment_attempt_started_at: string | null
 }
 
 /**
@@ -358,6 +389,107 @@ async function ask(
   }
 }
 
+/**
+ * How many recorded E04111 observations to read for one reference.
+ *
+ * THE TRUNCATION DIRECTION IS THE WHOLE REASON THIS IS SAFE. Rows come back OLDEST FIRST, so if a
+ * reference has more observations than this the ones dropped are the NEWEST, and the span computed
+ * from what remains is SHORTER than the real one. A shorter span can only ever refuse a cancel that
+ * the full history would have authorised. Truncation errs toward leaving the order alone, which is
+ * the only direction this action is allowed to be wrong in.
+ *
+ * Measured 2026-08-27: the six live Mingle cases carry 103 to 106 rows each, spanning 14 days. 500
+ * is four to five times the observed worst case.
+ */
+const E04111_OBSERVATION_READ_LIMIT = 500
+
+/**
+ * The recorded E04111 observations for ONE gateway reference, oldest first.
+ *
+ * KEYED ON `metadata->>'businessOrderNo'`, NOT ON `entity_id`. The reference is what the gateway was
+ * asked about; the order id is what we were asking on behalf of. Those come apart — an order that is
+ * re-presented gets a new `paycloud_merchant_order_no`, and observations of the OLD reference say
+ * nothing about the new one. Keying on the reference is what makes "this reference has been unknown
+ * to the gateway for two weeks" a true sentence rather than a plausible one.
+ *
+ * NO ACTION FILTER, DELIBERATELY. Two writers record these today — the auto-cancel cron's
+ * `payment.verification_skipped` and `handleTerminalPaymentFailed`'s
+ * `payment.verification_uncertain` — and both carry `isE04111` and `businessOrderNo` in the same
+ * metadata shape. Naming the actions here would mean a third writer's observations were silently not
+ * counted, and "silently not counted" on this path shows up as an order that will not clear.
+ *
+ * A READ FAILURE RETURNS AN EMPTY LIST, WHICH REFUSES. It does not throw and it does not fall back:
+ * with no observations the ruling's second condition cannot hold, the order is left exactly as it
+ * was, and the outcome names the reason. An unrelated read failure must never become a cancel.
+ */
+async function readE04111Observations(
+  supabase: Supabase,
+  restaurantId: string,
+  merchantOrderNo: string,
+): Promise<string[]> {
+  try {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('created_at')
+      .eq('restaurant_id', restaurantId)
+      // PostgREST JSON-path equality. `.eq()` is parser-free — the value never reaches the
+      // filter-string parser — so a reference containing a comma or a parenthesis cannot alter
+      // the query. `.or()` would not have that property.
+      .eq('metadata->>businessOrderNo', merchantOrderNo)
+      .eq('metadata->>isE04111', 'true')
+      .order('created_at', { ascending: true })
+      .limit(E04111_OBSERVATION_READ_LIMIT)
+    if (error) throw error
+    return ((data ?? []) as Array<{ created_at: string | null }>)
+      .map((row) => trimmed(row?.created_at))
+      .filter((t) => t !== '')
+  } catch (err) {
+    console.error(
+      `[clearHeldForReview] could not read E04111 observations for ${merchantOrderNo}; ` +
+        'treating the history as empty, which REFUSES the cancel:',
+      err,
+    )
+    return []
+  }
+}
+
+/**
+ * The ruling's refusal reason -> the outcome the staff member reads.
+ *
+ * ONE OUTCOME PER REASON, because they are four different situations with two different next
+ * actions — three resolve by waiting and `no_attempt_timestamp` never does. A single "skipped" name
+ * covering all four would tell a staff member to wait for something that is not coming.
+ */
+const E04111_REFUSAL_OUTCOME: Record<
+  Exclude<E04111PersistenceVerdict['reason'], 'persisted_beyond_threshold'>,
+  ClearHeldOutcome
+> = {
+  too_recent: 'skipped_e04111_too_recent',
+  insufficient_observations: 'skipped_e04111_insufficient_observations',
+  observations_too_close_together: 'skipped_e04111_observations_too_close_together',
+  no_attempt_timestamp: 'skipped_e04111_no_attempt_timestamp',
+  /**
+   * STRUCTURALLY UNREACHABLE FROM THIS CALL SITE, and mapped anyway.
+   *
+   * `reconfirmedNow` is passed as a literal `true` exactly one statement after a live gateway call
+   * that answered E04111, so this reason cannot be returned here — asserted by the suite. It is
+   * mapped rather than omitted because the alternative is an order that reaches no branch and gets
+   * no outcome at all, which is the invisible skip this vocabulary exists to end.
+   *
+   * It takes the `too_recent` NAME because the four names differ only in the sentence a staff
+   * member reads, and "leave it, run the check again later" is the correct instruction for a caller
+   * that did not re-query. The TRUE reason is not lost: `gatewayNote` and the audit row carry the
+   * verdict's own `reason` field verbatim, so a reader reconstructing the run sees
+   * `not_reconfirmed_now` rather than the staff line.
+   */
+  not_reconfirmed_now: 'skipped_e04111_too_recent',
+}
+
+const HOUR_MS = 60 * 60 * 1000
+function hours(ms: number | null): number | null {
+  return ms === null ? null : Math.round((ms / HOUR_MS) * 10) / 10
+}
+
 export type ClearHeldForReviewParams = {
   restaurantId: string
   /** The signed-in user this run is attributed to. Recorded on every audit row this run writes. */
@@ -437,6 +569,12 @@ export async function clearHeldForReview(
       amount?: number | null
       askedAt?: string | null
       note?: string | null
+      /**
+       * Extra metadata for THIS order's audit row only. Carries the E04111 persistence verdict's
+       * numbers on the four refusals: a reader must be able to see WHY it was refused — the age,
+       * the observation count, the span — without re-deriving them from a sentence.
+       */
+      extra?: Record<string, unknown>
     },
   ) => {
     const orderId = String(row.id)
@@ -493,6 +631,7 @@ export async function clearHeldForReview(
         controlOrderId: control.orderId,
         controlVerdict: control.verdict,
         reason: CLEAR_HELD_OUTCOME_AUDIT_REASON[outcome],
+        ...(gateway.extra ?? {}),
       },
     })
     // BEST-EFFORT, unlike the money writers. Losing this row loses an observation; it does not
@@ -768,6 +907,7 @@ export async function clearHeldForReview(
         merchantOrderNo,
         restaurantId,
         requestedBy,
+        nowMs,
       })
     } catch (writeErr) {
       /**
@@ -806,7 +946,14 @@ async function applyGatewayAnswer(ctx: {
     row: OrderRow,
     cause: string,
     outcome: ClearHeldOutcome,
-    gateway: { code: string; status?: string | null; amount?: number | null; askedAt?: string | null; note?: string | null },
+    gateway: {
+      code: string
+      status?: string | null
+      amount?: number | null
+      askedAt?: string | null
+      note?: string | null
+      extra?: Record<string, unknown>
+    },
   ) => Promise<void>
   row: OrderRow
   cause: string
@@ -815,8 +962,14 @@ async function applyGatewayAnswer(ctx: {
   merchantOrderNo: string
   restaurantId: string
   requestedBy: string | null
+  /**
+   * The run's clock, threaded through so the E04111 age test is measured against the same instant
+   * as everything else in the run and can be driven by the `nowMs` seam in a test. A run lasts
+   * seconds; the ruling's unit is hours, so run-start and per-order are the same number.
+   */
+  nowMs: number
 }): Promise<void> {
-  const { supabase, control, record, row, cause, answer, askedAt, merchantOrderNo, restaurantId, requestedBy } = ctx
+  const { supabase, control, record, row, cause, answer, askedAt, merchantOrderNo, restaurantId, requestedBy, nowMs } = ctx
   const orderId = String(row.id)
   const orderTotal = toNumber(row.total)
 
@@ -847,17 +1000,34 @@ async function applyGatewayAnswer(ctx: {
      * cancel: order #149 answered E04111 at 13:58:48 and was confirmed PAID on the same reference
      * 22 seconds later.
      *
-     * WHAT MAKES IT ACTIONABLE HERE IS A CONJUNCTION, exactly as ruled for the manual sweep:
+     * WHAT MAKES IT ACTIONABLE HERE IS A CONJUNCTION:
      *   (a) the order carries NEITHER payment_reference NOR payment_voucher_no; AND
      *   (b) E04111 came back live, in this run; AND
-     *   (c) the venue's positive control came back PAID in this same iteration.
+     *   (c) the venue's positive control came back PAID in this same iteration; AND
+     *   (d) THE PERSISTENCE RULING HOLDS — `e04111PersistenceAuthorisesCancel`.
      *
      * (a) alone would have cancelled N$201 of real charges at FNB ChowNow (#456, #500 and #546 are
      * paid and carry neither marker). (b) alone is the mass-cancel the 2026-08-05 removal
      * prevented. (c) is what separates "no record" from "the query path is broken".
      *
-     * It is also what the owner-signed copy on the surface already tells staff about these rows:
-     * "the payment provider has no record of this order. Nothing was taken."
+     * ============================================================================================
+     * (d) IS THE OWNER'S RULING OF 2026-08-27 AND IT IS WHY THIS BRANCH IS NOT A ONE-LINER.
+     * ============================================================================================
+     *
+     * Without it, (a)+(b)+(c) cancel an order whose card was presented ten minutes ago on the
+     * strength of a single sample of a system that has been MEASURED changing its answer inside 22
+     * seconds. #149 and this ruling bound each other, and the boundary is TIME: a single E04111 is
+     * never terminal; an E04111 that has persisted for 72 hours, been seen at least twice at least
+     * 24 hours apart, and been reconfirmed by a fresh query at the moment of the write, is.
+     *
+     * THE RULING IS NOT REIMPLEMENTED HERE. `e04111PersistenceAuthorisesCancel` is the single
+     * implementation, with eleven two-sided tests of its own, and the thresholds live beside it. A
+     * second copy of a money rule is a second rule the moment either one is edited.
+     *
+     * `reconfirmedNow: true` is passed as a LITERAL and it is honest: `answer` is the result of a
+     * gateway call made in this run, on this reference, a few statements above, and this is the only
+     * call site. The parameter exists precisely so a caller that has NOT re-queried cannot satisfy
+     * condition 3 by leaving it out.
      */
     if (trimmed(row.payment_reference) || trimmed(row.payment_voucher_no)) {
       await record(row, cause, 'skipped_gateway_no_record_but_marker_present', {
@@ -869,8 +1039,90 @@ async function applyGatewayAnswer(ctx: {
       })
       return
     }
+
+    const observedAt = await readE04111Observations(supabase, restaurantId, merchantOrderNo)
+    const verdict = e04111PersistenceAuthorisesCancel({
+      attemptStartedAt: row.payment_attempt_started_at,
+      observedAt,
+      reconfirmedNow: true,
+      now: new Date(nowMs),
+    })
+
+    /**
+     * THE NUMBERS THE VERDICT WAS REACHED ON, recorded on BOTH sides — the cancel and each refusal.
+     *
+     * A verdict with no numbers behind it is unauditable: "we decided it had persisted" is not a
+     * measurement, and Rule 20 applies to an audit row as much as to a comment. Anyone
+     * reconstructing this run must be able to see the age, the count and the span that were true at
+     * the moment of the decision, plus the thresholds they were compared against — because the
+     * thresholds can change and the row must still be readable afterwards.
+     */
+    const persistence = {
+      rule: 'e04111_persistence_2026_08_27',
+      reason: verdict.reason,
+      authorisesCancel: verdict.authorisesCancel,
+      attemptStartedAt: row.payment_attempt_started_at ?? null,
+      ageMs: verdict.ageMs,
+      ageHours: hours(verdict.ageMs),
+      observationCount: verdict.observationCount,
+      observationSpanMs: verdict.observationSpanMs,
+      observationSpanHours: hours(verdict.observationSpanMs),
+      thresholdMs: E04111_PERSISTENCE_CANCEL_MS,
+      minObservationSeparationMs: E04111_MIN_OBSERVATION_SEPARATION_MS,
+      observationsReadLimit: E04111_OBSERVATION_READ_LIMIT,
+      reconfirmedNow: true,
+      reconfirmedAt: askedAt,
+    }
+
+    /**
+     * THE CANCEL IS THE NARROW BRANCH AND EVERYTHING ELSE REFUSES, written in that order on
+     * purpose. Both halves of the verdict have to agree — `authorisesCancel` AND the one reason
+     * that means it — so a future shape in which they disagree lands on the refusal side rather
+     * than falling through to a write. On a money path the default must be "do nothing", and a
+     * default is whatever happens when the condition is not exactly what you expected.
+     */
+    if (!(verdict.authorisesCancel && verdict.reason === 'persisted_beyond_threshold')) {
+      /**
+       * `persisted_beyond_threshold` with `authorisesCancel: false` is an incoherent verdict this
+       * helper cannot produce. If one ever arrives, it is treated as "the fresh confirmation was
+       * never established" — the strictest of the refusals — and the row still carries the verdict's
+       * own `reason` verbatim, so nothing about it is hidden from a reader.
+       */
+      const refusalReason =
+        verdict.reason === 'persisted_beyond_threshold' ? 'not_reconfirmed_now' : verdict.reason
+      await record(row, cause, E04111_REFUSAL_OUTCOME[refusalReason], {
+        code: answer.code,
+        askedAt,
+        note:
+          `E04111 was reconfirmed live, but the persistence ruling refused the cancel: ` +
+          `${verdict.reason}. Age ${hours(verdict.ageMs) ?? 'unknown'}h against a ${
+            E04111_PERSISTENCE_CANCEL_MS / (60 * 60 * 1000)
+          }h threshold; ${verdict.observationCount} recorded observation(s) spanning ${
+            hours(verdict.observationSpanMs) ?? 'n/a'
+          }h. Nothing was changed, and this is not evidence that no card was charged.`,
+        extra: { e04111Persistence: persistence },
+      })
+      return
+    }
+
     await cancel(ctx, 'e04111_no_attempt_reached_gateway', answer.code, askedAt, {
       gatewayMessage: answer.message,
+      e04111Persistence: persistence,
+      /**
+       * SAID OUT LOUD, IN THE ROW, because the two authorisations are not the same evidence and a
+       * reader must never have to infer which one fired. `finatic_verified_not_paid` means the
+       * gateway told us it failed. THIS means the gateway said it has never heard of the reference,
+       * for long enough, often enough, and again just now — a conclusion drawn from PERSISTENCE, not
+       * from an answer. `queryFinaticOrderPaid` never returns `paid: false` for an E04111; the call
+       * throws, so no `paid=false` answer was ever in evidence for this order.
+       */
+      authorisedBy: 'e04111_persistence_rule',
+      authorisedByNote:
+        'Cancelled on the E04111 PERSISTENCE ruling of 2026-08-27, NOT on a paid=false answer from ' +
+        'the gateway. No such answer exists for this order: an E04111 query throws rather than ' +
+        'returning not-paid. The evidence is that the reference has been unknown to the gateway ' +
+        'for longer than the threshold, across separated observations, and was unknown again when ' +
+        'asked in this run.',
     })
     return
   }
@@ -1115,6 +1367,21 @@ export const CLEAR_HELD_OUTCOME_AUDIT_REASON: Record<ClearHeldOutcome, string> =
     'The gateway has no record of this reference (E04111) and yet the order carries a payment ' +
     'marker. E04111 alone is never terminal, and with a marker present the two facts contradict ' +
     'each other. A contradiction is not a licence to cancel.',
+  skipped_e04111_too_recent:
+    'E04111 was reconfirmed live, but under 72h have passed since payment_attempt_started_at. ' +
+    'Order #149 answered E04111 and was confirmed PAID on the same reference 22 seconds later, so ' +
+    'a recent E04111 is a race in progress, not a verdict. Left held; it will be reconsidered.',
+  skipped_e04111_insufficient_observations:
+    'E04111 was reconfirmed live and the order is old enough, but fewer than two E04111 ' +
+    'observations are recorded for this reference. One sample of a system measured changing its ' +
+    'answer is not evidence of a settled state. Left held.',
+  skipped_e04111_observations_too_close_together:
+    'Two or more E04111 observations exist for this reference but they span less than 24h, so they ' +
+    'describe one moment rather than a persistent condition. Left held.',
+  skipped_e04111_no_attempt_timestamp:
+    'The order carries no usable payment_attempt_started_at, so there is no clock to measure the ' +
+    'gateway race on. REFUSED rather than falling back to placed_at, which can predate the card ' +
+    'being presented by days. This one does not resolve by waiting and needs a person.',
   skipped_gateway_status_unrecognised:
     'The gateway answered with a trans_status this codebase does not recognise. Unknown is not ' +
     'not-paid, and unknown never authorises a cancel. The value is recorded verbatim.',

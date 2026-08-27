@@ -159,11 +159,19 @@ describe('who sees the control', () => {
     expect(el('held-clear-control')).toBeNull()
   })
 
-  it('is present with the permission, and every word of it is marked unsigned', async () => {
+  it('is present with the permission, and renders the SIGNED button copy with no marker left on it', async () => {
+    /**
+     * WAS "every word of it is marked unsigned". The owner signed this string on 2026-08-27, so the
+     * assertion inverts: the marker must be GONE and the signed sentence must be what renders.
+     *
+     * Both halves, because either alone is satisfiable by an accident. "No marker" passes on an
+     * empty button; "contains the copy" passes on a button that also still says PENDING COPY.
+     */
     await mount(<HeldForReviewPanel rows={HELD_ROWS} onClearAll={() => {}} canClearAll />)
     const button = el('held-clear-button')
     expect(button).not.toBeNull()
-    expect(button!.textContent).toContain(CLEAR_HELD_PENDING_COPY_MARKER)
+    expect(button!.textContent).toBe(CLEAR_HELD_CONTROL_COPY.button)
+    expect(button!.textContent).not.toContain(CLEAR_HELD_PENDING_COPY_MARKER)
   })
 })
 
@@ -185,7 +193,8 @@ describe('the confirmation', () => {
     // the COUNT and the AMOUNT, so the staff member sees what is about to be touched
     expect(body.textContent).toContain('6')
     expect(body.textContent).toContain('N$315.00')
-    expect(body.textContent).toContain(CLEAR_HELD_PENDING_COPY_MARKER)
+    // SIGNED 2026-08-27, so the marker must be gone from what a staff member reads.
+    expect(body.textContent).not.toContain(CLEAR_HELD_PENDING_COPY_MARKER)
     // the placeholders were substituted, not rendered raw
     expect(body.textContent).not.toContain('{count}')
     expect(body.textContent).not.toContain('{amount}')
