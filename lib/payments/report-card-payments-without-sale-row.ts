@@ -27,6 +27,8 @@
  * very signal that says the writer is broken. Same principle as the negative-stock report.
  */
 
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
+
 export const SALE_ROW_GRACE_MINUTES = 15
 
 export type CardPaymentWithoutSaleRow = {
@@ -110,7 +112,10 @@ export async function reportCardPaymentsWithoutSaleRow(
     missingRatio: cardPaid.length === 0 ? 0 : missingRows.length / cardPaid.length,
     worst: missingRows.slice(0, 10).map((o) => ({
       orderId: String(o.id),
-      orderNumber: o.order_number == null ? null : Number(o.order_number),
+      // hasAllocatedOrderNumber, never `== null`: `0` is not a legal order number here and both
+      // `!= null` and `typeof === 'number'` admit it. That is how "Order #0" reached production
+      // three times, and the static gate caught this exact line in my own first draft.
+      orderNumber: hasAllocatedOrderNumber(o) ? Number(o.order_number) : null,
       restaurantName: String(o.restaurants?.name ?? '(unknown)'),
       total: Number(o.total ?? 0),
       paidAt: String(o.paid_at),
