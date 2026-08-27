@@ -235,6 +235,47 @@ const PRECONDITIONS = {
     ]
     return { out, ok: tracked[0].n === 0 }
   },
+  /**
+   * #348's crash_reports table. REQUIRED BY CODE BEING PROMOTED -- /api/crash-reports writes here,
+   * so promoting the route without the table ships a boundary that tells a customer their crash
+   * was reported while every insert fails. The drift gate caught exactly that.
+   */
+  '20260827117000': async (c) => {
+    const { rows: exists } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.tables
+        WHERE table_schema='public' AND table_name='crash_reports'`,
+    )
+    return {
+      out: [`  public.crash_reports already exists ... ${exists[0].n === 1 ? 'YES' : 'no'}`],
+      ok: exists[0].n === 0,
+    }
+  },
+  /**
+   * #324's is_stress_fixture. GENERATED ALWAYS AS STORED, derived from columns that already exist,
+   * nothing reads it yet. Additive and reversible.
+   *
+   * NOTE FOR WHOEVER READS THE COLUMN COMMENT: it states 1,314 fixture rows as at 2026-08-27 and
+   * that is now HISTORY, not current state -- the rows were deleted the same day. The column
+   * evaluates FALSE on every row today. The comment is kept because it explains why the column
+   * exists; it should not be read as a live count.
+   */
+  '20260827116000': async (c) => {
+    const { rows: col } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_name='orders' AND column_name='is_stress_fixture'`,
+    )
+    const { rows: match } = await c.query(
+      `SELECT count(*)::int AS n FROM orders
+        WHERE restaurant_id IS NULL AND COALESCE(firebase_restaurant_id,'') LIKE 'restaurant_test_%'`,
+    )
+    return {
+      out: [
+        `  column already exists ............. ${col[0].n === 1 ? 'YES' : 'no'}`,
+        `  rows the predicate matches today .. ${match[0].n}   (0 is expected - #324's delete ran)`,
+      ],
+      ok: col[0].n === 0,
+    }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,
