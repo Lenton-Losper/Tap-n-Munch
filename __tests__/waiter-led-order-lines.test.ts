@@ -20,6 +20,7 @@
  */
 import {
   buildOrderLines,
+  findInvalidLineNoteIndex,
   initialStatesFor,
   isLineReady,
   routeToForLine,
@@ -303,6 +304,78 @@ describe('buildOrderLines', () => {
 
   it('returns nothing for an empty round rather than inventing a line', async () => {
     expect(await buildOrderLines(fakeSupabase({}), { ...BASE, items: [] })).toEqual([])
+  })
+})
+
+/**
+ * line_note is a TEXT column and Postgres coerces rather than refusing, so an object lands as the
+ * literal "[object Object]" and a cook reads that off the pass. Dropping it silently is worse
+ * still: the steak comes out wrong and nothing recorded that a note was ever sent.
+ */
+describe('findInvalidLineNoteIndex — a note that is not text refuses the round', () => {
+  it.each([
+    ['an object', { text: 'medium' }],
+    ['an array', ['medium']],
+    ['a nested object', { note: { text: 'medium' } }],
+  ])('flags %s', (_label, note) => {
+    expect(findInvalidLineNoteIndex([{ menuItemId: 'm1', note }])).toBe(0)
+  })
+
+  it('names the offending index, not just that something is wrong', () => {
+    expect(
+      findInvalidLineNoteIndex([
+        { menuItemId: 'a', note: 'medium' },
+        { menuItemId: 'b' },
+        { menuItemId: 'c', note: { text: 'well done' } },
+      ]),
+    ).toBe(2)
+  })
+
+  it('accepts strings, numbers, absent and null notes', () => {
+    expect(
+      findInvalidLineNoteIndex([
+        { menuItemId: 'a', note: 'medium' },
+        { menuItemId: 'b', note: 3 },
+        { menuItemId: 'c', note: null },
+        { menuItemId: 'd' },
+      ]),
+    ).toBeNull()
+  })
+
+  it('catches the alternate note spellings too, not just `note`', () => {
+    expect(findInvalidLineNoteIndex([{ menuItemId: 'a', specialInstructions: { t: 'x' } }])).toBe(0)
+    expect(findInvalidLineNoteIndex([{ menuItemId: 'a', line_note: ['x'] }])).toBe(0)
+  })
+
+  it('never coerces an object into a note', async () => {
+    const supabase = fakeSupabase({
+      menuItems: [{ id: 'm1', category_id: 'c1' }],
+      categories: [{ id: 'c1', route_to: 'kitchen' }],
+    })
+
+    const lines = await buildOrderLines(supabase, {
+      ...BASE,
+      items: [{ menuItemId: 'm1', name: 'Steak', quantity: 1, note: { text: 'medium' } }],
+    })
+
+    // The route refuses this shape before it reaches here; if it ever does reach here, the note
+    // must be null and must NEVER be the string "[object Object]".
+    expect(lines[0].line_note).toBeNull()
+    expect(lines[0].line_note).not.toBe('[object Object]')
+  })
+
+  it('stringifies a numeric note rather than dropping it', async () => {
+    const supabase = fakeSupabase({
+      menuItems: [{ id: 'm1', category_id: 'c1' }],
+      categories: [{ id: 'c1', route_to: 'kitchen' }],
+    })
+
+    const lines = await buildOrderLines(supabase, {
+      ...BASE,
+      items: [{ menuItemId: 'm1', name: 'Steak', quantity: 1, note: 3 }],
+    })
+
+    expect(lines[0].line_note).toBe('3')
   })
 })
 

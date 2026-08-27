@@ -66,6 +66,7 @@ import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import {
   buildOrderLines,
+  findInvalidLineNoteIndex,
   stationsOwnedBy,
   writeOrderLines,
   type LineRouteTo,
@@ -103,6 +104,26 @@ export async function POST(request: Request) {
     }
     if (!Array.isArray(items) || items.length === 0) {
       return NextResponse.json({ error: 'items are required' }, { status: 400 })
+    }
+
+    /**
+     * A note that is not text is refused before anything is written.
+     *
+     * line_note is a text column and Postgres COERCES rather than refusing, so an object arrives
+     * in the database as the literal "[object Object]" and a cook reads that off the pass.
+     * Dropping it silently is worse: the steak comes out wrong and nothing recorded that a note
+     * was ever sent. See findInvalidLineNoteIndex.
+     */
+    const badNoteIndex = findInvalidLineNoteIndex(items)
+    if (badNoteIndex !== null) {
+      return NextResponse.json(
+        {
+          error: `items[${badNoteIndex}] has a note that is not text. Send \`note\` as a string.`,
+          code: 'INVALID_LINE_NOTE',
+          item_index: badNoteIndex,
+        },
+        { status: 400 },
+      )
     }
 
     /**

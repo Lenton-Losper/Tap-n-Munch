@@ -129,19 +129,64 @@ function readMenuItemId(item: OrderItemish): string {
  * grown their own, and a note that silently fails to reach the kitchen is worse than no note
  * feature at all. The terminal brief names `note` as the one to send.
  */
+const NOTE_KEYS = [
+  'note',
+  'notes',
+  'lineNote',
+  'line_note',
+  'specialInstructions',
+  'special_instructions',
+  'instructions',
+] as const
+
 function readLineNote(item: OrderItemish): string | null {
-  const candidates = [
-    item.note,
-    item.notes,
-    item.lineNote,
-    item.line_note,
-    item.specialInstructions,
-    item.special_instructions,
-    item.instructions,
-  ]
-  for (const candidate of candidates) {
+  for (const key of NOTE_KEYS) {
+    const candidate = item[key]
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+    // A number is a strange note but it survives the trip intact and means what it says.
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return String(candidate)
   }
+  return null
+}
+
+/**
+ * Find the first item carrying a note that is neither a string nor a number.
+ *
+ * ============================================================================================
+ * WHY THIS REFUSES RATHER THAN COERCING OR DROPPING
+ * ============================================================================================
+ *
+ * `line_note` is a text column, and Postgres does NOT refuse an object -- it coerces. A note sent
+ * as `{ text: 'medium' }` lands in the database as the literal string "[object Object]", and a
+ * cook reads it off the pass at 8pm.
+ *
+ * Dropping it silently is no better and is arguably worse: the customer asked for their steak
+ * medium, the note vanishes between the P5 and the kitchen, the steak comes out wrong, and
+ * nothing anywhere recorded that a note was ever sent. A wrong plate with no evidence is the
+ * hardest kind of bug to chase the next morning.
+ *
+ * So a malformed note refuses the ROUND, with the offending index named. The client is our own
+ * APK, built against a brief that says to send a string; a 400 during development is exactly
+ * when this should be found, and by the time it is in a venue the shape is fixed.
+ *
+ * Numbers and strings are both accepted, because both survive the trip meaning what they say.
+ */
+export function findInvalidLineNoteIndex(items: unknown): number | null {
+  if (!Array.isArray(items)) return null
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index] as OrderItemish | null
+    if (!item || typeof item !== 'object') continue
+
+    for (const key of NOTE_KEYS) {
+      const candidate = item[key]
+      if (candidate === undefined || candidate === null) continue
+      if (typeof candidate === 'string') continue
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) continue
+      return index
+    }
+  }
+
   return null
 }
 
