@@ -206,6 +206,21 @@ describe('#229 the funnel: buildMenuItemDbPayload canonicalises whatever the req
   })
 })
 
+/*
+ * #229 NOTE, 2026-08-27 — WHERE THIS DESCRIBE BLOCK'S INTENT NOW SITS.
+ *
+ * These cases were written when the answer to "what should the stored shape be" was still open,
+ * and they say two things at once: (a) a DELTA is never read as an ABSOLUTE, and (b) production's
+ * rows are consequently inert. (a) is permanent and these tests remain its guard. (b) is
+ * DELIBERATELY ENDED by
+ * supabase/migrations/20260827122000_issue229_variant_groups_from_legacy_variants.sql, which
+ * replaces those five rows' delta groups with absolute-priced options copied out of the legacy
+ * column — so after it is applied the groups ARE live, and the customer is offered and charged
+ * exactly what they were before. Nothing is deleted here because the delta hazard is unchanged;
+ * what moved is which rows happen to be carrying it.
+ *
+ * The migration's own proof is __tests__/229-migrated-groups-charge-the-same-price.test.ts.
+ */
 describe('#229 MONEY GUARD: this change does not make production variant groups live (#117)', () => {
   const cappucinno = (variantGroups: unknown) => ({
     id: 'e184dfe6-a077-4976-b9f3-286fd48d568b',

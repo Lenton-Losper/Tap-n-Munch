@@ -316,6 +316,40 @@ function writeOptionAbsolutePrice(option: unknown): number | null {
   return Number.isFinite(price) ? price : null
 }
 
+/**
+ * A price-typed option as it is STORED. `price: null` is a BLANK PLACEHOLDER -- an option row the
+ * venue can see and fill in, not a free item.
+ *
+ * BLANK OPTIONS (#229, ruling 2026-08-27 rule 4: "carry across what exists and leave the rest
+ * BLANK for them to fill. Never invent a price.")
+ *
+ * Cappucinno's legacy column prices two options against a variant group that declares three, and
+ * which volume its "Large" means is unknowable from the data. So the migration writes the two
+ * that exist and one blank. That blank has to SURVIVE the venue opening the item and saving it,
+ * or the one row prompting them to finish the job disappears the first time they change the
+ * photo.
+ *
+ * It is safe to store because `normalizeVariantGroups` tests the LABEL first and discards an
+ * option with an empty one before it ever looks at the price -- so a blank is invisible to
+ * customers, unselectable, and unchargeable.
+ *
+ * A label with NO usable price is still DROPPED rather than blanked, and that asymmetry is
+ * deliberate: `normalizeVariantGroups` reads a missing price as `Number(undefined)`... which is
+ * NaN and rejected, but `Number(null)` is 0 and accepted. Storing `{label:'Medium', price:null}`
+ * would therefore put a FREE Medium in front of customers. Only an option with no label -- which
+ * the reader throws away on the label test alone -- may be kept unpriced.
+ */
+export type WritableVariantOption = { label: string; price: number | null }
+
+/** A blank placeholder if it has no label, a real option if it has both, otherwise dropped. */
+function writePriceOption(option: unknown): WritableVariantOption | null {
+  const label = writeOptionLabel(option)
+  const price = writeOptionAbsolutePrice(option)
+  const usablePrice = price !== null && price > 0 ? price : null
+  if (label === '') return { label: '', price: usablePrice }
+  return usablePrice === null ? null : { label, price: usablePrice }
+}
+
 /** True when the option prices itself as a DELTA and gives no absolute to use instead. */
 function writeOptionIsDeltaPriced(option: unknown): boolean {
   if (!option || typeof option !== 'object') return false
@@ -333,7 +367,9 @@ function writeOptionIsDeltaPriced(option: unknown): boolean {
  * - An option label is read as `label || name`, matching the reader.
  * - A group is dropped ONLY when it has no name or no options -- a group with no name cannot
  *   be keyed by a selection map, so it could never be rendered, priced or enforced anyway.
- * - A group whose options are delta-priced, or which canonicalises to zero usable options, is
+ * - An UNLABELLED price option is kept as a BLANK PLACEHOLDER rather than dropped, in position.
+ *   See WritableVariantOption: this is what lets the venue finish a half-known size list.
+ * - A group whose options are delta-priced, or which canonicalises to no LABELLED option, is
  *   preserved verbatim and named in `unconvertible`. See the block comment above for why.
  */
 export function sanitizeVariantGroupsForWrite(groups: unknown): VariantGroupWriteResult {
@@ -361,15 +397,22 @@ export function sanitizeVariantGroupsForWrite(groups: unknown): VariantGroupWrit
     const hasAbsolutePrice = rawOptions.some((opt) => writeOptionAbsolutePrice(opt) !== null)
     const type: 'price' | 'text' = declaredType ?? (hasAbsolutePrice ? 'price' : 'text')
 
-    const options: Array<string | { label: string; price: number }> =
+    const options: Array<string | WritableVariantOption> =
       type === 'price'
-        ? rawOptions
-            .map((opt) => ({ label: writeOptionLabel(opt), price: writeOptionAbsolutePrice(opt) }))
-            .filter((opt) => opt.label !== '' && opt.price !== null && opt.price > 0)
-            .map((opt) => ({ label: opt.label, price: opt.price as number }))
+        ? (rawOptions.map(writePriceOption).filter(Boolean) as WritableVariantOption[])
         : rawOptions.map(writeOptionLabel).filter((label) => label !== '')
 
-    if (options.length === 0) {
+    /*
+     * A group of nothing but BLANKS is not a usable group. Judged on the labelled options, not
+     * on `options.length`, because a placeholder is stored and would otherwise make a group that
+     * normalises to nothing look convertible -- and on these five rows that matters: a stored
+     * group which normalises to nothing sends `getVariantGroups` back to the legacy `variants`
+     * column, silently resurrecting the prices the venue had just replaced.
+     */
+    const hasLabelledOption = options.some((opt) =>
+      typeof opt === 'string' ? opt !== '' : opt.label !== '',
+    )
+    if (!hasLabelledOption) {
       stored.push(group)
       unconvertible.push(groupName)
       continue

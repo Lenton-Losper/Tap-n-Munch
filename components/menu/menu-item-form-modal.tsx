@@ -19,7 +19,10 @@ import {
 } from '@/components/menu/menu-item-inventory-tab'
 import { useToast } from '@/hooks/use-toast'
 import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
-import { sanitizeVariantGroupsForWrite } from '@/lib/menu/variant-groups'
+import {
+  sanitizeVariantGroupsForWrite,
+  type WritableVariantOption,
+} from '@/lib/menu/variant-groups'
 import {
   validateMenuItemDraft,
   type ExistingMenuItem,
@@ -55,7 +58,12 @@ type ItemFormState = {
     name: string
     required: boolean
     type: 'text' | 'price'
-    options: Array<string | { label: string; price: number }>
+    /*
+     * `price: null` is a BLANK option row -- see WritableVariantOption. #229 rule 4 leaves a
+     * size the venue has not priced yet BLANK rather than guessing it, so the form has to be
+     * able to hold "no price" as something other than zero.
+     */
+    options: Array<string | WritableVariantOption>
   }>
   has_addons: boolean
   addons: Array<{ name: string; price: number }>
@@ -72,7 +80,7 @@ type ItemFormState = {
  * screen hiding what was in it. `getVariantGroups`/`sanitizeVariantGroupsForWrite` already read
  * `label || name`; this is the editor agreeing with them.
  */
-function variantOptionLabelForEditor(option: string | { label: string; price: number }): string {
+function variantOptionLabelForEditor(option: string | WritableVariantOption): string {
   if (typeof option === 'string') return option
   const raw = option as { label?: unknown; name?: unknown }
   return String(raw.label ?? raw.name ?? '')
@@ -662,9 +670,17 @@ function MenuItemFormContent({
       const nextOptions = [...group.options]
       const existing = nextOptions[optionIndex]
       if (group.type === 'price') {
-        const obj = typeof existing === 'string' ? { label: existing, price: 0 } : existing
+        const obj: WritableVariantOption =
+          typeof existing === 'string' ? { label: existing, price: null } : existing
+        /*
+         * #229 rule 4. CLEARING the price box leaves the option BLANK, not zero. Before this it
+         * read `Number('') || 0`, so emptying a price silently declared the size free -- and the
+         * only way to say "I have not decided this one yet" was to delete the row.
+         */
         nextOptions[optionIndex] =
-          field === 'price' ? { ...obj, price: Number(value) || 0 } : { ...obj, label: value }
+          field === 'price'
+            ? { ...obj, price: value.trim() === '' ? null : Number(value) || 0 }
+            : { ...obj, label: value }
       } else {
         nextOptions[optionIndex] = value
       }
@@ -988,11 +1004,9 @@ function MenuItemFormContent({
                                   step="0.01"
                                   placeholder="Price"
                                   value={
-                                    typeof opt === 'string'
+                                    typeof opt === 'string' || !Number.isFinite(opt.price)
                                       ? ''
-                                      : Number.isFinite(opt.price)
-                                        ? opt.price
-                                        : ''
+                                      : (opt.price as number)
                                   }
                                   onChange={(event) =>
                                     handleUpdateVariantGroupOption(
