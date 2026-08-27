@@ -44,7 +44,7 @@ export async function loadTableOwners(
 
   try {
     const { data: assignments, error: assignmentsError } = await supabase
-      .from('table_assignments')
+      .from('service_table_assignments')
       .select('table_id, waiter_user_id, assigned_at')
       .eq('restaurant_id', restaurantId)
       .in('table_id', ids)

@@ -159,7 +159,7 @@ report below must show this rather than resolve it.
 ### 3. Assignment is table-scoped with history; the tab snapshots its owner.
 
 ```
-table_assignments
+service_table_assignments
   id            uuid pk
   restaurant_id uuid not null
   table_id      uuid not null -> restaurant_tables(id)

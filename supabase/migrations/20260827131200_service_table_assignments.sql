@@ -56,7 +56,7 @@
 -- Whichever way §8.3 is ruled, tip attribution is unaffected -- it follows the tab's opening
 -- owner, not whoever wrote the line.
 
-CREATE TABLE IF NOT EXISTS public.table_assignments (
+CREATE TABLE IF NOT EXISTS public.service_table_assignments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 
   restaurant_id uuid NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
@@ -82,42 +82,42 @@ CREATE TABLE IF NOT EXISTS public.table_assignments (
   assigned_by_user_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
 
   -- A release cannot precede the assignment it releases.
-  CONSTRAINT table_assignments_interval_ordered
+  CONSTRAINT service_table_assignments_interval_ordered
     CHECK (released_at IS NULL OR released_at >= assigned_at)
 );
 
-COMMENT ON TABLE public.table_assignments IS
+COMMENT ON TABLE public.service_table_assignments IS
   'ADR-005 §3: who owns a table, over time. Open interval -- the current assignment is the row with released_at IS NULL. Deliberately NOT the tip anchor: tips follow tabs.opened_by_user_id, so that a shift handover cannot retroactively reassign money already earned.';
 
-COMMENT ON COLUMN public.table_assignments.released_at IS
+COMMENT ON COLUMN public.service_table_assignments.released_at IS
   'NULL means current. There is no ''active'' flag on purpose -- a flag and a timestamp can contradict each other, and then neither can be trusted.';
 
-COMMENT ON COLUMN public.table_assignments.waiter_user_id IS
+COMMENT ON COLUMN public.service_table_assignments.waiter_user_id IS
   'users.id -- the identity the terminal PIN flow produces, NOT staff_members.id. ON DELETE RESTRICT, unlike the audit tables: deleting someone who currently holds tables should fail loudly and be resolved by releasing them, not by silently orphaning live assignments mid-service.';
 
 -- ONE OPEN ASSIGNMENT PER TABLE. The invariant the open-interval representation depends on --
 -- without it, two overlapping unreleased rows make "who has table 12" ambiguous and there is no
 -- way to tell which is stale.
-CREATE UNIQUE INDEX IF NOT EXISTS table_assignments_one_open_per_table_idx
-  ON public.table_assignments (table_id)
+CREATE UNIQUE INDEX IF NOT EXISTS service_table_assignments_one_open_idx
+  ON public.service_table_assignments (table_id)
   WHERE released_at IS NULL;
 
 -- "Which tables are mine right now" -- the waiter's home screen on the P5.
-CREATE INDEX IF NOT EXISTS table_assignments_open_by_waiter_idx
-  ON public.table_assignments (restaurant_id, waiter_user_id)
+CREATE INDEX IF NOT EXISTS service_table_assignments_by_waiter_idx
+  ON public.service_table_assignments (restaurant_id, waiter_user_id)
   WHERE released_at IS NULL;
 
 -- "Who had table 12 last Tuesday" -- the history read this table exists for.
-CREATE INDEX IF NOT EXISTS table_assignments_table_history_idx
-  ON public.table_assignments (table_id, assigned_at DESC);
+CREATE INDEX IF NOT EXISTS service_table_assignments_history_idx
+  ON public.service_table_assignments (table_id, assigned_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- RLS: staff with tables:read may read. Every write is service role.
 -- ---------------------------------------------------------------------------
-ALTER TABLE public.table_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.service_table_assignments ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Authorized staff can read table assignments" ON public.table_assignments;
+DROP POLICY IF EXISTS "Authorized staff can read table assignments" ON public.service_table_assignments;
 CREATE POLICY "Authorized staff can read table assignments"
-  ON public.table_assignments
+  ON public.service_table_assignments
   FOR SELECT
   USING (public.user_has_permission(restaurant_id, 'tables:read'));

@@ -187,7 +187,7 @@ export async function POST(
      * losing the assignment costs the floor grid an owner name, and refusing the request would
      * cost the customer their order. Logged loudly, same trade as markTableOccupied.
      */
-    const { error: assignmentError } = await supabase.from('table_assignments').insert({
+    const { error: assignmentError } = await supabase.from('service_table_assignments').insert({
       restaurant_id: terminal.restaurantId,
       table_id: table.id,
       waiter_user_id: userId,

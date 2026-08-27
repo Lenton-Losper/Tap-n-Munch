@@ -10,13 +10,13 @@
 -- who served them. A shift change mid-meal does not transfer the tip to whoever happened to be
 -- standing there at settle.
 --
--- table_assignments (20260827131200) already records who owns a table over time, so this column
+-- service_table_assignments (20260827131200) already records who owns a table over time, so this column
 -- looks redundant. It is not, and the difference is money:
 --
 --   Ana opens table 12's tab at 18:00. She goes off shift at 21:00 and Ben takes the section.
 --   The table settles at 21:30 with a tip.
 --
--- Resolved through table_assignments at settle time, that tip goes to Ben, who did not serve them.
+-- Resolved through service_table_assignments at settle time, that tip goes to Ben, who did not serve them.
 -- Resolved through a value frozen at 18:00, it goes to Ana, who did. A JOIN cannot be made to
 -- return the second answer without reconstructing "what was true at 18:00", and a reconstruction
 -- is exactly the thing that breaks quietly when the assignment history is edited, backfilled, or
@@ -52,7 +52,7 @@ ALTER TABLE public.tabs
     REFERENCES public.users(id) ON DELETE SET NULL;
 
 COMMENT ON COLUMN public.tabs.opened_by_user_id IS
-  'ADR-005 §6: the waiter who opened this tab, snapshotted at creation and never updated. The tip anchor. users.id, the identity the terminal PIN flow produces. Deliberately NOT resolved through table_assignments at settle time -- a shift handover would otherwise move an earned tip to whoever was standing there. NULL for customer-opened (QR) tabs, which is a fact rather than a gap.';
+  'ADR-005 §6: the waiter who opened this tab, snapshotted at creation and never updated. The tip anchor. users.id, the identity the terminal PIN flow produces. Deliberately NOT resolved through service_table_assignments at settle time -- a shift handover would otherwise move an earned tip to whoever was standing there. NULL for customer-opened (QR) tabs, which is a fact rather than a gap.';
 
 -- "Which tabs did this waiter open" -- per-waiter tip and service reporting (ADR-005 §6 ruling 4).
 -- Partial: every pre-existing tab and every QR tab is null, and none of them are ever the answer
