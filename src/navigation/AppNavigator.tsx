@@ -10,6 +10,7 @@ import {SafeAreaProvider} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {AuthProvider, useAuth} from '../context/AuthContext';
 import {CartProvider} from '../context/CartContext';
+import {ServiceSessionProvider} from '../context/ServiceSessionContext';
 import {StreamProvider} from '../context/StreamContext';
 import {Colors, Typography} from '../constants/theme';
 import ActivationScreen from '../screens/ActivationScreen';
@@ -20,6 +21,10 @@ import RefundAuthScreen from '../screens/RefundAuthScreen';
 import RefundConfirmScreen from '../screens/RefundConfirmScreen';
 import RefundPinScreen from '../screens/RefundPinScreen';
 import POSCartScreen from '../screens/POSCartScreen';
+import ServiceFloorScreen from '../screens/ServiceFloorScreen';
+import ServiceOpenTableScreen from '../screens/ServiceOpenTableScreen';
+import ServiceRoundReviewScreen from '../screens/ServiceRoundReviewScreen';
+import ServiceRoundScreen from '../screens/ServiceRoundScreen';
 import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import TableDetailScreen from '../screens/TableDetailScreen';
@@ -32,6 +37,8 @@ export type AuthStackParamList = {
 
 export type MainTabParamList = {
   Tables: undefined;
+  /** Waiter-led service, screen 1. The legacy Tables tab is untouched and stays the default. */
+  ServiceFloor: undefined;
   Orders: undefined;
   POSSale: undefined;
 };
@@ -77,6 +84,23 @@ export type MainStackParamList = {
   Settings: undefined;
   POSSale: undefined;
   POSCart: {restaurantId: string};
+  /** Waiter-led service, screen 2. Reached only by tapping a FREE table on the floor grid. */
+  ServiceOpenTable: {
+    tableId: string;
+    tableNumber: number;
+    tableName: string | null;
+  };
+  /**
+   * Waiter-led service, screen 3. The tab, the table and the basket all live in
+   * ServiceSessionContext rather than in params, so a round survives navigating to review and
+   * back without being serialised through the navigator.
+   *
+   * `outOfStockLineIds` is the one thing that has to travel: it is the answer to a 409 the review
+   * screen received, and every line it names must light up at once.
+   */
+  ServiceRound: {outOfStockLineIds?: string[]} | undefined;
+  /** Waiter-led service, screen 4. The ONE review screen; Send lives here. */
+  ServiceRoundReview: undefined;
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
@@ -108,6 +132,20 @@ function MainTabNavigator() {
           tabBarIcon: ({color, size}) => (
             <MaterialCommunityIcons
               name="table-furniture"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+      <MainTab.Screen
+        name="ServiceFloor"
+        component={ServiceFloorScreen}
+        options={{
+          tabBarLabel: 'Floor',
+          tabBarIcon: ({color, size}) => (
+            <MaterialCommunityIcons
+              name="view-grid-outline"
               size={size}
               color={color}
             />
@@ -150,6 +188,7 @@ function MainNavigator() {
   return (
     <StreamProvider>
       <CartProvider>
+        <ServiceSessionProvider>
         <MainStack.Navigator
         initialRouteName="MainTabs"
         screenOptions={{
@@ -198,6 +237,21 @@ function MainNavigator() {
           options={{headerShown: false}}
         />
         <MainStack.Screen
+          name="ServiceOpenTable"
+          component={ServiceOpenTableScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="ServiceRound"
+          component={ServiceRoundScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="ServiceRoundReview"
+          component={ServiceRoundReviewScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
           name="Settings"
           component={SettingsScreen}
           options={{
@@ -206,6 +260,7 @@ function MainNavigator() {
           }}
         />
       </MainStack.Navigator>
+        </ServiceSessionProvider>
       </CartProvider>
     </StreamProvider>
   );

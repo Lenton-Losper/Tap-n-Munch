@@ -44,6 +44,8 @@ interface ApiErrorBody {
   sale_amount?: number | null;
   prior_refunded?: number | null;
   retry_after_seconds?: number | null;
+  /** PIN_MISMATCH on POST /api/terminal/authorize. Absent on every other route. */
+  attempts_remaining?: number | null;
   /** #120 residual: the rows blocking a table close, one entry each. */
   pending_requests?: unknown;
 }
@@ -122,6 +124,8 @@ export class ApiRequestError extends Error {
   saleAmount?: number | null;
   priorRefunded?: number | null;
   retryAfterSeconds?: number | null;
+  /** Wrong-PIN attempts left before lockout. Only POST /authorize sends it. */
+  attemptsRemaining?: number | null;
   /** #120 residual. Empty for every error that is not a blocked table close. */
   pendingRequests: PendingOrderRequest[] = [];
 
@@ -136,6 +140,7 @@ export class ApiRequestError extends Error {
       saleAmount?: number | null;
       priorRefunded?: number | null;
       retryAfterSeconds?: number | null;
+      attemptsRemaining?: number | null;
       pendingRequests?: PendingOrderRequest[];
     },
   ) {
@@ -149,6 +154,7 @@ export class ApiRequestError extends Error {
     this.saleAmount = extras?.saleAmount;
     this.priorRefunded = extras?.priorRefunded;
     this.retryAfterSeconds = extras?.retryAfterSeconds;
+    this.attemptsRemaining = extras?.attemptsRemaining;
     this.pendingRequests = extras?.pendingRequests ?? [];
   }
 }
@@ -187,6 +193,7 @@ async function parseApiError(response: Response): Promise<ApiRequestError> {
     saleAmount: finiteOrNull(data.sale_amount),
     priorRefunded: finiteOrNull(data.prior_refunded),
     retryAfterSeconds,
+    attemptsRemaining: finiteOrNull(data.attempts_remaining),
     pendingRequests: parsePendingRequests(data.pending_requests),
   });
 }
@@ -1303,11 +1310,26 @@ export interface AuthorizedUser {
  */
 export class AuthorizationDeniedError extends Error {
   status: number;
+  /**
+   * The server's `code`, carried so a caller can tell the two 401/403 cases apart.
+   * `PIN_MISMATCH` (401) means "wrong PIN, ask again". A bare 403 means this person cannot do
+   * this at all — not a member, no permission, or no PIN set — and re-prompting is pointless.
+   * Optional: nothing before waiter-led service read it, and older servers omit it.
+   */
+  code?: string;
+  /** Wrong-PIN attempts left before lockout, when the server says. */
+  attemptsRemaining?: number | null;
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    extras?: {code?: string; attemptsRemaining?: number | null},
+  ) {
     super(message);
     this.name = 'AuthorizationDeniedError';
     this.status = status;
+    this.code = extras?.code;
+    this.attemptsRemaining = extras?.attemptsRemaining;
   }
 }
 
@@ -1428,7 +1450,10 @@ export async function authorizeAction(
       throw err;
     }
     if (response.status === 401 || response.status === 403) {
-      throw new AuthorizationDeniedError(err.message, response.status);
+      throw new AuthorizationDeniedError(err.message, response.status, {
+        code: err.code,
+        attemptsRemaining: err.attemptsRemaining,
+      });
     }
     throw err;
   }
@@ -2016,4 +2041,385 @@ export async function deletePrinterConfig(token: string): Promise<void> {
   if (!response.ok) {
     throw await parseApiError(response);
   }
+}
+
+// ─── Waiter-led service v1 ────────────────────────────────────────────────────
+//
+// Contract: docs/terminal-brief-waiter-led-service-v1.md (web repo).
+//
+// THESE ROUTES DO NOT USE throwIfUnauthorized, AND THAT IS THE WHOLE POINT.
+//
+// throwIfUnauthorized collapses 401 and 403 into one TerminalAuthError. For every route written
+// before this feature that was harmless, because both meant "the device cannot do this". Here it
+// would destroy the only signal that matters: the service routes answer 403 with an
+// `AUTHORIZATION_*` code for every PIN failure and reserve 401 for an expired TERMINAL token.
+// Turning a 403 AUTHORIZATION_EXPIRED into TerminalAuthError would send the device into
+// refresh-and-retry against a problem no token refresh can fix — the failure class that produced
+// #327. So these call throwIfTerminalSessionExpired (401 only) and let 403 through as a coded
+// ApiRequestError the screen branches on.
+//
+// terminalFetch still does the right thing on 401: refresh once and retry. POST /authorize is the
+// one endpoint that must bypass it, and authorizeAction above already does.
+
+/** 401 ONLY. See the block comment above for why this is not throwIfUnauthorized. */
+function throwIfTerminalSessionExpired(response: Response): void {
+  if (response.status === 401) {
+    throw new TerminalAuthError();
+  }
+}
+
+export interface FloorTableOwner {
+  user_id: string;
+  name: string;
+  assigned_at?: string | null;
+}
+
+export interface FloorTableTab {
+  id: string;
+  status: string;
+  total: number;
+  opened_by_user_id?: string | null;
+}
+
+export interface FloorTable {
+  id: string;
+  table_number: number;
+  table_name: string | null;
+  /**
+   * THE ONLY THING THAT DECIDES OPEN VS FREE. Computed server-side from the live tab.
+   * `table_status` is returned for diagnosis and disagrees with reality in both directions
+   * (#216, and the abandoned-tab reaper) — never render from it.
+   */
+  state: 'open' | 'free';
+  /**
+   * The table's CURRENT owner, which is not necessarily `tab.opened_by_user_id` — they differ
+   * after a handover, correctly. Null on an open table is legitimate (a QR-opened tab, or an
+   * assignment that failed while the tab succeeded): show the table as open with no name.
+   */
+  owner: FloorTableOwner | null;
+  opened_at: string | null;
+  /** Server-computed. Use this, not the device clock — see formatSecondsOpen. */
+  seconds_open: number | null;
+  tab: FloorTableTab | null;
+  /** Diagnosis only. Deliberately not used to drive anything. */
+  table_status?: string;
+}
+
+export type FloorPayload = {
+  tables: FloorTable[];
+  /** The server's clock at response time; lets the grid tick between refreshes. */
+  serverTime: string | null;
+};
+
+/**
+ * The floor grid — EVERY active table, open and free.
+ *
+ * `?view=floor` is REQUIRED. Without it this route returns the legacy occupied-tables-only shape
+ * that getTablesWithMeta consumes, which has no `state`, no `owner` and no `seconds_open`, and the
+ * grid would render every table as free.
+ */
+export async function getFloorTables(token: string): Promise<FloorPayload> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tables?view=floor`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as {
+    tables?: FloorTable[];
+    server_time?: string;
+  };
+
+  return {
+    tables: data.tables ?? [],
+    serverTime: typeof data.server_time === 'string' ? data.server_time : null,
+  };
+}
+
+export interface OpenTableResult {
+  /**
+   * TRUE IS A SUCCESS, NOT AN ERROR. It means the table already had a live tab and the device is
+   * being handed it — two waiters tapping the same table at once, or a slightly stale grid.
+   * Proceed into the round screen exactly as if the tab had just been created.
+   */
+  already_open: boolean;
+  table: {id: string; table_number: number};
+  tab: {
+    id: string;
+    status: string;
+    total: number;
+    opened_at?: string;
+    opened_by_user_id?: string;
+  };
+  owner: FloorTableOwner | null;
+}
+
+/**
+ * Spends the single-use 90-second authorization token on opening a table.
+ *
+ * Call this IMMEDIATELY after authorizeAction. The token is single-use and expires in 90 seconds;
+ * caching it, reusing it, or fetching it in advance all end in a 403 AUTHORIZATION_* that has
+ * already burned the waiter's PIN entry.
+ *
+ * A 404 or 409 here has NOT burned it — the table is validated before the token is consumed — so
+ * those two re-render the grid rather than re-prompting for a PIN.
+ */
+export async function openServiceTable(
+  params: {tableId: string; userId: string; authorizationTokenId: string},
+  token: string,
+): Promise<OpenTableResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tables/${encodeURIComponent(
+      params.tableId,
+    )}/open`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        user_id: params.userId,
+        authorization_token_id: params.authorizationTokenId,
+      }),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as OpenTableResult;
+  return {...data, already_open: Boolean(data.already_open)};
+}
+
+export interface StationCounts {
+  kitchen: number;
+  bar: number;
+  /**
+   * Items whose category had no usable routing. NOT defaulted to the kitchen, on purpose. The
+   * brief requires this to be shown when it is above zero: it is a menu problem, and the waiter is
+   * the first person in a position to notice.
+   *
+   * Shape and meaning are unchanged by the one-line-per-item schema change — these are still how
+   * many lines each screen will show.
+   */
+  unrouted: number;
+}
+
+export interface RoundResult {
+  success: boolean;
+  order_id: string;
+  order_number: number;
+  tab_id: string;
+  lines_written: boolean;
+  /**
+   * EXACTLY THE NUMBER OF ITEMS SENT. It was briefed as able to exceed that — a `both` item used
+   * to fan out into a kitchen row and a bar row — and it no longer can: one line now carries the
+   * frozen `route_to` plus separate `kitchen_state` and `bar_state`, so each station still bumps
+   * independently while a cancellation cancels one thing and the bill counts it once.
+   *
+   * Nothing on the device is built around the old fan-out, deliberately. If this ever comes back
+   * above the item count, that is a server change to chase, not a display quirk to absorb.
+   */
+  line_count: number;
+  station_counts: StationCounts;
+}
+
+/**
+ * 502. The round IS ON THE TAB but the kitchen and bar were never told.
+ *
+ * Its own class because it must never be handled by a generic error branch: the customer will be
+ * billed for food nobody has been told to cook. Do not retry it, do not collapse it into "failed" —
+ * a retry double-bills, and "failed" is a lie in the direction that loses money. The order number
+ * stays on screen so a manager can be told which order.
+ */
+export class RoundLinesNotWrittenError extends Error {
+  orderId: string | null;
+  orderNumber: number | null;
+
+  constructor(
+    message: string,
+    orderId: string | null,
+    orderNumber: number | null,
+  ) {
+    super(message);
+    this.name = 'RoundLinesNotWrittenError';
+    this.orderId = orderId;
+    this.orderNumber = orderNumber;
+  }
+}
+
+/** 409 TAB_NOT_OPEN. The tab was settled or closed while the round was being built. */
+export class TabNotOpenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TabNotOpenError';
+  }
+}
+
+/** 409 OUT_OF_STOCK. Carries EVERY refused item so the basket can flag them all at once. */
+export class RoundOutOfStockError extends Error {
+  outOfStock: {item: string; ingredient?: string}[];
+
+  constructor(
+    message: string,
+    outOfStock: {item: string; ingredient?: string}[],
+  ) {
+    super(message);
+    this.name = 'RoundOutOfStockError';
+    this.outOfStock = outOfStock;
+  }
+}
+
+/**
+ * The exact wording the brief requires when the server sends no message of its own with a
+ * LINES_NOT_WRITTEN 502. Not a paraphrase, and not a generic failure string.
+ */
+export const LINES_NOT_WRITTEN_MESSAGE =
+  'The round was recorded on the tab but the kitchen and bar were not notified. ' +
+  'Tell a manager before serving this table.';
+
+/**
+ * Commits a round to an open tab.
+ *
+ * TAKES NO user_id, BY DESIGN. Attribution is read server-side from the tab's
+ * `opened_by_user_id` and cannot be overridden by the request, which is precisely why a device
+ * cannot credit a round to somebody else. Do not invent a PIN prompt here.
+ *
+ * `subtotal` and `total` are ADVISORY — the server re-prices from the catalog and ignores them.
+ * That is the anti-tampering control on the terminal path. Show the waiter the computed figure,
+ * but expect the authoritative one to come from the tab.
+ *
+ * The error bodies here carry fields (`order_id`, `order_number`, `outOfStock`) that
+ * parseApiError's whitelist drops, so the body is read once by hand instead.
+ */
+export async function sendRound(
+  params: {
+    tabId: string;
+    items: {
+      menuItemId: string;
+      name: string;
+      quantity: number;
+      note?: string;
+    }[];
+    subtotal: number;
+    total: number;
+    orderInstructions?: string;
+    /**
+     * MANDATORY. The route rejects a request without the `x-idempotency-key` header with
+     * 400 IDEMPOTENCY_KEY_REQUIRED — it is no longer best-effort, because on the existing POS
+     * path 0 of 1,545 orders carried one and every failed retry there stranded a duplicate order.
+     *
+     * ONE value per round attempt, REUSED across every retry of that same round. A fresh uuid on
+     * retry defeats the entire mechanism. A repeat carrying an already-used key returns the
+     * ORIGINAL order — same order_id, same order_number — with 200, and that is a SUCCESS: do not
+     * create a second round and do not show a failure for it.
+     */
+    idempotencyKey: string;
+  },
+  token: string,
+): Promise<RoundResult> {
+  // Refused here rather than on the wire. An empty key would come back as
+  // 400 IDEMPOTENCY_KEY_REQUIRED, and a caller that reached this line without one has a bug that
+  // a server round-trip would only disguise.
+  if (!params.idempotencyKey) {
+    throw new Error('sendRound called without an idempotency key');
+  }
+
+  const body: Record<string, unknown> = {
+    tab_id: params.tabId,
+    items: params.items,
+    subtotal: params.subtotal,
+    total: params.total,
+  };
+  const instructions = params.orderInstructions?.trim();
+  if (instructions) {
+    body.order_instructions = instructions;
+  }
+
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/rounds`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-idempotency-key': params.idempotencyKey,
+      },
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (response.ok) {
+    const data = (await response.json()) as RoundResult;
+    return {
+      ...data,
+      lines_written: data.lines_written !== false,
+      line_count: Number(data.line_count ?? 0),
+      station_counts: {
+        kitchen: Number(data.station_counts?.kitchen ?? 0),
+        bar: Number(data.station_counts?.bar ?? 0),
+        unrouted: Number(data.station_counts?.unrouted ?? 0),
+      },
+    };
+  }
+
+  // Read once — a Response body cannot be consumed twice, and three of these branches need
+  // fields that ApiRequestError does not carry.
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = (await response.json()) as Record<string, unknown>;
+  } catch {
+    // Non-JSON body — the status-only fallbacks below still apply.
+  }
+
+  const code = typeof raw.code === 'string' ? raw.code : undefined;
+  const serverMessage =
+    typeof raw.error === 'string' && raw.error ? raw.error : null;
+
+  if (code === 'LINES_NOT_WRITTEN') {
+    throw new RoundLinesNotWrittenError(
+      serverMessage ?? LINES_NOT_WRITTEN_MESSAGE,
+      typeof raw.order_id === 'string' ? raw.order_id : null,
+      finiteOrNull(raw.order_number),
+    );
+  }
+
+  if (code === 'TAB_NOT_OPEN') {
+    throw new TabNotOpenError(
+      serverMessage ?? 'This table was closed while the round was being built.',
+    );
+  }
+
+  if (code === 'OUT_OF_STOCK') {
+    const rows = Array.isArray(raw.outOfStock) ? raw.outOfStock : [];
+    throw new RoundOutOfStockError(
+      serverMessage ?? 'Some items are out of stock.',
+      rows
+        .filter(
+          (row): row is Record<string, unknown> =>
+            !!row && typeof row === 'object',
+        )
+        .map(row => ({
+          item: String(row.item ?? ''),
+          ingredient:
+            row.ingredient != null ? String(row.ingredient) : undefined,
+        })),
+    );
+  }
+
+  throw new ApiRequestError(
+    serverMessage ?? `Request failed (${response.status})`,
+    response.status,
+    {code},
+  );
 }
