@@ -15,24 +15,32 @@ import {
 } from '@/lib/recipes/quantity-sanity'
 
 /**
- * PLACEHOLDER COPY — not for release. Every string below needs writing by whoever owns merchant
- * wording; what each one has to convey is stated next to it.
+ * SIGNED COPY, 2026-08-27. Every string below is the owner's wording, verbatim.
  *
- * The field label must say that the number is per single unit sold. The warnings must be
- * readable as questions, not accusations: each one is a heuristic, the merchant may well be
- * right, and none of them stops a save.
+ * These rendered as `[PLACEHOLDER: ...]` on production to a live venue until today, because the
+ * placeholder gate matches PENDING COPY / COPY PENDING and had never heard of PLACEHOLDER -- a
+ * third spelling of the same convention.
+ *
+ * WHAT THE WARNINGS MUST KEEP. They read as questions, not accusations -- each is a heuristic, the
+ * merchant may well be right, and none of them stops a save. TWO EXCEPTIONS TO THAT, both ruled
+ * deliberately:
+ *   exceeds_on_hand      is blunt on purpose. It is the Mingle nine caught at entry -- a delivery
+ *                        count typed into a per-sale field, where one sale ate the whole delivery.
+ *                        It states a consequence rather than asking a question.
+ *   one_to_one_not_single names the 25ml tot explicitly, so a bar manager recognises their own
+ *                        case in the sentence instead of wondering whether they have erred.
  */
-const QUANTITY_FIELD_LABEL_PLACEHOLDER = 'Quantity [PLACEHOLDER: say "per one sold"]'
+const QUANTITY_FIELD_LABEL = 'Quantity used per single sale'
 
-const QUANTITY_WARNING_PLACEHOLDER: Record<RecipeQuantityWarningCode, string> = {
+const QUANTITY_WARNING_COPY: Record<RecipeQuantityWarningCode, string> = {
   // Convey: this is exactly what you have in stock. Did you mean how much ONE sale uses?
   // Selling one would take the whole lot.
-  equals_on_hand: '[PLACEHOLDER: quantity equals the amount on hand — per-sale amount intended?]',
+  equals_on_hand: 'this is exactly what you have in stock. did you mean how much one sale uses? as entered, selling one would take the whole lot.',
   // Convey: this is more than you have, so the first sale takes the balance below zero.
-  exceeds_on_hand: '[PLACEHOLDER: quantity is more than the amount on hand — first sale goes negative]',
+  exceeds_on_hand: 'this is more than you have in stock. as entered, the first sale takes the balance below zero.',
   // Convey: this ingredient is the same thing as the item being sold, so one sale should
   // normally use one — unless the stock item is counted in smaller pieces.
-  one_to_one_not_single: '[PLACEHOLDER: ingredient is the item itself — expected 1 per sale?]',
+  one_to_one_not_single: 'this ingredient is the same item being sold, so one sale would normally use 1. that is fine if the stock item is counted in smaller pieces - a 25ml tot from a 750ml bottle, for example.',
 }
 
 export type MenuItemIngredientRow = {
@@ -194,11 +202,11 @@ export function MenuItemInventoryTab({
                   label="Ingredient"
                 />
                 <div className="space-y-1.5">
-                  {/* PLACEHOLDER LABEL — must convey that this number is the amount consumed by
+                  {/* Signed 2026-08-27. It must keep saying that this number is what ONE sale uses, by
                       selling ONE of this menu item, not how many are in stock. The bare word
                       "Quantity" is what let a delivery count be typed here nine times. */}
                   <Label htmlFor={`ingredient-qty-${row.key}`}>
-                    {QUANTITY_FIELD_LABEL_PLACEHOLDER}
+                    {QUANTITY_FIELD_LABEL}
                   </Label>
                   <Input
                     id={`ingredient-qty-${row.key}`}
@@ -221,8 +229,8 @@ export function MenuItemInventoryTab({
                       role="status"
                       className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800"
                     >
-                      {/* PLACEHOLDER — see QUANTITY_WARNING_PLACEHOLDER. */}
-                      {QUANTITY_WARNING_PLACEHOLDER[
+                      {/* Signed 2026-08-27 — see QUANTITY_WARNING_COPY. */}
+                      {QUANTITY_WARNING_COPY[
                         quantityWarningByStockItem.get(row.stockItemId)!.code
                       ]}
                     </p>

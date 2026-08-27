@@ -95,6 +95,68 @@ describe('the PENDING COPY gate', () => {
     expect(out).toContain('OK')
   })
 
+  it('FIRES on the THIRD spelling — [PLACEHOLDER: ...] — which reached a live venue', () => {
+    // Found on production 2026-08-27 by the owner, in the menu editor's Inventory tab:
+    // `Quantity [PLACEHOLDER: say "per one sold"]`. Four strings across two files, eight renders.
+    // The gate matched PENDING COPY / COPY PENDING and had never heard of the word.
+    const root = fixture({
+      'components/thing.tsx': `export const C = 'Quantity [PLACEHOLDER: say "per one sold"]'
+`,
+    })
+    expect(runGate(root).status).toBe(1)
+  })
+
+  it('FIRES on other bracketed marker words, so the next spelling is already covered', () => {
+    // The point of the sweep: stop fixing one phrasing at a time. TODO/TBD/FIXME/XXX appear in NO
+    // shippable string literal today — this keeps it that way rather than waiting for the fourth.
+    for (const marker of ['[TODO: write this]', '[TBD]', '[FIXME: wording]', '[XXX: temp]']) {
+      const root = fixture({ 'components/t.tsx': `export const C = '${marker}'
+` })
+      expect(runGate(root).status).toBe(1)
+    }
+  })
+
+  it('does NOT fire on lowercase brackets — the two real lines a first cut broke on', () => {
+    /**
+     * THE DISCRIMINATOR IS CASE, and these are why. A case-insensitive bracket rule fired on:
+     *
+     *   components/ui/select.tsx          data-[placeholder]:text-muted-foreground
+     *   lib/reports/generate-pdf-lib.ts   new Blob([copy], { type: 'application/pdf' })
+     *
+     * Neither is a marker. Real markers are shouted; lowercase brackets are code. Without this
+     * test the next person to "improve" the regex reintroduces both.
+     */
+    const root = fixture({
+      'components/ui/select.tsx':
+        `export const cls = "border-input data-[placeholder]:text-muted-foreground"
+`,
+      'lib/pdf.ts': `export const blob = new Blob([copy], { type: 'application/pdf' })
+`,
+    })
+    const { status, out } = runGate(root)
+    expect(status).toBe(0)
+    expect(out).toContain('OK')
+  })
+
+  it('does NOT fire on the sixty-five legitimate lines the marker-word sweep found', () => {
+    // Measured across shippable source: PLACEHOLDER 28 (all Tailwind/React props), DRAFT 24 (all
+    // `status === 'draft'`), NOT SIGNED 13 (all 'Not signed in'). Matching the WORD rather than
+    // the SHAPE would fire on every one of them, and a gate that cries wolf gets switched off.
+    const root = fixture({
+      'components/form.tsx': `export const a = 'placeholder:text-[#9B978E]'
+export const b = 'Search'
+`,
+      'app/api/doc.ts': `export const c = (status === 'draft')
+export const d = 'Only draft invoices can be edited'
+`,
+      'app/admin/page.tsx': `export const e = 'Not signed in'
+`,
+    })
+    const { status, out } = runGate(root)
+    expect(status).toBe(0)
+    expect(out).toContain('OK')
+  })
+
   it('PASSES once the string is signed off', () => {
     const root = fixture({
       'components/thing.tsx': `export const COPY = { label: 'Location' }\n`,

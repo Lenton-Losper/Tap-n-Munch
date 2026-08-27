@@ -19,16 +19,27 @@ import type { MeasurementUnitOption } from '@/lib/measurement-units/format'
 import type { StockItemOption } from '@/lib/stock/queries'
 
 /**
- * PLACEHOLDER COPY — not for release, and deliberately identical in meaning to the strings in
- * components/menu/menu-item-inventory-tab.tsx. Both surfaces edit the same field and must say
- * the same thing; whoever writes the real wording should write it once and share it.
+ * SIGNED COPY, 2026-08-27. Every string below is the owner's wording, verbatim.
+ *
+ * These rendered as `[PLACEHOLDER: ...]` on production to a live venue until today, because the
+ * placeholder gate matches PENDING COPY / COPY PENDING and had never heard of PLACEHOLDER -- a
+ * third spelling of the same convention.
+ *
+ * WHAT THE WARNINGS MUST KEEP. They read as questions, not accusations -- each is a heuristic, the
+ * merchant may well be right, and none of them stops a save. TWO EXCEPTIONS TO THAT, both ruled
+ * deliberately:
+ *   exceeds_on_hand      is blunt on purpose. It is the Mingle nine caught at entry -- a delivery
+ *                        count typed into a per-sale field, where one sale ate the whole delivery.
+ *                        It states a consequence rather than asking a question.
+ *   one_to_one_not_single names the 25ml tot explicitly, so a bar manager recognises their own
+ *                        case in the sentence instead of wondering whether they have erred.
  */
-const QUANTITY_FIELD_LABEL_PLACEHOLDER = 'Quantity [PLACEHOLDER: say "per one sold"]'
+const QUANTITY_FIELD_LABEL = 'Quantity used per single sale'
 
-const QUANTITY_WARNING_PLACEHOLDER: Record<RecipeQuantityWarningCode, string> = {
-  equals_on_hand: '[PLACEHOLDER: quantity equals the amount on hand — per-sale amount intended?]',
-  exceeds_on_hand: '[PLACEHOLDER: quantity is more than the amount on hand — first sale goes negative]',
-  one_to_one_not_single: '[PLACEHOLDER: ingredient is the item itself — expected 1 per sale?]',
+const QUANTITY_WARNING_COPY: Record<RecipeQuantityWarningCode, string> = {
+  equals_on_hand: 'this is exactly what you have in stock. did you mean how much one sale uses? as entered, selling one would take the whole lot.',
+  exceeds_on_hand: 'this is more than you have in stock. as entered, the first sale takes the balance below zero.',
+  one_to_one_not_single: 'this ingredient is the same item being sold, so one sale would normally use 1. that is fine if the stock item is counted in smaller pieces - a 25ml tot from a 750ml bottle, for example.',
 }
 
 type IngredientRow = {
@@ -237,9 +248,9 @@ export function RecipeEditorForm({
                 label="Stock item"
               />
               <div className="space-y-1.5">
-                {/* PLACEHOLDER LABEL — must convey that this number is the amount consumed by
+                {/* Signed 2026-08-27. It must keep saying that this number is what ONE sale uses, by
                     selling ONE of this menu item, not how many are in stock. */}
-                <Label htmlFor={`quantity-${row.key}`}>{QUANTITY_FIELD_LABEL_PLACEHOLDER}</Label>
+                <Label htmlFor={`quantity-${row.key}`}>{QUANTITY_FIELD_LABEL}</Label>
                 <Input
                   id={`quantity-${row.key}`}
                   type="number"
@@ -261,7 +272,7 @@ export function RecipeEditorForm({
                     role="status"
                     className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800"
                   >
-                    {QUANTITY_WARNING_PLACEHOLDER[
+                    {QUANTITY_WARNING_COPY[
                       quantityWarningByStockItem.get(row.stockItemId)!.code
                     ]}
                   </p>
