@@ -45,6 +45,7 @@ import {
   preselectFor,
   showsSkipOnly,
 } from '../lib/cashAttributionPicker';
+import {selectCashSettleableOrders} from '../lib/cashSettlement';
 import {classifyFailureReport} from '../lib/paymentReportOutcome';
 import {
   SETTLE_ORDER_ALREADY_PAID,
@@ -430,13 +431,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
     attribution?: {staffUserId: string; authorizationTokenId: string},
   ) => {
     // Server-driven: only orders the server says are cash-settleable, and the amount is
-    // derived from that same set so the two can never disagree.
-    const eligible = orders.filter(
-      order =>
-        requestedOrderIds.includes(order.id) && order.can_settle_cash === true,
+    // derived from that same set so the two can never disagree. The rule lives in
+    // lib/cashSettlement so the suite named after it tests this and not a copy (#148 sweep).
+    const {orderIds, amount} = selectCashSettleableOrders(
+      orders,
+      requestedOrderIds,
     );
-    const orderIds = eligible.map(order => order.id);
-    const amount = eligible.reduce((sum, order) => sum + order.total, 0);
 
     if (orderIds.length === 0 || amount <= 0) {
       Alert.alert(

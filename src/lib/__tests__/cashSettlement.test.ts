@@ -11,6 +11,7 @@ import {
   formatNadAmount,
   staffMessageForSettleFailure,
 } from '../staffApiErrors';
+import {selectCashSettleableOrders} from '../cashSettlement';
 
 type OrderLike = {
   id: string;
@@ -20,16 +21,14 @@ type OrderLike = {
   card_payment_in_flight?: boolean;
 };
 
-/** Mirrors TableDetailScreen's selection: server flag only, strictly true. */
-function selectCashSettleable(orders: OrderLike[], requested: string[]) {
-  const eligible = orders.filter(
-    o => requested.includes(o.id) && o.can_settle_cash === true,
-  );
-  return {
-    orderIds: eligible.map(o => o.id),
-    amount: eligible.reduce((sum, o) => sum + o.total, 0),
-  };
-}
+/**
+ * THIS USED TO BE A LOCAL COPY, commented "Mirrors TableDetailScreen's selection". Four assertions
+ * ran against it while the real logic sat inline in runCashSettle, so breaking the screen could not
+ * fail any of them — it proved only that the copy worked. The rule now lives in lib/cashSettlement
+ * and the screen calls it; this alias just keeps the assertions below readable.
+ */
+const selectCashSettleable = (orders: OrderLike[], requested: string[]) =>
+  selectCashSettleableOrders(orders, requested);
 
 describe('cash settle error copy', () => {
   it('tells staff what to do when a card payment is in flight', () => {
