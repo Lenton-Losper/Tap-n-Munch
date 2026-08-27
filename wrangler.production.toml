@@ -36,3 +36,19 @@ crons = ["*/2 * * * *"]
 [[kv_namespaces]]
 binding = "NEXT_CACHE_WORKERS_KV"
 id = "7366f83606dc41c2b59bedb2026ef10a"
+
+# #241 - rate limit for POST /api/terminals/activate, the one unauthenticated route that mints a
+# terminal JWT (that token carries orders:update, which gates settle / table close / mark-paid).
+#
+# Edge-level and NOT a database counter, for a reason that is not a preference: a FAILED activation
+# knows no restaurant, and both audit tables declare restaurant_id NOT NULL - so the attempt most
+# worth recording is the one they cannot hold. A row per attempt would also turn a guessing attack
+# into write amplification against our own database.
+#
+# namespace_id is an arbitrary but STABLE identifier for this limiter. Changing it silently resets
+# every counter, so treat it as fixed once deployed.
+[[unsafe.bindings]]
+name = "ACTIVATION_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }

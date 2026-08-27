@@ -158,6 +158,23 @@ afterEach(() => {
   errorLog.mockRestore()
 })
 
+/**
+ * The two writes the accept path makes on the failure route: the claim, then the release.
+ *
+ * Asserted field by field rather than with one toEqual, because #215 added `claimed_at` to the
+ * CLAIM and the reaper's whole existence depends on it being there — a claim with no recorded time
+ * is one no sweeper can age. The RELEASE stays an exact match: it must write status and nothing
+ * else, and above all not 'accepted'.
+ */
+function expectClaimThenRelease(writes: Record<string, unknown>[]) {
+  expect(writes).toHaveLength(2)
+  expect(writes[0].status).toBe('accepting')
+  // #215: without this the row is unreapable if the worker dies before the release lands.
+  expect(typeof writes[0].claimed_at).toBe('string')
+  expect(Number.isNaN(Date.parse(String(writes[0].claimed_at)))).toBe(false)
+  expect(writes[1]).toEqual({ status: 'waiting_review' })
+}
+
 describe('accept: releasing the accepting claim', () => {
   // CONTROL. Passes before and after the change. If this goes red the harness is wrong,
   // not the code: the ordinary failure path must keep behaving exactly as it did.
@@ -165,7 +182,7 @@ describe('accept: releasing the accepting claim', () => {
     const { res, body, writes } = await runAcceptWhereCreateOrderFails(false)
 
     expect(res.status).toBe(500)
-    expect(writes).toEqual([{ status: 'accepting' }, { status: 'waiting_review' }])
+    expectClaimThenRelease(writes)
     expect(body.error).toBe('stock check failed')
     // Nothing was stranded, so nothing should claim it was.
     expect(String(body.error)).not.toMatch(/stuck|stranded|accepting/i)
@@ -175,7 +192,7 @@ describe('accept: releasing the accepting claim', () => {
     const { writes } = await runAcceptWhereCreateOrderFails(true)
 
     // The release was attempted and did not take: the row is still 'accepting'.
-    expect(writes).toEqual([{ status: 'accepting' }, { status: 'waiting_review' }])
+    expectClaimThenRelease(writes)
 
     const logged = errorLog.mock.calls
       .map((args) => args.map((a: unknown) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))

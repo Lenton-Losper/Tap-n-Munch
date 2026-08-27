@@ -19,7 +19,10 @@ export async function createSupabaseRestaurant(data: {
       name: data.name,
       phone: data.phone,
       currency: data.currency || 'NAD',
-      payment_methods: ['cash'],
+      // #349: restaurants.payment_methods dropped. It was never read — the gate customers
+      // actually meet is restaurant_settings.payment_methods, and a venue with no settings row
+      // falls back to ['cash','card'] at each read site. Writing a second copy here only ever
+      // created a column that disagreed with the real one.
       subscription_status: 'trial',
       subscription_tier: 'starter',
     })

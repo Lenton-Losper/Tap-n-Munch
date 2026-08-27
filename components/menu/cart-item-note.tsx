@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { MessageSquarePlus } from 'lucide-react'
 import { MAX_INSTRUCTIONS_LENGTH } from '@/lib/orders/instruction-limits'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
 interface CartItemNoteProps {
   /** Cart row position — only used to keep label/textarea ids unique on the page. */
@@ -49,7 +50,7 @@ export function CartItemNote({ index, itemLabel, value, onChange, onCommit }: Ca
         className="mt-1 h-8 px-0 font-sans text-sm text-muted-foreground hover:bg-transparent hover:text-foreground"
       >
         <MessageSquarePlus className="mr-1 h-4 w-4 stroke-[1.5]" />
-        Add a note
+        {MENU_COPY.noteAddANote}
       </Button>
     )
   }
@@ -60,12 +61,12 @@ export function CartItemNote({ index, itemLabel, value, onChange, onCommit }: Ca
         htmlFor={`item-note-${index}`}
         className="mb-1 block font-sans text-sm text-muted-foreground"
       >
-        Note for this item
+        {MENU_COPY.noteForThisItem}
       </Label>
       <Textarea
         id={`item-note-${index}`}
         aria-label={`Note for ${itemLabel}`}
-        placeholder="e.g. no sugar"
+        placeholder={MENU_COPY.notePlaceholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         maxLength={MAX_INSTRUCTIONS_LENGTH}

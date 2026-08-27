@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type ComponentType } from 'react'
@@ -28,9 +27,22 @@ import {
   subscribeAlertArmedState,
   type AlertArmedState,
 } from '@/lib/dashboard/order-alert-sound'
+import {
+  registerFeedChannel,
+  reportFeedChannelStatus,
+  getFeedConnectionState,
+  subscribeFeedConnectionState,
+  startFeedFallback,
+  type FeedConnectionState,
+  type FeedRefetchReason,
+} from '@/lib/dashboard/realtime-connection'
+import { FEED_CONNECTION_COPY } from '@/lib/dashboard/feed-connection-copy'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import {
+  effectiveRequestPricing,
+  type OrderRequestPricingRow,
+} from '@/lib/orders/order-request-pricing'
 import {
   STALE_REQUEST_THRESHOLD_MS,
   isRequestOverdue,
@@ -54,7 +66,7 @@ import {
   TAB_TOTAL_ORDER_COLUMNS,
   computeTabFigures,
 } from '@/lib/tabs/tab-outstanding'
-import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList, Volume2, VolumeX, BellOff } from 'lucide-react'
+import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList, Volume2, VolumeX, BellOff, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
 import { useToast } from '@/hooks/use-toast'
@@ -232,7 +244,14 @@ function OrderRequestCard({
   onAccept,
   onDecline,
 }: {
-  request: OrderRequest & Record<string, any>
+  /**
+   * `OrderRequestPricingRow` is named here rather than left to the index signature. `OrderRequest`
+   * declares only id/restaurant_id/status by hand, and `OrderRequestPricingRow` is a weak type --
+   * every member optional -- so passing one to the other is TS2559, "no properties in common", even
+   * though the row carries them all at runtime. Declaring what this card actually needs is the
+   * honest form; a cast at the call site would silence the same thing while hiding it.
+   */
+  request: OrderRequest & OrderRequestPricingRow & Record<string, any>
   currency: string
   timeAgoLabel: string
   /** The dashboard's shared clock, so a lock going stale re-renders without a row changing. */
@@ -531,6 +550,61 @@ function OrderAlertIndicator() {
   )
 }
 
+/**
+ * WHETHER THE ORDER LIST IS ACTUALLY BEING FED. #350.
+ *
+ * Built to the standard `OrderAlertIndicator` above sets, because it is the same argument with more
+ * force: a dead socket loses the ORDERS, not just the noise announcing them. Before this, the
+ * dashboard's only visible motion during an outage was a 60-second clock tick advancing "2 minutes
+ * ago" to "3 minutes ago" on frozen data — the page looked alive while nothing was arriving.
+ *
+ * THREE STATES, and only one of them asks anything of a staff member. `reconnecting` is a blip
+ * resolving itself and must not read as an alarm, or staff learn to ignore the indicator; `offline`
+ * means the list is only as fresh as the slow poll and is the one state with an instruction.
+ *
+ * The state is SUBSCRIBED, not read once — see `subscribeFeedConnectionState`. Reading it at mount
+ * would produce an indicator that goes stale, which is the exact failure it exists to report.
+ *
+ * NOT A BUTTON. The sound indicator is clickable because clicking is what unlocks audio. There is
+ * no equivalent gesture here — the fallbacks already retry on their own — so this is a status
+ * readout with `role="status"`, and adding a "reconnect" button would only offer staff a control
+ * that does nothing the page is not already doing.
+ */
+export function FeedConnectionIndicator() {
+  const [state, setState] = useState<FeedConnectionState>('reconnecting')
+
+  useEffect(() => {
+    const sync = () => setState(getFeedConnectionState())
+    sync()
+    return subscribeFeedConnectionState(sync)
+  }, [])
+
+  const Icon = state === 'live' ? Wifi : state === 'reconnecting' ? RefreshCw : WifiOff
+  const label = FEED_CONNECTION_COPY[state]
+
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+      data-testid="feed-connection-indicator"
+      data-feed-state={state}
+      className={
+        'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium ' +
+        (state === 'live'
+          ? 'border-green-300 bg-green-50 text-green-700'
+          : state === 'reconnecting'
+            ? 'border-amber-300 bg-amber-50 text-amber-800'
+            : 'border-red-300 bg-red-50 text-red-700')
+      }
+    >
+      <Icon className={cn('h-4 w-4', state === 'reconnecting' && 'animate-spin')} />
+      <span>{label}</span>
+    </span>
+  )
+}
+
 export function OrdersDashboard() {
   const { user, restaurantId, restaurant } = useAuth()
   const { hasPermission, permissionsLoaded } = usePermissions()
@@ -649,10 +723,80 @@ export function OrdersDashboard() {
     return true
   }, [isRecentCardPendingOrder])
 
+  /**
+   * #350. THIS INTERVAL ONLY TICKS A CLOCK -- it does not refetch, and never did. That is precisely
+   * why a dropped socket was invisible: relative timestamps kept advancing on frozen data, so the
+   * page looked alive while nothing was arriving. The refetching is `refreshOpenOrders` below, on
+   * its own schedule. Do not merge the two: this one must stay cheap enough to run every minute
+   * whether or not anything is wrong.
+   */
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
     return () => window.clearInterval(id)
   }, [])
+
+  /**
+   * RE-READ THE OPEN ORDER LIST FROM THE DATABASE. #350.
+   *
+   * The single refetch path, shared by the header's manual refresh button, the reconnect handlers,
+   * the slow fallback poll and `visibilitychange`. It exists because a Realtime socket that comes
+   * back does NOT backfill what it missed -- resubscribing without refetching leaves the list
+   * permanently missing a window of orders while looking healthy.
+   *
+   * `showSpinner` is off by default ON PURPOSE. A background poll that flashed the full-screen
+   * spinner every minute would be its own defect, and one staff would learn to ignore.
+   */
+  const refreshOpenOrders = useCallback(
+    async ({ showSpinner = false }: { showSpinner?: boolean } = {}) => {
+      const scope = orderScopeRef.current
+      if (!dashboardRestaurantId || !scope) return
+      if (showSpinner) setLoading(true)
+      try {
+        const incoming = await getAllOpenRestaurantOrders(dashboardRestaurantId, scope)
+        const list = Array.isArray(incoming) ? (incoming as Order[]) : []
+        setAllOrders(list)
+        setPendingHostedCount(countPendingHostedOrders(list))
+      } catch (err) {
+        console.error(err)
+      } finally {
+        if (showSpinner) setLoading(false)
+      }
+    },
+    [dashboardRestaurantId],
+  )
+
+  /** The same, for the QR order requests channel. Requests are where a customer's order lands first. */
+  const refreshWaitingRequests = useCallback(async () => {
+    const scope = orderScopeRef.current
+    if (!dashboardRestaurantId || !scope) return
+    try {
+      const incoming = await getWaitingOrderRequests(dashboardRestaurantId, scope)
+      setOrderRequests(Array.isArray(incoming) ? incoming : [])
+    } catch (err) {
+      console.error(err)
+    }
+  }, [dashboardRestaurantId])
+
+  /**
+   * THE FALLBACKS. #350, items 3 and 4.
+   *
+   * A tab left open overnight is the NORMAL case for this screen and browsers let background tabs'
+   * sockets die quietly, so becoming visible is the highest-value moment to refetch. The slow poll
+   * runs whatever the reported connection state says, because a channel can report SUBSCRIBED and
+   * still deliver nothing -- the requirement is that this list cannot be indefinitely stale.
+   */
+  useEffect(() => {
+    // `user` as well as the id: the subscription effect refuses to run without one, and a poll
+    // that fired anyway would be an unauthenticated read this repo has ruled out (#264).
+    if (!user || !dashboardRestaurantId) return
+    return startFeedFallback({
+      refetch: (reason: FeedRefetchReason) => {
+        void refreshOpenOrders()
+        void refreshWaitingRequests()
+        if (reason !== 'poll') console.info('[orders] feed refetch:', reason)
+      },
+    })
+  }, [user, dashboardRestaurantId, refreshOpenOrders, refreshWaitingRequests])
 
   /* eslint-disable react-hooks/set-state-in-effect -- scope/tab hydration guards; React Query refactor out of scope */
   useEffect(() => {
@@ -663,6 +807,10 @@ export function OrdersDashboard() {
     if (restaurant?.id) {
       setOrderScope({
         restaurantId: String(restaurant.id),
+        // Both halves, as `resolveOrderRestaurantScope` sets them on the branch below: the same
+        // uuid twice. `firebaseRestaurantId` is deprecated and nothing in this file reads it, so
+        // this is the shape being made honest, not a behaviour change.
+        firebaseRestaurantId: String(restaurant.id),
       })
       return
     }
@@ -828,6 +976,10 @@ export function OrdersDashboard() {
     const restaurantUuid = orderScope?.restaurantId
     if (!restaurantUuid) return
 
+    // Registered BEFORE the channel is created: `.subscribe()`'s callback can land first, and
+    // registering afterwards would overwrite the status it just reported with `joining`.
+    const unregister = registerFeedChannel(`tabs:${restaurantUuid}`)
+
     const channel = supabase
       .channel(`tabs-dash-${restaurantUuid}`)
       .on(
@@ -838,12 +990,13 @@ export function OrdersDashboard() {
           table: 'tabs',
           filter: `restaurant_id=eq.${restaurantUuid}`,
         },
-        (payload) => {
+        (payload: { new?: Record<string, unknown> | null }) => {
           const row = payload.new as {
             id?: string
             status?: string
             payment_preference?: string | null
             members?: unknown
+            linked_unpaid_tab_id?: unknown
           }
           if (!row?.id) return
           setTabInfoById((prev) => ({
@@ -854,16 +1007,47 @@ export function OrdersDashboard() {
               members: Array.isArray(row.members)
                 ? row.members
                 : prev[String(row.id)]?.members ?? [],
+              /**
+               * CARRIED, not dropped. This entry REPLACES the one `loadTabs` built, and that one is
+               * the only place the unpaid-tab-elsewhere pointer (#211 follow-up) ever came from.
+               * Omitting it here erased the amber flag from every order on that tab the moment any
+               * `tabs` row changed -- including the change that matters most, the customer moving
+               * to `ready_to_pay`, which is exactly when staff need to know about the other tab.
+               * Nothing else refills it: `unpaidTabElsewhere` is resolved in `loadTabs`'s second
+               * pass and no realtime event re-runs it.
+               *
+               * Read the payload when it carries the column and fall back to the previous value
+               * when it does not, so this is right whether or not the publication ships every
+               * column. A stale pointer is harmless by construction: the badge only renders while
+               * `unpaidTabElsewhere[linkedId]` still shows that tab unpaid, which is how it clears
+               * on settle without anything writing to the settle path.
+               */
+              linked_unpaid_tab_id:
+                'linked_unpaid_tab_id' in row
+                  ? row.linked_unpaid_tab_id
+                    ? String(row.linked_unpaid_tab_id)
+                    : null
+                  : prev[String(row.id)]?.linked_unpaid_tab_id ?? null,
             },
           }))
         }
       )
-      .subscribe()
+      /**
+       * #350: this was a bare `.subscribe()` with no callback at all -- the channel could die and
+       * nothing anywhere would know. On a RETURN to SUBSCRIBED we refetch the orders rather than
+       * the tabs directly: the tab-info effect above keys on `allOrders`, so a fresh list re-reads
+       * every tab row as a consequence, and there is one refetch path instead of two.
+       */
+      .subscribe((status: string) => {
+        const { refetch } = reportFeedChannelStatus(`tabs:${restaurantUuid}`, status)
+        if (refetch) void refreshOpenOrders()
+      })
 
     return () => {
+      unregister()
       supabase.removeChannel(channel)
     }
-  }, [orderScope?.restaurantId])
+  }, [orderScope?.restaurantId, refreshOpenOrders])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   /* eslint-disable react-hooks/set-state-in-effect -- subscription lifecycle guards; React Query refactor out of scope */
@@ -884,6 +1068,7 @@ export function OrdersDashboard() {
 
     let cancelled = false
     let unsubscribe: (() => void) | undefined
+    let unregisterChannel: (() => void) | undefined
 
     const start = async () => {
       let scope = orderScopeRef.current
@@ -903,6 +1088,10 @@ export function OrdersDashboard() {
       subscribedRestaurantIdRef.current = dashboardRestaurantId
 
       setLoading(true)
+
+      // #350. Registered before the subscription exists, so the indicator reads `reconnecting`
+      // from the first paint rather than claiming `live` on a channel that has not joined yet.
+      unregisterChannel = registerFeedChannel(`orders:${dashboardRestaurantId}`)
 
       unsubscribe = subscribeRestaurantOrdersRealtime(
         dashboardRestaurantId,
@@ -938,12 +1127,28 @@ export function OrdersDashboard() {
               }
             }
           },
+          /**
+           * #350, ITEMS 1 AND 2. `subscribeRestaurantOrdersRealtime` has forwarded this status
+           * since it was written and NO CALLER EVER PASSED ONE -- CHANNEL_ERROR, TIMED_OUT and
+           * CLOSED went nowhere, so a dead socket froze this list in silence.
+           *
+           * REFETCHING ON RECONNECT IS THE LOAD-BEARING HALF, not the resubscribe. Postgres changes
+           * that happened while the socket was away are gone -- Realtime does not replay them. A
+           * dashboard that only resubscribed would sit there permanently missing a window of
+           * orders while every indicator on the page said it was fine.
+           */
+          onStatus: (status) => {
+            if (cancelled) return
+            const { refetch } = reportFeedChannelStatus(`orders:${dashboardRestaurantId}`, status)
+            if (refetch) void refreshOpenOrders()
+          },
         },
         scope
       )
 
       if (cancelled) {
         unsubscribe()
+        unregisterChannel?.()
         if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
           subscribedRestaurantIdRef.current = null
         }
@@ -957,15 +1162,17 @@ export function OrdersDashboard() {
       if (subscribedRestaurantIdRef.current === dashboardRestaurantId) {
         subscribedRestaurantIdRef.current = null
       }
+      unregisterChannel?.()
       unsubscribe?.()
     }
-  }, [user, dashboardRestaurantId])
+  }, [user, dashboardRestaurantId, refreshOpenOrders])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (!dashboardRestaurantId) return
     let cancelled = false
     let unsubscribe: (() => void) | undefined
+    let unregisterChannel: (() => void) | undefined
 
     const start = async () => {
       let scope = orderScopeRef.current
@@ -978,6 +1185,8 @@ export function OrdersDashboard() {
         }
       }
       if (cancelled || !scope) return
+
+      unregisterChannel = registerFeedChannel(`order_requests:${dashboardRestaurantId}`)
 
       unsubscribe = subscribeOrderRequestsRealtime(
         dashboardRestaurantId,
@@ -1004,6 +1213,15 @@ export function OrdersDashboard() {
               }
             }
           },
+          /** #350. Same reconnect rule as the orders channel: a returning socket backfills nothing. */
+          onStatus: (status) => {
+            if (cancelled) return
+            const { refetch } = reportFeedChannelStatus(
+              `order_requests:${dashboardRestaurantId}`,
+              status,
+            )
+            if (refetch) void refreshWaitingRequests()
+          },
         },
         scope,
       )
@@ -1013,9 +1231,10 @@ export function OrdersDashboard() {
 
     return () => {
       cancelled = true
+      unregisterChannel?.()
       unsubscribe?.()
     }
-  }, [dashboardRestaurantId])
+  }, [dashboardRestaurantId, refreshWaitingRequests])
 
   useEffect(() => {
     if (activeTab !== 'completed' || !dashboardRestaurantId) return
@@ -2017,25 +2236,16 @@ export function OrdersDashboard() {
             </Button>
             <h1 className="text-3xl font-bold">Live Orders</h1>
             <OrderAlertIndicator />
+            <FeedConnectionIndicator />
           </div>
           <Button
             variant="outline"
             size="icon"
             onClick={() => {
-              setLoading(true)
-              const scope = orderScopeRef.current
-              if (!dashboardRestaurantId || !scope) {
-                setLoading(false)
-                return
-              }
-              void getAllOpenRestaurantOrders(dashboardRestaurantId, scope)
-                .then((incoming) => {
-                  const list = Array.isArray(incoming) ? (incoming as Order[]) : []
-                  setAllOrders(list)
-                  setPendingHostedCount(countPendingHostedOrders(list))
-                })
-                .catch((err) => console.error(err))
-                .finally(() => setLoading(false))
+              // One refetch path (#350): the manual button, the reconnect handlers, the poll and
+              // `visibilitychange` all go through `refreshOpenOrders`. The spinner is this
+              // caller's alone -- a staff member who pressed a button is owed visible feedback.
+              void refreshOpenOrders({ showSpinner: true })
             }}
           >
             <RefreshCw className="h-5 w-5" />
@@ -2215,7 +2425,20 @@ export function OrdersDashboard() {
               const memberSessionId = String(
                 (order as Order & { member_session_id?: string | null }).member_session_id || ''
               ).trim()
-              const normalizedOrder = {
+              /**
+               * ANNOTATED `Order` ON PURPOSE — this is not decoration, it is 18 of this file's 22
+               * type errors.
+               *
+               * `Order` is `Record<string, any> & { id; status; ... }`. Spreading a value of that
+               * type into an object literal DROPS the index signature: TypeScript infers only the
+               * named members plus what the literal adds. So without this annotation every access
+               * to a column `Order` does not name by hand -- `order_number`, `channel`,
+               * `table_number`, `tab_id`, `kiosk_order_number`, `customer_name`,
+               * `order_instructions`, `table_session_id` -- is a TS2339, even though `order` itself
+               * accepts all of them one line above. Runtime is identical either way; the object
+               * really does carry those columns, which is why the screen renders them.
+               */
+              const normalizedOrder: Order = {
                 ...order,
                 items: Array.isArray(order.items) ? order.items : [],
                 customer: order.customer || {},

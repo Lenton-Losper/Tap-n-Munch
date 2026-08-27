@@ -1,3 +1,5 @@
+import { sanitizeVariantGroupsForWrite } from '@/lib/menu/variant-groups'
+
 /**
  * Round a price to whole cents on the way IN.
  *
@@ -74,8 +76,27 @@ export function buildMenuItemDbPayload(data: Record<string, any>): Record<string
   }
 
   if (data.variants !== undefined) payload.variants = data.variants
-  if (data.variant_groups !== undefined) payload.variant_groups = data.variant_groups
-  if (data.variantGroups !== undefined) payload.variant_groups = data.variantGroups
+
+  /**
+   * #229. Both spellings used to be written through verbatim, so `variant_groups` was the one
+   * jsonb column with no shape guarantee at all: app/api/admin/menu/items/route.ts spreads the
+   * raw request body straight into this builder (see the roundPrice note above, which makes the
+   * identical reachability argument for base_price), so ANY body could install a group the
+   * customer menu is structurally unable to render -- exactly what production's five FNB
+   * ChowNow rows are.
+   *
+   * Canonicalised HERE for the same reason the rounding is: it is the one place every write
+   * passes through, so the editor and the API cannot end up disagreeing about what a stored
+   * group looks like. sanitizeVariantGroupsForWrite fills in a missing `type` and reads an
+   * option's label as `label || name`; it never converts a `price_modifier` delta into a
+   * `price` absolute, so no stored row's PRICING changes as a result of this call.
+   */
+  if (data.variant_groups !== undefined) {
+    payload.variant_groups = sanitizeVariantGroupsForWrite(data.variant_groups).groups
+  }
+  if (data.variantGroups !== undefined) {
+    payload.variant_groups = sanitizeVariantGroupsForWrite(data.variantGroups).groups
+  }
 
   if (data.is_popular !== undefined) payload.is_popular = Boolean(data.is_popular)
 

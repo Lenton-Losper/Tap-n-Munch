@@ -16,6 +16,7 @@ import { PaymentBadge } from './payment-badge'
 import { InfoBanner } from './info-banner'
 import { OrderSummary } from './order-summary'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import { orderIdentityLabel, hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
 import {
   formatReceiptDate,
@@ -122,7 +123,7 @@ export function OrderConfirmationView({
               <CheckCircle2 className="h-9 w-9 text-[#16A34A]" strokeWidth={2} aria-hidden />
             </div>
             <h1 className="text-2xl sm:text-3xl font-serif font-bold text-[#111827]">
-              Order Placed!
+              {MENU_COPY.confirmOrderPlaced}
             </h1>
             {/*
               #296: NO INVENTED NUMBER.
@@ -188,13 +189,13 @@ export function OrderConfirmationView({
 
           {isCardManual && (
             <InfoBanner className="mt-4" variant="info">
-              Please have your card ready. Staff will bring the card machine to your table.
+              {MENU_COPY.confirmHaveYourCardReady}
             </InfoBanner>
           )}
 
           {isOtherChannel && (
             <InfoBanner className="mt-4" variant="info">
-              Staff will assist you with payment at your table.
+              {MENU_COPY.confirmStaffWillAssistAtTable}
             </InfoBanner>
           )}
 
@@ -202,14 +203,14 @@ export function OrderConfirmationView({
           {!isTabOrder && (
           <div className="mt-6 grid grid-cols-2 gap-4 rounded-xl border border-[#E5E7EB] bg-[#F8FAFC]/60 p-4">
             <div>
-              <p className="text-xs font-medium text-[#6B7280] mb-1.5">Payment Method</p>
+              <p className="text-xs font-medium text-[#6B7280] mb-1.5">{MENU_COPY.confirmPaymentMethod}</p>
               <div className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
                 <PaymentMethodIcon method={methodLabel} />
                 {methodLabel}
               </div>
             </div>
             <div className="text-right sm:text-left">
-              <p className="text-xs font-medium text-[#6B7280] mb-1.5">Payment Status</p>
+              <p className="text-xs font-medium text-[#6B7280] mb-1.5">{MENU_COPY.confirmPaymentStatus}</p>
               <PaymentBadge status={statusLabel} />
             </div>
           </div>
@@ -218,10 +219,10 @@ export function OrderConfirmationView({
           {!isTabOrder && showReadyToPayHint && statusLabel === 'Pending' && (
             <p className="mt-3 text-xs text-center text-[#6B7280] leading-relaxed">
               {methodLabel === 'Cash'
-                ? 'A waiter will bring your bill when your order is ready.'
+                ? MENU_COPY.confirmWaiterWillBringYourBill
                 : isTerminal
-                  ? "Tap 'Ready to Pay' below when you would like the card machine brought to your table."
-                  : 'Complete payment using the secure link if you have not already.'}
+                  ? MENU_COPY.confirmTapReadyToPay
+                  : MENU_COPY.confirmCompletePaymentSecureLink}
             </p>
           )}
 
@@ -229,7 +230,7 @@ export function OrderConfirmationView({
 
           {waiterNotified && (
             <InfoBanner className="mt-4" variant="notify">
-              Waiter has been notified — card machine coming soon.
+              {MENU_COPY.confirmWaiterNotifiedCardMachineComing}
             </InfoBanner>
           )}
 
@@ -250,10 +251,10 @@ export function OrderConfirmationView({
 
           <div className="mt-8 pt-6 text-center border-t border-dashed border-[#E5E7EB]">
             <p className="font-serif text-2xl text-[#111827] italic flex items-center justify-center gap-2">
-              Thank you!
+              {MENU_COPY.confirmThankYou}
               <Heart className="h-5 w-5 text-[#16A34A] fill-green-100" aria-hidden />
             </p>
-            <p className="text-sm text-[#6B7280] mt-1">We appreciate your support</p>
+            <p className="text-sm text-[#6B7280] mt-1">{MENU_COPY.confirmWeAppreciateYourSupport}</p>
           </div>
 
           {orderReadyBanner ? <div className="mt-4">{orderReadyBanner}</div> : null}
@@ -262,9 +263,9 @@ export function OrderConfirmationView({
         <footer className="text-center space-y-1 print:hidden pb-4">
           <p className="text-xs text-[#6B7280] inline-flex items-center justify-center gap-1.5">
             <Shield className="h-3.5 w-3.5" aria-hidden />
-            Secure • Fast • Contactless
+            {MENU_COPY.confirmSecureFastContactless}
           </p>
-          <p className="text-xs text-[#9CA3AF]">Powered by FlashTap</p>
+          <p className="text-xs text-[#9CA3AF]">{MENU_COPY.poweredByFlashtap}</p>
         </footer>
       </div>
     </div>

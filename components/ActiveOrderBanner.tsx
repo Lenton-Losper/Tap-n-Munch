@@ -17,6 +17,7 @@ import {
 } from '@/lib/orders/active-order-visibility'
 import { orderIdentityLabel } from '@/lib/orders/order-identity'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import { orderPlacedAtMs } from '@/lib/orders/active-order-visibility'
 
 /**
@@ -193,25 +194,25 @@ export function ActiveOrderBanner() {
     const p = String(paymentStatus || '').toLowerCase()
     const ch = String(channel || '').toLowerCase()
     if (p === 'pending' && s === 'pending' && ch === 'terminal') {
-      return { text: 'Order received — tap below when ready for card machine', pulse: true, tone: 'neutral' as const }
+      return { text: MENU_COPY.bannerOrderReceivedTapWhenReady, pulse: true, tone: 'neutral' as const }
     }
     if (p === 'pending' && s === 'pending') {
-      return { text: 'Order received - Awaiting payment', pulse: true, tone: 'neutral' as const }
+      return { text: MENU_COPY.bannerOrderReceivedAwaitingPayment, pulse: true, tone: 'neutral' as const }
     }
     if (p === 'pending' && s === 'ready_for_terminal') {
-      return { text: 'Waiter notified — card machine on the way', pulse: true, tone: 'preparing' as const }
+      return { text: MENU_COPY.bannerWaiterNotifiedCardMachineOnWay, pulse: true, tone: 'preparing' as const }
     }
     if (p === 'cash_pending' && s === 'pending') {
-      return { text: 'Order received - Pay at counter', pulse: true, tone: 'neutral' as const }
+      return { text: MENU_COPY.bannerOrderReceivedPayAtCounter, pulse: true, tone: 'neutral' as const }
     }
     if (p === 'paid' && s === 'accepted') {
-      return { text: 'Order accepted - Being prepared', pulse: true, tone: 'preparing' as const }
+      return { text: MENU_COPY.bannerOrderAcceptedBeingPrepared, pulse: true, tone: 'preparing' as const }
     }
     if (p === 'paid' && s === 'ready') {
-      return { text: 'Your order is ready for collection', pulse: false, tone: 'ready' as const }
+      return { text: MENU_COPY.bannerOrderReadyForCollection, pulse: false, tone: 'ready' as const }
     }
     if (p === 'paid' && s === 'completed') {
-      return { text: 'Payment confirmed - Thank you!', pulse: false, tone: 'completed' as const }
+      return { text: MENU_COPY.bannerPaymentConfirmedThankYou, pulse: false, tone: 'completed' as const }
     }
     // Statuses this banner only began showing once the eligibility list was widened. Without
     // these they reach the fallback below and read "Order in progress", which says nothing.
@@ -252,9 +253,9 @@ export function ActiveOrderBanner() {
       }
     }
     if (s === 'preparing') {
-      return { text: 'Order accepted - Being prepared', pulse: true, tone: 'preparing' as const }
+      return { text: MENU_COPY.bannerOrderAcceptedBeingPrepared, pulse: true, tone: 'preparing' as const }
     }
-    return { text: 'Order in progress', pulse: false, tone: 'neutral' as const }
+    return { text: MENU_COPY.bannerOrderInProgress, pulse: false, tone: 'neutral' as const }
   }
 
   const statusInfo = getStatusInfo(currentOrder.status, currentOrder.payment_status, payChannel)
@@ -326,7 +327,7 @@ export function ActiveOrderBanner() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs opacity-90">View Receipt →</span>
+            <span className="text-xs opacity-90">{MENU_COPY.bannerViewReceipt}</span>
           </div>
         </div>
         {showReadyToPayTerminal && restaurantId && (

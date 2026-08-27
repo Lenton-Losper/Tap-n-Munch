@@ -7,6 +7,10 @@ import {
   refreshTokenExpiresAt,
 } from '@/lib/terminals/refresh-token'
 import { signTerminalJwt } from '@/lib/terminals/terminal-jwt'
+import {
+  ACTIVATION_RATE_PERIOD_SECONDS,
+  checkActivationRateLimit,
+} from '@/lib/terminals/activation-rate-limit'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,6 +26,30 @@ function readBodyString(body: Record<string, unknown>, ...keys: string[]): strin
 
 export async function POST(request: Request) {
   try {
+    /**
+     * #241. BEFORE the body is read, so a flood costs us as little as possible per request.
+     *
+     * Fails OPEN when no binding is reachable -- local dev, jest, or a worker deployed before the
+     * config lands. A misconfigured binding must not brick terminal activation for every device:
+     * a venue that cannot activate a replacement terminal cannot trade, which is worse than the
+     * hole this closes. The `unenforced` flag is logged so "allowed" and "not asked" are
+     * distinguishable in the worker log rather than looking identical.
+     */
+    const rateLimit = await checkActivationRateLimit(request)
+    if (!rateLimit.allowed) {
+      console.warn('[terminals/activate] rate limited')
+      return NextResponse.json(
+        { error: 'Too many activation attempts. Wait a moment and try again.' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rateLimit.retryAfterSeconds || ACTIVATION_RATE_PERIOD_SECONDS) },
+        },
+      )
+    }
+    if (rateLimit.unenforced) {
+      console.warn('[terminals/activate] rate limiting is NOT in force -- no binding reachable')
+    }
+
     const body = (await request.json()) as Record<string, unknown>
     const code = normalizeActivationCode(String(body?.code || ''))
     const deviceId = readBodyString(body, 'deviceId', 'device_id')

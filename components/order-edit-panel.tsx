@@ -26,6 +26,7 @@ import {
 } from '@/lib/orders/edit-lock'
 import { editLeavesOrderEmpty } from '@/lib/orders/edit-emptiness'
 import { QR_REDESIGN_PENDING_COPY } from '@/lib/customer-copy/qr-redesign-copy'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import { MAX_LINE_QUANTITY } from '@/lib/orders/quantity-limits'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { useRouter } from 'next/navigation'
@@ -165,7 +166,7 @@ export function OrderEditPanel({
       // the store is read here and not cleared.
       setNotes(String(acquired.orderInstructions ?? ''))
     } catch (err) {
-      setError(err instanceof OrderEditRefused ? err.message : 'Could not open this order for editing')
+      setError(err instanceof OrderEditRefused ? err.message : MENU_COPY.editCouldNotOpenOrder)
     } finally {
       setBusy(false)
     }
@@ -396,7 +397,7 @@ export function OrderEditPanel({
         grantRef.current = null
         setGrant(null)
       } else {
-        setError('Could not save your changes')
+        setError(MENU_COPY.editCouldNotSaveChanges)
       }
     } finally {
       setBusy(false)
@@ -585,7 +586,7 @@ export function OrderEditPanel({
       </Button>
 
       <label className="block text-sm">
-        <span className="mb-1 block font-medium text-[#374151]">Notes for the kitchen</span>
+        <span className="mb-1 block font-medium text-[#374151]">{MENU_COPY.editNotesForTheKitchen}</span>
         <textarea
           className="w-full rounded-md border border-[#E5E7EB] p-2 text-sm"
           rows={3}
@@ -608,7 +609,7 @@ export function OrderEditPanel({
           onClick={() => void save()}
           disabled={busy || wouldBeEmpty || (!itemsChanged && !notesChanged)}
         >
-          Save changes
+          {MENU_COPY.editSaveChanges}
         </Button>
       </div>
     </div>

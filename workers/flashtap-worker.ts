@@ -35,12 +35,21 @@ export default {
     // immediately unless a schedule's local send_time has been reached, so per-restaurant
     // send times cost nothing extra and a missed tick catches up on the next one.
     // negative-stock-balances (#146) and reap-abandoned-tabs (#333) self-limit the same way, to
-    // the first tick of each hour.
+    // the first tick of each hour. reap-stranded-claims (#215) deliberately does NOT: a claim
+    // stuck in `accepting` blocks settle and close since #120, so it is a till a venue cannot
+    // use — its threshold does the waiting instead of the tick.
     const cronRoutes = [
       'cleanup-stale-orders',
       'send-scheduled-reports',
       'negative-stock-balances',
       'reap-abandoned-tabs',
+      'reap-stranded-claims',
+      // #156. Detection only, self-limited to the first tick of each hour. It asks the one
+      // question the device cannot answer about itself: the server knows it marked an order paid
+      // by card, so it can see whether the ledger row that should have followed ever arrived.
+      // The ledger died on 2026-07-28 and nothing noticed for a month because the only trace was
+      // a console.error on a terminal in a restaurant.
+      'card-payments-without-sale-row',
     ] as const
 
     const requestFor = (route: string) =>

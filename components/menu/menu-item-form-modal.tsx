@@ -19,6 +19,7 @@ import {
 } from '@/components/menu/menu-item-inventory-tab'
 import { useToast } from '@/hooks/use-toast'
 import { menuItemImageDisplayUrl } from '@/lib/menu-item-image'
+import { sanitizeVariantGroupsForWrite } from '@/lib/menu/variant-groups'
 import {
   validateMenuItemDraft,
   type ExistingMenuItem,
@@ -62,6 +63,19 @@ type ItemFormState = {
   is_popular: boolean
   status: 'available' | 'out_of_stock' | 'hidden'
   tax_rate_id: string
+}
+
+/**
+ * #229. A stored option can spell its label `name` rather than `label` -- every production
+ * `variant_groups` option does. Reading `label` alone rendered three EMPTY text boxes under a
+ * group named "Size", so the one screen a staff member would use to fix the row was also the
+ * screen hiding what was in it. `getVariantGroups`/`sanitizeVariantGroupsForWrite` already read
+ * `label || name`; this is the editor agreeing with them.
+ */
+function variantOptionLabelForEditor(option: string | { label: string; price: number }): string {
+  if (typeof option === 'string') return option
+  const raw = option as { label?: unknown; name?: unknown }
+  return String(raw.label ?? raw.name ?? '')
 }
 
 function emptyItemForm(subCategoryId = '', categoryId = ''): ItemFormState {
@@ -328,37 +342,22 @@ function MenuItemFormContent({
     [itemForm.variants],
   )
 
-  const sanitizedVariantGroups = useMemo(
-    () =>
-      itemForm.variantGroups
-        .map((group) => {
-          const cleanedName = String(group.name || '').trim()
-          const cleanedOptions =
-            group.type === 'price'
-              ? group.options
-                  .map((opt) => {
-                    if (typeof opt === 'string') return null
-                    return {
-                      label: String(opt.label || '').trim(),
-                      price: Number(opt.price),
-                    }
-                  })
-                  .filter((opt) => opt && opt.label && Number.isFinite(opt.price) && opt.price > 0)
-              : group.options
-                  .map((opt) =>
-                    typeof opt === 'string' ? String(opt).trim() : String(opt?.label || '').trim(),
-                  )
-                  .filter(Boolean)
-          return {
-            name: cleanedName,
-            required: Boolean(group.required),
-            type: group.type,
-            options: cleanedOptions,
-          }
-        })
-        .filter((group) => group.name && group.options.length > 0),
+  /**
+   * #229. This used to be a private copy of the write rules, and it did two things wrong that
+   * the shared version does not: it read an option label as `label` only (a stored option has
+   * `name`), and it DISCARDED any group it could not clean. On an item carrying a legacy group
+   * beside a good one, saving an unrelated field therefore wrote back only the good one and
+   * destroyed the other with nothing on screen.
+   *
+   * Now the same function the API funnel uses (lib/menu-item-db-payload.ts). Two copies of
+   * these rules would be two answers to "what is a stored variant group", which is the reason
+   * the read rules were lifted into lib/menu/variant-groups.ts in the first place.
+   */
+  const variantGroupWrite = useMemo(
+    () => sanitizeVariantGroupsForWrite(itemForm.variantGroups),
     [itemForm.variantGroups],
   )
+  const sanitizedVariantGroups = variantGroupWrite.groups
 
   const inventoryIngredients = useMemo(
     () =>
@@ -903,6 +902,19 @@ function MenuItemFormContent({
                   Add Group
                 </Button>
               </div>
+              {variantGroupWrite.unconvertible.length > 0 && (
+                /*
+                 * PLACEHOLDER COPY -- NOT SIGNED OFF. Must convey, to a staff member: this group
+                 * is stored but customers are not being shown it, because its option prices are
+                 * written as an amount to ADD to the base price and this menu needs the full
+                 * price of each option; nothing has been lost and nothing will be changed for
+                 * the customer until someone types those prices in. It must NOT suggest the
+                 * system can work them out, and it must NOT read as a save failure.
+                 */
+                <p className="text-xs text-amber-600" data-testid="variant-group-unconvertible">
+                  {`${variantGroupWrite.unconvertible.join(', ')}: this group is saved but customers aren't seeing it. its options are priced as an amount to add, not the full price. type the full price for each option to show it. Nothing is lost and nothing changes for the customer until you do.`}
+                </p>
+              )}
               {itemForm.variantGroups.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No groups configured.</p>
               ) : (
@@ -960,7 +972,7 @@ function MenuItemFormContent({
                                 <Input
                                   className="col-span-7"
                                   placeholder="Option label"
-                                  value={typeof opt === 'string' ? opt : opt.label}
+                                  value={variantOptionLabelForEditor(opt)}
                                   onChange={(event) =>
                                     handleUpdateVariantGroupOption(
                                       groupIndex,
@@ -996,7 +1008,7 @@ function MenuItemFormContent({
                               <Input
                                 className="col-span-11"
                                 placeholder="Option value"
-                                value={typeof opt === 'string' ? opt : opt.label}
+                                value={variantOptionLabelForEditor(opt)}
                                 onChange={(event) =>
                                   handleUpdateVariantGroupOption(
                                     groupIndex,

@@ -155,6 +155,17 @@ jobs:
       # only fail on a newly committed migration.
       - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
         run: npx tsx scripts/check-migration-inline-check.ts
+      # #280, which FIRED FOR REAL on 2026-08-26 between two unpushed branches and would have
+      # passed every gate here. Two agents authored migrations the same evening from the same base
+      # and both drew 20260826160000. check-migration-drift.mjs identifies a migration by its
+      # numeric prefix alone, so the ledger would have recorded that version once, gone green, and
+      # left ONE OF THE TWO permanently unapplied with nothing reporting it.
+      #
+      # Static, no credentials, no database. Self-tests its own detector before reporting, because
+      # a collision checker that quietly stopped detecting exits 0 and looks exactly like a clean
+      # tree -- the same false negative as the guard it backstops.
+      - name: Every migration version maps to exactly one file
+        run: node scripts/check-migration-version-unique.mjs
       # A `PENDING COPY` marker reached production and the owner of a multi-location account read
       # `PENDING COPY — Location` above the switcher on all twenty staff screens (2026-08-21).
       #
@@ -187,6 +198,16 @@ jobs:
       # only the bundler noticed, by which point it was a failed deploy on every push.
       - name: Named imports in @ts-nocheck files resolve
         run: node scripts/check-nocheck-imports-resolve.mjs
+      # The other half of the same hole, and the half that has now taken production down. On
+      # 2026-08-26 a real call in orders-dashboard.tsx was replaced with `noFallbackAtAll(` and
+      # tsc, the import checker above, and all 211 jest suites stayed GREEN -- the pragma hides the
+      # file, the name is not an import, and an unbound name is `undefined` rather than a throw.
+      # This strips the pragma in memory and asks the real compiler which names resolve to nothing.
+      # No allowlist: the compiler's own scope resolution handles dynamic dispatch, object methods,
+      # shadowed locals and JSX names for free. It self-tests two-sided before reporting, driving
+      # the same function it checks with.
+      - name: Names referenced in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-names-resolve.mjs
       - name: Customer copy under app/menu is sourced from lib/customer-copy
         run: node scripts/check-menu-copy-sourced.mjs
       # Deliberately NOT staging.yml's "Unit and schema tests" step. That step passes the

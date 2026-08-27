@@ -1,0 +1,61 @@
+-- #349 — DROP restaurants.payment_methods, a dead second copy of the real gate.
+--
+-- RENUMBERED 20260826160000 -> 20260826170000 on 2026-08-26, before either branch merged.
+-- #215's order_requests_claimed_at migration was authored the same evening on another branch
+-- and drew the SAME version prefix. That is #280 firing for real: the drift guard identifies a
+-- migration by its numeric prefix alone, so the ledger would have recorded 20260826160000 once,
+-- gone green, and left ONE OF THE TWO PERMANENTLY UNAPPLIED with nothing reporting it.
+-- Renaming an unpushed file costs nothing; the same discovery after merge means working out
+-- which of two identically-numbered migrations actually ran against production.
+--
+-- WHY A DROP RATHER THAN A COMMENT. This column has no reader anywhere in the application. It is
+-- still populated, still queryable, and disagrees with the column that actually governs behaviour
+-- at 10 of 11 venues — at FNB ChowNow the two are exact opposites (dead column says {cash}, the
+-- real gate says {card}, i.e. card ONLY). A column that answers plausibly and wrongly is worse than
+-- one that is absent: an absent column raises an error, a wrong one produces a confident conclusion.
+--
+-- It has already cost something. On 2026-08-26, reading this column during an investigation of why
+-- `tabs.payment_preference` had never once been 'cash' produced an apparent gate bypass on the money
+-- path — a customer recording a 'card' preference at what looked like a cash-only venue. There was
+-- no bypass. Digi Cofee is {cash,card} in the table that counts. The wrong column manufactured an
+-- urgent, plausible, entirely fictional defect on the payment path in the space of minutes.
+--
+-- Same ruling as #338's last_seen_at: delete it, do not document it.
+--
+-- THE REAL GATE IS `restaurant_settings.payment_methods`, read in four places:
+--   app/api/tabs/[tabId]/ready-to-pay/route.ts   (403s a disallowed preference)
+--   app/api/orders/route.ts                      (order submission allowlist)
+--   app/api/terminal/me/route.ts                 (terminal config)
+--   contexts/restaurant-context.tsx              (derives canPayCash / canPayCard — which buttons render)
+-- and exposed to anon through the `public_restaurant_settings` VIEW, which selects FROM
+-- restaurant_settings and is therefore unaffected by this drop (confirmed against pg_depend: no view
+-- depends on restaurants.payment_methods).
+--
+-- VENUES WITH NO restaurant_settings ROW are governed by a hardcoded ARRAY['cash','card'] fallback at
+-- each of the four sites above — never by this column. Six such venues exist on production and all
+-- six have zero orders and zero tabs, so the fallback has never decided anything for a real sale.
+--
+-- PRE-DROP AUDIT, 2026-08-26 (production):
+--   readers in app/lib/components/contexts ....... none
+--   readers in __tests__ ......................... none (all 12 occurrences target restaurant_settings)
+--   readers in scripts/ and probes ............... none (verify-effect-proofs.mjs selects s.payment_methods
+--                                                  across a join; its JS `r.payment_methods` is that
+--                                                  aliased value, not this column)
+--   views depending on it ........................ none (pg_depend)
+--   CHECK constraints naming it .................. none
+--   writers ...................................... ONE: createSupabaseRestaurant() in
+--                                                  lib/supabase/restaurants.ts, which has zero callers
+--                                                  anywhere in the repo including tests. The insert's
+--                                                  `payment_methods: ['cash']` line is removed in the
+--                                                  same change as this migration, so the drop cannot
+--                                                  break a future caller.
+--
+-- NOT DROPPED, AND DELIBERATELY SO: `restaurants.card_payments_available` shares this column's shape
+-- but is LIVE — app/menu/[restaurantId]/cart/page.tsx:87 reads it to decide whether the card button
+-- renders at all, and it carries a generated default derived from the Finatic merchant/store fields.
+-- It was named as a candidate when #349 was filed; that was wrong, and it stays.
+--
+-- IRREVERSIBLE. The values are recoverable only from a backup. They are worth nothing: every row is
+-- either the column default ARRAY['cash'] or a stale hand edit, and no code has consulted them.
+
+ALTER TABLE public.restaurants DROP COLUMN IF EXISTS payment_methods;

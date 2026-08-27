@@ -11,6 +11,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { X, Plus, Minus, ShoppingCart } from 'lucide-react'
 import { CartItem } from '@/contexts/cart-context'
 import { FoodItemImage } from '@/components/menu/food-item-image'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 import {
   clampLineQuantity,
   MAX_LINE_QUANTITY,
@@ -369,11 +370,11 @@ export function ItemDetailModal({
           {item.allow_special_instructions && (
             <div>
               <Label htmlFor="instructions" className="text-base font-semibold mb-3 block font-sans text-foreground">
-                Special Instructions
+                {MENU_COPY.itemSpecialInstructions}
               </Label>
               <Textarea
                 id="instructions"
-                placeholder="Any special requests? (e.g., no onions, extra sauce)"
+                placeholder={MENU_COPY.itemSpecialInstructionsPlaceholder}
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
                 maxLength={MAX_INSTRUCTIONS_LENGTH}
@@ -408,7 +409,7 @@ export function ItemDetailModal({
                 aria-label={
                   quantity >= MAX_LINE_QUANTITY
                     ? `Maximum ${MAX_LINE_QUANTITY} per item`
-                    : 'Increase quantity'
+                    : MENU_COPY.itemIncreaseQuantity
                 }
                 className="h-11 w-11 border-border"
               >
@@ -438,7 +439,7 @@ export function ItemDetailModal({
             size="lg"
           >
             <ShoppingCart className="w-5 h-5 mr-2 stroke-[1.5]" />
-            Add to Cart
+            {MENU_COPY.itemAddToCart}
           </Button>
         </div>
       </div>

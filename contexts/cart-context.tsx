@@ -5,6 +5,7 @@ import { getCurrentSession } from '@/lib/session'
 import { findMergeableLineIndex } from '@/lib/cart/cart-line-identity'
 import { capCartLine } from '@/lib/cart/cart-lines'
 import { round2 } from '@/lib/tax-rates/apply-tax'
+import { MENU_INTERNAL_MESSAGES } from '@/lib/customer-copy/menu-copy'
 
 export interface CartItem {
   menu_item_id: string
@@ -162,7 +163,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 export function useCart() {
   const context = useContext(CartContext)
   if (context === undefined) {
-    throw new Error('useCart must be used within a CartProvider')
+    throw new Error(MENU_INTERNAL_MESSAGES.useCartOutsideProvider)
   }
   return context
 }

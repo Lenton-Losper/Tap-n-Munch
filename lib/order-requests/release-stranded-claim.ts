@@ -38,7 +38,27 @@ export type ReleaseActor = {
   restaurantId: string
   /** For the audit row: which terminal, or which staff user, asked. */
   actor: Record<string, unknown>
+  /**
+   * #215 — the reaper's extra precondition: only release a claim taken BEFORE this instant.
+   *
+   * Supplied as an ISO timestamp and applied to the conditional UPDATE, not just to the read, for
+   * the same reason `.eq('status','accepting')` is: it is the DATABASE that must decide, at write
+   * time, that this claim is old. A candidate query cannot be trusted with that — a worker whose
+   * accept is still in flight would otherwise have its claim taken away by a sweeper that selected
+   * the row a moment earlier.
+   *
+   * Omitted by the two STAFF surfaces. A human looking at a stuck table has judgement a clock does
+   * not, and making them wait out a threshold is exactly the "table you cannot close" this and
+   * #120 exist to prevent.
+   */
+  staleBefore?: string
+  /** Overrides the audit row's `reason`. Defaults to the manual escape hatch's wording. */
+  reason?: string
 }
+
+/** The audit `reason` written when a human presses the button. */
+const MANUAL_RELEASE_REASON =
+  'staff released a stranded accept claim (#120 residual, manual escape hatch)'
 
 /**
  * Releases one stranded claim, or explains precisely why it will not.
@@ -50,7 +70,7 @@ export type ReleaseActor = {
 export async function releaseStrandedClaim(
   supabase: SupabaseClient,
   requestId: string,
-  { restaurantId, actor }: ReleaseActor,
+  { restaurantId, actor, staleBefore, reason }: ReleaseActor,
 ): Promise<ReleaseOutcome> {
   const normalizedId = String(requestId ?? '').trim()
   if (!normalizedId) {
@@ -63,7 +83,7 @@ export async function releaseStrandedClaim(
    */
   const { data: row, error: loadError } = await supabase
     .from('order_requests')
-    .select('id, restaurant_id, tab_id, table_id, status')
+    .select('id, restaurant_id, tab_id, table_id, status, claimed_at, placed_at')
     .eq('id', normalizedId)
     .maybeSingle()
 
@@ -92,15 +112,43 @@ export async function releaseStrandedClaim(
   }
 
   /**
+   * #215 — read-side age check, so an automated caller gets a reason it can count rather than the
+   * opaque ALREADY_RESOLVED the conditional update would otherwise produce. It is NOT the guard;
+   * the `.lt` on the UPDATE below is. This exists to make the refusal legible, and it deliberately
+   * refuses a NULL `claimed_at` too: an unknown age is not a stale one.
+   */
+  if (staleBefore) {
+    const claimedAt = row.claimed_at ? Date.parse(String(row.claimed_at)) : NaN
+    if (Number.isNaN(claimedAt) || claimedAt >= Date.parse(staleBefore)) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'CLAIM_NOT_STALE',
+        currentStatus: STRANDED_CLAIM_STATUS,
+        error: 'This claim is not old enough to be released automatically.',
+      }
+    }
+  }
+
+  /**
    * THE CONDITIONAL CLAIM, and it is the whole safety of this operation. `.eq('status','accepting')`
    * is evaluated by the database at write time, so a worker that finishes its own release a
    * millisecond earlier wins and this matches zero rows.
    */
-  const { data: released, error: updateError } = await supabase
+  let writer = supabase
     .from('order_requests')
     .update({ status: RELEASED_TO_STATUS })
     .eq('id', normalizedId)
     .eq('status', STRANDED_CLAIM_STATUS)
+
+  /**
+   * #215 — the age predicate goes in the WRITE, alongside the status predicate, never in the
+   * caller. `claimed_at` is NULL-safe by construction: `.lt` is false for NULL, and a row with no
+   * claim time is one whose age is unknown, which must never be reaped.
+   */
+  if (staleBefore) writer = writer.lt('claimed_at', staleBefore)
+
+  const { data: released, error: updateError } = await writer
     .select('id, status')
     .maybeSingle()
 
@@ -138,7 +186,11 @@ export async function releaseStrandedClaim(
         to: RELEASED_TO_STATUS,
         tabId: row.tab_id ?? null,
         tableId: row.table_id ?? null,
-        reason: 'staff released a stranded accept claim (#120 residual, manual escape hatch)',
+        claimedAt: row.claimed_at ?? null,
+        // The customer's submission time, recorded so the TRUE age of the round is readable even
+        // though claimed_at is what the decision was made on. See #215's migration header.
+        placedAt: row.placed_at ?? null,
+        reason: reason || MANUAL_RELEASE_REASON,
       },
     })
   } catch (auditError) {

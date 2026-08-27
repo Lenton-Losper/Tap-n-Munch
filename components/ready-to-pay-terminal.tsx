@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
 
-export const TERMINAL_NOTIFIED_MESSAGE =
-  'Waiter has been notified — the card machine is on its way'
+export const TERMINAL_NOTIFIED_MESSAGE = MENU_COPY.readyToPayWaiterNotifiedCardMachine
 
 type Props = {
   restaurantId: string
@@ -61,7 +61,7 @@ export function ReadyToPayTerminalButton({
         type="button"
         className="w-full py-4 px-6 text-base font-semibold text-white text-center bg-[#16A34A] hover:bg-green-700 rounded-xl whitespace-normal h-auto min-h-[3rem]"
         disabled={!sessionId || loading}
-        title={!sessionId ? 'Session not found — open this page from the same device you ordered on.' : undefined}
+        title={!sessionId ? MENU_COPY.readyToPaySessionNotFound : undefined}
         onClick={async () => {
           if (!sessionId || loading || alreadyNotified || notified) {
             if (alreadyNotified || notified) onNotified?.()
@@ -77,17 +77,17 @@ export function ReadyToPayTerminalButton({
             })
             const data = await res.json().catch(() => ({}))
             if (!res.ok) {
-              throw new Error(typeof data?.error === 'string' ? data.error : 'Request failed')
+              throw new Error(typeof data?.error === 'string' ? data.error : MENU_COPY.readyToPayRequestFailed)
             }
             setUserNotified(true)
             onNotified?.()
           } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : 'Something went wrong')
+            setError(e instanceof Error ? e.message : MENU_COPY.readyToPaySomethingWentWrong)
             setLoading(false)
           }
         }}
       >
-        {loading ? 'Sending…' : 'Ready to Pay'}
+        {loading ? 'Sending…' : MENU_COPY.readyToPayButton}
       </Button>
     </div>
   )

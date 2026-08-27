@@ -28,7 +28,13 @@ function tsxFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe('every MENU_COPY key referenced by a menu screen exists', () => {
-  const files = tsxFiles('app/menu')
+  /**
+   * #334 ROUND TWO widened the gate to the customer-reachable half of components/ and contexts/,
+   * so the references that must resolve now live there too — and those files are exactly the ones
+   * where a mistyped key is invisible: several carry `@ts-nocheck`, and React renders `undefined`
+   * as nothing at all.
+   */
+  const files = [...tsxFiles('app/menu'), ...tsxFiles('components'), ...tsxFiles('contexts')]
   const references: { file: string; key: string }[] = []
   for (const file of files) {
     const source = readFileSync(file, 'utf8')
@@ -59,7 +65,9 @@ describe('every MENU_COPY key referenced by a menu screen exists', () => {
     // A stale key is wording nobody can see, still going through sign-off as if it shipped. The
     // seventeen keys signed off before the move are rendered by components outside app/menu, so
     // they are checked against the whole app rather than the menu screens alone.
-    const everywhere = [...tsxFiles('app'), ...tsxFiles('components'), ...tsxFiles('lib')]
+    // `contexts` joined this list with round two: tab-context renders five keys and nothing else
+    // does, so without it every one of them reads as stale.
+    const everywhere = [...tsxFiles('app'), ...tsxFiles('components'), ...tsxFiles('contexts'), ...tsxFiles('lib')]
       .map((f) => readFileSync(f, 'utf8'))
       .join('\n')
     const unused = Object.keys(MENU_COPY).filter((key) => !everywhere.includes(`MENU_COPY.${key}`))
