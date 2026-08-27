@@ -29,6 +29,56 @@ function emptyRow(): LineRow {
   return { key: crypto.randomUUID(), organizationStockItemId: '', quantity: '' }
 }
 
+/**
+ * THE DESTINATION PICKER IS EMPTY BECAUSE RLS SCOPED IT, NOT BECAUSE THE ORGANISATION HAS ONE SITE.
+ *
+ * `app/(staff)/stock/transfers/new/page.tsx:39` reads the organisation's locations through the
+ * SESSION client, so `restaurants` RLS applies:
+ *
+ *     id IN (SELECT public.user_restaurant_ids()) OR owner_id = auth.uid()
+ *
+ * `organization_id` appears nowhere in that policy, so the list collapses to the locations the
+ * caller is personally a `restaurant_users` member of. Measured against PRODUCTION on 2026-08-27:
+ * Gosto Investment CC has three locations (Riviera, FNB ChowNow, Chownow Nedbank) and six distinct
+ * staff users across them; FIVE OF THE SIX belong to exactly one of the three, so five of six open
+ * this screen and get a blank destination picker. The sixth belongs to two and sees one of the
+ * other two. Every one of them holds `stock:transfer_create` and reaches the screen.
+ *
+ * THE SCOPING IS THE RULING, NOT THE DEFECT. The owner's words: "a permission to create
+ * cross-location transfers is not a permission to see every location in the organisation." So this
+ * read stays session-scoped. What is wrong is the SILENCE — and, before this change, an assertion
+ * that was flatly false for those five users: the screen said "There are no other locations in your
+ * organization to transfer stock to yet" when there were two.
+ *
+ * DO NOT "FIX" THIS BY WIDENING THE READ. `resolveVisibleLocations` in lib/organizations/queries.ts
+ * is the only sanctioned elevated path and it is gated on `authorizeOrganization(...,
+ * 'view_all_locations')`, which is organisation-OWNER only. Applying it here would hand every
+ * location's manager the whole estate, which is exactly the thing that was ruled out.
+ *
+ * A SECOND CASE EXISTS AND IS DELIBERATELY NOT BRANCHED ON. An organisation with a single location
+ * produces the identical zero state, and on production most do (Mingle Brew & Pour alone has four
+ * staff who reach this screen). For them "ask a manager for access" is a pointless errand; the true
+ * answer is "your business only has one location". Separating the two needs the page to know how
+ * many locations the organisation HAS, which is a count taken with RLS bypassed — a smaller thing
+ * than listing them, but still an elevated read and therefore the owner's call, not this file's.
+ * Logged for a ruling; until then both cases get the one message below.
+ */
+const NO_DESTINATIONS_COPY_PENDING = {
+  /**
+   * Placeholder, not drafted copy. MUST CONVEY, once signed off:
+   *   1. stock can only be transferred to locations the reader themselves works at;
+   *   2. the list is empty because the reader is not attached to any other location — this is a
+   *      fact about their access, not a failure to load and not a fault in the system;
+   *   3. what to do next: ask a manager for access to the other location.
+   * MUST NOT read as an error, and MUST NOT imply that creating transfers is unavailable to this
+   * person in general — they hold the permission; they simply have nowhere in range to send to.
+   */
+  body:
+    'PENDING COPY — You can only transfer stock to locations you work at, and you are not ' +
+    'attached to any other location yet. Ask a manager for access to the location you need to ' +
+    'send stock to.',
+}
+
 export function CreateTransferForm({
   sourceRestaurantId,
   sourceRestaurantName,
@@ -131,7 +181,7 @@ export function CreateTransferForm({
   if (destinations.length === 0) {
     return (
       <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5 text-sm text-[#6B675F]">
-        There are no other locations in your organization to transfer stock to yet.
+        {NO_DESTINATIONS_COPY_PENDING.body}
       </div>
     )
   }

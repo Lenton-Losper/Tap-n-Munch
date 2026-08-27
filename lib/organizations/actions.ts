@@ -23,6 +23,23 @@ export type LocationsPageData = {
   organizationId: string
   canCreateLocation: boolean
   locations: OrganizationRestaurantOption[]
+  /**
+   * TRUE when `locations` came back through the SESSION client, i.e. narrowed by `restaurants` RLS
+   * to the caller's own `restaurant_users` memberships rather than being the organisation's real
+   * list. The UI needs this because the two cases are indistinguishable from the array alone: a
+   * business with one location and a five-location business seen by someone attached to one of them
+   * both arrive as a single row.
+   *
+   * As of 2026-08-27 this is TRUE for five of the six staff users of Gosto Investment CC, the only
+   * multi-location business on production — it has three locations and five of its six users belong
+   * to exactly one. All five hold `settings:read` and can open this tab.
+   *
+   * It is the inverse of `canViewAllLocations` and is NOT a second permission: it reports how the
+   * read was taken, so the screen can describe its own list honestly. It must never be used to
+   * decide whether to take the elevated read — that decision is `resolveVisibleLocations`'s and is
+   * gated on organisation ownership.
+   */
+  listIsScopedToCallerMemberships: boolean
 }
 
 export async function getLocationsPageDataAction(): Promise<
@@ -55,7 +72,14 @@ export async function getLocationsPageDataAction(): Promise<
     canViewAllLocations,
   })
 
-  return { data: { organizationId, canCreateLocation, locations } }
+  return {
+    data: {
+      organizationId,
+      canCreateLocation,
+      locations,
+      listIsScopedToCallerMemberships: !canViewAllLocations,
+    },
+  }
 }
 
 export type CreateLocationInput = {
