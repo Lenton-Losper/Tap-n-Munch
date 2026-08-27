@@ -258,6 +258,63 @@ const PRECONDITIONS = {
       ok: four && absent,
     }
   },
+  /**
+   * #229 — variant groups become the working mechanism for five FNB ChowNow drinks.
+   *
+   * THE ONE THING THAT MUST NOT HAPPEN is a price changing without the venue doing it, and the
+   * migration carries its own precondition and postcondition for that inside the transaction. What
+   * is checked HERE is the thing those cannot see: that the five rows still look like the ones the
+   * proof was built against.
+   */
+  '20260827122000': async (c) => {
+    const { rows: r } = await c.query(
+      `SELECT count(*)::int AS five,
+              count(*) FILTER (WHERE variants IS NOT NULL AND variants::text <> '[]')::int AS with_legacy
+         FROM menu_items
+        WHERE name IN ('Americano','Caffè Latte','Cappucinno','Flat White','Red Cappuccino')
+          AND variant_groups IS NOT NULL AND variant_groups::text <> '[]'`,
+    )
+    return {
+      out: [
+        `  rows carrying BOTH shapes ......... ${r[0].five}   <- must be 5`,
+        `  of those, legacy still populated .. ${r[0].with_legacy}   <- must be 5; it is the source`,
+      ],
+      ok: r[0].five === 5 && r[0].with_legacy === 5,
+    }
+  },
+  /**
+   * #336 — dedupe organization_stock_items and add the unique index.
+   *
+   * It DELETES a row, so the precondition is about the duplicate still being the one that was
+   * measured. The migration refuses internally on unit disagreement or an active/active collision;
+   * this refuses earlier if the population has moved at all.
+   */
+  '20260827115000': async (c) => {
+    const { rows: dup } = await c.query(
+      `SELECT count(*)::int AS groups FROM (
+         SELECT organization_id, lower(btrim(name)) FROM organization_stock_items
+          GROUP BY 1,2 HAVING count(*) > 1) d`,
+    )
+    /**
+     * Scoped to an index over the NAME, not to "any unique index" -- my first version matched
+     * `organization_stock_items_pkey` and refused, because every primary key IS a unique index.
+     * The check has to name the thing it is looking for.
+     */
+    const { rows: idx } = await c.query(
+      `SELECT count(*)::int AS n FROM pg_indexes
+        WHERE tablename='organization_stock_items'
+          AND indexdef ILIKE '%unique%' AND indexdef ILIKE '%name%'`,
+    )
+    const { rows: tot } = await c.query(`SELECT count(*)::int AS n FROM organization_stock_items`)
+    return {
+      out: [
+        `  duplicate name groups ............. ${dup[0].groups}   <- measured as 1 (Powerade)`,
+        `  organization_stock_items rows ..... ${tot[0].n}   <- measured as 52`,
+        `  unique index already present ...... ${idx[0].n ? 'YES' : 'no'}`,
+      ],
+      ok: dup[0].groups === 1 && idx[0].n === 0,
+    }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,
