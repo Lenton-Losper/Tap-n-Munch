@@ -16,9 +16,48 @@ export interface ReceiptLineItem {
   name: string
   quantity: number
   unit_price: number
+  /**
+   * GROSS since #250. Do NOT read this as "gross" on a snapshot you did not just build:
+   * on production the 820 receipts issued 2026-07-23..2026-08-25 carry the EX-VAT figure
+   * here under the same `renderer_version`, and the document says nothing about which.
+   * `receiptLineVatBasis()` below is the only sanctioned way to ask.
+   */
   line_total: number
   /** Size / addon labels captured at issue time (display-only). */
   modifiers: string[]
+  /**
+   * #251 — the ex-VAT / tax split and the rate that produced it, frozen beside the gross
+   * figure exactly as the TAX INVOICE has always done (`lib/documents/create-document.ts`
+   * stores `line_total` + `line_subtotal` + `line_tax` + `tax_rate_percentage` +
+   * `tax_inclusive`). Their presence is what makes a receipt line self-describing: a reader
+   * can re-present it on either basis without consulting `orders.items`, and without
+   * consulting `tax_rates`, which is mutable, has no `updated_at`, and would silently
+   * backdate today's rate onto a historical sale.
+   *
+   * PERMANENTLY OPTIONAL. All 1,805 receipts already on production were issued before these
+   * fields existed and no backfill is sanctioned (issue #251: converting them would mean
+   * re-deriving from the order rows, which is a ruling, not an implementation choice).
+   * Absent therefore means the basis is UNKNOWN — never "assume ex-VAT", never "assume
+   * gross", and never "recompute it at today's rate".
+   *
+   * Written only when the source line carries all three of `subtotal`/`tax`/`total` AND they
+   * reconcile to the cent against the figure actually printed. A cart-shaped line
+   * (`contexts/cart-context.tsx`) has no `tax`, so it gets no split rather than a guessed one.
+   */
+  line_subtotal?: number
+  line_tax?: number
+  tax_rate_percentage?: number
+  tax_inclusive?: boolean
+}
+
+/** The re-presentable form of one snapshot line. Only ever derived from stored figures. */
+export interface ReceiptLineVatBasis {
+  gross: number
+  ex_vat: number
+  tax: number
+  /** null when the line stored the split but not the rate that produced it. */
+  tax_rate_percentage: number | null
+  tax_inclusive: boolean | null
 }
 
 export interface ReceiptPayment {
@@ -94,6 +133,98 @@ function maskReference(value: string): string {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+/** Integer cents, or null when the value is not a finite number. Money is never compared as a float. */
+function cents(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 100) : null
+}
+
+/**
+ * #251 — copies the per-line VAT split off a SERVER-PRICED order line, or returns nothing.
+ *
+ * `lib/orders/calculate-order-pricing.ts` already writes `subtotal` (ex-VAT), `tax`, `total`
+ * (gross), `taxRatePercentage` and `taxInclusive` onto every priced line, and every one of the
+ * 820 mis-based receipts on production still has all five on its order row. So this copies; it
+ * never computes, and in particular never applies a rate to a figure.
+ *
+ * TWO GATES, both of which must pass, because a wrong split is worse than no split:
+ *
+ *  1. BOTH halves present and finite. `tax` is the discriminating key: a cart-shaped line has a
+ *     `subtotal` and no `tax`, and `subtotal` means the GROSS charge in that shape, so treating a
+ *     missing `tax` as zero would file a gross number under an ex-VAT name and stamp "VAT 0.00"
+ *     on a receipt for a sale that did bear VAT.
+ *
+ *  2. `subtotal + tax` equals THE FIGURE THIS RECEIPT IS PRINTING, to the cent. Deliberately
+ *     reconciled against `lineTotal` and not against `item.total`: `item.total` is only one of
+ *     four keys `lineTotal` may resolve from, and a split that adds up to some number other than
+ *     the one on the paper is exactly the disagreement #251 is about. `applyTaxToAmount` makes
+ *     `subtotal + tax === total` exact in all three of its branches, so a genuine pricer line
+ *     whose `total` is what gets printed always passes, and nothing else does.
+ */
+function extractLineVatSplit(
+  item: Record<string, unknown>,
+  lineTotal: number,
+): Pick<ReceiptLineItem, 'line_subtotal' | 'line_tax' | 'tax_rate_percentage' | 'tax_inclusive'> {
+  const subtotalCents = cents(item.subtotal)
+  const taxCents = cents(item.tax)
+
+  if (subtotalCents === null || taxCents === null) return {}
+  if (subtotalCents + taxCents !== Math.round(lineTotal * 100)) return {}
+
+  const split: Pick<
+    ReceiptLineItem,
+    'line_subtotal' | 'line_tax' | 'tax_rate_percentage' | 'tax_inclusive'
+  > = {
+    line_subtotal: subtotalCents / 100,
+    line_tax: taxCents / 100,
+  }
+
+  const percentage = item.taxRatePercentage ?? item.tax_rate_percentage
+  if (typeof percentage === 'number' && Number.isFinite(percentage)) {
+    split.tax_rate_percentage = percentage
+  }
+
+  const inclusive = item.taxInclusive ?? item.tax_inclusive
+  if (typeof inclusive === 'boolean') {
+    split.tax_inclusive = inclusive
+  }
+
+  return split
+}
+
+/**
+ * #251 — the ONLY sanctioned way to ask a snapshot line what its VAT basis is.
+ *
+ * Returns null when the line does not carry its own split. That null is the whole point of the
+ * fix: it is the difference between "this receipt is 17.39 ex-VAT of a 20.00 sale" and "this
+ * receipt says 17.39 and nobody alive knows whether that is the gross figure". Every one of the
+ * 1,805 receipts issued before #251 answers null, and a caller that wants a number anyway must
+ * go and get a ruling — it must not divide by a rate, because the only rate reachable at render
+ * time is whatever `tax_rates` holds TODAY.
+ *
+ * The reconciliation re-check is not redundant with the write path: snapshots are opaque jsonb
+ * that has been sitting in the database for months, and a row hand-edited to carry a split that
+ * does not add up must answer null rather than be believed.
+ */
+export function receiptLineVatBasis(line: ReceiptLineItem): ReceiptLineVatBasis | null {
+  const exVatCents = cents(line.line_subtotal)
+  const taxCents = cents(line.line_tax)
+  const grossCents = cents(line.line_total)
+
+  if (exVatCents === null || taxCents === null || grossCents === null) return null
+  if (exVatCents + taxCents !== grossCents) return null
+
+  return {
+    gross: grossCents / 100,
+    ex_vat: exVatCents / 100,
+    tax: taxCents / 100,
+    tax_rate_percentage:
+      typeof line.tax_rate_percentage === 'number' && Number.isFinite(line.tax_rate_percentage)
+        ? line.tax_rate_percentage
+        : null,
+    tax_inclusive: typeof line.tax_inclusive === 'boolean' ? line.tax_inclusive : null,
+  }
 }
 
 function extractModifiers(item: Record<string, unknown>): string[] {
@@ -200,6 +331,10 @@ export function toLineItem(raw: unknown): ReceiptLineItem {
     unit_price: unitPrice,
     line_total: lineTotal,
     modifiers: extractModifiers(item),
+    // #251: present only when the source line carried a reconciling split. Spread last so an
+    // absent split leaves the four keys off the object entirely rather than writing undefined --
+    // `jsonb` would drop them either way, but the in-memory shape must match what is stored.
+    ...extractLineVatSplit(item, lineTotal),
   }
 }
 
