@@ -297,4 +297,67 @@ describe('#346 — a SLOW payment that still succeeds', () => {
   });
 });
 
+/**
+ * #346 — THE TWO CEILINGS ARE TWO NUMBERS, AND COLLAPSING THEM IS THE PREDICTABLE EDIT.
+ *
+ * The issue is explicit that they must not be collapsed, and the constant's own docblock says so in
+ * capitals — but nothing asserted it. PAYMENT_RESULT_TIMEOUT_MS was covered by the suite above;
+ * PAYMENT_ADVISORY_CEILING_S was covered by nothing at all, which makes the number most likely to
+ * be "tidied" the one with no guard.
+ *
+ * They answer different questions. The ADVISORY ceiling is when to tell a human something: 45s,
+ * chosen because 98.2% of successful payments are done by then, so it neither cries wolf nor
+ * arrives after staff have already given up (the measured median before staff re-rang was 42s).
+ * The HARD timeout is when to stop waiting for the promise: 300s, which has to clear the slowest
+ * payment that ever actually SUCCEEDED — 284s, Mingle #371.
+ *
+ * Setting the hard timeout to 45s would abandon real payments. Setting the advisory to 300s would
+ * restore the silent screen this issue is about, five minutes of it.
+ */
+describe('#346 — the advisory ceiling and the hard timeout stay distinct', () => {
+  const {
+    PAYMENT_ADVISORY_CEILING_S,
+    PAYMENT_RESULT_TIMEOUT_MS,
+  } = require('../../constants') as {
+    PAYMENT_ADVISORY_CEILING_S: number;
+    PAYMENT_RESULT_TIMEOUT_MS: number;
+  };
+
+  it('keeps the advisory ceiling at the measured 45s', () => {
+    expect(PAYMENT_ADVISORY_CEILING_S).toBe(45);
+  });
+
+  it('keeps the hard timeout long enough for the slowest payment that ever succeeded', () => {
+    // 284s, Mingle #371. A timeout at or below that abandons a payment that would have landed.
+    expect(PAYMENT_RESULT_TIMEOUT_MS).toBe(300_000);
+    expect(PAYMENT_RESULT_TIMEOUT_MS).toBeGreaterThan(284_000);
+  });
+
+  it('does not let the advisory ceiling become the hard timeout', () => {
+    // The collapse, in one assertion, in whichever direction it is attempted.
+    expect(PAYMENT_ADVISORY_CEILING_S * 1000).not.toBe(PAYMENT_RESULT_TIMEOUT_MS);
+    // And the advisory must fire FIRST, by a wide margin — it exists to warn while there is still
+    // something to wait for.
+    expect(PAYMENT_ADVISORY_CEILING_S * 1000).toBeLessThan(
+      PAYMENT_RESULT_TIMEOUT_MS,
+    );
+  });
+
+  it('states the ceiling to the operator in the waiting copy', () => {
+    // The number is only useful if the operator is told it: "a bounded wait is a different
+    // experience from an open one". This is what makes the constant load-bearing rather than
+    // internal.
+    const {paymentProcessingElapsed} =
+      require('../../constants/paymentCopy') as {
+        paymentProcessingElapsed: (e: number, c: number) => string;
+      };
+    const line = paymentProcessingElapsed(12, PAYMENT_ADVISORY_CEILING_S);
+    expect(line).toContain('12s');
+    expect(line).toContain(`${PAYMENT_ADVISORY_CEILING_S}s`);
+    // Signed decision: ASCII hyphen, never an em dash — an em dash on a payment screen is the
+    // concatenation shape #326 was.
+    expect(line).not.toContain('—');
+  });
+});
+
 export {};
