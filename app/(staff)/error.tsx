@@ -30,7 +30,11 @@
  */
 
 import { useEffect, useRef } from 'react'
-import { errorReference, reportBoundaryError } from '@/lib/errors/report-boundary-error'
+import {
+  CRASH_REPORT_INTAKE_PATH,
+  errorReference,
+  reportBoundaryError,
+} from '@/lib/errors/report-boundary-error'
 
 export const STAFF_ERROR_BOUNDARY_ID = 'app/(staff)/error.tsx'
 
@@ -49,15 +53,25 @@ export default function StaffError({
     // is possible -- offline, dead session, or the intake itself returning 500.
     if (reportedRef.current) return
     reportedRef.current = true
-    void reportBoundaryError({
-      boundary: STAFF_ERROR_BOUNDARY_ID,
-      reference,
-      digest: error?.digest,
-      name: error?.name,
-      message: error?.message,
-      stack: error?.stack,
-      pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
-    })
+    void reportBoundaryError(
+      {
+        boundary: STAFF_ERROR_BOUNDARY_ID,
+        reference,
+        digest: error?.digest,
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack,
+        pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+      },
+      {
+        // #348, half 1. The primary intake is the authenticated one, so a report from a signed-in
+        // staff member still lands in the ops inbox attributed to their venue. The fallback closes
+        // the case that made the signed line false: an expired session is BOTH a way onto this
+        // screen and a 500 from /api/bug-reports, so exactly the crash a session expiry caused was
+        // the crash that reported nowhere.
+        fallbackPath: CRASH_REPORT_INTAKE_PATH,
+      },
+    )
   }, [error, reference])
 
   const reload = () => {
