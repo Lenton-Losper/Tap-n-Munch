@@ -56,9 +56,7 @@ const EXTS = ['.ts', '.tsx']
 const BASELINE = new Set([
   'app/menu/[restaurantId]/my-orders/page.tsx',
   'app/menu/[restaurantId]/v2/page.tsx',
-  'lib/supabase/menu.ts',
   'lib/table-session.ts',
-  'components/ActiveOrderBanner.tsx',
   'components/menu-management-new.tsx',
   'components/menu-management-v2.tsx',
   'components/menu-management.tsx',
@@ -86,6 +84,50 @@ function walk(dir, out = []) {
   return out
 }
 
+/**
+ * THE DECISION, over two sets rather than over the repo.
+ *
+ * Separated so the self-test below drives THIS function instead of a private copy of its logic. A
+ * self-test with its own implementation proves only that the copy still works — the same rule the
+ * #280 gate and the #324 fixture gate are built to, and the reason both can be trusted.
+ */
+export function classify(found, baseline) {
+  return {
+    added: [...found].filter((f) => !baseline.has(f)).sort(),
+    fixed: [...baseline].filter((f) => !found.has(f)).sort(),
+  }
+}
+
+/**
+ * Prove the two arms still fire before reporting that neither did.
+ *
+ * The stale arm is the one this exists for: it exited 0 until 2026-08-27, and a ratchet that has
+ * quietly stopped holding looks exactly like a clean tree.
+ */
+function selfTest() {
+  const b = new Set(['kept.ts', 'wasFixed.ts'])
+  const t = classify(new Set(['kept.ts', 'brandNew.ts']), b)
+  if (t.added.length !== 1 || t.added[0] !== 'brandNew.ts') {
+    console.error('SELF-TEST FAILED: a NEW @ts-nocheck file is no longer detected.')
+    process.exit(2)
+  }
+  if (t.fixed.length !== 1 || t.fixed[0] !== 'wasFixed.ts') {
+    console.error('SELF-TEST FAILED: a STALE baseline entry is no longer detected.')
+    process.exit(2)
+  }
+  // FALSE-POSITIVE GUARD. A file that is baselined AND still carries the pragma is the normal,
+  // healthy state of every entry on the list — it must produce neither arm. Without this the
+  // "make stale entries fail" change could be satisfied by a rule that simply fails on any
+  // baseline entry at all, which would be red on a correct tree forever.
+  const steady = classify(new Set(['kept.ts', 'wasFixed.ts']), b)
+  if (steady.added.length !== 0 || steady.fixed.length !== 0) {
+    console.error('SELF-TEST FAILED: an unchanged baseline entry now fires an arm.')
+    process.exit(2)
+  }
+}
+
+selfTest()
+
 const files = []
 for (const d of SEARCH_DIRS) walk(join(ROOT, d), files)
 
@@ -99,13 +141,44 @@ for (const file of files) {
   }
 }
 
-const added = [...found].filter((f) => !BASELINE.has(f)).sort()
-const fixed = [...BASELINE].filter((f) => !found.has(f)).sort()
+const { added, fixed } = classify(found, BASELINE)
 
+/**
+ * A STALE BASELINE ENTRY IS A RE-ENTRY PERMIT, AND IT USED TO EXIT 0.
+ *
+ * Found 2026-08-27 by mutation. `added` is `found - BASELINE`, so a file NAMED IN BASELINE can
+ * never be "new" — no matter when it acquired the pragma. On 2026-08-27 two entries were stale:
+ * `components/ActiveOrderBanner.tsx` and `lib/supabase/menu.ts` had both been typed and no longer
+ * carried it. Putting `// @ts-nocheck` back on the FIRST LINE of ActiveOrderBanner.tsx — a live
+ * customer component, and the file whose bare literal started #334 — produced:
+ *
+ *     check-ts-nocheck-baseline: OK — 7 file(s) hidden from tsc, none new. (597 scanned)
+ *
+ * exit 0. The typecheck could no longer see the file and this gate, which exists for exactly that,
+ * said "none new".
+ *
+ * The old behaviour PRINTED the staleness and passed. That is an advisory on a green run, which is
+ * the one place nobody reads: a ratchet that only tightens when a human notices a line in passing
+ * output and then goes and edits this script is not a ratchet. So it FAILS now, and the debt
+ * shrinks monotonically — once a file leaves the list it cannot come back without tripping the
+ * `added` arm above.
+ *
+ * The cost is real and is the right trade: fixing a file turns the build red until BASELINE is
+ * edited in the same commit. That is one line, the message below says which, and it is the whole
+ * reason the list can be trusted as a debt rather than a licence.
+ */
 if (fixed.length) {
-  console.log('')
-  console.log(`  ${fixed.length} file(s) no longer carry @ts-nocheck — REMOVE from BASELINE:`)
-  for (const f of fixed) console.log(`      ${f}`)
+  console.error('\ncheck-ts-nocheck-baseline: FAILED\n')
+  console.error(
+    'A BASELINE entry no longer carries @ts-nocheck. Remove it from BASELINE in this script,\n' +
+      'in the same commit that fixed the file.\n\n' +
+      'This is not bookkeeping. `added` is computed as `found - BASELINE`, so while a fixed file\n' +
+      'is still listed here, re-adding the pragma to it is INVISIBLE to this gate — the ratchet\n' +
+      'silently stops holding for that file. Deleting the line is what makes the fix permanent.\n',
+  )
+  for (const f of fixed) console.error(`      ${f}`)
+  console.error('')
+  process.exit(1)
 }
 
 if (added.length) {
