@@ -12,7 +12,11 @@ export async function GET(req: Request) {
 
     const [{ data: restaurant, error: restaurantError }, { data: settings, error: settingsError }] =
       await Promise.all([
-        supabase.from('restaurants').select('name').eq('id', terminal.restaurantId).maybeSingle(),
+        supabase
+          .from('restaurants')
+          .select('name, is_counter_service')
+          .eq('id', terminal.restaurantId)
+          .maybeSingle(),
         supabase
           .from('restaurant_settings')
           .select('payment_methods')
@@ -39,6 +43,26 @@ export async function GET(req: Request) {
       permissions: terminal.permissions,
       cardPaymentEnabled: paymentMethods.includes('card'),
       cashPaymentEnabled: paymentMethods.includes('cash'),
+      /**
+       * ADR-005 -- THE VENUE SERVICE MODEL, so the device can decide which ordering surface to
+       * show. `is_counter_service` is `boolean NOT NULL DEFAULT false` (20260824120000):
+       * TRUE = counter service, FALSE = table service.
+       *
+       * WHY HERE AND NOT IN THE TERMINAL JWT. The token lives an hour and is minted at
+       * activation or refresh, so a venue switching service model would wait up to an hour for
+       * the change to reach a device -- and a device that had not refreshed would keep showing
+       * the wrong ordering surface with nothing reporting it. This endpoint is polled, so the
+       * answer is current.
+       *
+       * WHY NOT LET THE DEVICE READ THE COLUMN DIRECTLY. `anon` was granted SELECT on it
+       * (20260824130000) for the guest web client, and the terminal does hold an anon key -- so
+       * it COULD. That would route a venue-behaviour decision around the terminal auth surface
+       * entirely and make it part of no contract. It belongs here, next to the other two
+       * capability flags the device already switches on.
+       *
+       * Purely additive: every existing APK ignores an unknown field.
+       */
+      isCounterService: restaurant?.is_counter_service === true,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
