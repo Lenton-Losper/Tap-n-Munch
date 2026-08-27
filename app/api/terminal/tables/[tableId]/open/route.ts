@@ -40,7 +40,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 import { markTableOccupied } from '@/lib/tables/mark-table-occupied'
-import { loadTableOwners } from '@/lib/tables/table-owners'
+import { claimTableForWaiter, loadTableOwners } from '@/lib/tables/table-owners'
 
 export const dynamic = 'force-dynamic'
 
@@ -145,17 +145,64 @@ export async function POST(
     if (existingTabError) throw existingTabError
 
     if (existingTab?.id) {
+      /**
+       * ADOPTION. The service session attaches to the tab that is already there and the waiter
+       * becomes its owner. No second tab, no refusal.
+       *
+       * Refusing would strand every table that already carries a tab -- and Riviera has those
+       * right now. A waiter who cannot open them cannot serve them, on the first morning, with
+       * no workaround on the device.
+       */
+      const claim = await claimTableForWaiter(
+        supabase,
+        terminal.restaurantId,
+        table.id,
+        userId,
+      )
+
+      /**
+       * FILL THE TIP ANCHOR ONLY IF IT IS EMPTY.
+       *
+       * A tab opened by a customer scanning a QR code has no opened_by_user_id, so nobody can be
+       * credited for serving it. The waiter who adopts it is the person actually serving it, so
+       * they take that slot.
+       *
+       * NEVER OVERWRITE AN EXISTING VALUE. That column is the tip anchor and is immutable once
+       * set: overwriting it on adoption would let a second waiter tapping the table at 21:00 walk
+       * off with the tip earned by whoever opened it at 18:00. The `.is('opened_by_user_id', null)`
+       * filter is what makes that impossible rather than merely unlikely.
+       */
+      let adoptedOwnerId = existingTab.opened_by_user_id ?? null
+      if (!adoptedOwnerId) {
+        const { data: claimedTab, error: claimTabError } = await supabase
+          .from('tabs')
+          .update({ opened_by_user_id: userId })
+          .eq('id', existingTab.id)
+          .is('opened_by_user_id', null)
+          .select('opened_by_user_id')
+          .maybeSingle()
+
+        if (claimTabError) {
+          console.error('[terminal/tables/open] could not adopt the unowned tab', claimTabError)
+        } else if (claimedTab?.opened_by_user_id) {
+          adoptedOwnerId = String(claimedTab.opened_by_user_id)
+        }
+      }
+
       const owner =
         (await loadTableOwners(supabase, terminal.restaurantId, [table.id])).get(table.id) ?? null
+
       return NextResponse.json({
         already_open: true,
+        adopted: true,
+        handed_over_from: claim.handedOverFrom,
         table: { id: table.id, table_number: table.table_number },
         tab: {
           id: existingTab.id,
           status: existingTab.status,
           total: existingTab.total,
           opened_at: existingTab.created_at,
-          opened_by_user_id: existingTab.opened_by_user_id ?? null,
+          opened_by_user_id: adoptedOwnerId,
         },
         owner,
       })
@@ -187,21 +234,7 @@ export async function POST(
      * losing the assignment costs the floor grid an owner name, and refusing the request would
      * cost the customer their order. Logged loudly, same trade as markTableOccupied.
      */
-    const { error: assignmentError } = await supabase.from('service_table_assignments').insert({
-      restaurant_id: terminal.restaurantId,
-      table_id: table.id,
-      waiter_user_id: userId,
-      assigned_by_user_id: userId,
-    })
-
-    if (assignmentError) {
-      console.error(
-        '[terminal/tables/open] the tab was created but the table assignment was NOT — the floor ' +
-          'grid will show this table as open with no owner, and tip attribution still works ' +
-          'because it reads tabs.opened_by_user_id',
-        { tableId: table.id, userId, error: assignmentError },
-      )
-    }
+    await claimTableForWaiter(supabase, terminal.restaurantId, table.id, userId)
 
     // #216: a table with a live tab and a non-'occupied' status is invisible on the terminal.
     await markTableOccupied(supabase, table.id, '[terminal/tables/open]')
@@ -211,6 +244,8 @@ export async function POST(
 
     return NextResponse.json({
       already_open: false,
+      adopted: false,
+      handed_over_from: null,
       table: { id: table.id, table_number: table.table_number },
       tab: {
         id: tab.id,
