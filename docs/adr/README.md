@@ -23,6 +23,9 @@ Each ADR is a numbered Markdown file: `NNN-short-title.md` (e.g.
 - `Operationally Complete` — implemented and verified; any remaining
   items are hardening/follow-up, not blockers
 - `Superseded by ADR-NNN` — replaced by a later decision
+- `Absorbed by ADR-NNN` — a reserved slot that never carried a decision; a
+  later ADR took over its scope. The file is kept as a redirect so the
+  numbering stays unbroken.
 
 ## Template
 
