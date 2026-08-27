@@ -472,6 +472,70 @@ export async function getTerminalInfo(token: string): Promise<TerminalInfo> {
   return response.json() as Promise<TerminalInfo>;
 }
 
+/**
+ * #265 — what `POST /api/tabs/[tabId]/reset-pin` answers with.
+ *
+ * `recoveryUrl` is the whole payload: a menu URL carrying a single-use `pinReset` token with a
+ * 15-minute TTL. The customer opens it and the guest half mints a FRESH PIN and returns it to that
+ * device — the reset route deliberately never touches `tab_pin`, so no PIN exists to leak here.
+ */
+export interface ResetTabPinResult {
+  ok: boolean;
+  recoveryUrl: string;
+}
+
+/**
+ * Start PIN recovery for a tab. Requires `orders:update`; the server answers 403 without it.
+ *
+ * THERE IS NO PIN IN THIS RESPONSE AND THERE MUST NEVER BE ONE. #265's ruling (Q1:A) is that staff
+ * never see a customer's PIN, and the route enforces that by minting only a token. If some future
+ * server starts returning a PIN, it must not be read here — narrow the parse rather than widen it.
+ */
+export async function resetTabPin(
+  tabId: string,
+  token: string,
+): Promise<ResetTabPinResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/tabs/${tabId}/reset-pin`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    },
+    token,
+  );
+
+  /**
+   * 401 AND 403 ARE SPLIT HERE, AND THIS ROUTE DELIBERATELY DOES NOT USE throwIfUnauthorized.
+   *
+   * That helper maps BOTH to TerminalAuthError("Terminal session expired"), which is right for
+   * every other call in this file — they are not permission-gated, so a 403 there really does mean
+   * the session is bad. This one IS permission-gated: the route requires `orders:update`, so a 403
+   * is a live, authenticated terminal being told it may not do this.
+   *
+   * Collapsing the two would tell staff their session expired when it has not, and offer them a
+   * retry that can never succeed — the same retry-loop shape as #354. So 401 keeps the existing
+   * meaning and 403 arrives as an ApiRequestError the screen can render as "ask a manager".
+   *
+   * The general case is worth someone's attention: any future permission-gated route added to this
+   * file will inherit the same conflation from throwIfUnauthorized.
+   */
+  if (response.status === 401) {
+    throw new TerminalAuthError();
+  }
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const body = (await response.json()) as Partial<ResetTabPinResult>;
+  // Narrowed field by field, so nothing the server adds later acquires a reader by accident.
+  return {
+    ok: body.ok === true,
+    recoveryUrl: typeof body.recoveryUrl === 'string' ? body.recoveryUrl : '',
+  };
+}
+
 export interface OrderStreamEvent {
   type: string;
   orderId: string;

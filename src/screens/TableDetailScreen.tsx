@@ -27,9 +27,12 @@ import {
   completePaymentReliably,
   type PendingOrderRequest,
   getTablesWithMeta,
+  getTerminalInfo,
   recordSaleEvent,
+  resetTabPin,
   settleTab,
 } from '../lib/api';
+import QRCode from 'react-native-qrcode-svg';
 import {
   declinedFailureReference,
   processPaymentIntent,
@@ -46,6 +49,16 @@ import {
   showsSkipOnly,
 } from '../lib/cashAttributionPicker';
 import {selectCashSettleableOrders} from '../lib/cashSettlement';
+import {canResetTabPin} from '../lib/terminalPermissions';
+import {
+  TAB_RECOVERY_ACTION_LABEL,
+  TAB_RECOVERY_DONE_LABEL,
+  TAB_RECOVERY_FAILED,
+  TAB_RECOVERY_IN_PROGRESS,
+  TAB_RECOVERY_INSTRUCTION,
+  TAB_RECOVERY_NOT_PERMITTED,
+  TAB_RECOVERY_TITLE,
+} from '../constants/tabRecoveryCopy';
 import {classifyFailureReport} from '../lib/paymentReportOutcome';
 import {
   SETTLE_ORDER_ALREADY_PAID,
@@ -108,6 +121,20 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffLoadFailed, setStaffLoadFailed] = useState(false);
   const [pinStaff, setPinStaff] = useState<AuthorizedUser | null>(null);
+  /**
+   * #265 — PIN recovery. `recoveryUrl` is the only thing that comes back and it is rendered as a
+   * QR for the CUSTOMER to scan; there is no PIN in this flow for staff to see, by design.
+   *
+   * `terminalPermissions` starts undefined, which canResetTabPin reads as "cannot tell" and
+   * therefore shows the control — see lib/terminalPermissions for why that direction is the safe
+   * one when the server is the real gate.
+   */
+  const [recoveryVisible, setRecoveryVisible] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryUrl, setRecoveryUrl] = useState<string | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [terminalPermissions, setTerminalPermissions] =
+    useState<unknown>(undefined);
 
   const tab = table.tab;
   const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
@@ -534,6 +561,77 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * A failure is NOT fatal. Attribution is optional server-side, so a list that will not
    * load must never make cash untakeable — it falls back to the Skip path.
    */
+  /**
+   * #265 — load this terminal's permissions so the recovery control can be hidden where it would
+   * only fail. Best effort: a failure leaves `terminalPermissions` undefined, which shows the
+   * control and lets the server refuse, which is the deliberate direction (see
+   * lib/terminalPermissions). Never blocks the screen.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getTerminalToken();
+        if (!token) {
+          return;
+        }
+        const info = await getTerminalInfo(token);
+        if (!cancelled) {
+          setTerminalPermissions(info.permissions);
+        }
+      } catch {
+        // Leave undefined — "cannot tell", so the control stays visible.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * #265 — staff-initiated PIN recovery for a customer who cannot get back onto their tab.
+   *
+   * STAFF NEVER SEE A PIN. This mints a single-use token with a 15-minute TTL and returns a
+   * recovery URL; the NEW pin is minted when the customer redeems it and is returned only to their
+   * device. `reset-pin` never touches `tab_pin`, so there is nothing here to leak — ruling Q1:A.
+   *
+   * It is also the only exit from #236: a tab with `pin_required` set and `tab_pin` NULL refuses
+   * every join with TAB_PIN_UNAVAILABLE, and the redemption branch writes `tab_pin` unconditionally
+   * and before the policy check, so this flow rescues a tab that is otherwise unjoinable forever.
+   *
+   * The sheet opens IMMEDIATELY, before the request resolves, so the operator sees the spinner
+   * rather than a button that appears to do nothing for a second.
+   */
+  const handleStartTabRecovery = async () => {
+    if (!tab || recoveryBusy) {
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    setRecoveryUrl(null);
+    setRecoveryVisible(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+      const result = await resetTabPin(tab.id, token);
+      if (!result.ok || !result.recoveryUrl) {
+        // A 200 that carries no URL is a failure, not a success with nothing to show.
+        throw new Error('reset-pin returned no recovery url');
+      }
+      setRecoveryUrl(result.recoveryUrl);
+    } catch (err) {
+      console.warn('[TableDetail] reset-pin failed:', err);
+      const forbidden = err instanceof ApiRequestError && err.status === 403;
+      setRecoveryError(
+        forbidden ? TAB_RECOVERY_NOT_PERMITTED : TAB_RECOVERY_FAILED,
+      );
+    } finally {
+      setRecoveryBusy(false);
+    }
+  };
+
   const openPinPrompt = async () => {
     setPinError(null);
     setPinValue('');
@@ -755,6 +853,38 @@ export default function TableDetailScreen({route, navigation}: Props) {
         <View style={styles.headerIcon} />
       </View>
 
+      {/*
+        #265 — the missing half. Everything behind this button already existed: the reset route is
+        live, and the customer half redeems the token and mints a fresh PIN. Until now the route was
+        reachable only by a raw authenticated API call, so a customer who forgot their tab PIN could
+        not be helped at all.
+
+        Shown only when there IS a tab (nothing to rejoin otherwise) and this terminal is not known
+        to lack orders:update.
+      */}
+      {tab && canResetTabPin(terminalPermissions) ? (
+        <View style={styles.recoveryBar}>
+          <Pressable
+            style={[
+              styles.recoveryButton,
+              recoveryBusy && styles.buttonDisabled,
+            ]}
+            disabled={recoveryBusy || settling}
+            onPress={handleStartTabRecovery}>
+            <MaterialCommunityIcons
+              name="qrcode-scan"
+              size={18}
+              color={Colors.primary}
+            />
+            <Text style={styles.recoveryButtonText}>
+              {recoveryBusy
+                ? TAB_RECOVERY_IN_PROGRESS
+                : TAB_RECOVERY_ACTION_LABEL}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {table.can_close ? (
         <View style={styles.closeBar}>
           <Pressable
@@ -947,6 +1077,59 @@ export default function TableDetailScreen({route, navigation}: Props) {
       </Modal>
 
       {/*
+        #265 — the recovery sheet. The QR is the whole point: the customer scans it on their own
+        phone and the guest half mints them a fresh PIN. Staff never see a PIN at any stage.
+
+        ALL COPY HERE IS **PENDING COPY** — see constants/tabRecoveryCopy, where each string carries
+        what it must convey. The owner signs the wording; the facts it must state (customer scans,
+        expires shortly, works once) are already ruled on.
+      */}
+      <Modal
+        visible={recoveryVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRecoveryVisible(false)}>
+        <View style={styles.pinBackdrop}>
+          <View style={styles.recoveryCard}>
+            <Text style={styles.pinTitle}>{TAB_RECOVERY_TITLE}</Text>
+
+            {recoveryBusy ? (
+              <ActivityIndicator
+                style={styles.pinLoader}
+                color={Colors.primary}
+              />
+            ) : recoveryError ? (
+              <Text style={styles.recoveryError}>{recoveryError}</Text>
+            ) : recoveryUrl ? (
+              <>
+                {/*
+                  White quiet zone behind the code regardless of theme — a QR rendered on a tinted
+                  background is the classic reason a phone camera will not lock on to it.
+                */}
+                <View style={styles.recoveryQrFrame}>
+                  <QRCode
+                    value={recoveryUrl}
+                    size={220}
+                    backgroundColor={Colors.white}
+                    color={Colors.textPrimary}
+                  />
+                </View>
+                <Text style={styles.recoveryInstruction}>
+                  {TAB_RECOVERY_INSTRUCTION}
+                </Text>
+              </>
+            ) : null}
+
+            <Pressable
+              style={styles.pinCancel}
+              onPress={() => setRecoveryVisible(false)}>
+              <Text style={styles.pinCancelText}>{TAB_RECOVERY_DONE_LABEL}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/*
         #120 residual. Rendered from the close route's own 409 rather than from anything this
         screen guesses: the rows, and per row whether it is a stranded claim or a real round.
       */}
@@ -1090,6 +1273,57 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+  },
+  /** #265 — the PIN-recovery control. Secondary styling: it is a helper, not a settle action. */
+  recoveryBar: {
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    backgroundColor: Colors.background,
+  },
+  recoveryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    paddingVertical: 12,
+  },
+  recoveryButtonText: {
+    ...Typography.body,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  recoveryCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: Colors.white,
+    borderRadius: 12,
+    padding: Spacing.lg,
+    alignItems: 'center',
+  },
+  /**
+   * A white quiet zone around the code, independent of theme. A QR drawn straight onto a tinted
+   * surface, or with no margin, is the usual reason a phone camera will not lock on.
+   */
+  recoveryQrFrame: {
+    backgroundColor: Colors.white,
+    padding: Spacing.md,
+    borderRadius: 8,
+    marginVertical: Spacing.md,
+  },
+  recoveryInstruction: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.sm,
+  },
+  recoveryError: {
+    ...Typography.body,
+    color: Colors.red,
+    textAlign: 'center',
+    marginVertical: Spacing.md,
   },
   closeButton: {
     backgroundColor: Colors.green,

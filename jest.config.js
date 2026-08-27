@@ -18,7 +18,7 @@ module.exports = {
    * dependency needed it and why.
    */
   transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community)?|@react-navigation|react-native-vector-icons)/)',
+    'node_modules/(?!((jest-)?react-native|@react-native(-community)?|@react-navigation|react-native-vector-icons|react-native-qrcode-svg|react-native-svg)/)',
   ],
   /**
    * #339. The preset's own setup MUST be listed explicitly: naming `setupFiles` here REPLACES the
