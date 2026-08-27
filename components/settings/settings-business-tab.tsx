@@ -65,8 +65,7 @@ const SCOPED_LIST_COPY_PENDING = {
    * something they previously had.
    */
   note:
-    'PENDING COPY — This shows the locations you are attached to. If your business has others, ' +
-    'you have not been given access to them — ask a manager or the business owner.',
+    'This shows the locations you are attached to. If your business has others, you have not been given access to them - ask a manager or the business owner.',
 }
 
 function locationTypeLabel(locationType: string): string {

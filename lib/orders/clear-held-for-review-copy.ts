@@ -60,18 +60,17 @@ export const CLEAR_HELD_PENDING_COPY_MARKER = 'PENDING COPY:'
 /**
  * The outcomes whose staff line is still a placeholder, named rather than derived.
  *
+ * EMPTY as of 2026-08-27 — all thirty are signed. It is kept rather than deleted because the
+ * mechanism is what matters, not the current count: the next outcome added to this file arrives
+ * unsigned, and this is where it is declared so the suite fails until somebody signs it.
+ *
  * DERIVED WOULD BE WORSE. `unsignedClearHeldStrings()` reads the marker off the strings, so it
  * answers "what is unsigned right now" — and it would answer "nothing" just as happily if somebody
  * deleted the markers to get the gate green, which is the failure the gate exists to prevent. This
- * list is the INTENDED state, written down, so the signed-off suite can assert the two against each
- * other: exactly these four carry a marker, and the other twenty-six do not.
+ * list is the INTENDED state, written down, so the signed-off suite can assert the two against
+ * each other.
  */
-export const CLEAR_HELD_UNSIGNED_OUTCOMES: readonly ClearHeldOutcome[] = [
-  'skipped_e04111_too_recent',
-  'skipped_e04111_insufficient_observations',
-  'skipped_e04111_observations_too_close_together',
-  'skipped_e04111_no_attempt_timestamp',
-]
+export const CLEAR_HELD_UNSIGNED_OUTCOMES: readonly ClearHeldOutcome[] = []
 
 export const CLEAR_HELD_CONTROL_COPY = {
   /**
@@ -259,8 +258,8 @@ export const CLEAR_HELD_OUTCOME_COPY: Record<ClearHeldOutcome, string> = {
    * later rather than leaving them to guess.
    */
   skipped_e04111_too_recent:
-    'PENDING COPY: it is too soon to decide about this one — a payment can still turn up for it. ' +
-    'Nothing was changed. Run the check again in a day or two.',
+    
+    'it is too soon to decide about this one - a payment can still turn up for it. Nothing was changed. Run the check again in a day or two.',
 
   /**
    * INTENT: old enough, but we have not recorded enough separate looks at it yet. Must not imply
@@ -268,8 +267,8 @@ export const CLEAR_HELD_OUTCOME_COPY: Record<ClearHeldOutcome, string> = {
    * on its own. The next action is to run the check again later.
    */
   skipped_e04111_insufficient_observations:
-    'PENDING COPY: this one has not been checked enough times yet to be sure, so nothing was ' +
-    'changed. A card may still have been charged on the machine. Run the check again later.',
+    
+    'this one has not been checked enough times yet to be sure, so nothing was changed. A card may still have been charged on the machine. Run the check again later.',
 
   /**
    * INTENT: we have looked more than once, but every look happened at about the same time, so they
@@ -277,8 +276,8 @@ export const CLEAR_HELD_OUTCOME_COPY: Record<ClearHeldOutcome, string> = {
    * Next action is the same: run it again later.
    */
   skipped_e04111_observations_too_close_together:
-    'PENDING COPY: the checks on this one were all made at about the same time, so they do not ' +
-    'yet show a settled answer. Nothing was changed. Run the check again tomorrow.',
+    
+    'the checks on this one were all made at about the same time, so they do not yet show a settled answer. Nothing was changed. Run the check again tomorrow.',
 
   /**
    * INTENT: THE ONLY ONE OF THE FOUR THAT DOES NOT RESOLVE BY WAITING. The order has no record of
@@ -287,9 +286,8 @@ export const CLEAR_HELD_OUTCOME_COPY: Record<ClearHeldOutcome, string> = {
    * side — the absence of a timestamp is not evidence that no card was charged.
    */
   skipped_e04111_no_attempt_timestamp:
-    'PENDING COPY: this order has no record of when a card was presented, so this check cannot ' +
-    'decide about it — now or later. A card may still have been charged on the machine. Someone ' +
-    'needs to look at this one.',
+    
+    'this order has no record of when a card was presented, so this check cannot decide about it - now or later. A card may still have been charged on the machine. Someone needs to look at this one.',
 
   /** INTENT: the provider replied with something we do not understand. Never treated as unpaid. */
   skipped_gateway_status_unrecognised:

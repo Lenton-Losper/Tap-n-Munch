@@ -74,9 +74,7 @@ const NO_DESTINATIONS_COPY_PENDING = {
    * person in general — they hold the permission; they simply have nowhere in range to send to.
    */
   body:
-    'PENDING COPY — You can only transfer stock to locations you work at, and you are not ' +
-    'attached to any other location yet. Ask a manager for access to the location you need to ' +
-    'send stock to.',
+    'You can only transfer stock to locations you work at. If your business has other locations, ask a manager for access to the one you need to send stock to.',
 }
 
 export function CreateTransferForm({

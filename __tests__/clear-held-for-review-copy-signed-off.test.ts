@@ -88,6 +88,29 @@ const SIGNED_OUTCOME: Record<string, string> = {
   deferred_run_cap:
     'there were too many to do in one go, so this one was not reached. Run the check again to pick ' +
     'it up.',
+
+  /**
+   * SIGNED 2026-08-27. The four verdicts the owner's 72h E04111 persistence ruling created — they
+   * did not exist when the other twenty-six were drafted.
+   *
+   * Three say "run the check again" because waiting genuinely resolves them. The fourth does NOT,
+   * and that asymmetry is asserted separately below: an order with no record of when a card was
+   * presented can never be decided by this check, so telling staff to try later would send them
+   * back forever.
+   */
+  skipped_e04111_too_recent:
+    'it is too soon to decide about this one - a payment can still turn up for it. Nothing was ' +
+    'changed. Run the check again in a day or two.',
+  skipped_e04111_insufficient_observations:
+    'this one has not been checked enough times yet to be sure, so nothing was changed. A card may ' +
+    'still have been charged on the machine. Run the check again later.',
+  skipped_e04111_observations_too_close_together:
+    'the checks on this one were all made at about the same time, so they do not yet show a settled ' +
+    'answer. Nothing was changed. Run the check again tomorrow.',
+  skipped_e04111_no_attempt_timestamp:
+    'this order has no record of when a card was presented, so this check cannot decide about it - ' +
+    'now or later. A card may still have been charged on the machine. Someone needs to look at ' +
+    'this one.',
 }
 
 /** Every signed string, in one list, for the checks that apply to all of them. */
@@ -218,27 +241,54 @@ describe('the signed set as a whole', () => {
     expect(ALL_SIGNED.filter((s) => s.includes('…'))).toEqual([SIGNED_CONTROL.running])
   })
 
-  it('is twenty-six strings, and the only unsigned ones are the four E04111 refusals', () => {
+  it('is THIRTY signed strings and nothing unsigned — the four E04111 refusals were signed 2026-08-27', () => {
     /**
      * BOTH DIRECTIONS IN ONE ASSERTION, because each alone has a way of passing while wrong.
      * Counting the signed strings alone would not notice a marker deleted to get
      * `check-no-pending-copy` green; counting the unsigned ones alone would not notice a signed
      * string quietly gaining a marker back.
      */
-    expect(ALL_SIGNED).toHaveLength(26)
+    // Was 26 signed / 4 unsigned. The owner signed the four E04111 refusals on 2026-08-27 and
+    // this assertion was INVERTED rather than deleted: it was a tripwire for exactly that moment,
+    // and it fired. What it protects now is the other direction — nothing may quietly become
+    // unsigned, and no outcome may exist without a pinned string.
+    expect(ALL_SIGNED).toHaveLength(30)
 
     const unsigned = unsignedClearHeldStrings()
-    expect(unsigned).toHaveLength(4)
-    expect(CLEAR_HELD_UNSIGNED_OUTCOMES).toHaveLength(4)
-    for (const outcome of CLEAR_HELD_UNSIGNED_OUTCOMES) {
-      expect(CLEAR_HELD_OUTCOME_COPY[outcome].startsWith(CLEAR_HELD_PENDING_COPY_MARKER)).toBe(true)
-    }
+    expect(unsigned).toHaveLength(0)
+    expect(CLEAR_HELD_UNSIGNED_OUTCOMES).toHaveLength(0)
+    // The marker constant itself must survive, or the mechanism goes with the placeholders.
+    expect(CLEAR_HELD_PENDING_COPY_MARKER).toBe('PENDING COPY:')
     // Every outcome is either pinned above or named unsigned. No third category.
     for (const outcome of CLEAR_HELD_OUTCOMES) {
       const pinned = Object.prototype.hasOwnProperty.call(SIGNED_OUTCOME, outcome)
       const declaredUnsigned = CLEAR_HELD_UNSIGNED_OUTCOMES.includes(outcome)
       expect(pinned !== declaredUnsigned).toBe(true)
     }
+  })
+
+  it('tells staff to retry the three verdicts that clear by waiting, and NOT the fourth', () => {
+    // The load-bearing asymmetry in the four signed 2026-08-27. `no_attempt_timestamp` is the only
+    // one that never resolves on its own -- there is no timestamp to age -- so inviting a retry
+    // would send staff back to it forever. The other three do resolve by waiting.
+    for (const k of [
+      'skipped_e04111_too_recent',
+      'skipped_e04111_insufficient_observations',
+      'skipped_e04111_observations_too_close_together',
+    ]) {
+      expect(SIGNED_OUTCOME[k]).toMatch(/Run the check again/)
+    }
+    expect(SIGNED_OUTCOME.skipped_e04111_no_attempt_timestamp).not.toMatch(/Run the check again/)
+    expect(SIGNED_OUTCOME.skipped_e04111_no_attempt_timestamp).toContain('now or later')
+    expect(SIGNED_OUTCOME.skipped_e04111_no_attempt_timestamp).toContain('Someone needs to look at this one')
+  })
+
+  it('warns that a card may still have been charged on the two verdicts where that is true', () => {
+    // Not on `too_recent` -- there the payment may simply not have reached the gateway yet, and
+    // saying "may have been charged" on every refusal trains staff to ignore the sentence.
+    expect(SIGNED_OUTCOME.skipped_e04111_insufficient_observations).toContain('may still have been charged')
+    expect(SIGNED_OUTCOME.skipped_e04111_no_attempt_timestamp).toContain('may still have been charged')
+    expect(SIGNED_OUTCOME.skipped_e04111_too_recent).not.toContain('may still have been charged')
   })
 
   it('starts every signed line lower case, as they were signed', () => {
