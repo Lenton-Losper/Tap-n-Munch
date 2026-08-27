@@ -53,12 +53,21 @@ import {canResetTabPin} from '../lib/terminalPermissions';
 import {
   TAB_RECOVERY_ACTION_LABEL,
   TAB_RECOVERY_DONE_LABEL,
+  TAB_RECOVERY_EXPIRED,
   TAB_RECOVERY_FAILED,
   TAB_RECOVERY_IN_PROGRESS,
   TAB_RECOVERY_INSTRUCTION,
+  TAB_RECOVERY_NEW_CODE_LABEL,
   TAB_RECOVERY_NOT_PERMITTED,
   TAB_RECOVERY_TITLE,
+  tabRecoveryExpiresIn,
 } from '../constants/tabRecoveryCopy';
+import {
+  TAB_RECOVERY_TTL_MS,
+  isRecoveryExpired,
+  recoveryLifetimeMs,
+  recoverySecondsRemaining,
+} from '../lib/tabRecoveryExpiry';
 import {classifyFailureReport} from '../lib/paymentReportOutcome';
 import {
   SETTLE_ORDER_ALREADY_PAID,
@@ -135,8 +144,36 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [terminalPermissions, setTerminalPermissions] =
     useState<unknown>(undefined);
+  /**
+   * #265 requirement 4 — a dead QR must leave the screen. "A dead QR left on screen is worse than
+   * no QR": the customer scans it, is refused, and asks staff again.
+   *
+   * The code's life is held as an ISSUED INSTANT plus a DURATION, both on the device's own clock,
+   * rather than as the server's absolute `expiresAt`. That is what makes terminal clock skew cancel
+   * instead of landing on the customer — see lib/tabRecoveryExpiry.
+   */
+  const [recoveryIssuedAt, setRecoveryIssuedAt] = useState<number | null>(null);
+  const [recoveryLifetime, setRecoveryLifetime] =
+    useState<number>(TAB_RECOVERY_TTL_MS);
+  const [recoveryNow, setRecoveryNow] = useState<number>(() => Date.now());
 
   const tab = table.tab;
+
+  /**
+   * #265 requirement 4 — derived, never stored, so the expired state cannot go stale behind a
+   * missed setState. Both read the same clock the lifetime was measured against.
+   */
+  const recoveryExpired =
+    recoveryIssuedAt != null &&
+    isRecoveryExpired(recoveryIssuedAt, recoveryLifetime, recoveryNow);
+  const recoverySecondsLeft =
+    recoveryIssuedAt == null
+      ? 0
+      : recoverySecondsRemaining(
+          recoveryIssuedAt,
+          recoveryLifetime,
+          recoveryNow,
+        );
   const orders = useMemo(() => tab?.orders ?? [], [tab?.orders]);
 
   // Selectable/settleable orders — claimable only. A cancelled order is not
@@ -562,6 +599,29 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * load must never make cash untakeable — it falls back to the Skip path.
    */
   /**
+   * #265 requirement 4 — tick the countdown while a live code is on screen, and stop the moment it
+   * expires. Runs only while the sheet is open and a code is showing, so a backgrounded tab detail
+   * is not holding a 1s timer for no reason.
+   */
+  useEffect(() => {
+    if (!recoveryVisible || recoveryIssuedAt == null || !recoveryUrl) {
+      return;
+    }
+    if (isRecoveryExpired(recoveryIssuedAt, recoveryLifetime, recoveryNow)) {
+      // Already dead — the render has swapped to the expired state, so nothing left to tick.
+      return;
+    }
+    const timer = setTimeout(() => setRecoveryNow(Date.now()), 1000);
+    return () => clearTimeout(timer);
+  }, [
+    recoveryVisible,
+    recoveryIssuedAt,
+    recoveryLifetime,
+    recoveryNow,
+    recoveryUrl,
+  ]);
+
+  /**
    * #265 — load this terminal's permissions so the recovery control can be hidden where it would
    * only fail. Best effort: a failure leaves `terminalPermissions` undefined, which shows the
    * control and lets the server refuse, which is the deliberate direction (see
@@ -620,6 +680,16 @@ export default function TableDetailScreen({route, navigation}: Props) {
         // A 200 that carries no URL is a failure, not a success with nothing to show.
         throw new Error('reset-pin returned no recovery url');
       }
+      /**
+       * Requirement 4. The server's absolute instant is converted to a duration ONCE, here, against
+       * the same clock that will later measure elapsed time — so whatever this terminal thinks the
+       * time is, the skew cancels. Falls back to the route's 15-minute TTL when the server sends
+       * nothing, and is clamped both ways; the reasoning is in lib/tabRecoveryExpiry.
+       */
+      const issuedAt = Date.now();
+      setRecoveryIssuedAt(issuedAt);
+      setRecoveryLifetime(recoveryLifetimeMs(result.expiresAt, issuedAt));
+      setRecoveryNow(issuedAt);
       setRecoveryUrl(result.recoveryUrl);
     } catch (err) {
       console.warn('[TableDetail] reset-pin failed:', err);
@@ -1100,6 +1170,25 @@ export default function TableDetailScreen({route, navigation}: Props) {
               />
             ) : recoveryError ? (
               <Text style={styles.recoveryError}>{recoveryError}</Text>
+            ) : recoveryUrl && recoveryExpired ? (
+              /*
+                REQUIREMENT 4. The QR is GONE, not greyed out or left up with a note beside it —
+                a code still on screen is a code that will be scanned, and this one now refuses.
+                The customer must not be sent away with something that does not work.
+              */
+              <>
+                <Text style={styles.recoveryExpired}>
+                  {TAB_RECOVERY_EXPIRED}
+                </Text>
+                <Pressable
+                  style={styles.recoveryNewCodeButton}
+                  disabled={recoveryBusy}
+                  onPress={handleStartTabRecovery}>
+                  <Text style={styles.recoveryButtonText}>
+                    {TAB_RECOVERY_NEW_CODE_LABEL}
+                  </Text>
+                </Pressable>
+              </>
             ) : recoveryUrl ? (
               <>
                 {/*
@@ -1116,6 +1205,13 @@ export default function TableDetailScreen({route, navigation}: Props) {
                 </View>
                 <Text style={styles.recoveryInstruction}>
                   {TAB_RECOVERY_INSTRUCTION}
+                </Text>
+                {/*
+                  The countdown exists so the expiry is never a surprise: staff can see the code is
+                  about to die while the customer is still getting their phone out.
+                */}
+                <Text style={styles.recoveryCountdown}>
+                  {tabRecoveryExpiresIn(recoverySecondsLeft)}
                 </Text>
               </>
             ) : null}
@@ -1324,6 +1420,29 @@ const styles = StyleSheet.create({
     color: Colors.red,
     textAlign: 'center',
     marginVertical: Spacing.md,
+  },
+  recoveryCountdown: {
+    ...Typography.body,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginBottom: Spacing.sm,
+  },
+  /** Expiry is the design working, not a fault — so this is muted text, not an error colour. */
+  recoveryExpired: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginVertical: Spacing.md,
+  },
+  recoveryNewCodeButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    paddingVertical: 12,
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
   },
   closeButton: {
     backgroundColor: Colors.green,

@@ -65,3 +65,33 @@ export const TAB_RECOVERY_NOT_PERMITTED =
 
 /** PENDING COPY — dismisses the sheet. */
 export const TAB_RECOVERY_DONE_LABEL = 'Done';
+
+/**
+ * PENDING COPY — the live countdown under the QR.
+ *
+ * MUST CONVEY: how much longer this code will work, readable at a glance while the customer is
+ * getting their phone out. It exists so the expiry is never a surprise — requirement 4's whole
+ * point is that the customer does not scan something already dead.
+ */
+export const tabRecoveryExpiresIn = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `Expires in ${mins}:${String(secs).padStart(2, '0')}`;
+};
+
+/**
+ * PENDING COPY — replaces the QR once the code has expired.
+ *
+ * MUST CONVEY: this code is dead and must not be scanned; nothing was changed or charged; a new
+ * one can be made straight away. It must NOT read as an error — expiry is the design working, not
+ * a failure, and staff who read it as a fault will start avoiding the feature.
+ */
+export const TAB_RECOVERY_EXPIRED =
+  'This code has expired. Nothing was changed. Create a new one to try again.';
+
+/**
+ * PENDING COPY — the action that issues a fresh code from the expired state.
+ *
+ * MUST CONVEY: this makes a NEW code, and the previous one no longer works (it already does not).
+ */
+export const TAB_RECOVERY_NEW_CODE_LABEL = 'Create a new code';

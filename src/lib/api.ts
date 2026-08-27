@@ -482,6 +482,12 @@ export async function getTerminalInfo(token: string): Promise<TerminalInfo> {
 export interface ResetTabPinResult {
   ok: boolean;
   recoveryUrl: string;
+  /**
+   * When the token dies, as the SERVER reckons it. Null when the server did not send it — the
+   * screen then falls back to the route's documented 15-minute TTL rather than showing the code
+   * forever. Never compared against the device clock directly; see lib/tabRecoveryExpiry for why.
+   */
+  expiresAt: string | null;
 }
 
 /**
@@ -533,6 +539,7 @@ export async function resetTabPin(
   return {
     ok: body.ok === true,
     recoveryUrl: typeof body.recoveryUrl === 'string' ? body.recoveryUrl : '',
+    expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : null,
   };
 }
 

@@ -92,6 +92,39 @@ describe('#265 — resetTabPin on the wire', () => {
     ).rejects.toMatchObject({status: 403});
   });
 
+  it('carries expiresAt through, because requirement 4 needs it', async () => {
+    // Dropped entirely in the first cut of this route, which is how the QR came to be shown
+    // indefinitely. A screen cannot expire a code whose expiry never reached it.
+    const result = await withApi(
+      {
+        status: 200,
+        body: {
+          ok: true,
+          recoveryUrl: RECOVERY_URL,
+          expiresAt: '2026-08-27T05:15:00.000Z',
+        },
+      },
+      async api => api.resetTabPin(TAB, 'tok'),
+    );
+
+    expect(result.expiresAt).toBe('2026-08-27T05:15:00.000Z');
+  });
+
+  it('reports a missing or non-string expiresAt as null, never a fabricated value', async () => {
+    // Null is a fact the screen acts on — fall back to the documented TTL. A guessed timestamp
+    // would look authoritative and be wrong.
+    for (const body of [
+      {ok: true, recoveryUrl: RECOVERY_URL},
+      {ok: true, recoveryUrl: RECOVERY_URL, expiresAt: 900},
+      {ok: true, recoveryUrl: RECOVERY_URL, expiresAt: null},
+    ]) {
+      const result = await withApi({status: 200, body}, async api =>
+        api.resetTabPin(TAB, 'tok'),
+      );
+      expect(result.expiresAt).toBeNull();
+    }
+  });
+
   it('still treats a 401 as an expired session, not a permission problem', async () => {
     // The other side of the split. 401 must keep its existing meaning app-wide; only 403 is
     // reinterpreted, and only on this route, because only this route is permission-gated.
@@ -120,7 +153,7 @@ describe('#265 — resetTabPin on the wire', () => {
       async api => api.resetTabPin(TAB, 'tok'),
     );
 
-    expect(Object.keys(result).sort()).toEqual(['ok', 'recoveryUrl']);
+    expect(Object.keys(result).sort()).toEqual(['expiresAt', 'ok', 'recoveryUrl']);
     expect(JSON.stringify(result)).not.toContain('4321');
   });
 });
