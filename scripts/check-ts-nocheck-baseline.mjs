@@ -38,13 +38,20 @@ const SEARCH_DIRS = ['app', 'lib', 'components', 'workers']
 const EXTS = ['.ts', '.tsx']
 
 /**
- * The nine files carrying `@ts-nocheck` as of 2026-08-19, down from #172's fourteen.
+ * The files carrying `@ts-nocheck`, down from #172's fourteen.
  *
- * Each entry is a file the typecheck CANNOT see. Two of them — my-orders and orders-dashboard —
- * are the screens a customer and a staff member actually look at, which is why a green `tsc` has
- * never been evidence about them.
+ * Each entry is a file the typecheck CANNOT see. `my-orders` — the screen a customer actually
+ * looks at — is still one of them, which is why a green `tsc` has never been evidence about it.
  *
  * REMOVE AN ENTRY WHEN YOU FIX THE FILE. The check tells you when one is ready to go.
+ *
+ * 2026-08-26: `components/orders-dashboard.tsx` came OFF the list. It was 22 errors, and 21 of
+ * them were one root cause each rather than 22 problems: annotating `normalizedOrder` as `Order`
+ * cleared 18 on its own (spreading a type with an index signature drops the index signature), and
+ * three more were a deprecated field, an implicit `any` and a weak-type mismatch. The 22nd was a
+ * real defect the pragma had been hiding — the `tabs` realtime handler dropped
+ * `linked_unpaid_tab_id`, erasing the #211 unpaid-tab-elsewhere flag on every realtime update.
+ * That ratio is the argument for working the remaining entries: they are not 4,000 errors.
  */
 const BASELINE = new Set([
   'app/menu/[restaurantId]/my-orders/page.tsx',
@@ -55,7 +62,6 @@ const BASELINE = new Set([
   'components/menu-management-new.tsx',
   'components/menu-management-v2.tsx',
   'components/menu-management.tsx',
-  'components/orders-dashboard.tsx',
 ])
 
 function walk(dir, out = []) {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type ComponentType } from 'react'
@@ -40,7 +39,10 @@ import {
 import { FEED_CONNECTION_COPY } from '@/lib/dashboard/feed-connection-copy'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import {
+  effectiveRequestPricing,
+  type OrderRequestPricingRow,
+} from '@/lib/orders/order-request-pricing'
 import {
   STALE_REQUEST_THRESHOLD_MS,
   isRequestOverdue,
@@ -242,7 +244,14 @@ function OrderRequestCard({
   onAccept,
   onDecline,
 }: {
-  request: OrderRequest & Record<string, any>
+  /**
+   * `OrderRequestPricingRow` is named here rather than left to the index signature. `OrderRequest`
+   * declares only id/restaurant_id/status by hand, and `OrderRequestPricingRow` is a weak type --
+   * every member optional -- so passing one to the other is TS2559, "no properties in common", even
+   * though the row carries them all at runtime. Declaring what this card actually needs is the
+   * honest form; a cast at the call site would silence the same thing while hiding it.
+   */
+  request: OrderRequest & OrderRequestPricingRow & Record<string, any>
   currency: string
   timeAgoLabel: string
   /** The dashboard's shared clock, so a lock going stale re-renders without a row changing. */
@@ -798,6 +807,10 @@ export function OrdersDashboard() {
     if (restaurant?.id) {
       setOrderScope({
         restaurantId: String(restaurant.id),
+        // Both halves, as `resolveOrderRestaurantScope` sets them on the branch below: the same
+        // uuid twice. `firebaseRestaurantId` is deprecated and nothing in this file reads it, so
+        // this is the shape being made honest, not a behaviour change.
+        firebaseRestaurantId: String(restaurant.id),
       })
       return
     }
@@ -977,12 +990,13 @@ export function OrdersDashboard() {
           table: 'tabs',
           filter: `restaurant_id=eq.${restaurantUuid}`,
         },
-        (payload) => {
+        (payload: { new?: Record<string, unknown> | null }) => {
           const row = payload.new as {
             id?: string
             status?: string
             payment_preference?: string | null
             members?: unknown
+            linked_unpaid_tab_id?: unknown
           }
           if (!row?.id) return
           setTabInfoById((prev) => ({
@@ -993,6 +1007,27 @@ export function OrdersDashboard() {
               members: Array.isArray(row.members)
                 ? row.members
                 : prev[String(row.id)]?.members ?? [],
+              /**
+               * CARRIED, not dropped. This entry REPLACES the one `loadTabs` built, and that one is
+               * the only place the unpaid-tab-elsewhere pointer (#211 follow-up) ever came from.
+               * Omitting it here erased the amber flag from every order on that tab the moment any
+               * `tabs` row changed -- including the change that matters most, the customer moving
+               * to `ready_to_pay`, which is exactly when staff need to know about the other tab.
+               * Nothing else refills it: `unpaidTabElsewhere` is resolved in `loadTabs`'s second
+               * pass and no realtime event re-runs it.
+               *
+               * Read the payload when it carries the column and fall back to the previous value
+               * when it does not, so this is right whether or not the publication ships every
+               * column. A stale pointer is harmless by construction: the badge only renders while
+               * `unpaidTabElsewhere[linkedId]` still shows that tab unpaid, which is how it clears
+               * on settle without anything writing to the settle path.
+               */
+              linked_unpaid_tab_id:
+                'linked_unpaid_tab_id' in row
+                  ? row.linked_unpaid_tab_id
+                    ? String(row.linked_unpaid_tab_id)
+                    : null
+                  : prev[String(row.id)]?.linked_unpaid_tab_id ?? null,
             },
           }))
         }
@@ -2390,7 +2425,20 @@ export function OrdersDashboard() {
               const memberSessionId = String(
                 (order as Order & { member_session_id?: string | null }).member_session_id || ''
               ).trim()
-              const normalizedOrder = {
+              /**
+               * ANNOTATED `Order` ON PURPOSE — this is not decoration, it is 18 of this file's 22
+               * type errors.
+               *
+               * `Order` is `Record<string, any> & { id; status; ... }`. Spreading a value of that
+               * type into an object literal DROPS the index signature: TypeScript infers only the
+               * named members plus what the literal adds. So without this annotation every access
+               * to a column `Order` does not name by hand -- `order_number`, `channel`,
+               * `table_number`, `tab_id`, `kiosk_order_number`, `customer_name`,
+               * `order_instructions`, `table_session_id` -- is a TS2339, even though `order` itself
+               * accepts all of them one line above. Runtime is identical either way; the object
+               * really does carry those columns, which is why the screen renders them.
+               */
+              const normalizedOrder: Order = {
                 ...order,
                 items: Array.isArray(order.items) ? order.items : [],
                 customer: order.customer || {},

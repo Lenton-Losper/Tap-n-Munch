@@ -628,6 +628,16 @@ jobs:
       # only the bundler noticed, by which point it was a failed deploy on every push.
       - name: Named imports in @ts-nocheck files resolve
         run: node scripts/check-nocheck-imports-resolve.mjs
+      # The other half of the same hole, and the half that has now taken production down. On
+      # 2026-08-26 a real call in orders-dashboard.tsx was replaced with `noFallbackAtAll(` and
+      # tsc, the import checker above, and all 211 jest suites stayed GREEN -- the pragma hides the
+      # file, the name is not an import, and an unbound name is `undefined` rather than a throw.
+      # This strips the pragma in memory and asks the real compiler which names resolve to nothing.
+      # No allowlist: the compiler's own scope resolution handles dynamic dispatch, object methods,
+      # shadowed locals and JSX names for free. It self-tests two-sided before reporting, driving
+      # the same function it checks with.
+      - name: Names referenced in @ts-nocheck files resolve
+        run: node scripts/check-nocheck-names-resolve.mjs
       - name: Every order-number test goes through hasAllocatedOrderNumber
         run: npx tsx scripts/check-order-number-guard.ts
 
