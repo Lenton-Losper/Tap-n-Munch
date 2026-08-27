@@ -133,6 +133,28 @@ const PRECONDITIONS = {
     // The count is advisory -- receipts keep being issued -- so it is printed, not enforced.
     return { out, ok: col[0]?.data_type === 'jsonb' }
   },
+  /**
+   * #156's cron_runs heartbeat table. CREATE TABLE IF NOT EXISTS — additive, and dropping it
+   * removes visibility without breaking a caller. The preconditions therefore check the two things
+   * that would make creating it WRONG rather than merely redundant.
+   */
+  '20260827120000': async (c) => {
+    const { rows: existing } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.tables
+        WHERE table_schema='public' AND table_name='cron_runs'`,
+    )
+    // If something already owns this name, IF NOT EXISTS would silently adopt a table with the
+    // wrong shape and every later insert would fail on a column that is not there.
+    const { rows: cols } = await c.query(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='cron_runs'`,
+    )
+    const out = [
+      `  public.cron_runs already exists .... ${existing[0].n === 1 ? 'YES' : 'no'}`,
+      `  columns on it ..................... ${cols[0].n}   <- must be 0 unless we created it`,
+    ]
+    return { out, ok: existing[0].n === 0 }
+  },
   '20260826170000': async (c) => {
     const { rows: dead } = await c.query(
       `SELECT count(*)::int AS venues, count(payment_methods)::int AS with_value FROM restaurants`,
