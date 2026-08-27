@@ -419,13 +419,17 @@ station so each can mark its own done.
 | `404` | `{"error":"Tab not found"}` | Tab vanished. Return to the grid and refresh. |
 | `409` | `{"code":"TAB_NOT_OPEN"}` | The tab was settled or closed while the waiter was building the round. **Do not silently discard the basket** — tell them the table was closed and offer to re-open it. |
 | `409` | `{"code":"OUT_OF_STOCK","outOfStock":[{"item":"Ribeye","ingredient":"Beef"}]}` | Highlight **every** listed item at once in the basket. Do not make them discover one refusal at a time. |
-| `502` | `{"code":"LINES_NOT_WRITTEN","order_id":"...","lines_written":false}` | **See below. This one is important.** |
+| `502` | `{"error":"…","code":"LINES_NOT_WRITTEN","order_id":"…","order_number":1043,"lines_written":false}` | **See below. This one is important.** |
 | `500` | `{"error":"..."}` | Retryable with the same idempotency key |
 
 ### The `502 LINES_NOT_WRITTEN` case
 
 This means **the round was recorded on the tab, but the kitchen and bar were not
 notified.** The customer will be billed for food nobody has been told to cook.
+
+The body always carries **both** `error` (the full sentence below) and
+`order_number`, alongside `code`, `order_id` and `lines_written: false`. You do
+not need a fallback string, though keeping one costs nothing.
 
 Do not retry it silently and do not show a generic error. Show the message the
 server sends, prominently, and keep the `order_number` on screen:
