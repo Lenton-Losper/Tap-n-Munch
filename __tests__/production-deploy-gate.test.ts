@@ -211,6 +211,10 @@ describe('every static orders gate is actually invoked by a workflow', () => {
     'scripts/check-orders-fixture-excluded.ts',
     'scripts/check-nocheck-undefined-identifiers.mjs',
     'scripts/check-migration-version-unique.mjs',
+    // Added 2026-08-27. Ran in no workflow, and could not fail even if it had: one boolean per
+    // FILE, catch bodies read from raw source so a COMMENTED-OUT guard counted, and zero callers
+    // printing an all-clear at exit 0.
+    'scripts/check-terminal-auth-catch.ts',
   ]
 
   const runsIn = (file: string): string[] =>

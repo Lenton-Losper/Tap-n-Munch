@@ -664,6 +664,11 @@ jobs:
       # the promotion, which is the whole reason the sibling read-bounded gate runs in both.
       - name: Cross-venue measurements over orders exclude the stress fixtures
         run: npx tsx scripts/check-orders-fixture-excluded.ts
+      # WIRED 2026-08-27 -- see the fuller note in production-worker.yml. Guards the terminal's
+      # ability to recover from an ordinary hourly token expiry. It ran in no workflow and had
+      # three ways of not failing, all now fixed and mutation-verified. Static, no credentials.
+      - name: Terminal auth handlers return a thrown auth Response unchanged
+        run: npx tsx scripts/check-terminal-auth-catch.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.

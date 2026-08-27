@@ -165,6 +165,19 @@ jobs:
       # Static, no credentials, no database, and it self-tests its detectors before reporting.
       - name: Cross-venue measurements over orders exclude the stress fixtures
         run: npx tsx scripts/check-orders-fixture-excluded.ts
+      # WIRED 2026-08-27. Guards the terminal's ability to RECOVER: requireTerminalAuth normalises
+      # every auth failure to a Response, and terminalFetch refreshes and retries on 401 only. A
+      # handler that swallows the thrown Response turns the ordinary hourly token expiry into its
+      # own default status, which the device cannot act on -- measured on production 2026-08-26 as
+      # `Bearer not-a-real-token -> 500` on all four hostnames, on routes including the
+      # "Check payment status" button.
+      #
+      # It ran in no workflow, and until today it could not fail: one boolean per FILE (a good GET
+      # vouched for a bad POST), catch bodies read from RAW source (a guard COMMENTED OUT still
+      # counted), and zero callers printed an all-clear at exit 0. All three are fixed and each is
+      # mutation-verified both ways. Static, no credentials, no database.
+      - name: Terminal auth handlers return a thrown auth Response unchanged
+        run: npx tsx scripts/check-terminal-auth-catch.ts
       # #172: `@ts-nocheck` hides a file from `tsc --noEmit` entirely, and the gate exists
       # because a TS2339 reached production -- exactly the class the pragma suppresses. This does
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
