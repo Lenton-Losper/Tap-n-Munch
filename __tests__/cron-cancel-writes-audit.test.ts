@@ -25,8 +25,12 @@ const MON = 'FT-TEST-0001'
 
 type Row = Record<string, unknown>
 
-const withRef = () => ({ id: ORDER, restaurant_id: RESTAURANT, total: 33, paycloud_merchant_order_no: MON })
-const noRef = () => ({ id: ORDER, restaurant_id: RESTAURANT, total: 33, paycloud_merchant_order_no: null })
+  // #353: the sweep now reads EVERY channel and filters at the partition, so `channel` is
+  // load-bearing in this fixture. It was implicitly 'pos' before -- the candidate query carried
+  // .eq('channel','pos'), so no other value could ever reach the code under test. An absent
+  // channel is deliberately NOT treated as 'pos': unknown is not not-paid, and it is not POS either.
+const withRef = () => ({ id: ORDER, restaurant_id: RESTAURANT, total: 33, channel: 'pos', paycloud_merchant_order_no: MON })
+const noRef = () => ({ id: ORDER, restaurant_id: RESTAURANT, total: 33, channel: 'pos', paycloud_merchant_order_no: null })
 
 function makeSupabase(opts: {
   candidate: Row

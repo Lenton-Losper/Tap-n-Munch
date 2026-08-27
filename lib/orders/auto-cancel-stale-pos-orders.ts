@@ -91,7 +91,22 @@ type StaleOrderCandidate = {
   id: string
   restaurant_id: string
   total: number
+  channel: string | null
   paycloud_merchant_order_no: string | null
+}
+
+/**
+ * #353 — a stale order this sweep can SEE but must never act on.
+ *
+ * Carries the figures a caller needs to report it without a second query, because the point of
+ * surfacing is that somebody finds out.
+ */
+export type SurfacedStaleOrder = {
+  id: string
+  restaurantId: string
+  channel: string
+  total: number
+  hasGatewayReference: boolean
 }
 
 export type AutoCancelStalePosOrdersResult = {
@@ -137,7 +152,46 @@ export type AutoCancelStalePosOrdersResult = {
    */
   releasedVerificationUnavailableCount: number
   releasedVerificationUnavailableIds: string[]
+  /**
+   * #353. Stale pending orders on a channel this sweep does NOT act on. Seen, reported, and
+   * otherwise untouched: not cancelled, not probed, not written to in any way.
+   *
+   * WHY VISIBILITY WIDENS BUT THE CANCEL DOES NOT. Measured on production 2026-08-27, the stale
+   * pending population was:
+   *
+   *     channel   stuck   avg days   oldest   no gateway reference
+   *     pos           7       10.9     14.4    0 of 7
+   *     table         9        3.3      8.0    9 of 9
+   *     kiosk         4       33.8     40.6    3 of 4
+   *
+   * The sweep saw seven of twenty, and the thirteen it could not see were stuck THREE TIMES
+   * LONGER, with nothing anywhere looking for them. Eleven of those thirteen carry no
+   * paycloud_merchant_order_no at all.
+   *
+   * That last figure is exactly why the filter alone must not be widened. Every branch below the
+   * partition assumes a POS/Finatic shape: a merchant order number to quote, a gateway to ask,
+   * and E04111 as the discriminator between "no record yet" and "no record ever". An order with
+   * no reference cannot be verified by anything, so the no-reference branch cancels it outright
+   * on the reasoning that prepare-payment never ran. On a POS order that reasoning holds. On a
+   * `table` order it does not: those are pay-at-till, they legitimately never had a gateway
+   * reference, and eleven of them are `ready`, `preparing` or `completed` — the food was made.
+   * Cancelling them would write off real debt on a rule imported from another channel.
+   *
+   * So these are SURFACED, and the surface is components/held-for-review-panel.tsx. This field
+   * exists so a cron run also says the number out loud; it is not the customer of it.
+   */
+  surfacedNeedsHumanCount: number
+  surfacedNeedsHumanIds: string[]
+  surfacedNeedsHuman: SurfacedStaleOrder[]
 }
+
+/**
+ * The one channel whose stale pending orders this sweep may cancel or verify.
+ *
+ * Named rather than written as a bare `'pos'` at the partition, so the blast radius of the
+ * cancel path is greppable and a future channel cannot be swept into it by an edit to a query.
+ */
+export const SWEEP_ACTIONABLE_CHANNEL = 'pos'
 
 /**
  * #223 quarantine. A gateway-confirmed payment whose amount we could not agree.
@@ -302,7 +356,22 @@ async function releaseHeldVerificationUnavailable(
     .eq('payment_status', VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS)
   if (restaurantId) query = query.eq('restaurant_id', restaurantId)
 
-  const held = await fetchAllRows<StaleOrderCandidate>(query, {
+  /**
+   * Its OWN row type, not StaleOrderCandidate. #353 added `channel` to that type because the
+   * candidate query now selects it; this select does not, and fetchAllRows' generic is an
+   * unchecked cast, so reusing it would have declared a column that is always undefined here.
+   *
+   * NO channel filter belongs on this read either. A held order is by construction one the sweep
+   * itself held, and the hold only ever happens on the POS path -- but the release must return
+   * whatever it finds in the hold status regardless, because a row this function refuses to
+   * release is a row nothing else will.
+   */
+  const held = await fetchAllRows<{
+    id: string
+    restaurant_id: string
+    total: number
+    paycloud_merchant_order_no: string | null
+  }>(query, {
     label: 'releaseHeldVerificationUnavailable',
   })
   if (held.length === 0) return []
@@ -461,9 +530,21 @@ async function cancelByIds(
 
 /**
  * Cancels Sale-tab/terminal POS orders that sat at payment_status='pending' past the
- * stale timeout. Deliberately scoped to channel='pos' only -- other channels can
- * legitimately sit pending for a long time (pay-at-till), so a blanket filter would
- * wrongly cancel those too.
+ * stale timeout.
+ *
+ * #353 SPLIT VISIBILITY FROM ACTION. Until 2026-08-27 the candidate query itself carried
+ * `.eq('channel','pos')`, so the other channels were not merely spared -- they were INVISIBLE,
+ * and nothing else in the system looked for them either. Measured that day: the sweep saw 7 of
+ * 20 stale pending orders, and the 13 it could not see had been stuck three times longer, the
+ * oldest for 40.6 days.
+ *
+ * The query now reads EVERY channel and the `pos` filter has moved to the partition. Non-POS
+ * orders are reported in `surfacedNeedsHuman` and are otherwise untouched: not cancelled, not
+ * probed, not written to. The cancel path below still assumes a POS/Finatic shape -- a merchant
+ * order number, a gateway that can be asked, E04111 as the discriminator -- and 11 of those 13
+ * orders carry no gateway reference at all, so widening the filter alone would have cancelled
+ * orders that could never have been verified. The staff surface is where they get resolved; see
+ * lib/orders/held-for-review.ts.
  *
  * Split by whether a Finatic payment attempt could have been initiated at all:
  *  - No paycloud_merchant_order_no at all: cancel immediately, no network call
@@ -517,6 +598,9 @@ export async function autoCancelStalePosOrders(
     heldVerificationUnavailableIds: [],
     releasedVerificationUnavailableCount: 0,
     releasedVerificationUnavailableIds: [],
+    surfacedNeedsHumanCount: 0,
+    surfacedNeedsHumanIds: [],
+    surfacedNeedsHuman: [],
   }
 
   /**
@@ -552,10 +636,17 @@ export async function autoCancelStalePosOrders(
     }
   }
 
+  /**
+   * #353 — NO `.eq('channel', 'pos')` HERE ANY MORE, and `channel` is now selected.
+   *
+   * The filter moved DOWN, to the partition below, and the difference is the whole change: a
+   * channel filter on the query makes the other channels invisible, a channel filter on the
+   * ACTION makes them visible and untouched. The cancel and verify paths are unchanged and still
+   * see only `pos`.
+   */
   let candidateQuery = supabase
     .from('orders')
-    .select('id, restaurant_id, total, paycloud_merchant_order_no')
-    .eq('channel', 'pos')
+    .select('id, restaurant_id, total, channel, paycloud_merchant_order_no')
     .eq('payment_status', 'pending')
     .lt('placed_at', cutoffIso)
 
@@ -563,17 +654,60 @@ export async function autoCancelStalePosOrders(
     candidateQuery = candidateQuery.eq('restaurant_id', restaurantId)
   }
 
-  // #323: a GLOBAL sweep -- every stale pending POS order across every restaurant, with no upper
-  // bound but the cutoff. Nine rows today; it grows with unpaid POS attempts, not with sales.
+  // #323: a GLOBAL sweep -- every stale pending order across every restaurant, with no upper
+  // bound but the cutoff. Twenty rows today; it grows with unpaid attempts, not with sales.
   const candidates = await fetchAllRows<{
     id: string
     restaurant_id: string
     total: number
+    channel: string | null
     paycloud_merchant_order_no: string | null
   }>(candidateQuery, { label: 'autoCancelStalePosOrders' })
   if (candidates.length === 0) return finalise(result)
 
-  const rows = candidates as StaleOrderCandidate[]
+  const allRows = candidates as StaleOrderCandidate[]
+
+  /**
+   * THE PARTITION. Everything below this line still operates on POS orders only.
+   *
+   * `rows` is deliberately reassigned to the POS subset rather than the whole candidate set, so
+   * that `noAttempt`, `withAttempt`, the Finatic loop and both cancel call sites are reached by
+   * exactly the orders they were reached by before this change. A non-POS order cannot enter any
+   * of them without an edit here.
+   *
+   * Channel is compared after trim+lowercase: it is free text, and a stray 'POS' must not fall
+   * out of the actionable set and start being merely surfaced instead -- that would be a silent
+   * behaviour change on the money path, in the safe-looking direction.
+   */
+  const channelOf = (row: StaleOrderCandidate) =>
+    String(row.channel ?? '')
+      .trim()
+      .toLowerCase()
+
+  const rows = allRows.filter((row) => channelOf(row) === SWEEP_ACTIONABLE_CHANNEL)
+
+  for (const row of allRows) {
+    if (channelOf(row) === SWEEP_ACTIONABLE_CHANNEL) continue
+    result.surfacedNeedsHuman.push({
+      id: String(row.id),
+      restaurantId: String(row.restaurant_id),
+      channel: channelOf(row) || '(none)',
+      total: Number(row.total),
+      hasGatewayReference: String(row.paycloud_merchant_order_no ?? '').trim() !== '',
+    })
+  }
+  result.surfacedNeedsHumanIds = result.surfacedNeedsHuman.map((o) => o.id)
+
+  /**
+   * #353 + #153, MERGED 2026-08-27: `finalise`, not a bare `return result`.
+   *
+   * This is a THIRD early return, added by #353 after #153 introduced finalise() precisely
+   * because early returns were reporting zero for counts whose id lists were non-empty. It is the
+   * most exposed of the three: the release pass runs BEFORE it, so a run whose only stale
+   * candidates were non-POS would report `releasedVerificationUnavailable: 0` having just
+   * released orders, and would report `surfacedNeedsHuman: 0` having just surfaced them.
+   */
+  if (rows.length === 0) return finalise(result)
   // The `payment.attempt_started` lookup that used to live here fed the removed E04111 cancel
   // gate (see the catch block below) and has no other consumer, so it goes with it rather than
   // sitting dead.
@@ -955,6 +1089,10 @@ export async function autoCancelStalePosOrders(
  * above reported zero for fields whose id lists were non-empty -- harmless while the only such
  * field was populated after them, and a live wrong number the moment #153 added a field populated
  * BEFORE them (the release pass runs first).
+ *
+ * #353 added a THIRD early return (`rows.length === 0`, the run whose only stale candidates were
+ * non-POS) and a field populated before it, so its count is derived here too rather than assigned
+ * at the partition. One rule, one place, no exceptions -- the exception is what the bug was.
  */
 function finalise(result: AutoCancelStalePosOrdersResult): AutoCancelStalePosOrdersResult {
   result.cancelledCount = result.cancelledIds.length
@@ -963,5 +1101,6 @@ function finalise(result: AutoCancelStalePosOrdersResult): AutoCancelStalePosOrd
   result.skippedUncertainCount = result.skippedUncertainIds.length
   result.heldVerificationUnavailableCount = result.heldVerificationUnavailableIds.length
   result.releasedVerificationUnavailableCount = result.releasedVerificationUnavailableIds.length
+  result.surfacedNeedsHumanCount = result.surfacedNeedsHumanIds.length
   return result
 }

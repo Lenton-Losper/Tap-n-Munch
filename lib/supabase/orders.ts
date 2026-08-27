@@ -6,6 +6,8 @@ import {
   type OrderRestaurantScope,
 } from './restaurants'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { HELD_FOR_REVIEW_PAYMENT_STATUSES } from '@/lib/payments/payment-integrity'
+import { STRANDED_PENDING_THRESHOLD_MS } from '@/lib/orders/held-for-review'
 
 export type Order = Record<string, unknown> & {
   id: string
@@ -131,6 +133,78 @@ export async function getAllOpenRestaurantOrders(
     { label: 'getOpenOrders' },
   )
   return data ?? []
+}
+
+/**
+ * #353 — the rows behind the "Held for review" surface: not paid, not cancelled, needs a person.
+ *
+ * THE ABSENT FILTER IS THE POINT. Every other read in this file carries `.eq('is_closed', false)`.
+ * This one must not, and the reason is measured rather than theoretical: on production 2026-08-27
+ * ALL twenty stale pending orders carry `is_closed = true`, and exactly ONE order in the whole
+ * database has `is_closed = false`. Adding that filter here would return zero rows while N$484 sat
+ * unresolved — a false all-clear, which is a worse outcome than having no surface at all. The
+ * close route already documents the mechanism: it detaches unpaid orders from the table with
+ * their payment_status preserved and sets is_closed=true, so "money still owed stays RECORDED and
+ * becomes INVISIBLE at the same moment".
+ *
+ * TWO QUERIES, NOT ONE `.or()`. The predicate is a disjunction — a held status at ANY age, or
+ * plain `pending` past the stranded threshold — and PostgREST expresses that with `.or()`, whose
+ * argument is a string parsed server-side. `.eq()`/`.in()`/`.lt()` are parser-free. Nothing here
+ * is user-supplied today, so this is not a live injection; it is refusing to open the seam at all
+ * in a file where the next caller might pass something that is. Same reformulate-don't-sanitise
+ * ruling as by-payment-ref.
+ *
+ * NO AGE FILTER ON THE HELD LEG. A gateway has already answered about those orders; they need a
+ * person immediately, not in two hours.
+ *
+ * The status='cancelled'-but-payment_status='pending' rows are NOT excluded here. Filtering them
+ * in SQL would need a byte-exact comparison against a free-text column; `heldForReviewCause`
+ * drops them after normalising, which is the house rule for status columns.
+ */
+export async function getHeldForReviewOrders(
+  restaurantId: string,
+  options?: {
+    scopeOverride?: OrderRestaurantScope | null
+    /** Cut-off for the stranded-`pending` leg. Defaults to STRANDED_PENDING_THRESHOLD_MS ago. */
+    strandedBefore?: Date
+    thresholdMs?: number
+  },
+) {
+  const scope =
+    options?.scopeOverride ?? (await resolveOrderRestaurantScope(restaurantId))
+  const thresholdMs = options?.thresholdMs ?? STRANDED_PENDING_THRESHOLD_MS
+  const cutoff = (options?.strandedBefore ?? new Date(Date.now() - thresholdMs)).toISOString()
+
+  const heldRows = await fetchAllRows(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', scope.restaurantId)
+      .in('payment_status', [...HELD_FOR_REVIEW_PAYMENT_STATUSES])
+      .order('placed_at', { ascending: true }),
+    { label: 'getHeldForReviewOrders:held' },
+  )
+
+  const strandedRows = await fetchAllRows(
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', scope.restaurantId)
+      .eq('payment_status', 'pending')
+      .lt('placed_at', cutoff)
+      .order('placed_at', { ascending: true }),
+    { label: 'getHeldForReviewOrders:stranded' },
+  )
+
+  // Dedupe by id. The two legs cannot overlap today, but a future status that is both `pending`
+  // and a member of the held set would be rendered twice, and a duplicated row on a money screen
+  // reads as a second unpaid order.
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const row of [...(heldRows ?? []), ...(strandedRows ?? [])]) {
+    const id = String((row as { id?: unknown }).id ?? '')
+    if (id) byId.set(id, row as Record<string, unknown>)
+  }
+  return [...byId.values()]
 }
 
 export type OrderRealtimePayload = {

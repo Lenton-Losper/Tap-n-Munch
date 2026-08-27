@@ -82,6 +82,17 @@ async function runCleanup(req: Request) {
       pos.releasedVerificationUnavailableIds,
     )
   }
+  if (pos.surfacedNeedsHumanCount > 0) {
+    // #353. Stale pending orders on a channel this sweep does not act on. NOTHING WAS WRITTEN
+    // for these -- they are logged here so the number exists somewhere other than the staff
+    // screen, and console.error rather than console.warn because "13 orders nobody is looking
+    // for" is the condition this whole change exists to stop being silent about.
+    console.error(
+      '[CLEANUP-STALE-ORDERS] Non-POS stale pending orders SURFACED, not actioned (see the Held for review panel):',
+      pos.surfacedNeedsHumanCount,
+      pos.surfacedNeedsHuman,
+    )
+  }
 
   const hostedFallback = { expiredCount: 0, closedTabCount: 0 }
   let hosted: { expiredCount: number; closedTabCount: number } = hostedFallback
@@ -148,6 +159,11 @@ async function runCleanup(req: Request) {
     posHeldVerificationUnavailableIds: pos.heldVerificationUnavailableIds,
     posReleasedVerificationUnavailable: pos.releasedVerificationUnavailableCount,
     posReleasedVerificationUnavailableIds: pos.releasedVerificationUnavailableIds,
+    // #353 -- non-POS stale pending orders the sweep can now SEE and deliberately does not touch.
+    // Deliberately NOT prefixed `pos`, unlike every key above it: these are the orders that are
+    // not POS, and naming them posSurfaced... would say the opposite of what the field means.
+    surfacedNeedsHuman: pos.surfacedNeedsHumanCount,
+    surfacedNeedsHumanIds: pos.surfacedNeedsHumanIds,
     hostedExpired: hosted.expiredCount,
     hostedClosedTabs: hosted.closedTabCount,
     reconcile,

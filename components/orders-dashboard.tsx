@@ -6,7 +6,17 @@ import {
   resolveOrderRestaurantScope,
   type OrderRestaurantScope,
 } from '@/lib/supabase/restaurants'
-import { subscribeRestaurantOrdersRealtime, getAllOpenRestaurantOrders } from '@/lib/supabase/orders'
+import {
+  subscribeRestaurantOrdersRealtime,
+  getAllOpenRestaurantOrders,
+  getHeldForReviewOrders,
+} from '@/lib/supabase/orders'
+import { HeldForReviewPanel } from '@/components/held-for-review-panel'
+import {
+  selectHeldForReviewOrders,
+  type HeldForReviewCandidate,
+  type HeldForReviewRow,
+} from '@/lib/orders/held-for-review'
 import {
   subscribeOrderRequestsRealtime,
   getWaitingOrderRequests,
@@ -665,6 +675,22 @@ export function OrdersDashboard() {
     Record<string, { table_number: number | null; payable: number; pending: number }>
   >({})
 
+  /**
+   * #353 — the Held for review rows. Loaded by their OWN query, deliberately.
+   *
+   * They cannot be derived from `allOrders`. That array comes from getAllOpenRestaurantOrders,
+   * which filters `is_closed = false`, and on production every single stranded order carries
+   * `is_closed = true` — 20 of 20 on 2026-08-27, against exactly one row in the whole database
+   * with is_closed = false. A panel fed from `allOrders` would render empty while N$484 sat
+   * unresolved, which is the precise failure this panel exists to remove.
+   *
+   * `heldForReviewError` is a separate piece of state from an empty list because the panel must
+   * be able to say "this did not load" instead of showing nothing and being read as all clear.
+   */
+  const [heldForReviewRows, setHeldForReviewRows] = useState<HeldForReviewRow[]>([])
+  const [heldForReviewLoading, setHeldForReviewLoading] = useState(true)
+  const [heldForReviewError, setHeldForReviewError] = useState<string | null>(null)
+
   const tabInfoScopeId = orderScope?.restaurantId ?? ''
   const [tabInfoScopeKey, setTabInfoScopeKey] = useState(tabInfoScopeId)
   if (tabInfoScopeKey !== tabInfoScopeId) {
@@ -1048,6 +1074,45 @@ export function OrdersDashboard() {
       supabase.removeChannel(channel)
     }
   }, [orderScope?.restaurantId, refreshOpenOrders])
+
+  /**
+   * #353 — load the Held for review rows.
+   *
+   * Re-runs on `allOrders` as well as on the scope, so that resolving one of these orders on the
+   * dashboard makes it leave the panel without a manual refresh. It is a second network read per
+   * order change, which is affordable here: the two queries are indexed on
+   * (restaurant_id, payment_status) and return single-digit row counts on every real venue.
+   *
+   * A FAILURE SETS THE ERROR AND CLEARS NOTHING. Keeping the last known rows on screen while
+   * saying the refresh failed is strictly better than replacing a true list with an empty one.
+   */
+  useEffect(() => {
+    const restaurantUuid = orderScope?.restaurantId
+    if (!dashboardRestaurantId || !restaurantUuid) return
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        const rows = await getHeldForReviewOrders(dashboardRestaurantId, {
+          scopeOverride: orderScope,
+        })
+        if (cancelled) return
+        setHeldForReviewRows(selectHeldForReviewOrders(rows as HeldForReviewCandidate[]))
+        setHeldForReviewError(null)
+      } catch (err) {
+        if (cancelled) return
+        console.error('[HELD-FOR-REVIEW] load failed', err)
+        setHeldForReviewError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (!cancelled) setHeldForReviewLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [dashboardRestaurantId, orderScope, allOrders])
 
   // Single Realtime subscription for all order INSERT/UPDATE/DELETE events
   /* eslint-disable react-hooks/set-state-in-effect -- subscription lifecycle guards; React Query refactor out of scope */
@@ -2286,6 +2351,18 @@ export function OrdersDashboard() {
 
       {/* Orders List */}
       <div className="container mx-auto px-6 py-6">
+        {/*
+          #353 — OUTSIDE the tab switch, on purpose.
+          These orders belong to no workflow tab: they are is_closed, so they are absent from
+          every list below, and putting the panel behind a tab would mean a staff member has to
+          already suspect something is wrong before they can find out that it is.
+        */}
+        <HeldForReviewPanel
+          rows={heldForReviewRows}
+          loading={heldForReviewLoading}
+          error={heldForReviewError}
+          currency={restaurant?.currency || 'N$'}
+        />
         {activeTab === 'waiting_review' ? (
           orderRequests.length === 0 ? (
             <div className="text-center py-12 bg-card border rounded-lg">
