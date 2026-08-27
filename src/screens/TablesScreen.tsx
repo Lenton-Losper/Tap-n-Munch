@@ -32,8 +32,16 @@ function formatUnpaidTotal(amount: number): string {
  * excluding 'paid' and 'cancelled'. TableDetailScreen already avoided this bug by
  * routing through isClaimablePaymentStatus; this badge wants the wider owesMoney
  * set instead, since it's a debt count, not a "may I charge a new card" gate.
+ *
+ * EXPORTED ONLY SO IT CAN BE TESTED, and that is not ceremony. owesMoney itself was already
+ * covered, but nothing covered THIS — the call site. Both halves of #230 were reverted by hand to
+ * check: swapping the body back to `payment_status !== 'paid'` left all 317 tests green (eslint
+ * caught only the now-unused import, which guards the import and not the behaviour), and the
+ * variant that keeps the import while re-adding 'cancelled' passed eslint AND all 317 tests. A
+ * correct status set that the badge does not actually use is the exact shape of defect this
+ * project keeps shipping, so the badge's own arithmetic is pinned in paymentIntegrity.test.ts.
  */
-function countUnpaidOrders(table: TableWithTab): number {
+export function countUnpaidOrders(table: TableWithTab): number {
   if (!table.tab) {
     return 0;
   }
