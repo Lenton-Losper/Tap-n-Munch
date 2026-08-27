@@ -17,8 +17,20 @@
 -- transitions and silently overwrites the rest, which means the audit trail is wrong precisely in
 -- the cases anyone would ever want to read it: the disputed ones.
 --
--- So: order_lines.state is the DENORMALISED CURRENT VALUE, kept for query speed and for the
--- partial index the station screens live on. THIS TABLE IS THE TRUTH.
+-- So: order_lines.kitchen_state / bar_state are the DENORMALISED CURRENT VALUES, kept for query
+-- speed and for the partial indexes the station screens live on. THIS TABLE IS THE TRUTH.
+--
+-- ============================================================================================
+-- ONE EVENT PER (LINE, STATION)
+-- ============================================================================================
+--
+-- A line routed 'both' is ONE row in order_lines carrying two independent states, so an event
+-- has to say WHICH state moved. `station` is that column, and it is NOT NULL: there is no such
+-- thing as a transition that belongs to no station.
+--
+-- A 'both' line therefore gets TWO creation events, one per station it owns, and each later bump
+-- records only its own. Reading the history of a plate means filtering by station; reading
+-- whether the whole plate is ready means the isLineReady predicate over the line's two columns.
 --
 -- ============================================================================================
 -- REAL COLUMNS, NOT JSON
@@ -51,9 +63,14 @@ CREATE TABLE IF NOT EXISTS public.order_line_events (
 
   order_line_id uuid NOT NULL REFERENCES public.order_lines(id) ON DELETE CASCADE,
 
+  -- WHICH station's state moved. NOT NULL -- a transition that belongs to no station does not
+  -- exist. 'unrouted' is deliberately NOT a value here: an unrouted LINE is owned by both
+  -- stations, so its events are recorded as 'kitchen' or 'bar' like any other.
+  station text NOT NULL CHECK (station IN ('kitchen', 'bar')),
+
   -- NULL on the creation event -- the line came from nowhere. Not a special sentinel string,
   -- because 'created' is not a state a line can be in and putting it here would corrupt the
-  -- vocabulary shared with order_lines.state.
+  -- vocabulary shared with order_lines.kitchen_state / bar_state.
   from_state text CHECK (from_state IN ('outstanding', 'done', 'voided')),
 
   to_state text NOT NULL CHECK (to_state IN ('outstanding', 'done', 'voided')),
@@ -82,10 +99,13 @@ CREATE TABLE IF NOT EXISTS public.order_line_events (
 );
 
 COMMENT ON TABLE public.order_line_events IS
-  'ADR-005: append-only history of every order_lines state transition, with actor and timestamp as real columns. This is the truth; order_lines.state is a denormalised cache of the latest row. Exists rather than done_at/done_by columns because undo makes outstanding->done->outstanding a real sequence a column pair cannot record.';
+  'ADR-005: append-only history of every order_lines state transition, with station, actor and timestamp as real columns. This is the truth; order_lines.kitchen_state/bar_state are denormalised caches of the latest row per station. Exists rather than done_at/done_by columns because undo makes outstanding->done->outstanding a real sequence a column pair cannot record.';
+
+COMMENT ON COLUMN public.order_line_events.station IS
+  'Which of the line''s two states moved. NOT NULL -- a transition belongs to a station. A ''both'' line gets one creation event per station and each later bump records only its own.';
 
 COMMENT ON COLUMN public.order_line_events.from_state IS
-  'NULL on the creation event. Not a ''created'' sentinel -- that is not a state a line can be in, and adding it would corrupt the vocabulary shared with order_lines.state.';
+  'NULL on the creation event. Not a ''created'' sentinel -- that is not a state a line can be in, and adding it would corrupt the vocabulary shared with order_lines.kitchen_state / bar_state.';
 
 COMMENT ON COLUMN public.order_line_events.actor_user_id IS
   'users.id -- the identity the terminal PIN flow actually produces (terminal_authorization_credentials.user_id), NOT staff_members.id. Nullable on purpose: a ''system'' cascade has no person behind it, and an unattributed event is still evidence the transition happened. ON DELETE SET NULL so someone leaving does not take the audit trail with them.';

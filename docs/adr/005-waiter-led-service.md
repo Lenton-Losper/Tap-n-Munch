@@ -61,14 +61,21 @@ order_lines
   name_snapshot      text not null
   quantity           numeric not null
   line_note          text null          -- "medium", "well done"
-  station            text not null      -- 'kitchen' | 'bar' | 'unrouted'
-  state              text not null      -- 'outstanding' | 'done' | 'voided'
+  route_to           text not null      -- 'kitchen'|'bar'|'both'|'unrouted', frozen at creation
+  kitchen_state      text null          -- 'outstanding'|'done'|'voided', NULL if not owned
+  bar_state          text null          -- same
   created_at         timestamptz not null default now()
+
+  CHECK (states are populated exactly for the stations route_to owns)
 ```
 
 **`order_lines` carries no monetary column.** Not price, not subtotal, not
-tax. This is deliberate and load-bearing — see §2. If there is no money on
-the table, nobody can sum money from it.
+tax. The reason is **one source of truth**: money lives in `orders.items` and
+`orders.total`, where the receipt reads it and the settle path charges it. A
+price on the fulfilment record is a second home for the same number, and the
+second home is the one that goes stale after a comp, a discount or a
+re-price. A bill that needs a line's price joins back through
+`source_item_index`.
 
 `orders.status` is neither read nor written by station bumping. A line's
 state is a property of the line.
@@ -83,10 +90,14 @@ order_line_events
   order_line_id    uuid not null -> order_lines(id)
   from_state       text null      -- null on creation
   to_state         text not null
+  station          text not null  -- 'kitchen' | 'bar' -- WHICH state moved
   actor_kind       text not null  -- 'station' | 'terminal' | 'system'
   actor_user_id   uuid null      -> users(id)
   occurred_at      timestamptz not null default now()
 ```
+
+A line owned by two stations gets one creation event per station, and each
+later bump records only its own.
 
 Why an events table rather than `done_at` / `done_by` columns on the line:
 event Q. Someone in the kitchen will press the wrong thing, so undo has to
@@ -106,14 +117,28 @@ bar; two screens resolving independently can disagree with each other; and a
 frozen station is the only thing that makes the pre-launch report below mean
 anything.
 
-**`both` fans out into two rows.** One with `station = 'kitchen'`, one with
-`station = 'bar'`, each with its own independent state. This is the only
-reading of the ruling that actually delivers it — for two stations to bump
-independently there must be two states, and one row cannot hold two.
+**`both` is ONE row with TWO states.** `kitchen_state` and `bar_state`, each
+populated only for the stations the line routes to, each bumped
+independently.
 
-**The consequence that must never be lost: `order_lines` is a fulfilment
-record, not a billing record.** One `both` item is one billed item and two
-fulfilment lines. This is precisely why §1 gives the table no money column.
+The requirement pulls in two directions and both halves matter: the kitchen
+marking its half done must not clear the bar's half, so the state cannot be
+one column; and a cancellation must cancel one thing while the bill counts
+the item once, so the line cannot be two rows. Two nullable state columns on
+one row is what satisfies both.
+
+An earlier draft of this ADR fanned `both` into two rows. It got independent
+bumping right and everything else wrong — a cancel had to find and void both,
+and any sum over the table counted the item twice. **Superseded.** The CHECK
+constraint makes the states-match-route invariant unfalsifiable rather than a
+convention the writing code is trusted to keep.
+
+**Ready to run means every station that owns the line has marked it.** As a
+predicate: `coalesce(kitchen_state,'done')='done' AND
+coalesce(bar_state,'done')='done'` — a NULL state is a station that does not
+own the line and cannot hold the plate back. That has exactly one definition
+in code, `isLineReady`, so the runner's view and the station screens cannot
+disagree about the same plate.
 
 `null` resolves to `station = 'unrouted'` and appears on **both** screens
 under a visible "unrouted" heading. It is not silently defaulted to kitchen.
@@ -276,6 +301,11 @@ assumptions change with it.
 - **Every order is now two writes** — the order and its lines. They must
   share one transaction, or a station will display half an order.
 - `order_lines` cannot be summed for money. By construction, permanently.
+- **A round cannot be sent twice.** `x-idempotency-key` is mandatory on
+  `POST /api/terminal/rounds`, unlike the POS path where 0 of 1,545 orders
+  carry one — which is why every failed retry there stranded a duplicate
+  order. A replayed key returns the original round and writes no second set
+  of lines.
 
 **What remains open** — §8.
 

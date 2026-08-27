@@ -25,6 +25,14 @@
  * client, and a waiter's P5 does not get to set prices any more than a customer's phone does.
  *
  * ============================================================================================
+ * ONE ROUND PER SEND
+ * ============================================================================================
+ *
+ * `x-idempotency-key` is REQUIRED, and a duplicate Send returns the original round rather than
+ * creating a second one. See the validation below for why it is mandatory here when the POS path
+ * leaves it optional, and the replay guard further down for why checking the ORDER is not enough.
+ *
+ * ============================================================================================
  * LINES ARE BUILT FROM THE STORED ITEMS, NOT FROM THE REQUEST BODY
  * ============================================================================================
  *
@@ -56,7 +64,12 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { createOrder } from '@/lib/orders/create-order'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
-import { buildOrderLines, writeOrderLines } from '@/lib/orders/order-lines'
+import {
+  buildOrderLines,
+  stationsOwnedBy,
+  writeOrderLines,
+  type LineRouteTo,
+} from '@/lib/orders/order-lines'
 
 export const dynamic = 'force-dynamic'
 
@@ -90,6 +103,31 @@ export async function POST(request: Request) {
     }
     if (!Array.isArray(items) || items.length === 0) {
       return NextResponse.json({ error: 'items are required' }, { status: 400 })
+    }
+
+    /**
+     * RULED: one round per Send, and duplicate Sends are rejected. The key is REQUIRED here, not
+     * best-effort, and that is the whole point.
+     *
+     * The mechanism has existed since 20260502140000 -- a unique partial index on
+     * orders.idempotency_key, plus createOrder's 23505 branch returning the original order. It has
+     * never fired on the POS path because the POS sends no key: 0 of 1,545 orders carry one, which
+     * is exactly why every failed retry there stranded a duplicate order.
+     *
+     * A mechanism that callers may opt out of is a mechanism that is off. So this endpoint refuses
+     * the request rather than inheriting that.
+     */
+    const idempotencyKey = String(request.headers.get('x-idempotency-key') ?? '').trim()
+    if (!idempotencyKey) {
+      return NextResponse.json(
+        {
+          error:
+            'x-idempotency-key is required. Send one uuid per round and reuse it across retries ' +
+            'of that same round.',
+          code: 'IDEMPOTENCY_KEY_REQUIRED',
+        },
+        { status: 400 },
+      )
     }
 
     /**
@@ -166,10 +204,51 @@ export async function POST(request: Request) {
       tabSettlementForTabId: null,
       channel: 'pos',
       customerName: null,
-      idempotencyKey: request.headers.get('x-idempotency-key') || null,
+      idempotencyKey,
       // Stays on the tab -- the table is not closed by taking a round.
       isClosed: false,
     })
+
+    /**
+     * THE REPLAY GUARD, and it is not optional.
+     *
+     * On a duplicate Send, createOrder's 23505 branch returns the ORIGINAL order rather than
+     * creating a second one -- which is correct, and which means `result.orderId` here is an order
+     * whose lines already exist. Writing lines again would put a second copy of the whole round in
+     * front of the kitchen: the customer is billed once and the food is made twice.
+     *
+     * So the lines are the thing checked, not the order. If any exist for this order, this call is
+     * a replay: report what is already there and write nothing.
+     */
+    const { data: existingLines, error: existingLinesError } = await supabase
+      .from('order_lines')
+      .select('id, route_to')
+      .eq('order_id', result.orderId)
+
+    if (existingLinesError) throw existingLinesError
+
+    if ((existingLines ?? []).length > 0) {
+      const stationCounts = { kitchen: 0, bar: 0, unrouted: 0 }
+      for (const row of existingLines as Array<{ route_to: LineRouteTo }>) {
+        const owned = stationsOwnedBy(row.route_to)
+        if (owned.includes('kitchen')) stationCounts.kitchen += 1
+        if (owned.includes('bar')) stationCounts.bar += 1
+        if (row.route_to === 'unrouted') stationCounts.unrouted += 1
+      }
+
+      return NextResponse.json({
+        success: true,
+        // The device treats this as success and returns to the grid. It is the SAME round, not a
+        // new one, and showing an error for it would make a waiter send it a third time.
+        duplicate: true,
+        order_id: result.orderId,
+        order_number: result.orderNumber,
+        tab_id: String(tab.id),
+        lines_written: true,
+        line_count: (existingLines ?? []).length,
+        station_counts: stationCounts,
+      })
+    }
 
     // See the header: lines index into the STORED items, so they are read back.
     const { data: storedOrder, error: storedOrderError } = await supabase
@@ -217,6 +296,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      duplicate: false,
       order_id: result.orderId,
       order_number: result.orderNumber,
       tab_id: String(tab.id),

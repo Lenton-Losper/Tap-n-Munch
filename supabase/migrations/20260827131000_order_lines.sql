@@ -21,57 +21,79 @@
 -- 2,035 of them are 'completed', which at this venue means PAID, not made.
 --
 -- ============================================================================================
--- THIS TABLE HAS NO MONETARY COLUMN, AND THAT IS STRUCTURAL
+-- ONE LINE, PER-STATION STATE
 -- ============================================================================================
 --
--- ADR-005 §2 rules that an item routed 'both' appears on BOTH screens as its own line, each
--- station bumping independently. Two independent states require two rows -- one row cannot hold
--- two -- so a 'both' item fans out into a kitchen row AND a bar row.
+-- RULED. An item routed 'both' is ONE row carrying TWO states, not two rows.
 --
--- Which means: ONE BILLED ITEM CAN BE TWO ROWS HERE. Summing this table for money double-charges
--- the customer for every 'both' item on the ticket, and production currently holds 1,274 of them.
+-- The requirement has two halves that pull in opposite directions:
 --
--- So there is no price column, no subtotal, no tax, no total. Not omitted -- REFUSED. The
--- protection is that the numbers are absent, not that a future reader is careful. Money lives in
--- orders.items and orders.total, where it already lives and where it is not fanned out.
+--   * The kitchen marking its half done must NOT clear the bar's half. So the state cannot be
+--     a single column.
+--   * A cancellation must cancel ONE thing, and the bill must count the item ONCE. So the line
+--     cannot be two rows.
 --
--- DO NOT ADD A PRICE COLUMN HERE. If a bill needs a line's price, it joins back to
--- orders.items via source_item_index, which is exactly what that column is for.
+-- `kitchen_state` and `bar_state` satisfy both. Each is NULL for a station that does not own the
+-- line -- a kitchen-only line has `bar_state IS NULL` -- and non-null states bump independently.
+--
+-- An earlier draft fanned 'both' into two rows. It got independent bumping right and everything
+-- else wrong: two rows meant a cancel had to find and void both, and any sum over the table
+-- counted the item twice. The constraint below makes the states-match-route invariant
+-- unfalsifiable rather than a convention the writing code is trusted to keep.
+--
+-- READY TO RUN means EVERY STATION THAT OWNS THE LINE HAS MARKED IT. As a predicate:
+--
+--     coalesce(kitchen_state, 'done') = 'done' AND coalesce(bar_state, 'done') = 'done'
+--
+-- A NULL state is a station that does not own the line, so it cannot hold the line back. That
+-- predicate has ONE definition in code, `isLineReady` in lib/orders/order-lines.ts, so the
+-- runner's view and the station screens cannot come to different answers about the same plate.
 --
 -- ============================================================================================
--- station IS FROZEN AT WRITE TIME, NOT RESOLVED AT READ TIME
+-- THIS TABLE HAS NO MONETARY COLUMN
 -- ============================================================================================
 --
--- menu_categories.route_to is read ONCE, when the line is created, and the answer is stored here.
--- Three reasons, any one sufficient:
+-- Not because of the fan-out -- that reason died with the two-row draft above, and a comment
+-- asserting it would now be false.
 --
---   1. route_to is editable. A category re-pointed from kitchen to bar while food is on the pass
---      would silently move a line the kitchen has already started cooking.
---   2. Two screens resolving independently can disagree with each other, and nothing would tell
---      anyone that they had.
---   3. A frozen station is the only thing that makes the pre-launch routing report meaningful.
---      A report of what WOULD land where is worthless if the answer can change after it is read.
+-- The reason is ONE SOURCE OF TRUTH. Money lives in orders.items and orders.total, where it
+-- already lives, where the receipt reads it, and where the settle path charges it. A price on
+-- the fulfilment record is a second place for the same number to live, and the second place is
+-- the one that goes stale after a comp, a discount or a re-price.
 --
--- 'unrouted' IS NOT A SILENT DEFAULT. A line whose route_to is null lands here as 'unrouted' and
--- the screens show it on BOTH, under a heading that says so. The alternative -- quietly defaulting
--- null to 'kitchen' -- is food that nobody sees on a screen nobody thinks to question. A visible
--- wrong answer gets fixed; an invisible one gets served cold or not at all. Production holds 4 of
--- these today.
+-- If a bill needs a line's price it joins back through source_item_index, which is what that
+-- column is for. DO NOT ADD A PRICE COLUMN HERE.
 --
--- ROUTE DATA IS NOT TRUSTED AND IS NOT CORRECTED HERE. Riviera verifies their own menu against the
--- pre-launch report before go-live. Nothing in this migration cleans, backfills or second-guesses
--- route_to, deliberately.
+-- ============================================================================================
+-- route_to IS COPIED ONTO THE LINE AT CREATION -- A GENERAL PRINCIPLE, NOT A CONVENIENCE
+-- ============================================================================================
+--
+-- RULED: a line records what was true when it was created. `route_to` is read from
+-- menu_categories ONCE, at write time, and frozen here. It is never re-derived at read time.
+--
+-- A menu edit at 8pm must not move food that is already cooking. This is the same rule the
+-- immutable receipt snapshot follows, and for the same reason: a record of what happened cannot
+-- be allowed to change because a catalog row changed afterwards.
+--
+-- 'unrouted' IS IN THE ENUM AND IS NOT A SILENT DEFAULT. A line whose category route_to is null,
+-- missing or unrecognised is stored as 'unrouted' and shown on BOTH screens under a heading that
+-- says so. Quietly defaulting null to 'kitchen' is food nobody sees on a screen nobody thinks to
+-- question. Production holds 4 of these today.
+--
+-- ROUTE DATA IS NOT TRUSTED AND IS NOT CORRECTED HERE. Riviera verifies their own menu against
+-- the pre-launch report before go-live. Nothing in this migration cleans, backfills or
+-- second-guesses route_to, deliberately.
 --
 -- ============================================================================================
 -- orders.status IS NEITHER READ NOR WRITTEN BY ANYTHING BUILT ON THIS TABLE
 -- ============================================================================================
 --
--- 'completed' means PAID: ~99.5% of the 2,035 completed orders have completed_at == paid_at to the
--- instant, markOrderPaidConfirmed writes it from any prior status, and the table-close route
+-- 'completed' means PAID: ~99.5% of the 2,035 completed orders have completed_at == paid_at to
+-- the instant, markOrderPaidConfirmed writes it from any prior status, and the table-close route
 -- bulk-stamps it. 6 orders are in 'ready' and 1 in 'preparing' in the entire production history.
 --
 -- A line's state is a property of THE LINE. The two vocabularies coexist and mean different
--- things: orders.status means paid, order_lines.state means made. That is a deliberate
+-- things: orders.status means paid, order_lines states mean made. That is a deliberate
 -- inconsistency, named here so nobody later "tidies" it by wiring one to the other.
 
 CREATE TABLE IF NOT EXISTS public.order_lines (
@@ -87,9 +109,8 @@ CREATE TABLE IF NOT EXISTS public.order_lines (
   -- through orders for the commonest question. NULL for a non-tab order.
   tab_id uuid REFERENCES public.tabs(id) ON DELETE SET NULL,
 
-  -- Position in orders.items this line was produced from. THE JOIN BACK TO MONEY: a 'both' item
-  -- produces two rows carrying the SAME index, which is what makes the double-count detectable
-  -- rather than silent.
+  -- Position in orders.items this line was produced from. THE JOIN BACK TO MONEY, and now
+  -- one-to-one: one item, one line, one index.
   source_item_index integer NOT NULL,
 
   -- NULLABLE and ON DELETE SET NULL: a menu item deleted next month must not delete or block the
@@ -107,41 +128,61 @@ CREATE TABLE IF NOT EXISTS public.order_lines (
   -- kitchen which of three steaks is the rare one.
   line_note text,
 
-  -- Frozen at write time. See the header. 'unrouted' is a real, visible value, not an error state.
-  station text NOT NULL CHECK (station IN ('kitchen', 'bar', 'unrouted')),
+  -- Frozen at creation from menu_categories.route_to. See the header: a line records what was
+  -- true when it was created.
+  route_to text NOT NULL CHECK (route_to IN ('kitchen', 'bar', 'both', 'unrouted')),
 
-  -- Denormalised current value; order_line_events is the truth. See 20260827131100.
-  state text NOT NULL DEFAULT 'outstanding'
-    CHECK (state IN ('outstanding', 'done', 'voided')),
+  -- Per-station state. NULL means this station does not own this line and cannot hold it back.
+  -- order_line_events is the authoritative history of every transition; these are the current
+  -- values, kept for the partial indexes the screens live on.
+  kitchen_state text CHECK (kitchen_state IN ('outstanding', 'done', 'voided')),
+  bar_state text CHECK (bar_state IN ('outstanding', 'done', 'voided')),
 
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+
+  -- THE INVARIANT, ENFORCED RATHER THAN TRUSTED.
+  --
+  -- "Populated only for the stations that line routes to" is the whole design; leaving it to the
+  -- writing code means the first caller that forgets produces a kitchen line the kitchen cannot
+  -- see, and nothing reports it. 'unrouted' owns BOTH stations deliberately -- it shows on both
+  -- screens, so both must be able to clear it.
+  CONSTRAINT order_lines_states_match_route CHECK (
+    (route_to = 'kitchen' AND kitchen_state IS NOT NULL AND bar_state IS NULL)
+    OR (route_to = 'bar' AND bar_state IS NOT NULL AND kitchen_state IS NULL)
+    OR (route_to IN ('both', 'unrouted') AND kitchen_state IS NOT NULL AND bar_state IS NOT NULL)
+  )
 );
 
 COMMENT ON TABLE public.order_lines IS
-  'ADR-005: the FULFILMENT record -- what a station has to make. NOT a billing record. An item routed ''both'' fans out into two rows, so one billed item can be two rows here; this table therefore carries no monetary column and must never be summed for money. Billing stays in orders.items.';
+  'ADR-005: the FULFILMENT record -- what a station has to make. NOT a billing record. One row per ordered item, carrying frozen route_to plus per-station kitchen_state/bar_state so the kitchen bumping cannot clear the bar while a cancellation still cancels one thing and the bill counts it once. Carries no monetary column: money has one home, orders.items.';
+
+COMMENT ON COLUMN public.order_lines.route_to IS
+  'Copied from menu_categories.route_to at creation and frozen. Never re-derived at read time -- a menu edit at 8pm must not move food already cooking, the same rule the immutable receipt snapshot follows. ''unrouted'' means route_to was null, missing or unrecognised; it displays on both screens under a visible heading rather than defaulting silently to kitchen.';
+
+COMMENT ON COLUMN public.order_lines.kitchen_state IS
+  'NULL when the kitchen does not own this line, and a NULL state cannot hold the line back. Ready-to-run is coalesce(kitchen_state,''done'')=''done'' AND coalesce(bar_state,''done'')=''done'' -- defined once in isLineReady(), lib/orders/order-lines.ts.';
+
+COMMENT ON COLUMN public.order_lines.bar_state IS
+  'NULL when the bar does not own this line. See kitchen_state.';
 
 COMMENT ON COLUMN public.order_lines.source_item_index IS
-  'Position in orders.items this line came from. The join back to price. A ''both'' item produces two rows sharing one index -- that is the fan-out, and it is why no money lives on this table.';
-
-COMMENT ON COLUMN public.order_lines.station IS
-  'Resolved from menu_categories.route_to ONCE at write time and frozen. Never re-derived at read time: route_to is editable, and a line already on the pass must not move. ''unrouted'' means route_to was null -- it displays on both screens under a visible heading rather than defaulting silently to kitchen.';
-
-COMMENT ON COLUMN public.order_lines.state IS
-  'Whether this line is outstanding, done or voided. Denormalised current value of order_line_events, which is the authoritative history. Unrelated to orders.status, which means PAID.';
-
-COMMENT ON COLUMN public.order_lines.line_note IS
-  'Per-line note such as "medium". Not the same thing as orders.order_instructions, which cannot say which of three steaks is the rare one.';
+  'Position in orders.items this line came from. The join back to price, one-to-one. No price is stored here: money has one home, and a second copy is the one that goes stale after a comp or a re-price.';
 
 -- ---------------------------------------------------------------------------
 -- Indexes
 -- ---------------------------------------------------------------------------
 
--- THE STATION SCREEN QUERY, and the only one that runs continuously: every outstanding line for
--- this venue at this station. Partial, because a screen never asks for done or voided lines and
--- the done rows will outnumber the outstanding ones by orders of magnitude within a week.
-CREATE INDEX IF NOT EXISTS order_lines_station_outstanding_idx
-  ON public.order_lines (restaurant_id, station, created_at)
-  WHERE state = 'outstanding';
+-- THE TWO STATION SCREEN QUERIES, and the only ones that run continuously. Partial, because a
+-- screen never asks for done or voided lines and those will outnumber the outstanding ones by
+-- orders of magnitude within a week. Separate indexes per station because the screens are
+-- separate and each asks only about its own column.
+CREATE INDEX IF NOT EXISTS order_lines_kitchen_outstanding_idx
+  ON public.order_lines (restaurant_id, created_at)
+  WHERE kitchen_state = 'outstanding';
+
+CREATE INDEX IF NOT EXISTS order_lines_bar_outstanding_idx
+  ON public.order_lines (restaurant_id, created_at)
+  WHERE bar_state = 'outstanding';
 
 -- "Show me this order's lines" -- the terminal, the amend path, and the card that groups lines
 -- on the station screen.

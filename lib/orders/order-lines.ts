@@ -2,6 +2,21 @@
  * ADR-005 §1 and §2 -- turning an order's items into fulfilment lines.
  *
  * ============================================================================================
+ * ONE LINE PER ITEM, WITH PER-STATION STATE
+ * ============================================================================================
+ *
+ * An item routed 'both' is ONE line carrying TWO states, not two lines.
+ *
+ *   * `kitchen_state` and `bar_state` are independent, so the kitchen marking its half done does
+ *     not clear the bar's half.
+ *   * There is still only one row, so a cancellation cancels one thing and the bill counts the
+ *     item once.
+ *
+ * A station that does not own the line has NULL for its state, and a NULL cannot hold the line
+ * back. `isLineReady` below is the single definition of "every station that owns this has marked
+ * it", so the runner's view and the station screens cannot disagree about the same plate.
+ *
+ * ============================================================================================
  * WHY THIS DOES NOT USE normalizeRouteTo / enrichOrderItemsWithRouteTo
  * ============================================================================================
  *
@@ -18,49 +33,87 @@
  * whether a whole order is interesting to a station, and guessing kitchen there is a display
  * heuristic on data nobody promised.
  *
- * For a LINE it is forbidden. ADR-005 §2, ruled: route_to is not trusted, it is not silently
- * corrected, and a line that cannot be routed becomes 'unrouted' and shows on BOTH screens under
- * a visible heading. Production holds 4 items with a null route_to today. Under the existing
- * helper all 4 would land silently in the kitchen; under this one they land visibly in front of
- * both stations, and somebody asks why -- which is the entire point. A silent default is food
- * nobody sees.
+ * For a LINE it is forbidden. Ruled: route_to is not trusted, it is not silently corrected, and a
+ * line that cannot be routed becomes 'unrouted' and shows on BOTH screens under a visible
+ * heading. Production holds 4 items with a null route_to today. Under the existing helper all 4
+ * would land silently in the kitchen; under this one they land visibly in front of both stations
+ * and somebody asks why -- which is the entire point. A silent default is food nobody sees.
  *
  * So the two coexist on purpose. Changing `normalizeRouteTo` to match this would alter what the
  * POS and the existing station filters do to live orders, which is not in scope and was not ruled.
  *
  * ============================================================================================
- * 'both' FANS OUT, WHICH IS WHY LINES CARRY NO MONEY
+ * route_to IS FROZEN AT CREATION
  * ============================================================================================
  *
- * One item routed 'both' produces TWO lines -- one kitchen, one bar -- with independent state, so
- * each station bumps its own without touching the other. Both lines carry the SAME
- * source_item_index, because they came from one billed item.
- *
- * That is exactly why `order_lines` has no price column and why nothing here computes one.
- * Summing lines for money would double-charge every 'both' item, and production holds 1,274.
+ * Ruled as a general principle: a line records what was true when it was created. The category's
+ * route_to is read once, here, and stored. A menu edit at 8pm must not move food that is already
+ * cooking -- the same rule the immutable receipt snapshot follows.
  */
 
-export type LineStation = 'kitchen' | 'bar' | 'unrouted'
+/** What a line routes to, frozen at creation. */
+export type LineRouteTo = 'kitchen' | 'bar' | 'both' | 'unrouted'
 
-/** Raw category route_to values we recognise. Anything else is unroutable, not kitchen. */
+/** A station that can own a line's state. 'unrouted' lines are owned by both. */
+export type Station = 'kitchen' | 'bar'
+
+export type LineState = 'outstanding' | 'done' | 'voided'
+
 const ROUTE_KITCHEN = 'kitchen'
 const ROUTE_BAR = 'bar'
 const ROUTE_BOTH = 'both'
 
 /**
- * The fan-out. Deliberately total: every input maps to at least one station, and the fallback
- * is 'unrouted' rather than 'kitchen'.
+ * Resolve a raw category route_to into the value frozen on the line.
  *
- * An unrecognised STRING is treated exactly like null. A category whose route_to says 'grill'
- * is not a kitchen item we happen to have spelled oddly -- it is a value this code has never
- * heard of, and pretending to understand it is the silent correction the ruling forbids.
+ * Deliberately total, and the fallback is 'unrouted' rather than 'kitchen'. An unrecognised
+ * STRING is treated exactly like null: a category whose route_to says 'grill' is not a kitchen
+ * item we happen to have spelled oddly, it is a value this code has never heard of, and
+ * pretending to understand it is the silent correction the ruling forbids.
  */
-export function stationsForRouteTo(routeTo: unknown): LineStation[] {
-  const value = typeof routeTo === 'string' ? routeTo.trim().toLowerCase() : ''
-  if (value === ROUTE_KITCHEN) return ['kitchen']
-  if (value === ROUTE_BAR) return ['bar']
-  if (value === ROUTE_BOTH) return ['kitchen', 'bar']
-  return ['unrouted']
+export function routeToForLine(rawRouteTo: unknown): LineRouteTo {
+  const value = typeof rawRouteTo === 'string' ? rawRouteTo.trim().toLowerCase() : ''
+  if (value === ROUTE_KITCHEN) return 'kitchen'
+  if (value === ROUTE_BAR) return 'bar'
+  if (value === ROUTE_BOTH) return 'both'
+  return 'unrouted'
+}
+
+/**
+ * Which stations own a line. 'unrouted' is owned by BOTH -- it shows on both screens, so both
+ * must be able to clear it.
+ */
+export function stationsOwnedBy(routeTo: LineRouteTo): Station[] {
+  if (routeTo === 'kitchen') return ['kitchen']
+  if (routeTo === 'bar') return ['bar']
+  return ['kitchen', 'bar']
+}
+
+/** The initial per-station states. NULL for a station that does not own the line. */
+export function initialStatesFor(routeTo: LineRouteTo): {
+  kitchen_state: LineState | null
+  bar_state: LineState | null
+} {
+  const owned = stationsOwnedBy(routeTo)
+  return {
+    kitchen_state: owned.includes('kitchen') ? 'outstanding' : null,
+    bar_state: owned.includes('bar') ? 'outstanding' : null,
+  }
+}
+
+/**
+ * READY TO RUN: every station that owns this line has marked it.
+ *
+ * THE SINGLE DEFINITION. A NULL state is a station that does not own the line, so it cannot hold
+ * the plate back -- which is why the coalesce is to 'done' and not to 'outstanding'. Two callers
+ * writing this predicate by hand is how the runner's view and the kitchen screen end up
+ * disagreeing about whether the same plate can go out.
+ */
+export function isLineReady(line: {
+  kitchen_state?: LineState | null
+  bar_state?: LineState | null
+}): boolean {
+  return (line.kitchen_state ?? 'done') === 'done' && (line.bar_state ?? 'done') === 'done'
 }
 
 type OrderItemish = Record<string, unknown>
@@ -104,10 +157,6 @@ function readName(item: OrderItemish): string {
 
 /**
  * Resolve the RAW route_to for each item's category, preserving null.
- *
- * Returns a map of menu_item_id -> raw route_to value (which may be null/undefined). Items with
- * no resolvable menu item are simply absent from the map, and the caller turns that into
- * 'unrouted'.
  *
  * A FAILED READ RESOLVES TO 'unrouted', NOT TO 'kitchen' AND NOT TO AN ERROR.
  *
@@ -180,8 +229,9 @@ export type BuiltOrderLine = {
   name_snapshot: string
   quantity: number
   line_note: string | null
-  station: LineStation
-  state: 'outstanding'
+  route_to: LineRouteTo
+  kitchen_state: LineState | null
+  bar_state: LineState | null
 }
 
 export type BuildOrderLinesParams = {
@@ -192,7 +242,7 @@ export type BuildOrderLinesParams = {
 }
 
 /**
- * Build the fulfilment lines for one order. Pure apart from the route_to lookup.
+ * Build the fulfilment lines for one order. One line per item, always.
  *
  * An item with quantity 3 is ONE line of quantity 3, not three lines: the kitchen reads "3x
  * Steak" as one thing to make, and three separately bumpable rows would be three chances to
@@ -208,36 +258,32 @@ export async function buildOrderLines(
   const menuItemIds = [...new Set(items.map(readMenuItemId).filter(Boolean))]
   const rawRouteByMenuItemId = await fetchRawRouteToByMenuItemId(supabase, menuItemIds)
 
-  const lines: BuiltOrderLine[] = []
-
-  items.forEach((item, index) => {
+  return items.map((item, index) => {
     const menuItemId = readMenuItemId(item)
     // Absent from the map means unresolvable -- no menu item id, a deleted item, a failed read,
     // or a category we could not load. All of them are 'unrouted', all of them visible.
     const rawRouteTo = menuItemId ? rawRouteByMenuItemId.get(menuItemId) : undefined
+    const routeTo = routeToForLine(rawRouteTo)
 
-    for (const station of stationsForRouteTo(rawRouteTo)) {
-      lines.push({
-        restaurant_id: params.restaurantId,
-        order_id: params.orderId,
-        tab_id: params.tabId,
-        source_item_index: index,
-        menu_item_id: menuItemId || null,
-        name_snapshot: readName(item),
-        quantity: readQuantity(item),
-        line_note: readLineNote(item),
-        station,
-        state: 'outstanding',
-      })
+    return {
+      restaurant_id: params.restaurantId,
+      order_id: params.orderId,
+      tab_id: params.tabId,
+      source_item_index: index,
+      menu_item_id: menuItemId || null,
+      name_snapshot: readName(item),
+      quantity: readQuantity(item),
+      line_note: readLineNote(item),
+      route_to: routeTo,
+      ...initialStatesFor(routeTo),
     }
   })
-
-  return lines
 }
 
 export type WriteOrderLinesResult = {
   lineCount: number
-  stationCounts: Record<LineStation, number>
+  /** How many lines each screen will show. An 'unrouted' line counts to all three. */
+  stationCounts: { kitchen: number; bar: number; unrouted: number }
 }
 
 /**
@@ -246,6 +292,9 @@ export type WriteOrderLinesResult = {
  * ONE insert for the lines and ONE for the events, rather than a row at a time: a partially
  * written order is an order the kitchen sees half of, and batching is the closest thing to
  * atomicity available through PostgREST.
+ *
+ * A 'both' or 'unrouted' line produces TWO creation events, one per station it owns, because an
+ * event records which of the line's two states moved.
  *
  * KNOWN GAP, DOCUMENTED RATHER THAN HIDDEN. The order row and its lines are still two round
  * trips, so a failure between them leaves an order with no lines -- an order the stations never
@@ -257,32 +306,40 @@ export async function writeOrderLines(
   lines: BuiltOrderLine[],
   actor: { actorKind: 'terminal' | 'station' | 'system'; actorUserId: string | null },
 ): Promise<WriteOrderLinesResult> {
-  const stationCounts: Record<LineStation, number> = { kitchen: 0, bar: 0, unrouted: 0 }
+  const stationCounts = { kitchen: 0, bar: 0, unrouted: 0 }
   if (lines.length === 0) return { lineCount: 0, stationCounts }
 
   const { data: inserted, error: linesError } = await supabase
     .from('order_lines')
     .insert(lines)
-    .select('id, station')
+    .select('id, route_to')
 
   if (linesError) throw linesError
 
-  const insertedRows = (inserted || []) as Array<{ id: string; station: LineStation }>
+  const insertedRows = (inserted || []) as Array<{ id: string; route_to: LineRouteTo }>
+
+  const events: Array<Record<string, unknown>> = []
 
   for (const row of insertedRows) {
-    if (row.station in stationCounts) stationCounts[row.station] += 1
-  }
+    const owned = stationsOwnedBy(row.route_to)
+    if (owned.includes('kitchen')) stationCounts.kitchen += 1
+    if (owned.includes('bar')) stationCounts.bar += 1
+    if (row.route_to === 'unrouted') stationCounts.unrouted += 1
 
-  // The creation event. from_state is NULL because the line came from nowhere -- see the
-  // migration's note on why 'created' is not a state.
-  const events = insertedRows.map((row) => ({
-    restaurant_id: lines[0].restaurant_id,
-    order_line_id: row.id,
-    from_state: null,
-    to_state: 'outstanding',
-    actor_kind: actor.actorKind,
-    actor_user_id: actor.actorUserId,
-  }))
+    // One creation event per station that owns the line. from_state is NULL because the line came
+    // from nowhere -- see the migration's note on why 'created' is not a state.
+    for (const station of owned) {
+      events.push({
+        restaurant_id: lines[0].restaurant_id,
+        order_line_id: row.id,
+        station,
+        from_state: null,
+        to_state: 'outstanding',
+        actor_kind: actor.actorKind,
+        actor_user_id: actor.actorUserId,
+      })
+    }
+  }
 
   if (events.length > 0) {
     const { error: eventsError } = await supabase.from('order_line_events').insert(events)

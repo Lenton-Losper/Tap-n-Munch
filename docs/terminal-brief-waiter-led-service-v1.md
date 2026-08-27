@@ -370,22 +370,34 @@ x-idempotency-key: <uuid you generate per round>
   authoritative figure to come from the tab.
 - **`order_instructions`** is order-level free text. It is *not* a substitute for
   per-line notes — it cannot say which of three steaks is the rare one.
-- **`x-idempotency-key`**: generate one UUID per round attempt and reuse it across
-  retries of that same round. This is what stops a double-tap becoming two rounds.
+- **`x-idempotency-key` is MANDATORY.** A request without it is rejected `400`
+  with `{"code":"IDEMPOTENCY_KEY_REQUIRED"}`. Generate **one** UUID per round
+  attempt and **reuse the same value across every retry of that round** — a fresh
+  UUID per retry defeats the entire mechanism. A replayed key returns the original
+  round with `duplicate: true` and `200`; treat that as success and return to the
+  grid, do not create a second round and do not show an error.
+
+  It is mandatory here because on the POS path it is optional and consequently
+  absent: 0 of 1,545 orders carry one, which is exactly why every failed retry
+  there stranded a duplicate order. A mechanism callers may opt out of is off.
 
 ### Response `200`
 
 ```json
 {
   "success": true,
+  "duplicate": false,
   "order_id": "3c4d5e6f-...",
   "order_number": 1043,
   "tab_id": "9f8e7d6c-...",
   "lines_written": true,
-  "line_count": 4,
+  "line_count": 3,
   "station_counts": { "kitchen": 2, "bar": 1, "unrouted": 1 }
 }
 ```
+
+`duplicate: true` means this exact round was already sent and you are being handed
+the original. Success. Return to the grid.
 
 `station_counts` is worth showing on the confirmation toast — "2 to kitchen,
 1 to bar". **If `unrouted` is greater than zero, say so visibly**: it means an item
@@ -393,14 +405,16 @@ had no usable routing and both stations will see it flagged. That is a menu
 problem someone needs to fix, and the waiter is the first person in a position to
 notice.
 
-`line_count` can exceed the number of items you sent. That is correct: an item
-routed to both stations becomes two lines so each station can mark its own done.
+`line_count` is exactly the number of items you sent — one line per item, always.
+An item routed to both stations is still one line; it carries a separate state per
+station so each can mark its own done.
 
 ### Errors
 
 | Status | Body | What the device does |
 |---|---|---|
 | `400` | `{"error":"items are required"}` | Programming error |
+| `400` | `{"code":"IDEMPOTENCY_KEY_REQUIRED"}` | You omitted `x-idempotency-key`. Not retryable without one. |
 | `403` | `{"error":"Missing permission"}` | Terminal token lacks `orders:update` |
 | `404` | `{"error":"Tab not found"}` | Tab vanished. Return to the grid and refresh. |
 | `409` | `{"code":"TAB_NOT_OPEN"}` | The tab was settled or closed while the waiter was building the round. **Do not silently discard the basket** — tell them the table was closed and offer to re-open it. |
@@ -453,11 +467,11 @@ Things to understand so you do not build the wrong thing:
 
 ## 9. Two behaviours that will look like bugs and are not
 
-**A `both` item becomes two lines.** One item routed to both stations produces a
-kitchen line *and* a bar line, so each station bumps its own without affecting the
-other. `line_count` will exceed your item count. The bill is unaffected — money
-lives on the order, and the lines carry no price at all, precisely so nobody can
-sum them and double-charge.
+**A `both` item counts toward both station totals from a single line.** One item
+routed to both stations is ONE line carrying two independent states, so
+`station_counts.kitchen` and `station_counts.bar` can add up to more than
+`line_count`. That is correct: both screens show the line, each marks its own half
+done, and the bill still counts the item once.
 
 **A null route becomes `unrouted`, not `kitchen`.** Items whose category has no
 usable routing are deliberately *not* defaulted to the kitchen. They are marked
