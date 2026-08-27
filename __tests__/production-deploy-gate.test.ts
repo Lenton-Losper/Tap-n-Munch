@@ -192,7 +192,26 @@ describe('production refuses to promote from a red staging', () => {
  * the one thing such a test detects and the only thing it needs to.
  */
 describe('every static orders gate is actually invoked by a workflow', () => {
-  const GATES = ['scripts/check-orders-read-bounded.ts', 'scripts/check-orders-fixture-excluded.ts']
+  /**
+   * Each of these was found unwired, or wired on one branch only, in the 2026-08-27 audit:
+   *
+   *   check-orders-fixture-excluded.ts        ran in NO workflow (#324)
+   *   check-nocheck-undefined-identifiers.mjs ran in NO workflow -- and it was built in response
+   *                                           to the 2026-08-26 staff-dashboard outage, so the
+   *                                           outage class it exists for stayed unguarded
+   *   check-migration-version-unique.mjs      production only, while the collision it detects is
+   *                                           authored on branches, i.e. on staging (#280)
+   *
+   * They are pinned together because the failure is one failure: a gate is written, it works, and
+   * nothing invokes it. That is invisible to every other test in this repo -- each of these gates
+   * passes its own tests perfectly while running nowhere.
+   */
+  const GATES = [
+    'scripts/check-orders-read-bounded.ts',
+    'scripts/check-orders-fixture-excluded.ts',
+    'scripts/check-nocheck-undefined-identifiers.mjs',
+    'scripts/check-migration-version-unique.mjs',
+  ]
 
   const runsIn = (file: string): string[] =>
     Object.values(loadWorkflow(file).jobs).flatMap((j) => stepsOf(j).map((s) => s.run ?? ''))

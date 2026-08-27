@@ -170,6 +170,19 @@ jobs:
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
       - name: No new @ts-nocheck files
         run: node scripts/check-ts-nocheck-baseline.mjs
+      # WIRED 2026-08-27. This gate was written in response to a PRODUCTION OUTAGE -- on
+      # 2026-08-26 flashtap.app/dashboard served "Application error: a client-side exception has
+      # occurred" to staff mid-service, because components/orders-dashboard.tsx used
+      # STRANDED_CLAIM_COPY three times and imported it nowhere. It shipped in 9a2c3165 and rode
+      # SIX production deploys first, because tsc skips @ts-nocheck files, eslint's no-undef is off
+      # for TS, and check-nocheck-imports-resolve inspects imports -- and there was no import.
+      #
+      # The gate built to close that gap was then added to no workflow, so the outage class it
+      # exists for was still unguarded. Verified two-sided before wiring: an undefined identifier
+      # planted in lib/table-session.ts is reported at the exact line with exit 1; the clean tree
+      # exits 0. Runs eslint's real scope analyser with one rule on the files tsc refuses to read.
+      - name: Every identifier in a @ts-nocheck file is bound
+        run: node scripts/check-nocheck-undefined-identifiers.mjs
       # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
       # when the column already exists — the migration succeeds and the
       # constraint is never created, so the ledger and the database disagree in

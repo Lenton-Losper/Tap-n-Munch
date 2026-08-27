@@ -669,6 +669,13 @@ jobs:
       # NOT fix the nine existing files; it makes the set a ratchet so no NEW one appears.
       - name: No new @ts-nocheck files
         run: node scripts/check-ts-nocheck-baseline.mjs
+      # WIRED 2026-08-27 -- see the fuller note in production-worker.yml. Built after the
+      # 2026-08-26 staff-dashboard outage (an identifier used and never imported, invisible to tsc
+      # because the file is @ts-nocheck, and to eslint because no-undef is off for TS), then added
+      # to no workflow. It belongs on staging too: a ReferenceError on a staff surface is exactly
+      # what staging exists to catch before the promotion.
+      - name: Every identifier in a @ts-nocheck file is bound
+        run: node scripts/check-nocheck-undefined-identifiers.mjs
       # #212: an inline CHECK on `ADD COLUMN IF NOT EXISTS` is silently skipped
       # when the column already exists — the migration succeeds and the
       # constraint is never created. Static, no credentials, no database.
@@ -676,6 +683,16 @@ jobs:
       # are baselined inside the script, so this can only fail on something new.
       - name: Reject inline CHECK on ADD COLUMN IF NOT EXISTS
         run: npx tsx scripts/check-migration-inline-check.ts
+      # #280, ADDED TO STAGING 2026-08-27. It ran on production only, which is the wrong branch for
+      # it. The collision it detects is authored HERE: two agents on two unpushed branches drawing
+      # `<today>HHMMSS` from the same clock and both rounding to the hour, which is the expected
+      # outcome of the naming convention under concurrency rather than bad luck. Catching it at the
+      # production promotion means catching it after both migrations already exist and one of them
+      # may have run somewhere -- and a migration that has run against a database must never be
+      # renumbered, so the cheap fix (bump the HHMMSS) is exactly the one that has expired by then.
+      # Static, no credentials, no database; self-tests its detector before reporting.
+      - name: Every migration version maps to one filename
+        run: node scripts/check-migration-version-unique.mjs
       # cloudflare-staging fell 23 commits behind main without anyone noticing, and the only
       # number on offer overstated it 2.4x (250 by rev-list, 106 by patch-id), so looking did not
       # help. Among the gap was a live PostgREST .or() injection fix main had and staging did not.
