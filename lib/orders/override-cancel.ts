@@ -47,9 +47,10 @@ import {
   isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
 } from '@/lib/payments/query-finatic-order-paid'
-import { heldForReviewCause } from '@/lib/orders/held-for-review'
+import { heldForReviewCause, neverAttemptedPayment } from '@/lib/orders/held-for-review'
 import {
   OVERRIDE_CANCEL_AUDIT_REASON,
+  OVERRIDE_CANCEL_NEVER_ATTEMPTED_AUDIT_REASON,
   OVERRIDE_CANCEL_REFUSAL_COPY,
   type OverrideCancelRefusal,
 } from '@/lib/orders/override-cancel-copy'
@@ -150,17 +151,93 @@ export async function overrideCancelHeldOrder(
   // Re-asserted from the row we just read, not from what the client believed when it rendered.
   if (!heldForReviewCause(row as never, nowMs)) return refuse('order_not_held')
 
-  const merchantOrderNo = trimmed(row.paycloud_merchant_order_no)
-  if (!merchantOrderNo) return refuse('no_gateway_reference')
-
   /**
-   * The same conjunction the clear-all applies: an order carrying a payment marker from the card
-   * machine is not cancellable on "the gateway has no record", because those two facts cannot both
-   * be simple. An override does not make a contradiction actionable.
+   * THE MARKER CHECK RUNS FIRST, BEFORE ANY PATH IS CHOSEN. An order carrying a reference or a
+   * voucher from the card machine is evidence a card was presented, and it must never reach the
+   * light path however empty its other fields are.
    */
   if (trimmed(row.payment_reference) || trimmed(row.payment_voucher_no)) {
     return refuse('payment_marker_present')
   }
+
+  /**
+   * ============================================================================================
+   * THE LIGHT PATH -- no payment was ever started, so there is nothing to ask the gateway.
+   * ============================================================================================
+   *
+   * A Finatic charge requires a merchant order number. With no reference AND no attempt
+   * timestamp, none was ever created, so no charge was possible. Querying the gateway would be
+   * asking about a reference that does not exist, and the answer could only ever be E04111 --
+   * ceremony that tells nobody anything.
+   *
+   * THE GUARD IS `neverAttemptedPayment`, and it is deliberately conjunctive: EITHER a reference
+   * OR an attempt timestamp sends the order down the heavy path with its gateway re-query and its
+   * PAID refusal intact. This path is not a relaxation of that rule; it is a different case.
+   */
+  if (neverAttemptedPayment(row as never)) {
+    const previous = trimmed(row.payment_status)
+    const { data: lightUpdated, error: lightError } = await supabase
+      .from('orders')
+      .update({
+        status: 'cancelled',
+        payment_status: 'cancelled',
+        cancelled_at: new Date(nowMs).toISOString(),
+        cancellation_reason: 'operator_override_never_attempted',
+      })
+      .eq('id', orderId)
+      .eq('restaurant_id', restaurantId)
+      .eq('payment_status', previous)
+      .select('id, order_number, total')
+      .maybeSingle()
+
+    if (lightError) throw lightError
+    if (!lightUpdated?.id) return refuse('order_not_held', { note: 'payment_status changed under us' })
+
+    await supabase.from('audit_logs').insert({
+      restaurant_id: restaurantId,
+      entity_type: 'order',
+      entity_id: orderId,
+      action: OVERRIDE_CANCEL_ACTION,
+      metadata: {
+        source: 'held_for_review_operator_override',
+        operatorOverride: true,
+        // Named so the two paths are separable in a query. A reader must never have to infer
+        // which one ran from the absence of a gateway code.
+        path: 'never_attempted',
+        overrodeRule: null,
+        requestedBy,
+        cancelledAt: new Date(nowMs).toISOString(),
+        gatewayQueried: false,
+        gatewayCode: null,
+        gatewayStatus: null,
+        businessOrderNo: null,
+        orderNumber: lightUpdated.order_number ?? null,
+        orderTotal: lightUpdated.total ?? null,
+        previousPaymentStatus: previous,
+        attemptStartedAt: null,
+        ageHours: hoursSince(row.placed_at, nowMs),
+        reason: OVERRIDE_CANCEL_NEVER_ATTEMPTED_AUDIT_REASON,
+      },
+    })
+
+    return {
+      ok: true,
+      orderId,
+      orderNumber: (lightUpdated.order_number as number) ?? null,
+      total: (lightUpdated.total as number) ?? null,
+      gatewayCode: null,
+      gatewayStatus: null,
+      ageHours: hoursSince(row.placed_at, nowMs),
+    }
+  }
+
+  /**
+   * Heavy path from here. Reachable only when a reference or an attempt timestamp exists, so an
+   * order with an attempt but no reference still refuses -- there is genuinely nothing to
+   * re-check, and something was started.
+   */
+  const merchantOrderNo = trimmed(row.paycloud_merchant_order_no)
+  if (!merchantOrderNo) return refuse('no_gateway_reference')
 
   const { data: venue } = await supabase
     .from('restaurants')
@@ -240,6 +317,8 @@ export async function overrideCancelHeldOrder(
       source: 'held_for_review_operator_override',
       // The flag that separates this from the rule firing. A reader must never have to infer it.
       operatorOverride: true,
+      path: 'gateway_requeried',
+      gatewayQueried: true,
       overrodeRule: 'e04111_persistence_2026_08_27',
       requestedBy,
       cancelledAt: new Date(nowMs).toISOString(),

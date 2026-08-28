@@ -18,6 +18,7 @@ import { getSettingsAccessToken } from './settings-utils'
 import { onboardingFetch } from '@/lib/onboarding/api-client'
 import { usePermissions } from '@/hooks/use-permissions'
 import { PERMISSIONS } from '@/lib/permissions'
+import { StationScreensPairingSection } from './station-screens-pairing-section'
 
 const ACTIVATION_STORAGE_PREFIX = 'settings_terminal_activation_result'
 const SUCCESS_BG = '#FFF8F4'
@@ -731,6 +732,8 @@ export function SettingsPaymentTab() {
           </div>
         )}
       </div>
+
+      <StationScreensPairingSection />
     </div>
   )
 }

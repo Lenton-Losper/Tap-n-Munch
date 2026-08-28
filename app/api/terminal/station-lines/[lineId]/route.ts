@@ -2,33 +2,53 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
-import { ORDER_LINES_TABLE, ORDER_LINE_EVENTS_TABLE } from '@/lib/stations/schema-assumptions'
+import { assertTerminalPairedToStation, StationPairingMismatchError } from '@/lib/stations/station-pairing'
+import { POST as bumpOrderLineState } from '@/app/api/station/order-lines/[lineId]/state/route'
 
 export const dynamic = 'force-dynamic'
-
-const KITCHEN_STATE_BY_ACTION = {
-  cooked: 'cooked',
-  ready_to_run: 'ready_to_run',
-} as const
-
-type Action = keyof typeof KITCHEN_STATE_BY_ACTION
 
 /**
  * feat/station-screens-v1 — the kitchen screen's two taps. Station marks a line Cooked; the
  * pass marks it Ready to run.
  *
- * Writes BOTH halves of schema-assumptions.ts's ruling (4): sets order_lines.kitchen_state (the
- * column a screen reads — never bar_state, which is a separate column entirely, so this can
- * never clear the bar's half of a 'both' line) and appends an order_line_events row as the
- * audit trail. The two writes are NOT atomic here — that would need a single RPC on the other
- * session's side, which this branch does not own (ruled: do not write those migrations). If the
- * second write fails, the line's state has still moved and is correct; only the audit trail is
- * short one row, logged so it is not silently lost.
+ * ============================================================================================
+ * FIXED 2026-08-28 — THIS ROUTE NO LONGER WRITES order_lines OR order_line_events ITSELF
+ * ============================================================================================
  *
- * TODO(schema-relay): table/column names are the ASSUMED shape in
- * lib/stations/schema-assumptions.ts.
+ * It used to, against a GUESSED schema (lib/stations/schema-assumptions.ts, now retired), and
+ * carried two live defects because of it:
+ *
+ *   1. KITCHEN_STATE_BY_ACTION mapped the ACTION NAME 'ready_to_run' into the stored value, i.e.
+ *      it wrote the literal string 'ready_to_run' into kitchen_state. The real vocabulary
+ *      (lib/orders/order-lines.ts) has no such state — it is 'ready' — so that write 500'd
+ *      against order_lines_kitchen_state_check the moment 'cooked' also became reachable in
+ *      production. 'cooked' the action happened to spell the same as 'cooked' the state, which is
+ *      the only reason that half ever looked like it worked.
+ *   2. The order_line_events insert used event_type/created_at/created_by. The real table
+ *      (20260827131100_order_line_events.sql) has from_state/to_state/actor_kind/actor_user_id/
+ *      occurred_at. The insert error was caught and logged, never surfaced, so every bump looked
+ *      successful while writing zero audit rows.
+ *
+ * The fix is not two column-name patches. This route now does ONLY its own job — translate its
+ * own `action` vocabulary and enforce the screen-pairing gate — and delegates the actual write to
+ * POST /api/station/order-lines/[lineId]/state, in-process, which already does the conditional
+ * update AND the atomic audit-event write for both of them, and would have refused
+ * 'ready_to_run' at the door with a readable 400 instead of a swallowed-error 200. One writer for
+ * order_lines and order_line_events, not two independently-guessed ones.
+ *
+ * 'done' is NOT in ACTION_TO_STATE. This route's own action vocabulary is 'cooked' |
+ * 'ready_to_run' (the kitchen screen's two button labels) and stays that way; the delegate
+ * separately accepts 'done' as ITS OWN legacy alias for callers that speak the state vocabulary
+ * directly, which this route does not.
  */
-export async function POST(req: Request, { params }: { params: Promise<{ lineId: string }> }) {
+const ACTION_TO_STATE = {
+  cooked: 'cooked',
+  ready_to_run: 'ready',
+} as const
+
+type Action = keyof typeof ACTION_TO_STATE
+
+export async function POST(req: Request, ctx: { params: Promise<{ lineId: string }> }) {
   try {
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
@@ -36,40 +56,36 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
 
     const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
     if (!allowed) {
-      return NextResponse.json({ error: 'Station screens are not enabled for this restaurant' }, { status: 403 })
+      return NextResponse.json(
+        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
     }
 
-    const { lineId } = await params
-    const body = (await req.json().catch(() => ({}))) as { action?: string }
+    try {
+      await assertTerminalPairedToStation(supabase, terminal, 'kitchen')
+    } catch (err) {
+      if (err instanceof StationPairingMismatchError) {
+        return NextResponse.json({ error: err.message, code: err.code, pairedTo: err.pairedTo }, { status: 403 })
+      }
+      throw err
+    }
 
-    if (!body.action || !(body.action in KITCHEN_STATE_BY_ACTION)) {
+    const body = (await req.json().catch(() => ({}))) as { action?: string }
+    if (!body.action || !(body.action in ACTION_TO_STATE)) {
       return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
     }
-    const action = body.action as Action
-    const nowIso = new Date().toISOString()
+    const to_state = ACTION_TO_STATE[body.action as Action]
 
-    const { error: updateError } = await supabase
-      .from(ORDER_LINES_TABLE)
-      .update({ kitchen_state: KITCHEN_STATE_BY_ACTION[action] })
-      .eq('id', lineId)
-      .eq('restaurant_id', terminal.restaurantId)
-
-    if (updateError) throw updateError
-
-    const { error: eventError } = await supabase.from(ORDER_LINE_EVENTS_TABLE).insert({
-      restaurant_id: terminal.restaurantId,
-      order_line_id: lineId,
-      station: 'kitchen',
-      event_type: action,
-      created_at: nowIso,
-      created_by: terminal.terminalId,
+    // Delegate to the real contract: same terminal token (same Authorization header), the
+    // station and to_state it actually expects. In-process, not a network round trip.
+    const delegateReq = new Request(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify({ station: 'kitchen', to_state }),
     })
 
-    if (eventError) {
-      console.error('[station-lines/:lineId] state updated but the event log write failed:', eventError)
-    }
-
-    return NextResponse.json({ ok: true })
+    return bumpOrderLineState(delegateReq, ctx)
   } catch (err: unknown) {
     if (err instanceof Response) return err
     console.error('[station-lines/:lineId] failed:', err)

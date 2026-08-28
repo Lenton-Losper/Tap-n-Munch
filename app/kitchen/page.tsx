@@ -20,6 +20,8 @@ import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-ses
 function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [lines, setLines] = useState<KitchenLine[]>([])
   const [notEnabled, setNotEnabled] = useState(false)
+  const [notPaired, setNotPaired] = useState(false)
+  const [pairedTo, setPairedTo] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -33,6 +35,18 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
     return () => window.clearInterval(id)
   }, [])
 
+  // last_seen_at (paired-screens list, Settings -> Payment & terminals) only moves when
+  // something calls this. Without it, a wall screen that has been up for a week still reads
+  // "last seen: at activation" -- exactly the silent-staleness failure #350 exists to prevent,
+  // one column over. The route is generic (app/api/terminal/heartbeat) and already used by other
+  // terminal clients; this just means the current terminal is also one of them.
+  useEffect(() => {
+    const beat = () => void authFetch('/api/terminal/heartbeat', { method: 'POST' })
+    beat()
+    const id = window.setInterval(beat, 60_000)
+    return () => window.clearInterval(id)
+  }, [authFetch])
+
   useEffect(() => {
     let cancelled = false
     const channelKey = `station-kitchen:${session.terminalId}`
@@ -42,6 +56,8 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
         if (cancelled) return
         setLines(snapshot.items)
         setNotEnabled(snapshot.notEnabled)
+        setNotPaired(snapshot.notPaired)
+        setPairedTo(snapshot.pairedTo)
       })
     }
 
@@ -73,6 +89,9 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
     }
   }, [session.restaurantId, session.terminalId, authFetch])
 
+  if (notPaired) {
+    return <StationNotEnabled reason="not_paired" pairedTo={pairedTo} />
+  }
   if (notEnabled) {
     return <StationNotEnabled />
   }

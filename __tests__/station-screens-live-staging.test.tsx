@@ -1,27 +1,26 @@
 /**
  * @jest-environment jsdom
  *
- * feat/station-screens-v1 — REDONE AGAINST REAL ROWS, 2026-08-28. The three claims that were
- * fixture-only before this suite existed:
+ * feat/station-screens-v1 — REDONE AGAINST REAL ROWS. The three claims that were fixture-only
+ * before this suite existed:
  *
  *   - both screens rendering
- *   - the half-bumped 'both' line staying independent per station
+ *   - a route_to = 'both' line staying independent per station (kitchen cooked, bar still in)
  *   - age escalation red at ~6 minutes, sorted to the top
  *
- * Reads the snapshot scripts/seed-station-screens-staging.ts writes after a real insert into
- * STAGING (mdqjpxwczrhkxkbqatqa) — the rows in that file are exactly what is live in
- * order_lines/order_line_events at seed time, not a fixture — and maps them through the REAL
- * lib/stations/map-raw-lines.ts, then mounts the REAL KitchenScreen/BarScreen components
- * (react-dom/client, same technique __tests__/350-feed-connection-indicator-renders.test.tsx
- * uses).
+ * REBUILT 2026-08-28 for the real four-state model: reads the snapshot
+ * scripts/seed-station-screens-staging.ts writes after real inserts into STAGING
+ * (mdqjpxwczrhkxkbqatqa) — kitchenResponse/barResponse are built in that script's own
+ * buildStationResponse(), which imports the SAME isLineReady/stationsOwnedBy this test's
+ * production code path (lib/stations/map-raw-lines.ts) is downstream of, so this is real rows
+ * mapped through real logic, not a fixture with the right field names.
  *
- * WHY A SNAPSHOT FILE, NOT A LIVE QUERY FROM INSIDE THIS TEST: tried that first. jest-
- * environment-jsdom's global scope has no fetch, and polyfilling undici's dependency chain to
- * do real TLS from inside jsdom cascaded through missing TextDecoder, then missing
- * clearImmediate, with no clean stopping point — jsdom is not built for real Node socket I/O.
- * Fetching real data (Node environment) and rendering it (jsdom environment) are two different
- * environments' jobs; the JSON snapshot is the seam between them, written by a plain `tsx`
- * script that has no such constraint.
+ * WHY A SNAPSHOT FILE, NOT A LIVE QUERY FROM INSIDE THIS TEST: jest-environment-jsdom's global
+ * scope has no fetch, and polyfilling undici's dependency chain to do real TLS from inside jsdom
+ * cascaded through missing TextDecoder, then missing clearImmediate, with no clean stopping
+ * point. Fetching real data (Node environment) and rendering it (jsdom environment) are two
+ * different environments' jobs; the JSON snapshot is the seam between them, written by a plain
+ * `tsx` script that has no such constraint.
  *
  * REQUIRES the seed script to have been run first: `npx tsx scripts/seed-station-screens-
  * staging.ts`. Skips (does not fail) if the snapshot file is missing, so this suite does not
@@ -35,18 +34,17 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
 import { BarScreen } from '@/components/stations/bar-screen'
-import { mapRawLinesToBarRounds, mapRawLinesToKitchenLines } from '@/lib/stations/map-raw-lines'
+import { mapStationLinesToBarRounds, mapStationLinesToKitchenLines } from '@/lib/stations/map-raw-lines'
+import type { StationLinesResponseDTO } from '@/lib/stations/map-raw-lines'
 import { readyToRunEscalation, ageMinutes } from '@/lib/stations/age'
-import type { RawOrderLine, RawOrderLineEvent } from '@/lib/stations/schema-assumptions'
 import { SEED_SNAPSHOT_PATH } from '../scripts/seed-station-screens-staging'
 
 type Snapshot = {
   seededAt: string
   restaurantId: string
-  orderId: string
   tableNumberByOrderId: Record<string, string>
-  lines: RawOrderLine[]
-  events: RawOrderLineEvent[]
+  kitchenResponse: StationLinesResponseDTO
+  barResponse: StationLinesResponseDTO
 }
 
 function loadSnapshot(): Snapshot | null {
@@ -77,8 +75,8 @@ describe('station screens against REAL staging rows', () => {
       return
     }
 
-    const kitchenLines = mapRawLinesToKitchenLines(snapshot.lines, snapshot.events, snapshot.tableNumberByOrderId)
-    const barRounds = mapRawLinesToBarRounds(snapshot.lines, snapshot.events, snapshot.tableNumberByOrderId)
+    const kitchenLines = mapStationLinesToKitchenLines(snapshot.kitchenResponse)
+    const barRounds = mapStationLinesToBarRounds(snapshot.barResponse)
 
     expect(kitchenLines.length).toBeGreaterThan(0)
     expect(barRounds.length).toBeGreaterThan(0)
@@ -106,26 +104,22 @@ describe('station screens against REAL staging rows', () => {
     expect(container.textContent).toContain('PROBE:')
   })
 
-  it("the half-bumped 'both' line stays independent per station — real proof of order_lines row 89fe25a2's own pattern, on this run's own seed", () => {
+  it("a route_to = 'both', half-bumped line stays independent per station — kitchen cooked, bar still in", () => {
     const snapshot = loadSnapshot()
     if (!snapshot) return
 
-    const halfBumped = snapshot.lines.find((l) => l.route_to === 'both')
-    if (!halfBumped) {
-      console.warn('SKIPPED: no route_to=both line in this seed snapshot')
+    const kitchenLines = mapStationLinesToKitchenLines(snapshot.kitchenResponse)
+    const barRounds = mapStationLinesToBarRounds(snapshot.barResponse)
+
+    const halfBumpedKitchenLine = kitchenLines.find((l) => l.itemName.includes('half-bumped'))
+    if (!halfBumpedKitchenLine) {
+      console.warn('SKIPPED: no half-bumped line in this seed snapshot')
       return
     }
-    expect(halfBumped.kitchen_state).toBe('done')
-    expect(halfBumped.bar_state).toBe('outstanding')
+    expect(halfBumpedKitchenLine.state).toBe('cooked') // kitchen's half IS cooked
 
-    const kitchenLines = mapRawLinesToKitchenLines(snapshot.lines, snapshot.events, snapshot.tableNumberByOrderId)
-    const barRounds = mapRawLinesToBarRounds(snapshot.lines, snapshot.events, snapshot.tableNumberByOrderId)
-
-    const kitchenLine = kitchenLines.find((l) => l.id === halfBumped.id)!
-    expect(kitchenLine.readyToRunAt).not.toBeNull() // kitchen's half IS done
-
-    const round = barRounds.find((r) => r.items.some((i) => i.itemName === halfBumped.name_snapshot))!
-    expect(round.outAt).toBeNull() // bar's half is NOT out, despite kitchen being done
+    const round = barRounds.find((r) => r.items.some((i) => i.itemName.includes('half-bumped')))!
+    expect(round).toBeTruthy() // bar's half is still IN, despite kitchen being cooked
 
     act(() => {
       root.render(
@@ -138,41 +132,36 @@ describe('station screens against REAL staging rows', () => {
         />,
       )
     })
-    const readyCards = Array.from(container.querySelectorAll('[data-testid="ready-to-run-card"]'))
-    expect(readyCards.some((c) => c.textContent?.includes('half-bumped'))).toBe(true)
+    const cookedCards = Array.from(container.querySelectorAll('[data-testid="cooked-card"]'))
+    expect(cookedCards.some((c) => c.textContent?.includes('half-bumped'))).toBe(true)
 
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
       root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBumpOut={() => {}} />)
     })
-    const outCards = container.querySelector('[data-testid="bar-out-column"]')!
-    expect(outCards.textContent).not.toContain('half-bumped')
-    const inCards = container.querySelector('[data-testid="bar-in-column"]')!
-    expect(inCards.textContent).toContain('half-bumped')
+    const inSection = container.querySelector('[data-testid="bar-in-section"]')!
+    expect(inSection.textContent).toContain('half-bumped')
   })
 
-  it('age escalation is red for the oldest done line and sorts it to the top — real elapsed time, real row', () => {
+  it('age escalation is red for the oldest cooked order and sorts it to the top — real elapsed time, real rows', () => {
     const snapshot = loadSnapshot()
     if (!snapshot) return
 
-    const redLine = snapshot.lines.find((l) => l.route_to === 'kitchen' && l.name_snapshot.includes('expect RED'))
-    const whiteLine = snapshot.lines.find((l) => l.route_to === 'kitchen' && l.name_snapshot.includes('expect WHITE'))
+    const kitchenLines = mapStationLinesToKitchenLines(snapshot.kitchenResponse)
+    const redLine = kitchenLines.find((l) => l.state === 'cooked' && l.itemName.includes('expect RED'))
+    const whiteLine = kitchenLines.find((l) => l.state === 'cooked' && l.itemName.includes('expect WHITE'))
     if (!redLine || !whiteLine) {
       console.warn('SKIPPED: escalation-proof lines not found in this seed snapshot')
       return
     }
 
-    const kitchenLines = mapRawLinesToKitchenLines(snapshot.lines, snapshot.events, snapshot.tableNumberByOrderId)
-    const redKL = kitchenLines.find((l) => l.id === redLine.id)!
-    const whiteKL = kitchenLines.find((l) => l.id === whiteLine.id)!
-
     const now = Date.now()
-    const redMinutes = ageMinutes(redKL.readyToRunAt as string, now)
-    const whiteMinutes = ageMinutes(whiteKL.readyToRunAt as string, now)
+    const redMinutes = ageMinutes(redLine.placedAt as string, now)
+    const whiteMinutes = ageMinutes(whiteLine.placedAt as string, now)
 
-    // Seeded 6 and 1 minutes old respectively; asserted against ACTUAL elapsed time at test run,
-    // not the original seed values — real wall-clock time has passed since seeding.
+    // Seeded on orders placed 6 and 1 minutes old respectively; asserted against ACTUAL elapsed
+    // time at test run, not the original seed values.
     expect(redMinutes).toBeGreaterThan(whiteMinutes)
     expect(readyToRunEscalation(redMinutes)).toBe('red')
 
@@ -188,11 +177,11 @@ describe('station screens against REAL staging rows', () => {
       )
     })
 
-    const cards = Array.from(container.querySelectorAll('[data-testid="ready-to-run-card"]'))
+    const cards = Array.from(container.querySelectorAll('[data-testid="cooked-card"]'))
     const redCard = cards.find((c) => c.textContent?.includes('expect RED'))!
     const whiteCard = cards.find((c) => c.textContent?.includes('expect WHITE'))!
     expect(redCard.getAttribute('data-escalation')).toBe('red')
-    // Oldest first: the red (older) card's position in the DOM must precede the white one's.
+    // Oldest first: the red (older order) card's position in the DOM must precede the white one's.
     expect(cards.indexOf(redCard)).toBeLessThan(cards.indexOf(whiteCard))
   })
 })

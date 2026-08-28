@@ -195,7 +195,7 @@ describe('#353 classification — what needs a human', () => {
 
   it('a stranded pending order is included even though it is plain `pending`', () => {
     expect(
-      heldForReviewCause({ id: 'o', payment_status: 'pending', placed_at: daysAgo(35) }, NOW),
+      heldForReviewCause({ id: 'o', /* a payment WAS started -- keeps this the attempted cause after the 2026-08-28 split */ paycloud_merchant_order_no: 'FT1', payment_status: 'pending', placed_at: daysAgo(35) }, NOW),
     ).toBe(STRANDED_PENDING_CAUSE)
   })
 
@@ -236,13 +236,17 @@ describe('#353 classification — what needs a human', () => {
   it('a pending order with an unreadable placed_at is included, not dropped', () => {
     // Dropping it would be the invisible-absence shape this surface exists to remove.
     expect(
-      heldForReviewCause({ id: 'o', payment_status: 'pending', placed_at: 'not a date' }, NOW),
+      heldForReviewCause({ id: 'o', /* a payment WAS started -- keeps this the attempted cause after the 2026-08-28 split */ paycloud_merchant_order_no: 'FT1', payment_status: 'pending', placed_at: 'not a date' }, NOW),
     ).toBe(STRANDED_PENDING_CAUSE)
   })
 
   it('normalises a stray casing rather than misclassifying it', () => {
     expect(
-      heldForReviewCause({ id: 'o', payment_status: ' Pending ', placed_at: daysAgo(3) }, NOW),
+      heldForReviewCause(
+        /* a payment WAS started -- keeps this the attempted cause after the 2026-08-28 split */
+        { id: 'o', payment_status: ' Pending ', placed_at: daysAgo(3), paycloud_merchant_order_no: 'FT1' },
+        NOW,
+      ),
     ).toBe(STRANDED_PENDING_CAUSE)
     expect(heldForReviewCause({ id: 'o', payment_status: ' Paid ', placed_at: daysAgo(3) }, NOW)).toBeNull()
   })

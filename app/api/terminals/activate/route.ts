@@ -51,7 +51,8 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as Record<string, unknown>
-    const code = normalizeActivationCode(String(body?.code || ''))
+    const rawCode = String(body?.code || '')
+    const code = normalizeActivationCode(rawCode)
     const deviceId = readBodyString(body, 'deviceId', 'device_id')
     const terminalSn = readBodyString(body, 'terminalSn', 'terminal_sn', 'sn')
 
@@ -61,6 +62,18 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const nowIso = new Date().toISOString()
+    /**
+     * TEMPORARY INSTRUMENTATION, 2026-08-28 -- four failed activation attempts on staging with
+     * four different (wrong, unverified) explanations offered. Rather than a fifth hypothesis,
+     * this logs and (behind an explicit opt-in header, never on by default) returns exactly what
+     * was asked for: the raw code as received, the code after normalizeActivationCode, the
+     * where-clause values the redemption query actually runs with, and -- separately from the
+     * strict 3-condition query below -- whether ANY row exists for that normalized code at all,
+     * ignoring active/expiry, so "no such code" is distinguishable from "code exists but already
+     * active" or "code exists but expired" instead of collapsing all three into one 400. Remove
+     * once the live cause is confirmed; do not let this rot in as permanent surface area.
+     */
+    const debugRequested = request.headers.get('x-debug-activation') === '1'
 
     const { data, error } = await supabase
       .from('restaurant_terminals')
@@ -73,7 +86,32 @@ export async function POST(request: Request) {
     if (error) throw error
 
     if (!data?.id) {
-      return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
+      const { data: anyMatch } = await supabase
+        .from('restaurant_terminals')
+        .select('id, restaurant_id, terminal_name, status, active, activation_code, activation_code_expires_at')
+        .eq('activation_code', code)
+        .maybeSingle()
+
+      console.error('[activate] no strict match', {
+        rawCode,
+        normalizedCode: code,
+        whereClause: { activation_code: code, active: false, activation_code_expires_at_gt: nowIso },
+        anyMatchIgnoringActiveAndExpiry: anyMatch ?? null,
+      })
+
+      return NextResponse.json({
+        error: 'Invalid or expired activation code',
+        ...(debugRequested
+          ? {
+              debug: {
+                rawCode,
+                normalizedCode: code,
+                whereClause: { activation_code: code, active: false, activation_code_expires_at_gt: nowIso },
+                anyMatchIgnoringActiveAndExpiry: anyMatch ?? null,
+              },
+            }
+          : {}),
+      }, { status: 400 })
     }
 
     const restaurantId = String(data.restaurant_id)
