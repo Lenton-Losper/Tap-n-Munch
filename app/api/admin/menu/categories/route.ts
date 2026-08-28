@@ -68,6 +68,9 @@ export async function POST(request: Request) {
   }
 }
 
+/** kitchen | bar | both -- matches the DB CHECK constraint on menu_categories.route_to. */
+const VALID_ROUTES = new Set(['kitchen', 'bar', 'both'])
+
 export async function PATCH(request: Request) {
   try {
     const user = await getUserFromRequest(request)
@@ -76,6 +79,39 @@ export async function PATCH(request: Request) {
 
     const { supabase, restaurantId } = auth
     const body = (await request.json()) as Record<string, unknown>
+
+    /**
+     * BULK ROUTE-TO, deliberately its own branch rather than a loop over the single-category
+     * path below. Setting kitchen/bar/both is the ONE field a manager needs to change across
+     * many categories at once during setup -- "nineteen categories one at a time is not a setup
+     * flow" -- so bulk mode is scoped to exactly that field, not general bulk-editing.
+     */
+    if (Array.isArray(body?.categoryIds)) {
+      const categoryIds = body.categoryIds.map((id) => String(id).trim()).filter(Boolean)
+      const routeTo = String(body?.route_to || body?.routeTo || '').trim()
+
+      if (categoryIds.length === 0) {
+        return NextResponse.json({ error: 'categoryIds must be a non-empty array' }, { status: 400 })
+      }
+      if (!VALID_ROUTES.has(routeTo)) {
+        return NextResponse.json(
+          { error: "route_to must be 'kitchen', 'bar', or 'both'" },
+          { status: 400 },
+        )
+      }
+
+      const { data, error } = await supabase
+        .from('menu_categories')
+        .update({ route_to: routeTo, updated_at: new Date().toISOString() })
+        .eq('restaurant_id', restaurantId)
+        .in('id', categoryIds)
+        .select('id')
+
+      if (error) throw error
+
+      return NextResponse.json({ success: true, updatedCount: (data ?? []).length })
+    }
+
     const categoryId = String(body?.categoryId || body?.id || '').trim()
 
     if (!categoryId) {

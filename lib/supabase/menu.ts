@@ -339,6 +339,25 @@ export async function updateMenuCategory(
   return updateSupabaseCategory(categoryId, updates)
 }
 
+/** Sets route_to on several categories in one request -- see the API route's own docblock. */
+export async function bulkSetCategoryRoute(
+  categoryIds: string[],
+  routeTo: 'kitchen' | 'bar' | 'both',
+) {
+  const accessToken = await getStaffAccessToken()
+  const response = await fetch('/api/admin/menu/categories', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ categoryIds, route_to: routeTo }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload?.error || 'Failed to update category routing')
+  return payload?.updatedCount as number
+}
+
 export async function getSubCategories(firebaseRestaurantId: string, categoryId: string) {
   const restaurantId = await resolveRestaurantUuid(firebaseRestaurantId)
   const { data, error } = await supabase

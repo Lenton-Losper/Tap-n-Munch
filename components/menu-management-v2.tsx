@@ -4,12 +4,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRef } from 'react'
 import { useAuth } from '@/components/auth/auth-provider'
-import { 
-  getMenuCategories, 
-  createMenuCategory, 
+import {
+  getMenuCategories,
+  createMenuCategory,
   updateMenuCategory,
   deleteMenuCategoryCascade,
-  MenuCategory 
+  bulkSetCategoryRoute,
+  MenuCategory
 } from '@/lib/supabase/menu'
 import { 
   getSubCategories, 
@@ -86,6 +87,10 @@ export function MenuManagementV2({
   const [showItemModal, setShowItemModal] = useState(false)
   const [defaultSubCategoryId, setDefaultSubCategoryId] = useState('')
   const [showEditMenuCategoryModal, setShowEditMenuCategoryModal] = useState(false)
+  const [showRoutingModal, setShowRoutingModal] = useState(false)
+  const [routingSelection, setRoutingSelection] = useState<Set<string>>(new Set())
+  const [routingBulkValue, setRoutingBulkValue] = useState<'kitchen' | 'bar' | 'both'>('kitchen')
+  const [routingSaving, setRoutingSaving] = useState(false)
   const [showEditSubCategoryModal, setShowEditSubCategoryModal] = useState(false)
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null)
   const [editingMenuCategory, setEditingMenuCategory] = useState<MenuCategory | null>(null)
@@ -370,6 +375,22 @@ export function MenuManagementV2({
     }
   }, [itemsByCategory, selectedMenuCategory, subCategoriesByMenuCategory])
 
+  /**
+   * THE SPLIT, VISIBLE AT A GLANCE. Digi Cofee sends every drink to the kitchen right now because
+   * every category defaults to 'kitchen' (the column's own DB default) and nothing ever showed a
+   * manager that the split was wrong. "71 kitchen / 124 bar / 3 both" is the whole point: a number
+   * that looks off is a number a manager can act on, without opening nineteen categories to find
+   * the one nobody set.
+   */
+  const routingSplit = useMemo(() => {
+    const counts = { kitchen: 0, bar: 0, both: 0 }
+    for (const category of menuCategories) {
+      const route = (category.route_to || 'kitchen') as 'kitchen' | 'bar' | 'both'
+      if (route in counts) counts[route] += 1
+    }
+    return counts
+  }, [menuCategories])
+
   const hasRealSubcategories = useMemo(() => {
     if (!selectedMenuCategory) return false
     return (subCategoriesByMenuCategory[selectedMenuCategory.id] || []).length > 0
@@ -580,6 +601,40 @@ export function MenuManagementV2({
         description: err.message || 'Failed to update category',
         variant: 'destructive',
       })
+    }
+  }
+
+  const toggleRoutingSelection = (categoryId: string) => {
+    setRoutingSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(categoryId)) next.delete(categoryId)
+      else next.add(categoryId)
+      return next
+    })
+  }
+
+  const handleApplyBulkRouting = async () => {
+    if (!restaurantId || routingSelection.size === 0) return
+
+    setRoutingSaving(true)
+    try {
+      await bulkSetCategoryRoute([...routingSelection], routingBulkValue)
+      const categories = ((await getMenuCategories(restaurantId)) || []) as any[]
+      setMenuCategories(categories)
+      toast({
+        title: 'Success',
+        description: `${routingSelection.size} ${routingSelection.size === 1 ? 'category' : 'categories'} set to route to ${routingBulkValue}`,
+      })
+      setRoutingSelection(new Set())
+      await invalidateServerMenuCache()
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to update category routing',
+        variant: 'destructive',
+      })
+    } finally {
+      setRoutingSaving(false)
     }
   }
 
@@ -871,7 +926,15 @@ export function MenuManagementV2({
               <h1 className="text-2xl sm:text-3xl font-bold">Menu Management</h1>
             </div>
             <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-              <Button 
+              <Button
+                variant="outline"
+                onClick={() => setShowRoutingModal(true)}
+                className="w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-4 sm:px-6"
+                title={`${routingSplit.kitchen} kitchen / ${routingSplit.bar} bar / ${routingSplit.both} both`}
+              >
+                {routingSplit.kitchen} kitchen / {routingSplit.bar} bar / {routingSplit.both} both
+              </Button>
+              <Button
                 onClick={() => setShowMenuCategoryModal(true)}
                 className="bg-[#FF6B35] hover:bg-[#e55a28] w-full sm:w-auto h-11 sm:h-10 text-sm sm:text-base px-4 sm:px-6"
               >
@@ -1512,6 +1575,102 @@ export function MenuManagementV2({
               </Button>
               <Button onClick={handleSaveSubCategoryEdit} className="bg-[#FF6B35] hover:bg-[#e55a28]">
                 Save
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Category Routing Modal -- bulk kitchen/bar/both, with the split visible up top */}
+      <Dialog
+        open={showRoutingModal}
+        onOpenChange={(open) => {
+          setShowRoutingModal(open)
+          if (!open) setRoutingSelection(new Set())
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>PENDING COPY: category routing modal title</DialogTitle>
+            <DialogDescription>
+              PENDING COPY: category routing modal description
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm font-medium">
+              {routingSplit.kitchen} kitchen / {routingSplit.bar} bar / {routingSplit.both} both
+            </div>
+
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                className="text-sm text-muted-foreground underline"
+                onClick={() =>
+                  setRoutingSelection((prev) =>
+                    prev.size === menuCategories.length
+                      ? new Set()
+                      : new Set(menuCategories.map((category) => category.id)),
+                  )
+                }
+              >
+                {routingSelection.size === menuCategories.length && menuCategories.length > 0
+                  ? 'PENDING COPY: deselect-all label'
+                  : 'PENDING COPY: select-all label'}
+              </button>
+              <span className="text-sm text-muted-foreground">
+                {routingSelection.size} PENDING COPY: selected-count suffix
+              </span>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-1 border rounded-md p-2">
+              {menuCategories.map((category) => (
+                <label
+                  key={category.id}
+                  className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-muted/50 cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={routingSelection.has(category.id)}
+                      onChange={() => toggleRoutingSelection(category.id)}
+                      className="h-4 w-4 shrink-0"
+                    />
+                    <span className="truncate text-sm">{category.name}</span>
+                  </span>
+                  <span className="text-xs text-muted-foreground shrink-0 capitalize">
+                    {category.route_to || 'kitchen'}
+                  </span>
+                </label>
+              ))}
+              {menuCategories.length === 0 && (
+                <p className="text-sm text-muted-foreground italic px-2 py-4 text-center">
+                  PENDING COPY: no-categories-yet empty state
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t">
+              <Select
+                value={routingBulkValue}
+                onValueChange={(value: 'kitchen' | 'bar' | 'both') => setRoutingBulkValue(value)}
+              >
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kitchen">Kitchen</SelectItem>
+                  <SelectItem value="bar">Bar</SelectItem>
+                  <SelectItem value="both">Both</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={handleApplyBulkRouting}
+                disabled={routingSelection.size === 0 || routingSaving}
+                className="bg-[#FF6B35] hover:bg-[#e55a28] flex-1"
+              >
+                {routingSaving
+                  ? 'PENDING COPY: applying-routing-in-progress label'
+                  : `PENDING COPY: apply-routing button label (selected: ${routingSelection.size})`}
               </Button>
             </div>
           </div>
