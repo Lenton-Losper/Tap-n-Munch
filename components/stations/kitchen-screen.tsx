@@ -1,83 +1,89 @@
 'use client'
 
+import { useCallback } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageMinutes, formatAge, worstEscalation } from '@/lib/stations/age'
+import { ageSeconds, formatElapsedClock, worstEscalation } from '@/lib/stations/age'
 import {
   buildKitchenBoard,
   kitchenActiveLineEscalation,
-  readyLineEscalation,
+  kitchenReadyRowEscalation,
   type TableGroup,
 } from '@/lib/stations/grouping'
-import { densityFor, type DensityScale } from '@/lib/stations/board-density'
+import { densityFor, dispatchDensityFor, type DensityScale } from '@/lib/stations/board-density'
 import type { BumpLines } from '@/lib/stations/bump'
-import type { KitchenLine } from '@/lib/stations/types'
+import type { DispatchRow, KitchenLine } from '@/lib/stations/types'
 import type { FeedConnectionState } from '@/lib/dashboard/realtime-connection'
 import { StationConnectionIndicator } from '@/components/stations/station-connection-indicator'
 import {
   CardFailureBanner,
+  DispatchRowView,
+  NotSentStrip,
   PerCardButton,
   StationCard,
   StationLineRow,
   useCardBump,
+  useRecentlyCollected,
 } from '@/components/stations/station-card'
 
 /**
  * THE KITCHEN WALL BOARD.
  *
  * ============================================================================================
- * REBUILT 20260829160000 — TWO ZONES, NOT ONE ORDER FOR THREE THINGS
+ * SECOND-PASS REDESIGN (20260829) — TWO FIXED SURFACES, NOT TWO SECTIONS THAT SHARE THE SCROLL
  * ============================================================================================
  *
- * The previous rebuild fixed the WIDTH problem (two cards across a 1920x1080 wall) and left two
- * others standing: finished food sat ABOVE active work, and 'ready' lines could not appear on
- * this screen at all — `GET /api/station/lines` excluded them server-side, so there was nowhere
- * for a finished plate to go once the pass passed it, which is backwards for a chef who needs to
- * know what to make next before what already left.
- *
- * Now there are two real zones, in reading order:
- *
- *   1. ACTIVE ("To make") — everything not yet ready: not started AND already cooked-and-waiting,
- *      merged into ONE list. A table with one plated dish and one unstarted side is one piece of
- *      active work, and the previous split (a "cooked" zone drawn above an "outstanding" zone)
- *      is exactly the ordering the owner reported as backwards.
- *
- *   2. READY, pinned — lines the pass has passed, waiting to be run. Never sits beneath incoming
- *      work: the board's one scrollable element (`station-board-body`) is measured by
- *      tests/e2e/station-board-wall-fit.spec.ts to never actually scroll, so this zone being
- *      "pinned" falls out of that same contract rather than needing position:sticky — it is
- *      always fully on screen because the whole board is.
- *
- * A "Collected" tap (order_line_events 'collected', 20260829160000) clears a line out of this
- * zone — without it a pinned zone never empties, because nothing ever moves a line past 'ready'.
+ * Owner's second-pass brief, verbatim: "Both boards, two fixed surfaces: 68% active, 32% ready.
+ * ... ACTIVE answers 'what do I make', READY answers 'what can leave right now'." The board is
+ * `flex flex-col` with the active section at `flex-[68]` and the ready section at `flex-[32]` —
+ * a genuine height split, not a suggestion — inside the SAME never-actually-scrolls container the
+ * first rebuild established (`station-board-body`, still measured by
+ * tests/e2e/station-board-wall-fit.spec.ts, though that spec's own testids (`active-table-card` /
+ * `ready-table-card`) predate this redesign and need the owner's own reconciliation — see this
+ * rebuild's report).
  *
  * ============================================================================================
- * "FIFO BY DEFAULT, BUT OVERDUE RISES VISUALLY" — POSITION, NOT ONLY COLOUR
+ * READY IS NOW A DISPATCH QUEUE, NOT A GRID OF SHRUNKEN PRODUCTION CARDS
  * ============================================================================================
  *
- * lib/stations/grouping.ts sorts each zone by worst escalation first, then oldest-first within a
- * tier — see that file's own note on why "rises" is read as a real reorder rather than only a
- * colour change. Age is still carried by colour, per the brief's own words: "not by making a
- * number bigger" — the printed age is the second read, same as before.
+ * "No production cards. Dense rows... it is a dispatch queue, not a shrunken production card."
+ * The Ready zone used to be StationCard-per-table, same chrome as Active. It is now flat
+ * DispatchRowView rows straight from `board.readyRows` (lib/stations/grouping.ts) — one row per
+ * LINE, table carried inline as a column, not a heading. A table with a ready dish and an
+ * unstarted side genuinely appears in BOTH zones now: an Active card for its outstanding line, one
+ * Ready row for its finished one. That is the point of tracking state per line, not per table.
  *
  * ============================================================================================
- * PER LINE IS STILL THE DEFAULT. THE PER-TABLE CONTROL IS A SHORTCUT OVER IT.
+ * NOT SENT IS NOW A STRIP ABOVE THE WHOLE BOARD, NOT A SECTION INSIDE THE SCROLL
  * ============================================================================================
  *
- * Every line keeps its own button. A table showing both outstanding and cooked lines gets up to
- * TWO shortcuts — "All cooked" over its outstanding lines, "All ready" over its cooked ones —
- * because those are two different targets and a single blended shortcut would have to guess which
- * one a tap meant. Each shortcut is offered only when its own subset holds more than one line, for
- * the same reason the original rule existed: a subset of one already has its one tap.
+ * "It can never be buried by normal work" is read literally: NotSentStrip renders OUTSIDE
+ * `station-board-body` entirely, in its own `shrink-0` row between the header and the two fixed
+ * surfaces, so no amount of active or ready content can push it off screen — not "usually stays
+ * on top", but structurally cannot be covered.
+ *
+ * ============================================================================================
+ * A COLLECTED ROW IS RECOVERABLE, NOT INSTANT — THE ONE RULING THE OWNER CHANGED FROM THE PROPOSAL
+ * ============================================================================================
+ *
+ * "A waiter who taps the wrong row has no way back... the tap must be recoverable." A collected
+ * line leaves GET /api/station/lines' response the moment the server accepts the tap, so this
+ * screen keeps its own short-lived memory of "I just told the server to collect this"
+ * (`useRecentlyCollected`, station-card.tsx) and renders those rows struck through with Undo
+ * alongside whatever `board.readyRows` still reports, until the memory window closes or the row is
+ * undone. See `readyDisplayRows` below for exactly how the two lists are merged.
+ *
+ * ============================================================================================
+ * PER LINE IS STILL THE DEFAULT ON THE ACTIVE SURFACE. THE PER-TABLE CONTROL IS A SHORTCUT OVER IT.
+ * ============================================================================================
+ *
+ * Unchanged from the first rebuild: every line keeps its own button; a table showing both
+ * outstanding and cooked lines gets up to TWO small shortcuts ("All cooked" / "All ready"), never
+ * one blended button that would have to guess which lines a tap meant.
  */
 
 /** The clock an active line is judged on — the pass clock once cooked, the ticket clock before. */
 function activeLineClock(line: KitchenLine): string {
   return (line.state === 'cooked' ? line.cookedAt ?? line.placedAt : line.placedAt) ?? ''
-}
-
-/** The clock a ready line is judged on — how long it has sat waiting to be collected. */
-function readyLineClock(line: KitchenLine): string {
-  return line.readyAt ?? line.placedAt ?? ''
 }
 
 /** One table's active work — not-yet-cooked and cooked-and-waiting lines together. */
@@ -97,13 +103,16 @@ function ActiveTableCard({
   const cookedLines = group.lines.filter((line) => line.state === 'cooked')
   const allLineIds = group.lines.map((line) => line.id)
   const escalations = group.lines.map((line) => kitchenActiveLineEscalation(line, now))
-  const oldest = Math.max(...group.lines.map((line) => ageMinutes(activeLineClock(line), now)))
+  // Elapsed stays small and consistent as MM:SS — the second-pass brief's own words. formatAge's
+  // unit-scaling ("Xh Ym" / "Nd") is the OLD age display this replaces; formatElapsedClock is a
+  // deliberately different, fixed-width function (see age.ts's own note on why both still exist).
+  const oldestSeconds = Math.max(...group.lines.map((line) => ageSeconds(activeLineClock(line), now)))
 
   return (
     <StationCard
       testId="active-table-card"
       tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
-      ageLabel={formatAge(oldest)}
+      ageLabel={formatElapsedClock(oldestSeconds)}
       escalation={worstEscalation(escalations)}
       scale={scale}
       headerAction={
@@ -170,64 +179,6 @@ function ActiveTableCard({
   )
 }
 
-/** One table's Ready plates — passed, waiting to be run. Pinned zone; see the file docblock. */
-function ReadyTableCard({
-  group,
-  now,
-  scale,
-  onBump,
-}: {
-  group: TableGroup
-  now: number
-  scale: DensityScale
-  onBump: BumpLines
-}) {
-  const bump = useCardBump(onBump)
-  const lineIds = group.lines.map((line) => line.id)
-  const escalations = group.lines.map((line) => readyLineEscalation(line.readyAt, line.placedAt, now))
-  const oldest = Math.max(...group.lines.map((line) => ageMinutes(readyLineClock(line), now)))
-
-  return (
-    <StationCard
-      testId="ready-table-card"
-      tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
-      ageLabel={formatAge(oldest)}
-      escalation={worstEscalation(escalations)}
-      scale={scale}
-      headerAction={
-        group.lines.length > 1 ? (
-          <PerCardButton
-            label={STATION_COPY.kitchen.allCollectedButton}
-            count={group.lines.length}
-            lineIds={lineIds}
-            action="collected"
-            tone="pass"
-            bump={bump}
-            scale={scale}
-          />
-        ) : null
-      }
-      banner={<CardFailureBanner visibleLineIds={lineIds} bump={bump} scale={scale} />}
-    >
-      {group.lines.map((line) => (
-        <StationLineRow
-          key={line.id}
-          lineId={line.id}
-          itemName={line.itemName}
-          quantity={line.quantity}
-          lineNote={line.lineNote}
-          buttonLabel={STATION_COPY.kitchen.collectedButton}
-          action="collected"
-          tone="pass"
-          bump={bump}
-          scale={scale}
-          escalation={readyLineEscalation(line.readyAt, line.placedAt, now)}
-        />
-      ))}
-    </StationCard>
-  )
-}
-
 export function KitchenScreen({
   lines,
   now,
@@ -241,15 +192,64 @@ export function KitchenScreen({
 }) {
   const board = buildKitchenBoard(lines, now)
   const activeScale = densityFor(board.activeByTable.length)
-  const readyScale = densityFor(board.readyByTable.length)
-  const cardCount = board.activeByTable.length + board.readyByTable.length
+
+  const recentlyCollected = useRecentlyCollected()
+
+  /**
+   * Every row `board.readyRows` still reports, as-is, PLUS every locally-remembered "just
+   * collected" row that has actually left the server's response — see
+   * useRecentlyCollected's own docblock in station-card.tsx and this rebuild's report for why the
+   * merge goes this direction (server truth wins whenever it and local memory disagree).
+   */
+  const extraCollectedRows = Object.values(recentlyCollected.entries)
+    .map((entry) => entry.row)
+    .filter((row) => !board.readyRows.some((r) => r.lineId === row.lineId))
+  const readyDisplayRows: Array<{ row: DispatchRow; collected: boolean }> = [
+    ...board.readyRows.map((row) => ({ row, collected: false })),
+    ...extraCollectedRows.map((row) => ({ row, collected: true })),
+  ]
+  const readyDensity = dispatchDensityFor(readyDisplayRows.length)
+
+  /**
+   * The Ready zone's one shared bump instance (same pattern as an Active card's own useCardBump).
+   * Wraps `onBump` so a successful 'collected' tap is remembered locally the instant it lands —
+   * capturing the row's own data before the next refetch removes it from `board.readyRows`
+   * entirely, per the recoverable-tap ruling.
+   */
+  const collectBump = useCallback<BumpLines>(
+    async (lineIds, action) => {
+      const outcome = await onBump(lineIds, action)
+      if (action === 'collected') {
+        const succeeded = lineIds.filter((id) => !outcome.failedLineIds.includes(id))
+        for (const lineId of succeeded) {
+          const row = board.readyRows.find((r) => r.lineId === lineId)
+          if (row) recentlyCollected.markCollected(row)
+        }
+      }
+      return outcome
+    },
+    [onBump, board.readyRows, recentlyCollected],
+  )
+  const readyBump = useCardBump(collectBump)
+
+  const handleUndo = useCallback(
+    (row: DispatchRow) => {
+      void onBump([row.lineId], 'ready_to_run').then((outcome) => {
+        if (!outcome.failedLineIds.includes(row.lineId)) {
+          recentlyCollected.clear(row.lineId)
+        }
+      })
+    },
+    [onBump, recentlyCollected],
+  )
 
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-[#F5F4F0] p-3"
       data-testid="kitchen-screen"
       data-density={activeScale.density}
-      data-card-count={cardCount}
+      data-card-count={board.activeByTable.length}
+      data-ready-row-count={readyDisplayRows.length}
     >
       <div className="mb-2 flex shrink-0 items-center justify-between">
         <h1 className="font-serif text-2xl font-bold text-[#37352F]">{STATION_COPY.kitchen.pageTitle}</h1>
@@ -257,48 +257,49 @@ export function KitchenScreen({
       </div>
 
       {/*
-        THE ONE SCROLLABLE THING, AND IT IS SUPPOSED TO NEVER SCROLL.
-        tests/e2e/station-board-wall-fit.spec.ts measures exactly this element at 1920x1080 with the
-        twenty-round fixture and fails if scrollHeight exceeds clientHeight. It is `overflow-auto`
-        rather than `overflow-hidden` on purpose: if a board ever does exceed the wall, a scrollbar
-        is an admission that there is more, and clipping is a lie.
+        "It can never be buried by normal work" — rendered OUTSIDE the scrollable two-surface area
+        entirely, its own shrink-0 row, always the first thing under the header. See the file
+        docblock.
       */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="station-board-body">
-        {board.unrouted.length > 0 ? (
-          <div
-            data-testid="unrouted-section"
-            className="mb-1.5 shrink-0 rounded-xl border-4 border-red-500 bg-red-50 px-2.5 py-1.5"
-          >
-            <div className="flex flex-wrap items-baseline gap-x-3">
-              <h2 className="text-lg font-black text-red-900">{STATION_COPY.unrouted.heading}</h2>
-              <p className="text-sm text-red-800">{STATION_COPY.unrouted.description}</p>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {board.unrouted.map((line) => (
-                <div
-                  key={line.id}
-                  data-testid="unrouted-item"
-                  className="flex items-baseline gap-2 rounded-lg border-2 border-red-300 bg-white px-2 py-1"
-                >
-                  <p className="text-lg font-bold text-red-900">
-                    {STATION_COPY.kitchen.tableLabel(line.tableNumber)} — {line.quantity}× {line.itemName}
-                  </p>
-                  <p className="text-sm font-semibold text-red-700">{STATION_COPY.unrouted.itemNote}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+      <NotSentStrip
+        items={board.unrouted.map((line) => ({
+          lineId: line.id,
+          tableNumber: line.tableNumber,
+          quantity: line.quantity,
+          itemName: line.itemName,
+        }))}
+        tableLabel={STATION_COPY.kitchen.tableLabel}
+      />
 
-        {/* ACTIVE — roughly the top two-thirds of the board. */}
-        <section className="flex-[65] shrink-0" data-testid="active-section">
-          <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
+      {/*
+        THE TWO FIXED SURFACES, AND THE WHOLE THING IS SUPPOSED TO NEVER SCROLL.
+        tests/e2e/station-board-wall-fit.spec.ts measures exactly this element at 1920x1080 and
+        fails if scrollHeight exceeds clientHeight — its own testids predate this redesign's
+        Ready-as-rows layout and need reconciling, see this rebuild's report. `overflow-auto`
+        rather than `overflow-hidden` is deliberate: if a board ever does exceed the wall, a
+        scrollbar admits there is more, and clipping would be a lie.
+      */}
+      <div className="mt-2 flex min-h-0 flex-1 flex-col" data-testid="station-board-body">
+        {/*
+          ACTIVE — a genuine 68% of the two-surface height, not a suggestion. `min-h-0` is
+          load-bearing: without it a flex child refuses to shrink below its content's natural
+          size, which is exactly what let a full Active grid push Ready off the bottom of a
+          1920x1080 screen the first time this was measured. `overflow-y-auto` on the GRID (not
+          the section) is the same honesty rule the old single-surface board used: if the density
+          system ever undersizes a busy service, THIS surface admits it with its own scrollbar
+          rather than stealing Ready's fixed share of the wall.
+        */}
+        <section className="flex min-h-0 flex-[68] flex-col" data-testid="active-section">
+          <h2 className="mb-1 shrink-0 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.kitchen.activeHeading}
           </h2>
           {board.activeByTable.length === 0 ? (
             <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.activeEmpty}</p>
           ) : (
-            <div className={`gap-1.5 ${activeScale.columnsClass}`} data-testid="active-grid">
+            <div
+              className={`min-h-0 flex-1 overflow-y-auto gap-1.5 ${activeScale.columnsClass}`}
+              data-testid="active-grid"
+            >
               {board.activeByTable.map((group) => (
                 <ActiveTableCard
                   key={group.tableNumber}
@@ -312,26 +313,42 @@ export function KitchenScreen({
           )}
         </section>
 
-        {/* READY, PINNED — always rendered, always below active work, never scrolled out. */}
+        {/* READY, PINNED — a genuine 32% of the two-surface height, ALWAYS fully present
+            regardless of Active's content (see the note above — that is what min-h-0 on Active
+            guarantees). "What can leave right now" — a dense dispatch queue of rows, not cards. */}
         <section
-          className="mt-2 flex-[35] shrink-0 border-t-4 border-[#37352F] pt-1.5"
+          className="mt-2 flex min-h-0 flex-[32] flex-col border-t-4 border-[#37352F] pt-1.5"
           data-testid="ready-section"
+          data-ready-density={readyDensity.density}
         >
-          <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
+          <h2 className="mb-1 shrink-0 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.kitchen.readyHeading}
           </h2>
-          {board.readyByTable.length === 0 ? (
+          {readyDisplayRows.length === 0 ? (
             <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.readyEmpty}</p>
           ) : (
-            <div className={`gap-1.5 ${readyScale.columnsClass}`} data-testid="ready-grid">
-              {board.readyByTable.map((group) => (
-                <ReadyTableCard
-                  key={group.tableNumber}
-                  group={group}
-                  now={now}
-                  scale={readyScale}
-                  onBump={onBump}
-                />
+            <div
+              className={`min-h-0 flex-1 overflow-y-auto gap-1 ${readyDensity.columnsClass}`}
+              data-testid="ready-dispatch-list"
+            >
+              {readyDisplayRows.map(({ row, collected }) => (
+                <div key={row.lineId} className="mb-1 break-inside-avoid">
+                  <DispatchRowView
+                    row={row}
+                    now={now}
+                    escalation={kitchenReadyRowEscalation(row, now)}
+                    scale={readyDensity}
+                    tableLabel={STATION_COPY.kitchen.tableLabel}
+                    readyWord={STATION_COPY.dispatch.readyWord}
+                    action="collected"
+                    actionLabel={STATION_COPY.kitchen.collectedButton}
+                    tone="pass"
+                    bump={readyBump}
+                    collected={collected}
+                    undoLabel={STATION_COPY.dispatch.undoButton}
+                    onUndo={collected ? () => handleUndo(row) : undefined}
+                  />
+                </div>
               ))}
             </div>
           )}
