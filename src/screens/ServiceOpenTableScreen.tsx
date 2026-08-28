@@ -42,6 +42,18 @@ const EMPTY_LIST_MESSAGE =
 export default function ServiceOpenTableScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
   const {tableId, tableNumber, tableName} = route.params;
+  /**
+   * Where a successful open lands.
+   *
+   * 'table' — the waiter tapped a FREE table on the floor and is being shown what they just
+   *           opened, which is an empty table view with an Add Round button.
+   * 'round' — the waiter was already looking at a table and pressed Add Round, so the PIN they
+   *           have just paid buys them the round screen directly rather than bouncing them back
+   *           to the view they came from and asking them to press the same button again.
+   *
+   * Defaults to 'table' so any caller that forgets it gets the safe, non-skipping path.
+   */
+  const next = route.params.next ?? 'table';
   const {beginSession} = useServiceSession();
 
   const [users, setUsers] = useState<AuthorizedUser[]>([]);
@@ -130,7 +142,27 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
           ownerName: opened.owner?.name ?? selected.name,
         },
       );
-      navigation.replace('ServiceRound');
+
+      // `handed_over_from` non-null means this table was taken from another waiter. The brief
+      // requires the person doing it to be told — silently reassigning a colleague's table is how
+      // two people believe they are serving it.
+      const takenFrom = opened.handed_over_from ?? null;
+
+      if (next === 'round') {
+        navigation.replace('ServiceRound');
+        return;
+      }
+
+      navigation.replace('ServiceTable', {
+        tableId: opened.table?.id ?? tableId,
+        tableNumber: opened.table?.table_number ?? tableNumber,
+        tableName,
+        tabId: opened.tab.id,
+        ownerName: opened.owner?.name ?? selected.name,
+        ownerUserId: opened.owner?.user_id ?? selected.user_id,
+        adoptedExistingTab: opened.already_open === true,
+        handedOverFrom: takenFrom,
+      });
     } catch (err) {
       setPin('');
 
@@ -196,6 +228,7 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
     busy,
     locked,
     navigation,
+    next,
     pin,
     selected,
     tableId,

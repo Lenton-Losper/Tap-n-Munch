@@ -6,6 +6,7 @@
  */
 import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
 import {recordWiretapEvent} from './wiretap';
+import {TabLinesPayload} from './tabLines';
 import {
   getRefreshToken,
   saveMerchantCredentials,
@@ -433,6 +434,18 @@ export interface TerminalInfo {
   cash_payment_enabled?: boolean;
   cardPaymentEnabled?: boolean;
   cashPaymentEnabled?: boolean;
+  /**
+   * Waiter-led service v2. `true` = counter service (today's Sale flow), `false` = table service
+   * (floor grid, tabs, rounds). Read server-side from `restaurants.is_counter_service` at REQUEST
+   * TIME and deliberately not carried in the 1h terminal JWT, so a venue changing model takes
+   * effect on the next poll rather than up to an hour later.
+   *
+   * ABSENT MEANS UNKNOWN, AND UNKNOWN MEANS LEAVE THE APP ALONE. Never read a missing field as
+   * table service — that would strip the Sale tab off every terminal running an older deploy or
+   * served a cached response. lib/serviceModel.ts is the only thing allowed to interpret this.
+   */
+  isCounterService?: boolean;
+  is_counter_service?: boolean;
 }
 
 export type PaymentMethodsAvailability = {
@@ -2149,6 +2162,18 @@ export interface OpenTableResult {
    * Proceed into the round screen exactly as if the tab had just been created.
    */
   already_open: boolean;
+  /**
+   * TRUE means the table was ALREADY OPEN and this device adopted the live tab rather than
+   * creating one. Distinct from `already_open` only in name — kept as the field the screens read
+   * so the adoption notice cannot be confused with an error branch.
+   */
+  adopted?: boolean;
+  /**
+   * Non-null when this open TOOK THE TABLE FROM ANOTHER WAITER. The person doing it must be told:
+   * a silent reassignment leaves two people believing they are serving the same table, and the
+   * one who lost it finds out when a round they did not place appears on their section.
+   */
+  handed_over_from?: {user_id: string; name: string} | null;
   table: {id: string; table_number: number};
   tab: {
     id: string;
@@ -2422,4 +2447,88 @@ export async function sendRound(
     response.status,
     {code},
   );
+}
+
+/**
+ * Everything on ONE TAB: the bill, every order, every fulfilment line, and the server's own
+ * verdict on which lines are ready.
+ *
+ * THIS IS THE ONLY SOURCE OF READINESS ON THE DEVICE. It exists because the station routes cannot
+ * answer the waiter's question: `/api/station/lines` is scoped by restaurant and returns only
+ * OUTSTANDING work, so a line that has gone out disappears from it entirely — and "has the starter
+ * gone out yet" is answered by a line that is DONE. Joining the legacy tables payload against the
+ * station feed to infer the difference was considered and rejected: it reports "ready" for
+ * anything the station call happens not to return, which is a lie in the direction that sends a
+ * waiter to collect food that is not there.
+ *
+ * `is_ready` and `all_ready` are computed server-side through the same definition the kitchen and
+ * bar screens use. Do not recompute them here or in a screen.
+ *
+ * 401 only, like every other service route — see the block comment above getFloorTables. A 403
+ * here is a terminal missing `orders:read`, which no token refresh can fix.
+ */
+export async function getTabLines(
+  tabId: string,
+  token: string,
+): Promise<TabLinesPayload> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/lines`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (!response.ok) {
+    // 403 missing permission, 404 tab not found (also another venue's tab — the route is
+    // restaurant-scoped), 400 malformed uuid. All three are coded ApiRequestErrors the screen
+    // branches on; none of them is retryable by refreshing anything.
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as Partial<TabLinesPayload>;
+
+  const orders = Array.isArray(data.orders) ? data.orders : [];
+
+  return {
+    tab: {
+      id: String(data.tab?.id ?? tabId),
+      table_number: Number(data.tab?.table_number ?? 0),
+      status: String(data.tab?.status ?? ''),
+      total: Number(data.tab?.total ?? 0),
+      opened_at: data.tab?.opened_at ?? null,
+      opened_by_user_id: data.tab?.opened_by_user_id ?? null,
+    },
+    orders: orders.map(order => ({
+      order_id: String(order.order_id ?? ''),
+      order_number: Number(order.order_number ?? 0),
+      order_instructions: order.order_instructions ?? null,
+      order_total: Number(order.order_total ?? 0),
+      placed_at: String(order.placed_at ?? ''),
+      seconds_since_placed: finiteOrNull(order.seconds_since_placed),
+      lines: (Array.isArray(order.lines) ? order.lines : []).map(line => ({
+        id: String(line.id ?? ''),
+        name_snapshot: String(line.name_snapshot ?? ''),
+        quantity: Number(line.quantity ?? 0),
+        line_note: line.line_note ?? null,
+        route_to: line.route_to ?? null,
+        kitchen_state: line.kitchen_state ?? null,
+        bar_state: line.bar_state ?? null,
+        // Defaulted FALSE, never true. An unreadable flag must not assert that food is ready.
+        is_ready: line.is_ready === true,
+        is_voided: line.is_voided === true,
+        unrouted: line.unrouted === true,
+      })),
+    })),
+    summary: {
+      total_lines: Number(data.summary?.total_lines ?? 0),
+      outstanding: Number(data.summary?.outstanding ?? 0),
+      ready: Number(data.summary?.ready ?? 0),
+      voided: Number(data.summary?.voided ?? 0),
+    },
+    // Same reasoning as is_ready: absent is never "everything is ready".
+    all_ready: data.all_ready === true,
+    has_lines: data.has_lines === true,
+    server_time: typeof data.server_time === 'string' ? data.server_time : null,
+  };
 }

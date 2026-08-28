@@ -13,8 +13,15 @@ import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
-import {ApiRequestError, FloorTable, getFloorTables} from '../lib/api';
+import * as Copy from '../constants/serviceCopy';
+import {
+  ApiRequestError,
+  FloorTable,
+  getFloorTables,
+  getTabLines,
+} from '../lib/api';
 import {formatSecondsOpen} from '../lib/serviceRound';
+import {deriveTableFlag, TableFlag} from '../lib/tabLines';
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -24,86 +31,125 @@ type NavProp = NativeStackNavigationProp<MainStackParamList>;
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_BACKOFF_MS = 60_000;
 
+/**
+ * How many tab-line requests may be in flight at once while the grid decorates itself.
+ *
+ * The flags cost one request PER OPEN TABLE — there is no bulk endpoint — so a busy Riviera night
+ * is a dozen or more calls per refresh on a P5 over venue wifi. Four at a time keeps the grid
+ * responsive without queueing the whole floor behind one slow response, and the fetch is
+ * best-effort throughout: rows render from the floor payload immediately and flags appear as they
+ * land. A table whose lines cannot be fetched simply carries no flag.
+ */
+const FLAG_CONCURRENCY = 4;
+
+/** Flags are re-fetched no more often than this, independent of the grid's own 15s poll. */
+const FLAG_MIN_INTERVAL_MS = 30_000;
+
 function formatTotal(amount: number | null | undefined): string {
   const safe = Number.isFinite(Number(amount)) ? Number(amount) : 0;
   return `NAD ${safe.toFixed(2)}`;
 }
 
-interface FloorCardProps {
+function flagLabel(flag: TableFlag): string | null {
+  switch (flag) {
+    case 'ready':
+      return Copy.FLAG_READY_LABEL;
+    case 'waiting':
+      return Copy.FLAG_WAITING_LABEL;
+    case 'unrouted':
+      return Copy.FLAG_UNROUTED_LABEL;
+    default:
+      return null;
+  }
+}
+
+interface FloorRowProps {
   table: FloorTable;
+  flag: TableFlag;
   /** Seconds elapsed on the DEVICE since the payload was fetched. A duration, never a clock. */
   elapsedSinceLoad: number;
   onPress: () => void;
 }
 
-function FloorCard({table, elapsedSinceLoad, onPress}: FloorCardProps) {
+function FloorRow({table, flag, elapsedSinceLoad, onPress}: FloorRowProps) {
   // `state` — never `table_status`. The two disagree in production in both directions (#216, and
   // the abandoned-tab reaper), and the brief returns table_status for diagnosis only.
   const isOpen = table.state === 'open';
   const secondsOpen =
     table.seconds_open != null ? table.seconds_open + elapsedSinceLoad : null;
+  const label = flagLabel(flag);
+  const age = formatSecondsOpen(secondsOpen);
 
   return (
     <Pressable
-      style={({pressed}) => [
-        styles.card,
-        isOpen ? styles.cardOpen : styles.cardFree,
-        pressed && styles.cardPressed,
-      ]}
+      style={({pressed}) => [styles.row, pressed && styles.rowPressed]}
       onPress={onPress}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.tableNumber}>{table.table_number}</Text>
-        <View
+      <View
+        style={[
+          styles.numberBlock,
+          isOpen ? styles.numberBlockOpen : styles.numberBlockFree,
+        ]}>
+        <Text
           style={[
-            styles.stateChip,
-            isOpen ? styles.stateChipOpen : styles.stateChipFree,
-          ]}>
-          <Text
-            style={[
-              styles.stateChipText,
-              isOpen ? styles.stateChipTextOpen : styles.stateChipTextFree,
-            ]}>
-            {isOpen ? 'OPEN' : 'FREE'}
-          </Text>
-        </View>
+            styles.tableNumber,
+            isOpen ? styles.tableNumberOpen : styles.tableNumberFree,
+          ]}
+          numberOfLines={1}
+          adjustsFontSizeToFit>
+          {table.table_number}
+        </Text>
       </View>
 
-      {table.table_name ? (
-        <Text style={styles.tableName} numberOfLines={1}>
-          {table.table_name}
-        </Text>
+      <View style={styles.rowMain}>
+        <View style={styles.rowTopLine}>
+          <Text
+            style={[
+              styles.stateText,
+              isOpen ? styles.stateTextOpen : styles.stateTextFree,
+            ]}>
+            {isOpen ? Copy.FLOOR_STATE_OPEN : Copy.FLOOR_STATE_FREE}
+          </Text>
+          {table.table_name ? (
+            <Text style={styles.tableName} numberOfLines={1}>
+              {table.table_name}
+            </Text>
+          ) : null}
+        </View>
+
+        {isOpen ? (
+          <>
+            {/* A null owner on an open table is legitimate — a QR-opened tab, or an assignment
+                that failed while the tab succeeded. Show it as open with no name; never block. */}
+            <Text style={styles.metaText} numberOfLines={1}>
+              {table.owner?.name ?? Copy.FLOOR_OWNER_UNASSIGNED}
+              {age ? ` · ${age}` : ''}
+            </Text>
+            <Text style={styles.tabTotal}>{formatTotal(table.tab?.total)}</Text>
+          </>
+        ) : (
+          <Text style={styles.freeHint}>{Copy.FLOOR_FREE_HINT}</Text>
+        )}
+      </View>
+
+      {label ? (
+        <View
+          style={[
+            styles.flagChip,
+            flag === 'ready' && styles.flagChipReady,
+            flag === 'waiting' && styles.flagChipWaiting,
+            flag === 'unrouted' && styles.flagChipUnrouted,
+          ]}>
+          <Text style={styles.flagChipText} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
       ) : null}
 
-      {isOpen ? (
-        <>
-          {/* A null owner on an open table is legitimate — a QR-opened tab, or an assignment
-              that failed while the tab succeeded. Show the table as open with no name; never
-              block on it. */}
-          <View style={styles.metaRow}>
-            <MaterialCommunityIcons
-              name="account-outline"
-              size={16}
-              color={Colors.textSecondary}
-            />
-            <Text style={styles.metaText} numberOfLines={1}>
-              {table.owner?.name ?? 'Unassigned'}
-            </Text>
-          </View>
-          <View style={styles.metaRow}>
-            <MaterialCommunityIcons
-              name="clock-outline"
-              size={16}
-              color={Colors.textSecondary}
-            />
-            <Text style={styles.metaText}>
-              {formatSecondsOpen(secondsOpen) || '—'}
-            </Text>
-          </View>
-          <Text style={styles.tabTotal}>{formatTotal(table.tab?.total)}</Text>
-        </>
-      ) : (
-        <Text style={styles.freeHint}>Tap to open</Text>
-      )}
+      <MaterialCommunityIcons
+        name="chevron-right"
+        size={26}
+        color={Colors.textMuted}
+      />
     </Pressable>
   );
 }
@@ -111,9 +157,10 @@ function FloorCard({table, elapsedSinceLoad, onPress}: FloorCardProps) {
 export default function ServiceFloorScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NavProp>();
-  const {beginSession, endSession} = useServiceSession();
+  const {endSession} = useServiceSession();
 
   const [tables, setTables] = useState<FloorTable[]>([]);
+  const [flags, setFlags] = useState<Record<string, TableFlag>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   /** Non-null only for the unrecoverable 403 case. Everything else is a soft banner. */
@@ -125,47 +172,119 @@ export default function ServiceFloorScreen() {
   const backoffRef = useRef(REFRESH_INTERVAL_MS);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
+  const flagsFetchedAtRef = useRef(0);
 
-  const load = useCallback(async (mode: 'initial' | 'pull' | 'poll') => {
-    if (mode === 'pull') {
-      setRefreshing(true);
-    } else if (mode === 'initial') {
-      setLoading(true);
+  /**
+   * Decorate the grid with the derived warning flags.
+   *
+   * BEST-EFFORT AND NON-BLOCKING BY DESIGN. It never sets an error, never gates the rows on its
+   * own completion, and a table whose lines fail to load simply carries no badge — the floor is
+   * usable the instant the tables land. Missing flags are the correct degradation: a waiter who
+   * sees no badge walks to the table, which is exactly what they do today.
+   */
+  const loadFlags = useCallback(async (current: FloorTable[]) => {
+    const now = Date.now();
+    if (now - flagsFetchedAtRef.current < FLAG_MIN_INTERVAL_MS) {
+      return;
+    }
+    flagsFetchedAtRef.current = now;
+
+    const targets = current.filter(t => t.state === 'open' && t.tab?.id);
+    if (targets.length === 0) {
+      setFlags({});
+      return;
     }
 
-    try {
-      const token = await getTerminalToken();
-      if (!token) {
-        throw new Error('Terminal session not found. Re-activate this terminal.');
+    const token = await getTerminalToken();
+    if (!token) {
+      return;
+    }
+
+    const next: Record<string, TableFlag> = {};
+    let cursor = 0;
+
+    const worker = async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= targets.length || !focusedRef.current) {
+          return;
+        }
+        const table = targets[index];
+        const tabId = table.tab?.id;
+        if (!tabId) {
+          continue;
+        }
+        try {
+          const payload = await getTabLines(tabId, token);
+          next[table.id] = deriveTableFlag(payload);
+        } catch {
+          // Silent. See the docblock: no flag is the honest answer, and a banner here would
+          // cover the floor in warnings every time a single tab read failed.
+        }
       }
-      const payload = await getFloorTables(token);
-      const sorted = [...payload.tables].sort(
-        (a, b) => a.table_number - b.table_number,
-      );
-      setTables(sorted);
-      setLoadedAtMs(Date.now());
-      setElapsedSinceLoad(0);
-      setHardError(null);
-      setSoftError(null);
-      backoffRef.current = REFRESH_INTERVAL_MS;
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 403) {
-        // Not recoverable on the device: the terminal token itself lacks orders:read.
-        setHardError(
-          `${err.message}. This terminal is not permitted to read tables — a manager must fix its role in the dashboard.`,
-        );
-      } else {
-        // Keep showing the last good grid and retry with backoff.
-        setSoftError(
-          err instanceof Error ? err.message : 'Failed to load the floor',
-        );
-        backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    };
+
+    await Promise.all(
+      Array.from({length: Math.min(FLAG_CONCURRENCY, targets.length)}, () =>
+        worker(),
+      ),
+    );
+
+    if (focusedRef.current) {
+      setFlags(next);
     }
   }, []);
+
+  const load = useCallback(
+    async (mode: 'initial' | 'pull' | 'poll') => {
+      if (mode === 'pull') {
+        setRefreshing(true);
+      } else if (mode === 'initial') {
+        setLoading(true);
+      }
+
+      try {
+        const token = await getTerminalToken();
+        if (!token) {
+          throw new Error(
+            'Terminal session not found. Re-activate this terminal.',
+          );
+        }
+        const payload = await getFloorTables(token);
+        const sorted = [...payload.tables].sort(
+          (a, b) => a.table_number - b.table_number,
+        );
+        setTables(sorted);
+        setLoadedAtMs(Date.now());
+        setElapsedSinceLoad(0);
+        setHardError(null);
+        setSoftError(null);
+        backoffRef.current = REFRESH_INTERVAL_MS;
+
+        if (mode === 'pull') {
+          // An explicit pull is a request for fresh everything, flags included.
+          flagsFetchedAtRef.current = 0;
+        }
+        loadFlags(sorted);
+      } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 403) {
+          // Not recoverable on the device: the terminal token itself lacks orders:read.
+          setHardError(
+            `${err.message}. This terminal is not permitted to read tables — a manager must fix its role in the dashboard.`,
+          );
+        } else {
+          // Keep showing the last good grid and retry with backoff.
+          setSoftError(Copy.FLOOR_OFFLINE_BANNER);
+          backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [loadFlags],
+  );
 
   // Poll on a timer while focused. Rescheduled from the tail of each attempt rather than on a
   // fixed interval, so a slow response cannot stack requests on top of each other.
@@ -187,8 +306,10 @@ export default function ServiceFloorScreen() {
   useFocusEffect(
     useCallback(() => {
       focusedRef.current = true;
-      // Arriving at the grid by ANY route drops the held waiter — Back out of a round, a cancel,
-      // or the return after a Send. The next table must cost a PIN again.
+      // ARRIVING AT THE FLOOR BY ANY ROUTE DROPS THE HELD WAITER — after a Send, after backing out
+      // of a half-built round, after merely looking at a table. Terminals are shared and pass from
+      // hand to hand mid-service; the next attributable act must cost a PIN again. The round just
+      // sent is unaffected, because attribution is read server-side from the tab.
       endSession();
       load('initial').then(() => scheduleNext());
       return () => {
@@ -219,25 +340,22 @@ export default function ServiceFloorScreen() {
       if (table.state === 'open') {
         if (!table.tab?.id) {
           // Open with no tab id is a shape we cannot act on; a refresh is the honest answer.
-          setSoftError('That table is open but its tab could not be read. Refreshing.');
+          setSoftError(Copy.TABLE_LOAD_FAILED);
           load('pull');
           return;
         }
-        // No PIN to join an already-open table. Ruling E/F in the brief: allow it, show whose
-        // table it is, do not block — a hard block strands a table when a waiter is on break.
-        beginSession(
-          table.owner
-            ? {userId: table.owner.user_id, name: table.owner.name}
-            : null,
-          {
-            tableId: table.id,
-            tableNumber: table.table_number,
-            tableName: table.table_name,
-            tabId: table.tab.id,
-            ownerName: table.owner?.name ?? null,
-          },
-        );
-        navigation.navigate('ServiceRound');
+        // NO PIN TO LOOK AT A TABLE. Reading what a table has ordered is not an attributable act,
+        // and a PIN prompt here would cost a waiter four digits to answer "is table 7's food up".
+        // The PIN is spent on OPENING a tab, and the table view asks for one only when the waiter
+        // chooses to add a round to a table this device did not open.
+        navigation.navigate('ServiceTable', {
+          tableId: table.id,
+          tableNumber: table.table_number,
+          tableName: table.table_name,
+          tabId: table.tab.id,
+          ownerName: table.owner?.name ?? null,
+          ownerUserId: table.owner?.user_id ?? null,
+        });
         return;
       }
 
@@ -247,7 +365,7 @@ export default function ServiceFloorScreen() {
         tableName: table.table_name,
       });
     },
-    [beginSession, load, navigation],
+    [load, navigation],
   );
 
   if (hardError) {
@@ -265,13 +383,17 @@ export default function ServiceFloorScreen() {
     );
   }
 
+  const openCount = tables.filter(t => t.state === 'open').length;
+
   return (
     <View style={[styles.wrapper, {paddingTop: insets.top}]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Floor</Text>
+        <Text style={styles.headerTitle}>{Copy.FLOOR_TITLE}</Text>
         <Text style={styles.headerSubtitle}>
-          {tables.filter(t => t.state === 'open').length} open ·{' '}
-          {tables.filter(t => t.state === 'free').length} free
+          {Copy.FLOOR_SUBTITLE.replace('{open}', String(openCount)).replace(
+            '{free}',
+            String(tables.length - openCount),
+          )}
         </Text>
       </View>
 
@@ -296,11 +418,9 @@ export default function ServiceFloorScreen() {
         <FlatList
           data={tables}
           keyExtractor={item => item.id}
-          numColumns={2}
           contentContainerStyle={
             tables.length === 0 ? styles.emptyList : styles.list
           }
-          columnWrapperStyle={tables.length === 0 ? undefined : styles.column}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -309,17 +429,16 @@ export default function ServiceFloorScreen() {
             />
           }
           renderItem={({item}) => (
-            <FloorCard
+            <FloorRow
               table={item}
+              flag={flags[item.id] ?? null}
               elapsedSinceLoad={elapsedSinceLoad}
               onPress={() => handlePress(item)}
             />
           )}
           ListEmptyComponent={
             <View style={styles.centered}>
-              <Text style={styles.emptyText}>
-                No active tables for this restaurant.
-              </Text>
+              <Text style={styles.emptyText}>{Copy.FLOOR_EMPTY}</Text>
             </View>
           }
         />
@@ -362,55 +481,65 @@ const styles = StyleSheet.create({
   },
   list: {padding: Spacing.sm},
   emptyList: {flexGrow: 1},
-  column: {gap: Spacing.sm},
-  card: {
-    flex: 1,
-    margin: Spacing.xs,
-    padding: Spacing.md,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    minHeight: 148,
-  },
-  cardOpen: {backgroundColor: Colors.blueLight, borderColor: Colors.blue},
-  cardFree: {backgroundColor: Colors.background, borderColor: Colors.border},
-  cardPressed: {opacity: 0.85},
-  cardHeader: {
+
+  // ONE ROW PER TABLE, 84 tall, and the whole row is the target. The P5 is small and a waiter is
+  // holding it one-handed while standing; a grid of cards puts two small targets side by side,
+  // which is the opposite of what the brief asks for.
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  tableNumber: {fontSize: 34, fontWeight: '800', color: Colors.textPrimary},
-  stateChip: {
+    gap: Spacing.sm,
+    minHeight: 84,
     paddingHorizontal: Spacing.sm,
-    paddingVertical: 3,
-    borderRadius: 999,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
-  stateChipOpen: {backgroundColor: Colors.blue},
-  stateChipFree: {backgroundColor: Colors.border},
-  stateChipText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.5},
-  stateChipTextOpen: {color: Colors.white},
-  stateChipTextFree: {color: Colors.textSecondary},
-  tableName: {
-    ...Typography.small,
-    color: Colors.textSecondary,
+  rowPressed: {opacity: 0.9, backgroundColor: Colors.surface},
+  numberBlock: {
+    width: 62,
+    height: 62,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  numberBlockOpen: {backgroundColor: Colors.blue},
+  numberBlockFree: {backgroundColor: Colors.surface},
+  tableNumber: {fontSize: 26, fontWeight: '800'},
+  tableNumberOpen: {color: Colors.white},
+  tableNumberFree: {color: Colors.textSecondary},
+  rowMain: {flex: 1, justifyContent: 'center'},
+  rowTopLine: {flexDirection: 'row', alignItems: 'center', gap: Spacing.xs},
+  stateText: {fontSize: 12, fontWeight: '800', letterSpacing: 0.6},
+  stateTextOpen: {color: Colors.blue},
+  stateTextFree: {color: Colors.textMuted},
+  tableName: {flex: 1, ...Typography.tiny, color: Colors.textSecondary},
+  metaText: {...Typography.small, color: Colors.textSecondary, marginTop: 2},
+  tabTotal: {
+    ...Typography.body,
+    fontWeight: '700',
+    color: Colors.textPrimary,
     marginTop: 2,
   },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginTop: Spacing.xs,
+  freeHint: {...Typography.small, color: Colors.textMuted, marginTop: 2},
+  flagChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+    maxWidth: 96,
   },
-  metaText: {flex: 1, ...Typography.small, color: Colors.textSecondary},
-  tabTotal: {
-    ...Typography.subheading,
-    color: Colors.textPrimary,
-    marginTop: Spacing.sm,
-  },
-  freeHint: {
-    ...Typography.small,
-    color: Colors.textMuted,
-    marginTop: Spacing.md,
+  flagChipReady: {backgroundColor: Colors.green},
+  flagChipWaiting: {backgroundColor: Colors.amber},
+  flagChipUnrouted: {backgroundColor: Colors.red},
+  flagChipText: {
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
   hardErrorText: {
     ...Typography.body,

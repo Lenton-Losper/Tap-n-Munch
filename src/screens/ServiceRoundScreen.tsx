@@ -15,6 +15,7 @@ import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
+import * as Copy from '../constants/serviceCopy';
 import {getMenuCategories, getMenuItems, MenuCategory, MenuItem} from '../lib/api';
 import {basketCount, basketSubtotal, RoundLine} from '../lib/serviceRound';
 import {getRestaurantId, getTerminalToken} from '../lib/storage';
@@ -124,12 +125,11 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  /** Every category's items that have been loaded so far — also the search index. */
+  /** Every category's items. The whole menu, and therefore the whole search index. */
   const [itemsByCategory, setItemsByCategory] = useState<
     Record<string, MenuItem[]>
   >({});
   const [loadingMenu, setLoadingMenu] = useState(true);
-  const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [basketOpen, setBasketOpen] = useState(false);
@@ -139,41 +139,76 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
     getRestaurantId().then(setRestaurantId);
   }, []);
 
+  /**
+   * THE WHOLE MENU, UP FRONT.
+   *
+   * v1 fetched each category on first tap and searched only what had been loaded, which made the
+   * search quietly wrong rather than slow: a waiter typing "coke" before ever opening Drinks got
+   * "no match", which reads as "we do not sell it". A search box that answers correctly only for
+   * the parts of the menu you have already browsed is worse than no search box, because the waiter
+   * cannot see which answer they are getting.
+   *
+   * The cost is bounded and small. Riviera is 55-200 items across a handful of categories, and no
+   * count is hard-coded anywhere — the loop is driven by whatever the categories call returns. The
+   * first category is awaited so the grid paints immediately; the rest stream in behind it, and a
+   * category that fails to load leaves the others intact rather than emptying the screen.
+   */
   useEffect(() => {
     if (!token || !restaurantId) {
       return;
     }
+    let cancelled = false;
     setLoadingMenu(true);
-    getMenuCategories(token, restaurantId)
-      .then(cats => {
+
+    (async () => {
+      try {
+        const cats = await getMenuCategories(token, restaurantId);
+        if (cancelled) {
+          return;
+        }
         const active = cats.filter(c => c.is_active !== false);
         setCategories(active);
-        if (active.length > 0) {
-          setSelectedCategory(active[0].id);
+        if (active.length === 0) {
+          return;
         }
-      })
-      .catch(e => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoadingMenu(false));
-  }, [token, restaurantId]);
+        setSelectedCategory(active[0].id);
 
-  // Items are fetched lazily, on first tap of a category, and cached. The search index is built
-  // from whatever has been loaded — the brief says so explicitly, and pre-fetching the whole menu
-  // on a P5 over a venue's wifi is not something to do while a waiter waits at a table.
-  useEffect(() => {
-    if (!token || !restaurantId || !selectedCategory) {
-      return;
-    }
-    if (itemsByCategory[selectedCategory]) {
-      return;
-    }
-    setLoadingItems(true);
-    getMenuItems(token, restaurantId, selectedCategory)
-      .then(fetched =>
-        setItemsByCategory(prev => ({...prev, [selectedCategory]: fetched})),
-      )
-      .catch(e => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoadingItems(false));
-  }, [token, restaurantId, selectedCategory, itemsByCategory]);
+        // First category first, so the waiter can start tapping while the rest arrive.
+        const first = await getMenuItems(token, restaurantId, active[0].id);
+        if (cancelled) {
+          return;
+        }
+        setItemsByCategory(prev => ({...prev, [active[0].id]: first}));
+        setLoadingMenu(false);
+
+        await Promise.all(
+          active.slice(1).map(async cat => {
+            try {
+              const fetched = await getMenuItems(token, restaurantId, cat.id);
+              if (!cancelled) {
+                setItemsByCategory(prev => ({...prev, [cat.id]: fetched}));
+              }
+            } catch {
+              // One category failing must not blank the others. That category simply stays
+              // empty and out of the search index until the screen is reopened.
+            }
+          }),
+        );
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingMenu(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token, restaurantId]);
 
   const searchTerm = search.trim().toLowerCase();
 
@@ -260,7 +295,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
           style={styles.searchInput}
           value={search}
           onChangeText={setSearch}
-          placeholder="Search loaded items"
+          placeholder={Copy.ROUND_SEARCH_PLACEHOLDER}
           placeholderTextColor={Colors.textMuted}
           autoCorrect={false}
         />
@@ -310,7 +345,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
         </View>
       ) : null}
 
-      {loadingMenu || loadingItems ? (
+      {loadingMenu ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -341,7 +376,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
             <View style={styles.centered}>
               <Text style={styles.emptyText}>
                 {searchTerm
-                  ? 'No match in the categories loaded so far. Open a category to add it to the search.'
+                  ? Copy.ROUND_SEARCH_NO_MATCH
                   : 'No items in this category.'}
               </Text>
             </View>

@@ -10,8 +10,10 @@ import {SafeAreaProvider} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {AuthProvider, useAuth} from '../context/AuthContext';
 import {CartProvider} from '../context/CartContext';
+import {ServiceModelProvider, useServiceModel} from '../context/ServiceModelContext';
 import {ServiceSessionProvider} from '../context/ServiceSessionContext';
 import {StreamProvider} from '../context/StreamContext';
+import {showsCounterSaleTab, usesWaiterLedService} from '../lib/serviceModel';
 import {Colors, Typography} from '../constants/theme';
 import ActivationScreen from '../screens/ActivationScreen';
 import OrderDetailScreen from '../screens/OrderDetailScreen';
@@ -25,6 +27,7 @@ import ServiceFloorScreen from '../screens/ServiceFloorScreen';
 import ServiceOpenTableScreen from '../screens/ServiceOpenTableScreen';
 import ServiceRoundReviewScreen from '../screens/ServiceRoundReviewScreen';
 import ServiceRoundScreen from '../screens/ServiceRoundScreen';
+import ServiceTableScreen from '../screens/ServiceTableScreen';
 import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import TableDetailScreen from '../screens/TableDetailScreen';
@@ -35,11 +38,20 @@ export type AuthStackParamList = {
   Activation: undefined;
 };
 
+/**
+ * THREE TABS, ALWAYS. The tab NAMES do not change with the venue model — what changes is which
+ * component `Tables` renders and whether `POSSale` is mounted at all.
+ *
+ * v1 of this feature added a fourth "Floor" tab beside Tables/Orders/Sale, which put two ways to
+ * create an order on one device: a waiter could ring a round onto a tab from one tab and a
+ * standalone paid-now sale from another, for the same food, at the same table. There is one way to
+ * take an order per venue, and the venue decides which.
+ */
 export type MainTabParamList = {
+  /** Floor grid at a table-service venue; the legacy occupied-tables list at a counter one. */
   Tables: undefined;
-  /** Waiter-led service, screen 1. The legacy Tables tab is untouched and stays the default. */
-  ServiceFloor: undefined;
   Orders: undefined;
+  /** Mounted only at counter-service venues, and when the model is not yet known. */
   POSSale: undefined;
 };
 
@@ -84,11 +96,37 @@ export type MainStackParamList = {
   Settings: undefined;
   POSSale: undefined;
   POSCart: {restaurantId: string};
-  /** Waiter-led service, screen 2. Reached only by tapping a FREE table on the floor grid. */
+  /**
+   * The PIN gate. Reached by tapping a FREE table on the floor, or by pressing Add Round on a
+   * table this device has not opened — in which case the open ADOPTS the running tab.
+   *
+   * `next` decides where a successful open lands; see the screen for why. Defaults to 'table'.
+   */
   ServiceOpenTable: {
     tableId: string;
     tableNumber: number;
     tableName: string | null;
+    next?: 'table' | 'round';
+  };
+  /**
+   * THE TABLE VIEW. What has been ordered, the running bill, which lines are outstanding versus
+   * ready, and Add Round.
+   *
+   * Reached with NO PIN — reading a table is not an attributable act. The tab id travels in params
+   * rather than through ServiceSessionContext precisely because there may be no session: a waiter
+   * looking at a colleague's table has not PINned in and does not need to.
+   */
+  ServiceTable: {
+    tableId: string;
+    tableNumber: number;
+    tableName: string | null;
+    tabId: string;
+    ownerName: string | null;
+    ownerUserId: string | null;
+    /** Set by the open screen when `already_open` came back true. Success, not an error. */
+    adoptedExistingTab?: boolean;
+    /** Set when this open took the table off another waiter. They must be told. */
+    handedOverFrom?: {user_id: string; name: string} | null;
   };
   /**
    * Waiter-led service, screen 3. The tab, the table and the basket all live in
@@ -108,6 +146,14 @@ const MainStack = createNativeStackNavigator<MainStackParamList>();
 const MainTab = createBottomTabNavigator<MainTabParamList>();
 
 function MainTabNavigator() {
+  const {model} = useServiceModel();
+
+  // THE ONE DECISION. Both questions — which Tables screen, and is there a Sale tab — are answered
+  // from the same resolved model through the two helpers, so they cannot drift into disagreeing
+  // about the same venue. 'unknown' takes the counter-service branch on both, which is today's app.
+  const waiterLed = usesWaiterLedService(model);
+  const showSale = showsCounterSaleTab(model);
+
   return (
     <MainTab.Navigator
       initialRouteName="Tables"
@@ -124,28 +170,17 @@ function MainTabNavigator() {
           fontWeight: '600',
         },
       }}>
+      {/* SAME TAB, SAME POSITION, SAME LABEL — a different screen behind it. At a table-service
+          venue "Tables" is the floor grid (every table, open and free); at a counter one it stays
+          the occupied-tables settlement list it has always been. */}
       <MainTab.Screen
         name="Tables"
-        component={TablesScreen}
+        component={waiterLed ? ServiceFloorScreen : TablesScreen}
         options={{
           tabBarLabel: 'Tables',
           tabBarIcon: ({color, size}) => (
             <MaterialCommunityIcons
               name="table-furniture"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <MainTab.Screen
-        name="ServiceFloor"
-        component={ServiceFloorScreen}
-        options={{
-          tabBarLabel: 'Floor',
-          tabBarIcon: ({color, size}) => (
-            <MaterialCommunityIcons
-              name="view-grid-outline"
               size={size}
               color={color}
             />
@@ -166,20 +201,25 @@ function MainTabNavigator() {
           ),
         }}
       />
-      <MainTab.Screen
-        name="POSSale"
-        component={POSSaleScreen}
-        options={{
-          tabBarLabel: 'Sale',
-          tabBarIcon: ({color, size}) => (
-            <MaterialCommunityIcons
-              name="cart-plus"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
+      {/* NOT MOUNTED at a table-service venue: the waiter-led flow REPLACES it, so there is one
+          way to take an order rather than two. Still mounted when the model is unknown — see
+          lib/serviceModel.ts on why a missing field must never cost a venue its till. */}
+      {showSale ? (
+        <MainTab.Screen
+          name="POSSale"
+          component={POSSaleScreen}
+          options={{
+            tabBarLabel: 'Sale',
+            tabBarIcon: ({color, size}) => (
+              <MaterialCommunityIcons
+                name="cart-plus"
+                size={size}
+                color={color}
+              />
+            ),
+          }}
+        />
+      ) : null}
     </MainTab.Navigator>
   );
 }
@@ -188,6 +228,7 @@ function MainNavigator() {
   return (
     <StreamProvider>
       <CartProvider>
+        <ServiceModelProvider>
         <ServiceSessionProvider>
         <MainStack.Navigator
         initialRouteName="MainTabs"
@@ -242,6 +283,11 @@ function MainNavigator() {
           options={{headerShown: false}}
         />
         <MainStack.Screen
+          name="ServiceTable"
+          component={ServiceTableScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
           name="ServiceRound"
           component={ServiceRoundScreen}
           options={{headerShown: false}}
@@ -261,6 +307,7 @@ function MainNavigator() {
         />
       </MainStack.Navigator>
         </ServiceSessionProvider>
+        </ServiceModelProvider>
       </CartProvider>
     </StreamProvider>
   );
