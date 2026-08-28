@@ -12,6 +12,7 @@ import {useFocusEffect} from '@react-navigation/native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import CloseTableAction from '../components/CloseTableAction';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
 import {ApiRequestError, getTabLines, getTablesWithMeta} from '../lib/api';
@@ -117,7 +118,7 @@ export default function ServiceTableScreen({route, navigation}: Props) {
     adoptedExistingTab,
     handedOverFrom,
   } = route.params;
-  const {table: sessionTable} = useServiceSession();
+  const {table: sessionTable, lines: sessionLines} = useServiceSession();
 
   /**
    * The adoption / handover notice, dismissible.
@@ -554,6 +555,31 @@ export default function ServiceTableScreen({route, navigation}: Props) {
             </Text>
           </Pressable>
         </View>
+
+        {/*
+          CLOSE TABLE, BELOW the Take payment / Add Round row rather than beside it.
+
+          Settling does not end a session — only this does — and the two must not read as a pair
+          of equivalent buttons: one takes money and leaves the table live, the other ends the
+          session and cannot be undone from the floor. Keeping it on its own row is what stops a
+          waiter reaching for it while aiming at Take payment.
+
+          The whole control, including all twelve refusals, lives in components/CloseTableAction,
+          so this screen gains one element and no policy. Nothing here closes anything on its own:
+          the component acts only on a press.
+        */}
+        <View style={styles.closeTableSlot}>
+          <CloseTableAction
+            tableId={tableId}
+            tabId={tabId}
+            unsentRoundLineCount={
+              sessionTable && sessionTable.tabId === tabId
+                ? sessionLines.length
+                : 0
+            }
+            onClosed={() => navigation.goBack()}
+          />
+        </View>
       </View>
     </View>
   );
@@ -791,4 +817,5 @@ const styles = StyleSheet.create({
   stateChipTextUnknown: {color: Colors.red},
   stateChipTextNothingBilled: {color: Colors.red},
   owedAmount: {fontSize: 16, fontWeight: '800', color: Colors.textPrimary},
+  closeTableSlot: {marginTop: Spacing.sm},
 });
