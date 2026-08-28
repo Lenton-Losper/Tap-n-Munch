@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { ORDER_LINES_TABLE, ORDER_LINE_EVENTS_TABLE } from '@/lib/stations/schema-assumptions'
 
 export const dynamic = 'force-dynamic'
@@ -28,15 +29,20 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Station screens are not enabled for this restaurant' }, { status: 403 })
     }
 
-    const { data: openOrders, error: ordersError } = await supabase
-      .from('orders')
-      .select('id, table_number')
-      .eq('restaurant_id', terminal.restaurantId)
-      .not('status', 'in', '(completed,cancelled)')
+    // #323-shaped: `orders` is unbounded past 1000 rows without an explicit range, and
+    // `.eq('restaurant_id', ...)` alone does not narrow enough for the CI gate to accept it (a
+    // busy venue's lifetime order count is not itself a small set) even though a REALLY open
+    // board never is. fetchAllRows is the sanctioned way to say "all of them, paged."
+    const openOrders = await fetchAllRows<{ id: string; table_number: string | number | null }>(
+      supabase
+        .from('orders')
+        .select('id, table_number')
+        .eq('restaurant_id', terminal.restaurantId)
+        .not('status', 'in', '(completed,cancelled)'),
+      { label: 'station-lines open orders' },
+    )
 
-    if (ordersError) throw ordersError
-
-    const openOrderIds = (openOrders ?? []).map((o) => o.id)
+    const openOrderIds = openOrders.map((o) => o.id)
     if (openOrderIds.length === 0) {
       return NextResponse.json({ lines: [], events: [], tableNumberByOrderId: {} })
     }

@@ -87,6 +87,7 @@ describe('station screens against REAL staging rows', () => {
       root.render(
         <KitchenScreen
           lines={kitchenLines}
+          now={Date.now()}
           connectionState="live"
           onMarkCooked={() => {}}
           onMarkReadyToRun={() => {}}
@@ -99,7 +100,7 @@ describe('station screens against REAL staging rows', () => {
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
-      root.render(<BarScreen rounds={barRounds} connectionState="live" onBumpOut={() => {}} />)
+      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBumpOut={() => {}} />)
     })
     expect(container.querySelector('[data-testid="bar-screen"]')).toBeTruthy()
     expect(container.textContent).toContain('PROBE:')
@@ -130,6 +131,7 @@ describe('station screens against REAL staging rows', () => {
       root.render(
         <KitchenScreen
           lines={kitchenLines}
+          now={Date.now()}
           connectionState="live"
           onMarkCooked={() => {}}
           onMarkReadyToRun={() => {}}
@@ -142,7 +144,7 @@ describe('station screens against REAL staging rows', () => {
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
-      root.render(<BarScreen rounds={barRounds} connectionState="live" onBumpOut={() => {}} />)
+      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBumpOut={() => {}} />)
     })
     const outCards = container.querySelector('[data-testid="bar-out-column"]')!
     expect(outCards.textContent).not.toContain('half-bumped')

@@ -21,8 +21,17 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
   const [lines, setLines] = useState<KitchenLine[]>([])
   const [notEnabled, setNotEnabled] = useState(false)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
+
+  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches. 30s here
+  // (tighter than the dashboard's 60s) because the ready-to-run escalation bands are what this
+  // clock drives, and the red threshold sits at 5 minutes on a wall screen nobody refreshes.
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 30_000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -71,6 +80,7 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
   return (
     <KitchenScreen
       lines={lines}
+      now={nowMs}
       connectionState={connectionState}
       onMarkCooked={(lineId) => {
         void authFetch(`/api/terminal/station-lines/${lineId}`, {

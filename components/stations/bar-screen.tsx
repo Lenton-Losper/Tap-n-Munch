@@ -62,12 +62,12 @@ function RoundCard({
 
 export function BarScreen({
   rounds,
-  now = Date.now(),
+  now,
   connectionState,
   onBumpOut,
 }: {
   rounds: BarRound[]
-  now?: number
+  now: number
   connectionState: FeedConnectionState
   onBumpOut: (roundId: string) => void
 }) {

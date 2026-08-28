@@ -83,13 +83,13 @@ function OutstandingLineRow({
 
 export function KitchenScreen({
   lines,
-  now = Date.now(),
+  now,
   connectionState,
   onMarkCooked,
   onMarkReadyToRun,
 }: {
   lines: KitchenLine[]
-  now?: number
+  now: number
   connectionState: FeedConnectionState
   onMarkCooked: (lineId: string) => void
   onMarkReadyToRun: (lineId: string) => void

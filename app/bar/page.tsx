@@ -21,8 +21,16 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
   const [rounds, setRounds] = useState<BarRound[]>([])
   const [notEnabled, setNotEnabled] = useState(false)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
+
+  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches. Bar has no
+  // age escalation, but the round age label ("in" vs "out") still needs a live `now`.
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -66,6 +74,7 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
   return (
     <BarScreen
       rounds={rounds}
+      now={nowMs}
       connectionState={connectionState}
       onBumpOut={(roundId) => {
         void authFetch(`/api/terminal/bar-rounds/${roundId}`, {
