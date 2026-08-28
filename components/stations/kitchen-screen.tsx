@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
 import { ageSeconds, formatElapsedClock, worstEscalation } from '@/lib/stations/age'
 import {
@@ -193,7 +193,11 @@ export function KitchenScreen({
   const board = buildKitchenBoard(lines, now)
   const activeScale = densityFor(board.activeByTable.length)
 
-  const recentlyCollected = useRecentlyCollected()
+  // Destructured once, matching bar-screen.tsx's own pattern -- markCollected/clear are each
+  // individually stable (useCallback inside the hook), but the wrapping object useRecentlyCollected
+  // returns is a fresh literal every render, which is unstable as a useCallback dependency in a way
+  // eslint's exhaustive-deps rule cannot see through a member expression on it.
+  const { entries: recentlyCollectedEntries, markCollected, clear: clearRecentlyCollected } = useRecentlyCollected()
 
   /**
    * Every row `board.readyRows` still reports, as-is, PLUS every locally-remembered "just
@@ -201,7 +205,7 @@ export function KitchenScreen({
    * useRecentlyCollected's own docblock in station-card.tsx and this rebuild's report for why the
    * merge goes this direction (server truth wins whenever it and local memory disagree).
    */
-  const extraCollectedRows = Object.values(recentlyCollected.entries)
+  const extraCollectedRows = Object.values(recentlyCollectedEntries)
     .map((entry) => entry.row)
     .filter((row) => !board.readyRows.some((r) => r.lineId === row.lineId))
   const readyDisplayRows: Array<{ row: DispatchRow; collected: boolean }> = [
@@ -215,20 +219,32 @@ export function KitchenScreen({
    * Wraps `onBump` so a successful 'collected' tap is remembered locally the instant it lands —
    * capturing the row's own data before the next refetch removes it from `board.readyRows`
    * entirely, per the recoverable-tap ruling.
+   *
+   * `board.readyRows` is read via a ref, synced in an effect rather than depended on directly —
+   * it is a brand new array every render (buildKitchenBoard recomputes it), so putting it in
+   * useCallback's own dependency list would defeat memoization every render for no benefit; the
+   * callback only ever runs from an event handler, strictly after the render/effect that last set
+   * the ref, so this stays accurate. Depends on `markCollected` itself, not the whole
+   * `recentlyCollected` object (whose own wrapper is a fresh object each render, same reason).
    */
+  const readyRowsRef = useRef(board.readyRows)
+  useEffect(() => {
+    readyRowsRef.current = board.readyRows
+  }, [board.readyRows])
+
   const collectBump = useCallback<BumpLines>(
     async (lineIds, action) => {
       const outcome = await onBump(lineIds, action)
       if (action === 'collected') {
         const succeeded = lineIds.filter((id) => !outcome.failedLineIds.includes(id))
         for (const lineId of succeeded) {
-          const row = board.readyRows.find((r) => r.lineId === lineId)
-          if (row) recentlyCollected.markCollected(row)
+          const row = readyRowsRef.current.find((r) => r.lineId === lineId)
+          if (row) markCollected(row)
         }
       }
       return outcome
     },
-    [onBump, board.readyRows, recentlyCollected],
+    [onBump, markCollected],
   )
   const readyBump = useCardBump(collectBump)
 
@@ -236,11 +252,11 @@ export function KitchenScreen({
     (row: DispatchRow) => {
       void onBump([row.lineId], 'ready_to_run').then((outcome) => {
         if (!outcome.failedLineIds.includes(row.lineId)) {
-          recentlyCollected.clear(row.lineId)
+          clearRecentlyCollected(row.lineId)
         }
       })
     },
-    [onBump, recentlyCollected],
+    [onBump, clearRecentlyCollected],
   )
 
   return (

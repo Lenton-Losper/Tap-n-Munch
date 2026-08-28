@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
 import { ageSeconds, formatElapsedClock } from '@/lib/stations/age'
 import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
@@ -86,8 +86,14 @@ function useDispatchBumpHandler(
   markCollected: (row: DispatchRow) => void,
   clear: (lineId: string) => void,
 ): BumpLines {
+  // Synced in an effect, not assigned during render -- a ref write during render is exactly what
+  // React's own rules (and the compiler's static check) forbid, since render can run more than
+  // once for the same commit. The callback below is only ever invoked from an event handler,
+  // strictly after the render/effect that last updated `rows`, so this stays accurate for it.
   const rowsRef = useRef(rows)
-  rowsRef.current = rows
+  useEffect(() => {
+    rowsRef.current = rows
+  }, [rows])
 
   return useCallback(
     async (lineIds, action) => {
