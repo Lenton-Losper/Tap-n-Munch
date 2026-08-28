@@ -229,9 +229,9 @@ describe('POST /api/admin/staff/bulk-create', () => {
    */
   it('the fixture reports a missing id per-entry, not silently, if a caller ever omits it', async () => {
     const { client } = makeSupabase({ usersIdNotNull: true })
-    currentClient = client
+    const raw = client as unknown as { from: (t: string) => { insert: (r: Row) => { single: () => Promise<{ error: { message: string } | null }> } } }
 
-    const res = await client.from('users').insert({ name: 'No id' }).single()
+    const res = await raw.from('users').insert({ name: 'No id' }).single()
 
     expect(res.error?.message).toMatch(/column "id"/)
   })
