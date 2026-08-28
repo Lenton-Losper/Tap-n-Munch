@@ -1,15 +1,17 @@
 'use client'
 
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageMinutes } from '@/lib/stations/age'
+import { ageMinutes, formatAge } from '@/lib/stations/age'
 import { buildBarBoard } from '@/lib/stations/grouping'
 import type { BarRound } from '@/lib/stations/types'
 import type { FeedConnectionState } from '@/lib/dashboard/realtime-connection'
 import { StationConnectionIndicator } from '@/components/stations/station-connection-indicator'
 
-function ageLabel(minutes: number): string {
-  return minutes <= 0 ? STATION_COPY.age.justNow : STATION_COPY.age.minutes(minutes)
-}
+/**
+ * Shared with the kitchen board — see lib/stations/age.ts. The bar had the identical unbounded
+ * `${n} min` and would have printed the same unreadable "12877 min" on an abandoned round.
+ */
+const ageLabel = formatAge
 
 function RoundCard({
   round,

@@ -1,7 +1,7 @@
 'use client'
 
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageMinutes, readyToRunEscalation, type AgeEscalation } from '@/lib/stations/age'
+import { ageMinutes, formatAge, readyToRunEscalation, type AgeEscalation } from '@/lib/stations/age'
 import { buildKitchenBoard } from '@/lib/stations/grouping'
 import type { KitchenLine } from '@/lib/stations/types'
 import type { FeedConnectionState } from '@/lib/dashboard/realtime-connection'
@@ -19,17 +19,29 @@ const ESCALATION_CLASSES: Record<AgeEscalation, string> = {
   white: 'border-[#E9E9E7] bg-white text-[#37352F]',
   amber: 'border-amber-400 bg-amber-50 text-amber-900',
   red: 'border-red-500 bg-red-50 text-red-900',
-}
-
-function ageLabel(minutes: number): string {
-  return minutes <= 0 ? STATION_COPY.age.justNow : STATION_COPY.age.minutes(minutes)
+  /**
+   * Deliberately the QUIETEST card on the board, not the loudest.
+   *
+   * A line still sitting cooked hours later was orphaned, not missed. Painting it red puts it in
+   * the same visual class as a plate going cold right now, and since abandoned cards accumulate
+   * and live ones do not, red ends up mostly meaning "old" — which is what the owner saw. Muted
+   * grey keeps it visible (somebody has to clear it) without spending the one colour that is
+   * supposed to move a cook's hands.
+   */
+  stale: 'border-[#D8D6D0] bg-[#F2F1EE] text-[#8A857C]',
 }
 
 /**
- * A line the station has already cooked, waiting on the pass. Escalates in urgency the same way
- * the old "Ready to run" card did — see lib/stations/types.ts's docblock: the age driving that
- * escalation is the ORDER's age, not this line's own cooked timestamp, because the real GET
- * contract carries no per-line transition timestamp to key it on.
+ * A line the station has already cooked, waiting on the pass.
+ *
+ * THE CLOCK IS THE LINE'S COOKED TIME, NOT THE ORDER'S AGE. This previously keyed on the order's
+ * placed_at because the GET carried no per-line transition timestamp; it now carries `cooked_at`
+ * from order_line_events, so the card ages on how long the plate has actually been on the pass.
+ * Under the old clock a steak that took eleven honest minutes opened red the instant it was tapped
+ * Cooked, and the whole board went red within six minutes of a round landing.
+ *
+ * `placedAt` remains the fallback for a line whose cooked event could not be read — a degraded
+ * colour is worth more than a blank card, and it is the pre-existing behaviour.
  */
 function CookedCard({
   line,
@@ -40,7 +52,7 @@ function CookedCard({
   now: number
   onMarkReadyToRun: (lineId: string) => void
 }) {
-  const minutes = ageMinutes(line.placedAt ?? '', now)
+  const minutes = ageMinutes(line.cookedAt ?? line.placedAt ?? '', now)
   const escalation = readyToRunEscalation(minutes)
 
   return (
@@ -52,7 +64,7 @@ function CookedCard({
       <div className="flex items-start justify-between gap-4">
         <p className="text-7xl font-black leading-none tabular-nums">{STATION_COPY.kitchen.tableLabel(line.tableNumber)}</p>
         <span className="rounded-full bg-black/10 px-4 py-1.5 text-2xl font-bold tabular-nums" data-testid="cooked-age">
-          {ageLabel(minutes)}
+          {formatAge(minutes)}
         </span>
       </div>
       <p className="mt-5 text-4xl font-extrabold leading-tight">

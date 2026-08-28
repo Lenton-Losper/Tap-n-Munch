@@ -42,7 +42,17 @@ export const STATION_COPY = {
     cookedButton: 'Cooked',
     /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
     readyToRunButton: 'Ready to run',
-    tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
+    /**
+     * "Table 0" was on the wall. Zero is not a table in any restaurant — it was a default from a
+     * writer with no table to record, and a cook reading it has nothing to act on.
+     *
+     * An absent table now says so in words. NOT a dash: at 3m a dash reads as a rendering fault,
+     * and a cook's next move is to ask whether the screen is broken. "No table" is a fact about
+     * the order, and the card still carries the item so the food can be made while somebody works
+     * out where it goes.
+     */
+    tableLabel: (tableNumber: string) =>
+      tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
   bar: {
     pageTitle: 'Bar',
@@ -51,7 +61,9 @@ export const STATION_COPY = {
     /** The one tap that sends a whole round straight to ready. Removes it from this board — see
      *  bar-screen.tsx on why there is no persisted Out column any more. */
     outButton: 'Out',
-    tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
+    /** Same absent-table rule as the kitchen — see the note there. */
+    tableLabel: (tableNumber: string) =>
+      tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
   /** Shared by both screens — a route_to = 'unrouted' line must never read as ordinary work. */
   unrouted: {

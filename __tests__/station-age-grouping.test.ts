@@ -45,6 +45,7 @@ function kitchenLine(overrides: Partial<KitchenLine>): KitchenLine {
     tableNumber: '1',
     orderNumber: 100,
     itemName: 'Item',
+    cookedAt: null,
     quantity: 1,
     lineNote: null,
     routeTo: 'kitchen',

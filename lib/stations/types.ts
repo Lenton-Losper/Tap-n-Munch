@@ -76,8 +76,21 @@ export type KitchenLine = {
   lineNote: string | null
   routeTo: RouteTo
   state: KitchenLineState
-  /** The order's placed_at — see the module docblock on why this is order age, not line age. */
+  /**
+   * The order's placed_at. Correct for OUTSTANDING work — how long the kitchen has had the
+   * ticket — and it is what the outstanding side is sorted and aged on.
+   */
   placedAt: string | null
+  /**
+   * When this station tapped Cooked, from order_line_events. Null while still outstanding.
+   *
+   * A cooked card escalates on THIS, not on placedAt. Order age answers "how long ago did they
+   * order", which for a dish already made is the wrong question — a steak that took eleven honest
+   * minutes would open red the moment it was tapped, and every cooked card went red within six
+   * minutes of the round landing. This clock answers "how long has it been sitting on the pass",
+   * which is the thing that actually goes cold.
+   */
+  cookedAt: string | null
   unrouted: boolean
   /** True for a 'both' or 'unrouted' line — the bar also has (or shares) this line. */
   sharedWithOtherStation: boolean
