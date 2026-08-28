@@ -215,13 +215,25 @@ export type OrderRealtimePayload = {
 
 /**
  * Single Realtime channel for all order INSERT/UPDATE/DELETE events for a restaurant.
+ *
+ * feat/station-screens-v1: EXTENDED, not forked, to also carry order_lines changes for the
+ * kitchen/bar screens — ruled explicitly: reuse this subscriber (it already handles
+ * CHANNEL_ERROR / TIMED_OUT / CLOSED, visibility and the 60s polling fallback via #350's
+ * lib/dashboard/realtime-connection.ts, which every caller wires up around this the same way
+ * components/orders-dashboard.tsx already does) rather than write a second one that can
+ * silently freeze in some way this one doesn't. `onLineChange` is optional and additive: an
+ * existing caller that doesn't pass it sees no change in behaviour. `onInitial` / `onChange`
+ * are now optional too, so a lines-only caller (the station screens) isn't forced to pay for an
+ * `orders` fetch and subscription it has no use for.
  */
 export function subscribeRestaurantOrdersRealtime(
   restaurantId: string,
   callbacks: {
-    onInitial: (orders: any[]) => void
-    onChange: (payload: OrderRealtimePayload) => void
+    onInitial?: (orders: any[]) => void
+    onChange?: (payload: OrderRealtimePayload) => void
     onStatus?: (status: string) => void
+    /** feat/station-screens-v1 — order_lines changes, same channel, same resilience wiring. */
+    onLineChange?: (payload: OrderRealtimePayload) => void
   },
   scopeOverride?: OrderRestaurantScope | null
 ) {
@@ -242,12 +254,14 @@ export function subscribeRestaurantOrdersRealtime(
 
     if (cancelled) return
 
-    try {
-      const orders = await getAllOpenRestaurantOrders(restaurantId, scope)
-      if (!cancelled) callbacks.onInitial(orders)
-    } catch (error) {
-      console.error(error)
-      if (!cancelled) callbacks.onInitial([])
+    if (callbacks.onInitial) {
+      try {
+        const orders = await getAllOpenRestaurantOrders(restaurantId, scope)
+        if (!cancelled) callbacks.onInitial(orders)
+      } catch (error) {
+        console.error(error)
+        if (!cancelled) callbacks.onInitial([])
+      }
     }
 
     if (cancelled) return
@@ -255,32 +269,48 @@ export function subscribeRestaurantOrdersRealtime(
     const channelName = `orders-channel-${scope.restaurantId}`
     const nextChannel = supabase.channel(channelName)
 
-    const onOrderChange = (payload: {
-      eventType?: string
-      new?: Record<string, unknown>
-      old?: Record<string, unknown>
-    }) => {
-      if (cancelled) return
+    type RawChangePayload = { eventType?: string; new?: Record<string, unknown>; old?: Record<string, unknown> }
+
+    const forward = (
+      handler: ((payload: OrderRealtimePayload) => void) | undefined,
+      payload: RawChangePayload,
+    ) => {
+      if (cancelled || !handler) return
       const eventType = payload.eventType
       if (eventType !== 'INSERT' && eventType !== 'UPDATE' && eventType !== 'DELETE') return
 
-      callbacks.onChange({
+      handler({
         eventType,
         new: (payload.new as Record<string, unknown> | undefined) ?? null,
         old: (payload.old as Record<string, unknown> | undefined) ?? null,
       })
     }
 
-    nextChannel.on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'orders',
-        filter: `restaurant_id=eq.${scope.restaurantId}`,
-      },
-      onOrderChange
-    )
+    if (callbacks.onChange) {
+      nextChannel.on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `restaurant_id=eq.${scope.restaurantId}`,
+        },
+        (payload: RawChangePayload) => forward(callbacks.onChange, payload),
+      )
+    }
+
+    if (callbacks.onLineChange) {
+      nextChannel.on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'order_lines',
+          filter: `restaurant_id=eq.${scope.restaurantId}`,
+        },
+        (payload: RawChangePayload) => forward(callbacks.onLineChange, payload),
+      )
+    }
 
     nextChannel.subscribe((status: string) => {
       callbacks.onStatus?.(status)

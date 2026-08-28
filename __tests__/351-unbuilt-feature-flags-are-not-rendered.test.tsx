@@ -113,7 +113,7 @@ describe('#351 the admin feature-flag panel renders only flags something reads',
     for (const key of UNBUILT_FEATURE_FLAG_KEYS) {
       expect(FEATURE_FLAG_KEYS as readonly string[]).toContain(key)
     }
-    expect(FEATURE_FLAG_KEYS).toHaveLength(11)
+    expect(FEATURE_FLAG_KEYS).toHaveLength(12)
   })
 
   test('an unbuilt flag carries no label, so no copy promises it', () => {
