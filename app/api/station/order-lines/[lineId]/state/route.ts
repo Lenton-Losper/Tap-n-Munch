@@ -39,6 +39,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { requireFeature } from '@/lib/features/get-restaurant-features'
 import {
   isLineReady,
   stationsOwnedBy,
@@ -83,6 +84,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
+
+    /**
+     * DEFENSE IN DEPTH -- see app/api/station/lines/route.ts's identical note. This route is a
+     * bump the terminal wrapper routes (station-lines/[lineId], batch, bar-rounds/[roundId])
+     * delegate to after their own feature-flag check, but it is also independently reachable
+     * over HTTP with nothing but a valid terminal token. Found 2026-08-28 alongside the read side.
+     */
+    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
 
     if (!terminal.permissions.includes('orders:update')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })

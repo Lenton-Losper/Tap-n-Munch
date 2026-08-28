@@ -28,6 +28,8 @@
 import { GET as stationLinesGET } from '@/app/api/terminal/station-lines/route'
 import { POST as bumpLinePOST } from '@/app/api/terminal/station-lines/[lineId]/route'
 import { POST as bumpRoundPOST } from '@/app/api/terminal/bar-rounds/[roundId]/route'
+import { GET as domainLinesGET } from '@/app/api/station/lines/route'
+import { POST as domainStatePOST } from '@/app/api/station/order-lines/[lineId]/state/route'
 
 const TERMINAL_ID = 'terminal-1'
 const RESTAURANT_ID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
@@ -96,6 +98,37 @@ describe('station screens are unreachable with stationScreensEnabled off', () =>
       headers: { authorization: 'Bearer fake' },
     })
     const res = await bumpRoundPOST(req, { params: Promise.resolve({ roundId: 'order-1' }) })
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toMatch(/not enabled/i)
+    expect(fromCallCount).toBe(0)
+  })
+
+  /**
+   * THE TWO ROUTES ABOVE DELEGATE TO. Found 2026-08-28: the real domain routes the terminal
+   * wrapper routes call in-process after their own flag check are ALSO independently exported
+   * route handlers, reachable directly over HTTP with nothing but a valid terminal token —
+   * bypassing the wrapper's gate entirely if hit at their own URL. Gated the same way, so they
+   * must refuse the same way.
+   */
+  it('GET /api/station/lines refuses with 403 and never queries orders or order_lines', async () => {
+    const req = new Request('http://localhost/api/station/lines?station=kitchen', {
+      headers: { authorization: 'Bearer fake' },
+    })
+    const res = await domainLinesGET(req)
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toMatch(/not enabled/i)
+    expect(fromCallCount).toBe(0)
+  })
+
+  it('POST /api/station/order-lines/:lineId/state refuses with 403 and writes nothing', async () => {
+    const req = new Request('http://localhost/api/station/order-lines/line-1/state', {
+      method: 'POST',
+      headers: { authorization: 'Bearer fake', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ station: 'kitchen', to_state: 'cooked' }),
+    })
+    const res = await domainStatePOST(req, { params: Promise.resolve({ lineId: 'line-1' }) })
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.error).toMatch(/not enabled/i)
