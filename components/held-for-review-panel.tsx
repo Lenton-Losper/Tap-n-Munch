@@ -32,6 +32,7 @@ import {
   type HeldForReviewRow,
 } from '@/lib/orders/held-for-review'
 import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
+import { OVERRIDE_CANCEL_COPY } from '@/lib/orders/override-cancel-copy'
 /**
  * FROM THE OUTCOMES MODULE, NOT THE ACTION. Importing the action here pulls the Finatic credentials
  * chain — restaurant cache, lib/redis, @upstash/redis — into the browser bundle. That is what the
@@ -67,6 +68,17 @@ export type HeldForReviewPanelProps = {
   clearSummary?: ClearHeldSummary | null
   /** Non-null when the REQUEST failed, as opposed to the run completing with skips. */
   clearError?: string | null
+  /**
+   * The PER-ORDER manual override. Distinct from `onClearAll` in every way that matters: it names
+   * one order, and it is a human overruling a safety rule rather than the rule running.
+   */
+  onOverrideCancel?: (orderId: string) => void | Promise<void>
+  /** True when the signed-in user holds `orders:update`. Hides the control when false. */
+  canOverride?: boolean
+  /** The order currently being overridden, if any. Disables that one control. */
+  overridingId?: string | null
+  /** Per-order result of the last override, keyed by order id. Refusals land here too. */
+  overrideMessages?: Record<string, string>
 }
 
 export function HeldForReviewPanel({
@@ -79,6 +91,10 @@ export function HeldForReviewPanel({
   clearing = false,
   clearSummary = null,
   clearError = null,
+  onOverrideCancel,
+  canOverride = false,
+  overridingId = null,
+  overrideMessages = {},
 }: HeldForReviewPanelProps) {
   /**
    * TWO-STEP, IN-COMPONENT. Not `window.confirm`, which is untestable in jsdom without stubbing a
@@ -86,6 +102,35 @@ export function HeldForReviewPanel({
    * because that is the blast radius, and it is the last point at which a staff member can stop.
    */
   const [confirming, setConfirming] = useState(false)
+
+  /**
+   * COLLAPSED BY DEFAULT. Eight identical cards is not information -- it is the same sentence
+   * eight times, and a staff member scanning the dashboard reads none of them. The summary line
+   * carries the three facts that actually differ between one board and another: how many, how
+   * much, and how old the worst one is.
+   *
+   * Collapsed regardless of count, deliberately. A threshold ("collapse above three") is a rule
+   * nobody asked for and it makes the surface behave differently on different days, which is
+   * exactly how a staff member learns not to trust what it is showing them.
+   */
+  /**
+   * EXCEPT WHEN A ROW CARRIES UNSIGNED COPY, in which case it opens.
+   *
+   * #353's guarantee is that an unsigned string is impossible to MISS — it exists because on
+   * 2026-08-21 five of them reached production and the owner of a multi-location account read
+   * `PENDING COPY — Location` on twenty staff screens. A collapse that folds unsigned wording
+   * behind a tap re-creates that defect exactly, and it would do it silently: the marker would
+   * still be in the DOM, still be greppable, still pass `check-no-pending-copy.mjs`, and simply
+   * not be on screen.
+   *
+   * So the collapse applies to the case it was asked for -- eight identical, correctly-worded
+   * cards -- and yields to the older guarantee when the two conflict.
+   */
+  const hasUnsignedCopy = rows.some((row) => !row.copySigned)
+  const [expanded, setExpanded] = useState(hasUnsignedCopy)
+
+  /** Which card is mid-confirmation. One at a time -- this is a per-order decision. */
+  const [overrideConfirmingId, setOverrideConfirmingId] = useState<string | null>(null)
   if (error) {
     return (
       <section
@@ -124,6 +169,18 @@ export function HeldForReviewPanel({
   if (rows.length === 0) return null
 
   const total = rows.reduce((sum, row) => sum + row.total, 0)
+
+  /**
+   * The OLDEST held order's age, for the summary line. Null when no row carries a usable age --
+   * `heldForMs` is nullable by design, because an order whose `placed_at` will not parse is
+   * exactly as unresolved as one whose will, and dropping it would be the invisible-absence
+   * failure this surface exists to remove. A null here hides the "oldest" clause; it never hides
+   * the row.
+   */
+  const heldAges = rows
+    .map((row) => row.heldForMs)
+    .filter((ms): ms is number => typeof ms === 'number' && Number.isFinite(ms))
+  const oldestHeldMs = heldAges.length > 0 ? Math.max(...heldAges) : null
   const showClear = Boolean(onClearAll) && canClearAll
   const banner = clearSummary ? clearHeldBanner(clearSummary) : null
 
@@ -149,7 +206,38 @@ export function HeldForReviewPanel({
         {HELD_FOR_REVIEW_SECTION_COPY.intro}
       </p>
 
-      <ul className="mt-3 grid gap-2">
+      {/*
+        THE SUMMARY LINE. Count, amount, and the age of the OLDEST -- the oldest rather than an
+        average, because the oldest is the one that has been ignored longest and is the reason to
+        open this at all. An average would hide it behind seven fresh ones.
+      */}
+      <button
+        type="button"
+        data-testid="held-for-review-summary"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-3 flex w-full items-center justify-between gap-3 rounded-md border border-amber-200 bg-card px-3 py-2 text-left"
+      >
+        <span className="text-sm font-semibold text-foreground">
+          <span data-testid="held-summary-count">{rows.length}</span>
+          {' held · '}
+          <span data-testid="held-summary-total">
+            {currency}
+            {heldAmountDigits(total)}
+          </span>
+          {oldestHeldMs === null ? null : (
+            <>
+              {' · oldest '}
+              <span data-testid="held-summary-oldest">{formatHeldDuration(oldestHeldMs)}</span>
+            </>
+          )}
+        </span>
+        <span aria-hidden className="text-sm text-muted-foreground">
+          {expanded ? 'Hide' : 'Show'}
+        </span>
+      </button>
+
+      <ul className="mt-2 grid gap-2" hidden={!expanded}>
         {rows.map((row) => (
           <li
             key={row.id}
@@ -179,6 +267,73 @@ export function HeldForReviewPanel({
             <p data-testid="held-row-why" className="mt-1 text-sm text-muted-foreground">
               {row.why}
             </p>
+
+            {/*
+              THE PER-ORDER OVERRIDE. Visibly distinct from "Clear all" below, and it has to be:
+              that one is the rule running, this is a person overruling it. So it is destructive
+              red rather than the panel's amber, it is a two-step, and its confirm text names the
+              risk rather than the count.
+
+              Hiding it without the permission is a courtesy. The route checks `orders:update`
+              itself and 403s regardless -- the client never participates in an authorization
+              decision.
+            */}
+            {onOverrideCancel && canOverride ? (
+              <div data-testid="held-row-override" className="mt-2 border-t border-amber-100 pt-2">
+                {overrideMessages[row.id] ? (
+                  <p data-testid="held-row-override-message" className="text-sm text-amber-900">
+                    {overrideMessages[row.id]}
+                  </p>
+                ) : overridingId === row.id ? (
+                  <p data-testid="held-row-override-running" className="text-sm text-amber-900">
+                    Checking with the payment provider…
+                  </p>
+                ) : overrideConfirmingId === row.id ? (
+                  <div data-testid="held-row-override-confirm">
+                    <p className="text-sm font-medium text-red-900">
+                      {OVERRIDE_CANCEL_COPY.title}
+                    </p>
+                    <p
+                      data-testid="held-row-override-confirm-body"
+                      className="mt-1 text-sm text-red-900"
+                    >
+                      {OVERRIDE_CANCEL_COPY.body}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        data-testid="held-row-override-accept"
+                        className="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white"
+                        onClick={() => {
+                          setOverrideConfirmingId(null)
+                          void onOverrideCancel(row.id)
+                        }}
+                      >
+                        {OVERRIDE_CANCEL_COPY.confirm}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="held-row-override-cancel"
+                        className="rounded-md border border-amber-300 px-3 py-1.5 text-sm"
+                        onClick={() => setOverrideConfirmingId(null)}
+                      >
+                        Keep it
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="held-row-override-start"
+                    disabled={Boolean(overridingId)}
+                    className="text-sm font-medium text-red-700 underline underline-offset-2 disabled:opacity-50"
+                    onClick={() => setOverrideConfirmingId(row.id)}
+                  >
+                    {OVERRIDE_CANCEL_COPY.button}
+                  </button>
+                )}
+              </div>
+            ) : null}
           </li>
         ))}
       </ul>
