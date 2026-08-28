@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Trash2, UserPlus, Shield, KeyRound } from 'lucide-react'
+import { Trash2, UserPlus, Users, Shield, KeyRound } from 'lucide-react'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
   InviteStaffDialog,
@@ -19,6 +19,7 @@ import {
   useStaffInvites,
   type StaffInviteRow,
 } from '@/components/staff/staff-invites'
+import { BulkAddStaffDialog } from '@/components/staff/bulk-add-staff-dialog'
 import {
   fetchRestaurantRoles,
   filterStaffAssignableRoles,
@@ -49,6 +50,7 @@ export function StaffPageContent() {
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState<string | null>(null)
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [bulkAddOpen, setBulkAddOpen] = useState(false)
   const [cancellingInviteId, setCancellingInviteId] = useState<string | null>(null)
   const { invites, addInvite, loadInvites, cancelInvite } = useStaffInvites()
 
@@ -165,6 +167,10 @@ export function StaffPageContent() {
             <UserPlus className="w-4 h-4 mr-2" />
             Invite Staff
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setBulkAddOpen(true)}>
+            <Users className="w-4 h-4 mr-2" />
+            Add Staff
+          </Button>
         </div>
       </div>
 
@@ -172,6 +178,13 @@ export function StaffPageContent() {
         open={inviteOpen}
         onOpenChange={setInviteOpen}
         onInviteSent={handleInviteSent}
+      />
+
+      <BulkAddStaffDialog
+        open={bulkAddOpen}
+        onOpenChange={setBulkAddOpen}
+        assignableRoles={assignableRoles}
+        onCreated={load}
       />
 
       <div className="border rounded-lg divide-y">
