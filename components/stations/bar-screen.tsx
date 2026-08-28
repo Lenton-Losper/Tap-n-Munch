@@ -1,163 +1,169 @@
 'use client'
 
+import { useCallback, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageMinutes, formatAge, worstEscalation } from '@/lib/stations/age'
-import { barActiveLineEscalation, buildBarBoard, readyLineEscalation } from '@/lib/stations/grouping'
-import { densityFor, type DensityScale } from '@/lib/stations/board-density'
-import type { BumpLines, StationBumpAction } from '@/lib/stations/bump'
-import type { BarRound } from '@/lib/stations/types'
+import { ageSeconds, formatElapsedClock } from '@/lib/stations/age'
+import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
+import { densityFor, dispatchDensityFor, type DensityScale } from '@/lib/stations/board-density'
+import type { BumpLines } from '@/lib/stations/bump'
+import type { BarRound, DispatchRow } from '@/lib/stations/types'
 import type { FeedConnectionState } from '@/lib/dashboard/realtime-connection'
 import { StationConnectionIndicator } from '@/components/stations/station-connection-indicator'
 import {
   CardFailureBanner,
+  DispatchRowView,
+  NotSentStrip,
   PerCardButton,
   StationCard,
   StationLineRow,
   useCardBump,
+  useRecentlyCollected,
 } from '@/components/stations/station-card'
 
 /**
  * THE BAR WALL BOARD.
  *
  * ============================================================================================
- * REBUILT 20260829160000 — SAME TWO ZONES AS THE KITCHEN, ONE REMAINING DIFFERENCE
+ * SECOND-PASS REDESIGN (20260829) — SAME SYSTEM AS THE KITCHEN, ONE STATION'S LINES
  * ============================================================================================
  *
- * Shares components/stations/station-card.tsx and lib/stations/board-density.ts with the kitchen
- * — same tiling, same round geometry, same type floor, same per-line-plus-per-round control
- * shape, same partial-failure behaviour, same two zones in the same order: TO MAKE on top, a
- * pinned Ready ("Waiting for collection") zone below it.
- *
- * A round is not made or collected all at once — "PER LINE, both boards" is a standing ruling
- * this rebuild does not touch — so lib/stations/grouping.ts splits a round's OWN items between
- * the two zones rather than the round as a whole. A table with two drinks poured and one still
- * pending is a real shape: it shows up here as a TO MAKE card carrying its one pending drink and a
- * Ready card carrying its two poured ones, at the same time.
+ * "Bar is not a variant of kitchen - it is the same system with a different station's lines and a
+ * softer ready escalation." Two fixed surfaces (68% active / 32% ready) inside
+ * `station-board-body`, a full-width NOT SENT strip rendered OUTSIDE that scrollable area so
+ * nothing can ever bury it, and a flat, dense Ready dispatch queue instead of the first pass's
+ * grouped Ready cards — see lib/stations/grouping.ts and lib/stations/types.ts's own docblocks for
+ * why Ready is DispatchRow[], not BarRound[], and components/stations/station-card.tsx for the
+ * shared NotSentStrip / DispatchRowView / useRecentlyCollected primitives this board is built out
+ * of, same as the kitchen.
  *
  * ============================================================================================
- * "TO MAKE STAYS NEUTRAL" WAS RULED AT FOUR CARDS, AND REVERSED 20260829 AT TWELVE
+ * TO MAKE AGES AGAIN, ON ITS OWN (LATER) BANDS — READY AGES TOO, ON ITS OWN (SOFTER) BANDS
  * ============================================================================================
  *
- * The original ruling — "a warm beer is a smaller problem than a cold steak" — was correct about
- * the STAKES and wrong about what follows from them. At four cards, reading every table number
- * costs nothing, so switching colour off cost nothing either. At real volume it does: a
- * bartender scanning twelve identical white TO MAKE cards for the oldest one has to read every
- * number in turn, which is exactly the read the kitchen board's colour exists to shortcut. Owner,
- * walking the rebuilt board: "I made that ruling when the board was four cards. At twelve it
- * costs more than it saves."
+ * Both bar zones now sort and colour by urgency, same as every zone on either board (see
+ * lib/stations/grouping.ts's module docblock on the 20260829 reversal of "bar stays neutral"). The
+ * STAKES argument that motivated the original neutral ruling still holds — it just stopped meaning
+ * "no colour" once a bartender had to read a dozen identical white cards to find the oldest one.
+ * TO MAKE uses barActiveLineEscalation's later-than-kitchen bands; Waiting for collection uses
+ * barReadyRowEscalation's own softer-than-kitchen bands. "The consequence of a waiting drink is
+ * lower than a waiting plate" is now expressed as WHICH BANDS, not as an absence of colour.
  *
- * So TO MAKE now ages and sorts by urgency exactly like every other zone on either board — see
- * lib/stations/grouping.ts's barActiveLineEscalation. THE STAKES STILL DIFFER, THOUGH: a warm
- * beer is still a smaller problem than a cold steak, so the bands are later than the kitchen's
- * outstanding bands (lib/stations/age.ts's BAR_ACTIVE_AMBER_MINUTES / BAR_ACTIVE_RED_MINUTES,
- * flagged unmeasured exactly like the kitchen's own first cut was) — a round that would already
- * be red on the kitchen's clock can still be white or amber here.
+ * ============================================================================================
+ * "ALL OUT" STAYS THE BAR'S OWN ACTION — NO NEW `cooked` SUB-STATE ADDED
+ * ============================================================================================
  *
- * Waiting for collection is unchanged by this: it already aged, on the same clock (readyAt) and
- * the same bands (readyToRunEscalation) as the kitchen's Ready zone, since this rebuild's own
- * ruling that "a drink sitting uncollected is a different problem from one not yet made."
+ * The brief's "an 'All cooked' convenience action may update every outstanding bar line in that
+ * round" is read as the KIND of per-round shortcut the kitchen has, described in kitchen
+ * vocabulary out of habit — not a literal instruction to give the bar a `cooked` intermediate
+ * state. The bar's own tap has always gone straight outstanding -> ready (`out`), a deliberate
+ * design decision from earlier tonight, not an oversight. So the bar keeps its existing action
+ * vocabulary unchanged: `Out` per line, `All out` per round over outstanding lines only. Flagged in
+ * this rebuild's report rather than guessed further.
+ *
+ * ============================================================================================
+ * A COLLECTED LINE STAYS ON SCREEN, STRUCK THROUGH, WITH AN UNDO — SEE useRecentlyCollected
+ * ============================================================================================
+ *
+ * "A waiter who taps the wrong row has no way back... the tap must be recoverable." Wiring lives in
+ * useDispatchBumpHandler below: it wraps the real onBump so a successful Collected tap records the
+ * row's own data locally (before the next refetch drops it from board.readyRows entirely, same as
+ * a voided line) and a successful Undo tap (the bar's existing `out` action — no new server action
+ * needed) clears that local memory immediately.
  */
 
-/** An unrouted round has nowhere to be bumped TO until somebody sets a route, so it renders with
- *  no controls at all. Module-level so it is a stable identity across renders. */
-const NO_BUMP: BumpLines = async () => ({ ok: true, total: 0, failedLineIds: [] })
+/** One shared bump instance for the whole Ready zone (see station-card.tsx's own note on why one
+ *  instance per zone is enough — the same pattern the Active zone's per-round cards already use,
+ *  just at zone scope instead of round scope since a dispatch row has no round to share one with).
+ *
+ *  Wraps the real onBump so the recoverable-collected ruling can be wired without re-implementing
+ *  useCardBump's own pending/failed bookkeeping: a successful 'collected' tap records the row
+ *  locally (markCollected) before it can vanish from the next refetch; a successful 'out' tap (the
+ *  Undo button's own action) clears that local memory so the row falls back to being sourced from
+ *  the server response, same as any other Ready row. */
+function useDispatchBumpHandler(
+  onBump: BumpLines,
+  rows: DispatchRow[],
+  markCollected: (row: DispatchRow) => void,
+  clear: (lineId: string) => void,
+): BumpLines {
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
 
-function BarRoundCard({
+  return useCallback(
+    async (lineIds, action) => {
+      const outcome = await onBump(lineIds, action)
+      if (action === 'collected') {
+        const byId = new Map(rowsRef.current.map((row) => [row.lineId, row]))
+        for (const lineId of lineIds) {
+          if (outcome.failedLineIds.includes(lineId)) continue
+          const row = byId.get(lineId)
+          if (row) markCollected(row)
+        }
+      } else if (action === 'out') {
+        for (const lineId of lineIds) {
+          if (!outcome.failedLineIds.includes(lineId)) clear(lineId)
+        }
+      }
+      return outcome
+    },
+    [onBump, markCollected, clear],
+  )
+}
+
+/** One TO MAKE round — the only zone still card-shaped on this board. Unrouted rounds never reach
+ *  here any more (see NotSentStrip below); every round this renders is routed and not-yet-ready. */
+function BarActiveRoundCard({
   round,
   now,
   scale,
-  zone,
   onBump,
-  unrouted = false,
 }: {
   round: BarRound
   now: number
   scale: DensityScale
-  zone: 'active' | 'ready'
-  onBump?: BumpLines
-  unrouted?: boolean
+  onBump: BumpLines
 }) {
-  // Hooks are not optional, so the unrouted case gets NO_BUMP rather than a conditional hook.
-  const bump = useCardBump(onBump ?? NO_BUMP)
+  const bump = useCardBump(onBump)
   const lineIds = round.items.map((item) => item.id)
-
-  const escalation =
-    zone === 'ready'
-      ? worstEscalation(round.items.map((item) => readyLineEscalation(item.readyAt, round.placedAt, now)))
-      : barActiveLineEscalation(round, now)
-  const clock = (item: BarRound['items'][number]) => (zone === 'ready' ? item.readyAt ?? round.placedAt : round.placedAt) ?? ''
-  const oldest = Math.max(...round.items.map((item) => ageMinutes(clock(item), now)))
-
-  const action: StationBumpAction = zone === 'ready' ? 'collected' : 'out'
-  const buttonLabel = zone === 'ready' ? STATION_COPY.bar.collectedButton : STATION_COPY.bar.outButton
-  const allLabel = zone === 'ready' ? STATION_COPY.bar.allCollectedButton : STATION_COPY.bar.allOutButton
-  const tone = zone === 'ready' ? 'pass' : 'station'
+  const escalation = barActiveLineEscalation(round, now)
 
   return (
     <StationCard
       testId="bar-round-card"
       tableLabel={STATION_COPY.bar.tableLabel(round.tableNumber)}
-      ageLabel={formatAge(oldest)}
+      ageLabel={formatElapsedClock(ageSeconds(round.placedAt ?? '', now))}
       escalation={escalation}
       scale={scale}
       headerAction={
-        onBump && round.items.length > 1 ? (
+        round.items.length > 1 ? (
           <PerCardButton
-            label={allLabel}
+            label={STATION_COPY.bar.allOutButton}
             count={round.items.length}
             lineIds={lineIds}
-            action={action}
-            tone={tone}
+            action="out"
+            tone="station"
             bump={bump}
             scale={scale}
           />
         ) : null
       }
-      banner={onBump ? <CardFailureBanner visibleLineIds={lineIds} bump={bump} scale={scale} /> : null}
+      banner={<CardFailureBanner visibleLineIds={lineIds} bump={bump} scale={scale} />}
     >
-      {round.items.map((item) =>
-        onBump ? (
-          <StationLineRow
-            key={item.id}
-            lineId={item.id}
-            itemName={item.itemName}
-            quantity={item.quantity}
-            lineNote={item.lineNote}
-            buttonLabel={buttonLabel}
-            action={action}
-            tone={tone}
-            bump={bump}
-            scale={scale}
-            escalation={
-              zone === 'ready'
-                ? readyLineEscalation(item.readyAt, round.placedAt, now)
-                : barActiveLineEscalation(round, now)
-            }
-          />
-        ) : (
-          <div
-            key={item.id}
-            data-testid="station-line-row"
-            data-escalation="none"
-            className={`border-t border-current/15 first:border-t-0 ${scale.rowPadClass}`}
-          >
-            <p className={`font-bold leading-tight ${scale.itemClass}`}>
-              {item.quantity}× {item.itemName}
-            </p>
-            {item.lineNote ? (
-              <p
-                data-testid="line-note"
-                className={`mt-0.5 inline-block rounded bg-red-100 px-1 font-bold text-red-900 ${scale.noteClass}`}
-              >
-                ⚠ {item.lineNote}
-              </p>
-            ) : null}
-          </div>
-        ),
-      )}
-      {unrouted ? (
-        <p className={`mt-1 font-semibold text-red-700 ${scale.noteClass}`}>{STATION_COPY.unrouted.itemNote}</p>
-      ) : null}
+      {round.items.map((item) => (
+        <StationLineRow
+          key={item.id}
+          lineId={item.id}
+          itemName={item.itemName}
+          quantity={item.quantity}
+          lineNote={item.lineNote}
+          buttonLabel={STATION_COPY.bar.outButton}
+          action="out"
+          tone="station"
+          bump={bump}
+          scale={scale}
+          escalation={escalation}
+        />
+      ))}
     </StationCard>
   )
 }
@@ -175,41 +181,55 @@ export function BarScreen({
 }) {
   const board = buildBarBoard(rounds, now)
   const activeScale = densityFor(board.active.length)
-  const readyScale = densityFor(board.ready.length)
-  const cardCount = board.active.length + board.ready.length
+
+  const { entries: recentlyCollected, markCollected, clear } = useRecentlyCollected()
+  const serverReadyIds = new Set(board.readyRows.map((row) => row.lineId))
+  const stillRecoverable = Object.values(recentlyCollected)
+    .map((entry) => entry.row)
+    .filter((row) => !serverReadyIds.has(row.lineId))
+  const collectedIds = new Set(stillRecoverable.map((row) => row.lineId))
+  const displayRows = [...board.readyRows, ...stillRecoverable]
+  const dispatchScale = dispatchDensityFor(displayRows.length)
+
+  const dispatchOnBump = useDispatchBumpHandler(onBump, board.readyRows, markCollected, clear)
+  const readyBump = useCardBump(dispatchOnBump)
+
+  const unroutedItems = board.unrouted.flatMap((round) =>
+    round.items.map((item) => ({
+      lineId: item.id,
+      tableNumber: round.tableNumber,
+      quantity: item.quantity,
+      itemName: item.itemName,
+    })),
+  )
 
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-[#F5F4F0] p-3"
       data-testid="bar-screen"
       data-density={activeScale.density}
-      data-card-count={cardCount}
+      data-card-count={board.active.length + displayRows.length}
     >
       <div className="mb-2 flex shrink-0 items-center justify-between">
         <h1 className="font-serif text-2xl font-bold text-[#37352F]">{STATION_COPY.bar.pageTitle}</h1>
         <StationConnectionIndicator state={connectionState} />
       </div>
 
-      {/* Measured by tests/e2e/station-board-wall-fit.spec.ts, same as the kitchen's. */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="station-board-body">
-        {board.unrouted.length > 0 ? (
-          <div
-            data-testid="unrouted-section"
-            className="mb-1.5 shrink-0 rounded-xl border-4 border-red-500 bg-red-50 px-2.5 py-1.5"
-          >
-            <div className="flex flex-wrap items-baseline gap-x-3">
-              <h2 className="text-lg font-black text-red-900">{STATION_COPY.unrouted.heading}</h2>
-              <p className="text-sm text-red-800">{STATION_COPY.unrouted.description}</p>
-            </div>
-            <div className={`mt-1.5 gap-1.5 ${activeScale.columnsClass}`}>
-              {board.unrouted.map((round) => (
-                <BarRoundCard key={round.id} round={round} now={now} scale={activeScale} zone="active" unrouted />
-              ))}
-            </div>
-          </div>
-        ) : null}
+      {/*
+        NOT SENT — full-width, above the scrollable two-surface area entirely, so it can never be
+        buried by any amount of active or ready work. See station-card.tsx's NotSentStrip docblock.
+      */}
+      <NotSentStrip items={unroutedItems} tableLabel={STATION_COPY.bar.tableLabel} />
 
-        <section className="flex-[65] shrink-0" data-testid="bar-active-section">
+      {/*
+        THE ONE SCROLLABLE THING, AND IT IS SUPPOSED TO NEVER SCROLL — same contract the kitchen
+        board holds itself to. 68% Active / 32% Ready by height, fixed regardless of either zone's
+        own content: `flex-[68]`/`flex-[32]` on the two sections below, each independently
+        overflow-auto so a genuine overflow shows as a scrollbar (an admission there is more)
+        rather than being silently clipped.
+      */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="station-board-body">
+        <section className="min-h-0 flex-[68] overflow-auto" data-testid="bar-active-section">
           <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.bar.activeHeading}
           </h2>
@@ -218,38 +238,43 @@ export function BarScreen({
           ) : (
             <div className={`gap-1.5 ${activeScale.columnsClass}`} data-testid="bar-active-grid">
               {board.active.map((round) => (
-                <BarRoundCard
-                  key={round.id}
-                  round={round}
-                  now={now}
-                  scale={activeScale}
-                  zone="active"
-                  onBump={onBump}
-                />
+                <BarActiveRoundCard key={round.id} round={round} now={now} scale={activeScale} onBump={onBump} />
               ))}
             </div>
           )}
         </section>
 
+        {/*
+          WAITING FOR COLLECTION — pinned to its own ~32% of the wall, dense dispatch rows, not
+          cards. "No production cards... it is a dispatch queue, not a shrunken production card."
+        */}
         <section
-          className="mt-2 flex-[35] shrink-0 border-t-4 border-[#37352F] pt-1.5"
+          className="mt-2 min-h-0 flex-[32] overflow-auto border-t-4 border-[#37352F] pt-1.5"
           data-testid="bar-ready-section"
         >
           <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.bar.readyHeading}
           </h2>
-          {board.ready.length === 0 ? (
+          {displayRows.length === 0 ? (
             <p className="text-base text-[#6B675F]">{STATION_COPY.bar.readyEmpty}</p>
           ) : (
-            <div className={`gap-1.5 ${readyScale.columnsClass}`} data-testid="bar-ready-grid">
-              {board.ready.map((round) => (
-                <BarRoundCard
-                  key={round.id}
-                  round={round}
+            <div className={`gap-1 ${dispatchScale.columnsClass}`} data-testid="bar-ready-list">
+              {displayRows.map((row) => (
+                <DispatchRowView
+                  key={row.lineId}
+                  row={row}
                   now={now}
-                  scale={readyScale}
-                  zone="ready"
-                  onBump={onBump}
+                  escalation={barReadyRowEscalation(row, now)}
+                  scale={dispatchScale}
+                  tableLabel={STATION_COPY.bar.tableLabel}
+                  readyWord={STATION_COPY.dispatch.readyWord}
+                  action="collected"
+                  actionLabel={STATION_COPY.bar.collectedButton}
+                  tone="pass"
+                  bump={readyBump}
+                  collected={collectedIds.has(row.lineId)}
+                  undoLabel={STATION_COPY.dispatch.undoButton}
+                  onUndo={() => void readyBump.run([row.lineId], 'out')}
                 />
               ))}
             </div>
