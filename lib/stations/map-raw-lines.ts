@@ -3,18 +3,16 @@
  * app/api/station/lines/route.ts) into the KitchenLine / BarRound shapes
  * components/stations renders.
  *
- * REBUILT 2026-08-28. This used to map a raw order_lines/order_line_events table dump against a
- * GUESSED shape (lib/stations/schema-assumptions.ts, now deleted). It maps the real route's own
- * response now — already grouped into one card per order, already filtered to NOT-FINISHED lines
- * for the station that asked, already carrying is_ready/unrouted/shared_with_other_station
- * computed once, server-side, by the same code the write side uses. See lib/stations/types.ts's
- * docblock for what that changes about what these shapes can represent (no 'ready' zone, no
- * per-line transition timestamp).
+ * REBUILT 20260829160000 for the pinned Ready zone. Maps the real route's own response —
+ * already grouped into one card per order, already filtered to NOT-COLLECTED lines for the
+ * station that asked, already carrying is_ready/cooked_at/ready_at/unrouted/
+ * shared_with_other_station computed once, server-side, by the same code the write side uses.
+ * See lib/stations/types.ts's docblock for what changed: 'ready' lines now reach this mapper
+ * (they used to be filtered out before it ever ran), and every line carries a second clock.
  *
- * Pure and unit-testable so the mapping is provable independent of the route under it — same
- * intent as before, different input shape.
+ * Pure and unit-testable so the mapping is provable independent of the route under it.
  */
-import type { KitchenLine, BarRound, RouteTo } from '@/lib/stations/types'
+import type { KitchenLine, BarRound, RouteTo, KitchenLineState, BarLineState } from '@/lib/stations/types'
 
 export type StationLineDTO = {
   id: string
@@ -26,6 +24,8 @@ export type StationLineDTO = {
   bar_state: string | null
   /** When this station last tapped Cooked. Null while the line is still outstanding. */
   cooked_at?: string | null
+  /** When this station's half reached 'ready'. Null before then. */
+  ready_at?: string | null
   is_ready: boolean
   unrouted: boolean
   shared_with_other_station: boolean
@@ -48,14 +48,16 @@ export type StationLinesResponseDTO = {
 }
 
 /**
- * GET /api/station/lines already filters kitchen_state to NOT-FINISHED for station=kitchen
- * (excludes 'ready' and 'voided' server-side), so this can only ever legitimately see
- * 'outstanding' or 'cooked'. A value neither of those (a future addition to the vocabulary this
- * mapper has not been taught about yet) falls open to 'outstanding' rather than throwing — the
- * same "fail open, get questioned" posture order-lines.ts's own isStationOutstanding uses.
+ * GET /api/station/lines filters to NOT-COLLECTED for the station that asked (excludes
+ * 'collected' and 'voided' server-side), so this can only ever legitimately see 'outstanding',
+ * 'cooked' or 'ready'. A value none of those (a future addition to the vocabulary this mapper has
+ * not been taught about yet) falls open to 'outstanding' rather than throwing — the same "fail
+ * open, get questioned" posture order-lines.ts's own isStationOutstanding uses.
  */
-function toKitchenLineState(raw: string | null): 'outstanding' | 'cooked' {
-  return raw === 'cooked' ? 'cooked' : 'outstanding'
+function toLineState(raw: string | null): KitchenLineState {
+  if (raw === 'cooked') return 'cooked'
+  if (raw === 'ready') return 'ready'
+  return 'outstanding'
 }
 
 export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO): KitchenLine[] {
@@ -74,9 +76,10 @@ export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO)
         quantity: line.quantity,
         lineNote: line.line_note,
         routeTo: line.route_to,
-        state: toKitchenLineState(line.kitchen_state),
+        state: toLineState(line.kitchen_state),
         placedAt: card.placed_at,
         cookedAt: line.cooked_at ?? null,
+        readyAt: line.ready_at ?? null,
         unrouted: line.unrouted,
         sharedWithOtherStation: line.shared_with_other_station,
       })
@@ -85,10 +88,14 @@ export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO)
   return out
 }
 
+function toBarLineState(raw: string | null): BarLineState {
+  return toLineState(raw)
+}
+
 /**
  * One order card IS one round — GET /api/station/lines already groups by order_id and already
  * scoped every line in it to lines the bar owns (bar_state IS NOT NULL), so no re-grouping is
- * needed here, unlike the old raw-row mapper which had to reconstruct that grouping itself.
+ * needed here.
  */
 export function mapStationLinesToBarRounds(response: StationLinesResponseDTO): BarRound[] {
   return response.orders
@@ -110,6 +117,9 @@ export function mapStationLinesToBarRounds(response: StationLinesResponseDTO): B
         itemName: line.name_snapshot,
         quantity: line.quantity,
         lineNote: line.line_note,
+        state: toBarLineState(line.bar_state),
+        cookedAt: line.cooked_at ?? null,
+        readyAt: line.ready_at ?? null,
       })),
       placedAt: card.placed_at,
       unrouted: card.lines.some((line) => line.unrouted),

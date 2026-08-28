@@ -58,6 +58,23 @@ describe('mapStationLinesToKitchenLines', () => {
     expect(kl.state).toBe('outstanding')
   })
 
+  test('kitchen_state = ready maps to state "ready" — the zone that could not exist before this rebuild', () => {
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ kitchen_state: 'ready' })] })]),
+    )
+    expect(kl.state).toBe('ready')
+  })
+
+  test('ready_at passes through, and is null when absent', () => {
+    const [withReady] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ kitchen_state: 'ready', ready_at: '2026-08-27T20:05:00Z' })] })]),
+    )
+    expect(withReady.readyAt).toBe('2026-08-27T20:05:00Z')
+
+    const [withoutReady] = mapStationLinesToKitchenLines(response([card({ lines: [line({})] })]))
+    expect(withoutReady.readyAt).toBeNull()
+  })
+
   test('placedAt comes from the order card, not the line', () => {
     const [kl] = mapStationLinesToKitchenLines(
       response([card({ order_id: 'o42', placed_at: '2026-08-27T19:55:00Z', lines: [line({})] })]),
@@ -144,6 +161,25 @@ describe('mapStationLinesToBarRounds', () => {
       response([card({ lines: [line({ line_note: 'no ice' })] })], 'bar'),
     )
     expect(rounds[0].items[0].lineNote).toBe('no ice')
+  })
+
+  test('each item carries its OWN state from bar_state — PER LINE, not round-level', () => {
+    const rounds = mapStationLinesToBarRounds(
+      response(
+        [
+          card({
+            lines: [
+              line({ id: 'l1', bar_state: 'outstanding' }),
+              line({ id: 'l2', bar_state: 'ready', ready_at: '2026-08-27T20:05:00Z' }),
+            ],
+          }),
+        ],
+        'bar',
+      ),
+    )
+    expect(rounds[0].items[0].state).toBe('outstanding')
+    expect(rounds[0].items[1].state).toBe('ready')
+    expect(rounds[0].items[1].readyAt).toBe('2026-08-27T20:05:00Z')
   })
 
   test('multiple order cards produce independent rounds', () => {

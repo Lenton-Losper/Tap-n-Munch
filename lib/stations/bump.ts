@@ -29,9 +29,11 @@
 import type { StationKind } from '@/lib/stations/station-pairing'
 
 /** The buttons' own vocabulary. NOT states — see app/api/terminal/station-lines/batch/route.ts,
- *  which is the single place these translate into 'cooked' / 'ready'. Never 'ready_to_run' as a
- *  stored value: the real vocabulary is outstanding / cooked / ready / voided. */
-export type StationBumpAction = 'cooked' | 'ready_to_run' | 'out'
+ *  which is the single place these translate into 'cooked' / 'ready' / 'collected'. Never
+ *  'ready_to_run' as a stored value: the real vocabulary is outstanding / cooked / ready /
+ *  collected / voided. 'collected' (20260829160000) is the pinned Ready zone's own clear action,
+ *  shared by both boards — see station-card.tsx's RoundRow. */
+export type StationBumpAction = 'cooked' | 'ready_to_run' | 'out' | 'collected'
 
 export type StationBumpOutcome = {
   /** True when nothing was refused. A batch of skips is still ok. */

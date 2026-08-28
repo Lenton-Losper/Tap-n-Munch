@@ -112,7 +112,14 @@ export function outstandingEscalation(minutes: number): AgeEscalation {
  * screen's ESCALATION_CLASSES), so a card holding one abandoned line and one live one must read as
  * the live one — otherwise a four-hour-old orphan would grey out a table that needs hands now.
  */
-const ESCALATION_LOUDNESS: Record<AgeEscalation, number> = { stale: 0, white: 1, amber: 2, red: 3 }
+/**
+ * EXPORTED (20260829160000) for the board rebuild's own sort — "FIFO by default, but overdue
+ * rises visually" is read literally: a round's POSITION, not only its colour, moves when its
+ * escalation is louder than its neighbours'. Same ranking worstEscalation already used to pick a
+ * card's colour; sorting by it too means a round cannot be the loudest colour on the board and
+ * still sit below three quieter ones.
+ */
+export const ESCALATION_RANK: Record<AgeEscalation, number> = { stale: 0, white: 1, amber: 2, red: 3 }
 
 /** The loudest tier in a card. Empty means nothing to shout about — 'white'. */
 export function worstEscalation(escalations: AgeEscalation[]): AgeEscalation {
@@ -124,7 +131,26 @@ export function worstEscalation(escalations: AgeEscalation[]): AgeEscalation {
       seenAny = true
       continue
     }
-    if (ESCALATION_LOUDNESS[escalation] > ESCALATION_LOUDNESS[worst]) worst = escalation
+    if (ESCALATION_RANK[escalation] > ESCALATION_RANK[worst]) worst = escalation
   }
   return worst
+}
+
+/**
+ * "FIFO by default, but overdue rises visually" (the board rebuild, 20260829160000) — a louder
+ * round moves ABOVE quieter ones regardless of when it landed; within the same tier, the one
+ * that has waited longest still comes first, which is what makes it read as FIFO at a glance
+ * rather than as a shuffled board. 'stale' ranks below 'white' (see ESCALATION_RANK), so an
+ * abandoned round sinks rather than crowding out one that still needs hands.
+ */
+export function sortByUrgency<T>(
+  items: T[],
+  escalationOf: (item: T) => AgeEscalation,
+  clockMsOf: (item: T) => number,
+): T[] {
+  return [...items].sort((a, b) => {
+    const rankDiff = ESCALATION_RANK[escalationOf(b)] - ESCALATION_RANK[escalationOf(a)]
+    if (rankDiff !== 0) return rankDiff
+    return clockMsOf(a) - clockMsOf(b)
+  })
 }

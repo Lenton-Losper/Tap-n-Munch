@@ -1,4 +1,33 @@
 /**
+ * REBUILT 20260829160000 for the high-density board — Ready is now a real, pinned zone on both
+ * screens rather than a zone that could not exist. Signed directly, per the standing instruction
+ * for this phase (draft copy in the house style, no PENDING COPY markers): say what happens, plain
+ * words a cook or waiter actually uses, and when it touches money or food safety say the
+ * consequence and what to do next.
+ *
+ * RETIRED, because their old meaning is no longer true of the zone they labelled:
+ *  - kitchen.cookedHeading / cookedEmpty / outstandingHeading / outstandingEmpty described two
+ *    SEPARATE zones. They are now one — kitchen.activeHeading / activeEmpty — because a table with
+ *    one cooked dish and one unstarted one is one piece of active work, not two, and putting
+ *    "finished, awaiting pass" above "not started" was the exact ordering the owner reported as
+ *    backwards.
+ *  - bar.inHeading / inEmpty described a single undifferentiated queue. Renamed to
+ *    bar.activeHeading / activeEmpty ("To make") now that a round can have some drinks ready and
+ *    some not — "in" no longer says which.
+ * cookedButton and readyToRunButton (kitchen) and outButton (bar) are UNCHANGED: every one of
+ * those taps still does exactly what its label says, only the zone around the button changed.
+ *
+ * ADDED:
+ *  - kitchen.readyHeading / readyEmpty, bar.readyHeading / readyEmpty — the pinned zone.
+ *  - kitchen.collectedButton / allCollectedButton, bar.collectedButton / allCollectedButton — the
+ *    new action that clears a line off the pinned zone (order_line_events 'collected',
+ *    20260829160000). Same word on both screens on purpose — "kitchen and bar share... same
+ *    visual system" is this rebuild's own rule, and two boards that both clear a line the same way
+ *    should say so with the same word.
+ *  - unrouted.heading / description / itemNote — reworded around "NOT SENT", matching this
+ *    rebuild's own brief verbatim ("food nobody is making — louder than anything else on the
+ *    board"). Still says what to do next, per house style.
+ *
  * feat/station-screens-v1 — every user-facing string on the kitchen and bar screens.
  *
  * SIGNED 2026-08-28, following this repo's established convention (see
@@ -41,16 +70,21 @@
 export const STATION_COPY = {
   kitchen: {
     pageTitle: 'Kitchen',
-    /** The escalating zone: cooked, not yet passed. Not "ready to run" — see the file docblock
-     *  on why that zone can no longer exist on this screen. */
-    cookedHeading: 'Cooked — awaiting pass',
-    outstandingHeading: 'Outstanding',
-    cookedEmpty: 'Nothing cooked yet.',
-    outstandingEmpty: 'Nothing waiting.',
+    /** The active zone: everything not yet ready, whether it is still to cook or already plated
+     *  and waiting on the pass. One zone, because that is one thing a cook is working through. */
+    activeHeading: 'To make',
+    activeEmpty: 'Nothing waiting.',
+    /** The pinned zone: passed, waiting for a runner or waiter to take it. Never scrolls out of
+     *  view under incoming work — see kitchen-screen.tsx's layout. */
+    readyHeading: 'Ready',
+    readyEmpty: 'Nothing ready.',
     /** Station tap: this line is cooked, awaiting the pass. */
     cookedButton: 'Cooked',
-    /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
+    /** Pass tap: this line is confirmed and can leave the kitchen. Moves it to the Ready zone. */
     readyToRunButton: 'Ready to run',
+    /** Runner/waiter tap on a Ready line: it has physically been taken off the pass. Clears it
+     *  from the Ready zone — without this a pinned zone never empties. */
+    collectedButton: 'Collected',
     /**
      * SIGNED by the owner 2026-08-28. The per-table shortcut, on the card header, beside the table number. One tap for a
      * table whose whole ticket landed at once — it must not cost five taps — while every line keeps
@@ -66,6 +100,9 @@ export const STATION_COPY = {
      * cooked-and-waiting goes ready to run at once.
      */
     allReadyToRunButton: 'All ready',
+    /** Same shortcut on the Ready zone: every line this table's Ready card is showing is
+     *  collected at once. */
+    allCollectedButton: 'All collected',
     /**
      * "Table 0" was on the wall. Zero is not a table in any restaurant — it was a default from a
      * writer with no table to record, and a cook reading it has nothing to act on.
@@ -80,33 +117,49 @@ export const STATION_COPY = {
   },
   bar: {
     pageTitle: 'Bar',
-    inHeading: 'In',
-    inEmpty: 'Nothing in.',
-    /** The one tap that sends a whole round straight to ready. Removes it from this board — see
-     *  bar-screen.tsx on why there is no persisted Out column any more. NOW PER LINE: a round is
-     *  not poured all at once either, and the label is still exactly what the tap does. */
+    /** The active zone: drinks not yet poured. Neutral, always — no age colour here, see
+     *  bar-screen.tsx's own note on why this is the one zone that stays that way. */
+    activeHeading: 'To make',
+    activeEmpty: 'Nothing waiting.',
+    /** The pinned zone: poured, waiting to be collected. Ages, unlike the zone above — a drink
+     *  sitting uncollected is a different problem from one not yet made. */
+    readyHeading: 'Waiting for collection',
+    readyEmpty: 'Nothing waiting for collection.',
+    /** The one tap that sends a drink to Ready. NOW PER LINE: a round is not poured all at once,
+     *  and the label is still exactly what the tap does. */
     outButton: 'Out',
+    /** Waiter/runner tap on a Ready drink: it has physically been taken off the bar. Clears it
+     *  from the Ready zone. Same word the kitchen uses, on purpose — see the file docblock. */
+    collectedButton: 'Collected',
     /**
      * SIGNED by the owner 2026-08-28. The per-round shortcut, matching the kitchen's per-table one: every line this round
      * card is showing goes out in one tap. The bar's half only — a kitchen line on the same order
      * is untouched.
      */
     allOutButton: 'All out',
+    /** Same shortcut on the Ready zone: every drink this round's Ready card is showing is
+     *  collected at once. */
+    allCollectedButton: 'All collected',
     /** Same absent-table rule as the kitchen — see the note there. */
     tableLabel: (tableNumber: string) =>
       tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
-  /** Shared by both screens — a route_to = 'unrouted' line must never read as ordinary work. */
+  /**
+   * Shared by both screens — a route_to = 'unrouted' line must never read as ordinary work.
+   * REWORDED 20260829160000 around the board rebuild's own language: "food nobody is making" —
+   * this is money left on a table and a food-safety question at once, and it must outrank
+   * lateness on the board. Still says what to do next, per house style.
+   */
   unrouted: {
-    heading: 'Unrouted — no station assigned',
-    /** Loud, not silent: this is the whole point of the section existing. */
-    description: 'These lines have no kitchen or bar route. They will not appear anywhere else on this screen.',
+    heading: 'NOT SENT — nobody is making this',
+    /** Loud, not silent: this is the whole point of the section existing. Says what to do next. */
+    description: 'No station is set on these items. Set one on the menu item so they get made.',
     /**
      * PINNED, 2026-08-28: "it is the sentence that stops food going unseen and it is the kind
      * of thing that gets shortened out." Shown on EVERY unrouted row, not just the section
      * banner — the banner can be scrolled past; this cannot, because it sits on the item itself.
      */
-    itemNote: 'This item has no station set. Check the menu.',
+    itemNote: 'Nobody is making this. Check the menu.',
   },
   /**
    * WHAT A CARD SAYS WHEN A MULTI-LINE BUMP ONLY PARTLY LANDED.

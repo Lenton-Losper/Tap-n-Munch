@@ -133,16 +133,17 @@ describe('station screens against REAL staging rows', () => {
         />,
       )
     })
-    const cookedCards = Array.from(container.querySelectorAll('[data-testid="cooked-card"]'))
-    expect(cookedCards.some((c) => c.textContent?.includes('half-bumped'))).toBe(true)
+    const activeCards = Array.from(container.querySelectorAll('[data-testid="active-table-card"]'))
+    expect(activeCards.some((c) => c.textContent?.includes('half-bumped'))).toBe(true)
 
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
       root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBump={NO_BUMP} />)
     })
-    const inSection = container.querySelector('[data-testid="bar-in-section"]')!
-    expect(inSection.textContent).toContain('half-bumped')
+    // The bar's half is still TO MAKE, despite the kitchen's half being cooked.
+    const activeSection = container.querySelector('[data-testid="bar-active-section"]')!
+    expect(activeSection.textContent).toContain('half-bumped')
   })
 
   it('age escalation is red for the oldest cooked order and sorts it to the top — real elapsed time, real rows', () => {
@@ -204,11 +205,12 @@ describe('station screens against REAL staging rows', () => {
       )
     })
 
-    const cards = Array.from(container.querySelectorAll('[data-testid="cooked-card"]'))
-    const redCard = cards.find((c) => c.textContent?.includes('expect RED'))!
-    const whiteCard = cards.find((c) => c.textContent?.includes('expect WHITE'))!
-    expect(redCard.getAttribute('data-escalation')).toBe('red')
-    // Oldest first: the red (older order) card's position in the DOM must precede the white one's.
-    expect(cards.indexOf(redCard)).toBeLessThan(cards.indexOf(whiteCard))
+    const rows = Array.from(container.querySelectorAll('[data-testid="station-line-row"]'))
+    const redRow = rows.find((c) => c.textContent?.includes('expect RED'))!
+    const whiteRow = rows.find((c) => c.textContent?.includes('expect WHITE'))!
+    expect(redRow.getAttribute('data-escalation')).toBe('red')
+    // Louder rises: the red (older, louder) line's table sorts above the white one's — see
+    // lib/stations/grouping.ts's sortByUrgency.
+    expect(rows.indexOf(redRow)).toBeLessThan(rows.indexOf(whiteRow))
   })
 })

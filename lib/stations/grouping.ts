@@ -1,44 +1,54 @@
 /**
  * lib/stations/grouping.ts — zone-building, pure functions.
  *
- * REBUILT 2026-08-28 for the real four-state model — see lib/stations/types.ts's docblock for
- * why there is no "ready" zone on either screen and no persisted bar OUT column.
+ * REBUILT 20260829160000 for the pinned Ready zone.
  *
  * route_to = 'unrouted' is never absorbed into either screen's ordinary zones — every function
- * here splits it out first. Unlike the old (guessed-schema) version, this no longer needs to
- * filter routed-vs-not: GET /api/station/lines already scopes its response to lines/rounds the
- * asking station owns (kitchen_state or bar_state IS NOT NULL), so everything reaching this
- * module already belongs on this screen.
+ * here splits it out first, same as before. GET /api/station/lines already scopes its response to
+ * lines/rounds the asking station owns and now to everything NOT collected/voided, so a 'ready'
+ * line reaches this module for the first time — see lib/stations/types.ts's docblock.
+ *
+ * ============================================================================================
+ * A ROUND CAN BE IN BOTH ZONES AT ONCE, BECAUSE ITS LINES CAN BE
+ * ============================================================================================
+ *
+ * "PER LINE, both boards" is a ruling this rebuild does not touch. A table with a plated steak
+ * and an unstarted side has one line ready and one still outstanding — genuinely, at the same
+ * moment — and a zone split that could only put the whole table in one place or the other would
+ * have to lie about one of the two lines. So the split happens on LINES (kitchen) or ITEMS (bar),
+ * not on tables or rounds: a table/round appears in the active zone carrying only its
+ * not-yet-ready lines, and in the ready zone carrying only its ready ones, and it is entirely
+ * normal for both to be non-empty for the same table at once.
+ *
+ * ============================================================================================
+ * "FIFO BY DEFAULT, BUT OVERDUE RISES VISUALLY" — READ AS A SORT, NOT ONLY A COLOUR
+ * ============================================================================================
+ *
+ * Ungoverned by an exact ruling on whether "rises" means position or only colour, so the safer
+ * default is the literal one: a table/round's position is decided by its worst escalation first
+ * (louder floats above quieter) and by age WITHIN that tier second (oldest first) — see
+ * lib/stations/age.ts's sortByUrgency. Same tier and nothing floats, so the ordinary case reads
+ * exactly as FIFO; only a genuinely overdue round jumps the queue, and it does so in the same
+ * direction its colour already argues for.
+ *
+ * THE ONE ZONE THIS DOES NOT APPLY TO: the bar's TO MAKE (active) list. It carries no escalation
+ * at all — "a warm beer is a smaller problem than a cold steak" — so there is nothing for it to
+ * rank by, and it stays pure FIFO. See bar-screen.tsx.
  */
-import { sortOldestFirst } from '@/lib/stations/age'
-import type { BarRound, KitchenLine } from '@/lib/stations/types'
+import {
+  ageMinutes,
+  outstandingEscalation,
+  readyToRunEscalation,
+  sortByUrgency,
+  sortOldestFirst,
+  worstEscalation,
+  type AgeEscalation,
+} from '@/lib/stations/age'
+import type { BarRound, BarRoundItem, KitchenLine } from '@/lib/stations/types'
 
 export type TableGroup = { tableNumber: string; lines: KitchenLine[] }
 
-export type KitchenBoard = {
-  /** "Cooked — awaiting pass", flat and oldest-first. Kept because it is the ORDER the pass reads
-   *  in; the board renders `cookedByTable` so the per-table shortcut has a card to live on. */
-  cooked: KitchenLine[]
-  /**
-   * The same cooked lines, one group per table.
-   *
-   * ADDED for the wall rebuild. The pass zone used to be one card per LINE, which meant there was
-   * no per-table object for "all ready to run" to attach to, and a table of five plates was five
-   * separate cards scattered by age across the grid — so running one table meant finding its cards
-   * first. Grouped, the card is the unit a runner actually carries.
-   *
-   * Ordered by the oldest PASS clock in each group (cookedAt, falling back to the order's age when
-   * the cooked event could not be read), not by the order's age, for the same reason the colour is:
-   * how long the plate has sat is the question, not how long ago they ordered.
-   */
-  cookedByTable: TableGroup[]
-  /** Table number -> lines. Table order follows first-seen (oldest line) order. No sub-station
-   *  grouping — order_lines has no such column; see types.ts's docblock. */
-  outstandingByTable: TableGroup[]
-  unrouted: KitchenLine[]
-}
-
-/** Table order follows the first line seen, so callers control it by sorting their input. */
+/** Table order follows the first line seen, so callers control it by sorting their input first. */
 function groupByTable(lines: KitchenLine[]): TableGroup[] {
   const tableOrder: string[] = []
   const byTable = new Map<string, KitchenLine[]>()
@@ -52,47 +62,116 @@ function groupByTable(lines: KitchenLine[]): TableGroup[] {
   return tableOrder.map((tableNumber) => ({ tableNumber, lines: byTable.get(tableNumber)! }))
 }
 
-export function buildKitchenBoard(lines: KitchenLine[]): KitchenBoard {
+/**
+ * A line still in the ACTIVE zone (outstanding or cooked). Two clocks, same reasoning the
+ * previous rebuild fixed defect 4 with: an outstanding ticket ages on how long the kitchen has
+ * HAD it (the slower bands); a cooked plate ages on how long it has sat waiting for the pass to
+ * pass it (the faster bands) — reusing the fast bands for both is the exact defect that was fixed
+ * on 2026-08-28 and this rebuild does not reopen it.
+ */
+export function kitchenActiveLineEscalation(line: KitchenLine, now: number): AgeEscalation {
+  return line.state === 'cooked'
+    ? readyToRunEscalation(ageMinutes(line.cookedAt ?? line.placedAt ?? '', now))
+    : outstandingEscalation(ageMinutes(line.placedAt ?? '', now))
+}
+
+/** The clock an active line is judged on — the pass clock once cooked, the ticket clock before. */
+function kitchenActiveLineClockMs(line: KitchenLine, now: number): number {
+  const iso = line.state === 'cooked' ? line.cookedAt ?? line.placedAt : line.placedAt
+  const ms = iso ? new Date(iso).getTime() : Number.NaN
+  return Number.isFinite(ms) ? ms : now
+}
+
+/**
+ * A line waiting to be collected off the pass — shared by kitchen and bar (this rebuild's own
+ * ruling: "the waiting-for-collection zone DOES age", on both boards, on the SAME clock). Falls
+ * back to placedAt only if readyAt could not be read, same degrade-not-throw posture cookedAt
+ * uses.
+ */
+export function readyLineEscalation(readyAt: string | null, placedAt: string | null, now: number): AgeEscalation {
+  return readyToRunEscalation(ageMinutes(readyAt ?? placedAt ?? '', now))
+}
+
+function readyLineClockMs(readyAt: string | null, placedAt: string | null, now: number): number {
+  const iso = readyAt ?? placedAt
+  const ms = iso ? new Date(iso).getTime() : Number.NaN
+  return Number.isFinite(ms) ? ms : now
+}
+
+export type KitchenBoard = {
+  /** Table number -> lines still outstanding or cooked. Ordered by worst escalation, then FIFO —
+   *  see the module docblock. No sub-station grouping — order_lines has no such column. */
+  activeByTable: TableGroup[]
+  /** Table number -> lines at 'ready'. PINNED by the caller (kitchen-screen.tsx lays this out as
+   *  its own bounded region), ordered the same way as activeByTable. */
+  readyByTable: TableGroup[]
+  unrouted: KitchenLine[]
+}
+
+export function buildKitchenBoard(lines: KitchenLine[], now: number = Date.now()): KitchenBoard {
   const unrouted = lines.filter((line) => line.unrouted)
   const routed = lines.filter((line) => !line.unrouted)
 
-  const cooked = sortOldestFirst(
-    routed.filter((line) => line.state === 'cooked'),
-    (line) => line.placedAt ?? '',
+  const activeLines = sortOldestFirst(
+    routed.filter((line) => line.state !== 'ready'),
+    (line) => (line.state === 'cooked' ? line.cookedAt ?? line.placedAt ?? '' : line.placedAt ?? ''),
+  )
+  const readyLines = sortOldestFirst(
+    routed.filter((line) => line.state === 'ready'),
+    (line) => line.readyAt ?? line.placedAt ?? '',
   )
 
-  const cookedByPassClock = sortOldestFirst(
-    routed.filter((line) => line.state === 'cooked'),
-    (line) => line.cookedAt ?? line.placedAt ?? '',
+  const activeByTable = sortByUrgency(
+    groupByTable(activeLines),
+    (group) => worstEscalation(group.lines.map((line) => kitchenActiveLineEscalation(line, now))),
+    (group) => Math.min(...group.lines.map((line) => kitchenActiveLineClockMs(line, now))),
+  )
+  const readyByTable = sortByUrgency(
+    groupByTable(readyLines),
+    (group) => worstEscalation(group.lines.map((line) => readyLineEscalation(line.readyAt, line.placedAt, now))),
+    (group) => Math.min(...group.lines.map((line) => readyLineClockMs(line.readyAt, line.placedAt, now))),
   )
 
-  const outstanding = sortOldestFirst(
-    routed.filter((line) => line.state === 'outstanding'),
-    (line) => line.placedAt ?? '',
-  )
+  return { activeByTable, readyByTable, unrouted }
+}
 
-  return {
-    cooked,
-    cookedByTable: groupByTable(cookedByPassClock),
-    outstandingByTable: groupByTable(outstanding),
-    unrouted,
-  }
+function itemsInState(round: BarRound, predicate: (item: BarRoundItem) => boolean): BarRound | null {
+  const items = round.items.filter(predicate)
+  return items.length === 0 ? null : { ...round, items }
+}
+
+function isPresent<T>(value: T | null): value is T {
+  return value !== null
 }
 
 export type BarBoard = {
-  /** Everything still IN — a round that reaches 'ready' leaves GET /api/station/lines' response
-   *  entirely and therefore leaves this list; there is no persisted "out" archive. See
-   *  bar-screen.tsx and the report this rebuild shipped with. */
-  in: BarRound[]
+  /** Rounds carrying only their not-yet-ready items — the bar's "TO MAKE". Pure FIFO; see the
+   *  module docblock on why this one zone does not sort by urgency. */
+  active: BarRound[]
+  /** Rounds carrying only their ready (waiting-for-collection) items. Ages and sorts by urgency,
+   *  same as the kitchen's ready zone — the one deliberate exception to the bar staying neutral. */
+  ready: BarRound[]
   unrouted: BarRound[]
 }
 
-export function buildBarBoard(rounds: BarRound[]): BarBoard {
+export function buildBarBoard(rounds: BarRound[], now: number = Date.now()): BarBoard {
   const unrouted = rounds.filter((round) => round.unrouted)
-  const inRounds = sortOldestFirst(
-    rounds.filter((round) => !round.unrouted),
-    (round) => round.placedAt ?? '',
+  const routed = rounds.filter((round) => !round.unrouted)
+
+  const activeRounds = routed
+    .map((round) => itemsInState(round, (item) => item.state !== 'ready'))
+    .filter(isPresent)
+  const readyRounds = routed
+    .map((round) => itemsInState(round, (item) => item.state === 'ready'))
+    .filter(isPresent)
+
+  const active = sortOldestFirst(activeRounds, (round) => round.placedAt ?? '')
+
+  const ready = sortByUrgency(
+    readyRounds,
+    (round) => worstEscalation(round.items.map((item) => readyLineEscalation(item.readyAt, round.placedAt, now))),
+    (round) => Math.min(...round.items.map((item) => readyLineClockMs(item.readyAt, round.placedAt, now))),
   )
 
-  return { in: inRounds, unrouted }
+  return { active, ready, unrouted }
 }

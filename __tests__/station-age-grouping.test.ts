@@ -1,4 +1,4 @@
-import { ageMinutes, readyToRunEscalation, sortOldestFirst } from '@/lib/stations/age'
+import { ageMinutes, readyToRunEscalation, sortByUrgency, sortOldestFirst } from '@/lib/stations/age'
 import { buildBarBoard, buildKitchenBoard } from '@/lib/stations/grouping'
 import type { BarRound, KitchenLine } from '@/lib/stations/types'
 
@@ -31,12 +31,44 @@ describe('sortOldestFirst', () => {
   })
 })
 
-// REBUILT 2026-08-28 for the real four-state model (lib/orders/order-lines.ts). kitchenLineStatus
-// and barRoundIsOut are retired along with them — see lib/stations/types.ts's docblock: a line
-// can only ever reach either screen as 'outstanding' or (kitchen only) 'cooked', so `state` on
-// KitchenLine is read directly rather than derived from timestamps, and BarRound carries no
-// "is this out yet" flag at all, because a round that reached 'ready' would not be in the array
-// this module is given in the first place.
+describe('sortByUrgency', () => {
+  test('a louder escalation rises above a quieter one regardless of age', () => {
+    const items = [
+      { id: 'old-quiet', escalation: 'white' as const, clock: 1 },
+      { id: 'new-loud', escalation: 'red' as const, clock: 2 },
+    ]
+    expect(sortByUrgency(items, (i) => i.escalation, (i) => i.clock).map((i) => i.id)).toEqual([
+      'new-loud',
+      'old-quiet',
+    ])
+  })
+
+  test('within the same tier, oldest still comes first — this is what makes it read as FIFO', () => {
+    const items = [
+      { id: 'newer', escalation: 'amber' as const, clock: 2 },
+      { id: 'older', escalation: 'amber' as const, clock: 1 },
+    ]
+    expect(sortByUrgency(items, (i) => i.escalation, (i) => i.clock).map((i) => i.id)).toEqual([
+      'older',
+      'newer',
+    ])
+  })
+
+  test('stale sinks below white — an abandoned round must not outrank a live one', () => {
+    const items = [
+      { id: 'stale', escalation: 'stale' as const, clock: 1 },
+      { id: 'white', escalation: 'white' as const, clock: 2 },
+    ]
+    expect(sortByUrgency(items, (i) => i.escalation, (i) => i.clock).map((i) => i.id)).toEqual([
+      'white',
+      'stale',
+    ])
+  })
+})
+
+// REBUILT 20260829160000 for the pinned Ready zone (lib/orders/order-lines.ts's fifth state,
+// 'collected'). A line can now reach either screen as 'outstanding', 'cooked' or 'ready' — never
+// 'collected' or 'voided', which leave the board entirely (see lib/stations/types.ts's docblock).
 
 function kitchenLine(overrides: Partial<KitchenLine>): KitchenLine {
   return {
@@ -46,6 +78,7 @@ function kitchenLine(overrides: Partial<KitchenLine>): KitchenLine {
     orderNumber: 100,
     itemName: 'Item',
     cookedAt: null,
+    readyAt: null,
     quantity: 1,
     lineNote: null,
     routeTo: 'kitchen',
@@ -57,72 +90,145 @@ function kitchenLine(overrides: Partial<KitchenLine>): KitchenLine {
   }
 }
 
+function barItem(overrides: Partial<BarRound['items'][number]> = {}): BarRound['items'][number] {
+  return { id: 'brl-1', itemName: 'Item', quantity: 1, lineNote: null, state: 'outstanding', cookedAt: null, readyAt: null, ...overrides }
+}
+
 function barRound(overrides: Partial<BarRound>): BarRound {
   return {
     id: 'br',
     tableNumber: '1',
     orderNumber: 100,
-    items: [{ id: 'brl-1', itemName: 'Item', quantity: 1, lineNote: null }],
+    items: [barItem()],
     placedAt: '2026-08-27T20:00:00Z',
     unrouted: false,
     ...overrides,
   }
 }
 
+const NOW = Date.parse('2026-08-27T20:10:00Z')
+
 describe('buildKitchenBoard', () => {
-  test('route_to = both, state = cooked lands in the cooked zone, and can be bumped independently of the bar screen', () => {
+  test('outstanding and cooked land in the SAME active zone — the previous two-zone split is gone', () => {
+    const board = buildKitchenBoard(
+      [
+        kitchenLine({ id: 'a', state: 'outstanding' }),
+        kitchenLine({ id: 'b', state: 'cooked', tableNumber: '2' }),
+      ],
+      NOW,
+    )
+    const activeIds = board.activeByTable.flatMap((t) => t.lines.map((l) => l.id))
+    expect(activeIds.sort()).toEqual(['a', 'b'])
+  })
+
+  test('a ready line lands in the pinned ready zone, not active', () => {
+    const board = buildKitchenBoard([kitchenLine({ id: 'r', state: 'ready', readyAt: '2026-08-27T20:05:00Z' })], NOW)
+    expect(board.readyByTable.flatMap((t) => t.lines.map((l) => l.id))).toEqual(['r'])
+    expect(board.activeByTable).toHaveLength(0)
+  })
+
+  test('route_to = both, state = cooked lands in active, and can be bumped independently of the bar screen', () => {
     const line = kitchenLine({ id: 'shared', routeTo: 'both', state: 'cooked', sharedWithOtherStation: true })
-    const board = buildKitchenBoard([line])
-    expect(board.cooked.map((l) => l.id)).toEqual(['shared'])
+    const board = buildKitchenBoard([line], NOW)
+    expect(board.activeByTable.flatMap((t) => t.lines.map((l) => l.id))).toEqual(['shared'])
   })
 
-  test('unrouted = true never lands in outstanding or cooked', () => {
-    const board = buildKitchenBoard([kitchenLine({ id: 'u', unrouted: true })])
+  test('unrouted = true never lands in active or ready', () => {
+    const board = buildKitchenBoard([kitchenLine({ id: 'u', unrouted: true })], NOW)
     expect(board.unrouted.map((l) => l.id)).toEqual(['u'])
-    expect(board.outstandingByTable).toHaveLength(0)
-    expect(board.cooked).toHaveLength(0)
+    expect(board.activeByTable).toHaveLength(0)
+    expect(board.readyByTable).toHaveLength(0)
   })
 
-  test('outstanding lines are grouped by table, oldest table first', () => {
-    const board = buildKitchenBoard([
-      kitchenLine({ id: 'newer', tableNumber: '9', placedAt: '2026-08-27T20:05:00Z' }),
-      kitchenLine({ id: 'older', tableNumber: '4', placedAt: '2026-08-27T20:00:00Z' }),
-    ])
-    expect(board.outstandingByTable.map((t) => t.tableNumber)).toEqual(['4', '9'])
+  test('a table with one outstanding and one ready line appears in BOTH zones, each carrying only its own line', () => {
+    const board = buildKitchenBoard(
+      [
+        kitchenLine({ id: 'still-cooking', tableNumber: '4', state: 'outstanding' }),
+        kitchenLine({ id: 'already-ready', tableNumber: '4', state: 'ready', readyAt: '2026-08-27T20:05:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.activeByTable.map((t) => t.tableNumber)).toEqual(['4'])
+    expect(board.activeByTable[0].lines.map((l) => l.id)).toEqual(['still-cooking'])
+    expect(board.readyByTable.map((t) => t.tableNumber)).toEqual(['4'])
+    expect(board.readyByTable[0].lines.map((l) => l.id)).toEqual(['already-ready'])
   })
 
-  test('cooked lines are sorted oldest (by order placedAt) first', () => {
-    const board = buildKitchenBoard([
-      kitchenLine({ id: 'newer', state: 'cooked', placedAt: '2026-08-27T20:05:00Z' }),
-      kitchenLine({ id: 'older', state: 'cooked', placedAt: '2026-08-27T20:00:00Z' }),
-    ])
-    expect(board.cooked.map((l) => l.id)).toEqual(['older', 'newer'])
+  test('a louder table rises above a quieter, older one in the active zone', () => {
+    const board = buildKitchenBoard(
+      [
+        // amber (10-19 min outstanding)
+        kitchenLine({ id: 'amber-older', tableNumber: '9', placedAt: '2026-08-27T19:55:00Z' }),
+        // red (20+ min outstanding), placed AFTER the amber one but louder
+        kitchenLine({ id: 'red-newer', tableNumber: '4', placedAt: '2026-08-27T19:45:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.activeByTable.map((t) => t.tableNumber)).toEqual(['4', '9'])
+  })
+
+  test('same tier sorts oldest table first — reads as FIFO', () => {
+    const board = buildKitchenBoard(
+      [
+        kitchenLine({ id: 'newer', tableNumber: '9', placedAt: '2026-08-27T20:05:00Z' }),
+        kitchenLine({ id: 'older', tableNumber: '4', placedAt: '2026-08-27T20:00:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.activeByTable.map((t) => t.tableNumber)).toEqual(['4', '9'])
   })
 })
 
 describe('buildBarBoard', () => {
-  test('a round appears in IN regardless of routeTo mix, as long as it is not unrouted', () => {
-    const round = barRound({ id: 'shared' })
-    const board = buildBarBoard([round])
-    expect(board.in.map((r) => r.id)).toEqual(['shared'])
+  test('a round with only outstanding/cooked items appears in active, not ready', () => {
+    const round = barRound({ id: 'r1', items: [barItem({ id: 'i1', state: 'outstanding' })] })
+    const board = buildBarBoard([round], NOW)
+    expect(board.active.map((r) => r.id)).toEqual(['r1'])
+    expect(board.ready).toHaveLength(0)
   })
 
-  test('unrouted = true never lands in IN', () => {
-    const board = buildBarBoard([barRound({ id: 'u', unrouted: true })])
+  test('a round with a mix of states appears in BOTH zones, each carrying only its own items', () => {
+    const round = barRound({
+      id: 'mixed',
+      items: [
+        barItem({ id: 'pending', state: 'outstanding' }),
+        barItem({ id: 'poured', state: 'ready', readyAt: '2026-08-27T20:05:00Z' }),
+      ],
+    })
+    const board = buildBarBoard([round], NOW)
+    expect(board.active.map((r) => r.id)).toEqual(['mixed'])
+    expect(board.active[0].items.map((i) => i.id)).toEqual(['pending'])
+    expect(board.ready.map((r) => r.id)).toEqual(['mixed'])
+    expect(board.ready[0].items.map((i) => i.id)).toEqual(['poured'])
+  })
+
+  test('unrouted = true never lands in active or ready', () => {
+    const board = buildBarBoard([barRound({ id: 'u', unrouted: true })], NOW)
     expect(board.unrouted.map((r) => r.id)).toEqual(['u'])
-    expect(board.in).toHaveLength(0)
+    expect(board.active).toHaveLength(0)
+    expect(board.ready).toHaveLength(0)
   })
 
-  test('IN rounds are sorted oldest first', () => {
-    const board = buildBarBoard([
-      barRound({ id: 'newer', placedAt: '2026-08-27T20:05:00Z' }),
-      barRound({ id: 'older', placedAt: '2026-08-27T20:00:00Z' }),
-    ])
-    expect(board.in.map((r) => r.id)).toEqual(['older', 'newer'])
+  test('active is pure FIFO regardless of age — the bar stays neutral, ordering included', () => {
+    const board = buildBarBoard(
+      [
+        barRound({ id: 'newer', placedAt: '2026-08-27T20:09:00Z' }),
+        barRound({ id: 'older', placedAt: '2026-08-27T20:00:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.active.map((r) => r.id)).toEqual(['older', 'newer'])
   })
 
-  test('there is no "out" list — a round that reached ready is simply absent from the input array', () => {
-    const board = buildBarBoard([barRound({ id: 'still-in' })])
-    expect((board as unknown as { out?: unknown }).out).toBeUndefined()
+  test('ready DOES sort by urgency, unlike active — the one deliberate difference', () => {
+    const board = buildBarBoard(
+      [
+        barRound({ id: 'quiet-older', items: [barItem({ state: 'ready', readyAt: '2026-08-27T20:08:00Z' })] }),
+        barRound({ id: 'loud-newer', items: [barItem({ state: 'ready', readyAt: '2026-08-27T19:49:00Z' })] }),
+      ],
+      NOW,
+    )
+    // loud-newer has sat ready for 21 minutes (red); quiet-older for 2 (white).
+    expect(board.ready.map((r) => r.id)).toEqual(['loud-newer', 'quiet-older'])
   })
 })

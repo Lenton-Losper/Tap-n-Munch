@@ -2,69 +2,69 @@
  * lib/stations/types.ts — data shapes for the kitchen and bar wall screens.
  *
  * ============================================================================================
- * REBUILT 2026-08-28 AGAINST THE REAL FOUR-STATE MODEL
+ * REBUILT 20260829160000 FOR THE PINNED READY ZONE
  * ============================================================================================
  *
  * order_lines / order_line_events are owned by lib/orders/order-lines.ts and
- * app/api/station/lines/route.ts (ADR-005 §1 and §5), which this file is now built directly
- * against — see lib/stations/map-raw-lines.ts, which maps that route's REAL response into the
- * shapes below. lib/stations/schema-assumptions.ts (a guessed, pre-domain-model shape) is
- * retired.
+ * app/api/station/lines/route.ts (ADR-005 §1 and §5), which this file is built directly against
+ * — see lib/stations/map-raw-lines.ts, which maps that route's REAL response into the shapes
+ * below.
  *
- * THE REAL VOCABULARY IS FOUR STATES, TWO ACTORS (lib/orders/order-lines.ts):
+ * THE REAL VOCABULARY IS FIVE STATES, TWO ACTORS (lib/orders/order-lines.ts):
  *
  *   outstanding -> nobody has started it
  *   cooked      -> the STATION made it, waiting on the pass
  *   ready       -> the PASS passed it — what a waiter walks in to read
+ *   collected   -> someone took it off the pass
  *   voided      -> cancelled or amended at the terminal
  *
  * ============================================================================================
- * WHY THERE IS NO "READY" ZONE ON EITHER SCREEN BELOW
+ * WHY THERE IS NOW A "READY" ZONE, WHEN THE PREVIOUS REBUILD SAID THERE COULD NOT BE ONE
  * ============================================================================================
  *
- * GET /api/station/lines filters to NOT-FINISHED for the station that asked
- * (`.not(stateColumn, 'in', '("ready","voided")')`) — see that route's own docblock. A line whose
- * kitchen_state (or bar_state) is 'ready' is EXCLUDED from that station's own board response,
- * server-side, unconditionally. That is not a bug this rebuild works around — it is correct: once
- * a station's half is 'ready', that station's own screen is not the one that still needs to see
- * it. The screen that reads 'ready' lines is the runner/pass view lib/orders/order-lines.ts's own
- * docblock describes ("This is what a waiter walks in to read") — no such screen exists in this
- * codebase yet, and building one is out of scope here; see the report this rebuild shipped with.
+ * `GET /api/station/lines` used to filter to NOT-FINISHED (`.not(stateColumn, 'in',
+ * '("ready","voided")')`), so a line at 'ready' was excluded from a station's own board
+ * entirely — the previous version of this file's own docblock explained that gap and called
+ * building a ready screen "out of scope here."
+ *
+ * That is exactly the gap the board rebuild closes: finished food sitting above active work was
+ * backwards, and fixing it needs the two zones to be REAL — active work AND a pinned ready zone
+ * on the SAME screen the station already uses, not a second screen. The route now excludes only
+ * `('collected','voided')`, so 'ready' lines stay on the board until someone marks them
+ * 'collected' — see lib/orders/order-lines.ts's docblock on why that state was added.
  *
  * Consequently:
- *   - KitchenLineState below is only ever 'outstanding' | 'cooked' — 'ready' cannot reach it.
- *   - BarRound below carries no "is this round out yet" flag at all — a round that reaches
- *     'ready' leaves GET /api/station/lines' response for station=bar entirely, the same as a
- *     kitchen line does. There is no persisted OUT column; see grouping.ts and bar-screen.tsx.
+ *   - KitchenLineState is 'outstanding' | 'cooked' | 'ready' — never 'collected' (a collected
+ *     line has LEFT the board; see the route's filter) or 'voided' (never a station's to show as
+ *     live work).
+ *   - BarRoundItem carries its OWN state, not a round-level flag — "PER LINE, both boards" is a
+ *     ruling this rebuild must not change: a round with three drinks made and one not is a real
+ *     shape, and collapsing it to one round-level status would hide the one still outstanding.
  *
  * ============================================================================================
- * NO PER-LINE TRANSITION TIMESTAMP EITHER
+ * TWO CLOCKS PER LINE NOW, NOT ONE
  * ============================================================================================
  *
- * The old (guessed) design derived a card's "how long has this been waiting" from
- * order_line_events' occurred_at. GET /api/station/lines returns no event data and no per-line
- * created_at — only `placed_at` / `seconds_waiting` PER ORDER. So the urgency clock the kitchen
- * screen's cooked-and-waiting zone escalates on is ORDER age (time since the order was placed),
- * not per-line cooked age. A dish cooked two minutes ago on a ten-minute-old order reads exactly
- * as urgent as one cooked ten minutes ago on that same order. That is a real, stated compromise —
- * the alternative (a per-line cooked_at) does not exist in the contract this rebuild was told not
- * to second-guess.
+ * `cookedAt` answers "how long has this sat on the pass, uncalled" — unchanged from the previous
+ * rebuild. `readyAt` is the same idea one step later: "how long has this sat ready, uncollected."
+ * Both come from `order_line_events.occurred_at` for this line's own `to_state` transition (see
+ * the route), both null until their transition has happened, and both degrade to the order's
+ * placedAt on read failure rather than throwing — see kitchen-screen.tsx / bar-screen.tsx for
+ * which clock each zone actually escalates on.
  *
  * ============================================================================================
  * NO SUB-STATION GROUPING, NO WAITER NAME
  * ============================================================================================
  *
- * The old (guessed) KitchenLine.station ("grill"/"salads"/"fry") and both types' waiterName had
- * no backing column anywhere (schema-assumptions.ts's own docblock said as much) and are dropped
- * here rather than carried forward as fiction. GET /api/station/lines' line/order shape has
- * neither.
+ * Neither has a backing column anywhere and both stay dropped, per the previous rebuild's own
+ * note — GET /api/station/lines' line/order shape still has neither.
  */
 import type { LineRouteTo } from '@/lib/orders/order-lines'
 
 export type RouteTo = LineRouteTo
 
-/** A line on the kitchen board. Never 'ready' or 'voided' — see the module docblock. */
-export type KitchenLineState = 'outstanding' | 'cooked'
+/** A line on the kitchen board. Never 'collected' or 'voided' — see the module docblock. */
+export type KitchenLineState = 'outstanding' | 'cooked' | 'ready'
 
 export type KitchenLine = {
   id: string
@@ -84,36 +84,54 @@ export type KitchenLine = {
   /**
    * When this station tapped Cooked, from order_line_events. Null while still outstanding.
    *
-   * A cooked card escalates on THIS, not on placedAt. Order age answers "how long ago did they
+   * A cooked line escalates on THIS, not on placedAt. Order age answers "how long ago did they
    * order", which for a dish already made is the wrong question — a steak that took eleven honest
    * minutes would open red the moment it was tapped, and every cooked card went red within six
    * minutes of the round landing. This clock answers "how long has it been sitting on the pass",
    * which is the thing that actually goes cold.
    */
   cookedAt: string | null
+  /**
+   * When this line reached 'ready', from order_line_events. Null until then.
+   *
+   * The pinned Ready zone escalates on THIS — a food-safety and money question ("this has been
+   * sitting finished for how long"), not the same clock cookedAt answers.
+   */
+  readyAt: string | null
   unrouted: boolean
   /** True for a 'both' or 'unrouted' line — the bar also has (or shares) this line. */
   sharedWithOtherStation: boolean
 }
 
+/** Same three values as the kitchen — a bar line just usually skips 'cooked' (see bar-screen.tsx
+ *  on why the bar's own tap goes straight outstanding -> ready). The type stays shared because
+ *  nothing about order_lines' vocabulary is station-specific. */
+export type BarLineState = KitchenLineState
+
 export type BarRoundItem = {
   /**
-   * The order_line id. ADDED for per-line bumping on the bar.
-   *
-   * The bar screen could only ever bump a WHOLE round, because the item it rendered had no identity
-   * — the round was the smallest thing that could be named to the server. A round is not poured all
-   * at once any more than a table is plated all at once, so this carries the id the whole way
-   * through and the per-round control becomes a shortcut over these rather than the only option.
+   * The order_line id. Carried so the bar can bump ONE drink, and now so a round can be split
+   * between the active and ready zones without losing which physical item is which — see
+   * lib/stations/grouping.ts's splitRoundByReadiness.
    */
   id: string
   itemName: string
   quantity: number
   lineNote: string | null
+  /** PER LINE — a round is not poured, cooked or collected all at once. Ruled, not to change. */
+  state: BarLineState
+  /** Same two clocks as the kitchen line, same reasons — see KitchenLine.cookedAt/readyAt. */
+  cookedAt: string | null
+  readyAt: string | null
 }
 
 /**
  * All bar-owned lines sharing one order — GET /api/station/lines already groups by order into
  * one card, so a "round" is exactly one card, not a re-derived grouping.
+ *
+ * A round with a mix of states is split by lib/stations/grouping.ts into an active view and a
+ * ready view of the SAME round, each carrying only the items that belong there — the round
+ * itself is not "in one zone or the other," its items are.
  */
 export type BarRound = {
   id: string

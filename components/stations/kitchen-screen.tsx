@@ -1,15 +1,13 @@
 'use client'
 
 import { STATION_COPY } from '@/lib/stations/copy'
+import { ageMinutes, formatAge, worstEscalation } from '@/lib/stations/age'
 import {
-  ageMinutes,
-  formatAge,
-  outstandingEscalation,
-  readyToRunEscalation,
-  worstEscalation,
-  type AgeEscalation,
-} from '@/lib/stations/age'
-import { buildKitchenBoard, type TableGroup } from '@/lib/stations/grouping'
+  buildKitchenBoard,
+  kitchenActiveLineEscalation,
+  readyLineEscalation,
+  type TableGroup,
+} from '@/lib/stations/grouping'
 import { densityFor, type DensityScale } from '@/lib/stations/board-density'
 import type { BumpLines } from '@/lib/stations/bump'
 import type { KitchenLine } from '@/lib/stations/types'
@@ -27,68 +25,63 @@ import {
  * THE KITCHEN WALL BOARD.
  *
  * ============================================================================================
- * WHAT CHANGED, AND WHY THE OLD BOARD WAS UNUSABLE AT VOLUME
+ * REBUILT 20260829160000 — TWO ZONES, NOT ONE ORDER FOR THREE THINGS
  * ============================================================================================
  *
- * The rebuild for distance (02dd27c5) got the type sizes right and the layout wrong. Two table
- * cards across a 1920x1080 wall means a twenty-table service runs off the bottom of the screen, and
- * a wall screen nobody walks up to and touches cannot be scrolled — everything below the fold does
- * not exist. The board only had to hold four tables for that to be invisible.
+ * The previous rebuild fixed the WIDTH problem (two cards across a 1920x1080 wall) and left two
+ * others standing: finished food sat ABOVE active work, and 'ready' lines could not appear on
+ * this screen at all — `GET /api/station/lines` excluded them server-side, so there was nowhere
+ * for a finished plate to go once the pass passed it, which is backwards for a chef who needs to
+ * know what to make next before what already left.
  *
- * Three things follow from "twenty tables, 1920x1080, read from three metres":
+ * Now there are two real zones, in reading order:
  *
- * 1. THE GRID TILES AND WRAPS, AND ITS DENSITY IS A FUNCTION OF LOAD. See
- *    lib/stations/board-density.ts: the board spends the wall on size while it is quiet and buys
- *    columns with type size in three steps as it fills, down to a documented floor. No tier ever
- *    hides, truncates or collapses a line of food.
+ *   1. ACTIVE ("To make") — everything not yet ready: not started AND already cooked-and-waiting,
+ *      merged into ONE list. A table with one plated dish and one unstarted side is one piece of
+ *      active work, and the previous split (a "cooked" zone drawn above an "outstanding" zone)
+ *      is exactly the ordering the owner reported as backwards.
  *
- * 2. AGE IS CARRIED BY COLOUR. On a twenty-card wall a cook is choosing between cards, not reading
- *    them, and a colour resolves before a two-digit number does. Each card takes the loudest tier
- *    among its own lines (lib/stations/age.ts's worstEscalation) and wears it on the border and as
- *    a body tint. The number stays, as the second read once the card is chosen.
+ *   2. READY, pinned — lines the pass has passed, waiting to be run. Never sits beneath incoming
+ *      work: the board's one scrollable element (`station-board-body`) is measured by
+ *      tests/e2e/station-board-wall-fit.spec.ts to never actually scroll, so this zone being
+ *      "pinned" falls out of that same contract rather than needing position:sticky — it is
+ *      always fully on screen because the whole board is.
  *
- *    THE TWO ZONES ESCALATE ON DIFFERENT CLOCKS AND DIFFERENT BANDS. A cooked plate ages on how
- *    long it has sat on the pass (0-2/3-5/5+). An outstanding ticket ages on how long the kitchen
- *    has had it, on the deliberately slower bands outstandingEscalation defines — reusing the pass
- *    bands would put every card on a busy board in red inside six minutes, which is the exact
- *    defect the owner photographed on 2026-08-28 and which 9735be9d fixed.
- *
- * 3. THE PASS ZONE IS GROUPED BY TABLE, LIKE THE STATION ZONE. It used to be one card per plate,
- *    which meant a table of five was five cards scattered by age across the grid, and there was no
- *    per-table object for an "all ready to run" control to live on. Each plate keeps its own row,
- *    its own colour and its own button — `data-testid="cooked-card"` is still one plate, not one
- *    table — inside a card that is one table.
+ * A "Collected" tap (order_line_events 'collected', 20260829160000) clears a line out of this
+ * zone — without it a pinned zone never empties, because nothing ever moves a line past 'ready'.
  *
  * ============================================================================================
- * PER LINE IS THE DEFAULT. THE PER-TABLE CONTROL IS A SHORTCUT OVER IT, NOT A REPLACEMENT.
+ * "FIFO BY DEFAULT, BUT OVERDUE RISES VISUALLY" — POSITION, NOT ONLY COLOUR
  * ============================================================================================
  *
- * Every line has its own button, because a salad and a steak do not finish together. On top of
- * that, a card holding MORE THAN ONE line also gets one control that acts on all of them.
+ * lib/stations/grouping.ts sorts each zone by worst escalation first, then oldest-first within a
+ * tier — see that file's own note on why "rises" is read as a real reorder rather than only a
+ * colour change. Age is still carried by colour, per the brief's own words: "not by making a
+ * number bigger" — the printed age is the second read, same as before.
  *
- * It is deliberately not rendered on a single-line card: there the per-line button already IS the
- * one tap, and a second identical-looking control beside it would only raise the question of
- * whether the two do different things.
+ * ============================================================================================
+ * PER LINE IS STILL THE DEFAULT. THE PER-TABLE CONTROL IS A SHORTCUT OVER IT.
+ * ============================================================================================
  *
- * It acts on exactly the ids this card is showing — see lib/stations/bump.ts and
- * app/api/terminal/station-lines/batch/route.ts, which take the list rather than re-deriving one
- * from the order, so the bar's half of the same order and anything already further along are
- * untouched. What the card shows when 3 of 5 succeed is documented on CardFailureBanner.
+ * Every line keeps its own button. A table showing both outstanding and cooked lines gets up to
+ * TWO shortcuts — "All cooked" over its outstanding lines, "All ready" over its cooked ones —
+ * because those are two different targets and a single blended shortcut would have to guess which
+ * one a tap meant. Each shortcut is offered only when its own subset holds more than one line, for
+ * the same reason the original rule existed: a subset of one already has its one tap.
  */
 
-function lineEscalation(line: KitchenLine, now: number): AgeEscalation {
-  return line.state === 'cooked'
-    ? readyToRunEscalation(ageMinutes(line.cookedAt ?? line.placedAt ?? '', now))
-    : outstandingEscalation(ageMinutes(line.placedAt ?? '', now))
-}
-
-/** The clock this line is judged on: the pass clock once it is cooked, the ticket clock before. */
-function lineClock(line: KitchenLine): string {
+/** The clock an active line is judged on — the pass clock once cooked, the ticket clock before. */
+function activeLineClock(line: KitchenLine): string {
   return (line.state === 'cooked' ? line.cookedAt ?? line.placedAt : line.placedAt) ?? ''
 }
 
-/** One table's plates on the pass. Each plate keeps its own colour, button and age. */
-function PassTableCard({
+/** The clock a ready line is judged on — how long it has sat waiting to be collected. */
+function readyLineClock(line: KitchenLine): string {
+  return line.readyAt ?? line.placedAt ?? ''
+}
+
+/** One table's active work — not-yet-cooked and cooked-and-waiting lines together. */
+function ActiveTableCard({
   group,
   now,
   scale,
@@ -100,59 +93,85 @@ function PassTableCard({
   onBump: BumpLines
 }) {
   const bump = useCardBump(onBump)
-  const lineIds = group.lines.map((line) => line.id)
-  const escalations = group.lines.map((line) => lineEscalation(line, now))
-  const oldest = Math.max(...group.lines.map((line) => ageMinutes(lineClock(line), now)))
+  const outstandingLines = group.lines.filter((line) => line.state === 'outstanding')
+  const cookedLines = group.lines.filter((line) => line.state === 'cooked')
+  const allLineIds = group.lines.map((line) => line.id)
+  const escalations = group.lines.map((line) => kitchenActiveLineEscalation(line, now))
+  const oldest = Math.max(...group.lines.map((line) => ageMinutes(activeLineClock(line), now)))
 
   return (
     <StationCard
-      testId="pass-table-card"
+      testId="active-table-card"
       tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
       ageLabel={formatAge(oldest)}
       escalation={worstEscalation(escalations)}
       scale={scale}
       headerAction={
-        group.lines.length > 1 ? (
-          <PerCardButton
-            label={STATION_COPY.kitchen.allReadyToRunButton}
-            count={group.lines.length}
-            lineIds={lineIds}
-            action="ready_to_run"
-            tone="pass"
-            bump={bump}
-            scale={scale}
-          />
+        outstandingLines.length > 1 || cookedLines.length > 1 ? (
+          <span className="flex shrink-0 items-center gap-1">
+            {outstandingLines.length > 1 ? (
+              <PerCardButton
+                label={STATION_COPY.kitchen.allCookedButton}
+                count={outstandingLines.length}
+                lineIds={outstandingLines.map((line) => line.id)}
+                action="cooked"
+                tone="station"
+                bump={bump}
+                scale={scale}
+              />
+            ) : null}
+            {cookedLines.length > 1 ? (
+              <PerCardButton
+                label={STATION_COPY.kitchen.allReadyToRunButton}
+                count={cookedLines.length}
+                lineIds={cookedLines.map((line) => line.id)}
+                action="ready_to_run"
+                tone="pass"
+                bump={bump}
+                scale={scale}
+              />
+            ) : null}
+          </span>
         ) : null
       }
-      banner={<CardFailureBanner visibleLineIds={lineIds} bump={bump} scale={scale} />}
+      banner={<CardFailureBanner visibleLineIds={allLineIds} bump={bump} scale={scale} />}
     >
-      {group.lines.map((line) => (
-        <div
+      {outstandingLines.map((line) => (
+        <StationLineRow
           key={line.id}
-          data-testid="cooked-card"
-          data-escalation={lineEscalation(line, now)}
-          className="border-t border-current/15 first:border-t-0"
-        >
-          <StationLineRow
-            lineId={line.id}
-            itemName={line.itemName}
-            quantity={line.quantity}
-            lineNote={line.lineNote}
-            buttonLabel={STATION_COPY.kitchen.readyToRunButton}
-            action="ready_to_run"
-            tone="pass"
-            bump={bump}
-            scale={scale}
-          />
-        </div>
+          lineId={line.id}
+          itemName={line.itemName}
+          quantity={line.quantity}
+          lineNote={line.lineNote}
+          buttonLabel={STATION_COPY.kitchen.cookedButton}
+          action="cooked"
+          tone="station"
+          bump={bump}
+          scale={scale}
+          escalation={kitchenActiveLineEscalation(line, now)}
+        />
+      ))}
+      {cookedLines.map((line) => (
+        <StationLineRow
+          key={line.id}
+          lineId={line.id}
+          itemName={line.itemName}
+          quantity={line.quantity}
+          lineNote={line.lineNote}
+          buttonLabel={STATION_COPY.kitchen.readyToRunButton}
+          action="ready_to_run"
+          tone="pass"
+          bump={bump}
+          scale={scale}
+          escalation={kitchenActiveLineEscalation(line, now)}
+        />
       ))}
     </StationCard>
   )
 }
 
-/** One table's outstanding work. The only action here is Cooked — Ready to run belongs to a line
- *  already on the pass, which is a different card in a different zone. */
-function OutstandingTableCard({
+/** One table's Ready plates — passed, waiting to be run. Pinned zone; see the file docblock. */
+function ReadyTableCard({
   group,
   now,
   scale,
@@ -165,12 +184,12 @@ function OutstandingTableCard({
 }) {
   const bump = useCardBump(onBump)
   const lineIds = group.lines.map((line) => line.id)
-  const escalations = group.lines.map((line) => lineEscalation(line, now))
-  const oldest = Math.max(...group.lines.map((line) => ageMinutes(line.placedAt ?? '', now)))
+  const escalations = group.lines.map((line) => readyLineEscalation(line.readyAt, line.placedAt, now))
+  const oldest = Math.max(...group.lines.map((line) => ageMinutes(readyLineClock(line), now)))
 
   return (
     <StationCard
-      testId="outstanding-table-card"
+      testId="ready-table-card"
       tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
       ageLabel={formatAge(oldest)}
       escalation={worstEscalation(escalations)}
@@ -178,11 +197,11 @@ function OutstandingTableCard({
       headerAction={
         group.lines.length > 1 ? (
           <PerCardButton
-            label={STATION_COPY.kitchen.allCookedButton}
+            label={STATION_COPY.kitchen.allCollectedButton}
             count={group.lines.length}
             lineIds={lineIds}
-            action="cooked"
-            tone="station"
+            action="collected"
+            tone="pass"
             bump={bump}
             scale={scale}
           />
@@ -197,11 +216,12 @@ function OutstandingTableCard({
           itemName={line.itemName}
           quantity={line.quantity}
           lineNote={line.lineNote}
-          buttonLabel={STATION_COPY.kitchen.cookedButton}
-          action="cooked"
-          tone="station"
+          buttonLabel={STATION_COPY.kitchen.collectedButton}
+          action="collected"
+          tone="pass"
           bump={bump}
           scale={scale}
+          escalation={readyLineEscalation(line.readyAt, line.placedAt, now)}
         />
       ))}
     </StationCard>
@@ -219,15 +239,16 @@ export function KitchenScreen({
   connectionState: FeedConnectionState
   onBump: BumpLines
 }) {
-  const board = buildKitchenBoard(lines)
-  const cardCount = board.cookedByTable.length + board.outstandingByTable.length
-  const scale = densityFor(cardCount)
+  const board = buildKitchenBoard(lines, now)
+  const activeScale = densityFor(board.activeByTable.length)
+  const readyScale = densityFor(board.readyByTable.length)
+  const cardCount = board.activeByTable.length + board.readyByTable.length
 
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-[#F5F4F0] p-3"
       data-testid="kitchen-screen"
-      data-density={scale.density}
+      data-density={activeScale.density}
       data-card-count={cardCount}
     >
       <div className="mb-2 flex shrink-0 items-center justify-between">
@@ -238,15 +259,15 @@ export function KitchenScreen({
       {/*
         THE ONE SCROLLABLE THING, AND IT IS SUPPOSED TO NEVER SCROLL.
         tests/e2e/station-board-wall-fit.spec.ts measures exactly this element at 1920x1080 with the
-        twenty-table fixture and fails if scrollHeight exceeds clientHeight. It is `overflow-auto`
+        twenty-round fixture and fails if scrollHeight exceeds clientHeight. It is `overflow-auto`
         rather than `overflow-hidden` on purpose: if a board ever does exceed the wall, a scrollbar
         is an admission that there is more, and clipping is a lie.
       */}
-      <div className="min-h-0 flex-1 overflow-auto" data-testid="station-board-body">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="station-board-body">
         {board.unrouted.length > 0 ? (
           <div
             data-testid="unrouted-section"
-            className="mb-2 rounded-xl border-4 border-red-500 bg-red-50 px-2.5 py-1.5"
+            className="mb-1.5 shrink-0 rounded-xl border-4 border-red-500 bg-red-50 px-2.5 py-1.5"
           >
             <div className="flex flex-wrap items-baseline gap-x-3">
               <h2 className="text-lg font-black text-red-900">{STATION_COPY.unrouted.heading}</h2>
@@ -269,20 +290,21 @@ export function KitchenScreen({
           </div>
         ) : null}
 
-        <section className="mb-2" data-testid="cooked-section">
-          <h2 className="mb-1.5 text-xl font-black uppercase tracking-wide text-[#37352F]">
-            {STATION_COPY.kitchen.cookedHeading}
+        {/* ACTIVE — roughly the top two-thirds of the board. */}
+        <section className="flex-[65] shrink-0" data-testid="active-section">
+          <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
+            {STATION_COPY.kitchen.activeHeading}
           </h2>
-          {board.cookedByTable.length === 0 ? (
-            <p className="text-lg text-[#6B675F]">{STATION_COPY.kitchen.cookedEmpty}</p>
+          {board.activeByTable.length === 0 ? (
+            <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.activeEmpty}</p>
           ) : (
-            <div className={`gap-2 ${scale.columnsClass}`} data-testid="cooked-grid">
-              {board.cookedByTable.map((group) => (
-                <PassTableCard
+            <div className={`gap-1.5 ${activeScale.columnsClass}`} data-testid="active-grid">
+              {board.activeByTable.map((group) => (
+                <ActiveTableCard
                   key={group.tableNumber}
                   group={group}
                   now={now}
-                  scale={scale}
+                  scale={activeScale}
                   onBump={onBump}
                 />
               ))}
@@ -290,20 +312,24 @@ export function KitchenScreen({
           )}
         </section>
 
-        <section data-testid="outstanding-section">
-          <h2 className="mb-1.5 text-xl font-black uppercase tracking-wide text-[#37352F]">
-            {STATION_COPY.kitchen.outstandingHeading}
+        {/* READY, PINNED — always rendered, always below active work, never scrolled out. */}
+        <section
+          className="mt-2 flex-[35] shrink-0 border-t-4 border-[#37352F] pt-1.5"
+          data-testid="ready-section"
+        >
+          <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
+            {STATION_COPY.kitchen.readyHeading}
           </h2>
-          {board.outstandingByTable.length === 0 ? (
-            <p className="text-lg text-[#6B675F]">{STATION_COPY.kitchen.outstandingEmpty}</p>
+          {board.readyByTable.length === 0 ? (
+            <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.readyEmpty}</p>
           ) : (
-            <div className={`gap-2 ${scale.columnsClass}`} data-testid="outstanding-grid">
-              {board.outstandingByTable.map((group) => (
-                <OutstandingTableCard
+            <div className={`gap-1.5 ${readyScale.columnsClass}`} data-testid="ready-grid">
+              {board.readyByTable.map((group) => (
+                <ReadyTableCard
                   key={group.tableNumber}
                   group={group}
                   now={now}
-                  scale={scale}
+                  scale={readyScale}
                   onBump={onBump}
                 />
               ))}
