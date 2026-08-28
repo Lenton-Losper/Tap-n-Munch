@@ -97,6 +97,15 @@ export type KitchenLine = {
 }
 
 export type BarRoundItem = {
+  /**
+   * The order_line id. ADDED for per-line bumping on the bar.
+   *
+   * The bar screen could only ever bump a WHOLE round, because the item it rendered had no identity
+   * — the round was the smallest thing that could be named to the server. A round is not poured all
+   * at once any more than a table is plated all at once, so this carries the id the whole way
+   * through and the per-round control becomes a shortcut over these rather than the only option.
+   */
+  id: string
   itemName: string
   quantity: number
   lineNote: string | null
