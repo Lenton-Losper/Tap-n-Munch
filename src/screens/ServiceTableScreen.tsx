@@ -378,41 +378,41 @@ export default function ServiceTableScreen({route, navigation}: Props) {
             and still be open for another round, and conflating the two is what makes staff
             believe payment ended the session.
 
-            Every string below is an inline PENDING COPY literal, awaiting real staff wording.
+            SIGNED by the owner 2026-08-28, verbatim. Each state names BOTH the money and the session -- "paid in full" against "table still open" vs "table closed" is what carries the paid-is-not-closed rule to a waiter. The unreadable state deliberately says nothing about the money: a blank or a soft message there reads as nothing owed, which is the trap.
           */}
           <View style={styles.paymentStateRow}>
             {settlementState === 'unpaid' ? (
               <View style={[styles.stateChip, styles.stateChipUnpaid]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextUnpaid]}>
-                  {'PENDING COPY: tab status nothing paid yet'}
+                  {'Nothing paid yet · table open'}
                 </Text>
               </View>
             ) : null}
             {settlementState === 'partially_paid' ? (
               <View style={[styles.stateChip, styles.stateChipPartial]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextPartial]}>
-                  {'PENDING COPY: tab status part paid part still owed'}
+                  {'Part paid · balance still owed'}
                 </Text>
               </View>
             ) : null}
             {settlementState === 'fully_paid' ? (
               <View style={[styles.stateChip, styles.stateChipPaid]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextPaid]}>
-                  {'PENDING COPY: tab status paid in full and still open'}
+                  {'Paid in full · table still open'}
                 </Text>
               </View>
             ) : null}
             {settlementState === 'closed' ? (
               <View style={[styles.stateChip, styles.stateChipClosed]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextClosed]}>
-                  {'PENDING COPY: tab status session closed'}
+                  {'Paid in full · table closed'}
                 </Text>
               </View>
             ) : null}
             {settlementState === 'unknown' ? (
               <View style={[styles.stateChip, styles.stateChipUnknown]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextUnknown]}>
-                  {'PENDING COPY: payment state could not be read'}
+                  {'Payment status unavailable · do not assume the bill is settled'}
                 </Text>
               </View>
             ) : null}
@@ -523,7 +523,7 @@ export default function ServiceTableScreen({route, navigation}: Props) {
                 styles.settleButtonText,
                 !settleOffered && styles.settleButtonTextDisabled,
               ]}>
-              {'PENDING COPY: take payment for this table'}
+              {'Take payment'}
             </Text>
           </Pressable>
 
