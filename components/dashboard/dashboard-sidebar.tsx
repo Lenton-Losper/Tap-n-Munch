@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   BarChart3,
+  CheckSquare,
   ClipboardList,
   FileText,
   History,
@@ -95,6 +96,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: Settings,
     permission: PERMISSIONS.SETTINGS_READ,
     match: (path: string) => path.startsWith('/settings'),
+  },
+  {
+    href: '/setup',
+    label: 'Venue Setup',
+    icon: CheckSquare,
+    permission: PERMISSIONS.SETTINGS_READ,
+    match: (path: string) => path.startsWith('/setup'),
   },
 ]
 
