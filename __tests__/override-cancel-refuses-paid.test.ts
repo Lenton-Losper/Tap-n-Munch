@@ -114,6 +114,12 @@ function fakeSupabase(row: Record<string, unknown> | null) {
   return client
 }
 
+function insertCapturingLight(row: Record<string, unknown>) {
+  const db = fakeSupabase(row)
+  return { client: db, audits: (db as unknown as { audits: Array<Record<string, unknown>> }).audits,
+           updates: (db as unknown as { updates: Array<Record<string, unknown>> }).updates }
+}
+
 beforeEach(() => {
   queryFinaticOrderPaid.mockReset()
   isFinaticMerchantOrderInvalidError.mockReset().mockReturnValue(false)
@@ -244,6 +250,99 @@ describe('the other refusals that never authorise a cancel', () => {
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error('unreachable')
     expect(result.refusal).toBe('order_not_held')
+    expect(queryFinaticOrderPaid).not.toHaveBeenCalled()
+    expect(db.updates).toHaveLength(0)
+  })
+})
+
+/**
+ * THE LIGHT PATH, and the guard that keeps it narrow.
+ *
+ * An order with no gateway reference AND no attempt timestamp had no payment started on it: a
+ * Finatic charge requires a merchant order number, so none was created and no charge was possible.
+ * It cancels without asking the gateway anything.
+ *
+ * The guard is conjunctive and the tests below are the reason to trust it: EITHER a reference OR
+ * an attempt timestamp is evidence something reached a card machine, and either one alone must
+ * send the order down the heavy path with its PAID refusal intact.
+ */
+describe('the light path — no payment was ever started', () => {
+  const neverAttempted = () => heldRow({ paycloud_merchant_order_no: null, payment_attempt_started_at: null })
+
+  it('cancels WITHOUT calling the gateway at all', async () => {
+    const db = insertCapturingLight(neverAttempted())
+    const result = await overrideCancelHeldOrder(db.client as never, {
+      restaurantId: RESTAURANT_ID, orderId: ORDER_ID, requestedBy: 'operator-1',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(queryFinaticOrderPaid).not.toHaveBeenCalled()
+    expect(db.updates).toHaveLength(1)
+    expect(db.updates[0]).toMatchObject({ cancellation_reason: 'operator_override_never_attempted' })
+  })
+
+  it('audits it as never-attempted, NOT with the provider wording', async () => {
+    const db = insertCapturingLight(neverAttempted())
+    await overrideCancelHeldOrder(db.client as never, {
+      restaurantId: RESTAURANT_ID, orderId: ORDER_ID, requestedBy: 'operator-1',
+    })
+
+    const meta = db.audits[0].metadata as Record<string, unknown>
+    expect(meta.path).toBe('never_attempted')
+    expect(meta.gatewayQueried).toBe(false)
+    expect(String(meta.reason)).toContain('No payment was ever started on this order')
+    // The provider sentence describes a gateway that was ASKED. It was not.
+    expect(String(meta.reason)).not.toContain('has no record')
+  })
+
+  /** THE GUARD. Asked for by name. */
+  it('a row WITH a merchant order number REFUSES the light path and queries the gateway', async () => {
+    queryFinaticOrderPaid.mockResolvedValue({
+      paid: true, statusRecognised: true, merchantOrderNo: 'FT1', status: 'PAID',
+      transactionId: null, amount: null, raw: {},
+    })
+    const db = insertCapturingLight(
+      heldRow({ paycloud_merchant_order_no: 'FT17878402258847650', payment_attempt_started_at: null }),
+    )
+    const result = await overrideCancelHeldOrder(db.client as never, {
+      restaurantId: RESTAURANT_ID, orderId: ORDER_ID, requestedBy: 'op',
+    })
+
+    // It went to the gateway, and the gateway's PAID refused it. No cancel.
+    expect(queryFinaticOrderPaid).toHaveBeenCalled()
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.refusal).toBe('gateway_reports_paid')
+    expect(db.updates).toHaveLength(0)
+  })
+
+  it('a row WITH an attempt timestamp but no reference also refuses the light path', async () => {
+    const db = insertCapturingLight(
+      heldRow({ paycloud_merchant_order_no: null, payment_attempt_started_at: new Date().toISOString() }),
+    )
+    const result = await overrideCancelHeldOrder(db.client as never, {
+      restaurantId: RESTAURANT_ID, orderId: ORDER_ID, requestedBy: 'op',
+    })
+
+    // Something was started; there is genuinely nothing to re-check. It refuses rather than
+    // taking the shortcut.
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.refusal).toBe('no_gateway_reference')
+    expect(db.updates).toHaveLength(0)
+  })
+
+  it('a card-machine marker refuses BEFORE either path is chosen', async () => {
+    const db = insertCapturingLight(
+      heldRow({ paycloud_merchant_order_no: null, payment_attempt_started_at: null, payment_reference: 'V-9' }),
+    )
+    const result = await overrideCancelHeldOrder(db.client as never, {
+      restaurantId: RESTAURANT_ID, orderId: ORDER_ID, requestedBy: 'op',
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.refusal).toBe('payment_marker_present')
     expect(queryFinaticOrderPaid).not.toHaveBeenCalled()
     expect(db.updates).toHaveLength(0)
   })

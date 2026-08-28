@@ -69,6 +69,35 @@ export const STRANDED_PENDING_THRESHOLD_MS = 2 * 60 * 60 * 1000
 export const STRANDED_PENDING_CAUSE = 'stranded_pending'
 
 /**
+ * Held, and NO PAYMENT WAS EVER STARTED -- no gateway reference, no attempt timestamp.
+ *
+ * Split out of `stranded_pending` on 2026-08-28, because that one cause was carrying two orders
+ * with opposite risk profiles and one signed sentence that is false for half of them:
+ *
+ *   - `stranded_pending` says "The card machine reported a problem". Five of Riviera's seven held
+ *     orders never touched a card machine.
+ *   - The override refused all five with "there is nothing to re-check against", which presented
+ *     the SAFEST orders on the board as the only ones that could not be cleared.
+ *
+ * A Finatic charge requires a merchant order number. With no reference and no attempt, none was
+ * created, so no charge was possible -- which is why this cause can be cancelled without asking
+ * the gateway anything.
+ */
+export const NEVER_ATTEMPTED_CAUSE = 'stranded_never_attempted'
+
+/**
+ * THE GUARD. A merchant order number OR an attempt timestamp means a payment was started, and the
+ * order is NOT this cause however old it is. Either one alone is enough: a reference with no
+ * timestamp and a timestamp with no reference are both evidence that something reached a card
+ * machine, and neither may take the path that skips the gateway.
+ */
+export function neverAttemptedPayment(order: HeldForReviewCandidate): boolean {
+  const reference = String(order.paycloud_merchant_order_no ?? '').trim()
+  const attempt = String(order.payment_attempt_started_at ?? '').trim()
+  return reference === '' && attempt === ''
+}
+
+/**
  * Marker carried by every string on this surface that the owner has NOT signed off.
  *
  * It is rendered verbatim, on purpose. The alternative — inventing plausible staff-facing prose
@@ -144,6 +173,26 @@ export const HELD_FOR_REVIEW_CAUSE_COPY: Readonly<Record<string, HeldForReviewCo
       'The card machine reported a problem and the payment provider has no record of this order. ' +
       'Nothing was taken. Decide whether to take payment again or cancel it.',
   },
+  /**
+   * WRITTEN BY THE IMPLEMENTER 2026-08-28 AND NOT YET SIGNED BY THE OWNER.
+   *
+   * Drafted rather than left as PENDING COPY at the owner's explicit instruction, because the
+   * board needed working buttons this morning and the wording can be corrected after. It is in
+   * the signed map so it renders as prose rather than as a marker -- so it is NOT protected by
+   * the character-for-character suite, and it is the one entry here a reviewer should read as
+   * provisional.
+   *
+   * What it must keep saying, whatever the wording becomes: no payment was started, nothing was
+   * taken, and no checking is needed before cancelling. That is the whole difference from
+   * `stranded_pending`, whose sentence sends staff to the card machine.
+   */
+  [NEVER_ATTEMPTED_CAUSE]: {
+    label: 'No payment was started',
+    why:
+      'This order was placed but no payment was ever started on it. The card machine was never ' +
+      'used and the payment provider was never contacted, so nothing was taken. It can be ' +
+      'cancelled without checking anything.',
+  },
 }
 
 /**
@@ -192,6 +241,13 @@ export type HeldForReviewCandidate = {
   channel?: unknown
   order_number?: unknown
   paycloud_merchant_order_no?: unknown
+  /**
+   * Needed to tell "a card was presented and we cannot tell what happened" from "no payment was
+   * ever started". `getHeldForReviewOrders` uses `select('*')`, so it is fetched -- but a caller
+   * that narrows that select and drops this column would silently route every order down the
+   * light path. That is the reason this field is documented rather than merely added.
+   */
+  payment_attempt_started_at?: unknown
 }
 
 export type HeldForReviewRow = {
@@ -254,10 +310,14 @@ export function heldForReviewCause(
 
   if (paymentStatus === 'pending') {
     const age = ageMs(order.placed_at, nowMs)
+    // See NEVER_ATTEMPTED_CAUSE. The split happens here so every surface -- panel, override,
+    // reports -- reads one classification rather than each re-deriving it.
     // Unparseable placed_at is NOT an excuse to drop the order. A pending order whose age cannot
     // be established is exactly as unresolved as one whose age can, and dropping it here is the
     // invisible-absence shape this whole surface exists to remove. It renders with a null age.
-    if (age === null || age >= thresholdMs) return STRANDED_PENDING_CAUSE
+    if (age === null || age >= thresholdMs) {
+      return neverAttemptedPayment(order) ? NEVER_ATTEMPTED_CAUSE : STRANDED_PENDING_CAUSE
+    }
   }
 
   return null

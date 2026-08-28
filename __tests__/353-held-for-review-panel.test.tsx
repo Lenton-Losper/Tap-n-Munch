@@ -109,6 +109,13 @@ const SELECTABLE: HeldForReviewCandidate[] = [
     total: 3,
     table_number: 1001,
     channel: 'kiosk',
+    /**
+     * A payment WAS started on this one, which is what keeps it `stranded_pending` after the
+     * 2026-08-28 split. Without a reference it is now `stranded_never_attempted` — a different
+     * cause with different copy — and this fixture exists to exercise the SIGNED stranded wording.
+     */
+    paycloud_merchant_order_no: 'MO-3',
+    payment_attempt_started_at: daysAgo(35),
   },
 ]
 
