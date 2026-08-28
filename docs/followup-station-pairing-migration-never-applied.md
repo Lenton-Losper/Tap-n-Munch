@@ -93,3 +93,46 @@ The practical outcome is unaffected — the column exists, reads correctly, and 
 the one restaurant that needs it (`staging test`) — but a migration whose applied-state history
 cannot be fully accounted for is worth recording even when the end state is correct. If this
 column's value or `applied` status is ever questioned later, this is the open thread to pull.
+
+## Fourth finding, CLOSED 2026-08-28: rows with `station_kind IS NULL` were a manual insert, not a code defect
+
+**This is a separate mystery from all three findings above.** Those were about the *column*
+never existing. This one is about specific `restaurant_terminals` rows that had the column, but
+read `station_kind = NULL` where a paired kitchen or bar screen was expected — which renders
+exactly like the empty-board bug fixed the same day in `lib/stations/copy.ts` (a board with no
+station to read is a board with nothing on it), and was chased as a possible code-level cause of
+that same symptom.
+
+**Ruled out, with direct evidence, before the true cause was known:**
+
+- `generate-code`'s row insert/upsert (`app/api/admin/terminals/stations/route.ts`) — read
+  directly; it does not write `station_kind` at all, so it cannot null a row it never touches.
+- The activation/refresh path — checked for any upsert or update that writes the whole
+  `restaurant_terminals` row (which would overwrite `station_kind` with `undefined` → `NULL`
+  rather than merging it) rather than patching only the columns it owns. None found.
+- The pairing-admin routes and `assertTerminalPairedToStation` — read-only with respect to
+  `station_kind`; neither writes it.
+- A sub-agent's schema or seed work in this session — checked against its actual diff and commit
+  history; touched none of these rows.
+
+**Actual cause, confirmed by the person who ran it:** two manual SQL inserts against
+`restaurant_terminals`, run directly, outside any application code path. The insert at 05h40 did
+not include `station_kind` in its column list. Since `station_kind` carries no `DEFAULT`
+(20260828230000_terminal_station_pairing.sql adds it as a plain nullable column, deliberately —
+see that migration for why an existing row must not silently gain a guessed station), the omitted
+column landed as `NULL` rather than erroring or defaulting to anything. The insert at 09h20 did
+include it, correctly, and that row paired and rendered as expected. Nothing between the two
+inserts wrote to either row.
+
+**Why the ruling-out work above was not wasted**, even though it did not find the cause: it
+correctly established that no *code path* does this, which was true and worth knowing before
+concluding a person did it directly. The gap the ruling-out work could not close is that a manual
+`INSERT` runs outside every one of those code paths by construction — it was never going to be
+caught by reading routes, triggers, or upsert bodies, because none of them ran.
+
+**No fix needed.** This was not a bug. A `restaurant_terminals` row born without `station_kind`
+correctly renders as unpaired/empty — the schema and the board are both doing exactly what they
+are supposed to do with a row that never said which station it belongs to. Re-running the insert
+with `station_kind` set (as the 09h20 insert did) is the correction, not a code change. Closed so
+nobody re-opens the routes, triggers, or upsert paths above chasing this as a repeat of the first
+three findings — they were already checked and are not where this one lived.
