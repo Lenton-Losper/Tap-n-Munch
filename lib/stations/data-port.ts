@@ -1,8 +1,12 @@
 /**
  * feat/station-screens-v1 — fetches the snapshot from GET /api/terminal/station-lines and maps
  * it through lib/stations/map-raw-lines.ts. This file, that route, and
- * lib/stations/schema-assumptions.ts are the three places order_lines' shape is touched — see
- * schema-assumptions.ts's docblock for what is confirmed vs. still open.
+ * lib/stations/map-raw-lines.ts are the three places the wire shape is touched.
+ *
+ * REBUILT 2026-08-28: GET /api/terminal/station-lines now delegates straight to the real
+ * GET /api/station/lines (ADR-005 §5) after its own feature-flag and pairing checks, so the body
+ * this fetches is that route's own `{ station, orders, server_time }` shape — see
+ * lib/stations/map-raw-lines.ts's StationLinesResponseDTO — not a raw table dump.
  *
  * Fails soft, not hard: a failed fetch returns an empty board rather than crashing the screen,
  * and logs once. `notEnabled` (the flag is off venue-wide) and `notPaired` (this specific
@@ -11,8 +15,7 @@
  * each is a distinct configuration fact worth telling staff, not the same silence as a genuinely
  * quiet shift.
  */
-import type { RawOrderLine, RawOrderLineEvent } from '@/lib/stations/schema-assumptions'
-import { mapRawLinesToBarRounds, mapRawLinesToKitchenLines } from '@/lib/stations/map-raw-lines'
+import { mapStationLinesToBarRounds, mapStationLinesToKitchenLines, type StationLinesResponseDTO } from '@/lib/stations/map-raw-lines'
 import type { BarRound, KitchenLine } from '@/lib/stations/types'
 import type { StationKind } from '@/lib/stations/station-pairing'
 import type { AuthFetch } from '@/lib/stations/use-terminal-session'
@@ -31,13 +34,11 @@ function warnOnce(detail: unknown) {
   console.warn('[stations] failed to load station lines — showing an empty board.', detail)
 }
 
-async function fetchRawSnapshot(
+async function fetchStationLinesResponse(
   authFetch: AuthFetch,
   station: StationKind,
 ): Promise<{
-  lines: RawOrderLine[]
-  events: RawOrderLineEvent[]
-  tableNumberByOrderId: Record<string, string>
+  response: StationLinesResponseDTO | null
   notEnabled: boolean
   notPaired: boolean
   pairedTo: string | null
@@ -48,9 +49,7 @@ async function fetchRawSnapshot(
     const body = (await response.json().catch(() => ({}))) as { code?: string; pairedTo?: string | null }
     const notPaired = body.code === 'STATION_NOT_PAIRED'
     return {
-      lines: [],
-      events: [],
-      tableNumberByOrderId: {},
+      response: null,
       notEnabled: !notPaired,
       notPaired,
       pairedTo: notPaired ? (body.pairedTo ?? null) : null,
@@ -59,36 +58,19 @@ async function fetchRawSnapshot(
 
   if (!response.ok) {
     warnOnce(await response.text().catch(() => response.statusText))
-    return { lines: [], events: [], tableNumberByOrderId: {}, notEnabled: false, notPaired: false, pairedTo: null }
+    return { response: null, notEnabled: false, notPaired: false, pairedTo: null }
   }
 
-  const body = (await response.json()) as {
-    lines?: RawOrderLine[]
-    events?: RawOrderLineEvent[]
-    tableNumberByOrderId?: Record<string, string>
-  }
-  return {
-    lines: body.lines ?? [],
-    events: body.events ?? [],
-    tableNumberByOrderId: body.tableNumberByOrderId ?? {},
-    notEnabled: false,
-    notPaired: false,
-    pairedTo: null,
-  }
+  const body = (await response.json()) as StationLinesResponseDTO
+  return { response: body, notEnabled: false, notPaired: false, pairedTo: null }
 }
 
 export async function fetchInitialKitchenLines(authFetch: AuthFetch): Promise<StationSnapshot<KitchenLine>> {
-  const { lines, events, tableNumberByOrderId, notEnabled, notPaired, pairedTo } = await fetchRawSnapshot(
-    authFetch,
-    'kitchen',
-  )
-  return { items: mapRawLinesToKitchenLines(lines, events, tableNumberByOrderId), notEnabled, notPaired, pairedTo }
+  const { response, notEnabled, notPaired, pairedTo } = await fetchStationLinesResponse(authFetch, 'kitchen')
+  return { items: response ? mapStationLinesToKitchenLines(response) : [], notEnabled, notPaired, pairedTo }
 }
 
 export async function fetchInitialBarRounds(authFetch: AuthFetch): Promise<StationSnapshot<BarRound>> {
-  const { lines, events, tableNumberByOrderId, notEnabled, notPaired, pairedTo } = await fetchRawSnapshot(
-    authFetch,
-    'bar',
-  )
-  return { items: mapRawLinesToBarRounds(lines, events, tableNumberByOrderId), notEnabled, notPaired, pairedTo }
+  const { response, notEnabled, notPaired, pairedTo } = await fetchStationLinesResponse(authFetch, 'bar')
+  return { items: response ? mapStationLinesToBarRounds(response) : [], notEnabled, notPaired, pairedTo }
 }

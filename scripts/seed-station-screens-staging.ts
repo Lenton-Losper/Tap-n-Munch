@@ -1,22 +1,25 @@
 /**
- * feat/station-screens-v1 — seed order_lines (+ order_line_events) on STAGING with a line in
- * every PROVEN state, so the kitchen and bar screens can be proved against real rows.
+ * feat/station-screens-v1 — seed order_lines on STAGING with lines in every state a kitchen or
+ * bar screen can actually show, so __tests__/station-screens-live-staging.test.tsx can render
+ * the real KitchenScreen/BarScreen components against real rows.
  *
- * CORRECTED 2026-08-28 to the real column/value shape — see
- * lib/stations/schema-assumptions.ts's docblock for the full account of what was found and why
- * it differs from the verbally-relayed shape (four kitchen_state values were described; only
- * 'outstanding' and 'done' have been observed in real rows, and this script only ever writes
- * those two).
+ * REBUILT 2026-08-28 for the real four-state model (lib/orders/order-lines.ts,
+ * 20260828141000_cooked_state.sql). The old version of this script wrote the RETIRED 'done'
+ * value and assumed 'unrouted' route_to was rejected by the live CHECK constraint — re-verified
+ * live against staging 2026-08-28 (a throwaway insert-and-clean-up probe, not a guess): both
+ * 'cooked'/'ready'/'voided' state values and route_to='unrouted' are accepted today. That old
+ * finding was accurate for what staging looked like at the time; it is not accurate now that
+ * 20260828141000_cooked_state.sql and the station tables have landed.
  *
- * Also seeds the AGE-ESCALATION proof directly: two 'done' lines with real, backdated
- * order_line_events.occurred_at — one 6 minutes old (must render RED and sort to the top of
- * READY TO RUN) and one 1 minute old (must render WHITE and sort after it).
+ * AGE ESCALATION IS NOW ORDER AGE, NOT PER-LINE EVENT AGE. GET /api/station/lines returns no
+ * per-line transition timestamp — only `placed_at` per ORDER (see lib/stations/types.ts's
+ * docblock on why). So the red/white escalation proof below backdates two SEPARATE ORDERS'
+ * placed_at, each carrying one cooked line, rather than backdating one order_line_events row the
+ * way the old script did.
  *
  * STAGING ONLY, same two-guard shape scripts/diagnose-106-track-inventory-desync.ts uses.
- * Creates its OWN order (tagged orders.session_id = PROBE_TAG) rather than reusing whatever
- * order happens to be open at the fixture restaurant — the one open order found there earlier
- * turned out to be another team's own E2E fixture (cancelled mid-run), and probe data belongs
- * in a probe's own order, not borrowed from someone else's.
+ * Creates its OWN orders (tagged orders.session_id = PROBE_TAG) rather than reusing whatever
+ * order happens to be open at the fixture restaurant.
  *
  * Usage:
  *   npx tsx scripts/seed-station-screens-staging.ts
@@ -26,6 +29,7 @@ import { resolve } from 'path'
 import { writeFileSync } from 'fs'
 import { createClient } from '@supabase/supabase-js'
 import { config } from 'dotenv'
+import { isLineReady, stationsOwnedBy, type LineRouteTo, type LineState } from '../lib/orders/order-lines'
 
 /**
  * Written after a successful seed so __tests__/station-screens-live-staging.test.tsx can
@@ -74,7 +78,81 @@ async function guardTableExists() {
   }
 }
 
-async function createProbeOrder(): Promise<{ orderId: string; tableNumber: number }> {
+type ProbeOrderSpec = {
+  label: string
+  placedMinutesAgo: number
+  lines: Array<{
+    name_snapshot: string
+    route_to: LineRouteTo
+    kitchen_state: LineState | null
+    bar_state: LineState | null
+    line_note?: string | null
+  }>
+}
+
+const PROBE_ORDERS: ProbeOrderSpec[] = [
+  {
+    label: 'outstanding order',
+    placedMinutesAgo: 3,
+    lines: [
+      { name_snapshot: 'PROBE: outstanding item', route_to: 'kitchen', kitchen_state: 'outstanding', bar_state: null },
+    ],
+  },
+  {
+    // AGE ESCALATION PROOF, red band: this ORDER was placed 6 minutes ago. Must render red and
+    // sort ABOVE the 1-minute order below (oldest first).
+    label: 'cooked 6 min ago order (expect RED, sorts first)',
+    placedMinutesAgo: 6,
+    lines: [
+      {
+        name_snapshot: 'PROBE: cooked, order placed 6 min ago (expect RED, sorts first)',
+        route_to: 'kitchen',
+        kitchen_state: 'cooked',
+        bar_state: null,
+      },
+    ],
+  },
+  {
+    // AGE ESCALATION PROOF, white band: this ORDER was placed 1 minute ago. Must render white
+    // and sort AFTER the 6-minute order above.
+    label: 'cooked 1 min ago order (expect WHITE, sorts second)',
+    placedMinutesAgo: 1,
+    lines: [
+      {
+        name_snapshot: 'PROBE: cooked, order placed 1 min ago (expect WHITE, sorts second)',
+        route_to: 'kitchen',
+        kitchen_state: 'cooked',
+        bar_state: null,
+      },
+    ],
+  },
+  {
+    // 'both', HALF-BUMPED: kitchen is cooked, bar is still outstanding — proves the two states
+    // move independently. Must appear in kitchen's cooked zone and must NOT be missing from
+    // bar's IN queue.
+    label: 'both, half-bumped (kitchen cooked, bar still outstanding)',
+    placedMinutesAgo: 2,
+    lines: [
+      {
+        name_snapshot: 'PROBE: both, half-bumped (kitchen cooked, bar still outstanding)',
+        route_to: 'both',
+        kitchen_state: 'cooked',
+        bar_state: 'outstanding',
+      },
+    ],
+  },
+  {
+    // 'unrouted' — re-verified live 2026-08-28 (see the file docblock) that the current staging
+    // CHECK constraint accepts this, unlike what the previous version of this script found.
+    label: 'unrouted item',
+    placedMinutesAgo: 2,
+    lines: [
+      { name_snapshot: 'PROBE: unrouted item', route_to: 'unrouted', kitchen_state: 'outstanding', bar_state: 'outstanding' },
+    ],
+  },
+]
+
+async function createProbeOrder(spec: ProbeOrderSpec): Promise<{ orderId: string; tableNumber: number }> {
   const { data: table, error: tableError } = await db
     .from('restaurant_tables')
     .select('id, table_number')
@@ -86,7 +164,7 @@ async function createProbeOrder(): Promise<{ orderId: string; tableNumber: numbe
     throw new Error('REFUSING: no restaurant_tables row found for the fixture restaurant.')
   }
 
-  const probeOrderNumber = 900000 + (Date.now() % 90000)
+  const probeOrderNumber = 900000 + (Date.now() % 90000) + Math.floor(Math.random() * 1000)
   const { data: created, error: createError } = await db
     .from('orders')
     .insert({
@@ -103,14 +181,15 @@ async function createProbeOrder(): Promise<{ orderId: string; tableNumber: numbe
       total: 0,
       is_closed: false,
       order_number: probeOrderNumber,
+      placed_at: minutesAgo(spec.placedMinutesAgo),
     })
     .select('id, table_number')
     .single()
 
   if (createError || !created?.id) {
-    throw new Error(`REFUSING: could not create a probe order: ${createError?.message}`)
+    throw new Error(`REFUSING: could not create a probe order (${spec.label}): ${createError?.message}`)
   }
-  console.log(`Created probe order ${created.id} (order_number ${probeOrderNumber}, table ${created.table_number}).`)
+  console.log(`Created probe order ${created.id} (${spec.label}, order_number ${probeOrderNumber}, table ${created.table_number}).`)
   return { orderId: String(created.id), tableNumber: created.table_number }
 }
 
@@ -146,113 +225,142 @@ async function runCleanup() {
   console.log(`Deleted ${orderIds.length} probe order(s).`)
 }
 
-type SeedLine = {
+type InsertedLine = {
+  id: string
+  order_id: string
   name_snapshot: string
-  route_to: 'kitchen' | 'bar' | 'both' | 'unrouted'
-  kitchen_state: 'outstanding' | 'done' | null
-  bar_state: 'outstanding' | 'done' | null
-  /** [station, to_state, minutes_ago][] — order_line_events to attach once the line has an id. */
-  events: Array<['kitchen' | 'bar', 'outstanding' | 'done', number]>
+  quantity: number
+  line_note: string | null
+  route_to: LineRouteTo
+  kitchen_state: LineState | null
+  bar_state: LineState | null
 }
 
-const SEED_LINES: SeedLine[] = [
-  {
-    name_snapshot: 'PROBE: outstanding item',
-    route_to: 'kitchen',
-    kitchen_state: 'outstanding',
-    bar_state: null,
-    events: [],
-  },
-  {
-    // AGE ESCALATION PROOF, red band: done 6 minutes ago. Must render red and sort ABOVE the
-    // 1-minute line below (oldest first).
-    name_snapshot: 'PROBE: done 6 min ago (expect RED, sorts first)',
-    route_to: 'kitchen',
-    kitchen_state: 'done',
-    bar_state: null,
-    events: [['kitchen', 'done', 6]],
-  },
-  {
-    // AGE ESCALATION PROOF, white band: done 1 minute ago. Must render white and sort AFTER
-    // the 6-minute line above.
-    name_snapshot: 'PROBE: done 1 min ago (expect WHITE, sorts second)',
-    route_to: 'kitchen',
-    kitchen_state: 'done',
-    bar_state: null,
-    events: [['kitchen', 'done', 1]],
-  },
-  {
-    // 'both', HALF-BUMPED: kitchen is done, bar is still outstanding — proves the two states
-    // move independently. Must appear in kitchen's READY TO RUN and must NOT read as Out on bar.
-    name_snapshot: 'PROBE: both, half-bumped (kitchen done, bar still outstanding)',
-    route_to: 'both',
-    kitchen_state: 'done',
-    bar_state: 'outstanding',
-    events: [['kitchen', 'done', 0.5]],
-  },
-  // 'unrouted' is DELIBERATELY NOT SEEDED. Diagnosed live against staging's
-  // order_lines_states_match_route CHECK constraint 2026-08-28: route_to='unrouted' (and every
-  // plausible alternate spelling tried: unassigned/none/no_station/unset) is rejected regardless
-  // of kitchen_state/bar_state — the current staging migration does not yet accept it, contrary
-  // to the 2026-08-28 ruling that it is a value in the enum. Real finding, not a guess to work
-  // around a third time; reported rather than seeded with an invented workaround.
-]
+/**
+ * Builds the SAME shape GET /api/station/lines returns for one station — one card per order,
+ * NOT-FINISHED lines only, is_ready computed via the real isLineReady() — from plain rows this
+ * script already has in hand. Not a re-guess of that route's contract: it imports the same
+ * isLineReady/stationsOwnedBy this script also used to decide what to insert, so the "server"
+ * and "seed" side of this proof cannot silently drift apart.
+ */
+function buildStationResponse(
+  station: 'kitchen' | 'bar',
+  orders: Array<{ id: string; order_number: number; table_number: number; placed_at: string }>,
+  lines: InsertedLine[],
+) {
+  const stateColumn = station === 'kitchen' ? 'kitchen_state' : 'bar_state'
+  const orderById = new Map(orders.map((o) => [o.id, o]))
+
+  const cardsByOrder = new Map<string, ReturnType<typeof emptyCard>>()
+  function emptyCard(orderId: string) {
+    const order = orderById.get(orderId)!
+    return {
+      order_id: orderId,
+      order_number: order.order_number,
+      table_number: order.table_number,
+      order_instructions: null,
+      placed_at: order.placed_at,
+      seconds_waiting: Math.max(0, Math.round((now - new Date(order.placed_at).getTime()) / 1000)),
+      lines: [] as unknown[],
+    }
+  }
+
+  for (const line of lines) {
+    const state = (line[stateColumn] ?? null) as LineState | null
+    if (state === null || state === 'ready' || state === 'voided') continue // NOT-FINISHED, same as the real route
+
+    if (!cardsByOrder.has(line.order_id)) cardsByOrder.set(line.order_id, emptyCard(line.order_id))
+    cardsByOrder.get(line.order_id)!.lines.push({
+      id: line.id,
+      name_snapshot: line.name_snapshot,
+      quantity: line.quantity,
+      line_note: line.line_note,
+      route_to: line.route_to,
+      kitchen_state: line.kitchen_state,
+      bar_state: line.bar_state,
+      is_ready: isLineReady(line),
+      unrouted: line.route_to === 'unrouted',
+      shared_with_other_station: line.route_to === 'both' || line.route_to === 'unrouted',
+    })
+  }
+
+  const orderCards = [...cardsByOrder.values()].sort((a, b) => a.placed_at.localeCompare(b.placed_at))
+  return { station, orders: orderCards, server_time: new Date(now).toISOString() }
+}
 
 async function runSeed() {
   await guardTableExists()
-  const { orderId, tableNumber } = await createProbeOrder()
 
-  console.log(`\n=== seeding order_lines on STAGING ${STAGING_REF}, order ${orderId} ===\n`)
+  console.log(`\n=== seeding order_lines on STAGING ${STAGING_REF} ===\n`)
 
-  const rows = SEED_LINES.map((line, index) => ({
-    restaurant_id: RESTAURANT_ID,
-    order_id: orderId,
-    source_item_index: index,
-    name_snapshot: line.name_snapshot,
-    quantity: 1,
-    route_to: line.route_to,
-    kitchen_state: line.kitchen_state,
-    bar_state: line.bar_state,
-  }))
+  const ordersCreated: Array<{ id: string; order_number: number; table_number: number; placed_at: string }> = []
+  const allInsertedLines: InsertedLine[] = []
 
-  const { data: inserted, error: insertError } = await db.from('order_lines').insert(rows).select('*')
+  for (const spec of PROBE_ORDERS) {
+    // Every line's stationsOwnedBy() must agree with the route_to it was seeded with — a real
+    // assertion, not decoration, since a mismatch here would mean this script and the domain
+    // model it imports have drifted.
+    for (const line of spec.lines) {
+      const owned = stationsOwnedBy(line.route_to)
+      if (owned.includes('kitchen') !== (line.kitchen_state !== null)) {
+        throw new Error(`REFUSING: ${spec.label} — kitchen_state nullness disagrees with stationsOwnedBy(${line.route_to})`)
+      }
+      if (owned.includes('bar') !== (line.bar_state !== null)) {
+        throw new Error(`REFUSING: ${spec.label} — bar_state nullness disagrees with stationsOwnedBy(${line.route_to})`)
+      }
+    }
 
-  if (insertError) {
-    console.error('\nINSERT FAILED (order_lines) — this is a real finding about the schema, not a bug in this script:')
-    console.error(insertError.message)
-    process.exitCode = 1
-    return
-  }
+    const { orderId, tableNumber } = await createProbeOrder(spec)
+    const placedAt = minutesAgo(spec.placedMinutesAgo)
+    ordersCreated.push({ id: orderId, order_number: 0, table_number: tableNumber, placed_at: placedAt })
 
-  console.log(`Inserted ${inserted?.length ?? 0} order_lines row(s).`)
-
-  const eventRows = (inserted ?? []).flatMap((row, i) =>
-    SEED_LINES[i].events.map(([station, toState, minsAgo]) => ({
+    const rows = spec.lines.map((line, index) => ({
       restaurant_id: RESTAURANT_ID,
-      order_line_id: row.id,
-      station,
-      from_state: 'outstanding',
-      to_state: toState,
-      actor_kind: 'terminal',
-      actor_user_id: null,
-      occurred_at: minutesAgo(minsAgo),
-    })),
-  )
+      order_id: orderId,
+      source_item_index: index,
+      name_snapshot: line.name_snapshot,
+      quantity: 1,
+      line_note: line.line_note ?? null,
+      route_to: line.route_to,
+      kitchen_state: line.kitchen_state,
+      bar_state: line.bar_state,
+    }))
 
-  if (eventRows.length > 0) {
-    const { error: eventsError } = await db.from('order_line_events').insert(eventRows)
-    if (eventsError) {
-      console.error('\nINSERT FAILED (order_line_events) — order_lines rows above ARE live; clean up and fix before retrying:')
-      console.error(eventsError.message)
+    const { data: inserted, error: insertError } = await db.from('order_lines').insert(rows).select('*')
+    if (insertError) {
+      console.error(`\nINSERT FAILED (order_lines, ${spec.label}) — this is a real finding about the schema, not a bug in this script:`)
+      console.error(insertError.message)
       process.exitCode = 1
       return
     }
-    console.log(`Inserted ${eventRows.length} order_line_events row(s).`)
+    console.log(`  Inserted ${inserted?.length ?? 0} order_lines row(s) for '${spec.label}'.`)
+    allInsertedLines.push(...((inserted ?? []) as InsertedLine[]))
+
+    // A creation event per station the line is owned by — mirrors writeOrderLines' own shape
+    // (lib/orders/order-lines.ts), so these rows look like ones the real write path would have
+    // produced, not a seed-script invention.
+    const events = (inserted ?? []).flatMap((row: InsertedLine) =>
+      stationsOwnedBy(row.route_to).map((station) => ({
+        restaurant_id: RESTAURANT_ID,
+        order_line_id: row.id,
+        station,
+        from_state: null,
+        to_state: 'outstanding',
+        actor_kind: 'terminal' as const,
+        actor_user_id: null,
+      })),
+    )
+    if (events.length > 0) {
+      const { error: eventsError } = await db.from('order_line_events').insert(events)
+      if (eventsError) console.warn(`  creation events failed for '${spec.label}':`, eventsError.message)
+    }
   }
 
-  const { data: insertedEvents } = eventRows.length
-    ? await db.from('order_line_events').select('*').in('order_line_id', (inserted ?? []).map((r) => r.id))
-    : { data: [] }
+  const tableNumberByOrderId: Record<string, string> = {}
+  for (const o of ordersCreated) tableNumberByOrderId[o.id] = String(o.table_number)
+
+  const kitchenResponse = buildStationResponse('kitchen', ordersCreated, allInsertedLines)
+  const barResponse = buildStationResponse('bar', ordersCreated, allInsertedLines)
 
   writeFileSync(
     SEED_SNAPSHOT_PATH,
@@ -260,10 +368,9 @@ async function runSeed() {
       {
         seededAt: new Date().toISOString(),
         restaurantId: RESTAURANT_ID,
-        orderId,
-        tableNumberByOrderId: { [orderId]: String(tableNumber) },
-        lines: inserted ?? [],
-        events: insertedEvents ?? [],
+        tableNumberByOrderId,
+        kitchenResponse,
+        barResponse,
       },
       null,
       2,
@@ -272,12 +379,10 @@ async function runSeed() {
   console.log(`\nSnapshot written to ${SEED_SNAPSHOT_PATH} for __tests__/station-screens-live-staging.test.tsx to render against.`)
 
   console.log('')
-  for (const row of inserted ?? []) {
+  for (const row of allInsertedLines) {
     console.log(`  ${row.name_snapshot} — route_to=${row.route_to} kitchen_state=${row.kitchen_state} bar_state=${row.bar_state}`)
   }
   console.log(`\nrestaurant_id: ${RESTAURANT_ID}`)
-  console.log(`order_id: ${orderId}`)
-  console.log(`table_number: ${tableNumber}`)
   console.log(`\nClean up afterward: npx tsx scripts/seed-station-screens-staging.ts --cleanup`)
 }
 

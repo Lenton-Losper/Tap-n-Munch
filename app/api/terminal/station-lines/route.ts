@@ -2,30 +2,42 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
-import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
-import { ORDER_LINES_TABLE, ORDER_LINE_EVENTS_TABLE } from '@/lib/stations/schema-assumptions'
 import {
   assertTerminalPairedToStation,
   isStationKind,
   StationPairingMismatchError,
 } from '@/lib/stations/station-pairing'
+import { GET as getStationLines } from '@/app/api/station/lines/route'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * feat/station-screens-v1 — the initial snapshot both the kitchen and bar screen fetch. One feed
- * for both screens: each maps it differently (lib/stations/map-raw-lines.ts) rather than the
- * server pre-filtering by station, so a route_to = 'both' line is visible to build both
- * screens' independent state.
+ * feat/station-screens-v1 — the initial (and only) snapshot the kitchen and bar screens fetch.
  *
- * table_number is returned alongside the lines as a separate `orders` lookup — it is not a
- * column on order_lines (confirmed 2026-08-28 from live rows; see
- * lib/stations/schema-assumptions.ts). "Still on the board" is bounded by the order's own
- * status, excluding completed/cancelled.
+ * ============================================================================================
+ * FIXED 2026-08-28 — RETIRED THE SECOND, GUESSED READ LAYER
+ * ============================================================================================
  *
- * `?station=kitchen|bar` is REQUIRED (20260828230000_terminal_station_pairing.sql). Pairing is
- * pointless if the same code works against both URLs, so this is what makes "pair a screen"
- * (components/settings/station-screens-pairing-section.tsx) mean something.
+ * This used to query order_lines/order_line_events directly against a GUESSED shape
+ * (lib/stations/schema-assumptions.ts, now deleted) and hand the raw rows to the frontend for
+ * lib/stations/map-raw-lines.ts to reassemble into cards. That is a second, independently
+ * evolving copy of exactly what GET /api/station/lines (ADR-005 §5, lib/orders/order-lines.ts)
+ * already computes correctly — the NOT-FINISHED filter, the per-order grouping, is_ready via the
+ * one shared isLineReady() — and it is precisely the kind of duplication that let 'cooked'
+ * silently fall out of a hand-rolled `.eq(column, 'outstanding')` filter the real route's own
+ * docblock warns about.
+ *
+ * So this route now does ONLY what is specific to it — the feature flag and the screen-pairing
+ * gate (20260828230000_terminal_station_pairing.sql), preserved in exactly the same order as
+ * before: requireFeature, then assertTerminalPairedToStation, BEFORE any board data is touched —
+ * and then hands the same incoming request straight to the real GET /api/station/lines handler,
+ * in-process. Both routes agree on the same `?station=kitchen|bar` query convention already
+ * present on this request's own URL, so nothing needs reconstructing beyond the terminal's own
+ * Authorization header, which `req` already carries and the real route re-validates itself.
+ *
+ * The response the screens now receive is the REAL contract's own shape (`{ station, orders,
+ * server_time }`, each order card carrying `lines` with `kitchen_state`/`bar_state`/`is_ready`)
+ * — see lib/stations/map-raw-lines.ts, rewritten to map THAT shape instead of a raw table dump.
  */
 export async function GET(req: Request) {
   try {
@@ -58,54 +70,10 @@ export async function GET(req: Request) {
       throw err
     }
 
-    // #323-shaped: `orders` is unbounded past 1000 rows without an explicit range, and
-    // `.eq('restaurant_id', ...)` alone does not narrow enough for the CI gate to accept it (a
-    // busy venue's lifetime order count is not itself a small set) even though a REALLY open
-    // board never is. fetchAllRows is the sanctioned way to say "all of them, paged."
-    const openOrders = await fetchAllRows<{ id: string; table_number: string | number | null }>(
-      supabase
-        .from('orders')
-        .select('id, table_number')
-        .eq('restaurant_id', terminal.restaurantId)
-        .not('status', 'in', '(completed,cancelled)'),
-      { label: 'station-lines open orders' },
-    )
-
-    const openOrderIds = openOrders.map((o) => o.id)
-    if (openOrderIds.length === 0) {
-      return NextResponse.json({ lines: [], events: [], tableNumberByOrderId: {} })
-    }
-
-    const tableNumberByOrderId: Record<string, string> = {}
-    for (const order of openOrders ?? []) {
-      tableNumberByOrderId[order.id] = String(order.table_number ?? '—')
-    }
-
-    const { data: lines, error: linesError } = await supabase
-      .from(ORDER_LINES_TABLE)
-      .select('*')
-      .eq('restaurant_id', terminal.restaurantId)
-      .in('order_id', openOrderIds)
-
-    if (linesError) throw linesError
-
-    const lineIds = (lines ?? []).map((line) => line.id)
-    if (lineIds.length === 0) {
-      return NextResponse.json({ lines: [], events: [], tableNumberByOrderId })
-    }
-
-    const { data: events, error: eventsError } = await supabase
-      .from(ORDER_LINE_EVENTS_TABLE)
-      .select('*')
-      .eq('restaurant_id', terminal.restaurantId)
-      .in('order_line_id', lineIds)
-
-    if (eventsError) throw eventsError
-
-    return NextResponse.json({ lines: lines ?? [], events: events ?? [], tableNumberByOrderId })
+    return getStationLines(req)
   } catch (err: unknown) {
     if (err instanceof Response) return err
-    console.error('[station-lines] failed:', err)
+    console.error('[terminal/station-lines] failed:', err)
     return NextResponse.json({ error: 'Failed to load station lines' }, { status: 500 })
   }
 }

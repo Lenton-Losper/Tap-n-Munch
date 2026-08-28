@@ -11,9 +11,9 @@ import { StationConnectionIndicator } from '@/components/stations/station-connec
  * Wall-mounted, read from ~3m with hands full. Every size decision here is driven by that, not
  * by ordinary screen density: table number is the single biggest thing on a card because that
  * is the one fact a cook needs to resolve before they've even walked over. Item + quantity is
- * the second-biggest thing. A modifier (parsed off the item name after the first comma -- "Ribeye,
- * medium" -> "Ribeye" + "medium") is smaller again, because it matters once you're already
- * looking at the right card, not before.
+ * the second-biggest thing. A modifier (line.lineNote — real data, per the four-state rebuild;
+ * see lib/stations/types.ts) is smaller again, because it matters once you're already looking at
+ * the right card, not before.
  */
 const ESCALATION_CLASSES: Record<AgeEscalation, string> = {
   white: 'border-[#E9E9E7] bg-white text-[#37352F]',
@@ -25,78 +25,78 @@ function ageLabel(minutes: number): string {
   return minutes <= 0 ? STATION_COPY.age.justNow : STATION_COPY.age.minutes(minutes)
 }
 
-function splitModifier(itemName: string): { name: string; modifier: string | null } {
-  const commaIndex = itemName.indexOf(',')
-  if (commaIndex === -1) return { name: itemName, modifier: null }
-  return { name: itemName.slice(0, commaIndex).trim(), modifier: itemName.slice(commaIndex + 1).trim() }
-}
-
-function ReadyToRunCard({ line, now }: { line: KitchenLine; now: number }) {
-  const minutes = ageMinutes(line.readyToRunAt as string, now)
+/**
+ * A line the station has already cooked, waiting on the pass. Escalates in urgency the same way
+ * the old "Ready to run" card did — see lib/stations/types.ts's docblock: the age driving that
+ * escalation is the ORDER's age, not this line's own cooked timestamp, because the real GET
+ * contract carries no per-line transition timestamp to key it on.
+ */
+function CookedCard({
+  line,
+  now,
+  onMarkReadyToRun,
+}: {
+  line: KitchenLine
+  now: number
+  onMarkReadyToRun: (lineId: string) => void
+}) {
+  const minutes = ageMinutes(line.placedAt ?? '', now)
   const escalation = readyToRunEscalation(minutes)
-  const { name, modifier } = splitModifier(line.itemName)
 
   return (
     <div
-      data-testid="ready-to-run-card"
+      data-testid="cooked-card"
       data-escalation={escalation}
       className={`rounded-3xl border-8 px-8 py-6 ${ESCALATION_CLASSES[escalation]}`}
     >
       <div className="flex items-start justify-between gap-4">
         <p className="text-7xl font-black leading-none tabular-nums">{STATION_COPY.kitchen.tableLabel(line.tableNumber)}</p>
-        <span className="rounded-full bg-black/10 px-4 py-1.5 text-2xl font-bold tabular-nums" data-testid="ready-to-run-age">
+        <span className="rounded-full bg-black/10 px-4 py-1.5 text-2xl font-bold tabular-nums" data-testid="cooked-age">
           {ageLabel(minutes)}
         </span>
       </div>
       <p className="mt-5 text-4xl font-extrabold leading-tight">
-        {line.quantity}× {name}
+        {line.quantity}× {line.itemName}
       </p>
-      {modifier ? <p className="mt-1.5 text-2xl font-medium opacity-70">{modifier}</p> : null}
+      {line.lineNote ? <p className="mt-1.5 text-2xl font-medium opacity-70">{line.lineNote}</p> : null}
+      <button
+        type="button"
+        onClick={() => onMarkReadyToRun(line.id)}
+        className="mt-5 w-full rounded-2xl bg-[#37352F] px-6 py-4 text-2xl font-bold text-white hover:bg-[#25231f]"
+      >
+        {STATION_COPY.kitchen.readyToRunButton}
+      </button>
     </div>
   )
 }
 
+/** Outstanding: not yet cooked. The only action here is Cooked — Ready to run only ever applies
+ *  to a line already in the cooked zone above, which is why this row takes no onMarkReadyToRun. */
 function OutstandingLineRow({
   line,
   onMarkCooked,
-  onMarkReadyToRun,
 }: {
   line: KitchenLine
   onMarkCooked: (lineId: string) => void
-  onMarkReadyToRun: (lineId: string) => void
 }) {
-  const status = line.cookedAt ? 'cooked' : 'outstanding'
-  const { name, modifier } = splitModifier(line.itemName)
-
   return (
     <div
       data-testid="outstanding-line-row"
-      data-status={status}
       className="flex items-center justify-between gap-4 border-t-2 border-[#EDECE8] py-4 first:border-t-0 first:pt-0"
     >
       <div className="min-w-0">
         <p className="text-4xl font-bold leading-tight text-[#37352F]">
-          {line.quantity}× {name}
+          {line.quantity}× {line.itemName}
         </p>
-        {modifier ? <p className="mt-1 text-xl text-[#6B675F]">{modifier}</p> : null}
+        {line.lineNote ? <p className="mt-1 text-xl text-[#6B675F]">{line.lineNote}</p> : null}
       </div>
-      {status === 'outstanding' ? (
-        <button
-          type="button"
-          onClick={() => onMarkCooked(line.id)}
-          className="shrink-0 rounded-2xl bg-[#FF6B35] px-6 py-4 text-2xl font-bold text-white hover:bg-[#e85f2f]"
-        >
-          {STATION_COPY.kitchen.cookedButton}
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => onMarkReadyToRun(line.id)}
-          className="shrink-0 rounded-2xl bg-[#37352F] px-6 py-4 text-2xl font-bold text-white hover:bg-[#25231f]"
-        >
-          {STATION_COPY.kitchen.readyToRunButton}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onMarkCooked(line.id)}
+        className="shrink-0 rounded-2xl bg-[#FF6B35] px-6 py-4 text-2xl font-bold text-white hover:bg-[#e85f2f]"
+      >
+        {STATION_COPY.kitchen.cookedButton}
+      </button>
     </div>
   )
 }
@@ -106,12 +106,10 @@ function OutstandingTableCard({
   tableNumber,
   lines,
   onMarkCooked,
-  onMarkReadyToRun,
 }: {
   tableNumber: string
   lines: KitchenLine[]
   onMarkCooked: (lineId: string) => void
-  onMarkReadyToRun: (lineId: string) => void
 }) {
   return (
     <div
@@ -123,7 +121,7 @@ function OutstandingTableCard({
       </p>
       <div className="mt-5">
         {lines.map((line) => (
-          <OutstandingLineRow key={line.id} line={line} onMarkCooked={onMarkCooked} onMarkReadyToRun={onMarkReadyToRun} />
+          <OutstandingLineRow key={line.id} line={line} onMarkCooked={onMarkCooked} />
         ))}
       </div>
     </div>
@@ -176,16 +174,16 @@ export function KitchenScreen({
         </div>
       ) : null}
 
-      <section className="mb-10" data-testid="ready-to-run-section">
+      <section className="mb-10" data-testid="cooked-section">
         <h2 className="mb-4 text-4xl font-black uppercase tracking-wide text-[#37352F]">
-          {STATION_COPY.kitchen.readyToRunHeading}
+          {STATION_COPY.kitchen.cookedHeading}
         </h2>
-        {board.readyToRun.length === 0 ? (
-          <p className="text-2xl text-[#6B675F]">{STATION_COPY.kitchen.readyToRunEmpty}</p>
+        {board.cooked.length === 0 ? (
+          <p className="text-2xl text-[#6B675F]">{STATION_COPY.kitchen.cookedEmpty}</p>
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {board.readyToRun.map((line) => (
-              <ReadyToRunCard key={line.id} line={line} now={now} />
+            {board.cooked.map((line) => (
+              <CookedCard key={line.id} line={line} now={now} onMarkReadyToRun={onMarkReadyToRun} />
             ))}
           </div>
         )}
@@ -201,12 +199,7 @@ export function KitchenScreen({
           <div className="grid gap-5 xl:grid-cols-2">
             {board.outstandingByTable.map((table) => (
               <div key={table.tableNumber} data-testid="outstanding-table-group">
-                <OutstandingTableCard
-                  tableNumber={table.tableNumber}
-                  lines={table.stationGroups.flatMap((group) => group.lines)}
-                  onMarkCooked={onMarkCooked}
-                  onMarkReadyToRun={onMarkReadyToRun}
-                />
+                <OutstandingTableCard tableNumber={table.tableNumber} lines={table.lines} onMarkCooked={onMarkCooked} />
               </div>
             ))}
           </div>

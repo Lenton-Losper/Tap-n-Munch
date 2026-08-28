@@ -1,129 +1,162 @@
-import { mapRawLinesToBarRounds, mapRawLinesToKitchenLines } from '@/lib/stations/map-raw-lines'
-import type { RawOrderLine, RawOrderLineEvent } from '@/lib/stations/schema-assumptions'
+/**
+ * REBUILT 2026-08-28: mapStationLinesToKitchenLines / mapStationLinesToBarRounds map the REAL
+ * GET /api/station/lines response shape (StationLinesResponseDTO) rather than a raw
+ * order_lines/order_line_events table dump against a guessed schema.
+ */
+import { mapStationLinesToBarRounds, mapStationLinesToKitchenLines } from '@/lib/stations/map-raw-lines'
+import type { StationLinesResponseDTO, StationLineDTO, StationOrderCardDTO } from '@/lib/stations/map-raw-lines'
 
-function rawLine(overrides: Partial<RawOrderLine>): RawOrderLine {
+function line(overrides: Partial<StationLineDTO>): StationLineDTO {
   return {
     id: 'l1',
-    restaurant_id: 'r1',
-    order_id: 'o1',
-    tab_id: 't1',
-    source_item_index: 0,
-    menu_item_id: 'm1',
     name_snapshot: 'Steak',
     quantity: 1,
     line_note: null,
     route_to: 'kitchen',
-    created_at: '2026-08-27T20:00:00Z',
     kitchen_state: 'outstanding',
     bar_state: null,
+    is_ready: false,
+    unrouted: false,
+    shared_with_other_station: false,
     ...overrides,
   }
 }
 
-function rawEvent(overrides: Partial<RawOrderLineEvent>): RawOrderLineEvent {
+function card(overrides: Partial<StationOrderCardDTO> & { lines: StationLineDTO[] }): StationOrderCardDTO {
   return {
-    id: 'e1',
-    restaurant_id: 'r1',
-    order_line_id: 'l1',
-    station: 'kitchen',
-    from_state: 'outstanding',
-    to_state: 'done',
-    actor_kind: 'terminal',
-    actor_user_id: 'terminal-1',
-    occurred_at: '2026-08-27T20:05:00Z',
+    order_id: 'o1',
+    order_number: 100,
+    table_number: '4',
+    order_instructions: null,
+    placed_at: '2026-08-27T20:00:00Z',
+    seconds_waiting: 60,
     ...overrides,
   }
 }
 
-describe('mapRawLinesToKitchenLines', () => {
-  test('kitchen_state = outstanding needs no event lookup, no cookedAt/readyToRunAt', () => {
-    const [line] = mapRawLinesToKitchenLines([rawLine({})], [])
-    expect(line.cookedAt).toBeNull()
-    expect(line.readyToRunAt).toBeNull()
+function response(cards: StationOrderCardDTO[], station: 'kitchen' | 'bar' = 'kitchen'): StationLinesResponseDTO {
+  return { station, orders: cards, server_time: '2026-08-27T20:10:00Z' }
+}
+
+describe('mapStationLinesToKitchenLines', () => {
+  test('kitchen_state = outstanding maps to state "outstanding"', () => {
+    const [kl] = mapStationLinesToKitchenLines(response([card({ lines: [line({})] })]))
+    expect(kl.state).toBe('outstanding')
   })
 
-  test('kitchen_state = done reads the to_state=done transition timestamp as readyToRunAt', () => {
-    const events = [rawEvent({ to_state: 'done', occurred_at: '2026-08-27T20:06:00Z' })]
-    const [line] = mapRawLinesToKitchenLines([rawLine({ kitchen_state: 'done' })], events)
-    expect(line.readyToRunAt).toBe('2026-08-27T20:06:00Z')
+  test('kitchen_state = cooked maps to state "cooked"', () => {
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ kitchen_state: 'cooked' })] })]),
+    )
+    expect(kl.state).toBe('cooked')
   })
 
-  test('current state is read off kitchen_state, never derived by folding events', () => {
-    // A stray/late-arriving bar event for the same line must not influence the kitchen read.
-    const events = [rawEvent({ station: 'bar', to_state: 'done', occurred_at: '2026-08-27T20:09:00Z' })]
-    const [line] = mapRawLinesToKitchenLines([rawLine({ route_to: 'both', kitchen_state: 'outstanding' })], events)
-    expect(line.readyToRunAt).toBeNull()
+  test('an unrecognised kitchen_state falls open to "outstanding", not throwing', () => {
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ kitchen_state: 'some_future_state' })] })]),
+    )
+    expect(kl.state).toBe('outstanding')
   })
 
-  test('table number comes from the lookup map keyed by order_id, not the line itself', () => {
-    const [line] = mapRawLinesToKitchenLines([rawLine({ order_id: 'o42' })], [], { o42: '17' })
-    expect(line.tableNumber).toBe('17')
+  test('placedAt comes from the order card, not the line', () => {
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ order_id: 'o42', placed_at: '2026-08-27T19:55:00Z', lines: [line({})] })]),
+    )
+    expect(kl.placedAt).toBe('2026-08-27T19:55:00Z')
+    expect(kl.orderId).toBe('o42')
+  })
+
+  test('table number comes from the order card', () => {
+    const [kl] = mapStationLinesToKitchenLines(response([card({ table_number: 17, lines: [line({})] })]))
+    expect(kl.tableNumber).toBe('17')
   })
 
   test('name_snapshot becomes itemName', () => {
-    const [line] = mapRawLinesToKitchenLines([rawLine({ name_snapshot: 'Fish and chips' })], [])
-    expect(line.itemName).toBe('Fish and chips')
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ name_snapshot: 'Fish and chips' })] })]),
+    )
+    expect(kl.itemName).toBe('Fish and chips')
   })
 
-  test('excludes lines routed only to bar', () => {
-    expect(mapRawLinesToKitchenLines([rawLine({ route_to: 'bar', kitchen_state: null })], [])).toHaveLength(0)
+  test('unrouted and shared_with_other_station pass straight through', () => {
+    const [kl] = mapStationLinesToKitchenLines(
+      response([card({ lines: [line({ unrouted: true, shared_with_other_station: true })] })]),
+    )
+    expect(kl.unrouted).toBe(true)
+    expect(kl.sharedWithOtherStation).toBe(true)
   })
 
-  test('includes unrouted lines — the screen itself puts them under Unrouted, not this filter', () => {
-    expect(
-      mapRawLinesToKitchenLines([rawLine({ route_to: 'unrouted', kitchen_state: null })], []),
-    ).toHaveLength(1)
+  test('every line on every card is flattened into one array', () => {
+    const kls = mapStationLinesToKitchenLines(
+      response([
+        card({ order_id: 'o1', lines: [line({ id: 'l1' }), line({ id: 'l2' })] }),
+        card({ order_id: 'o2', lines: [line({ id: 'l3' })] }),
+      ]),
+    )
+    expect(kls.map((l) => l.id)).toEqual(['l1', 'l2', 'l3'])
   })
 })
 
-describe('mapRawLinesToBarRounds', () => {
-  test('groups lines sharing an order_id into one round', () => {
-    const lines = [
-      rawLine({ id: 'l1', order_id: 'o1', route_to: 'bar', bar_state: 'outstanding', name_snapshot: 'IPA' }),
-      rawLine({ id: 'l2', order_id: 'o1', route_to: 'bar', bar_state: 'outstanding', name_snapshot: 'Lager' }),
-    ]
-    const rounds = mapRawLinesToBarRounds(lines, [])
+describe('mapStationLinesToBarRounds', () => {
+  test('one order card maps to one round, carrying every line on it as an item', () => {
+    const rounds = mapStationLinesToBarRounds(
+      response(
+        [
+          card({
+            order_id: 'o1',
+            lines: [
+              line({ id: 'l1', name_snapshot: 'IPA', route_to: 'bar', bar_state: 'outstanding' }),
+              line({ id: 'l2', name_snapshot: 'Lager', route_to: 'bar', bar_state: 'outstanding' }),
+            ],
+          }),
+        ],
+        'bar',
+      ),
+    )
     expect(rounds).toHaveLength(1)
     expect(rounds[0].items.map((i) => i.itemName)).toEqual(['IPA', 'Lager'])
   })
 
-  test('a round is Out only once every line in it has bar_state = done', () => {
-    const lines = [
-      rawLine({ id: 'l1', order_id: 'o1', route_to: 'bar', bar_state: 'done' }),
-      rawLine({ id: 'l2', order_id: 'o1', route_to: 'bar', bar_state: 'outstanding' }),
-    ]
-    const events = [rawEvent({ order_line_id: 'l1', station: 'bar', to_state: 'done' })]
-    expect(mapRawLinesToBarRounds(lines, events)[0].outAt).toBeNull()
-
-    const bothDone = [
-      lines[0],
-      rawLine({ id: 'l2', order_id: 'o1', route_to: 'bar', bar_state: 'done' }),
-    ]
-    const bothDoneEvents = [
-      ...events,
-      rawEvent({ id: 'e2', order_line_id: 'l2', station: 'bar', to_state: 'done', occurred_at: '2026-08-27T20:07:00Z' }),
-    ]
-    expect(mapRawLinesToBarRounds(bothDone, bothDoneEvents)[0].outAt).toBe('2026-08-27T20:05:00Z')
+  test('a card with no lines produces no round', () => {
+    const rounds = mapStationLinesToBarRounds(response([card({ lines: [] })], 'bar'))
+    expect(rounds).toHaveLength(0)
   })
 
-  test('current state is read off bar_state, never derived by folding events', () => {
-    const lines = [rawLine({ id: 'l1', order_id: 'o1', route_to: 'both', bar_state: 'outstanding' })]
-    const events = [rawEvent({ order_line_id: 'l1', station: 'kitchen', to_state: 'done' })]
-    expect(mapRawLinesToBarRounds(lines, events)[0].outAt).toBeNull()
+  test('unrouted is true for the round if ANY line on it is unrouted, even a mixed card', () => {
+    const rounds = mapStationLinesToBarRounds(
+      response(
+        [
+          card({
+            lines: [
+              line({ id: 'l1', route_to: 'bar', bar_state: 'outstanding', unrouted: false }),
+              line({ id: 'l2', route_to: 'unrouted', bar_state: 'outstanding', unrouted: true }),
+            ],
+          }),
+        ],
+        'bar',
+      ),
+    )
+    expect(rounds[0].unrouted).toBe(true)
   })
 
-  test('excludes lines routed only to kitchen', () => {
-    expect(mapRawLinesToBarRounds([rawLine({ route_to: 'kitchen', bar_state: null })], [])).toHaveLength(0)
+  test('line_note passes through onto the round item', () => {
+    const rounds = mapStationLinesToBarRounds(
+      response([card({ lines: [line({ line_note: 'no ice' })] })], 'bar'),
+    )
+    expect(rounds[0].items[0].lineNote).toBe('no ice')
   })
 
-  test("a route_to = both line's kitchen and bar state move independently, never mixed (proven live: order_lines row 89fe25a2 on staging)", () => {
-    const lines = [
-      rawLine({ id: 'l1', order_id: 'o1', route_to: 'both', kitchen_state: 'done', bar_state: 'outstanding' }),
-    ]
-    const events = [rawEvent({ order_line_id: 'l1', station: 'kitchen', to_state: 'done' })]
-    const [kitchenLine] = mapRawLinesToKitchenLines(lines, events)
-    const [round] = mapRawLinesToBarRounds(lines, events)
-    expect(kitchenLine.readyToRunAt).not.toBeNull()
-    expect(round.outAt).toBeNull()
+  test('multiple order cards produce independent rounds', () => {
+    const rounds = mapStationLinesToBarRounds(
+      response(
+        [
+          card({ order_id: 'o1', table_number: '2', lines: [line({ id: 'l1' })] }),
+          card({ order_id: 'o2', table_number: '9', lines: [line({ id: 'l2' })] }),
+        ],
+        'bar',
+      ),
+    )
+    expect(rounds.map((r) => r.id)).toEqual(['o1', 'o2'])
+    expect(rounds.map((r) => r.tableNumber)).toEqual(['2', '9'])
   })
 })
