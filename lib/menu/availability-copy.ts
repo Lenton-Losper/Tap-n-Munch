@@ -58,11 +58,20 @@ export const MENU_AVAILABILITY_COPY = {
   button: 'PENDING COPY: mark-unavailable button',
   title: 'PENDING COPY: mark-unavailable confirm title',
   /**
-   * The one that matters most. Whatever it becomes, it has to say the dish vanishes for EVERY
-   * customer at the venue -- a waiter pressing this at one table changes what the whole room can
-   * order.
+   * SIGNED BY THE OWNER 2026-08-28. The only string in this object that is not pending.
+   *
+   * Revised after the checkout path was traced. The first draft said only that the dish vanishes
+   * from every menu; it did not say what happens to a customer who is ALREADY holding it. That
+   * customer is refused at checkout by name — "no longer on the menu ... please remove it" — and
+   * has to edit their own order. A waiter deciding whether to press this needs to know they are
+   * about to interrupt somebody mid-order, not just change a menu.
+   *
+   * Do not shorten. The second sentence is the half a waiter cannot infer from the first.
    */
-  body: 'PENDING COPY: mark-unavailable confirm body — must state the dish disappears from every customer menu at this venue, QR and terminal, until it is restored',
+  body:
+    'This removes the dish from the menu for every customer in the restaurant, on their phones ' +
+    'and on every terminal. Anyone with it in their order right now will be told it is ' +
+    'unavailable and asked to take it off themselves.',
   confirm: 'PENDING COPY: mark-unavailable accept label',
   restoreButton: 'PENDING COPY: restore-to-menu button',
   successHidden: 'PENDING COPY: confirmation after a dish is hidden',
