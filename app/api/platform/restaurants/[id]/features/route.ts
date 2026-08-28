@@ -4,6 +4,7 @@ import {
   requirePlatformRole,
   writePlatformAudit,
 } from '@/lib/permissions/assert-platform-admin'
+import { FEATURE_FLAG_KEYS } from '@/app/admin/restaurants/[id]/constants'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,15 +20,11 @@ export async function PATCH(
   try {
     const body = await req.json()
 
-    const allowedKeys = [
-      'kitchen_enabled', 'inventory_enabled', 'analytics_enabled',
-      'split_bill_enabled', 'reservations_enabled', 'loyalty_enabled',
-      'online_payments_enabled', 'multi_branch_enabled', 'staff_app_enabled',
-      'kiosk_enabled', 'whatsapp_enabled',
-    ]
-
+    // Was a hand-maintained literal, drifted from FEATURE_FLAG_KEYS (the docblock there already
+    // claimed this route was driven by it) -- importing it means a new flag is added in one
+    // place, not two kept in sync by hand.
     const safeUpdates = Object.fromEntries(
-      Object.entries(body).filter(([k]) => allowedKeys.includes(k))
+      Object.entries(body).filter(([k]) => (FEATURE_FLAG_KEYS as readonly string[]).includes(k))
     )
 
     if (Object.keys(safeUpdates).length === 0)

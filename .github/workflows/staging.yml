@@ -5,6 +5,26 @@ on:
     branches:
       - cloudflare-staging
 
+# ONE STAGING RUN AT A TIME.
+#
+# The authorize- and staff-role suites are DB-BACKED: they run against the real staging Supabase
+# project and share a single fixture staff_member, because `resolveStaffMemberId` links a user to
+# staff_members BY EMAIL, so every run must use the same row. Their setup deletes duplicate
+# staff_members and clears that member's permission overrides.
+#
+# Two overlapping runs therefore corrupt each other rather than merely queueing: run B's beforeEach
+# clears the override row run A inserted a moment earlier, and run A then reads `false` from an
+# `allow` it just wrote. That is exactly the 2026-08-28 red — "staff_permissions overrides on
+# DB-backed defaults, expected true got false" — which passes in isolation and cannot be reproduced
+# by re-reading the code, because the defect is not in the code.
+#
+# QUEUE, DO NOT CANCEL. cancel-in-progress would kill a run between a fixture's insert and its
+# afterEach cleanup, leaving the override rows behind for the next run to trip over — turning an
+# overlap into a persistent red instead of a transient one.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
 jobs:
 
   probe-realtime-and-23505:
@@ -243,6 +263,185 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
         run: npx tsx scripts/verify-held-payments-staging.ts
+
+  apply-station-screens-flag:
+    # station_screens_enabled defaults false and is additive (ADD COLUMN IF NOT EXISTS), so
+    # nothing on this restaurant_features column can regress an existing venue by landing late --
+    # but /kitchen and /bar are unreachable without it: requireFeature() reads a column that does
+    # not exist yet, which is a 42703 Postgres error, not the clean 403 the flag-off path is
+    # supposed to answer with.
+    if: contains(github.event.head_commit.message, '[apply-station-screens-flag]')
+    runs-on: ubuntu-latest
+    name: Apply station_screens_enabled migration (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Apply station_screens_enabled migration on staging
+        run: |
+          set -euo pipefail
+          MIG="supabase/migrations/20260828220000_station_screens_enabled_feature.sql"
+          VER="20260828220000"
+
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            npx supabase db query --db-url "$DB_URL" -f "$MIG"
+            npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            echo "APPLY_STATION_SCREENS_FLAG_STAGING_OK (db-url)"
+            exit 0
+          fi
+
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            echo "APPLY_STATION_SCREENS_FLAG_STAGING_OK (password)"
+            exit 0
+          fi
+
+          echo "ERROR: No way to apply DDL. Add STAGING_DATABASE_URL or STAGING_SUPABASE_DB_PASSWORD,"
+          echo "or paste this file into the staging SQL editor: $MIG"
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+  apply-station-pairing:
+    # restaurant_terminals.station_kind, additive and nullable -- no P5/waiter terminal is
+    # affected. MEASURED 2026-08-28 rather than assumed: replicated the exact insert
+    # POST /api/admin/terminals/stations performs against staging directly and it fails with
+    # PGRST204 "Could not find the 'station_kind' column ... in the schema cache" -- the same
+    # apply-job gap 20260828220000 hit. Confirmed root cause of three consecutive failed
+    # activation attempts: the pairing route 500s before any code is ever generated, so no code
+    # matching what was typed ever existed to look up.
+    if: contains(github.event.head_commit.message, '[apply-station-pairing]')
+    runs-on: ubuntu-latest
+    name: Apply terminal station pairing migration (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Apply terminal_station_pairing migration on staging
+        run: |
+          set -euo pipefail
+          MIG="supabase/migrations/20260828230000_terminal_station_pairing.sql"
+          VER="20260828230000"
+
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            npx supabase db query --db-url "$DB_URL" -f "$MIG"
+            npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            echo "APPLY_STATION_PAIRING_STAGING_OK (db-url)"
+            exit 0
+          fi
+
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+            npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            echo "APPLY_STATION_PAIRING_STAGING_OK (password)"
+            exit 0
+          fi
+
+          echo "ERROR: No way to apply DDL. Add STAGING_DATABASE_URL or STAGING_SUPABASE_DB_PASSWORD,"
+          echo "or paste this file into the staging SQL editor: $MIG"
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+  apply-waiter-led-service:
+    # ADR-005. FOUR migrations, and the API that depends on them is INERT until they run:
+    #   * POST /api/terminal/tables/:id/open fails on tabs.opened_by_user_id
+    #   * POST /api/terminal/rounds answers 502 LINES_NOT_WRITTEN, because order_lines is missing
+    #   * GET /api/terminal/tables?view=floor reports every owner as null
+    #
+    # None of that loses data and all of it looks like a broken feature, which is the worst way for
+    # a waiter to meet it on a P5 at 08:00.
+    #
+    # APPLY BEFORE DEPLOY, for the reason the held_payments job gives above.
+    #
+    # ORDER IS LOAD-BEARING. order_line_events carries a foreign key to order_lines, so 131000 MUST
+    # run before 131100. The list below is in dependency order; do not sort it, do not parallelise
+    # it, and do not "tidy" it into a matrix.
+    if: contains(github.event.head_commit.message, '[apply-waiter-led-service]')
+    runs-on: ubuntu-latest
+    name: Apply waiter-led service migrations (staging)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Apply ADR-005 migrations on staging
+        run: |
+          set -euo pipefail
+          MIGS="supabase/migrations/20260827131000_order_lines.sql
+          supabase/migrations/20260827131100_order_line_events.sql
+          supabase/migrations/20260827131200_table_assignments.sql
+          supabase/migrations/20260827131300_tabs_opened_by_user_id.sql"
+
+          DB_URL="${STAGING_DATABASE_URL:-${DATABASE_URL:-${SUPABASE_DB_URL:-}}}"
+          if [ -n "$DB_URL" ]; then
+            echo "Using database URL with supabase db query --db-url"
+            for MIG in $MIGS; do
+              VER="$(basename "$MIG" | cut -d_ -f1)"
+              echo "--- applying $VER ($MIG)"
+              npx supabase db query --db-url "$DB_URL" -f "$MIG"
+              npx supabase db query --db-url "$DB_URL" "INSERT INTO supabase_migrations.schema_migrations(version) VALUES ('$VER') ON CONFLICT DO NOTHING"
+            done
+            echo "APPLY_WAITER_LED_SERVICE_STAGING_OK (db-url)"
+            exit 0
+          fi
+
+          DB_PASSWORD="${STAGING_SUPABASE_DB_PASSWORD:-${SUPABASE_DB_PASSWORD:-}}"
+          if [ -n "$DB_PASSWORD" ]; then
+            echo "Using DB password + supabase link"
+            npx supabase link --project-ref mdqjpxwczrhkxkbqatqa -p "$DB_PASSWORD" --yes
+            for MIG in $MIGS; do
+              VER="$(basename "$MIG" | cut -d_ -f1)"
+              echo "--- applying $VER ($MIG)"
+              npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa db query --linked -f "$MIG"
+              # `db query` does NOT record the ledger row, so the drift gate would report these as
+              # unapplied having applied them. `migration repair` is what records it.
+              npx tsx scripts/safe-supabase-linked.ts mdqjpxwczrhkxkbqatqa migration repair --linked --status applied "$VER"
+            done
+            echo "APPLY_WAITER_LED_SERVICE_STAGING_OK (password)"
+            exit 0
+          fi
+
+          echo "ERROR: No way to apply DDL. Add STAGING_DATABASE_URL or STAGING_SUPABASE_DB_PASSWORD,"
+          echo "or paste these four files into the staging SQL editor IN THIS ORDER:"
+          echo "$MIGS"
+          exit 1
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          STAGING_SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
   probe-tenant-isolation:
     if: contains(github.event.head_commit.message, '[probe-tenant-isolation]')

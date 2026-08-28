@@ -51,7 +51,8 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as Record<string, unknown>
-    const code = normalizeActivationCode(String(body?.code || ''))
+    const rawCode = String(body?.code || '')
+    const code = normalizeActivationCode(rawCode)
     const deviceId = readBodyString(body, 'deviceId', 'device_id')
     const terminalSn = readBodyString(body, 'terminalSn', 'terminal_sn', 'sn')
 
@@ -61,7 +62,6 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const nowIso = new Date().toISOString()
-
     const { data, error } = await supabase
       .from('restaurant_terminals')
       .select('id, restaurant_id, device_id, name, activation_code_expires_at, active, activation_code')
@@ -73,6 +73,19 @@ export async function POST(request: Request) {
     if (error) throw error
 
     if (!data?.id) {
+      /**
+       * Deliberately says nothing about WHICH of the three conditions failed. This endpoint is
+       * unauthenticated — anyone who can reach it can guess codes — so distinguishing "no such
+       * code" from "code exists but is already active" would confirm a valid code to someone who
+       * only guessed it.
+       *
+       * The temporary 2026-08-28 activation instrumentation that lived here has been removed. It
+       * logged the raw submitted code and, behind an `x-debug-activation: 1` request header,
+       * returned the matching terminal row — `activation_code` included — to any caller who set
+       * the header. An opt-in flag on an unauthenticated route is not a safeguard: the opt-in
+       * belongs to whoever is calling.
+       */
+      console.warn('[terminals/activate] no terminal matched an activation attempt')
       return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
     }
 

@@ -19,6 +19,7 @@ import {
   fetchPendingOrderRequests,
   summarisePendingForTab,
 } from '@/lib/tabs/pending-order-requests'
+import { loadTableOwners } from '@/lib/tables/table-owners'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +31,25 @@ export async function GET(req: Request) {
 
     if (!terminal.permissions.includes('orders:read')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    }
+
+    /**
+     * ADR-005 §3 -- THE FLOOR GRID, BEHIND AN OPT-IN PARAM.
+     *
+     * The default response below is structurally incapable of showing a free table: it filters
+     * `status = 'occupied'` and joins `tabs!inner`, so a table with no live tab cannot appear. A
+     * waiter's floor grid needs exactly those tables, because a table you cannot see is a table
+     * you cannot open.
+     *
+     * WHY A PARAM AND NOT A WIDENED DEFAULT. The current APK is live at three venues and renders
+     * this list as "tables that need attention". Adding every free table to that response would
+     * fill the existing device with cards for empty tables overnight, on a build nobody is about
+     * to change. So the new shape is opt-in and the old one is untouched -- the same reasoning
+     * that made `ready_to_pay_at` an additive field rather than a changed one.
+     */
+    const url = new URL(req.url)
+    if (url.searchParams.get('view') === 'floor') {
+      return await respondWithFloorGrid(supabase, terminal.restaurantId)
     }
 
     const { data: tables, error } = await supabase
@@ -55,6 +75,8 @@ export async function GET(req: Request) {
           payment_preference,
           ready_to_pay_at,
           members,
+          created_at,
+          opened_by_user_id,
           orders(
             id,
             order_number,
@@ -108,6 +130,16 @@ export async function GET(req: Request) {
     const now = new Date()
     const cardInFlight = (order: any) =>
       isCardPaymentStillInFlight(order.payment_status, order.terminal_pushed_at, now)
+
+    /**
+     * ADR-005 §3. Additive: the existing APK ignores these fields, and a new one uses them to
+     * print who has the table and how long it has been open.
+     */
+    const owners = await loadTableOwners(
+      supabase,
+      terminal.restaurantId,
+      (tables ?? []).map((t: any) => String(t.id)),
+    )
 
     // Compute canClose and unpaidTotal server-side
     const enriched = (tables ?? []).map((table: any) => {
@@ -216,9 +248,17 @@ export async function GET(req: Request) {
           pending_request_count: pendingForTab.count,
           pending_requests_value: pendingForTab.value,
           pending_requests_unknown: pendingForTab.unknown,
+          // ADR-005 §3: how long this table has been open, and who opened it. `opened_at` is the
+          // tab's own creation time, not the assignment's -- a handover must not reset the clock
+          // the waiter is reading.
+          opened_at: tab.created_at ?? null,
+          opened_by_user_id: tab.opened_by_user_id ?? null,
           orders,
         },
         can_close: canClose,
+        // Current owner of the TABLE, which can legitimately differ from the tab's opener after a
+        // shift change. Null when nobody is assigned -- a QR tab, or an assignment that failed.
+        owner: owners.get(String(table.id)) ?? null,
       }
     })
 
@@ -231,4 +271,104 @@ export async function GET(req: Request) {
     if (err instanceof Response) return err
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+}
+
+/**
+ * ADR-005 §3 -- every active table, open or free, with its owner and how long it has been open.
+ *
+ * OPEN/FREE IS DERIVED FROM THE TAB, NOT FROM restaurant_tables.status.
+ *
+ * The two disagree in production, and the disagreement is documented: #216 covers a table with a
+ * live tab whose status never became 'occupied', and 20260824150000_reap_abandoned_tabs covers the
+ * reverse -- a reaped tab leaving status stuck at 'occupied'. `status` is a cache of a fact that
+ * lives somewhere else.
+ *
+ * A waiter's grid must be right about which tables are free, because a table wrongly shown as open
+ * is a table nobody seats. So the live tab is the answer and `status` is reported alongside it for
+ * diagnosis rather than used as the source of truth.
+ */
+async function respondWithFloorGrid(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  restaurantId: string,
+) {
+  const { data: tables, error: tablesError } = await supabase
+    .from('restaurant_tables')
+    .select('id, table_number, table_name, status')
+    .eq('restaurant_id', restaurantId)
+    .eq('active', true)
+    .order('table_number', { ascending: true })
+
+  if (tablesError) {
+    console.error('[terminal/tables GET view=floor] tables read failed', tablesError)
+    return NextResponse.json({ error: 'Failed to load tables' }, { status: 500 })
+  }
+
+  const { data: tabs, error: tabsError } = await supabase
+    .from('tabs')
+    .select('id, table_id, status, total, created_at, opened_by_user_id')
+    .eq('restaurant_id', restaurantId)
+    .in('status', ['open', 'ready_to_pay'])
+
+  if (tabsError) {
+    console.error('[terminal/tables GET view=floor] tabs read failed', tabsError)
+    return NextResponse.json({ error: 'Failed to load tabs' }, { status: 500 })
+  }
+
+  // If a table somehow carries two live tabs, the NEWEST wins. That is the one a waiter just
+  // opened and the one they are about to add to; silently picking the older would send the round
+  // onto a tab nobody is looking at.
+  const tabByTableId = new Map<string, Record<string, unknown>>()
+  for (const tab of (tabs ?? []) as Array<Record<string, unknown>>) {
+    const tableId = String(tab.table_id ?? '').trim()
+    if (!tableId) continue
+    const existing = tabByTableId.get(tableId)
+    if (!existing || String(tab.created_at) > String(existing.created_at)) {
+      tabByTableId.set(tableId, tab)
+    }
+  }
+
+  const owners = await loadTableOwners(
+    supabase,
+    restaurantId,
+    (tables ?? []).map((t: { id: string }) => String(t.id)),
+  )
+
+  // One clock for the whole payload, so two tables opened in the same second cannot report
+  // times that disagree with each other.
+  const now = Date.now()
+
+  const grid = (tables ?? []).map((table: Record<string, unknown>) => {
+    const tab = tabByTableId.get(String(table.id)) ?? null
+    const openedAt = tab?.created_at ? String(tab.created_at) : null
+    const openedAtMs = openedAt ? new Date(openedAt).getTime() : Number.NaN
+
+    return {
+      id: String(table.id),
+      table_number: table.table_number ?? null,
+      table_name: table.table_name ?? null,
+      state: tab ? 'open' : 'free',
+      owner: owners.get(String(table.id)) ?? null,
+      opened_at: openedAt,
+      // Provided so the device does not have to trust its own clock against the server's, which
+      // on a terminal that has been on a shelf for a week is not a safe assumption.
+      seconds_open: Number.isFinite(openedAtMs)
+        ? Math.max(0, Math.round((now - openedAtMs) / 1000))
+        : null,
+      tab: tab
+        ? {
+            id: String(tab.id),
+            status: tab.status ?? null,
+            total: tab.total ?? 0,
+            opened_by_user_id: tab.opened_by_user_id ?? null,
+          }
+        : null,
+      // Reported for diagnosis only. See the header: it is not what `state` is computed from.
+      table_status: table.status ?? null,
+    }
+  })
+
+  return NextResponse.json({
+    tables: grid,
+    server_time: new Date(now).toISOString(),
+  })
 }
