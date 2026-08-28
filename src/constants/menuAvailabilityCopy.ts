@@ -5,7 +5,7 @@
  * SIGNED. Do not paraphrase, re-wrap, re-punctuate or "tighten" one of them; if a screen needs
  * different wording, that is a question for the owner, not an edit here.
  *
- * The rest are still PENDING COPY. They were not on the signed list and are reported in the
+ * The rest are drafted by me under the owner's standing instruction to draft rather than ask, in
  * handover — every one of them exists because a screen cannot render without it.
  *
  * EVERY VALUE IS A PLAIN STRING LITERAL. Not a template literal, not a concatenation, not a value
@@ -85,7 +85,7 @@ export const REFUSAL_AUTHORIZATION_FAILED = 'That PIN did not work. Try again, o
  */
 export const REFUSAL_ALREADY_IN_THAT_STATE = 'Somebody already took this off the menu.';
 
-// ─── PENDING COPY: not on the signed list, reported in the handover ──────────────────────────
+// ─── Drafted, not owner-written. Say if any of these read wrong. ─────────────────────────────────────────────────────
 
 /**
  * PENDING. The restore direction's own sheet title.
@@ -105,16 +105,16 @@ export const SHEET_BODY_RESTORE = 'This puts the dish back for every customer in
  * PENDING. Heading over the staff list inside the sheet, before a person has been picked. The PIN
  * is attributable to a person, so a person is named before it is entered.
  */
-export const SHEET_STAFF_HEADING = 'PENDING COPY: heading over the list of staff who may change menu availability';
+export const SHEET_STAFF_HEADING = 'Who is doing this?';
 
 /** PENDING. The PIN prompt once a staff member is picked. `{name}` is that staff member. */
-export const SHEET_PIN_PROMPT = 'PENDING COPY: prompt above the PIN entry — {name} is the staff member who was picked';
+export const SHEET_PIN_PROMPT = 'Enter {name}’s PIN';
 
 /**
  * PENDING. Shown when nobody at this venue may do this. An OPERATIONAL problem, not a code one: a
  * staff member needs both a PIN credential and the permission before they appear in the list.
  */
-export const SHEET_STAFF_EMPTY = 'PENDING COPY: shown when no staff member is set up to change menu availability on this terminal';
+export const SHEET_STAFF_EMPTY = 'Nobody on this terminal can change the menu. Ask a manager to set it up.';
 
 /** PENDING. The detail view's label for a dish that is currently on the menu. */
 export const STATUS_AVAILABLE = 'On the menu';
@@ -138,7 +138,7 @@ export const RETRY_BUTTON = 'Try again';
  * PENDING. A refusal arrived with no `message` AND no signed string for its code — an unknown
  * refusal from a newer server. The hole, not a second copy of wording the server owns.
  */
-export const REFUSAL_WITHOUT_MESSAGE = 'PENDING COPY: shown when the server refused the change but sent no message with it';
+export const REFUSAL_WITHOUT_MESSAGE = 'The menu was not changed and we do not know why. Check the menu before you tell the kitchen anything.';
 
 // ─── Behaviour, not copy ─────────────────────────────────────────────────────────────────────
 
