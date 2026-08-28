@@ -47,6 +47,13 @@ const MENU_MGMT_CACHE_PREFIX = 'menu_mgmt_cache_v1'
 const MENU_MGMT_CACHE_TTL_MS = 2 * 60 * 1000
 const INITIAL_VISIBLE_ITEMS_PER_SUBCATEGORY = 24
 
+/** Signed 2026-08-28. Matches the SelectItem labels in the routing modal below. */
+const ROUTING_DESTINATION_LABEL: Record<'kitchen' | 'bar' | 'both', string> = {
+  kitchen: 'Kitchen',
+  bar: 'Bar',
+  both: 'Both',
+}
+
 type MenuManagementCachePayload = {
   menuCategories: MenuCategory[]
   allSubCategories: SubCategory[]
@@ -1591,9 +1598,9 @@ export function MenuManagementV2({
       >
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>PENDING COPY: category routing modal title</DialogTitle>
+            <DialogTitle>Where do these go?</DialogTitle>
             <DialogDescription>
-              PENDING COPY: category routing modal description
+              Choose which station makes these items. Drinks go to the bar, food to the kitchen.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1614,11 +1621,11 @@ export function MenuManagementV2({
                 }
               >
                 {routingSelection.size === menuCategories.length && menuCategories.length > 0
-                  ? 'PENDING COPY: deselect-all label'
-                  : 'PENDING COPY: select-all label'}
+                  ? 'Clear selection'
+                  : 'Select all'}
               </button>
               <span className="text-sm text-muted-foreground">
-                {routingSelection.size} PENDING COPY: selected-count suffix
+                {routingSelection.size} selected
               </span>
             </div>
 
@@ -1644,7 +1651,7 @@ export function MenuManagementV2({
               ))}
               {menuCategories.length === 0 && (
                 <p className="text-sm text-muted-foreground italic px-2 py-4 text-center">
-                  PENDING COPY: no-categories-yet empty state
+                  No categories yet. Add one to your menu first.
                 </p>
               )}
             </div>
@@ -1669,8 +1676,8 @@ export function MenuManagementV2({
                 className="bg-[#FF6B35] hover:bg-[#e55a28] flex-1"
               >
                 {routingSaving
-                  ? 'PENDING COPY: applying-routing-in-progress label'
-                  : `PENDING COPY: apply-routing button label (selected: ${routingSelection.size})`}
+                  ? 'Saving…'
+                  : `Send ${routingSelection.size} to ${ROUTING_DESTINATION_LABEL[routingBulkValue]}`}
               </Button>
             </div>
           </div>

@@ -95,8 +95,12 @@ describe('#351 the admin feature-flag panel renders only flags something reads',
   })
 
   test('the "Kitchen Display System" label is gone from the rendered panel', () => {
+    // NOT a bare /kitchen/i ban. 2026-08-28: station_screens_enabled came out of
+    // UNBUILT_FEATURE_FLAG_KEYS once ITS reader shipped, and its signed label ("Kitchen and bar
+    // screens") legitimately contains the word -- that is a different flag, promising a real,
+    // built thing. What #351 actually forbids is the SPECIFIC retired promise, not the word.
     mountPanel()
-    expect(container.textContent).not.toMatch(/kitchen/i)
+    expect(container.textContent).not.toMatch(/Kitchen Display System/i)
   })
 
   test('every flag that is NOT unbuilt still renders exactly one switch', () => {

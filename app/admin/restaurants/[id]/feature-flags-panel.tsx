@@ -28,7 +28,7 @@ export const FEATURE_FLAG_LABELS: Record<OperatorFeatureFlagKey, string> = {
   staff_app_enabled: 'Staff App',
   kiosk_enabled: 'Kiosk Mode',
   whatsapp_enabled: 'WhatsApp Ordering',
-  station_screens_enabled: 'PENDING COPY: station screens rollout switch label',
+  station_screens_enabled: 'Kitchen and bar screens',
 }
 
 interface FeatureFlagsPanelProps {
