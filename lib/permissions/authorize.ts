@@ -2,6 +2,9 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ROLE_PERMISSIONS, Permission } from './index'
 import { NextResponse } from 'next/server'
 
+/** Postgres 42703: the column does not exist. See resolveStaffMemberId. */
+const UNDEFINED_COLUMN = '42703'
+
 /**
  * staff_permissions.staff_id references staff_members.id (not users.id).
  *
@@ -32,6 +35,19 @@ export async function resolveStaffMemberId(
 ): Promise<string | null> {
   const supabase = createServerSupabaseClient()
 
+  /**
+   * THE COLUMN MAY NOT EXIST YET, AND THAT MUST NOT TAKE PERMISSIONS DOWN.
+   *
+   * staff_members.user_id arrives in 20260829131000. Code reaches a deployed environment before a
+   * migration is applied to it — that is the normal order, not an edge case — and on 2026-08-28
+   * this exact query went out ahead of its column and threw 42703 out of resolveStaffMemberId(),
+   * which failed seven authorize tests and blocked a deploy.
+   *
+   * A MISSING COLUMN falls through to the email path, which is what every environment used before
+   * this change and is still correct. Any OTHER error still throws: a permissions lookup that
+   * swallows real failures would hand out an empty permission list, and an empty list is a silent
+   * total denial rather than an error anybody sees.
+   */
   const { data: linked, error: linkedError } = await supabase
     .from('staff_members')
     .select('id')
@@ -39,8 +55,15 @@ export async function resolveStaffMemberId(
     .eq('user_id', userId)
     .maybeSingle()
 
-  if (linkedError) throw linkedError
-  if (linked?.id) return String(linked.id)
+  if (linkedError) {
+    if (linkedError.code !== UNDEFINED_COLUMN) throw linkedError
+    console.warn(
+      '[permissions] staff_members.user_id is absent — migration 20260829131000 has not been ' +
+        'applied here. Falling back to the email join.',
+    )
+  } else if (linked?.id) {
+    return String(linked.id)
+  }
 
   const { data: userRow, error: userError } = await supabase
     .from('users')
