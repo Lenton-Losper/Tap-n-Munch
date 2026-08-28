@@ -1,7 +1,13 @@
 # Followup: `station_kind` migration never applied to staging — every pairing attempt fails
 
 **Filed:** 2026-08-28
-**Status:** root cause confirmed by direct measurement, not yet fixed (fix is applying an already-written, already-committed migration; see below)
+**Status:** FIXED 2026-08-28. Both `20260828220000_station_screens_enabled_feature.sql` and
+`20260828230000_terminal_station_pairing.sql` applied directly to staging (project ref
+`mdqjpxwczrhkxkbqatqa`) via `supabase link` + `supabase db query --linked`, using the same
+guarded `safe-supabase-linked` path this repo already uses elsewhere. Verified by direct query
+afterward: `restaurant_features.station_screens_enabled` and `restaurant_terminals.station_kind`
+both exist and read correctly. See the unaccounted-for detail below before treating this as a
+fully closed loop.
 
 ## What happened
 
@@ -63,3 +69,27 @@ once the migration lands and this can be tested against a route that actually su
 toast easy to miss on a settings page, should a failed pair leave any UI state that could be
 mistaken for success, etc. Not chased further now because the root cause makes it moot until
 the schema is applied.
+
+## Third finding: an unaccounted-for applied-state gap on `station_screens_enabled`
+
+`20260828220000_station_screens_enabled_feature.sql` is `ADD COLUMN IF NOT EXISTS
+station_screens_enabled BOOLEAN NOT NULL DEFAULT false` — every row, on first creation of the
+column, should read `false`. When the apply ran (2026-08-28, via `supabase db query --linked`,
+same session as the `station_kind` fix above) and the column was queried back immediately
+afterward, the `staging test` restaurant's row already read `true`.
+
+Two explanations are possible and this has not been narrowed further:
+
+1. The column already existed in Postgres (contradicting the `42703 column ... does not exist`
+   error measured directly, twice, earlier the same night, from a fresh `supabase-js` client —
+   `42703` is a raw Postgres SQLSTATE, not a PostgREST-cache-only symptom like `PGRST204`), and
+   something else set this one row to `true` before the column was queried again.
+2. The apply genuinely created the column moments before the read, and something in the same
+   window set it to `true` — plausible only if another process (the parallel session, or a
+   manual action) wrote to `restaurant_features` in the few minutes between the two events, which
+   was not checked for at the time.
+
+The practical outcome is unaffected — the column exists, reads correctly, and the flag is on for
+the one restaurant that needs it (`staging test`) — but a migration whose applied-state history
+cannot be fully accounted for is worth recording even when the end state is correct. If this
+column's value or `applied` status is ever questioned later, this is the open thread to pull.

@@ -33,7 +33,7 @@ export const STATION_PAIRING_COPY = {
     kitchenLabel: 'Kitchen',
     kitchenHint: 'Ready-to-run and outstanding items, grouped by table.',
     barLabel: 'Bar',
-    barHint: 'In and out rounds. No age escalation.',
+    barHint: 'Rounds appear here as they come in. Tap one when it goes out.',
     nameLabel: 'Name (optional)',
     namePlaceholder: (defaultName: string) => defaultName,
     generateButton: 'Generate code',
