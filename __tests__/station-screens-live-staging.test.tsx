@@ -52,6 +52,9 @@ function loadSnapshot(): Snapshot | null {
   return JSON.parse(readFileSync(SEED_SNAPSHOT_PATH, 'utf8')) as Snapshot
 }
 
+/** The screens now take ONE bump handler for a line or a table alike — see lib/stations/bump.ts. */
+const NO_BUMP = async (lineIds: string[]) => ({ ok: true, total: lineIds.length, failedLineIds: [] })
+
 let container: HTMLDivElement
 let root: Root
 
@@ -87,8 +90,7 @@ describe('station screens against REAL staging rows', () => {
           lines={kitchenLines}
           now={Date.now()}
           connectionState="live"
-          onMarkCooked={() => {}}
-          onMarkReadyToRun={() => {}}
+          onBump={NO_BUMP}
         />,
       )
     })
@@ -98,7 +100,7 @@ describe('station screens against REAL staging rows', () => {
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
-      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBumpOut={() => {}} />)
+      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBump={NO_BUMP} />)
     })
     expect(container.querySelector('[data-testid="bar-screen"]')).toBeTruthy()
     expect(container.textContent).toContain('PROBE:')
@@ -127,8 +129,7 @@ describe('station screens against REAL staging rows', () => {
           lines={kitchenLines}
           now={Date.now()}
           connectionState="live"
-          onMarkCooked={() => {}}
-          onMarkReadyToRun={() => {}}
+          onBump={NO_BUMP}
         />,
       )
     })
@@ -138,7 +139,7 @@ describe('station screens against REAL staging rows', () => {
     act(() => root.unmount())
     root = createRoot(container)
     act(() => {
-      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBumpOut={() => {}} />)
+      root.render(<BarScreen rounds={barRounds} now={Date.now()} connectionState="live" onBump={NO_BUMP} />)
     })
     const inSection = container.querySelector('[data-testid="bar-in-section"]')!
     expect(inSection.textContent).toContain('half-bumped')
@@ -171,8 +172,7 @@ describe('station screens against REAL staging rows', () => {
           lines={kitchenLines}
           now={now}
           connectionState="live"
-          onMarkCooked={() => {}}
-          onMarkReadyToRun={() => {}}
+          onBump={NO_BUMP}
         />,
       )
     })

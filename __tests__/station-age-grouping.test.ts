@@ -62,7 +62,7 @@ function barRound(overrides: Partial<BarRound>): BarRound {
     id: 'br',
     tableNumber: '1',
     orderNumber: 100,
-    items: [{ itemName: 'Item', quantity: 1, lineNote: null }],
+    items: [{ id: 'brl-1', itemName: 'Item', quantity: 1, lineNote: null }],
     placedAt: '2026-08-27T20:00:00Z',
     unrouted: false,
     ...overrides,
