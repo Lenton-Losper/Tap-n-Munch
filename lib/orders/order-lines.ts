@@ -356,6 +356,119 @@ export async function buildOrderLines(
   })
 }
 
+export type VoidOrderLinesResult = {
+  /** Lines with at least one station-half voided by this call. */
+  voidedLineCount: number
+}
+
+/**
+ * VOID EVERY STILL-OUTSTANDING HALF OF AN ORDER'S LINES. Filed as
+ * docs/followup-cancelled-order-lines-not-voided.md, 2026-08-28 — nothing wrote this, so a
+ * cancelled order's lines sat at `outstanding`, indistinguishable from real, live, unstarted
+ * work. Measured: 7 cancelled orders, 16 lines, every kitchen/both line still `outstanding`.
+ *
+ * CALLED FROM WHEREVER AN ORDER IS CANCELLED, not from a board-read route. `GET
+ * /api/station/lines` has no `orders.status` awareness and is not getting one here — filtering by
+ * order status in every board-reading route treats the symptom in N places instead of the cause
+ * in one, which is the followup doc's own conclusion.
+ *
+ * ONLY A STATION-HALF THAT IS STILL OUTSTANDING VOIDS — `isStationOutstanding` (outstanding or
+ * cooked). A half that already reached `ready` is untouched: the kitchen already made it and the
+ * pass already passed it, and cancelling the order afterward does not un-cook the plate. Whether
+ * that food still goes out is an ORDER-level question (refunded, comped, eaten anyway), not a
+ * reason to rewrite what the board already correctly showed as done.
+ *
+ * ONE EVENT PER VOIDED STATION-HALF, matching writeOrderLines' own shape: `order_line_events`
+ * needs an event per station a line was routed to, not per line, so a 'both' line voids as two
+ * events when both halves were still outstanding.
+ *
+ * A FAILED EVENTS INSERT DOES NOT THROW, matching writeOrderLines' own choice: the lines
+ * themselves are already correctly voided by the time the events insert runs, and losing the
+ * audit trail for a cancellation is a logged gap, not a reason to leave the board wrong.
+ */
+export async function voidOutstandingOrderLines(
+  supabase: { from: (table: string) => any },
+  params: {
+    orderId: string
+    restaurantId: string
+    actorKind: 'terminal' | 'station' | 'system'
+    actorUserId: string | null
+  },
+): Promise<VoidOrderLinesResult> {
+  const { data: lines, error: linesError } = await supabase
+    .from('order_lines')
+    .select('id, kitchen_state, bar_state')
+    .eq('order_id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+
+  if (linesError) throw linesError
+
+  const rows = (lines ?? []) as Array<{
+    id: string
+    kitchen_state: LineState | null
+    bar_state: LineState | null
+  }>
+
+  const events: Array<Record<string, unknown>> = []
+  let voidedLineCount = 0
+
+  for (const line of rows) {
+    const voidKitchen = isStationOutstanding(line.kitchen_state)
+    const voidBar = isStationOutstanding(line.bar_state)
+    if (!voidKitchen && !voidBar) continue
+
+    // Captured BEFORE the update, not read off `line` afterward -- an event's from_state must
+    // record what the state WAS, and reading it back off the same object after an update is a
+    // trap the moment anything (a mock, a future caller) mutates in place rather than replacing.
+    const priorKitchenState = line.kitchen_state
+    const priorBarState = line.bar_state
+
+    const patch: Record<string, LineState> = {}
+    if (voidKitchen) patch.kitchen_state = 'voided'
+    if (voidBar) patch.bar_state = 'voided'
+
+    const { error: updateError } = await supabase
+      .from('order_lines')
+      .update(patch)
+      .eq('id', line.id)
+    if (updateError) throw updateError
+
+    voidedLineCount += 1
+
+    if (voidKitchen) {
+      events.push({
+        restaurant_id: params.restaurantId,
+        order_line_id: line.id,
+        station: 'kitchen',
+        from_state: priorKitchenState,
+        to_state: 'voided',
+        actor_kind: params.actorKind,
+        actor_user_id: params.actorUserId,
+      })
+    }
+    if (voidBar) {
+      events.push({
+        restaurant_id: params.restaurantId,
+        order_line_id: line.id,
+        station: 'bar',
+        from_state: priorBarState,
+        to_state: 'voided',
+        actor_kind: params.actorKind,
+        actor_user_id: params.actorUserId,
+      })
+    }
+  }
+
+  if (events.length > 0) {
+    const { error: eventsError } = await supabase.from('order_line_events').insert(events)
+    if (eventsError) {
+      console.error('[ORDER LINES] void events failed to write', eventsError)
+    }
+  }
+
+  return { voidedLineCount }
+}
+
 export type WriteOrderLinesResult = {
   lineCount: number
   /** How many lines each screen will show. An 'unrouted' line counts to all three. */
