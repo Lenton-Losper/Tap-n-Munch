@@ -18,47 +18,49 @@ import {CloseTableRefusalId} from '../lib/closeTableRefusals';
 
 // ─── The control ─────────────────────────────────────────────────────────────
 
-export const CLOSE_TABLE_BUTTON =
-  'PENDING COPY: the button on the waiter table view that ends the session for this table';
+export const CLOSE_TABLE_BUTTON = 'Close table';
 
-export const CLOSE_TABLE_CHECKING =
-  'PENDING COPY: shown on the button while the device re-reads the table to decide whether closing is allowed';
+export const CLOSE_TABLE_CHECKING = 'Checking…';
 
-export const CLOSE_TABLE_IN_PROGRESS =
-  'PENDING COPY: shown on the button while the close request is in flight';
+export const CLOSE_TABLE_IN_PROGRESS = 'Closing…';
 
 // ─── The confirmation, shown only when nothing refuses ───────────────────────
 
-export const CLOSE_CONFIRM_TITLE =
-  'PENDING COPY: title of the sheet that asks the waiter to confirm ending the session for this table';
+export const CLOSE_CONFIRM_TITLE = 'Close this table?';
 
-export const CLOSE_CONFIRM_BODY =
-  'PENDING COPY: body of the confirm sheet — closing ends the session and frees the table, it is not the same as taking payment, and it cannot be undone from the floor';
+export const CLOSE_CONFIRM_BODY = 'This ends the session and frees the table. It does not take payment, and you cannot undo it from the floor.';
 
-export const CLOSE_CONFIRM_ACTION =
-  'PENDING COPY: the button that confirms the close';
+/**
+ * SHOWN INSTEAD OF CLOSE_CONFIRM_BODY when the tab has no line tracking — a QR-opened or
+ * pre-migration tab whose bill is settled.
+ *
+ * Owner's ruling 2026-08-28: such a table may now be closed when nothing is owed, because money is
+ * knowable on a QR tab even when fulfilment is not. But rules 9 and 10 cannot fire on it, so
+ * NOBODY has checked whether food is still coming. The waiter is taking on a responsibility the
+ * system cannot take for them, and this sentence is the only place they are told so.
+ *
+ * It has to carry both halves: the bill is settled, AND line progress could not be checked.
+ * Dropping the second as duplicative of the ordinary body removes the entire safeguard.
+ */
+export const CLOSE_CONFIRM_BODY_NO_LINE_TRACKING = 'The bill is settled, so this table can be closed. This tab does not track items, so nobody has checked whether food is still coming — make sure the table is done before you close it.';
 
-export const CLOSE_CONFIRM_CANCEL =
-  'PENDING COPY: the button that backs out of the confirm sheet without closing';
+export const CLOSE_CONFIRM_ACTION = 'Yes, close it';
+
+export const CLOSE_CONFIRM_CANCEL = 'Keep it open';
 
 // ─── The refusal sheet ───────────────────────────────────────────────────────
 
-export const CLOSE_REFUSED_TITLE =
-  'PENDING COPY: title of the sheet listing every reason this table cannot be closed yet';
+export const CLOSE_REFUSED_TITLE = 'This table cannot be closed yet';
 
-export const CLOSE_REFUSED_BODY =
-  'PENDING COPY: line above the reason list explaining that all of these have to be dealt with before the table can be closed';
+export const CLOSE_REFUSED_BODY = 'Deal with each of these first, then close it.';
 
-export const CLOSE_REFUSED_DISMISS =
-  'PENDING COPY: the button that dismisses the refusal sheet';
+export const CLOSE_REFUSED_DISMISS = 'Close';
 
 // ─── Failures the server, not the device, decides ────────────────────────────
 
-export const CLOSE_FAILED_GENERIC =
-  'PENDING COPY: shown when the close request failed and the server gave no reason this device understands';
+export const CLOSE_FAILED_GENERIC = 'The table was not closed and nothing has changed. Try again, and tell a manager if it keeps failing.';
 
-export const CLOSE_FAILED_PENDING_REQUESTS =
-  'PENDING COPY: shown when the server refused the close because rounds a customer placed are still waiting to be accepted or declined on this table';
+export const CLOSE_FAILED_PENDING_REQUESTS = 'Rounds a customer sent are still waiting to be accepted or declined. Deal with those first, then close the table.';
 
 // ─── One reason per refusal ──────────────────────────────────────────────────
 
@@ -69,27 +71,27 @@ export const CLOSE_FAILED_PENDING_REQUESTS =
  */
 export const CLOSE_TABLE_REFUSAL_COPY: Record<CloseTableRefusalId, string> = {
   TABLE_UNKNOWN:
-    'PENDING COPY: refusal reason — the device could not read this table, so it cannot tell whether anything is still owed',
+    'This table could not be read, so nobody can tell what is owed. Refresh and try again.',
   LINES_UNKNOWN:
-    'PENDING COPY: refusal reason — the device could not read this table s food, so it cannot tell whether anything is still being made',
+    'The food for this table could not be read, so nobody can tell what is still coming. Refresh and try again.',
   TAB_STATUS_UNKNOWN:
-    'PENDING COPY: refusal reason — the server did not say what state this tab is in',
+    'The server did not say what state this tab is in. Refresh, and tell a manager if it stays this way.',
   SERVER_REFUSES:
-    'PENDING COPY: refusal reason — the server says this table is not closeable yet',
+    'The server will not close this table and did not say why. Refresh, and tell a manager if it stays this way.',
   UNPAID_BALANCE:
-    'PENDING COPY: refusal reason — there is still money owed on this table',
+    'There is still money owed on this table. Take payment first.',
   ORDER_OWES_MONEY:
-    'PENDING COPY: refusal reason — at least one order on this table has not been paid for',
+    'An order on this table has not been paid for. Take payment first.',
   CARD_PAYMENT_IN_FLIGHT:
-    'PENDING COPY: refusal reason — a card payment for this table is on the reader right now',
+    'A card payment is on the reader right now. Wait for it to finish.',
   CARD_PAYMENT_STUCK:
-    'PENDING COPY: refusal reason — a card payment for this table has been running longer than allowed and nobody knows yet whether it went through',
+    'A card payment has been running too long and nobody knows yet whether it went through. The card may have been charged. Check the card machine before closing.',
   OUTSTANDING_LINE:
-    'PENDING COPY: refusal reason — something ordered on this table is still being prepared',
+    'Something on this table is still being made. Wait for it, or void it.',
   UNROUTED_LINE:
-    'PENDING COPY: refusal reason — something ordered on this table never reached a station, so nobody is making it',
+    'Something on this table never reached the kitchen or bar. It is on the bill and nobody is making it. Tell a manager now.',
   LINE_TRACKING_UNAVAILABLE:
-    'PENDING COPY: refusal reason — this tab does not track what has been made, so the device cannot tell whether anything is outstanding',
+    'There is still money owed on this table, and this tab does not track items. Take payment first.',
   UNSENT_ROUND_ON_DEVICE:
-    'PENDING COPY: refusal reason — this terminal is holding a round for this table that has not been sent yet',
+    'This terminal is holding a round you have not sent. Send it or clear it before closing, or it will be lost.',
 };
