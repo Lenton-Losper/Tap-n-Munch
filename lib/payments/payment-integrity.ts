@@ -376,34 +376,3 @@ export function isPaidPaymentStatus(status: unknown): boolean {
     .trim()
     .toLowerCase() === 'paid'
 }
-
-/**
- * A tab's payment state, computed from its orders, distinct from `unpaid_total === 0`.
- *
- * THE DEFECT THIS CLOSES. `unpaid_total` is `sum(orders where owesMoney)`, and it reads zero in
- * two situations a caller must never conflate: every order was genuinely settled, or every order
- * was cancelled/voided before anyone paid. Digi Cofee, 2026-08-28: three waiter rounds were
- * wrongly auto-cancelled (see autoCancelStalePosOrders), `unpaid_total` read 0, and the terminal
- * rendered "Paid in full · table still open" over three unpaid drinks. Nobody paid anything.
- *
- * COMPUTED AT THE SOURCE, deliberately, rather than left for a client to infer from a bare number.
- * `unpaid_total === 0` is the ambiguous signal; this is the disambiguation, so a caller has the
- * fact rather than having to guess it from an absence.
- *
- *   'unpaid'    — something is still owed. The ordinary "not done yet" state.
- *   'paid'      — nothing is owed, and at least one order was actually settled. The only state
- *                 that may say "paid" out loud.
- *   'cancelled' — nothing is owed, but nothing was ever paid either — every order that existed
- *                 was cancelled or voided first. Zero owed for the wrong reason.
- *   'no_orders' — the tab has no orders at all yet. Not "paid": there is nothing to have paid.
- */
-export type TabPaymentState = 'unpaid' | 'paid' | 'cancelled' | 'no_orders'
-
-export function computeTabPaymentState(
-  orders: ReadonlyArray<{ payment_status: unknown }>,
-): TabPaymentState {
-  if (orders.length === 0) return 'no_orders'
-  if (orders.some((o) => owesMoney(o.payment_status))) return 'unpaid'
-  if (orders.some((o) => isPaidPaymentStatus(o.payment_status))) return 'paid'
-  return 'cancelled'
-}

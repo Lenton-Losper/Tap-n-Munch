@@ -5,11 +5,11 @@ import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
-  computeTabPaymentState,
   isCardPaymentStillInFlight,
   isCashSettleablePaymentStatus,
   isClaimablePaymentStatus,
   owesMoney,
+  isPaidPaymentStatus,
   secondsSincePush,
 } from '@/lib/payments/payment-integrity'
 import {
@@ -210,6 +210,33 @@ export async function GET(req: Request) {
       )
 
       /**
+       * ==========================================================================================
+       * ZERO OWED BECAUSE EVERYTHING WAS CANCELLED IS NOT ZERO OWED BECAUSE EVERYTHING WAS PAID.
+       * ==========================================================================================
+       *
+       * `unpaid_total` alone cannot tell those apart, and on 2026-08-28 that cost real money.
+       * Digi Cofee Table 1 had orders #30, #31 and #32 auto-cancelled by the stale-payment sweep.
+       * Every one of them fell out of `unpaidOrders` — correctly, a cancelled order owes nothing —
+       * so `unpaid_total` came back 0, and the terminal rendered the tab as PAID IN FULL over a
+       * table where nothing had ever been paid and the kitchen had already sent the food out.
+       *
+       * A waiter reading "paid in full" closes the table. That is the expensive direction, so the
+       * distinction is drawn HERE rather than left to each client to infer from a number that
+       * genuinely does not carry it.
+       *
+       * `paid_order_count` is what makes "0 owed" legible: zero owed with at least one paid order
+       * is a settled tab; zero owed with none is a tab where nothing was ever billed. The counts
+       * are reported rather than a single verdict so a device can distinguish the states the
+       * owner's signed copy actually names, instead of collapsing them again on arrival.
+       *
+       * Purely additive — an older APK ignores unknown fields and keeps its current behaviour.
+       */
+      const paidOrders = orders.filter((o: any) => isPaidPaymentStatus(o.payment_status))
+      const billableOrders = orders.filter(
+        (o: any) => owesMoney(o.payment_status) || isPaidPaymentStatus(o.payment_status),
+      )
+
+      /**
        * #120. A round that has not been Accepted is not in `orders` at all, so every number above
        * is blind to it. `can_close` used to be computed from `unpaidOrders` alone, which is how
        * staff could close a table over the top of a round placed five minutes earlier — leaving it
@@ -235,13 +262,15 @@ export async function GET(req: Request) {
           total: tab.total,
           unpaid_total: unpaidTotal,
           /**
-           * DISTINGUISHES "nothing owed because it was paid" FROM "nothing owed because it was
-           * cancelled first" -- unpaid_total alone reads 0 for both. See
-           * computeTabPaymentState's docblock: Digi Cofee, 2026-08-28, rendered "Paid in full"
-           * over three wrongly auto-cancelled rounds because nothing else said otherwise.
-           * Additive -- an existing APK reading unpaid_total unchanged is unaffected either way.
+           * The three counts that make `unpaid_total: 0` readable. See the block above.
+           *   paid > 0, unpaid 0            -> genuinely settled
+           *   paid 0,   unpaid 0, billable 0 -> nothing was ever billed (all cancelled)
+           *   order_count > billable_count   -> some orders are cancelled; say so, never "paid"
            */
-          payment_state: computeTabPaymentState(orders),
+          paid_order_count: paidOrders.length,
+          unpaid_order_count: unpaidOrders.length,
+          billable_order_count: billableOrders.length,
+          order_count: orders.length,
           payment_preference: tab.payment_preference,
           /**
            * #318. The terminal's table-card chip decides "Ready to Pay" from `status` alone, and

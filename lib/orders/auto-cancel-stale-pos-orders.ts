@@ -93,11 +93,7 @@ type StaleOrderCandidate = {
   total: number
   channel: string | null
   paycloud_merchant_order_no: string | null
-  tab_id: string | null
 }
-
-/** `tabs.status` values that mean "still being served" -- see EXCLUDE_LIVE_TAB_ORDERS below. */
-const LIVE_TAB_STATUSES = ['open', 'ready_to_pay']
 
 /**
  * #353 — a stale order this sweep can SEE but must never act on.
@@ -187,6 +183,13 @@ export type AutoCancelStalePosOrdersResult = {
   surfacedNeedsHumanCount: number
   surfacedNeedsHumanIds: string[]
   surfacedNeedsHuman: SurfacedStaleOrder[]
+  /**
+   * Orders left alone because they sit on an OPEN TAB — a meal in progress, not a dead payment.
+   * Counted rather than dropped silently: a sweep that quietly skips rows is indistinguishable
+   * from a sweep whose query is broken.
+   */
+  skippedOpenTabCount: number
+  skippedOpenTabIds: string[]
 }
 
 /**
@@ -611,6 +614,8 @@ export async function autoCancelStalePosOrders(
     surfacedNeedsHumanCount: 0,
     surfacedNeedsHumanIds: [],
     surfacedNeedsHuman: [],
+    skippedOpenTabCount: 0,
+    skippedOpenTabIds: [],
   }
 
   /**
@@ -656,7 +661,9 @@ export async function autoCancelStalePosOrders(
    */
   let candidateQuery = supabase
     .from('orders')
-    .select('id, restaurant_id, total, channel, paycloud_merchant_order_no, tab_id')
+    // `tab_id` is selected for the open-tab exclusion immediately below. Without it every
+    // waiter-led round looks exactly like an abandoned POS payment.
+    .select('id, restaurant_id, total, channel, tab_id, paycloud_merchant_order_no')
     .eq('payment_status', 'pending')
     .lt('placed_at', cutoffIso)
 
@@ -671,12 +678,86 @@ export async function autoCancelStalePosOrders(
     restaurant_id: string
     total: number
     channel: string | null
-    paycloud_merchant_order_no: string | null
     tab_id: string | null
+    paycloud_merchant_order_no: string | null
   }>(candidateQuery, { label: 'autoCancelStalePosOrders' })
   if (candidates.length === 0) return finalise(result)
 
-  const allRows = candidates as StaleOrderCandidate[]
+  /**
+   * ============================================================================================
+   * AN UNPAID ORDER ON AN OPEN TAB IS A MEAL IN PROGRESS, NOT A DEAD PAYMENT ATTEMPT.
+   * ============================================================================================
+   *
+   * On 2026-08-28 this sweep cancelled three live rounds at Digi Cofee, Table 1 — orders #30,
+   * #31 and #32 — between two and three minutes after each was placed. `cancellation_reason`
+   * on all three reads `auto_timeout`. The kitchen had already cooked them: their lines were
+   * `kitchen_state = 'ready'` against orders the database had marked cancelled. Food left the
+   * pass for orders that could never be billed, and nothing on the terminal said so.
+   *
+   * WHY IT HAPPENED. A waiter-led round writes `channel: 'pos'` and `payment_status: 'pending'`,
+   * because it is unpaid — and it stays unpaid for the whole meal, by design, until someone
+   * settles the tab. That is indistinguishable, on this query alone, from a POS payment the
+   * customer walked away from. The sweep is right about the shape and wrong about the meaning.
+   *
+   * WHY NOT SIMPLY A LONGER TIMEOUT. Because a two-hour dinner is not a slower payment; it is a
+   * different lifecycle. Any timeout long enough to survive a real service is far too long to
+   * catch the abandoned card payment this sweep exists for, and it would still cancel the meal
+   * that ran long. The discriminator has to be the tab, not the clock.
+   *
+   * WHAT COUNTS AS PROTECTED: the order belongs to a tab whose status is still `open`. A tab
+   * that has been closed or settled no longer protects its orders, so a genuinely abandoned
+   * attempt on a finished tab is still swept.
+   *
+   * This deliberately protects QR-opened tabs too. An unpaid order on any open tab is a meal
+   * somebody is still having. Sweeping abandoned QR tabs is a separate question with its own
+   * threshold to measure (#366) and is not something to smuggle in here.
+   *
+   * FAILURE POSTURE: if the tabs read fails, NOTHING is swept this run. The alternative —
+   * proceeding with an empty protected set — cancels live meals whenever a query hiccups, which
+   * is precisely the outcome being fixed.
+   */
+  const candidateTabIds = [
+    ...new Set(
+      candidates
+        .map((row) => String(row.tab_id ?? '').trim())
+        .filter((id) => id.length > 0),
+    ),
+  ]
+
+  const openTabIds = new Set<string>()
+  if (candidateTabIds.length > 0) {
+    const { data: openTabs, error: openTabsError } = await supabase
+      .from('tabs')
+      .select('id')
+      .in('id', candidateTabIds)
+      .eq('status', 'open')
+
+    if (openTabsError) {
+      console.error(
+        '[autoCancelStalePosOrders] REFUSING TO SWEEP: could not read tabs, so a live meal ' +
+          'cannot be told from an abandoned payment.',
+        openTabsError,
+      )
+      return finalise(result)
+    }
+
+    for (const tab of (openTabs ?? []) as Array<{ id: unknown }>) {
+      openTabIds.add(String(tab.id))
+    }
+  }
+
+  const protectedByOpenTab = candidates.filter((row) =>
+    openTabIds.has(String(row.tab_id ?? '')),
+  )
+  for (const row of protectedByOpenTab) {
+    result.skippedOpenTabIds.push(String(row.id))
+  }
+  result.skippedOpenTabCount = result.skippedOpenTabIds.length
+
+  const allRows = candidates.filter(
+    (row) => !openTabIds.has(String(row.tab_id ?? '')),
+  ) as StaleOrderCandidate[]
+  if (allRows.length === 0) return finalise(result)
 
   /**
    * THE PARTITION. Everything below this line still operates on POS orders only.
@@ -695,61 +776,7 @@ export async function autoCancelStalePosOrders(
       .trim()
       .toLowerCase()
 
-  const posRows = allRows.filter((row) => channelOf(row) === SWEEP_ACTIONABLE_CHANNEL)
-
-  /**
-   * EXCLUDE ORDERS ON A LIVE TAB -- a service session, not an abandoned payment attempt.
-   *
-   * DIGI COFEE, 2026-08-28. Three waiter-led rounds (`POST /api/terminal/rounds`), each
-   * `channel: 'pos'`, `payment_status: 'pending'`, `tab_id` set -- by that route's own design:
-   * "the round is not paid here, it accumulates on the tab and is settled later". Every one was
-   * auto-cancelled 2-3 minutes after being sent, because to this sweep a waiter round and a stuck
-   * counter card payment are the same shape: `channel='pos'`, `pending`, no gateway reference,
-   * past STALE_POS_TIMEOUT_MS. NAD 19 of food was cooked, served and never billed.
-   *
-   * THE FIX IS THE LIFECYCLE, NOT THE TIMEOUT. An unpaid order on an open tab is the NORMAL state
-   * for the length of a whole meal -- widening STALE_POS_TIMEOUT_MS would still be wrong after two
-   * hours, and would also weaken the sweep for the counter-service case it was correctly built
-   * for (median settle 14.9s, p99 54.7s -- see that constant's own docblock). So this excludes by
-   * WHAT THE ORDER IS, not by how long it has waited: an order attached to a tab that is still
-   * `open` or `ready_to_pay` belongs to an ongoing service session and this sweep does not touch
-   * it, regardless of age. A counter sale with no tab_id is unaffected -- this changes nothing
-   * about the case the sweep exists for.
-   *
-   * NOT SURFACED. `surfacedNeedsHuman` above is for orders the sweep cannot act on but which may
-   * still be a real problem (#353). An order sitting pending on an open tab is not a problem; it
-   * is the ordinary, expected state of an unsettled meal. Surfacing it would be noise on every
-   * table currently being served.
-   *
-   * A CLOSED/SETTLED tab is NOT excluded. An order still pending after its tab closed is exactly
-   * the kind of leftover the sweep should still be able to reach -- this only protects orders
-   * whose tab is still genuinely in service.
-   */
-  const tabIds = [...new Set(posRows.map((r) => r.tab_id).filter((id): id is string => Boolean(id)))]
-  const liveTabIds = new Set<string>()
-  if (tabIds.length > 0) {
-    const { data: tabRows, error: tabsError } = await supabase
-      .from('tabs')
-      .select('id, status')
-      .in('id', tabIds)
-      .in('status', LIVE_TAB_STATUSES)
-    if (tabsError) {
-      // A failed read must not widen what the sweep is willing to cancel. Leaving liveTabIds
-      // empty here would do exactly that -- so on a failed read, every tab-attached order this
-      // run is deferred (never touched) rather than risked.
-      console.error(
-        '[autoCancelStalePosOrders] could not read tab statuses; deferring every tab-attached order this run:',
-        tabsError,
-      )
-      for (const id of tabIds) liveTabIds.add(id)
-    } else {
-      for (const t of (tabRows ?? []) as Array<{ id: string; status: string }>) {
-        liveTabIds.add(String(t.id))
-      }
-    }
-  }
-
-  const rows = posRows.filter((row) => !row.tab_id || !liveTabIds.has(row.tab_id))
+  const rows = allRows.filter((row) => channelOf(row) === SWEEP_ACTIONABLE_CHANNEL)
 
   for (const row of allRows) {
     if (channelOf(row) === SWEEP_ACTIONABLE_CHANNEL) continue
