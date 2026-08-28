@@ -43,7 +43,7 @@ export const STATION_COPY = {
     /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
     readyToRunButton: 'Ready to run',
     /**
-     * UNSIGNED. The per-table shortcut, on the card header, beside the table number. One tap for a
+     * SIGNED by the owner 2026-08-28. The per-table shortcut, on the card header, beside the table number. One tap for a
      * table whose whole ticket landed at once — it must not cost five taps — while every line keeps
      * its own button, because a salad and a steak do not finish together.
      *
@@ -51,12 +51,12 @@ export const STATION_COPY = {
      * It is not "the whole order" and it is not "the whole table" — the bar's half of the same
      * order is untouched, and so is anything already cooked.
      */
-    allCookedButton: 'PENDING COPY: the button that marks every outstanding line on one table card cooked, in one tap',
+    allCookedButton: 'All cooked',
     /**
-     * UNSIGNED. Same shortcut on the pass side of the board: every line this card is showing as
+     * SIGNED by the owner 2026-08-28. Same shortcut on the pass side of the board: every line this card is showing as
      * cooked-and-waiting goes ready to run at once.
      */
-    allReadyToRunButton: 'PENDING COPY: the button that marks every cooked line on one table card ready to run, in one tap',
+    allReadyToRunButton: 'All ready',
     /**
      * "Table 0" was on the wall. Zero is not a table in any restaurant — it was a default from a
      * writer with no table to record, and a cook reading it has nothing to act on.
@@ -78,11 +78,11 @@ export const STATION_COPY = {
      *  not poured all at once either, and the label is still exactly what the tap does. */
     outButton: 'Out',
     /**
-     * UNSIGNED. The per-round shortcut, matching the kitchen's per-table one: every line this round
+     * SIGNED by the owner 2026-08-28. The per-round shortcut, matching the kitchen's per-table one: every line this round
      * card is showing goes out in one tap. The bar's half only — a kitchen line on the same order
      * is untouched.
      */
-    allOutButton: 'PENDING COPY: the button that sends every line in one bar round out, in one tap',
+    allOutButton: 'All out',
     /** Same absent-table rule as the kitchen — see the note there. */
     tableLabel: (tableNumber: string) =>
       tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
@@ -117,12 +117,12 @@ export const STATION_COPY = {
    * marker it cannot see is worse than no marker.
    */
   bumpFailure: {
-    /** UNSIGNED. Card-level: some of what you just tapped did not move. Shown with "N/M" beside it. */
-    heading: 'PENDING COPY: told on a table card when only some of the lines it just bumped actually moved',
-    /** UNSIGNED. Row-level, on each individual line that was refused, so it is findable at 3m. */
-    lineMarker: 'PENDING COPY: the marker on the one line that would not move, sat on the line itself',
-    /** UNSIGNED. The button's own label while its bump is in flight and it is not tappable. */
-    working: 'PENDING COPY: what a bump button says while it is in flight and cannot be tapped again',
+    /** SIGNED by the owner 2026-08-28. Card-level: some of what you just tapped did not move. Shown with "N/M" beside it. */
+    heading: 'Some did not send',
+    /** SIGNED by the owner 2026-08-28. Row-level, on each individual line that was refused, so it is findable at 3m. */
+    lineMarker: 'Not sent',
+    /** SIGNED by the owner 2026-08-28. The button's own label while its bump is in flight and it is not tappable. */
+    working: 'Sending',
   },
   age: {
     justNow: 'just now',
