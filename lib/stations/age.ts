@@ -68,3 +68,63 @@ export function formatAge(minutes: number): string {
 export function sortOldestFirst<T>(items: T[], sinceIso: (item: T) => string): T[] {
   return [...items].sort((a, b) => new Date(sinceIso(a)).getTime() - new Date(sinceIso(b)).getTime())
 }
+
+/**
+ * ============================================================================================
+ * A SECOND SET OF BANDS, FOR THE OTHER CLOCK — AND THIS IS A DECISION THE OWNER SHOULD RULE ON
+ * ============================================================================================
+ *
+ * The bands above answer "how long has this PLATE been sitting on the pass". They were authored
+ * for that clock and they are right for it: five minutes is a long time for cooked food to wait.
+ *
+ * The wall board now carries colour on OUTSTANDING table cards too — twenty tables tiled across a
+ * 1920x1080 screen, where a cook has to pick the one that needs hands without reading twenty
+ * numbers. That means colouring a second clock: how long the kitchen has HAD the ticket.
+ *
+ * Reusing readyToRunEscalation for it would re-break the defect that was just fixed. A steak takes
+ * eleven honest minutes; under the 0-2/3-5/5+ bands every outstanding card on a busy board goes red
+ * inside six minutes and the colour stops carrying information — which is exactly what the owner
+ * photographed on 2026-08-28.
+ *
+ * So the outstanding clock gets its own, slower bands. NOTHING IN THE BRIEF RULED THESE NUMBERS.
+ * They are a first cut, chosen so that:
+ *   - a dish still cooking at a normal pace (under ten minutes) is not shouted about;
+ *   - a ticket the kitchen has held for twenty minutes with nothing plated is red, because in any
+ *     restaurant that is a table asking where their food is;
+ *   - past STALE_MINUTES the SAME quiet treatment applies as on the pass side, for the same
+ *     reason: at that age it is orphaned, not urgent, and red should mean hands-now.
+ * They are named constants so the owner can move them without hunting through a component.
+ */
+export const OUTSTANDING_AMBER_MINUTES = 10
+export const OUTSTANDING_RED_MINUTES = 20
+
+export function outstandingEscalation(minutes: number): AgeEscalation {
+  if (minutes >= STALE_MINUTES) return 'stale'
+  if (minutes < OUTSTANDING_AMBER_MINUTES) return 'white'
+  if (minutes < OUTSTANDING_RED_MINUTES) return 'amber'
+  return 'red'
+}
+
+/**
+ * How loud each tier is, for picking a CARD's colour from the lines inside it.
+ *
+ * 'stale' sits BELOW 'white' deliberately. It is the quietest thing on the board (see the kitchen
+ * screen's ESCALATION_CLASSES), so a card holding one abandoned line and one live one must read as
+ * the live one — otherwise a four-hour-old orphan would grey out a table that needs hands now.
+ */
+const ESCALATION_LOUDNESS: Record<AgeEscalation, number> = { stale: 0, white: 1, amber: 2, red: 3 }
+
+/** The loudest tier in a card. Empty means nothing to shout about — 'white'. */
+export function worstEscalation(escalations: AgeEscalation[]): AgeEscalation {
+  let worst: AgeEscalation = 'white'
+  let seenAny = false
+  for (const escalation of escalations) {
+    if (!seenAny) {
+      worst = escalation
+      seenAny = true
+      continue
+    }
+    if (ESCALATION_LOUDNESS[escalation] > ESCALATION_LOUDNESS[worst]) worst = escalation
+  }
+  return worst
+}

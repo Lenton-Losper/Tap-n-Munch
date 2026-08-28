@@ -43,6 +43,21 @@ export const STATION_COPY = {
     /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
     readyToRunButton: 'Ready to run',
     /**
+     * UNSIGNED. The per-table shortcut, on the card header, beside the table number. One tap for a
+     * table whose whole ticket landed at once — it must not cost five taps — while every line keeps
+     * its own button, because a salad and a steak do not finish together.
+     *
+     * Whoever writes this: it acts on EVERY OUTSTANDING LINE THIS CARD IS SHOWING and nothing else.
+     * It is not "the whole order" and it is not "the whole table" — the bar's half of the same
+     * order is untouched, and so is anything already cooked.
+     */
+    allCookedButton: 'PENDING COPY: the button that marks every outstanding line on one table card cooked, in one tap',
+    /**
+     * UNSIGNED. Same shortcut on the pass side of the board: every line this card is showing as
+     * cooked-and-waiting goes ready to run at once.
+     */
+    allReadyToRunButton: 'PENDING COPY: the button that marks every cooked line on one table card ready to run, in one tap',
+    /**
      * "Table 0" was on the wall. Zero is not a table in any restaurant — it was a default from a
      * writer with no table to record, and a cook reading it has nothing to act on.
      *
@@ -59,8 +74,15 @@ export const STATION_COPY = {
     inHeading: 'In',
     inEmpty: 'Nothing in.',
     /** The one tap that sends a whole round straight to ready. Removes it from this board — see
-     *  bar-screen.tsx on why there is no persisted Out column any more. */
+     *  bar-screen.tsx on why there is no persisted Out column any more. NOW PER LINE: a round is
+     *  not poured all at once either, and the label is still exactly what the tap does. */
     outButton: 'Out',
+    /**
+     * UNSIGNED. The per-round shortcut, matching the kitchen's per-table one: every line this round
+     * card is showing goes out in one tap. The bar's half only — a kitchen line on the same order
+     * is untouched.
+     */
+    allOutButton: 'PENDING COPY: the button that sends every line in one bar round out, in one tap',
     /** Same absent-table rule as the kitchen — see the note there. */
     tableLabel: (tableNumber: string) =>
       tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
@@ -76,6 +98,31 @@ export const STATION_COPY = {
      * banner — the banner can be scrolled past; this cannot, because it sits on the item itself.
      */
     itemNote: 'This item has no station set. Check the menu.',
+  },
+  /**
+   * WHAT A CARD SAYS WHEN A MULTI-LINE BUMP ONLY PARTLY LANDED.
+   *
+   * The failure this exists for: one tap on "all cooked" for a table of five, three lines move and
+   * two are refused (another screen got there first, the terminal voided one mid-service). The
+   * three that moved leave the board on the next refetch. Without this, the card silently shrinks
+   * from five rows to two and reads exactly like a table where two dishes are still being made —
+   * so nobody ever finds out that two lines were refused.
+   *
+   * Deliberately NOT a toast. A toast on a wall screen nobody stands in front of is the same as no
+   * message: it appears and expires while the kitchen is looking at the grill. These sit ON the
+   * card, and stay until the lines they name leave it.
+   *
+   * The counts are rendered as their own element next to `heading`, not interpolated into it, so
+   * that scripts/check-no-pending-copy.mjs — a SOURCE scanner — can still see these markers. A
+   * marker it cannot see is worse than no marker.
+   */
+  bumpFailure: {
+    /** UNSIGNED. Card-level: some of what you just tapped did not move. Shown with "N/M" beside it. */
+    heading: 'PENDING COPY: told on a table card when only some of the lines it just bumped actually moved',
+    /** UNSIGNED. Row-level, on each individual line that was refused, so it is findable at 3m. */
+    lineMarker: 'PENDING COPY: the marker on the one line that would not move, sat on the line itself',
+    /** UNSIGNED. The button's own label while its bump is in flight and it is not tappable. */
+    working: 'PENDING COPY: what a bump button says while it is in flight and cannot be tapped again',
   },
   age: {
     justNow: 'just now',

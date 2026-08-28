@@ -3,122 +3,196 @@
 import { STATION_COPY } from '@/lib/stations/copy'
 import { ageMinutes, formatAge } from '@/lib/stations/age'
 import { buildBarBoard } from '@/lib/stations/grouping'
+import { densityFor, type DensityScale } from '@/lib/stations/board-density'
+import type { BumpLines } from '@/lib/stations/bump'
 import type { BarRound } from '@/lib/stations/types'
 import type { FeedConnectionState } from '@/lib/dashboard/realtime-connection'
 import { StationConnectionIndicator } from '@/components/stations/station-connection-indicator'
+import {
+  CardFailureBanner,
+  PerCardButton,
+  StationCard,
+  StationLineRow,
+  useCardBump,
+} from '@/components/stations/station-card'
 
 /**
- * Shared with the kitchen board — see lib/stations/age.ts. The bar had the identical unbounded
- * `${n} min` and would have printed the same unreadable "12877 min" on an abandoned round.
+ * THE BAR WALL BOARD.
+ *
+ * ============================================================================================
+ * THIS SCREEN WAS LEFT BEHIND, AND THAT WAS THE DEFECT
+ * ============================================================================================
+ *
+ * When the kitchen was rebuilt for distance (02dd27c5) this file kept 14px item text, a 1px border,
+ * `text-xs` ages and a fixed three-across grid. One person reads both boards during one service.
+ * Two boards drawn to two different scales means everything learned on one — where the table number
+ * is, how big a tappable thing is, what a border means — is wrong on the other.
+ *
+ * It now shares components/stations/station-card.tsx and lib/stations/board-density.ts with the
+ * kitchen: same tiling, same card geometry, same type floor, same per-line-plus-per-card control
+ * shape, same partial-failure behaviour.
+ *
+ * ============================================================================================
+ * WITH ONE DELIBERATE DIFFERENCE: THERE IS STILL NO ESCALATION HERE
+ * ============================================================================================
+ *
+ * The standing ruling is "a warm beer is a smaller problem than a cold steak" — bar age is
+ * display-only. The tiling rebuild did NOT overturn it and must not be read as having done so:
+ * every card on this board is drawn neutral whatever its age, and the age number is the only age
+ * signal.
+ *
+ * ON THE RECORD, because the rebuild is the first thing to make it cost something: at twenty rounds
+ * a neutral board cannot be triaged by colour the way the kitchen's can, so the only way to find the
+ * oldest round is to read twenty numbers — which is the exact reading task the kitchen side stopped
+ * asking of a cook. That is a consequence worth the owner ruling on, not a bug to fix here, and the
+ * ruling stays in place until they do. `escalation={null}` is passed EXPLICITLY rather than omitted
+ * so nobody later reads a missing prop as an oversight.
  */
-const ageLabel = formatAge
+/** An unrouted round has nowhere to be bumped TO until somebody sets a route, so it renders with
+ *  no controls at all. Module-level so it is a stable identity across renders. */
+const NO_BUMP: BumpLines = async () => ({ ok: true, total: 0, failedLineIds: [] })
 
-function RoundCard({
+function BarRoundCard({
   round,
   now,
-  onBumpOut,
+  scale,
+  onBump,
   unrouted = false,
 }: {
   round: BarRound
   now: number
-  onBumpOut?: (roundId: string) => void
+  scale: DensityScale
+  onBump?: BumpLines
   unrouted?: boolean
 }) {
-  // Deliberately neutral styling regardless of age — no escalation on the bar side, per the brief.
+  // Hooks are not optional, so the unrouted case gets NO_BUMP rather than a conditional hook.
+  const bump = useCardBump(onBump ?? NO_BUMP)
+  const lineIds = round.items.map((item) => item.id)
+
   return (
-    <div data-testid="bar-round-card" className="rounded-xl border border-[#E9E9E7] bg-white p-4">
-      <div className="flex items-start justify-between gap-3">
-        <p className="font-semibold text-[#37352F]">{STATION_COPY.bar.tableLabel(round.tableNumber)}</p>
-        <span className="text-xs font-medium tabular-nums text-[#6B675F]" data-testid="bar-round-age">
-          {ageLabel(ageMinutes(round.placedAt ?? '', now))}
-        </span>
-      </div>
-      <ul className="mt-2 space-y-1 text-sm text-[#37352F]">
-        {round.items.map((item, index) => (
-          <li key={index}>
-            {item.quantity}× {item.itemName}
-            {item.lineNote ? <span className="ml-2 italic text-[#6B675F]">{item.lineNote}</span> : null}
-          </li>
-        ))}
-      </ul>
+    <StationCard
+      testId="bar-round-card"
+      tableLabel={STATION_COPY.bar.tableLabel(round.tableNumber)}
+      ageLabel={formatAge(ageMinutes(round.placedAt ?? '', now))}
+      escalation={null}
+      scale={scale}
+      headerAction={
+        onBump && round.items.length > 1 ? (
+          <PerCardButton
+            label={STATION_COPY.bar.allOutButton}
+            count={round.items.length}
+            lineIds={lineIds}
+            action="out"
+            tone="station"
+            bump={bump}
+            scale={scale}
+          />
+        ) : null
+      }
+      banner={onBump ? <CardFailureBanner visibleLineIds={lineIds} bump={bump} scale={scale} /> : null}
+    >
+      {round.items.map((item) =>
+        onBump ? (
+          <StationLineRow
+            key={item.id}
+            lineId={item.id}
+            itemName={item.itemName}
+            quantity={item.quantity}
+            lineNote={item.lineNote}
+            buttonLabel={STATION_COPY.bar.outButton}
+            action="out"
+            tone="station"
+            bump={bump}
+            scale={scale}
+          />
+        ) : (
+          <div
+            key={item.id}
+            data-testid="station-line-row"
+            className={`border-t border-current/15 first:border-t-0 ${scale.rowPadClass}`}
+          >
+            <p className={`font-bold leading-tight ${scale.itemClass}`}>
+              {item.quantity}× {item.itemName}
+            </p>
+            {item.lineNote ? (
+              <p className={`mt-0.5 font-medium opacity-70 ${scale.noteClass}`}>{item.lineNote}</p>
+            ) : null}
+          </div>
+        ),
+      )}
       {unrouted ? (
-        <p className="mt-2 text-xs font-medium text-red-700">{STATION_COPY.unrouted.itemNote}</p>
+        <p className={`mt-1 font-semibold text-red-700 ${scale.noteClass}`}>{STATION_COPY.unrouted.itemNote}</p>
       ) : null}
-      {onBumpOut ? (
-        <button
-          type="button"
-          onClick={() => onBumpOut(round.id)}
-          className="mt-3 w-full rounded-lg bg-[#FF6B35] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#e85f2f]"
-        >
-          {STATION_COPY.bar.outButton}
-        </button>
-      ) : null}
-    </div>
+    </StationCard>
   )
 }
 
 /**
- * REBUILT 2026-08-28 for the real four-state model. The old two-column IN | OUT layout is gone:
- * GET /api/station/lines excludes a round the instant its bar_state reaches 'ready' (the same
- * NOT-FINISHED filter that removes a kitchen line once it is passed — see
- * lib/stations/types.ts's docblock), so a round this screen just tapped Out leaves the very next
- * fetch's response and there is nothing left to populate an OUT archive with. Rendering one
- * anyway would mean fabricating client-only state that no other terminal, and no refresh of this
- * one, would agree with — worse than not having the column. See the report this rebuild shipped
- * with for the full reasoning.
- *
- * So this is now a single IN queue. Tapping Out fires the one bump (now to_state: 'ready',
- * directly — no 'cooked' step for the bar, see app/api/terminal/bar-rounds/[roundId]/route.ts's
- * own docblock) and the round disappears from this list on the next refetch, the same way a
- * kitchen line disappears once the pass runs it.
+ * A single IN queue — see this file's history and lib/stations/types.ts's docblock: a round that
+ * reaches 'ready' leaves GET /api/station/lines' response entirely, so there is nothing left to
+ * populate an OUT archive with and rendering one would mean fabricating client-only state.
  */
 export function BarScreen({
   rounds,
   now,
   connectionState,
-  onBumpOut,
+  onBump,
 }: {
   rounds: BarRound[]
   now: number
   connectionState: FeedConnectionState
-  onBumpOut: (roundId: string) => void
+  onBump: BumpLines
 }) {
   const board = buildBarBoard(rounds)
+  const cardCount = board.in.length + board.unrouted.length
+  const scale = densityFor(cardCount)
 
   return (
-    <div className="min-h-screen bg-[#FAFAF8] p-4 sm:p-6" data-testid="bar-screen">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="font-serif text-2xl font-semibold text-[#37352F]">{STATION_COPY.bar.pageTitle}</h1>
+    <div
+      className="flex h-screen flex-col overflow-hidden bg-[#F5F4F0] p-3"
+      data-testid="bar-screen"
+      data-density={scale.density}
+      data-card-count={cardCount}
+    >
+      <div className="mb-2 flex shrink-0 items-center justify-between">
+        <h1 className="font-serif text-2xl font-bold text-[#37352F]">{STATION_COPY.bar.pageTitle}</h1>
         <StationConnectionIndicator state={connectionState} />
       </div>
 
-      {board.unrouted.length > 0 ? (
-        <div
-          data-testid="unrouted-section"
-          className="mb-6 rounded-2xl border-2 border-red-400 bg-red-50 p-4"
-        >
-          <h2 className="text-lg font-bold text-red-900">{STATION_COPY.unrouted.heading}</h2>
-          <p className="mt-1 text-sm text-red-800">{STATION_COPY.unrouted.description}</p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {board.unrouted.map((round) => (
-              <RoundCard key={round.id} round={round} now={now} unrouted />
-            ))}
+      {/* Measured by tests/e2e/station-board-wall-fit.spec.ts, same as the kitchen's. */}
+      <div className="min-h-0 flex-1 overflow-auto" data-testid="station-board-body">
+        {board.unrouted.length > 0 ? (
+          <div
+            data-testid="unrouted-section"
+            className="mb-2 rounded-xl border-4 border-red-500 bg-red-50 px-2.5 py-1.5"
+          >
+            <div className="flex flex-wrap items-baseline gap-x-3">
+              <h2 className="text-lg font-black text-red-900">{STATION_COPY.unrouted.heading}</h2>
+              <p className="text-sm text-red-800">{STATION_COPY.unrouted.description}</p>
+            </div>
+            <div className={`mt-1.5 gap-2 ${scale.columnsClass}`}>
+              {board.unrouted.map((round) => (
+                <BarRoundCard key={round.id} round={round} now={now} scale={scale} unrouted />
+              ))}
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      <section data-testid="bar-in-section">
-        <h2 className="mb-3 text-xl font-bold uppercase tracking-wide text-[#37352F]">{STATION_COPY.bar.inHeading}</h2>
-        {board.in.length === 0 ? (
-          <p className="text-sm text-[#6B675F]">{STATION_COPY.bar.inEmpty}</p>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {board.in.map((round) => (
-              <RoundCard key={round.id} round={round} now={now} onBumpOut={onBumpOut} />
-            ))}
-          </div>
-        )}
-      </section>
+        <section data-testid="bar-in-section">
+          <h2 className="mb-1.5 text-xl font-black uppercase tracking-wide text-[#37352F]">
+            {STATION_COPY.bar.inHeading}
+          </h2>
+          {board.in.length === 0 ? (
+            <p className="text-lg text-[#6B675F]">{STATION_COPY.bar.inEmpty}</p>
+          ) : (
+            <div className={`gap-2 ${scale.columnsClass}`} data-testid="bar-in-grid">
+              {board.in.map((round) => (
+                <BarRoundCard key={round.id} round={round} now={now} scale={scale} onBump={onBump} />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   )
 }
