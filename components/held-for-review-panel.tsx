@@ -237,7 +237,38 @@ export function HeldForReviewPanel({
         </span>
       </button>
 
-      <ul className="mt-2 grid gap-2" hidden={!expanded}>
+      {/*
+        THE SIGNED WARNING IS NEVER COLLAPSED.
+
+        The cards are redundant -- seven identical sentences -- and that redundancy is what folds
+        away. The WARNING is not redundant, and #353 pins two of these sentences by name
+        ("A card may still have been charged on the machine.", "Nothing has been taken from this
+        order yet.") precisely so they cannot be shortened out or hidden. Folding them behind a tap
+        would satisfy the collapse and quietly undo the guarantee that put them on the screen.
+
+        One line per DISTINCT cause, so a board of seven identical holds shows the sentence once
+        rather than seven times -- which is the collapse doing its job on the right thing.
+      */}
+      <ul data-testid="held-for-review-warnings" className="mt-2 grid gap-1">
+        {[...new Set(rows.map((row) => row.why))].map((why) => (
+          <li key={why} data-testid="held-row-why" className="text-sm text-muted-foreground">
+            {why}
+          </li>
+        ))}
+      </ul>
+
+      {/*
+        CONDITIONALLY RENDERED, not `hidden`. The first version used
+        `<ul className="… grid …" hidden={!expanded}>`, which does nothing: Tailwind's `.grid`
+        utility sets `display: grid` and beats preflight's `[hidden] { display: none }`, so the
+        attribute was set on an element that stayed on screen. The collapse shipped to production
+        looking correct in the DOM and doing nothing at all — seven cards, every one of them still
+        there.
+        Only loading the page catches that. A unit test asserting `aria-expanded` passes either
+        way, which is exactly why the ones I wrote did.
+      */}
+      {expanded ? (
+      <ul className="mt-2 grid gap-2">
         {rows.map((row) => (
           <li
             key={row.id}
@@ -337,6 +368,7 @@ export function HeldForReviewPanel({
           </li>
         ))}
       </ul>
+      ) : null}
 
       {/*
         THE CONTROL. Rendered only when the caller supplied a handler AND the user holds

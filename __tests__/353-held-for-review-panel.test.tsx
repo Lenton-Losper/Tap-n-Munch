@@ -39,6 +39,22 @@ async function mount(node: React.ReactElement) {
   await act(async () => {
     root.render(node)
   })
+  /**
+   * EXPAND, because the panel now collapses to a summary line by default.
+   *
+   * These assertions are about WHERE THE SIGNED WORDING SITS INSIDE A ROW, and rows live behind
+   * the tap. The guarantee they encode -- that the signed sentence reaches the screen -- is NOT
+   * weakened by this: the panel renders every distinct warning ABOVE the fold, always, collapsed
+   * or not, and `the pinned sentences are on screen while COLLAPSED` below asserts exactly that.
+   * So the sentence is now visible with no tap at all, and this step is only reaching the
+   * per-row detail these particular tests inspect.
+   */
+  const summary = container.querySelector('[data-testid="held-for-review-summary"]')
+  if (summary) {
+    await act(async () => {
+      ;(summary as HTMLElement).click()
+    })
+  }
 }
 
 function text(): string {

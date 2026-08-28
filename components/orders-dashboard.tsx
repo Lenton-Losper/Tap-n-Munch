@@ -688,6 +688,17 @@ export function OrdersDashboard() {
    * `heldForReviewError` is a separate piece of state from an empty list because the panel must
    * be able to say "this did not load" instead of showing nothing and being read as all clear.
    */
+  /**
+   * The PER-ORDER override. Separate state from the clear-all run: a refusal on one order must not
+   * clear another order's result, and the two controls can be used in either order.
+   *
+   * `overrideMessages` is keyed by order id and holds BOTH outcomes. A refusal is the most
+   * important thing this control can say -- "the provider now reports this as PAID, so it has not
+   * been cancelled" -- and dropping it on the floor would leave a staff member pressing again.
+   */
+  const [overridingId, setOverridingId] = useState<string | null>(null)
+  const [overrideMessages, setOverrideMessages] = useState<Record<string, string>>({})
+
   const [heldForReviewRows, setHeldForReviewRows] = useState<HeldForReviewRow[]>([])
   const [heldForReviewLoading, setHeldForReviewLoading] = useState(true)
   const [heldForReviewError, setHeldForReviewError] = useState<string | null>(null)
@@ -1164,6 +1175,50 @@ export function OrdersDashboard() {
       setHeldClearError(err instanceof Error ? err.message : String(err))
     } finally {
       setHeldClearRunning(false)
+    }
+  }
+
+  /**
+   * The per-order manual override. POSTs ONE order id; the route re-reads the row and re-queries
+   * the gateway before any write, so naming an order buys the caller nothing but which order they
+   * are deciding about.
+   *
+   * A REFUSAL IS A 200 AND IS RENDERED, NOT THROWN. `{ success: true, result: { ok: false } }` is
+   * the system declining to cancel an order the provider now reports as paid -- the single most
+   * important sentence this control produces. Treating it as an error would render it as a generic
+   * failure and lose it.
+   */
+  const handleOverrideCancel = async (orderId: string) => {
+    if (overridingId) return
+    setOverridingId(orderId)
+    try {
+      const token = await getAccessToken()
+      const response = await fetch(`/api/admin/orders/${orderId}/override-cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json().catch(() => ({}))
+      const result = data?.result
+      if (!response.ok || !result) {
+        throw new Error(String(data?.error || 'override_failed'))
+      }
+      setOverrideMessages((m) => ({
+        ...m,
+        [orderId]: result.ok
+          ? `Cancelled. Order #${result.order_number ?? ''} is no longer held.`
+          : String(result.message || 'The override did not complete.'),
+      }))
+      // Re-read the held rows either way: a cancel removes one, and a refusal may mean the row
+      // has changed under us.
+      setHeldClearNonce((n) => n + 1)
+    } catch (err) {
+      console.error('[HELD-FOR-REVIEW] override failed', err)
+      setOverrideMessages((m) => ({
+        ...m,
+        [orderId]: 'The override could not be completed. Nothing was changed.',
+      }))
+    } finally {
+      setOverridingId(null)
     }
   }
 
@@ -2423,6 +2478,10 @@ export function OrdersDashboard() {
             a second late reads as broken — better to render nothing until the answer is real.
           */
           canClearAll={permissionsLoaded && hasPermission(PERMISSIONS.ORDERS_UPDATE)}
+          onOverrideCancel={handleOverrideCancel}
+          canOverride={permissionsLoaded && hasPermission(PERMISSIONS.ORDERS_UPDATE)}
+          overridingId={overridingId}
+          overrideMessages={overrideMessages}
           clearing={heldClearRunning}
           clearSummary={heldClearSummary}
           clearError={heldClearError}

@@ -91,12 +91,66 @@ describe('the collapse', () => {
     expect(q('held-summary-oldest')?.textContent).toContain('9')
   })
 
-  it('hides the detail until it is tapped, and opens on the tap', async () => {
+  /**
+   * ASSERTS THE ROWS ARE ABSENT FROM THE DOM, not that an attribute says they are.
+   *
+   * The first version of this suite checked `aria-expanded` only, and passed against a panel that
+   * rendered every card anyway: the list was hidden with `hidden={!expanded}` on an element
+   * carrying Tailwind's `grid` utility, and `.grid { display: grid }` beats preflight's
+   * `[hidden] { display: none }`. The attribute was set, the aria was correct, the test was green,
+   * and seven full cards shipped to production with no collapse at all.
+   *
+   * An attribute is a claim. The absence of the node is the effect.
+   */
+  it('the rows are NOT IN THE DOM while collapsed, and are after the tap', async () => {
     await mount(<HeldForReviewPanel rows={signedRows} />)
 
     expect(q('held-for-review-summary')?.getAttribute('aria-expanded')).toBe('false')
+    expect(qa('held-for-review-row')).toHaveLength(0)
+
     await click(q('held-for-review-summary'))
+
     expect(q('held-for-review-summary')?.getAttribute('aria-expanded')).toBe('true')
+    expect(qa('held-for-review-row')).toHaveLength(2)
+  })
+
+  /**
+   * THE GUARANTEE THAT MUST SURVIVE THE COLLAPSE.
+   *
+   * #353 pins two sentences by name so they cannot be shortened out. Folding them behind a tap
+   * would satisfy the collapse and quietly undo that. The cards are redundant -- seven identical
+   * sentences -- and redundancy is what folds; the warning does not.
+   */
+  it('the signed warning is on screen while COLLAPSED, with no tap', async () => {
+    const warned = row({
+      id: 'w',
+      why: 'A card may still have been charged on the machine.',
+    })
+    await mount(<HeldForReviewPanel rows={[warned]} />)
+
+    expect(q('held-for-review-summary')?.getAttribute('aria-expanded')).toBe('false')
+    expect(qa('held-for-review-row')).toHaveLength(0)
+    // …and yet the sentence is readable.
+    expect(container.textContent).toContain('A card may still have been charged on the machine.')
+  })
+
+  it('shows one warning line per DISTINCT cause, not one per card', async () => {
+    const many = [
+      row({ id: '1', why: 'Same warning.' }),
+      row({ id: '2', why: 'Same warning.' }),
+      row({ id: '3', why: 'Same warning.' }),
+    ]
+    await mount(<HeldForReviewPanel rows={many} />)
+
+    expect(qa('held-row-why')).toHaveLength(1)
+  })
+
+  it('collapsing again removes them from the DOM', async () => {
+    await mount(<HeldForReviewPanel rows={signedRows} />)
+    await click(q('held-for-review-summary'))
+    expect(qa('held-for-review-row')).toHaveLength(2)
+    await click(q('held-for-review-summary'))
+    expect(qa('held-for-review-row')).toHaveLength(0)
   })
 
   /** The guarantee the collapse must not break. */
