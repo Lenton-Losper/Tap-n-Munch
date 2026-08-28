@@ -12,6 +12,7 @@ import {useFocusEffect} from '@react-navigation/native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import CloseTableAction from '../components/CloseTableAction';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
 import {ApiRequestError, getTabLines} from '../lib/api';
@@ -110,7 +111,7 @@ export default function ServiceTableScreen({route, navigation}: Props) {
     adoptedExistingTab,
     handedOverFrom,
   } = route.params;
-  const {table: sessionTable} = useServiceSession();
+  const {table: sessionTable, lines: sessionLines} = useServiceSession();
 
   /**
    * The adoption / handover notice, dismissible.
@@ -356,6 +357,22 @@ export default function ServiceTableScreen({route, navigation}: Props) {
           <MaterialCommunityIcons name="plus" size={24} color={Colors.white} />
           <Text style={styles.addRoundText}>{Copy.TABLE_ADD_ROUND_BUTTON}</Text>
         </Pressable>
+        {/* CLOSE TABLE. Settling does not end a session — only this does. The whole control,
+            including everything it refuses, lives in components/CloseTableAction so this screen
+            gains one element and no policy. Nothing here closes anything on its own: the component
+            acts only on a press. */}
+        <View style={styles.closeTableSlot}>
+          <CloseTableAction
+            tableId={tableId}
+            tabId={tabId}
+            unsentRoundLineCount={
+              sessionTable && sessionTable.tabId === tabId
+                ? sessionLines.length
+                : 0
+            }
+            onClosed={() => navigation.goBack()}
+          />
+        </View>
       </View>
     </View>
   );
@@ -544,4 +561,5 @@ const styles = StyleSheet.create({
     minHeight: 60,
   },
   addRoundText: {color: Colors.white, fontSize: 18, fontWeight: '700'},
+  closeTableSlot: {marginTop: Spacing.sm},
 });
