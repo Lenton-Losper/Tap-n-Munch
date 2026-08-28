@@ -31,19 +31,15 @@ export type FeatureFlagsState = Record<FeatureFlagKey, boolean>
  * accompanying test asserts BOTH halves: hidden from the panel, still in `FEATURE_FLAG_KEYS`.
  */
 /**
- * `station_screens_enabled` (feat/station-screens-v1) is here for a DIFFERENT reason than
- * `kitchen_enabled` above, worth stating so the two are not read as the same mistake twice:
- * this flag DOES have a reader (every station API route under app/api/terminal/station-*,
- * app/api/terminal/bar-rounds gates on it) — it is not #351's "nothing reads this" defect.
- * It is withheld from the operator panel because the ruling was that ONE person turns it on,
- * deliberately, once the order_lines/order_line_events integration and the station credential
- * both ship — not that any super_admin can self-serve it from a switch today, which is exactly
- * the "screens are wired but the data behind them is still a guess" state #351 warns a labelled
- * switch must never represent. It is still PATCHable directly (this route's allowlist, driven
- * by FEATURE_FLAG_KEYS below) for the one person doing that turn-on. Remove it from this list
- * once both ship and it belongs to every super_admin, not one operator's deliberate call.
+ * `station_screens_enabled` REMOVED 2026-08-28 — the trigger condition its own note named has
+ * now happened. The waiter-led-service + station-screens integration shipped to production
+ * tonight (order_lines/order_line_events, the kitchen and bar screens, screen pairing), so this
+ * is no longer one person's deliberate call on unfinished data — it is an ordinary rollout
+ * control, same shape as any other super_admin-gated switch here. The write path was already
+ * super_admin-only (this route's requirePlatformRole); what changes is that the switch is now
+ * visible instead of requiring direct SQL against production to flip.
  */
-export const UNBUILT_FEATURE_FLAG_KEYS = ['kitchen_enabled', 'station_screens_enabled'] as const
+export const UNBUILT_FEATURE_FLAG_KEYS = ['kitchen_enabled'] as const
 
 export type UnbuiltFeatureFlagKey = (typeof UNBUILT_FEATURE_FLAG_KEYS)[number]
 export type OperatorFeatureFlagKey = Exclude<FeatureFlagKey, UnbuiltFeatureFlagKey>
