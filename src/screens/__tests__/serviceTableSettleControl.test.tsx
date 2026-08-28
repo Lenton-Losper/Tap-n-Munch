@@ -245,6 +245,42 @@ describe('the settle control on the waiter table view', () => {
     expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(true);
   });
 
+  /**
+   * THE DIGI COFEE CASE. Production, 2026-08-28: the stale-payment sweep cancelled orders #30,
+   * #31 and #32 (NAD 3 + 5 + 11) minutes after each was placed, paid_at null on all three, the
+   * kitchen already cooking. Nothing owed and nothing paid, so the screen said PAID IN FULL.
+   *
+   * It briefly shared the unpaid chip, which was true but incomplete: a waiter reading 'nothing
+   * paid yet' on a cancelled tab tries to take payment for food that has no order behind it.
+   * Its own chip now says what actually happened.
+   */
+  it('says the rounds were cancelled, not that the tab is paid or merely unpaid', async () => {
+    mockGetTablesWithMeta.mockImplementation(async () => ({
+      tables: [
+        tableWith(
+          'open',
+          [
+            {id: 'o30', payment_status: 'cancelled'},
+            {id: 'o31', payment_status: 'cancelled'},
+            {id: 'o32', payment_status: 'cancelled'},
+          ],
+          0,
+        ),
+      ],
+      cardInFlightTimeoutSeconds: 120,
+    }));
+
+    const {tree} = await renderScreen();
+    const screen = textOf(tree.root);
+
+    expect(screen).toContain('Nothing to pay · rounds were cancelled');
+    // The two readings that cost money: one closes the table, the other charges for nothing.
+    expect(screen).not.toContain('Paid in full');
+    expect(screen).not.toContain('Nothing paid yet');
+    // There is nothing to charge for, so settling must not be offered.
+    expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(true);
+  });
+
   it('distinguishes a partially paid tab from an unpaid one', async () => {
     mockGetTablesWithMeta.mockImplementation(async () => ({
       tables: [
