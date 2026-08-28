@@ -1,4 +1,4 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -14,7 +14,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
-import {ApiRequestError, getTabLines} from '../lib/api';
+import {ApiRequestError, getTabLines, getTablesWithMeta} from '../lib/api';
 import {
   formatAge,
   itemCount,
@@ -22,9 +22,16 @@ import {
   TabLinesPayload,
   tabRunningTotal,
 } from '../lib/tabLines';
+import {
+  amountOwed,
+  canOfferSettle,
+  deriveTabSettlementState,
+  TabSettlementState,
+} from '../lib/tabSettlement';
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
+import {TableWithTab} from '../types';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ServiceTable'>;
 
@@ -131,9 +138,33 @@ export default function ServiceTableScreen({route, navigation}: Props) {
   });
 
   const [payload, setPayload] = useState<TabLinesPayload | null>(null);
+  /**
+   * THE MONEY HALF OF THIS SCREEN, from `GET /api/terminal/tables`.
+   *
+   * The lines payload this screen was built on carries no payment information whatsoever — see
+   * the block comment on lib/tabSettlement. Without this second read the screen cannot tell a
+   * paid tab from an unpaid one, which is why it could only ever offer Add Round.
+   *
+   * Held separately from `payload` and allowed to be null on its own, because a failure to read
+   * the money must NOT blank the bill or the lines. It withdraws the settle control and says the
+   * payment state is unknown; it does not pretend nobody has paid.
+   */
+  const [moneyTable, setMoneyTable] = useState<TableWithTab | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /** Declared here, above the effect that clears it — see handleSettle for what it guards. */
+  const navigatingToSettle = useRef(false);
+
+  /**
+   * The five-way settlement state, derived on EVERY RENDER from the payload rather than stored.
+   * A stored payment state is a fact that was true once and goes stale silently — the same rule
+   * deriveTableFlag already follows for readiness.
+   */
+  const settlementState: TabSettlementState = deriveTabSettlementState(moneyTable);
+  const owed = amountOwed(moneyTable);
+  const settleOffered = canOfferSettle(settlementState);
 
   const load = useCallback(
     async (pull = false) => {
@@ -149,6 +180,22 @@ export default function ServiceTableScreen({route, navigation}: Props) {
         }
         setPayload(await getTabLines(tabId, token));
         setError(null);
+
+        /**
+         * Money read, deliberately AFTER the lines and deliberately in its own try/catch.
+         *
+         * Two separate calls rather than Promise.all: the lines are what this screen is for, and
+         * a tables call that 500s must not cost the waiter the view of their table. A failure
+         * here clears moneyTable, which drives the state to 'unknown' and takes the settle
+         * control away — the fail-closed direction.
+         */
+        try {
+          const {tables} = await getTablesWithMeta(token);
+          setMoneyTable(tables.find(t => t.id === tableId) ?? null);
+        } catch (moneyErr) {
+          console.warn('[ServiceTable] payment state unavailable:', moneyErr);
+          setMoneyTable(null);
+        }
       } catch (err) {
         if (err instanceof ApiRequestError && err.status === 404) {
           // Restaurant-scoped: 404 is also what another venue's tab returns. Either way this
@@ -164,12 +211,14 @@ export default function ServiceTableScreen({route, navigation}: Props) {
         setRefreshing(false);
       }
     },
-    [tabId],
+    [tabId, tableId],
   );
 
-  // Refetch on every focus, so returning from a round shows the lines it just created.
+  // Refetch on every focus, so returning from a round shows the lines it just created —
+  // and, now, so returning from taking payment shows the money that was taken.
   useFocusEffect(
     useCallback(() => {
+      navigatingToSettle.current = false;
       load();
     }, [load]),
   );
@@ -185,6 +234,50 @@ export default function ServiceTableScreen({route, navigation}: Props) {
    * When the session already holds THIS tab, the PIN was paid moments ago on the way in and is not
    * asked for twice.
    */
+  /**
+   * SETTLE.
+   *
+   * The control the waiter table view has never had. It hands off to the settle view, which is
+   * the SAME screen and the same code path the terminal already takes money through today —
+   * `runSettle` / `runCashSettle` in TableDetailScreen, with its Finatic ambiguity resolution,
+   * its `completePaymentReliably` failure reporting, and its server-gated cash affordances.
+   *
+   * NOT REIMPLEMENTED HERE, AND THAT IS THE POINT. A second card-payment flow written under
+   * deadline is how a customer gets charged twice. There is one flow that takes money on this
+   * device, it is the one with the #326/#327 fixes in it, and this screen routes into it rather
+   * than growing a rival.
+   *
+   * That screen offers BOTH shapes of settle: "Settle Entire Tab" and, per order, "Settle
+   * Selected". Riviera's split bill is the second of those. Note the granularity honestly: the
+   * server settles WHOLE ORDERS (`order_ids`, and it recomputes the amount from those orders'
+   * totals), so a bill splits by round, never by individual dish.
+   *
+   * `moneyTable` is passed rather than re-fetched by the destination, because it is the object
+   * that route requires and this screen has just read it. The destination refreshes it on focus
+   * regardless.
+   */
+  const handleSettle = useCallback(() => {
+    /**
+     * DOUBLE-TAP GUARD.
+     *
+     * Two taps on a native-stack button push the destination TWICE, leaving a second settle
+     * screen underneath the first with its own copy of the tab. Money is not taken here, so this
+     * guard is not the one that prevents a double charge — the settle screen's own in-flight
+     * flag and the server's atomic claim (which answers 409 ALREADY_PAID to the second attempt)
+     * are. This one prevents the waiter ever being shown two of them.
+     *
+     * Cleared on focus, so coming back from the settle screen re-arms the button.
+     */
+    if (navigatingToSettle.current) {
+      return;
+    }
+    if (!moneyTable || !canOfferSettle(settlementState)) {
+      return;
+    }
+    navigatingToSettle.current = true;
+    navigation.navigate('TableDetail', {table: moneyTable});
+  }, [moneyTable, navigation, settlementState]);
+
   const handleAddRound = useCallback(() => {
     if (sessionTable && sessionTable.tabId === tabId) {
       navigation.navigate('ServiceRound');
@@ -279,6 +372,57 @@ export default function ServiceTableScreen({route, navigation}: Props) {
             <Text style={styles.billAmount}>{formatMoney(total)}</Text>
           </View>
 
+          {/*
+            PAYMENT STATE. Five distinct states, five distinct chips, and in particular
+            'fully_paid' and 'closed' are NOT the same chip — a tab can be paid to the last cent
+            and still be open for another round, and conflating the two is what makes staff
+            believe payment ended the session.
+
+            Every string below is an inline PENDING COPY literal, awaiting real staff wording.
+          */}
+          <View style={styles.paymentStateRow}>
+            {settlementState === 'unpaid' ? (
+              <View style={[styles.stateChip, styles.stateChipUnpaid]}>
+                <Text style={[styles.stateChipText, styles.stateChipTextUnpaid]}>
+                  {'PENDING COPY: tab status nothing paid yet'}
+                </Text>
+              </View>
+            ) : null}
+            {settlementState === 'partially_paid' ? (
+              <View style={[styles.stateChip, styles.stateChipPartial]}>
+                <Text style={[styles.stateChipText, styles.stateChipTextPartial]}>
+                  {'PENDING COPY: tab status part paid part still owed'}
+                </Text>
+              </View>
+            ) : null}
+            {settlementState === 'fully_paid' ? (
+              <View style={[styles.stateChip, styles.stateChipPaid]}>
+                <Text style={[styles.stateChipText, styles.stateChipTextPaid]}>
+                  {'PENDING COPY: tab status paid in full and still open'}
+                </Text>
+              </View>
+            ) : null}
+            {settlementState === 'closed' ? (
+              <View style={[styles.stateChip, styles.stateChipClosed]}>
+                <Text style={[styles.stateChipText, styles.stateChipTextClosed]}>
+                  {'PENDING COPY: tab status session closed'}
+                </Text>
+              </View>
+            ) : null}
+            {settlementState === 'unknown' ? (
+              <View style={[styles.stateChip, styles.stateChipUnknown]}>
+                <Text style={[styles.stateChipText, styles.stateChipTextUnknown]}>
+                  {'PENDING COPY: payment state could not be read'}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* The server's unpaid_total, never a client-side sum. Absent stays absent. */}
+            {owed != null && settleOffered ? (
+              <Text style={styles.owedAmount}>{formatMoney(owed)}</Text>
+            ) : null}
+          </View>
+
           {hasLines && summary ? (
             <View style={styles.summaryRow}>
               <View style={styles.summaryCell}>
@@ -352,10 +496,44 @@ export default function ServiceTableScreen({route, navigation}: Props) {
 
       <View
         style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.sm}]}>
-        <Pressable style={styles.addRoundButton} onPress={handleAddRound}>
-          <MaterialCommunityIcons name="plus" size={24} color={Colors.white} />
-          <Text style={styles.addRoundText}>{Copy.TABLE_ADD_ROUND_BUTTON}</Text>
-        </Pressable>
+        <View style={styles.bottomActions}>
+          {/*
+            SETTLE, alongside Add Round rather than instead of it. Both remain available on a
+            partially paid tab: the party can still order, and they can still pay for what is
+            left, in either order and as many times as it takes.
+
+            Disabled — not hidden — when there is nothing to settle or the state is unknown, so
+            the control does not appear and vanish between refreshes.
+          */}
+          <Pressable
+            style={[
+              styles.settleButton,
+              !settleOffered && styles.settleButtonDisabled,
+            ]}
+            disabled={!settleOffered}
+            accessibilityState={{disabled: !settleOffered}}
+            onPress={handleSettle}>
+            <MaterialCommunityIcons
+              name="cash-multiple"
+              size={22}
+              color={settleOffered ? Colors.white : Colors.textMuted}
+            />
+            <Text
+              style={[
+                styles.settleButtonText,
+                !settleOffered && styles.settleButtonTextDisabled,
+              ]}>
+              {'PENDING COPY: take payment for this table'}
+            </Text>
+          </Pressable>
+
+          <Pressable style={styles.addRoundButton} onPress={handleAddRound}>
+            <MaterialCommunityIcons name="plus" size={24} color={Colors.white} />
+            <Text style={styles.addRoundText}>
+              {Copy.TABLE_ADD_ROUND_BUTTON}
+            </Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -544,4 +722,50 @@ const styles = StyleSheet.create({
     minHeight: 60,
   },
   addRoundText: {color: Colors.white, fontSize: 18, fontWeight: '700'},
+  bottomActions: {flexDirection: 'row', gap: Spacing.sm},
+  settleButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    backgroundColor: Colors.green,
+    borderRadius: 12,
+    paddingVertical: 18,
+    paddingHorizontal: Spacing.sm,
+    minHeight: 60,
+  },
+  settleButtonDisabled: {backgroundColor: Colors.surface},
+  settleButtonText: {
+    color: Colors.white,
+    fontSize: 16,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  settleButtonTextDisabled: {color: Colors.textMuted},
+  paymentStateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  stateChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+    flexShrink: 1,
+  },
+  stateChipUnpaid: {backgroundColor: Colors.amberLight},
+  stateChipPartial: {backgroundColor: Colors.blueLight},
+  stateChipPaid: {backgroundColor: Colors.greenLight},
+  stateChipClosed: {backgroundColor: Colors.surface},
+  stateChipUnknown: {backgroundColor: Colors.redLight},
+  stateChipText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.3},
+  stateChipTextUnpaid: {color: Colors.amber},
+  stateChipTextPartial: {color: Colors.blue},
+  stateChipTextPaid: {color: Colors.green},
+  stateChipTextClosed: {color: Colors.textMuted},
+  stateChipTextUnknown: {color: Colors.red},
+  owedAmount: {fontSize: 16, fontWeight: '800', color: Colors.textPrimary},
 });

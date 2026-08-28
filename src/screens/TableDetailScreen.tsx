@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -111,6 +111,15 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [strandedMessage, setStrandedMessage] = useState('');
   const [settling, setSettling] = useState(false);
   const [cashSettling, setCashSettling] = useState(false);
+  /**
+   * ONE flag for BOTH settle paths, deliberately shared.
+   *
+   * Card and cash are two ways to collect the same money. A guard per path would still permit
+   * "tap Settle, then tap Take Cash" while the card attempt is in flight — which is the exact
+   * double-collection the server refuses with CARD_PAYMENT_IN_FLIGHT, and the device should not
+   * be sending it in the first place. See the block comment in runSettle.
+   */
+  const settleInFlight = useRef(false);
   /**
    * Server's in-flight window, from /api/terminal/tables. Never hardcoded — the countdown
    * must match the server that will actually accept or reject the settle.
@@ -314,6 +323,28 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   const runSettle = async (requestedOrderIds: string[]) => {
+    /**
+     * RE-ENTRANCY GUARD — a synchronous double-tap must not reach the card reader twice.
+     *
+     * `settling` alone did not carry this. It is React state, so `setSettling(true)` below does
+     * not take effect until the next render, and the `disabled` prop on the button is computed
+     * from it — meaning two presses dispatched inside the SAME batch both find `settling` false,
+     * both find the button enabled, and both call processPaymentIntent. On a physical terminal
+     * the two taps are usually separate native events with a render between them, which is why
+     * this has not been seen; "usually" is not a property money code should rest on.
+     *
+     * A ref updates synchronously, so the second entry returns here before anything is charged.
+     * It is released in the same `finally` that clears `settling`, so a failed settle re-arms
+     * the button exactly as before.
+     *
+     * This guard is the FIRST of three, not the only one. The second is the button's disabled
+     * state; the third is the server's atomic claim, which answers 409 ALREADY_PAID to a second
+     * settle of the same orders. Only the third can stop two different devices.
+     */
+    if (settleInFlight.current) {
+      return;
+    }
+
     if (requestedOrderIds.length === 0) {
       return;
     }
@@ -341,6 +372,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       return;
     }
 
+    settleInFlight.current = true;
     setSettling(true);
     try {
       const token = await getTerminalToken();
@@ -478,6 +510,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         err instanceof Error ? err.message : 'Failed to settle tab',
       );
     } finally {
+      settleInFlight.current = false;
       setSettling(false);
     }
   };
@@ -494,6 +527,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
     requestedOrderIds: string[],
     attribution?: {staffUserId: string; authorizationTokenId: string},
   ) => {
+    // Shares runSettle's guard, and for the reason given where settleInFlight is declared:
+    // cash taken while a card attempt is live is a double collection, not a second button.
+    if (settleInFlight.current) {
+      return;
+    }
     // Server-driven: only orders the server says are cash-settleable, and the amount is
     // derived from that same set so the two can never disagree. The rule lives in
     // lib/cashSettlement so the suite named after it tests this and not a copy (#148 sweep).
@@ -515,6 +553,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       return;
     }
 
+    settleInFlight.current = true;
     setCashSettling(true);
     try {
       const token = await getTerminalToken();
@@ -587,6 +626,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       );
       await refreshTable();
     } finally {
+      settleInFlight.current = false;
       setCashSettling(false);
     }
   };
