@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { TerminalActivationGate } from '@/components/stations/terminal-activation-gate'
 import { BarScreen } from '@/components/stations/bar-screen'
 import { StationNotEnabled } from '@/components/stations/station-not-enabled'
+import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialBarRounds } from '@/lib/stations/data-port'
 import { postStationBump } from '@/lib/stations/bump'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
@@ -20,6 +21,7 @@ import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-ses
 
 function BarScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [rounds, setRounds] = useState<BarRound[]>([])
+  const [loading, setLoading] = useState(true)
   const [notEnabled, setNotEnabled] = useState(false)
   const [notPaired, setNotPaired] = useState(false)
   const [pairedTo, setPairedTo] = useState<string | null>(null)
@@ -56,6 +58,7 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
         setNotEnabled(snapshot.notEnabled)
         setNotPaired(snapshot.notPaired)
         setPairedTo(snapshot.pairedTo)
+        setLoading(false)
       })
     }
 
@@ -82,6 +85,9 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
     }
   }, [session.restaurantId, session.terminalId, authFetch])
 
+  if (loading) {
+    return <StationLoading />
+  }
   if (notPaired) {
     return <StationNotEnabled reason="not_paired" pairedTo={pairedTo} />
   }

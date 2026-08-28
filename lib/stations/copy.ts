@@ -27,6 +27,15 @@
  * actually shows: a plated dish still waiting on the pass, not one already sent. kitchen.
  * readyToRunButton and bar.outButton are UNCHANGED — both taps still do exactly what those
  * labels say, only the zone that surrounded the button changed.
+ *
+ * ADDED 2026-08-28 — `loading`. Measured directly against staging: the first fetch after
+ * activation genuinely takes 1-3.4s (requireTerminalAuth, validateTerminalRecord, requireFeature
+ * and assertTerminalPairedToStation are each their own DB round trip, sequential, before the
+ * real board query even runs). Before that resolves, `lines`/`rounds` state is still its initial
+ * `[]`, which rendered the SAME `cookedEmpty`/`outstandingEmpty`/`inEmpty` copy as a genuinely
+ * empty board — indistinguishable from "nothing waiting" to whoever is standing in front of it.
+ * Same failure shape #350 exists to prevent (a frozen list looks identical to a quiet kitchen),
+ * one phase earlier: here it is the LOADING phase reading as empty, not the disconnected phase.
  */
 
 export const STATION_COPY = {
@@ -140,6 +149,14 @@ export const STATION_COPY = {
     reconnecting: 'reconnecting - this list may be a moment behind',
     offline:
       'not receiving new orders. this list is refreshing slowly and orders may be missing. check the connection or reload.',
+  },
+  /**
+   * Shown instead of the board (and instead of notPaired/notEnabled, which are not yet known
+   * either) from mount until the first fetch resolves. Not "Nothing waiting" -- that is a claim
+   * about what the board found, and this is the moment before it has looked.
+   */
+  loading: {
+    heading: 'Loading the board…',
   },
   /** Shown instead of the board when stationScreensEnabled (20260828220000) is off. */
   notEnabled: {
