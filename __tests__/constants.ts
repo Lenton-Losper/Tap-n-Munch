@@ -17,9 +17,17 @@ export const CHOWNOW_ID = 'b161c758-582d-4dfa-839a-9fa35c492a49';
 export const CHOWNOW_KIOSK_TABLE_ID = '0cc87cbf-dc65-4687-9bcc-ab2cf1a20952';
 export const VALID_ROLES = ['owner', 'manager', 'cashier', 'waiter', 'kitchen', 'bar'];
 export const VALID_PAYMENT_METHODS = ['cash', 'card', 'hosted_checkout', 'eft', 'voucher', 'mobile_money'];
+// station_screens_enabled deliberately NOT here yet. This list feeds
+// schema-constraints.test.ts's "restaurant_features has all expected columns" check, which runs
+// with UNPREFIXED (production) credentials — so a key here asserts the column exists on
+// PRODUCTION, not staging. 20260828220000_station_screens_enabled_feature.sql has only been
+// applied to staging; production has never had it promoted (that's a deliberate, separate,
+// human-gated action -- production deploys are workflow_dispatch only, never on push). Add the
+// key back here once that promotion happens, not before -- claiming a column exists before it
+// does is exactly the drift this test is watching for.
 export const VALID_FEATURE_KEYS = [
   'kitchen_enabled', 'inventory_enabled', 'analytics_enabled',
   'split_bill_enabled', 'reservations_enabled', 'loyalty_enabled',
   'online_payments_enabled', 'multi_branch_enabled', 'staff_app_enabled',
-  'kiosk_enabled', 'whatsapp_enabled', 'station_screens_enabled',
+  'kiosk_enabled', 'whatsapp_enabled',
 ];
