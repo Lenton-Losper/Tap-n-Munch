@@ -12,17 +12,31 @@ import {
   View,
 } from 'react-native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
+import {useFocusEffect} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
 import {getMenuCategories, getMenuItems, MenuCategory, MenuItem} from '../lib/api';
+import {applyAvailabilityOverrides} from '../lib/menuAvailabilityOverrides';
 import {basketCount, basketSubtotal, RoundLine} from '../lib/serviceRound';
 import {getRestaurantId, getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ServiceRound'>;
+
+/**
+ * One tile, PLUS the category it was found under.
+ *
+ * The category travels with the item because the item detail view has to re-read the record to
+ * confirm the dish name against, and the only route that reads menu items is the per-category one.
+ * `MenuItem.category_id` cannot be used for that: the grouped response shape of
+ * GET /api/menu/{restaurant}/category/{id} does not always carry a category id on the item rows,
+ * so mapMenuItem defaults it to '' — which would send the detail view to a category that does not
+ * exist. The key this screen filed the item under is always right.
+ */
+type GridEntry = {item: MenuItem; categoryId: string};
 
 function formatMoney(amount: number): string {
   return `N$${amount.toFixed(2)}`;
@@ -210,28 +224,82 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
     };
   }, [token, restaurantId]);
 
+  /**
+   * FOLD IN ANY AVAILABILITY CHANGE THIS DEVICE HAS HAD CONFIRMED, every time the grid is
+   * re-entered.
+   *
+   * The menu above is fetched ONCE, on mount, and nothing invalidates it. The moment a waiter can
+   * take a dish off the menu from the item detail view, that cache can outlive the truth: they hide
+   * the dish, press back, and the tile they left behind still says it is orderable. Adding it to a
+   * customer's round from that tile is not a cosmetic staleness — it is an order for food the venue
+   * has just said it does not have.
+   *
+   * Coming back from the detail view is a FOCUS, which is why this hangs off useFocusEffect rather
+   * than route params: Android's hardware back does not go through the screen's own back control,
+   * and that is the exit a waiter actually uses.
+   *
+   * NOT OPTIMISTIC, and this is the load-bearing part: applyAvailabilityOverrides can only return
+   * what the SERVER confirmed. lib/menuAvailabilityOverrides.ts is written from exactly one place,
+   * inside the 200 branch of the availability call. Nothing here ever runs on a guess.
+   *
+   * The identity check is what stops this looping: an unchanged fold returns the same object and
+   * setState bails out rather than re-rendering the grid on every focus.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      setItemsByCategory(prev => {
+        let changed = false;
+        const next: Record<string, MenuItem[]> = {};
+        for (const [categoryId, list] of Object.entries(prev)) {
+          const patched = applyAvailabilityOverrides(list);
+          next[categoryId] = patched;
+          if (patched !== list) {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, []),
+  );
+
   const searchTerm = search.trim().toLowerCase();
 
-  const visibleItems = useMemo(() => {
+  /**
+   * WHY UNAVAILABLE ITEMS ARE NO LONGER FILTERED OUT.
+   *
+   * They used to be dropped from the grid and from the search index entirely. Two things changed
+   * with the terminal being able to take a dish off the menu:
+   *
+   *   - A dish taken off the menu has to STILL BE FINDABLE, or nobody can put it back. Restoring
+   *     it needs the item detail view, and the only way to that view is a tile.
+   *   - "No match" for a dish the venue does sell reads as "we do not sell it" — the exact
+   *     complaint that made this screen load the whole menu up front rather than search only what
+   *     had been browsed.
+   *
+   * An unavailable tile is rendered greyed and CANNOT be added to a round; see the renderItem.
+   */
+  const visibleItems = useMemo<GridEntry[]>(() => {
+    const entries: GridEntry[] = [];
     if (searchTerm) {
       const seen = new Set<string>();
-      const hits: MenuItem[] = [];
-      for (const list of Object.values(itemsByCategory)) {
+      for (const [categoryId, list] of Object.entries(itemsByCategory)) {
         for (const item of list) {
           if (seen.has(item.id)) {
             continue;
           }
           if (item.name.toLowerCase().includes(searchTerm)) {
             seen.add(item.id);
-            hits.push(item);
+            entries.push({item, categoryId});
           }
         }
       }
-      return hits.filter(i => i.is_available);
+      return entries;
     }
-    return (itemsByCategory[selectedCategory ?? ''] ?? []).filter(
-      i => i.is_available,
-    );
+    const categoryId = selectedCategory ?? '';
+    for (const item of itemsByCategory[categoryId] ?? []) {
+      entries.push({item, categoryId});
+    }
+    return entries;
   }, [itemsByCategory, searchTerm, selectedCategory]);
 
   const count = basketCount(lines);
@@ -353,24 +421,65 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
         <FlatList
           style={styles.itemList}
           data={visibleItems}
-          keyExtractor={i => i.id}
+          keyExtractor={entry => entry.item.id}
           numColumns={2}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.itemGrid}
-          renderItem={({item}) => (
-            <Pressable
-              style={({pressed}) => [
+          renderItem={({item: entry}) => (
+            <View
+              style={[
                 styles.itemCard,
-                pressed && styles.itemCardPressed,
-              ]}
-              onPress={() => addItem(item)}>
-              <Text style={styles.itemName} numberOfLines={2}>
-                {item.name}
-              </Text>
-              <Text style={styles.itemPrice}>
-                {formatMoney(item.base_price)}
-              </Text>
-            </Pressable>
+                !entry.item.is_available && styles.itemCardUnavailable,
+              ]}>
+              {/*
+                THE ORDER-BUILDING TAP, UNCHANGED. Tapping the body of a tile adds the item to the
+                round and does nothing else. A tile the server says is unavailable cannot be added
+                at all — that is what `disabled` is for, and it is why an unavailable tile is shown
+                greyed rather than hidden.
+              */}
+              <Pressable
+                style={({pressed}) => [
+                  styles.itemCardBody,
+                  pressed && styles.itemCardPressed,
+                ]}
+                disabled={!entry.item.is_available}
+                onPress={() => addItem(entry.item)}>
+                <Text style={styles.itemName} numberOfLines={2}>
+                  {entry.item.name}
+                </Text>
+                <Text style={styles.itemPrice}>
+                  {formatMoney(entry.item.base_price)}
+                </Text>
+              </Pressable>
+
+              {/*
+                THE ONLY WAY TO THE ITEM DETAIL VIEW, and therefore the only way to the control
+                that takes a dish off the menu.
+
+                DELIBERATELY AN EXPLICIT, SEPARATE TARGET. Not the tile's own tap — that builds an
+                order and must keep doing so — and NOT a swipe or a long-press: a mis-swipe while
+                scrolling a menu mid-service must never be able to reach a control that removes a
+                dish for every customer in the restaurant. Whoever is tempted to "save a tap" by
+                moving this onto a gesture is re-introducing exactly the risk the design removed.
+              */}
+              <Pressable
+                style={styles.itemInfoButton}
+                hitSlop={8}
+                accessibilityRole="button"
+                onPress={() =>
+                  navigation.navigate('MenuItemDetail', {
+                    itemId: entry.item.id,
+                    categoryId: entry.categoryId,
+                    tappedName: entry.item.name,
+                  })
+                }>
+                <MaterialCommunityIcons
+                  name="information-outline"
+                  size={20}
+                  color={Colors.textMuted}
+                />
+              </Pressable>
+            </View>
           )}
           ListEmptyComponent={
             <View style={styles.centered}>
@@ -522,7 +631,23 @@ const styles = StyleSheet.create({
     minHeight: 84,
     justifyContent: 'space-between',
   },
+  /**
+   * The greyed tile. It is on screen and can be opened, but its body is `disabled` so it cannot be
+   * added to a round — the greying is the visible half of that, not decoration.
+   */
+  itemCardUnavailable: {backgroundColor: Colors.surface, opacity: 0.55},
+  itemCardBody: {flex: 1, justifyContent: 'space-between'},
   itemCardPressed: {opacity: 0.8},
+  /** Small, in the corner, and away from the middle of the tile where an add-tap lands. */
+  itemInfoButton: {
+    position: 'absolute',
+    top: Spacing.xs,
+    right: Spacing.xs,
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   itemName: {...Typography.small, fontWeight: '600', color: Colors.textPrimary},
   itemPrice: {
     ...Typography.body,
