@@ -117,12 +117,14 @@ export const STATION_COPY = {
   },
   bar: {
     pageTitle: 'Bar',
-    /** The active zone: drinks not yet poured. Neutral, always — no age colour here, see
-     *  bar-screen.tsx's own note on why this is the one zone that stays that way. */
+    /** The active zone: drinks not yet poured. Ages now (reversed 20260829, see bar-screen.tsx's
+     *  own note) on later bands than the kitchen's — a warm beer is still a smaller problem than
+     *  a cold steak, it just was not a reason to switch colour off entirely at real volume. */
     activeHeading: 'To make',
     activeEmpty: 'Nothing waiting.',
-    /** The pinned zone: poured, waiting to be collected. Ages, unlike the zone above — a drink
-     *  sitting uncollected is a different problem from one not yet made. */
+    /** The pinned zone: poured, waiting to be collected. Ages on the same clock and bands as the
+     *  kitchen's Ready zone — a drink sitting uncollected is a different problem from one not yet
+     *  made. */
     readyHeading: 'Waiting for collection',
     readyEmpty: 'Nothing waiting for collection.',
     /** The one tap that sends a drink to Ready. NOW PER LINE: a round is not poured all at once,
@@ -189,6 +191,22 @@ export const STATION_COPY = {
   age: {
     justNow: 'just now',
     minutes: (n: number) => `${n} min`,
+  },
+  /**
+   * ADDED, second-pass board redesign (20260829). Shared by both boards' Ready/Waiting-for-
+   * collection dispatch rows — "same language, same dimensions" applies to the row's own words
+   * too, not just its layout.
+   */
+  dispatch: {
+    /** The word between the item and its clock: "T12 · Ribeye MR · READY 02:11". State, not
+     *  zone — the bar's zone is headed "Waiting for collection" but the dish itself is ready. */
+    readyWord: 'READY',
+    /**
+     * The recoverable-tap window's own button. "A waiter who taps the wrong row has no way back
+     * and no record on screen that it happened... the tap must be recoverable." One word, because
+     * it sits on an already-narrow row beside a struck-through item name and a clock.
+     */
+    undoButton: 'Undo',
   },
   /**
    * The connection indicator's labels — same three-state shape and same rule

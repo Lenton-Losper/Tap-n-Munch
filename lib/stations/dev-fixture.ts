@@ -188,14 +188,16 @@ export function buildBarFixture(now: number = Date.now()): BarRound[] {
 
 /**
  * ============================================================================================
- * A FULL BOARD — TWENTY ROUNDS. THE LAYOUT QUESTION ONLY EXISTS AT THIS SIZE.
+ * A FULL BOARD — FORTY ROUNDS (extended from twenty, second-pass redesign 20260829). THE LAYOUT
+ * QUESTION ONLY EXISTS AT THIS SIZE.
  * ============================================================================================
  *
  * The small fixture above is for the unit render test and proves nothing about the wall: a
  * handful of rounds fit any layout. This one is deliberately hostile to the layout, and every
  * awkward case in it is one that has actually reached a real board:
  *
- *   - TWENTY table groups: twelve outstanding, three cooked-and-waiting (all ACTIVE), five READY.
+ *   - FORTY table groups: twenty-three outstanding, seven cooked-and-waiting (all ACTIVE), ten
+ *     READY.
  *   - Line counts from one to four per table, so the flow cannot assume a uniform round height.
  *   - Ages spanning every band on all three clocks (ticket, pass, ready): seconds, minutes, the
  *     amber and red bands, past STALE_MINUTES, and 12877 minutes — the exact number the owner
@@ -251,6 +253,45 @@ const KITCHEN_WALL_SEED: KitchenSeed[] = [
   // Shared with the bar: the bar has its own half of this order, independently.
   { table: '19', placed: 9, items: [['Mussels', 1], ['Crusty bread', 1]], routeTo: 'both' },
   { table: '21', placed: 300, items: [['Vegetable curry', 1], ['Roti', 2]] },
+
+  /**
+   * ============================================================================================
+   * EXTENDED TO FORTY, second-pass redesign (20260829): "screenshot at 1920x1080 with 40 rounds,
+   * both boards." Same proportions as the twenty-round set above (roughly a quarter Ready, the
+   * rest Active), same realism rule — every awkward shape above still applies, this just makes
+   * there be twice as much of it.
+   * ============================================================================================
+   */
+  // ---- READY, PINNED — five more, five more escalation examples -----------------------------
+  { table: '22', placed: 5, cooked: 2, ready: 1, items: [['Grilled prawns', 1]] },
+  { table: '23', placed: 11, cooked: 6, ready: 4, items: [['Duck breast', 1, 'pink']] },
+  { table: '25', placed: 19, cooked: 13, ready: 8, items: [['Lamb curry', 1], ['Poppadums', 2]] },
+  { table: '27', placed: 260, cooked: 250, ready: 245, items: [['Beef tartare', 1]] },
+  { table: '28', placed: 8, cooked: 3, ready: 2, items: [['Mussels marinière', 1]] },
+
+  // ---- ACTIVE, cooked-and-waiting — four more -------------------------------------------------
+  { table: '24', placed: 9, cooked: 3, items: [['Seared tuna', 1, 'rare']] },
+  { table: '26', placed: 17, cooked: 6, items: [['Pork ribs', 1], ['Corn bread', 1]] },
+  { table: '29', placed: 12, cooked: 5, items: [['Mushroom risotto', 1]] },
+  { table: '32', placed: 23, cooked: 9, items: [['Chicken parmigiana', 1]] },
+
+  // ---- ACTIVE, not yet started — eleven more ---------------------------------------------------
+  { table: '20', placed: 4, items: [['Nachos', 1]] },
+  { table: '30', placed: 13, items: [['Beef burger', 2, 'one no cheese'], ['Sweet potato fries', 1]] },
+  { table: '31', placed: 27, items: [['Fish curry', 1], ['Basmati rice', 1]] },
+  { table: '33', placed: 1, items: [['Bruschetta', 1]] },
+  { table: '34', placed: 16, items: [['Vegetable lasagne', 1], ['Garlic bread', 1]] },
+  { table: '35', placed: 32, items: [['Pulled pork sandwich', 1], ['Coleslaw', 1]] },
+  { table: '36', placed: 6, items: [['Greek salad', 1]] },
+  {
+    table: '37',
+    placed: 22,
+    items: [['Surf and turf', 1], ['Calamari starter', 1], ['Onion rings', 1], ['Chips', 2]],
+  },
+  { table: '38', placed: 10, items: [['Chicken schnitzel', 2]] },
+  { table: '39', placed: 3, items: [['Caprese salad', 1]] },
+  // Shared with the bar, independent of its bar half — same shape as table 19 above.
+  { table: '40', placed: 14, items: [['Cheese platter', 1], ['Crackers', 1]], routeTo: 'both' },
 ]
 
 export function buildKitchenWallFixture(now: number = Date.now()): KitchenLine[] {
@@ -302,15 +343,16 @@ export function buildKitchenWallFixture(now: number = Date.now()): KitchenLine[]
 }
 
 /**
- * The bar at the same volume — twenty rounds, same split as the kitchen: five already poured and
- * waiting for collection, fifteen still to make. Same shapes the kitchen fixture exercises (an
- * absent table, an unrouted round, item counts from one to four, ages from seconds to 12877
- * minutes) so the two boards can be read side by side and any difference between them is a design
- * decision rather than a difference in the data.
+ * The bar at the same volume — forty rounds (extended from twenty, second-pass redesign
+ * 20260829), same split as the kitchen: a quarter already poured and waiting for collection, the
+ * rest still to make. Same shapes the kitchen fixture exercises (an absent table, an unrouted
+ * round, item counts from one to four, ages from seconds to 12877 minutes) so the two boards can
+ * be read side by side and any difference between them is a design decision rather than a
+ * difference in the data.
  *
- * NOTE what the TO MAKE half of this fixture cannot show, and that is half the point of it
- * existing: that zone has no age escalation by standing ruling, so every TO MAKE card is the same
- * colour no matter how its age is spread. See components/stations/bar-screen.tsx.
+ * BOTH ZONES NOW AGE, ON DIFFERENT BANDS. TO MAKE was ruled neutral, then reversed at real volume
+ * — see lib/stations/age.ts's barActiveEscalation/barReadyEscalation. The ages below are chosen to
+ * discriminate under THOSE (later-than-kitchen) bands, not the kitchen's own.
  */
 type BarSeed = {
   table: string
@@ -344,6 +386,37 @@ const BAR_WALL_SEED: BarSeed[] = [
   { table: '18', placed: 2, items: [['Americano', 1], ['Flat white', 1], ['Hot chocolate', 1]] },
   { table: '19', placed: 1, items: [['Sauvignon blanc', 2]] },
   { table: '21', placed: 0, items: [['Tap water', 4]] },
+
+  /**
+   * ============================================================================================
+   * EXTENDED TO FORTY, second-pass redesign (20260829) — same proportions as the twenty-round set
+   * above, plus the red/stale TO MAKE examples the first twenty could not show (every one of them
+   * sat under 20 minutes, before TO MAKE had bands of its own to discriminate against).
+   * ============================================================================================
+   */
+  // ---- WAITING FOR COLLECTION — five more --------------------------------------------------
+  { table: '22', placed: 3, ready: 1, items: [['Negroni', 1]] },
+  { table: '24', placed: 9, ready: 4, items: [['Bloody Mary', 1]] },
+  { table: '26', placed: 25, ready: 11, items: [['Whisky sour', 2]] },
+  { table: '29', placed: 260, ready: 250, items: [['Draught', 3]] },
+  { table: '31', placed: 6, ready: 2, items: [['Margarita', 1]] },
+
+  // ---- TO MAKE — fifteen more, including the red/stale bands the first twenty never reached --
+  { table: '20', placed: 5, items: [['Espresso', 2]] },
+  { table: '23', placed: 35, items: [['Long island iced tea', 1]] }, // red (>= 30)
+  { table: '25', placed: 300, items: [['Rooibos', 1]] }, // stale (>= 240)
+  { table: '27', placed: 2, items: [['Diet coke', 3]] },
+  { table: '28', placed: 12, items: [['Mai tai', 1], ['Piña colada', 1]] },
+  { table: '30', placed: 40, items: [['Manhattan', 1]] }, // red
+  { table: '32', placed: 7, items: [['Lime and soda', 2]] },
+  { table: '33', placed: 18, items: [['Craft cider', 2]] },
+  { table: '34', placed: 1, items: [['Fresh orange juice', 1]] },
+  { table: '35', placed: 22, items: [['Rum and coke', 2]] },
+  { table: '36', placed: 33, items: [['Negroni sbagliato', 1]] }, // red
+  { table: '37', placed: 4, items: [['Sparkling water', 2]] },
+  { table: '38', placed: 16, items: [['White wine spritzer', 1]] },
+  { table: '39', placed: 8, items: [['Hot toddy', 1]] },
+  { table: '40', placed: 10, items: [['Amarula', 2]] },
 ]
 
 export function buildBarWallFixture(now: number = Date.now()): BarRound[] {
@@ -364,8 +437,8 @@ export function buildBarWallFixture(now: number = Date.now()): BarRound[] {
     unrouted: false,
   }))
 
-  // The twenty-first card: unrouted, and therefore carrying no controls at all — not counted in
-  // the twenty, same convention the kitchen fixture uses for its own unrouted extra.
+  // The forty-first card: unrouted, and therefore carrying no controls at all — not counted in
+  // the forty, same convention the kitchen fixture uses for its own unrouted extra.
   rounds.push({
     id: 'bw-unrouted',
     tableNumber: '14',

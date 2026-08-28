@@ -2,7 +2,7 @@
 
 import { STATION_COPY } from '@/lib/stations/copy'
 import { ageMinutes, formatAge, worstEscalation } from '@/lib/stations/age'
-import { buildBarBoard, readyLineEscalation } from '@/lib/stations/grouping'
+import { barActiveLineEscalation, buildBarBoard, readyLineEscalation } from '@/lib/stations/grouping'
 import { densityFor, type DensityScale } from '@/lib/stations/board-density'
 import type { BumpLines, StationBumpAction } from '@/lib/stations/bump'
 import type { BarRound } from '@/lib/stations/types'
@@ -20,7 +20,7 @@ import {
  * THE BAR WALL BOARD.
  *
  * ============================================================================================
- * REBUILT 20260829160000 — SAME TWO ZONES AS THE KITCHEN, ONE DELIBERATE DIFFERENCE
+ * REBUILT 20260829160000 — SAME TWO ZONES AS THE KITCHEN, ONE REMAINING DIFFERENCE
  * ============================================================================================
  *
  * Shares components/stations/station-card.tsx and lib/stations/board-density.ts with the kitchen
@@ -35,21 +35,27 @@ import {
  * Ready card carrying its two poured ones, at the same time.
  *
  * ============================================================================================
- * THE ONE DIFFERENCE: TO MAKE STAYS NEUTRAL. WAITING FOR COLLECTION DOES NOT.
+ * "TO MAKE STAYS NEUTRAL" WAS RULED AT FOUR CARDS, AND REVERSED 20260829 AT TWELVE
  * ============================================================================================
  *
- * The standing ruling — "a warm beer is a smaller problem than a cold steak" — is about the TO
- * MAKE zone specifically, and this rebuild does not overturn it: every TO MAKE card is drawn
- * neutral whatever its age, `escalation={null}` passed explicitly so nobody later reads a missing
- * prop as an oversight, and the zone's own ordering stays plain FIFO rather than sorting by
- * urgency the way every other zone on either board now does — there is nothing to rank a neutral
- * card by.
+ * The original ruling — "a warm beer is a smaller problem than a cold steak" — was correct about
+ * the STAKES and wrong about what follows from them. At four cards, reading every table number
+ * costs nothing, so switching colour off cost nothing either. At real volume it does: a
+ * bartender scanning twelve identical white TO MAKE cards for the oldest one has to read every
+ * number in turn, which is exactly the read the kitchen board's colour exists to shortcut. Owner,
+ * walking the rebuilt board: "I made that ruling when the board was four cards. At twelve it
+ * costs more than it saves."
  *
- * The board rebuild's own new ruling is a DIFFERENT zone: "the waiting-for-collection zone DOES
- * age... a drink sitting uncollected is a different problem from one not yet made." So Waiting for
- * collection ages exactly like the kitchen's Ready zone, on the same clock (readyAt) and the same
- * bands (readyToRunEscalation) — the first age colour the bar screen has ever carried, and it is
- * scoped to the one zone the owner named.
+ * So TO MAKE now ages and sorts by urgency exactly like every other zone on either board — see
+ * lib/stations/grouping.ts's barActiveLineEscalation. THE STAKES STILL DIFFER, THOUGH: a warm
+ * beer is still a smaller problem than a cold steak, so the bands are later than the kitchen's
+ * outstanding bands (lib/stations/age.ts's BAR_ACTIVE_AMBER_MINUTES / BAR_ACTIVE_RED_MINUTES,
+ * flagged unmeasured exactly like the kitchen's own first cut was) — a round that would already
+ * be red on the kitchen's clock can still be white or amber here.
+ *
+ * Waiting for collection is unchanged by this: it already aged, on the same clock (readyAt) and
+ * the same bands (readyToRunEscalation) as the kitchen's Ready zone, since this rebuild's own
+ * ruling that "a drink sitting uncollected is a different problem from one not yet made."
  */
 
 /** An unrouted round has nowhere to be bumped TO until somebody sets a route, so it renders with
@@ -78,7 +84,7 @@ function BarRoundCard({
   const escalation =
     zone === 'ready'
       ? worstEscalation(round.items.map((item) => readyLineEscalation(item.readyAt, round.placedAt, now)))
-      : null
+      : barActiveLineEscalation(round, now)
   const clock = (item: BarRound['items'][number]) => (zone === 'ready' ? item.readyAt ?? round.placedAt : round.placedAt) ?? ''
   const oldest = Math.max(...round.items.map((item) => ageMinutes(clock(item), now)))
 
@@ -122,7 +128,11 @@ function BarRoundCard({
             tone={tone}
             bump={bump}
             scale={scale}
-            escalation={zone === 'ready' ? readyLineEscalation(item.readyAt, round.placedAt, now) : null}
+            escalation={
+              zone === 'ready'
+                ? readyLineEscalation(item.readyAt, round.placedAt, now)
+                : barActiveLineEscalation(round, now)
+            }
           />
         ) : (
           <div

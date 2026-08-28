@@ -2,8 +2,17 @@
  * feat/station-screens-v1 — age and escalation, pure functions.
  *
  * READY TO RUN is "the loudest thing on the screen" per the brief: white 0-2min, amber 3-5,
- * red 5+, oldest first. The BAR side deliberately has no escalation — "a warm beer is a smaller
- * problem than a cold steak" — so bar age is display-only and always uses `neutral`.
+ * red 5+, oldest first — the kitchen's Ready zone still uses these bands directly
+ * (readyToRunEscalation).
+ *
+ * FOUR ESCALATION FUNCTIONS NOW, ONE PER (BOARD, ZONE) PAIR THAT AGES ON ITS OWN CLOCK:
+ * outstandingEscalation (kitchen active/outstanding), readyToRunEscalation (kitchen active/cooked
+ * AND kitchen ready), barActiveEscalation (bar TO MAKE), barReadyEscalation (bar Waiting for
+ * collection). The bar was originally ruled to carry no escalation at all — "a warm beer is a
+ * smaller problem than a cold steak" — and that ruling was walked back at real volume (20260829):
+ * the STAKES argument still holds, which is why the bar's own two functions use later bands than
+ * their kitchen counterparts, but "lower stakes" stopped meaning "no colour" once a bartender had
+ * to read twelve identical white cards to find the oldest one.
  */
 
 export type AgeEscalation = 'white' | 'amber' | 'red' | 'stale'
@@ -27,6 +36,13 @@ export function ageMinutes(sinceIso: string, now: number = Date.now()): number {
   const since = new Date(sinceIso).getTime()
   if (!Number.isFinite(since)) return 0
   return Math.max(0, Math.floor((now - since) / 60_000))
+}
+
+/** Same clock as ageMinutes, second-resolution — for formatElapsedClock's MM:SS. */
+export function ageSeconds(sinceIso: string, now: number = Date.now()): number {
+  const since = new Date(sinceIso).getTime()
+  if (!Number.isFinite(since)) return 0
+  return Math.max(0, Math.floor((now - since) / 1000))
 }
 
 /**
@@ -62,6 +78,25 @@ export function formatAge(minutes: number): string {
   }
 
   return `${Math.floor(hours / 24)}d`
+}
+
+/**
+ * BOARD REDESIGN, SECOND PASS (20260829) — "elapsed stays small and consistent as MM:SS. Border
+ * and accent intensity carry urgency, not giant red numbers." This is deliberately a DIFFERENT
+ * function from formatAge above, not a replacement of it: formatAge's unit-scaling ("just now" /
+ * "Xh Ym" / "Nd") is what the defect-1 fix pinned, and other places may still want that reading.
+ * This board's dense grid wants a fixed-width, glanceable stopwatch instead.
+ *
+ * Minutes are NOT capped at 59 — a genuinely 2+ hour ticket reads "127:45", not "2:07:45" or a
+ * wrapped "07:45". That is still "small and consistent" in FORMAT even when the number itself
+ * gets long, and by the time a card is that old it has sunk to 'stale' (the quietest tier, see
+ * worstEscalation) and nobody is reading its exact age closely anyway.
+ */
+export function formatElapsedClock(totalSeconds: number): string {
+  const clamped = Math.max(0, Math.floor(totalSeconds))
+  const minutes = Math.floor(clamped / 60)
+  const seconds = clamped % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 /** Oldest first — the line that has waited longest is the one a waiter should see first. */
@@ -102,6 +137,64 @@ export function outstandingEscalation(minutes: number): AgeEscalation {
   if (minutes >= STALE_MINUTES) return 'stale'
   if (minutes < OUTSTANDING_AMBER_MINUTES) return 'white'
   if (minutes < OUTSTANDING_RED_MINUTES) return 'amber'
+  return 'red'
+}
+
+/**
+ * ============================================================================================
+ * A THIRD SET OF BANDS — THE BAR'S TO MAKE ZONE, REVERSED 20260829 (the board rebuild's own
+ * ruling walked back at real volume, not the original brief)
+ * ============================================================================================
+ *
+ * "A warm beer is a smaller problem than a cold steak" was ruled when the bar board held four
+ * cards and every one of them was the same colour — reading twelve numbers to find the oldest
+ * costs nothing at four. Owner, walking the rebuilt board at real volume: "at twelve it costs
+ * more than it saves" — a bartender had to read every table number in turn, because colour,
+ * which is what the kitchen board uses to shortcut exactly that read, was switched off here on
+ * purpose. So TO MAKE ages now, on the same four-tier language as everything else on either
+ * board.
+ *
+ * THE THRESHOLDS ARE LATER THAN THE KITCHEN'S, DELIBERATELY, PER THE SAME RULING THAT REVERSED
+ * THE REST OF IT: a warm beer is still a smaller problem than a cold steak, so a bar round should
+ * not go amber and red on the kitchen's clock. NOTHING HAS MEASURED THESE NUMBERS — same posture
+ * as OUTSTANDING_AMBER_MINUTES/OUTSTANDING_RED_MINUTES above: a first cut, roughly 1.5x the
+ * kitchen's outstanding bands, named so they can be moved without hunting through a component
+ * once real service has an opinion.
+ */
+export const BAR_ACTIVE_AMBER_MINUTES = 15
+export const BAR_ACTIVE_RED_MINUTES = 30
+
+export function barActiveEscalation(minutes: number): AgeEscalation {
+  if (minutes >= STALE_MINUTES) return 'stale'
+  if (minutes < BAR_ACTIVE_AMBER_MINUTES) return 'white'
+  if (minutes < BAR_ACTIVE_RED_MINUTES) return 'amber'
+  return 'red'
+}
+
+/**
+ * ============================================================================================
+ * A FOURTH SET OF BANDS — BAR'S READY (WAITING FOR COLLECTION) ZONE, SOFTER THAN THE KITCHEN'S
+ * ============================================================================================
+ *
+ * Second-pass redesign, 20260829: "bar ready ages and sorts but escalates more softly than
+ * kitchen. The consequence of a waiting drink is lower than a waiting plate." This SUPERSEDES the
+ * first pass's choice to share readyToRunEscalation's bands (2/5) between both boards' Ready
+ * zones — that was the same "one set of stakes for two different stakes" mistake the original
+ * "bar stays neutral" ruling made for TO MAKE, just in the other zone. A cold plate is still a
+ * worse consequence than a warm drink even once both are sitting made; the bands should say so.
+ *
+ * UNMEASURED, same posture as every other first-cut band in this file: roughly 2.5x the kitchen
+ * ready bands, softer than even bar's own TO MAKE bands above (a drink already poured and waiting
+ * is more urgent than one not yet started, so ready should still escalate FASTER than active for
+ * the same board — 5/15 here vs 15/30 for TO MAKE).
+ */
+export const BAR_READY_AMBER_MINUTES = 5
+export const BAR_READY_RED_MINUTES = 15
+
+export function barReadyEscalation(minutes: number): AgeEscalation {
+  if (minutes >= STALE_MINUTES) return 'stale'
+  if (minutes < BAR_READY_AMBER_MINUTES) return 'white'
+  if (minutes < BAR_READY_RED_MINUTES) return 'amber'
   return 'red'
 }
 

@@ -143,3 +143,28 @@ export type BarRound = {
    *  physical ticket across two UI sections would be worse than flagging the whole round loud. */
   unrouted: boolean
 }
+
+/**
+ * ONE ROW ON THE READY ZONE — the second-pass board redesign (20260829). "No production cards.
+ * Dense rows... it is a dispatch queue, not a shrunken production card." Shared by both boards on
+ * purpose ("same language, same dimensions") so kitchen-screen.tsx and bar-screen.tsx render
+ * their Ready zones from the exact same primitive (components/stations/dispatch-row.tsx) rather
+ * than each inventing its own — that divergence is the thing this redesign exists to prevent.
+ *
+ * Deliberately NOT grouped by table. A round used to reach the Ready zone as a TableGroup/BarRound
+ * carrying only its ready lines; now each ready LINE is its own row, table number carried inline
+ * as a column rather than a heading, because "T12 · Ribeye MR · READY 02:11 · [Collected]" names
+ * one dish, not one table.
+ */
+export type DispatchRow = {
+  lineId: string
+  tableNumber: string
+  itemName: string
+  quantity: number
+  lineNote: string | null
+  /** When this line reached 'ready' — the clock this row's own elapsed time is measured from.
+   *  Falls back to placedAt only if readyAt could not be read, same posture every other clock in
+   *  this module already takes. */
+  readyAt: string | null
+  placedAt: string | null
+}

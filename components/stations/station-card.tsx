@@ -1,10 +1,11 @@
 'use client'
 
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import type { AgeEscalation } from '@/lib/stations/age'
-import type { DensityScale } from '@/lib/stations/board-density'
+import { ageSeconds, formatElapsedClock, type AgeEscalation } from '@/lib/stations/age'
+import type { DensityScale, DispatchDensity } from '@/lib/stations/board-density'
 import type { BumpLines, StationBumpAction } from '@/lib/stations/bump'
+import type { DispatchRow } from '@/lib/stations/types'
 
 /**
  * components/stations/station-card.tsx — the one round both boards are built out of.
@@ -99,7 +100,9 @@ export function BumpButton({
   action: StationBumpAction
   bump: ReturnType<typeof useCardBump>
   tone: 'station' | 'pass'
-  scale: DensityScale
+  /** Only buttonClass is read — accepts DensityScale, DispatchDensity, or any shape carrying one,
+   *  so a Ready dispatch row can share this same button without faking a whole card's scale. */
+  scale: { buttonClass: string }
   full?: boolean
 }) {
   const pending = bump.isPending(lineIds)
@@ -317,17 +320,235 @@ export function StationCard({
         scale.cardPadClass
       } ${escalationClasses(escalation)}`}
     >
-      <div className="flex items-center justify-between gap-2">
+      {/*
+        AGE IS THE PROMINENT READ, TOP-RIGHT. Reversed 20260829: the per-round shortcut used to sit
+        where a busy reader's eye lands first, with age demoted to small and muted next to the
+        table number. Owner, walking a twelve-round board: "I read time before I read a count." A
+        shortcut is not a fact about the round the way its age is -- it does not need the loudest
+        corner, and most rounds do not even have one (see PerCardButton's own single-line gate).
+      */}
+      <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-baseline gap-2">
           <p className={`font-black leading-none tabular-nums ${scale.tableClass}`}>{tableLabel}</p>
-          <span className={`font-bold tabular-nums opacity-70 ${scale.noteClass}`} data-testid="card-age">
-            {ageLabel}
-          </span>
+          {headerAction}
         </div>
-        {headerAction}
+        <span
+          className={`shrink-0 font-black leading-none tabular-nums ${scale.tableClass}`}
+          data-testid="card-age"
+        >
+          {ageLabel}
+        </span>
       </div>
       {banner}
       <div className="mt-0.5">{children}</div>
     </div>
   )
+}
+
+/**
+ * ============================================================================================
+ * NOT SENT — A FULL-WIDTH FAULT STRIP AT THE TOP OF THE WHOLE BOARD, SHARED BY BOTH SCREENS
+ * ============================================================================================
+ *
+ * Second-pass redesign: "NOT SENT becomes a full-width high-contrast fault strip at the TOP OF
+ * THE WHOLE BOARD, not a card among cards. It can never be buried by normal work." The first pass
+ * drew it as a red-bordered BOX sitting first in the scrollable content — still, structurally, a
+ * card among cards, just a loud one. This is full-bleed (no side margin, no rounded corners, no
+ * card padding) and it is a caller's job to render it OUTSIDE the scrollable two-surface area
+ * entirely (see kitchen-screen.tsx / bar-screen.tsx), not merely first inside it — "can never be
+ * buried" means it cannot be pushed off by ANY amount of active or ready work, not just usually.
+ *
+ * Every unrouted item is still named on the strip itself, not just counted — "This item has no
+ * station set" is exactly the sentence that stops food going unseen, per the original ruling this
+ * carries forward unchanged.
+ */
+export function NotSentStrip({
+  items,
+  tableLabel,
+}: {
+  items: Array<{ lineId: string; tableNumber: string; quantity: number; itemName: string }>
+  tableLabel: (tableNumber: string) => string
+}) {
+  if (items.length === 0) return null
+  return (
+    <div
+      data-testid="unrouted-section"
+      className="shrink-0 bg-red-600 px-3 py-1.5 text-white"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <span className="text-lg font-black uppercase tracking-wide">{STATION_COPY.unrouted.heading}</span>
+        <span className="text-sm font-semibold text-red-100">{STATION_COPY.unrouted.description}</span>
+      </div>
+      <div className="mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
+        {items.map((item) => (
+          <span key={item.lineId} data-testid="unrouted-item" className="font-bold">
+            {tableLabel(item.tableNumber)} — {item.quantity}× {item.itemName}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * ============================================================================================
+ * THE DISPATCH ROW — READY'S OWN PRIMITIVE, NOT A SHRUNKEN STATIONCARD
+ * ============================================================================================
+ *
+ * "No production cards. Dense rows: 'T12 · Ribeye MR · READY 02:11 · [Collected]'... it is a
+ * dispatch queue, not a shrunken production card." One row = one line, table carried inline as a
+ * column rather than a heading. Shared by both boards ("same language, same dimensions") so
+ * neither screen invents its own Ready row shape.
+ *
+ * Urgency is a left border accent + a body tint, same colour language as StationCard, at a much
+ * smaller footprint — a whole card's border/background treatment on a one-line row would be
+ * louder than the row itself.
+ */
+const DISPATCH_ACCENT_CLASSES: Record<AgeEscalation, string> = {
+  white: 'border-[#E9E9E7] bg-white text-[#37352F]',
+  amber: 'border-amber-400 bg-amber-50 text-amber-900',
+  red: 'border-red-500 bg-red-50 text-red-900',
+  stale: 'border-[#D8D6D0] bg-[#F2F1EE] text-[#8A857C]',
+}
+
+export function DispatchRowView({
+  row,
+  now,
+  escalation,
+  scale,
+  tableLabel,
+  readyWord,
+  action,
+  actionLabel,
+  tone,
+  bump,
+  collected,
+  undoLabel,
+  onUndo,
+}: {
+  row: DispatchRow
+  now: number
+  escalation: AgeEscalation
+  scale: DispatchDensity
+  tableLabel: (tableNumber: string) => string
+  /** "READY" / "WAITING" — the word between the item and the clock. Signed per board. */
+  readyWord: string
+  action: StationBumpAction
+  actionLabel: string
+  tone: 'station' | 'pass'
+  bump: ReturnType<typeof useCardBump>
+  /** True while this row is in its short recoverable window after being tapped — struck through,
+   *  showing Undo instead of the collect action. See useRecentlyCollected. */
+  collected?: boolean
+  undoLabel?: string
+  onUndo?: () => void
+}) {
+  const elapsed = ageSeconds(row.readyAt ?? row.placedAt ?? '', now)
+  const failed = bump.failedLineIds.includes(row.lineId)
+
+  return (
+    <div
+      data-testid="dispatch-row"
+      data-line-id={row.lineId}
+      data-escalation={escalation}
+      data-collected={collected ? 'true' : 'false'}
+      className={`flex items-center gap-2 border-l-4 ${scale.rowPadClass} px-2 ${DISPATCH_ACCENT_CLASSES[escalation]} ${collected ? 'opacity-70' : ''}`}
+    >
+      <span className={`min-w-0 flex-1 truncate font-bold ${scale.rowTextClass} ${collected ? 'line-through' : ''}`}>
+        {tableLabel(row.tableNumber)} · {row.quantity}× {row.itemName}
+        {row.lineNote ? <span className="ml-1.5 font-black text-red-900">⚠ {row.lineNote}</span> : null}
+      </span>
+      <span className={`shrink-0 font-black tabular-nums opacity-70 ${scale.clockClass}`} data-testid="dispatch-row-clock">
+        {readyWord} {formatElapsedClock(elapsed)}
+      </span>
+      {collected ? (
+        <button
+          type="button"
+          data-testid="dispatch-row-undo"
+          onClick={onUndo}
+          className={`shrink-0 rounded-lg bg-[#37352F] font-bold text-white ${scale.buttonClass}`}
+        >
+          {undoLabel}
+        </button>
+      ) : (
+        <BumpButton
+          label={actionLabel}
+          lineIds={[row.lineId]}
+          action={action}
+          bump={bump}
+          tone={tone}
+          scale={scale}
+        />
+      )}
+      {failed ? (
+        <span data-testid="line-bump-failed" className={`shrink-0 font-bold text-red-700 ${scale.clockClass}`}>
+          {STATION_COPY.bumpFailure.lineMarker}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * ============================================================================================
+ * "A COLLECTED LINE SHOULD NOT VANISH THE INSTANT IT IS TAPPED" — THE ONE RULING CHANGED FROM
+ * THE PROPOSAL, AND EASY TO MISS
+ * ============================================================================================
+ *
+ * "A waiter who taps the wrong row has no way back and no record on screen that it happened.
+ * Keep it visible, struck through, for a short window - or give the row an undo. Your call which,
+ * but the tap must be recoverable. That is the same acknowledge-not-expire principle from the
+ * void design." Built as BOTH at once, not a choice between them: the row stays visible, struck
+ * through, WITH an Undo button, for one short window — recoverable by construction rather than by
+ * a race between "did I notice in time" and "did it already vanish".
+ *
+ * A collected line leaves GET /api/station/lines' response entirely (excluded server-side, same
+ * as voided), so this is CLIENT-ONLY memory of "I just told the server to collect this" — the row
+ * would otherwise disappear on the very next refetch with nothing left on screen to undo. Undo
+ * re-bumps to 'ready' (the kitchen's ready_to_run / the bar's out action both already map there
+ * server-side — no new server action needed) and clears the local memory immediately; the row
+ * then reappears from the next real refetch, the same as any other ready row.
+ *
+ * PRUNED ON A TIMER, NOT ON REFETCH: the row must stay struck-through for the FULL window even if
+ * a refetch happens to land in the middle of it (a busy board refetches often), or "keep it
+ * visible" would only be true between refetches, not for the promised duration.
+ */
+const RECOVERABLE_WINDOW_MS = 8000
+
+export function useRecentlyCollected() {
+  const [entries, setEntries] = useState<Record<string, { row: DispatchRow; collectedAtMs: number }>>({})
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setEntries((current) => {
+        const now = Date.now()
+        const next: typeof current = {}
+        let changed = false
+        for (const [lineId, entry] of Object.entries(current)) {
+          if (now - entry.collectedAtMs < RECOVERABLE_WINDOW_MS) {
+            next[lineId] = entry
+          } else {
+            changed = true
+          }
+        }
+        return changed ? next : current
+      })
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const markCollected = useCallback((row: DispatchRow) => {
+    setEntries((current) => ({ ...current, [row.lineId]: { row, collectedAtMs: Date.now() } }))
+  }, [])
+
+  const clear = useCallback((lineId: string) => {
+    setEntries((current) => {
+      if (!(lineId in current)) return current
+      const next = { ...current }
+      delete next[lineId]
+      return next
+    })
+  }, [])
+
+  return { entries, markCollected, clear }
 }

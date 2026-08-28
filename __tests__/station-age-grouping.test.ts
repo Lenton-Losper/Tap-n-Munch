@@ -121,9 +121,9 @@ describe('buildKitchenBoard', () => {
     expect(activeIds.sort()).toEqual(['a', 'b'])
   })
 
-  test('a ready line lands in the pinned ready zone, not active', () => {
+  test('a ready line lands in the pinned ready zone, not active — as a flat row, not a table group', () => {
     const board = buildKitchenBoard([kitchenLine({ id: 'r', state: 'ready', readyAt: '2026-08-27T20:05:00Z' })], NOW)
-    expect(board.readyByTable.flatMap((t) => t.lines.map((l) => l.id))).toEqual(['r'])
+    expect(board.readyRows.map((row) => row.lineId)).toEqual(['r'])
     expect(board.activeByTable).toHaveLength(0)
   })
 
@@ -137,7 +137,7 @@ describe('buildKitchenBoard', () => {
     const board = buildKitchenBoard([kitchenLine({ id: 'u', unrouted: true })], NOW)
     expect(board.unrouted.map((l) => l.id)).toEqual(['u'])
     expect(board.activeByTable).toHaveLength(0)
-    expect(board.readyByTable).toHaveLength(0)
+    expect(board.readyRows).toHaveLength(0)
   })
 
   test('a table with one outstanding and one ready line appears in BOTH zones, each carrying only its own line', () => {
@@ -150,8 +150,20 @@ describe('buildKitchenBoard', () => {
     )
     expect(board.activeByTable.map((t) => t.tableNumber)).toEqual(['4'])
     expect(board.activeByTable[0].lines.map((l) => l.id)).toEqual(['still-cooking'])
-    expect(board.readyByTable.map((t) => t.tableNumber)).toEqual(['4'])
-    expect(board.readyByTable[0].lines.map((l) => l.id)).toEqual(['already-ready'])
+    expect(board.readyRows.map((row) => row.tableNumber)).toEqual(['4'])
+    expect(board.readyRows.map((row) => row.lineId)).toEqual(['already-ready'])
+  })
+
+  test('ready rows are flat, not grouped — two ready lines on the same table are two separate rows', () => {
+    const board = buildKitchenBoard(
+      [
+        kitchenLine({ id: 'ribeye', tableNumber: '4', state: 'ready', itemName: 'Ribeye', readyAt: '2026-08-27T20:05:00Z' }),
+        kitchenLine({ id: 'fries', tableNumber: '4', state: 'ready', itemName: 'Fries', readyAt: '2026-08-27T20:06:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.readyRows).toHaveLength(2)
+    expect(board.readyRows.every((row) => row.tableNumber === '4')).toBe(true)
   })
 
   test('a louder table rises above a quieter, older one in the active zone', () => {
@@ -184,12 +196,13 @@ describe('buildBarBoard', () => {
     const round = barRound({ id: 'r1', items: [barItem({ id: 'i1', state: 'outstanding' })] })
     const board = buildBarBoard([round], NOW)
     expect(board.active.map((r) => r.id)).toEqual(['r1'])
-    expect(board.ready).toHaveLength(0)
+    expect(board.readyRows).toHaveLength(0)
   })
 
   test('a round with a mix of states appears in BOTH zones, each carrying only its own items', () => {
     const round = barRound({
       id: 'mixed',
+      tableNumber: '7',
       items: [
         barItem({ id: 'pending', state: 'outstanding' }),
         barItem({ id: 'poured', state: 'ready', readyAt: '2026-08-27T20:05:00Z' }),
@@ -198,18 +211,36 @@ describe('buildBarBoard', () => {
     const board = buildBarBoard([round], NOW)
     expect(board.active.map((r) => r.id)).toEqual(['mixed'])
     expect(board.active[0].items.map((i) => i.id)).toEqual(['pending'])
-    expect(board.ready.map((r) => r.id)).toEqual(['mixed'])
-    expect(board.ready[0].items.map((i) => i.id)).toEqual(['poured'])
+    expect(board.readyRows.map((row) => row.lineId)).toEqual(['poured'])
+    expect(board.readyRows[0].tableNumber).toBe('7')
   })
 
   test('unrouted = true never lands in active or ready', () => {
     const board = buildBarBoard([barRound({ id: 'u', unrouted: true })], NOW)
     expect(board.unrouted.map((r) => r.id)).toEqual(['u'])
     expect(board.active).toHaveLength(0)
-    expect(board.ready).toHaveLength(0)
+    expect(board.readyRows).toHaveLength(0)
   })
 
-  test('active is pure FIFO regardless of age — the bar stays neutral, ordering included', () => {
+  /**
+   * REVERSED 20260829 (second pass): the bar's TO MAKE zone was ruled neutral at four cards and
+   * that ruling was walked back once the board held twelve-plus — see lib/stations/age.ts's
+   * barActiveEscalation. This test used to pin pure FIFO; it now pins the opposite on purpose.
+   */
+  test('active sorts by urgency now too, on the softer bar bands — a louder round rises', () => {
+    const board = buildBarBoard(
+      [
+        // white (< 15 min on barActiveEscalation)
+        barRound({ id: 'quiet-older', placedAt: '2026-08-27T20:05:00Z' }),
+        // red (>= 30 min), placed BEFORE the quiet one but louder
+        barRound({ id: 'loud-newer', placedAt: '2026-08-27T19:35:00Z' }),
+      ],
+      NOW,
+    )
+    expect(board.active.map((r) => r.id)).toEqual(['loud-newer', 'quiet-older'])
+  })
+
+  test('within the same tier, active is still FIFO — oldest round first', () => {
     const board = buildBarBoard(
       [
         barRound({ id: 'newer', placedAt: '2026-08-27T20:09:00Z' }),
@@ -220,15 +251,29 @@ describe('buildBarBoard', () => {
     expect(board.active.map((r) => r.id)).toEqual(['older', 'newer'])
   })
 
-  test('ready DOES sort by urgency, unlike active — the one deliberate difference', () => {
+  test('ready rows sort by urgency too, on their own (softer-than-kitchen) bands', () => {
     const board = buildBarBoard(
       [
-        barRound({ id: 'quiet-older', items: [barItem({ state: 'ready', readyAt: '2026-08-27T20:08:00Z' })] }),
-        barRound({ id: 'loud-newer', items: [barItem({ state: 'ready', readyAt: '2026-08-27T19:49:00Z' })] }),
+        barRound({ id: 'r1', items: [barItem({ id: 'quiet-older', state: 'ready', readyAt: '2026-08-27T20:08:00Z' })] }),
+        barRound({ id: 'r2', items: [barItem({ id: 'loud-newer', state: 'ready', readyAt: '2026-08-27T19:49:00Z' })] }),
       ],
       NOW,
     )
-    // loud-newer has sat ready for 21 minutes (red); quiet-older for 2 (white).
-    expect(board.ready.map((r) => r.id)).toEqual(['loud-newer', 'quiet-older'])
+    // loud-newer has sat ready 21 minutes (barReadyEscalation red, >= 15); quiet-older 2 (white).
+    expect(board.readyRows.map((row) => row.lineId)).toEqual(['loud-newer', 'quiet-older'])
+  })
+
+  test('ready rows are flat — two ready items in one round are two separate rows, not one', () => {
+    const round = barRound({
+      id: 'r1',
+      tableNumber: '4',
+      items: [
+        barItem({ id: 'ipa', itemName: 'IPA', state: 'ready', readyAt: '2026-08-27T20:05:00Z' }),
+        barItem({ id: 'lager', itemName: 'Lager', state: 'ready', readyAt: '2026-08-27T20:06:00Z' }),
+      ],
+    })
+    const board = buildBarBoard([round], NOW)
+    expect(board.readyRows).toHaveLength(2)
+    expect(board.readyRows.every((row) => row.tableNumber === '4')).toBe(true)
   })
 })
