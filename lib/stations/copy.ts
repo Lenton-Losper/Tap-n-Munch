@@ -14,28 +14,42 @@
  *    signed wording (lib/dashboard/feed-connection-copy.ts) rather than a fresh, near-identical
  *    phrasing living a second place.
  *  - connection.live was NOT part of the correction and stays as originally drafted.
+ *
+ * REVISED 2026-08-28 for the real four-state model (lib/orders/order-lines.ts). Retired rather
+ * than repurposed, because their OLD meaning is no longer true of the zone they labelled:
+ *  - kitchen.readyToRunHeading / readyToRunEmpty described a zone of lines already passed. That
+ *    zone cannot exist on this screen any more — GET /api/station/lines excludes 'ready' lines
+ *    from a station's own board server-side (see lib/stations/types.ts's docblock) — so keeping
+ *    the string would describe a section that no longer renders anything real.
+ *  - bar.outHeading / outEmpty described a persisted archive of already-bumped rounds, which the
+ *    same filter makes impossible to populate truthfully from this route. See bar-screen.tsx.
+ * Replaced by kitchen.cookedHeading / cookedEmpty below, naming what the escalating zone now
+ * actually shows: a plated dish still waiting on the pass, not one already sent. kitchen.
+ * readyToRunButton and bar.outButton are UNCHANGED — both taps still do exactly what those
+ * labels say, only the zone that surrounded the button changed.
  */
 
 export const STATION_COPY = {
   kitchen: {
     pageTitle: 'Kitchen',
-    readyToRunHeading: 'Ready to run',
+    /** The escalating zone: cooked, not yet passed. Not "ready to run" — see the file docblock
+     *  on why that zone can no longer exist on this screen. */
+    cookedHeading: 'Cooked — awaiting pass',
     outstandingHeading: 'Outstanding',
-    readyToRunEmpty: 'Nothing ready to run.',
+    cookedEmpty: 'Nothing cooked yet.',
     outstandingEmpty: 'Nothing waiting.',
     /** Station tap: this line is cooked, awaiting the pass. */
     cookedButton: 'Cooked',
-    /** Pass tap: this line is confirmed and can leave the kitchen. */
+    /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
     readyToRunButton: 'Ready to run',
     tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
   },
   bar: {
     pageTitle: 'Bar',
     inHeading: 'In',
-    outHeading: 'Out',
     inEmpty: 'Nothing in.',
-    outEmpty: 'Nothing out yet.',
-    /** The one tap that moves a whole round from IN to OUT. */
+    /** The one tap that sends a whole round straight to ready. Removes it from this board — see
+     *  bar-screen.tsx on why there is no persisted Out column any more. */
     outButton: 'Out',
     tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
   },

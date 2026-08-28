@@ -17,13 +17,27 @@ function ageLabel(minutes: number): string {
   return minutes <= 0 ? STATION_COPY.age.justNow : STATION_COPY.age.minutes(minutes)
 }
 
-function ReadyToRunCard({ line, now }: { line: KitchenLine; now: number }) {
-  const minutes = ageMinutes(line.readyToRunAt as string, now)
+/**
+ * A line the station has already cooked, waiting on the pass. Escalates in urgency the same way
+ * the old "Ready to run" card did — see lib/stations/types.ts's docblock: the age driving that
+ * escalation is the ORDER's age, not this line's own cooked timestamp, because the real GET
+ * contract carries no per-line transition timestamp to key it on.
+ */
+function CookedCard({
+  line,
+  now,
+  onMarkReadyToRun,
+}: {
+  line: KitchenLine
+  now: number
+  onMarkReadyToRun: (lineId: string) => void
+}) {
+  const minutes = ageMinutes(line.placedAt ?? '', now)
   const escalation = readyToRunEscalation(minutes)
 
   return (
     <div
-      data-testid="ready-to-run-card"
+      data-testid="cooked-card"
       data-escalation={escalation}
       className={`flex items-center justify-between gap-3 rounded-xl border-2 px-4 py-3 ${ESCALATION_CLASSES[escalation]}`}
     >
@@ -32,43 +46,12 @@ function ReadyToRunCard({ line, now }: { line: KitchenLine; now: number }) {
         <p className="text-sm">
           {line.quantity}× {line.itemName}
         </p>
+        {line.lineNote ? <p className="text-sm italic opacity-80">{line.lineNote}</p> : null}
       </div>
-      <span className="text-sm font-medium tabular-nums" data-testid="ready-to-run-age">
-        {ageLabel(minutes)}
-      </span>
-    </div>
-  )
-}
-
-function OutstandingLineRow({
-  line,
-  onMarkCooked,
-  onMarkReadyToRun,
-}: {
-  line: KitchenLine
-  onMarkCooked: (lineId: string) => void
-  onMarkReadyToRun: (lineId: string) => void
-}) {
-  const status = line.cookedAt ? 'cooked' : 'outstanding'
-
-  return (
-    <div
-      data-testid="outstanding-line-row"
-      data-status={status}
-      className="flex items-center justify-between gap-3 rounded-lg border border-[#E9E9E7] bg-[#FAFAF8] px-3 py-2"
-    >
-      <span className="text-sm text-[#37352F]">
-        {line.quantity}× {line.itemName}
-      </span>
-      {status === 'outstanding' ? (
-        <button
-          type="button"
-          onClick={() => onMarkCooked(line.id)}
-          className="rounded-lg bg-[#FF6B35] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#e85f2f]"
-        >
-          {STATION_COPY.kitchen.cookedButton}
-        </button>
-      ) : (
+      <div className="flex flex-col items-end gap-2">
+        <span className="text-sm font-medium tabular-nums" data-testid="cooked-age">
+          {ageLabel(minutes)}
+        </span>
         <button
           type="button"
           onClick={() => onMarkReadyToRun(line.id)}
@@ -76,7 +59,34 @@ function OutstandingLineRow({
         >
           {STATION_COPY.kitchen.readyToRunButton}
         </button>
-      )}
+      </div>
+    </div>
+  )
+}
+
+function OutstandingLineRow({
+  line,
+  onMarkCooked,
+}: {
+  line: KitchenLine
+  onMarkCooked: (lineId: string) => void
+}) {
+  return (
+    <div
+      data-testid="outstanding-line-row"
+      className="flex items-center justify-between gap-3 rounded-lg border border-[#E9E9E7] bg-[#FAFAF8] px-3 py-2"
+    >
+      <span className="text-sm text-[#37352F]">
+        {line.quantity}× {line.itemName}
+        {line.lineNote ? <span className="ml-2 italic text-[#6B675F]">{line.lineNote}</span> : null}
+      </span>
+      <button
+        type="button"
+        onClick={() => onMarkCooked(line.id)}
+        className="rounded-lg bg-[#FF6B35] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#e85f2f]"
+      >
+        {STATION_COPY.kitchen.cookedButton}
+      </button>
     </div>
   )
 }
@@ -127,16 +137,16 @@ export function KitchenScreen({
         </div>
       ) : null}
 
-      <section className="mb-8" data-testid="ready-to-run-section">
+      <section className="mb-8" data-testid="cooked-section">
         <h2 className="mb-3 text-xl font-bold uppercase tracking-wide text-[#37352F]">
-          {STATION_COPY.kitchen.readyToRunHeading}
+          {STATION_COPY.kitchen.cookedHeading}
         </h2>
-        {board.readyToRun.length === 0 ? (
-          <p className="text-sm text-[#6B675F]">{STATION_COPY.kitchen.readyToRunEmpty}</p>
+        {board.cooked.length === 0 ? (
+          <p className="text-sm text-[#6B675F]">{STATION_COPY.kitchen.cookedEmpty}</p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {board.readyToRun.map((line) => (
-              <ReadyToRunCard key={line.id} line={line} now={now} />
+            {board.cooked.map((line) => (
+              <CookedCard key={line.id} line={line} now={now} onMarkReadyToRun={onMarkReadyToRun} />
             ))}
           </div>
         )}
@@ -151,23 +161,9 @@ export function KitchenScreen({
             {board.outstandingByTable.map((table) => (
               <div key={table.tableNumber} data-testid="outstanding-table-group">
                 <p className="mb-2 font-medium text-[#37352F]">{STATION_COPY.kitchen.tableLabel(table.tableNumber)}</p>
-                <div className="space-y-3">
-                  {table.stationGroups.map((group) => (
-                    <div key={group.station} data-testid="outstanding-station-group" data-station={group.station}>
-                      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-[#6B675F]">
-                        {group.station}
-                      </p>
-                      <div className="space-y-1.5">
-                        {group.lines.map((line) => (
-                          <OutstandingLineRow
-                            key={line.id}
-                            line={line}
-                            onMarkCooked={onMarkCooked}
-                            onMarkReadyToRun={onMarkReadyToRun}
-                          />
-                        ))}
-                      </div>
-                    </div>
+                <div className="space-y-1.5">
+                  {table.lines.map((line) => (
+                    <OutstandingLineRow key={line.id} line={line} onMarkCooked={onMarkCooked} />
                   ))}
                 </div>
               </div>
