@@ -946,6 +946,38 @@ jobs:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      # __tests__/station-screens-live-staging.test.tsx reads a JSON snapshot this seed script
+      # writes after inserting real order_lines rows into staging (mdqjpxwczrhkxkbqatqa). Nothing
+      # in this workflow ever ran the seed before the test job ran, so every test in that suite
+      # has been logging 'SKIPPED: no seed snapshot found' and passing trivially since it was
+      # written -- exercising nothing. This step must run BEFORE the test step below, in the same
+      # job, so the snapshot file the seed writes is on the same runner's filesystem the test
+      # reads from.
+      - name: Seed station screens staging snapshot
+        run: npx tsx scripts/seed-station-screens-staging.ts
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      - name: Station screens against real staging rows
+        run: npx jest --ci --forceExit --testPathPattern="station-screens-live-staging"
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      # Always clean up the probe orders/order_lines the seed step created, pass or fail, so
+      # staging does not accumulate PROBE-station-screens-v1 rows on every push.
+      - name: Clean up station screens staging probe rows
+        if: always()
+        run: npx tsx scripts/seed-station-screens-staging.ts --cleanup
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
 
   deploy:
     runs-on: ubuntu-latest
