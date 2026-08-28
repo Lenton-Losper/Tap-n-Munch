@@ -23,6 +23,7 @@ import {
   findInvalidLineNoteIndex,
   initialStatesFor,
   isLineReady,
+  isStationOutstanding,
   routeToForLine,
   stationsOwnedBy,
   writeOrderLines,
@@ -122,22 +123,50 @@ describe('station ownership and initial state', () => {
   })
 })
 
-describe('isLineReady — every station that owns it has marked it', () => {
-  it('a kitchen-only line is ready when the kitchen is done, and the null bar cannot block it', () => {
-    expect(isLineReady({ kitchen_state: 'done', bar_state: null })).toBe(true)
+describe('isLineReady — READY means the pass passed it, not that the station cooked it', () => {
+  it('a kitchen-only line is ready once the pass marks it, and the null bar cannot block it', () => {
+    expect(isLineReady({ kitchen_state: 'ready', bar_state: null })).toBe(true)
   })
 
   it('a kitchen-only line is not ready while the kitchen is outstanding', () => {
     expect(isLineReady({ kitchen_state: 'outstanding', bar_state: null })).toBe(false)
   })
 
-  /** The one that matters: half a plate must not go out. */
-  it('a both line is NOT ready when only the kitchen has marked it', () => {
-    expect(isLineReady({ kitchen_state: 'done', bar_state: 'outstanding' })).toBe(false)
+  /**
+   * THE POINT OF THE FOUR-STATE VOCABULARY. A plated dish waiting on the pass is not ready to
+   * run. If this ever returns true, the pass has been designed out again and a waiter will carry
+   * food nobody passed.
+   */
+  it('COOKED IS NOT READY — a plated dish waiting on the pass must not read as ready', () => {
+    expect(isLineReady({ kitchen_state: 'cooked', bar_state: null })).toBe(false)
+    expect(isLineReady({ kitchen_state: 'cooked', bar_state: 'ready' })).toBe(false)
   })
 
-  it('a both line is ready only once both stations have marked it', () => {
-    expect(isLineReady({ kitchen_state: 'done', bar_state: 'done' })).toBe(true)
+  /** Half a plate must not go out. */
+  it('a both line is NOT ready when only one station has been passed', () => {
+    expect(isLineReady({ kitchen_state: 'ready', bar_state: 'outstanding' })).toBe(false)
+    expect(isLineReady({ kitchen_state: 'ready', bar_state: 'cooked' })).toBe(false)
+  })
+
+  it('a both line is ready only once both stations have been passed', () => {
+    expect(isLineReady({ kitchen_state: 'ready', bar_state: 'ready' })).toBe(true)
+  })
+})
+
+describe('isStationOutstanding — what the board still shows', () => {
+  it('shows outstanding AND cooked, because a cooked dish is still the station’s business', () => {
+    expect(isStationOutstanding('outstanding')).toBe(true)
+    expect(isStationOutstanding('cooked')).toBe(true)
+  })
+
+  it('hides ready and voided', () => {
+    expect(isStationOutstanding('ready')).toBe(false)
+    expect(isStationOutstanding('voided')).toBe(false)
+  })
+
+  it('a station that does not own the line is not outstanding at it', () => {
+    expect(isStationOutstanding(null)).toBe(false)
+    expect(isStationOutstanding(undefined)).toBe(false)
   })
 })
 

@@ -73,7 +73,19 @@ export async function GET(req: Request) {
         'id, order_id, source_item_index, name_snapshot, quantity, line_note, route_to, kitchen_state, bar_state, created_at',
       )
       .eq('restaurant_id', terminal.restaurantId)
-      .eq(stateColumn, 'outstanding')
+      /**
+       * NOT-FINISHED, rather than a list of active states.
+       *
+       * This used to be `.eq(stateColumn, 'outstanding')`. Adding 'cooked' would have made that
+       * filter silently drop every plated dish off the board -- no error, no slow query, just a
+       * plate that is not there. Exactly the failure the old partial index had.
+       *
+       * Enumerating the TERMINAL states instead means the next value added to the vocabulary
+       * shows up on the board by default, which is the safe direction to fail: a state nobody
+       * has taught the screen about appears and gets questioned, rather than vanishing.
+       */
+      .not(stateColumn, 'is', null)
+      .not(stateColumn, 'in', '("ready","voided")')
       .order('created_at', { ascending: true })
 
     if (linesError) throw linesError

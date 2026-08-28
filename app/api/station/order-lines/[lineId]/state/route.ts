@@ -49,9 +49,22 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-/** What a station is allowed to write. 'voided' is deliberately absent -- see the header. */
-const STATION_WRITABLE_STATES = ['done', 'outstanding'] as const
+/**
+ * What a board may write. 'voided' is deliberately absent -- see the header.
+ *
+ *   cooked      -- the STATION has made it
+ *   ready       -- the PASS has passed it
+ *   outstanding -- undo, from either
+ *
+ * 'done' is accepted as an INPUT ALIAS for 'ready' and is never stored. It was the old
+ * vocabulary's terminal value, and translating it at the door means a board built against the
+ * previous contract keeps working through this deploy instead of 400ing mid-service. One stored
+ * meaning, no #349-shaped pair of values that can disagree.
+ */
+const STATION_WRITABLE_STATES = ['cooked', 'ready', 'outstanding'] as const
 type StationWritableState = (typeof STATION_WRITABLE_STATES)[number]
+
+const LEGACY_STATE_ALIASES: Record<string, StationWritableState> = { done: 'ready' }
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -85,7 +98,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
       to_state?: unknown
     }
     const station = String(body.station ?? '').trim().toLowerCase()
-    const toState = String(body.to_state ?? '').trim().toLowerCase()
+    const rawToState = String(body.to_state ?? '').trim().toLowerCase()
+    // Translate the retired vocabulary at the door, before validation, so a board on the old
+    // contract is accepted rather than refused.
+    const toState = LEGACY_STATE_ALIASES[rawToState] ?? rawToState
 
     if (!isStation(station)) {
       return NextResponse.json(
@@ -96,7 +112,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
     if (!isWritableState(toState)) {
       return NextResponse.json(
         {
-          error: "to_state must be 'done' or 'outstanding'. A station cannot void a line.",
+          error:
+            "to_state must be 'cooked' (the station made it), 'ready' (the pass passed it) or " +
+            "'outstanding' (undo). A station cannot void a line.",
           code: 'INVALID_STATE',
         },
         { status: 400 },

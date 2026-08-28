@@ -57,7 +57,22 @@ export type LineRouteTo = 'kitchen' | 'bar' | 'both' | 'unrouted'
 /** A station that can own a line's state. 'unrouted' lines are owned by both. */
 export type Station = 'kitchen' | 'bar'
 
-export type LineState = 'outstanding' | 'done' | 'voided'
+/**
+ * Four states, two actors.
+ *
+ *   outstanding -> nobody has started it
+ *   cooked      -> the STATION has made it and is waiting on the pass. Durable, deliberately: a
+ *                  cook who plated a dish two minutes ago and one who has not started must not
+ *                  look identical on the board. That is the whole reason the pass exists.
+ *   ready       -> the PASS has passed it. This is what a waiter walks in to read.
+ *   voided      -> cancelled or amended at the terminal.
+ *
+ * 'done' is RETIRED as a stored value (20260828141000). It meant "this station has finished",
+ * which under this vocabulary is `ready` -- the old model had no pass, so finished and
+ * ready-to-run were one event. It survives only as an input alias, translated at the endpoint,
+ * so no client breaks mid-deploy. It is deliberately absent from this type.
+ */
+export type LineState = 'outstanding' | 'cooked' | 'ready' | 'voided'
 
 const ROUTE_KITCHEN = 'kitchen'
 const ROUTE_BAR = 'bar'
@@ -113,7 +128,23 @@ export function isLineReady(line: {
   kitchen_state?: LineState | null
   bar_state?: LineState | null
 }): boolean {
-  return (line.kitchen_state ?? 'done') === 'done' && (line.bar_state ?? 'done') === 'done'
+  // READY, not cooked. A plated dish waiting on the pass is NOT ready to run, and that
+  // distinction is the entire point of the four-state vocabulary. The coalesce is to 'ready'
+  // because a NULL means a station that does not own the line and therefore cannot hold it back.
+  return (line.kitchen_state ?? 'ready') === 'ready' && (line.bar_state ?? 'ready') === 'ready'
+}
+
+/**
+ * Is this station still working on the line? True for outstanding AND cooked -- a cooked dish is
+ * still the station's business until the pass takes it.
+ *
+ * Expressed as "not finished" rather than as a list of active states on purpose: the vocabulary
+ * has grown once already tonight, and a predicate that enumerates the ACTIVE values has to be
+ * revisited every time it grows, while one that enumerates the TERMINAL values does not.
+ */
+export function isStationOutstanding(state: LineState | null | undefined): boolean {
+  if (state == null) return false
+  return state !== 'ready' && state !== 'voided'
 }
 
 type OrderItemish = Record<string, unknown>
