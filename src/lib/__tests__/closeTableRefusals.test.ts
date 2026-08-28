@@ -421,13 +421,48 @@ describe('each rule refuses on its own condition', () => {
     expect(evaluateCloseTableRefusals(snapshot)).toContain('UNROUTED_LINE');
   });
 
-  it('LINE_TRACKING_UNAVAILABLE — a QR or pre-migration tab that tracks nothing', () => {
+  /**
+   * RULED BY THE OWNER 2026-08-28 and the behaviour CHANGED: a QR or pre-migration tab is no
+   * longer refused outright. Refusing every one of them was wrong -- those tables exist at Mingle
+   * and ChowNow today and staff must be able to close them.
+   *
+   * Money is knowable on such a tab even when fulfilment is not, so the close turns on the bill:
+   * settled closes, anything owed refuses. The confirm sheet then tells the waiter that line
+   * progress could not be checked.
+   *
+   * THE CONTROL IS THE PAIR. 'a settled QR tab closes' passes trivially if the rule stopped
+   * firing entirely, so it is asserted alongside an owed QR tab that must still refuse.
+   */
+  it('LINE_TRACKING_UNAVAILABLE — a SETTLED QR tab may now be closed', () => {
     const snapshot = closeable({
       lines: linesPayload({has_lines: false, orders: [], all_ready: false}),
     });
-    expect(evaluateCloseTableRefusals(snapshot)).toEqual([
+    expect(evaluateCloseTableRefusals(snapshot)).toEqual([]);
+  });
+
+  it('CONTROL: a QR tab that still owes money is refused', () => {
+    const snapshot = closeable({
+      lines: linesPayload({has_lines: false, orders: [], all_ready: false}),
+      // unpaid_total lives on the TAB, not the table row -- setting it at the top level was
+      // silently ignored and the control passed while proving nothing.
+      table: (() => {
+        const t = tableRow();
+        return {...t, tab: {...t.tab!, unpaid_total: 40}};
+      })(),
+    });
+    expect(evaluateCloseTableRefusals(snapshot)).toContain(
       'LINE_TRACKING_UNAVAILABLE',
-    ]);
+    );
+  });
+
+  it('CONTROL: a QR tab whose money view could not be read is refused', () => {
+    const snapshot = closeable({
+      lines: linesPayload({has_lines: false, orders: [], all_ready: false}),
+      table: null,
+    });
+    expect(evaluateCloseTableRefusals(snapshot)).toContain(
+      'LINE_TRACKING_UNAVAILABLE',
+    );
   });
 
   it('UNSENT_ROUND_ON_DEVICE — this terminal is holding an unsent basket', () => {

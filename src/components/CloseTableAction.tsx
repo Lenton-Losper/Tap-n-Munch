@@ -14,6 +14,7 @@ import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   CLOSE_CONFIRM_ACTION,
   CLOSE_CONFIRM_BODY,
+  CLOSE_CONFIRM_BODY_NO_LINE_TRACKING,
   CLOSE_CONFIRM_CANCEL,
   CLOSE_CONFIRM_TITLE,
   CLOSE_FAILED_GENERIC,
@@ -91,6 +92,13 @@ export default function CloseTableAction({
   const [failure, setFailure] = useState<string | null>(null);
   const [strandedRequests, setStrandedRequests] = useState<PendingOrderRequest[]>([]);
   const [strandedMessage, setStrandedMessage] = useState<string>('');
+  /**
+   * Whether the tab this close is about has NO line tracking. Captured from the PRE-FLIGHT
+   * SNAPSHOT rather than re-read at render: the sheet must describe the table as it was when the
+   * rules were evaluated, and a refetch in between would let it describe one table while the
+   * verdict came from another.
+   */
+  const [noLineTracking, setNoLineTracking] = useState(false);
 
   /**
    * Re-read both halves of the truth, then ask the refusal set.
@@ -132,6 +140,9 @@ export default function CloseTableAction({
     setFailure(null);
     setPhase('checking');
     const snapshot = await runPreflight();
+    // A settled QR tab now passes the rules (owner's ruling 2026-08-28), and the confirm sheet is
+    // the only place the waiter learns nothing checked the food. See closeTableRefusals rule 11.
+    setNoLineTracking(snapshot.lines != null && snapshot.lines.has_lines !== true);
     const found = evaluateCloseTableRefusals(snapshot);
     if (found.length > 0) {
       setRefusals(found);
@@ -277,7 +288,11 @@ export default function CloseTableAction({
         <View style={styles.backdrop}>
           <View style={styles.sheet} testID="close-table-confirm-sheet">
             <Text style={styles.sheetTitle}>{CLOSE_CONFIRM_TITLE}</Text>
-            <Text style={styles.sheetBody}>{CLOSE_CONFIRM_BODY}</Text>
+            <Text style={styles.sheetBody}>
+              {noLineTracking
+                ? CLOSE_CONFIRM_BODY_NO_LINE_TRACKING
+                : CLOSE_CONFIRM_BODY}
+            </Text>
             <Pressable
               style={styles.primaryAction}
               testID="close-table-confirm"

@@ -308,14 +308,46 @@ export const CLOSE_TABLE_REFUSAL_RULES: readonly CloseTableRule[] = [
    * tab the question has no recorded answer. Rules 9 and 10 cannot fire on such a tab — they have
    * nothing to read — so without this rule those two silently pass for every QR table.
    *
-   * THE RULE MOST LIKELY TO BE RULED AWAY, and it should be ruled on rather than left: it will
-   * refuse every QR-opened and every pre-migration table, including ones that are paid and
-   * finished. It is defaulted to refuse because "we cannot tell" is the honest reading, not
-   * because refusing is obviously right here.
+   * RULED BY THE OWNER 2026-08-28, and this rule NO LONGER REFUSES OUTRIGHT.
+   *
+   * Refusing every QR-opened table was wrong: those tables exist at Mingle and ChowNow today and
+   * staff must be able to close them. But the original author was right that rules 9 and 10 cannot
+   * fire here, so line safety genuinely is unchecked.
+   *
+   * The ruling: "Money is knowable on a QR tab even when lines are not, so check what you can and
+   * do not pretend to check what you cannot." A settled bill closes; anything owed refuses.
+   *
+   * The waiter is therefore taking on the readiness question the system cannot answer, and the
+   * confirm sheet says so on this path (see CLOSE_CONFIRM_BODY_NO_LINE_TRACKING). That sentence is
+   * the whole safeguard, so it must not be dropped as duplicative of the ordinary confirm body.
    */
   {
     id: 'LINE_TRACKING_UNAVAILABLE',
-    refuses: s => s.lines != null && s.lines.has_lines !== true,
+    refuses: s => {
+      // Tracking is present, or the lines could not be read at all — rule 2 owns that case.
+      if (s.lines == null || s.lines.has_lines === true) {
+        return false;
+      }
+
+      /**
+       * DELIBERATELY SELF-CONTAINED rather than leaning on rules 5 and 6 to catch the owed case.
+       * They do catch it today, and this duplicates them on purpose: if either is ever ruled away,
+       * this must not silently become "close any QR table regardless of the bill".
+       *
+       * A money view that could not be read REFUSES here. "We cannot tell" is not "nothing owed" —
+       * the same trap the cancelled-tab chip exists for.
+       */
+      const tab = s.table?.tab;
+      if (tab == null) {
+        return true;
+      }
+
+      const nothingOwed =
+        Number(tab.unpaid_total ?? 0) === 0 &&
+        !(tab.orders ?? []).some(order => owesMoney(order.payment_status));
+
+      return !nothingOwed;
+    },
   },
 
   /**
