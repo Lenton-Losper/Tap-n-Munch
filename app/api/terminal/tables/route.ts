@@ -5,6 +5,7 @@ import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
+  computeTabPaymentState,
   isCardPaymentStillInFlight,
   isCashSettleablePaymentStatus,
   isClaimablePaymentStatus,
@@ -233,6 +234,14 @@ export async function GET(req: Request) {
           status: tab.status,
           total: tab.total,
           unpaid_total: unpaidTotal,
+          /**
+           * DISTINGUISHES "nothing owed because it was paid" FROM "nothing owed because it was
+           * cancelled first" -- unpaid_total alone reads 0 for both. See
+           * computeTabPaymentState's docblock: Digi Cofee, 2026-08-28, rendered "Paid in full"
+           * over three wrongly auto-cancelled rounds because nothing else said otherwise.
+           * Additive -- an existing APK reading unpaid_total unchanged is unaffected either way.
+           */
+          payment_state: computeTabPaymentState(orders),
           payment_preference: tab.payment_preference,
           /**
            * #318. The terminal's table-card chip decides "Ready to Pay" from `status` alone, and
