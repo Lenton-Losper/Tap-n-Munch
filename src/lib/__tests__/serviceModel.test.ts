@@ -1,8 +1,4 @@
-import {
-  resolveServiceModel,
-  showsCounterSaleTab,
-  usesWaiterLedService,
-} from '../serviceModel';
+import {resolveServiceModel, usesWaiterLedService} from '../serviceModel';
 
 /**
  * The fail-safe direction is the whole point of this module, so it is what these pin.
@@ -44,29 +40,33 @@ describe('resolveServiceModel', () => {
   });
 });
 
-describe('the two navigator questions never disagree', () => {
-  it('replaces Sale only for an explicit table-service venue', () => {
+describe('what the venue model decides', () => {
+  it('puts the floor grid behind Tables only for an explicit table-service venue', () => {
     expect(usesWaiterLedService('table')).toBe(true);
     expect(usesWaiterLedService('counter')).toBe(false);
     expect(usesWaiterLedService('unknown')).toBe(false);
-  });
-
-  it('keeps the Sale tab whenever the flow is not waiter-led', () => {
-    expect(showsCounterSaleTab('counter')).toBe(true);
-    expect(showsCounterSaleTab('unknown')).toBe(true);
-    expect(showsCounterSaleTab('table')).toBe(false);
-  });
-
-  it('is exactly complementary for every model, so no venue gets both or neither', () => {
-    for (const model of ['counter', 'table', 'unknown'] as const) {
-      expect(showsCounterSaleTab(model)).toBe(!usesWaiterLedService(model));
-    }
   });
 
   it('an unknown venue behaves identically to a counter one', () => {
     expect(usesWaiterLedService('unknown')).toBe(
       usesWaiterLedService('counter'),
     );
-    expect(showsCounterSaleTab('unknown')).toBe(showsCounterSaleTab('counter'));
+  });
+
+  /**
+   * The Sale tab is NOT a function of the venue model, and this pins that as an intention rather
+   * than leaving it as an absence.
+   *
+   * Hiding Sale at table-service venues was shipped and then reversed: a waiter still needs a sale
+   * attached to no table — a walk-up, a takeaway, a counter drink — so removing the tab removed a
+   * real capability. The module exports nothing that answers "should Sale be shown", and if a
+   * predicate for it ever reappears here, this test is the note explaining why it was deleted.
+   */
+  it('exports no predicate governing the Sale tab', () => {
+    const exported = require('../serviceModel');
+    expect(Object.keys(exported).sort()).toEqual([
+      'resolveServiceModel',
+      'usesWaiterLedService',
+    ]);
   });
 });

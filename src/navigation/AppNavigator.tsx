@@ -13,7 +13,7 @@ import {CartProvider} from '../context/CartContext';
 import {ServiceModelProvider, useServiceModel} from '../context/ServiceModelContext';
 import {ServiceSessionProvider} from '../context/ServiceSessionContext';
 import {StreamProvider} from '../context/StreamContext';
-import {showsCounterSaleTab, usesWaiterLedService} from '../lib/serviceModel';
+import {usesWaiterLedService} from '../lib/serviceModel';
 import {Colors, Typography} from '../constants/theme';
 import ActivationScreen from '../screens/ActivationScreen';
 import OrderDetailScreen from '../screens/OrderDetailScreen';
@@ -39,19 +39,19 @@ export type AuthStackParamList = {
 };
 
 /**
- * THREE TABS, ALWAYS. The tab NAMES do not change with the venue model — what changes is which
- * component `Tables` renders and whether `POSSale` is mounted at all.
+ * THREE TABS, ALWAYS, AT EVERY VENUE. Neither the names nor the set change with the venue model —
+ * the only thing that changes is which component sits behind `Tables`.
  *
- * v1 of this feature added a fourth "Floor" tab beside Tables/Orders/Sale, which put two ways to
- * create an order on one device: a waiter could ring a round onto a tab from one tab and a
- * standalone paid-now sale from another, for the same food, at the same table. There is one way to
- * take an order per venue, and the venue decides which.
+ * v1 of this feature added a FOURTH "Floor" tab beside Tables/Orders/Sale, which is what this
+ * replaces: the floor grid now lives in the Tables tab it belongs in rather than duplicating it.
+ * Sale stays put. A round goes onto a tab; a sale is charged with no table attached; both are real
+ * things a waiter does, and the device offers both everywhere.
  */
 export type MainTabParamList = {
   /** Floor grid at a table-service venue; the legacy occupied-tables list at a counter one. */
   Tables: undefined;
   Orders: undefined;
-  /** Mounted only at counter-service venues, and when the model is not yet known. */
+  /** Untethered sale — walk-up, takeaway, counter drink. Mounted at EVERY venue. */
   POSSale: undefined;
 };
 
@@ -148,11 +148,10 @@ const MainTab = createBottomTabNavigator<MainTabParamList>();
 function MainTabNavigator() {
   const {model} = useServiceModel();
 
-  // THE ONE DECISION. Both questions — which Tables screen, and is there a Sale tab — are answered
-  // from the same resolved model through the two helpers, so they cannot drift into disagreeing
-  // about the same venue. 'unknown' takes the counter-service branch on both, which is today's app.
+  // THE ONE DECISION THE VENUE MODEL MAKES: which screen sits behind the Tables tab. It decides
+  // nothing else. Sale is mounted unconditionally — see lib/serviceModel.ts on why hiding it was
+  // reversed. 'unknown' takes the counter-service branch, which is today's app.
   const waiterLed = usesWaiterLedService(model);
-  const showSale = showsCounterSaleTab(model);
 
   return (
     <MainTab.Navigator
@@ -201,25 +200,23 @@ function MainTabNavigator() {
           ),
         }}
       />
-      {/* NOT MOUNTED at a table-service venue: the waiter-led flow REPLACES it, so there is one
-          way to take an order rather than two. Still mounted when the model is unknown — see
-          lib/serviceModel.ts on why a missing field must never cost a venue its till. */}
-      {showSale ? (
-        <MainTab.Screen
-          name="POSSale"
-          component={POSSaleScreen}
-          options={{
-            tabBarLabel: 'Sale',
-            tabBarIcon: ({color, size}) => (
-              <MaterialCommunityIcons
-                name="cart-plus"
-                size={size}
-                color={color}
-              />
-            ),
-          }}
-        />
-      ) : null}
+      {/* MOUNTED AT EVERY VENUE, in every model. The waiter-led flow sits BESIDE this rather than
+          replacing it: a round goes onto a tab, and Sale is still how a walk-up, a takeaway or a
+          counter drink gets rung up and charged with no table attached. */}
+      <MainTab.Screen
+        name="POSSale"
+        component={POSSaleScreen}
+        options={{
+          tabBarLabel: 'Sale',
+          tabBarIcon: ({color, size}) => (
+            <MaterialCommunityIcons
+              name="cart-plus"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
     </MainTab.Navigator>
   );
 }

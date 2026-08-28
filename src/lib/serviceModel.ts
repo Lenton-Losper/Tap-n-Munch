@@ -61,12 +61,19 @@ export function usesWaiterLedService(model: ServiceModel): boolean {
 }
 
 /**
- * Is the counter-service Sale tab shown?
+ * THERE IS DELIBERATELY NO showsCounterSaleTab().
  *
- * The exact complement of the above, written out rather than negated at each call site so the two
- * questions a navigator asks — "which Tables screen" and "is there a Sale tab" — can never drift
- * into disagreeing about the same venue.
+ * An earlier cut of this feature hid the Sale tab wherever the waiter-led flow replaced it, on the
+ * reasoning that one venue should offer one way to take an order. Walking the flow on a real P5
+ * showed that reasoning was wrong in a way only a service floor reveals: a waiter still needs a
+ * sale that is attached to no table at all — a walk-up, a takeaway, a drink bought at the counter —
+ * and hiding Sale removed a capability the venue actually uses rather than removing an ambiguity.
+ *
+ * So THE SALE TAB IS UNCONDITIONAL and is not a function of the venue model. It is mounted at
+ * every venue, in every model, including 'unknown'. `isCounterService` decides one thing only:
+ * whether the Tables tab is the floor grid or the legacy occupied-tables settlement list.
+ *
+ * A helper that always returned true would be worse than none — it would read like a live decision
+ * and invite someone to make it conditional again. If Sale ever does become conditional, that is a
+ * product decision, and it should arrive with its own named predicate and its own reason.
  */
-export function showsCounterSaleTab(model: ServiceModel): boolean {
-  return !usesWaiterLedService(model);
-}
