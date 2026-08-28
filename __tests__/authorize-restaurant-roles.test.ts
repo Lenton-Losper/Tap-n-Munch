@@ -126,6 +126,37 @@ describe('staff_permissions overrides on DB-backed defaults (staging Phase 2)', 
     })
     expect(error).toBeNull()
 
+    /**
+     * PRECONDITION, RE-READ RATHER THAN ASSUMED.
+     *
+     * This suite shares ONE fixture staff_member with authorize-staff-permissions.test.ts —
+     * unavoidably, because resolveStaffMemberId links a user to staff_members by email — and its
+     * setup clears that member's overrides. A concurrent run (another CI run, or a session running
+     * these tests locally against the same staging project) deletes the row we just inserted, and
+     * the assertion below then reads `false` from an `allow` that no longer exists.
+     *
+     * That is what went red on 2026-08-28, and the bare "expected true got false" sent a reader
+     * looking for a bug in authorize() that was never there. Re-reading the row first means an
+     * interference failure says so in its own message. The workflow now serialises staging runs;
+     * this catches the case that serialisation cannot cover.
+     */
+    const { data: persisted } = await admin
+      .from('staff_permissions')
+      .select('permission, effect')
+      .eq('staff_id', staffMemberId)
+      .eq('restaurant_id', STAGING_TEST_RESTAURANT_ID)
+      .eq('permission', PERMISSIONS.RECIPE_VIEW)
+      .maybeSingle()
+
+    if (persisted?.effect !== 'allow') {
+      throw new Error(
+        'INTERFERENCE, NOT A DEFECT IN authorize(): the allow override for recipe:view was gone ' +
+          'before authorize() read it. Another run against this shared staging fixture cleared ' +
+          `it (found: ${JSON.stringify(persisted)}). Check for a concurrent staging CI run or a ` +
+          'local session running the authorize- suites against the same project.',
+      )
+    }
+
     expect(await authorize(STAGING_TEST_USER_ID, STAGING_TEST_RESTAURANT_ID, PERMISSIONS.RECIPE_VIEW)).toBe(
       true,
     )
