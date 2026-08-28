@@ -42,6 +42,7 @@ uat-auth-request-payload.json
 eslint-out.json
 eslint-report.json
 staging_live_schema.sql
+scripts/.station-screens-seed-snapshot.json
 
 # Cloudflare Wrangler local build/dev scratch (bundled worker output, not source)
 .wrangler/

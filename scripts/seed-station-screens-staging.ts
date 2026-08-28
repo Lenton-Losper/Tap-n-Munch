@@ -38,9 +38,16 @@ import { isLineReady, stationsOwnedBy, type LineRouteTo, type LineState } from '
  * undici's full dependency chain to do real TLS there turned into exactly the kind of rabbit
  * hole this note exists to warn the next person off. Fetching real data and rendering it are
  * two different environments' jobs; this is the seam between them.
+ *
+ * FIXED 2026-08-28 — WAS A SESSION-SPECIFIC TEMP PATH, WHICH IS WHY THE TEST ALWAYS SKIPPED.
+ * The previous value pointed inside one Claude session's own ephemeral scratchpad directory
+ * (`.../claude/<repo>/<session-id>/scratchpad/...`) -- a path that cannot exist in CI, on any
+ * other machine, or even in this same session after it ends. "Reseed staging" could never make
+ * the test pass anywhere but the one temp directory that wrote it. Repo-relative and gitignored
+ * (see .gitignore's generated-snapshots section) so any environment that runs the seed script
+ * finds what it wrote, consistently.
  */
-export const SEED_SNAPSHOT_PATH =
-  'C:\\Users\\223125~1\\AppData\\Local\\Temp\\claude\\C--Users-223125318-Desktop-mvp2-Tap-n-Munch\\08b91293-0bfd-4cc3-8f93-89b035332ccc\\scratchpad\\station-screens-seed-snapshot.json'
+export const SEED_SNAPSHOT_PATH = resolve(__dirname, '.station-screens-seed-snapshot.json')
 
 config({ path: resolve(__dirname, '../.env.test'), override: true })
 
