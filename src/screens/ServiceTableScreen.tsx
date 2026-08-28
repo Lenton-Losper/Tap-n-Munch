@@ -12,7 +12,9 @@ import {useFocusEffect} from '@react-navigation/native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import AmendLineSheet from '../components/AmendLineSheet';
 import CloseTableAction from '../components/CloseTableAction';
+import {canAmendLine} from '../lib/amendTabLines';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
 import {ApiRequestError, getTabLines, getTablesWithMeta} from '../lib/api';
@@ -47,15 +49,28 @@ function formatMoney(amount: number): string {
  * those are shown as detail only. The station screens and this screen must agree about what
  * "ready" means, and they only do so if exactly one place decides it.
  */
-function LineRow({line}: {line: TabLine}) {
+function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void}) {
   const chip = line.is_voided
     ? Copy.TABLE_LINE_VOIDED_CHIP
     : line.is_ready
     ? Copy.TABLE_LINE_READY_CHIP
     : Copy.TABLE_LINE_WAITING_CHIP;
 
+  /**
+   * Tappable ONLY while the amend window is open. A line the kitchen has started is not pressable
+   * at all, rather than opening a sheet that could only say no — the affordance is the window.
+   *
+   * The server still decides. It can refuse a line this thought was open, because the kitchen may
+   * tap Cooked between this render and the waiter's press, and that is exactly why refusals come
+   * back per line.
+   */
+  const amendable = onEdit != null && canAmendLine(line);
+
   return (
-    <View style={[styles.lineRow, line.is_voided && styles.lineRowVoided]}>
+    <Pressable
+      disabled={!amendable}
+      onPress={amendable ? () => onEdit!(line) : undefined}
+      style={[styles.lineRow, line.is_voided && styles.lineRowVoided]}>
       <Text style={styles.lineQty}>{line.quantity}×</Text>
       <View style={styles.lineMain}>
         <Text
@@ -103,7 +118,7 @@ function LineRow({line}: {line: TabLine}) {
           {chip}
         </Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -153,6 +168,10 @@ export default function ServiceTableScreen({route, navigation}: Props) {
   const [moneyTable, setMoneyTable] = useState<TableWithTab | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  /** The line whose amend sheet is open, or null. Holding the LINE, not an id, so the sheet
+   *  renders the dish the waiter actually tapped rather than re-finding it in a list that may
+   *  have refreshed underneath. */
+  const [editingLine, setEditingLine] = useState<TabLine | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Declared here, above the effect that clears it — see handleSettle for what it guards. */
@@ -503,7 +522,7 @@ export default function ServiceTableScreen({route, navigation}: Props) {
                     </Text>
                   ) : null}
                   {order.lines.map(line => (
-                    <LineRow key={line.id} line={line} />
+                    <LineRow key={line.id} line={line} onEdit={setEditingLine} />
                   ))}
                 </View>
               ))
@@ -581,6 +600,25 @@ export default function ServiceTableScreen({route, navigation}: Props) {
           />
         </View>
       </View>
+
+      {/*
+        AMEND. Mounted at the screen root rather than inside the line list so the sheet survives
+        the list re-rendering under it — a refresh mid-edit must not close the sheet the waiter is
+        typing into.
+
+        `onAmended` refetches rather than patching state locally: the amendment created a NEW
+        ORDER on this tab, and the only honest way to show that is to re-read the tab. Editing the
+        local copy would leave the bill and the line list disagreeing about what was ordered.
+      */}
+      <AmendLineSheet
+        tabId={tabId}
+        line={editingLine}
+        onClose={() => setEditingLine(null)}
+        onAmended={() => {
+          setEditingLine(null);
+          void load();
+        }}
+      />
     </View>
   );
 }

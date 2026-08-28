@@ -28,6 +28,7 @@ import type {
   HeldOrphanStoreResponse,
 } from './heldOrphanStore';
 import {Sdk6ReceiptLine} from './wiseSdk6Printer';
+import type {AmendResult, LineAmendment} from './amendTabLines';
 import {
   isPinLockedError as pinLockedFromFields,
   isRefundAmountExceedsRemaining as refundExceedsFromFields,
@@ -2467,6 +2468,61 @@ export async function sendRound(
  * 401 only, like every other service route — see the block comment above getFloorTables. A 403
  * here is a terminal missing `orders:read`, which no token refresh can fix.
  */
+/**
+ * POST /api/terminal/tabs/{tabId}/amend -- change or remove a line before the kitchen starts it.
+ *
+ * Contract read off app/api/terminal/tabs/[tabId]/amend/route.ts and migration
+ * 20260829150000_amend_order_lines_function.sql, not inferred. See lib/amendTabLines.ts for the
+ * model and for why the refusal strings are the SQL function's own literals.
+ *
+ * Auth is the terminal token plus orders:update, and the venue must have station_screens_enabled.
+ * THERE IS NO PIN on this route -- do not add a PIN prompt for a route that consumes none, or the
+ * waiter types a code that authorises nothing.
+ *
+ * REFUSALS ARE NOT ERRORS. A 200 carrying refused: [...] is the NORMAL outcome when the kitchen
+ * started a line while the waiter was still typing. The screen renders it as a fact about those
+ * lines, not as a failed request. Everything that IS an error throws a coded ApiRequestError and
+ * none of them are fixed by re-sending the same body: STATION_SCREENS_DISABLED (403),
+ * INVALID_LINE_ID / INVALID_QUANTITY (400), AMEND_FAILED (502 -- the transaction rolled back and
+ * NOTHING was voided).
+ *
+ * Do not retry the refused lines. They were refused because the kitchen already has them.
+ */
+export async function amendTabLines(
+  tabId: string,
+  amendments: LineAmendment[],
+  token: string,
+): Promise<AmendResult> {
+  if (amendments.length === 0) {
+    throw new Error('amendTabLines called with no amendments');
+  }
+
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/amend`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({amendments}),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as Partial<AmendResult>;
+
+  return {
+    order_id: data.order_id ?? null,
+    order_number: data.order_number ?? null,
+    applied: Array.isArray(data.applied) ? data.applied : [],
+    refused: Array.isArray(data.refused) ? data.refused : [],
+  };
+}
+
 export async function getTabLines(
   tabId: string,
   token: string,
