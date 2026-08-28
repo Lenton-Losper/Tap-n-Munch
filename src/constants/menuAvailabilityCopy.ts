@@ -41,7 +41,7 @@ export const SHEET_TITLE_HIDE = 'Mark this unavailable?';
 export const SHEET_BODY_HIDE = 'This removes the dish from the menu for every customer in the restaurant, on their phones and on every terminal. Nobody will be able to order it until it is put back.';
 
 /** SIGNED 4. The accept button at the bottom of the sheet; pressing it spends the PIN. */
-export const SHEET_ACCEPT_LABEL = 'Mark unavailable';
+export const SHEET_ACCEPT_LABEL = 'Yes, mark it unavailable';
 
 /**
  * SIGNED 5. The restore control. Used in TWO places, deliberately the same string: the button in
@@ -93,13 +93,13 @@ export const REFUSAL_ALREADY_IN_THAT_STATE = 'Somebody already took this off the
  * It cannot reuse SHEET_TITLE_HIDE: "Mark this unavailable?" over a button that PUTS THE DISH BACK
  * states the opposite of what the sheet does.
  */
-export const SHEET_TITLE_RESTORE = 'PENDING COPY: title of the sheet that puts a hidden dish back on the menu';
+export const SHEET_TITLE_RESTORE = 'Put this back on the menu?';
 
 /**
  * PENDING. The restore direction's own sheet body — the mirror of SHEET_BODY_HIDE. Same reason as
  * the title: signed string 3 says the dish is being REMOVED, which is wrong on this sheet.
  */
-export const SHEET_BODY_RESTORE = 'PENDING COPY: sheet body for the restore direction — the dish becomes orderable again for every customer in the restaurant, on their phones and on every terminal';
+export const SHEET_BODY_RESTORE = 'This puts the dish back for every customer in the restaurant, on their phones and on every terminal. Anyone will be able to order it again.';
 
 /**
  * PENDING. Heading over the staff list inside the sheet, before a person has been picked. The PIN
@@ -117,22 +117,22 @@ export const SHEET_PIN_PROMPT = 'PENDING COPY: prompt above the PIN entry — {n
 export const SHEET_STAFF_EMPTY = 'PENDING COPY: shown when no staff member is set up to change menu availability on this terminal';
 
 /** PENDING. The detail view's label for a dish that is currently on the menu. */
-export const STATUS_AVAILABLE = 'PENDING COPY: label for a dish that is currently on the menu';
+export const STATUS_AVAILABLE = 'On the menu';
 
 /** PENDING. The detail view's label for a dish that is currently hidden from every menu. */
-export const STATUS_HIDDEN = 'PENDING COPY: label for a dish that is currently hidden from every menu';
+export const STATUS_HIDDEN = 'Unavailable';
 
 /** PENDING. The detail view could not load the item record at all, so nothing may be changed. */
-export const DETAIL_LOAD_FAILED = 'PENDING COPY: shown when the item record could not be loaded, so nothing may be changed';
+export const DETAIL_LOAD_FAILED = 'This dish could not be loaded, so nothing can be changed. Try again.';
 
 /**
  * PENDING. The record loaded, but the id is not in it — the dish was deleted, or moved out of the
  * category the device came from. Nothing may be changed, because there is no name to confirm.
  */
-export const DETAIL_ITEM_MISSING = 'PENDING COPY: shown when the item is no longer in the menu record that was fetched';
+export const DETAIL_ITEM_MISSING = 'This dish is no longer on this menu. Close this and open the menu again.';
 
 /** PENDING. Retry control on either load failure above. */
-export const RETRY_BUTTON = 'PENDING COPY: retry button on a failed load';
+export const RETRY_BUTTON = 'Try again';
 
 /**
  * PENDING. A refusal arrived with no `message` AND no signed string for its code — an unknown
