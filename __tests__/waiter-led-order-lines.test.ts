@@ -151,6 +151,16 @@ describe('isLineReady — READY means the pass passed it, not that the station c
   it('a both line is ready only once both stations have been passed', () => {
     expect(isLineReady({ kitchen_state: 'ready', bar_state: 'ready' })).toBe(true)
   })
+
+  /**
+   * 'collected' (20260829160000) is one step PAST ready, not a step back — a line the pass
+   * already passed does not stop being ready just because it was then picked up.
+   */
+  it('COLLECTED IS STILL READY — picking a line up must not un-ready it', () => {
+    expect(isLineReady({ kitchen_state: 'collected', bar_state: null })).toBe(true)
+    expect(isLineReady({ kitchen_state: 'ready', bar_state: 'collected' })).toBe(true)
+    expect(isLineReady({ kitchen_state: 'collected', bar_state: 'collected' })).toBe(true)
+  })
 })
 
 describe('isStationOutstanding — what the board still shows', () => {
@@ -159,8 +169,9 @@ describe('isStationOutstanding — what the board still shows', () => {
     expect(isStationOutstanding('cooked')).toBe(true)
   })
 
-  it('hides ready and voided', () => {
+  it('hides ready, collected and voided', () => {
     expect(isStationOutstanding('ready')).toBe(false)
+    expect(isStationOutstanding('collected')).toBe(false)
     expect(isStationOutstanding('voided')).toBe(false)
   })
 

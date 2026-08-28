@@ -21,12 +21,15 @@
  * which is the one place a fiction cannot later be corrected by looking at the data.
  *
  * ============================================================================================
- * A STATION MAY WRITE 'done' AND 'outstanding'. IT MAY NOT WRITE 'voided'.
+ * A STATION MAY WRITE 'cooked', 'ready', 'collected' AND 'outstanding'. IT MAY NOT WRITE 'voided'.
  * ============================================================================================
  *
  * Undo has to exist -- event Q, someone presses the wrong thing, and a mis-bumped line that
  * disappears from the pass is food that never gets made. Undo is this same endpoint with
  * to_state 'outstanding'.
+ *
+ * 'collected' (20260829160000) is the pass zone's own clear action -- a runner or waiter picking
+ * up food that already reached 'ready'. Without it a pinned Ready zone never empties.
  *
  * 'voided' is not a station's to give. A void means the round was cancelled or amended at the
  * terminal, and letting a screen write it would let the kitchen silently delete a line the
@@ -55,6 +58,7 @@ export const dynamic = 'force-dynamic'
  *
  *   cooked      -- the STATION has made it
  *   ready       -- the PASS has passed it
+ *   collected   -- the pass zone was cleared; someone took it
  *   outstanding -- undo, from either
  *
  * 'done' is accepted as an INPUT ALIAS for 'ready' and is never stored. It was the old
@@ -62,7 +66,7 @@ export const dynamic = 'force-dynamic'
  * previous contract keeps working through this deploy instead of 400ing mid-service. One stored
  * meaning, no #349-shaped pair of values that can disagree.
  */
-const STATION_WRITABLE_STATES = ['cooked', 'ready', 'outstanding'] as const
+const STATION_WRITABLE_STATES = ['cooked', 'ready', 'collected', 'outstanding'] as const
 type StationWritableState = (typeof STATION_WRITABLE_STATES)[number]
 
 const LEGACY_STATE_ALIASES: Record<string, StationWritableState> = { done: 'ready' }
@@ -128,8 +132,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
       return NextResponse.json(
         {
           error:
-            "to_state must be 'cooked' (the station made it), 'ready' (the pass passed it) or " +
-            "'outstanding' (undo). A station cannot void a line.",
+            "to_state must be 'cooked' (the station made it), 'ready' (the pass passed it), " +
+            "'collected' (someone picked it up) or 'outstanding' (undo). A station cannot void a line.",
           code: 'INVALID_STATE',
         },
         { status: 400 },

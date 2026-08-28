@@ -58,13 +58,20 @@ export type LineRouteTo = 'kitchen' | 'bar' | 'both' | 'unrouted'
 export type Station = 'kitchen' | 'bar'
 
 /**
- * Four states, two actors.
+ * Five states, two actors.
  *
  *   outstanding -> nobody has started it
  *   cooked      -> the STATION has made it and is waiting on the pass. Durable, deliberately: a
  *                  cook who plated a dish two minutes ago and one who has not started must not
  *                  look identical on the board. That is the whole reason the pass exists.
  *   ready       -> the PASS has passed it. This is what a waiter walks in to read.
+ *   collected   -> ADDED 20260829160000. Physically taken off the pass. Without this, a pinned
+ *                  Ready zone (the board rebuild's own requirement) has no way to clear: a line
+ *                  that reaches 'ready' would sit there forever, since nothing ever moved it
+ *                  further. 'ready' still means "the pass passed it" -- unchanged -- 'collected'
+ *                  means someone then took it. Written by the same station that owns the line,
+ *                  same as 'cooked'/'ready'; a station may never write 'voided', and this does
+ *                  not change that.
  *   voided      -> cancelled or amended at the terminal.
  *
  * 'done' is RETIRED as a stored value (20260828141000). It meant "this station has finished",
@@ -72,7 +79,7 @@ export type Station = 'kitchen' | 'bar'
  * ready-to-run were one event. It survives only as an input alias, translated at the endpoint,
  * so no client breaks mid-deploy. It is deliberately absent from this type.
  */
-export type LineState = 'outstanding' | 'cooked' | 'ready' | 'voided'
+export type LineState = 'outstanding' | 'cooked' | 'ready' | 'collected' | 'voided'
 
 const ROUTE_KITCHEN = 'kitchen'
 const ROUTE_BAR = 'bar'
@@ -129,9 +136,11 @@ export function isLineReady(line: {
   bar_state?: LineState | null
 }): boolean {
   // READY, not cooked. A plated dish waiting on the pass is NOT ready to run, and that
-  // distinction is the entire point of the four-state vocabulary. The coalesce is to 'ready'
+  // distinction is the entire point of the five-state vocabulary. The coalesce is to 'ready'
   // because a NULL means a station that does not own the line and therefore cannot hold it back.
-  return (line.kitchen_state ?? 'ready') === 'ready' && (line.bar_state ?? 'ready') === 'ready'
+  // 'collected' also counts -- it is 'ready' plus "and then it was picked up", never a step back.
+  const isReadyOrCollected = (s: LineState) => s === 'ready' || s === 'collected'
+  return isReadyOrCollected(line.kitchen_state ?? 'ready') && isReadyOrCollected(line.bar_state ?? 'ready')
 }
 
 /**
@@ -139,12 +148,14 @@ export function isLineReady(line: {
  * still the station's business until the pass takes it.
  *
  * Expressed as "not finished" rather than as a list of active states on purpose: the vocabulary
- * has grown once already tonight, and a predicate that enumerates the ACTIVE values has to be
- * revisited every time it grows, while one that enumerates the TERMINAL values does not.
+ * has grown twice now, and a predicate that enumerates the ACTIVE values has to be revisited
+ * every time it grows, while one that enumerates the TERMINAL values does not. 'collected' is
+ * terminal, same as 'ready' was before it -- once a line is picked up it is not "the station's
+ * business" again.
  */
 export function isStationOutstanding(state: LineState | null | undefined): boolean {
   if (state == null) return false
-  return state !== 'ready' && state !== 'voided'
+  return state !== 'ready' && state !== 'collected' && state !== 'voided'
 }
 
 type OrderItemish = Record<string, unknown>

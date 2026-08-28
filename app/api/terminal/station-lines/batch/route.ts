@@ -67,11 +67,13 @@ export const dynamic = 'force-dynamic'
  */
 
 /** The screens' own action vocabulary — the words on the buttons — not the stored states. Same
- *  two the single-line route accepts, plus the bar's, all translated at the door exactly once. */
+ *  two the single-line route accepts, plus the bar's, all translated at the door exactly once.
+ *  'collected' (20260829160000) is the pinned Ready zone's own per-round shortcut. */
 const ACTION_TO_STATE = {
   cooked: 'cooked',
   ready_to_run: 'ready',
   out: 'ready',
+  collected: 'collected',
 } as const
 
 type Action = keyof typeof ACTION_TO_STATE
@@ -81,6 +83,7 @@ const STATE_PROGRESS: Record<LineState, number> = {
   outstanding: 0,
   cooked: 1,
   ready: 2,
+  collected: 3,
   // Not on the scale at all — a void is a different axis and is refused explicitly below.
   voided: -1,
 }

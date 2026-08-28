@@ -17,7 +17,8 @@ export const dynamic = 'force-dynamic'
  *
  * This used to write `bar_state: 'out'` directly (lib/stations/schema-assumptions.ts, now
  * retired). 'out' is not, and never was, a value in the real vocabulary
- * (lib/orders/order-lines.ts's LineState is 'outstanding' | 'cooked' | 'ready' | 'voided') — the
+ * (lib/orders/order-lines.ts's LineState is 'outstanding' | 'cooked' | 'ready' | 'collected' |
+ * 'voided') — the
  * same root defect as the kitchen route's 'ready_to_run', a value invented for the guessed
  * schema that the real order_lines_bar_state_check CHECK constraint has never accepted, plus the
  * same event_type/created_at/created_by column-name mismatch on the audit insert.
