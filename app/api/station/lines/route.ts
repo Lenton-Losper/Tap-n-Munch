@@ -37,6 +37,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { isLineReady, type LineRouteTo, type LineState, type Station } from '@/lib/orders/order-lines'
 
 export const dynamic = 'force-dynamic'
@@ -50,6 +51,22 @@ export async function GET(req: Request) {
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
+
+    /**
+     * DEFENSE IN DEPTH. This is the real domain route `/api/terminal/station-lines` delegates to
+     * in-process after its own feature-flag and pairing checks -- but it is also its own exported
+     * route handler, reachable directly over HTTP with nothing but a valid terminal token. Found
+     * 2026-08-28 while gating the waiter-flow routes on this same flag. No legitimate client calls
+     * this URL directly (lib/stations/data-port.ts only ever calls the terminal wrapper), so this
+     * closes a reachability gap rather than changing an actual call path.
+     */
+    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
 
     if (!terminal.permissions.includes('orders:read')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
