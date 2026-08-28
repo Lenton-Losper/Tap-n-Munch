@@ -1,45 +1,12 @@
 /**
  * EVERY STRING ON THE WAITER'S "MARK UNAVAILABLE" CONTROL.
  *
- * ================================================================================================
- * NONE OF THESE ARE SIGNED. THEY ALL CARRY THE `PENDING COPY:` MARKER, DELIBERATELY.
- * ================================================================================================
+ * SIGNED BY THE OWNER 2026-08-28. All ten strings; `body` was signed and written into this file
+ * first (see its own docblock below), the other nine signed the same morning and carried here
+ * verbatim from that sign-off.
  *
- * The owner's instruction, verbatim: *"bring me the list and I write them. Use PENDING COPY
- * placeholders in the meantime so nothing ships in your words."*
- *
- * So they render as markers rather than prose. That is the same mechanism `unsignedCopy()` uses
- * one module over, and it exists because on 2026-08-21 five plausible-sounding placeholder strings
- * reached production and the owner of a multi-location account read `PENDING COPY — Location` on
- * twenty staff screens. The lesson was not "be more careful", it was "make the marker visible to a
- * reviewer, a test AND a grep at once".
- *
- * ================================================================================================
- * CONSEQUENCE THE OWNER NEEDS TO KNOW: THIS CANNOT REACH PRODUCTION UNTIL THE STRINGS ARE WRITTEN
- * ================================================================================================
- *
- * `scripts/check-no-pending-copy.mjs` gates the production deploy on exactly this marker. That is
- * not an obstacle to work around — it is the gate doing its job, and it is why the marker was
- * chosen over provisional wording. Writing the seven strings below unblocks the deploy; nothing
- * else needs to change.
- *
- * THE LIST TO WRITE, and what each one has to carry:
- *
- *   button          the control on a menu item. Says what it does, not what it is.
- *   title           the confirm heading.
- *   body            the confirm body. MUST say the dish disappears for EVERY customer, on the QR
- *                   menu and the terminal, not just this table — that is the whole blast radius
- *                   and it is the thing a waiter will not expect.
- *   confirm         the accept label.
- *   restoreButton   putting it back.
- *   successHidden   confirmation after hiding.
- *   successRestored confirmation after restoring.
- *
- * And the refusals, which each need to say what to do next rather than only what went wrong:
- *
- *   item_not_found          wrong venue, or the item was deleted
- *   authorization_failed    the PIN did not authorise it
- *   already_in_that_state   somebody else got there first
+ * `already_in_that_state` reads as information, not an error, deliberately — during service it
+ * usually is: somebody else already took the dish off before this tap landed.
  */
 
 /**
@@ -55,10 +22,10 @@
  */
 
 export const MENU_AVAILABILITY_COPY = {
-  button: 'PENDING COPY: mark-unavailable button',
-  title: 'PENDING COPY: mark-unavailable confirm title',
+  button: 'Mark unavailable',
+  title: 'Mark this unavailable?',
   /**
-   * SIGNED BY THE OWNER 2026-08-28. The only string in this object that is not pending.
+   * SIGNED BY THE OWNER 2026-08-28, ahead of the other nine in this file.
    *
    * Revised after the checkout path was traced. The first draft said only that the dish vanishes
    * from every menu; it did not say what happens to a customer who is ALREADY holding it. That
@@ -72,16 +39,16 @@ export const MENU_AVAILABILITY_COPY = {
     'This removes the dish from the menu for every customer in the restaurant, on their phones ' +
     'and on every terminal. Anyone with it in their order right now will be told it is ' +
     'unavailable and asked to take it off themselves.',
-  confirm: 'PENDING COPY: mark-unavailable accept label',
-  restoreButton: 'PENDING COPY: restore-to-menu button',
-  successHidden: 'PENDING COPY: confirmation after a dish is hidden',
-  successRestored: 'PENDING COPY: confirmation after a dish is restored',
+  confirm: 'Mark unavailable',
+  restoreButton: 'Put back on the menu',
+  successHidden: 'Off the menu. Nobody can order it now.',
+  successRestored: 'Back on the menu.',
 } as const
 
 export const MENU_AVAILABILITY_REFUSAL_COPY = {
-  item_not_found: 'PENDING COPY: refusal — the item is not on this venue menu',
-  authorization_failed: 'PENDING COPY: refusal — the PIN did not authorise this',
-  already_in_that_state: 'PENDING COPY: refusal — the dish is already in that state',
+  item_not_found: 'This dish is no longer on the menu. Close this and open the menu again.',
+  authorization_failed: 'That PIN did not work. Try again, or ask a manager to do it.',
+  already_in_that_state: 'Somebody already took this off the menu.',
 } as const
 
 export type MenuAvailabilityRefusal = keyof typeof MENU_AVAILABILITY_REFUSAL_COPY
