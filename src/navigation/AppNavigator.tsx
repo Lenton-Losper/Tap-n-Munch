@@ -23,6 +23,7 @@ import RefundAuthScreen from '../screens/RefundAuthScreen';
 import RefundConfirmScreen from '../screens/RefundConfirmScreen';
 import RefundPinScreen from '../screens/RefundPinScreen';
 import POSCartScreen from '../screens/POSCartScreen';
+import MenuItemDetailScreen from '../screens/MenuItemDetailScreen';
 import ServiceFloorScreen from '../screens/ServiceFloorScreen';
 import ServiceOpenTableScreen from '../screens/ServiceOpenTableScreen';
 import ServiceRoundReviewScreen from '../screens/ServiceRoundReviewScreen';
@@ -139,6 +140,35 @@ export type MainStackParamList = {
   ServiceRound: {outOfStockLineIds?: string[]} | undefined;
   /** Waiter-led service, screen 4. The ONE review screen; Send lives here. */
   ServiceRoundReview: undefined;
+  /**
+   * THE ITEM DETAIL VIEW, and the only route on the terminal that can take a dish off the menu.
+   *
+   * Reached ONLY by the explicit info control on a menu tile. NOT by tapping the tile — that adds
+   * the item to the round and must keep doing exactly that — and NOT by swipe or long-press, so
+   * that a mis-swipe while scrolling a menu can never arrive here.
+   *
+   * `categoryId` is the category the tile was found under, not `MenuItem.category_id`: the grouped
+   * shape of GET /api/menu/{restaurant}/category/{id} does not always carry a category id on the
+   * item rows, and an empty one would make the detail view unable to re-read the record.
+   */
+  MenuItemDetail: {
+    itemId: string;
+    categoryId: string;
+    /**
+     * THE NAME ON THE TILE THE WAITER TAPPED, AND IT IS NEVER RENDERED. Not in the header, not in
+     * the sheet, not for a moment while the record loads.
+     *
+     * It is carried because the whole design rests on the opposite value being shown: the dish
+     * name in the confirm sheet comes from the record the detail screen FETCHED, so that a waiter
+     * who hit the wrong tile reads the wrong name before any button is reachable. A tapped name
+     * rendered "just while it loads" would defeat that in the exact case it exists for.
+     *
+     * Keeping it in params rather than deleting it makes that rule testable: a suite asserts the
+     * sheet shows the fetched name and does NOT contain this one, and it goes red the moment
+     * anybody renders it. See screens/__tests__/menuAvailabilitySheet.test.tsx.
+     */
+    tappedName: string;
+  };
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
@@ -292,6 +322,11 @@ function MainNavigator() {
         <MainStack.Screen
           name="ServiceRoundReview"
           component={ServiceRoundReviewScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="MenuItemDetail"
+          component={MenuItemDetailScreen}
           options={{headerShown: false}}
         />
         <MainStack.Screen

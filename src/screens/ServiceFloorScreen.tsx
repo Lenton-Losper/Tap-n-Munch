@@ -21,7 +21,12 @@ import {
   getTabLines,
 } from '../lib/api';
 import {formatSecondsOpen} from '../lib/serviceRound';
-import {deriveTableFlag, TableFlag} from '../lib/tabLines';
+import {
+  deriveTableBadge,
+  mergeTableBadges,
+  TableBadge,
+  TableFlag,
+} from '../lib/tabLines';
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -38,12 +43,27 @@ const MAX_BACKOFF_MS = 60_000;
  * is a dozen or more calls per refresh on a P5 over venue wifi. Four at a time keeps the grid
  * responsive without queueing the whole floor behind one slow response, and the fetch is
  * best-effort throughout: rows render from the floor payload immediately and flags appear as they
- * land. A table whose lines cannot be fetched simply carries no flag.
+ * land. A table whose lines cannot be fetched keeps the badge it last reported — see
+ * mergeTableBadges.
  */
 const FLAG_CONCURRENCY = 4;
 
-/** Flags are re-fetched no more often than this, independent of the grid's own 15s poll. */
-const FLAG_MIN_INTERVAL_MS = 30_000;
+/**
+ * Badges are re-fetched no more often than this.
+ *
+ * NOW EQUAL TO THE GRID'S OWN POLL, so in practice every poll refreshes the badges. It was 30s,
+ * which put up to 45 seconds between a kitchen bumping a dish and the waiter's grid saying so, and
+ * 45 seconds under a heat lamp is most of the problem this badge exists to solve. Ruled explicitly:
+ * N requests per 15s on this floor is not a load concern.
+ *
+ * It stays a separate named constant rather than collapsing into REFRESH_INTERVAL_MS because the
+ * two throttle different things — one is a single grid request, the other is one request per open
+ * table — and the day the floor gets big enough to care, this is the number to move, alone.
+ */
+const FLAG_MIN_INTERVAL_MS = REFRESH_INTERVAL_MS;
+
+/** What a row renders before its tab has been read, or when it has no tab to read. */
+const NO_BADGE: TableBadge = {flag: null, readyCount: 0};
 
 function formatTotal(amount: number | null | undefined): string {
   const safe = Number.isFinite(Number(amount)) ? Number(amount) : 0;
@@ -65,13 +85,14 @@ function flagLabel(flag: TableFlag): string | null {
 
 interface FloorRowProps {
   table: FloorTable;
-  flag: TableFlag;
+  badge: TableBadge;
   /** Seconds elapsed on the DEVICE since the payload was fetched. A duration, never a clock. */
   elapsedSinceLoad: number;
   onPress: () => void;
 }
 
-function FloorRow({table, flag, elapsedSinceLoad, onPress}: FloorRowProps) {
+function FloorRow({table, badge, elapsedSinceLoad, onPress}: FloorRowProps) {
+  const {flag, readyCount} = badge;
   // `state` — never `table_status`. The two disagree in production in both directions (#216, and
   // the abandoned-tab reaper), and the brief returns table_status for diagnosis only.
   const isOpen = table.state === 'open';
@@ -131,6 +152,10 @@ function FloorRow({table, flag, elapsedSinceLoad, onPress}: FloorRowProps) {
         )}
       </View>
 
+      {/* THE COUNT IS A NUMERAL IN ITS OWN ELEMENT, NOT A COMPOSED SENTENCE. Nothing here invents
+          staff-facing wording: the label is the existing FLAG_READY_LABEL and the number is a
+          number, so there is no new string for anyone to sign off. Rendered only above zero — see
+          TableBadge.readyCount on why "READY 0" is reachable and must never appear. */}
       {label ? (
         <View
           style={[
@@ -142,6 +167,11 @@ function FloorRow({table, flag, elapsedSinceLoad, onPress}: FloorRowProps) {
           <Text style={styles.flagChipText} numberOfLines={1}>
             {label}
           </Text>
+          {flag === 'ready' && readyCount > 0 ? (
+            <View style={styles.flagCount}>
+              <Text style={styles.flagCountText}>{readyCount}</Text>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -160,7 +190,7 @@ export default function ServiceFloorScreen() {
   const {endSession} = useServiceSession();
 
   const [tables, setTables] = useState<FloorTable[]>([]);
-  const [flags, setFlags] = useState<Record<string, TableFlag>>({});
+  const [badges, setBadges] = useState<Record<string, TableBadge>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   /** Non-null only for the unrecoverable 403 case. Everything else is a soft banner. */
@@ -175,14 +205,20 @@ export default function ServiceFloorScreen() {
   const flagsFetchedAtRef = useRef(0);
 
   /**
-   * Decorate the grid with the derived warning flags.
+   * Decorate the grid with the derived badges.
    *
-   * BEST-EFFORT AND NON-BLOCKING BY DESIGN. It never sets an error, never gates the rows on its
-   * own completion, and a table whose lines fail to load simply carries no badge — the floor is
-   * usable the instant the tables land. Missing flags are the correct degradation: a waiter who
-   * sees no badge walks to the table, which is exactly what they do today.
+   * BEST-EFFORT AND NON-BLOCKING BY DESIGN. It never sets an error and never gates the rows on its
+   * own completion — the floor is usable the instant the tables land, and badges appear as they
+   * arrive. A banner per failed tab would cover the floor in warnings every time one read failed.
+   *
+   * FAILURE IS NO LONGER ERASURE. The result is MERGED over what is already on screen rather than
+   * replacing it, so a table whose read failed keeps the badge it last reported instead of blinking
+   * out until the next pass. Eviction is driven by the eligible set — the tables THIS floor payload
+   * says are open with a tab — so a settled or freed table loses its badge on the next successful
+   * grid poll regardless of what its own endpoint is doing. See mergeTableBadges for why the two
+   * bounds together mean stale badges cannot accumulate.
    */
-  const loadFlags = useCallback(async (current: FloorTable[]) => {
+  const loadBadges = useCallback(async (current: FloorTable[]) => {
     const now = Date.now();
     if (now - flagsFetchedAtRef.current < FLAG_MIN_INTERVAL_MS) {
       return;
@@ -190,17 +226,23 @@ export default function ServiceFloorScreen() {
     flagsFetchedAtRef.current = now;
 
     const targets = current.filter(t => t.state === 'open' && t.tab?.id);
+    const eligibleIds = targets.map(t => t.id);
+
     if (targets.length === 0) {
-      setFlags({});
+      // Not a failure — the floor genuinely has no open tab to decorate. An empty eligible set
+      // clears everything, which is the same eviction rule as every other pass.
+      setBadges({});
       return;
     }
 
     const token = await getTerminalToken();
     if (!token) {
+      // We found nothing out. Leave every badge exactly as it is rather than blanking the floor
+      // on a storage read that will almost certainly succeed next time.
       return;
     }
 
-    const next: Record<string, TableFlag> = {};
+    const fetched: Record<string, TableBadge> = {};
     let cursor = 0;
 
     const worker = async () => {
@@ -217,10 +259,11 @@ export default function ServiceFloorScreen() {
         }
         try {
           const payload = await getTabLines(tabId, token);
-          next[table.id] = deriveTableFlag(payload);
+          fetched[table.id] = deriveTableBadge(payload);
         } catch {
-          // Silent. See the docblock: no flag is the honest answer, and a banner here would
-          // cover the floor in warnings every time a single tab read failed.
+          // Silent, and deliberately leaves no key in `fetched`. An absent key is what tells the
+          // merge "we did not find out" — as opposed to a present badge whose flag is null, which
+          // is the real answer "read it fine, nothing to flag".
         }
       }
     };
@@ -232,7 +275,7 @@ export default function ServiceFloorScreen() {
     );
 
     if (focusedRef.current) {
-      setFlags(next);
+      setBadges(previous => mergeTableBadges(previous, fetched, eligibleIds));
     }
   }, []);
 
@@ -266,7 +309,7 @@ export default function ServiceFloorScreen() {
           // An explicit pull is a request for fresh everything, flags included.
           flagsFetchedAtRef.current = 0;
         }
-        loadFlags(sorted);
+        loadBadges(sorted);
       } catch (err) {
         if (err instanceof ApiRequestError && err.status === 403) {
           // Not recoverable on the device: the terminal token itself lacks orders:read.
@@ -283,7 +326,7 @@ export default function ServiceFloorScreen() {
         setRefreshing(false);
       }
     },
-    [loadFlags],
+    [loadBadges],
   );
 
   // Poll on a timer while focused. Rescheduled from the tail of each attempt rather than on a
@@ -431,7 +474,7 @@ export default function ServiceFloorScreen() {
           renderItem={({item}) => (
             <FloorRow
               table={item}
-              flag={flags[item.id] ?? null}
+              badge={badges[item.id] ?? NO_BADGE}
               elapsedSinceLoad={elapsedSinceLoad}
               onPress={() => handlePress(item)}
             />
@@ -527,10 +570,13 @@ const styles = StyleSheet.create({
   },
   freeHint: {...Typography.small, color: Colors.textMuted, marginTop: 2},
   flagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     paddingHorizontal: Spacing.sm,
     paddingVertical: 6,
     borderRadius: 8,
-    maxWidth: 96,
+    maxWidth: 116,
   },
   flagChipReady: {backgroundColor: Colors.green},
   flagChipWaiting: {backgroundColor: Colors.amber},
@@ -540,6 +586,22 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.4,
+  },
+  // A counter pill inside the chip, so the number reads as a quantity rather than as part of the
+  // word. Sized to stay legible at arm's length on a P5 held one-handed.
+  flagCount: {
+    minWidth: 20,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 10,
+    backgroundColor: Colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  flagCountText: {
+    color: Colors.green,
+    fontSize: 12,
+    fontWeight: '800',
   },
   hardErrorText: {
     ...Typography.body,
