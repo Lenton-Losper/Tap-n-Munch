@@ -66,6 +66,19 @@ export const OVERRIDE_CANCEL_PINNED_SENTENCE = 'The card may have been charged.'
  * Not staff-facing. This is what someone reconstructing the decision months later reads, and it
  * has to say plainly that a human overruled a rule rather than that a rule fired.
  */
+/**
+ * The audit reason for the LIGHT path -- an order on which no payment was ever started.
+ *
+ * Deliberately does NOT reuse the provider wording below. That sentence describes a gateway that
+ * was asked and had no record; this one describes a gateway that was never contacted. Recording
+ * the first against the second would put a fiction in the audit trail, and an audit row is the
+ * one place a fiction cannot later be corrected by looking at the data.
+ */
+export const OVERRIDE_CANCEL_NEVER_ATTEMPTED_AUDIT_REASON =
+  'No payment was ever started on this order. It carried no payment provider reference and no ' +
+  'payment attempt timestamp, so no charge could have been created and the provider was not ' +
+  'queried. An operator cancelled it manually.'
+
 export const OVERRIDE_CANCEL_AUDIT_REASON =
   'An operator cancelled this order manually, overruling the E04111 persistence rule, which had ' +
   'refused it. The gateway was re-queried immediately before the write and did not report the ' +
