@@ -14,6 +14,15 @@
  * The waiter table view routes into this same screen rather than growing a second payment flow,
  * so this is the code path under both entry points.
  */
+/**
+ * Screen-level renders here mount the whole table view and drive async settle flows through
+ * act(). On a loaded machine — a Gradle build running alongside the suite, which is exactly how
+ * this ran during the settle work — the first render alone has been seen to take several
+ * seconds, and Jest's 5s default turned that into three "failures" that were really the CPU
+ * being busy. A test that only passes on an idle machine reports the machine, not the code.
+ */
+jest.setTimeout(30000);
+
 import React from 'react';
 import {Text} from 'react-native';
 import renderer, {act, ReactTestInstance} from 'react-test-renderer';
