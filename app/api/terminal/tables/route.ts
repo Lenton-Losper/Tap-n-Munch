@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
@@ -49,6 +50,20 @@ export async function GET(req: Request) {
      */
     const url = new URL(req.url)
     if (url.searchParams.get('view') === 'floor') {
+      /**
+       * ONLY THE FLOOR GRID IS GATED, NOT THIS ROUTE. The default response below is the pre-
+       * existing (2026-06-26) table list the live APK at Mingle and ChowNow already depends on,
+       * and it must keep working for every restaurant regardless of this flag. `?view=floor` is
+       * the new ADR-005 §3 shape, added 2026-08-28, and until today an old APK not sending the
+       * param was the ONLY thing keeping it from any restaurant that guessed the query string.
+       */
+      const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+      if (!allowed) {
+        return NextResponse.json(
+          { error: 'Waiter-led service is not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+          { status: 403 },
+        )
+      }
       return await respondWithFloorGrid(supabase, terminal.restaurantId)
     }
 

@@ -61,6 +61,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { createOrder } from '@/lib/orders/create-order'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
@@ -83,6 +84,19 @@ export async function POST(request: Request) {
     const terminal = await requireTerminalAuth(request)
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
+
+    /**
+     * ADR-005 is a station_screens_enabled venue's flow, not server policy yet. Riviera-only was
+     * an accident of client version -- Mingle and ChowNow are protected only by an old APK never
+     * calling this endpoint, not by anything server-side. Added 2026-08-28.
+     */
+    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Waiter-led service is not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
 
     if (!terminal.permissions.includes('orders:update')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })

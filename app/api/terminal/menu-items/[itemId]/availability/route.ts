@@ -49,6 +49,7 @@
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
+import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 import { invalidateMenuCache } from '@/lib/cache/menu-cache'
 import {
@@ -75,6 +76,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ itemId:
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
+
+    /**
+     * The waiter's "mark unavailable" control ships behind the same flag as the rest of the P5
+     * waiter flow, not server policy yet. Riviera-only was an accident of client version -- Mingle
+     * and ChowNow are protected only by an old APK never calling this endpoint, not by anything
+     * server-side. Added 2026-08-28.
+     */
+    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Waiter-led service is not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
 
     const { itemId } = await params
     if (!itemId || !isUuid(itemId)) {
