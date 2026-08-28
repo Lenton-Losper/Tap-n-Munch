@@ -1284,6 +1284,10 @@ async function cancel(
     basis,
     // A terminal callback that settles the order a millisecond earlier WINS and this writes nothing.
     guard: 'require_pending',
+    // A dashboard action, not a terminal/station device -- 'system' is the closest fit in the
+    // three-value actor_kind CHECK, with the clearing person recorded via actorUserId instead.
+    actorKind: 'system',
+    actorUserId: requestedBy,
     metadata: {
       source: 'held_for_review_clear_all',
       requestedBy,

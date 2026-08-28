@@ -1,3 +1,5 @@
+import { voidOutstandingOrderLines } from './order-lines'
+
 type Supabase = {
   from: (table: string) => any
 }
@@ -98,6 +100,13 @@ export async function cancelOrderWithTrail(
      * prevent get reintroduced one layer up.
      */
     guard: 'require_pending' | 'none'
+    /**
+     * WHO IS DOING THIS CANCELLATION, so voidOutstandingOrderLines' audit trail says so.
+     * Required for the same reason `guard` is: a default here is how the omission this module
+     * exists to prevent gets reintroduced one layer up.
+     */
+    actorKind: 'terminal' | 'station' | 'system'
+    actorUserId: string | null
     /** Merged into the audit row's metadata. Never written to the order. */
     metadata?: Record<string, unknown>
   },
@@ -141,6 +150,23 @@ export async function cancelOrderWithTrail(
     },
   })
   if (auditError) throw new Error(`cancelOrderWithTrail audit: ${auditError.message}`)
+
+  /**
+   * docs/followup-cancelled-order-lines-not-voided.md, 2026-08-28. The order is cancelled and
+   * audited by this point; its lines are not, and nothing else does this. A failed void must not
+   * un-cancel the order -- the order row is already correct -- so this is best-effort, matching
+   * writeOrderLines' own choice for its creation events: logged loudly, never thrown.
+   */
+  try {
+    await voidOutstandingOrderLines(supabase, {
+      orderId: params.orderId,
+      restaurantId: params.restaurantId,
+      actorKind: params.actorKind,
+      actorUserId: params.actorUserId,
+    })
+  } catch (voidError) {
+    console.error('[cancelOrderWithTrail] order cancelled but voiding its lines failed', voidError)
+  }
 
   return { order, cancelled: true }
 }

@@ -220,6 +220,8 @@ export async function PATCH(
           cancellationReason,
           basis: 'terminal_pre_gateway',
           guard: 'none',
+          actorKind: 'terminal',
+          actorUserId: null,
           metadata: { terminalId: terminal.terminalId ?? null, requestedStatus: newStatus },
         })
       } catch (err) {

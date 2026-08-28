@@ -18,6 +18,7 @@ import {
   ORDER_CANCELLED_ACTION,
   type CancelBasis,
 } from './cancel-order-with-trail'
+import { voidOutstandingOrderLines } from './order-lines'
 
 /**
  * How long a POS order may sit at payment_status='pending' before it becomes a CANDIDATE.
@@ -537,6 +538,29 @@ async function cancelByIds(
     })),
   )
   if (auditError) throw new Error(`cancelByIds audit: ${auditError.message}`)
+
+  /**
+   * docs/followup-cancelled-order-lines-not-voided.md, 2026-08-28. This sweep is the OTHER
+   * independent cancel-writer besides cancelOrderWithTrail (see that file's own void call) --
+   * without this, an auto-cancelled order's lines sit at `outstanding` exactly like the terminal
+   * path did before today. Best-effort: the orders are already correctly cancelled by this point,
+   * and a failed void must not undo that or abort the rest of the run.
+   */
+  for (const row of cancelled) {
+    try {
+      await voidOutstandingOrderLines(supabase, {
+        orderId: String(row.id),
+        restaurantId: row.restaurant_id,
+        actorKind: 'system',
+        actorUserId: null,
+      })
+    } catch (voidError) {
+      console.error(
+        `[autoCancelStalePosOrders] order ${row.id} cancelled but voiding its lines failed`,
+        voidError,
+      )
+    }
+  }
 
   return cancelled.map((row) => String(row.id))
 }

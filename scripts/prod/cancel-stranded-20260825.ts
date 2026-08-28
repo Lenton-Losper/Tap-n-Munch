@@ -199,6 +199,8 @@ async function main() {
         cancellationReason: REASON,
         basis: 'e04111_no_attempt_reached_gateway',
         guard: 'require_pending',
+        actorKind: 'system',
+        actorUserId: null,
         metadata: {
           ruledBy: 'owner (Lenton) - operator ruling on direct confirmation, 2026-08-25',
           venue: v.label,
