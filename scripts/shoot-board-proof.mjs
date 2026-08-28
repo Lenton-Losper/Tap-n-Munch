@@ -13,8 +13,8 @@ const OUT_DIR = process.argv[2]
 
 const browser = await chromium.launch()
 for (const [name, path] of [
-  ['kitchen-board-20-rounds', '/dev-kitchen-preview'],
-  ['bar-board-20-rounds', '/dev-bar-preview'],
+  ['kitchen-board-40-rounds', '/dev-kitchen-preview'],
+  ['bar-board-40-rounds', '/dev-bar-preview'],
 ]) {
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 })
   const page = await ctx.newPage()
