@@ -93,7 +93,11 @@ type StaleOrderCandidate = {
   total: number
   channel: string | null
   paycloud_merchant_order_no: string | null
+  tab_id: string | null
 }
+
+/** `tabs.status` values that mean "still being served" -- see EXCLUDE_LIVE_TAB_ORDERS below. */
+const LIVE_TAB_STATUSES = ['open', 'ready_to_pay']
 
 /**
  * #353 — a stale order this sweep can SEE but must never act on.
@@ -652,7 +656,7 @@ export async function autoCancelStalePosOrders(
    */
   let candidateQuery = supabase
     .from('orders')
-    .select('id, restaurant_id, total, channel, paycloud_merchant_order_no')
+    .select('id, restaurant_id, total, channel, paycloud_merchant_order_no, tab_id')
     .eq('payment_status', 'pending')
     .lt('placed_at', cutoffIso)
 
@@ -668,6 +672,7 @@ export async function autoCancelStalePosOrders(
     total: number
     channel: string | null
     paycloud_merchant_order_no: string | null
+    tab_id: string | null
   }>(candidateQuery, { label: 'autoCancelStalePosOrders' })
   if (candidates.length === 0) return finalise(result)
 
@@ -690,7 +695,61 @@ export async function autoCancelStalePosOrders(
       .trim()
       .toLowerCase()
 
-  const rows = allRows.filter((row) => channelOf(row) === SWEEP_ACTIONABLE_CHANNEL)
+  const posRows = allRows.filter((row) => channelOf(row) === SWEEP_ACTIONABLE_CHANNEL)
+
+  /**
+   * EXCLUDE ORDERS ON A LIVE TAB -- a service session, not an abandoned payment attempt.
+   *
+   * DIGI COFEE, 2026-08-28. Three waiter-led rounds (`POST /api/terminal/rounds`), each
+   * `channel: 'pos'`, `payment_status: 'pending'`, `tab_id` set -- by that route's own design:
+   * "the round is not paid here, it accumulates on the tab and is settled later". Every one was
+   * auto-cancelled 2-3 minutes after being sent, because to this sweep a waiter round and a stuck
+   * counter card payment are the same shape: `channel='pos'`, `pending`, no gateway reference,
+   * past STALE_POS_TIMEOUT_MS. NAD 19 of food was cooked, served and never billed.
+   *
+   * THE FIX IS THE LIFECYCLE, NOT THE TIMEOUT. An unpaid order on an open tab is the NORMAL state
+   * for the length of a whole meal -- widening STALE_POS_TIMEOUT_MS would still be wrong after two
+   * hours, and would also weaken the sweep for the counter-service case it was correctly built
+   * for (median settle 14.9s, p99 54.7s -- see that constant's own docblock). So this excludes by
+   * WHAT THE ORDER IS, not by how long it has waited: an order attached to a tab that is still
+   * `open` or `ready_to_pay` belongs to an ongoing service session and this sweep does not touch
+   * it, regardless of age. A counter sale with no tab_id is unaffected -- this changes nothing
+   * about the case the sweep exists for.
+   *
+   * NOT SURFACED. `surfacedNeedsHuman` above is for orders the sweep cannot act on but which may
+   * still be a real problem (#353). An order sitting pending on an open tab is not a problem; it
+   * is the ordinary, expected state of an unsettled meal. Surfacing it would be noise on every
+   * table currently being served.
+   *
+   * A CLOSED/SETTLED tab is NOT excluded. An order still pending after its tab closed is exactly
+   * the kind of leftover the sweep should still be able to reach -- this only protects orders
+   * whose tab is still genuinely in service.
+   */
+  const tabIds = [...new Set(posRows.map((r) => r.tab_id).filter((id): id is string => Boolean(id)))]
+  const liveTabIds = new Set<string>()
+  if (tabIds.length > 0) {
+    const { data: tabRows, error: tabsError } = await supabase
+      .from('tabs')
+      .select('id, status')
+      .in('id', tabIds)
+      .in('status', LIVE_TAB_STATUSES)
+    if (tabsError) {
+      // A failed read must not widen what the sweep is willing to cancel. Leaving liveTabIds
+      // empty here would do exactly that -- so on a failed read, every tab-attached order this
+      // run is deferred (never touched) rather than risked.
+      console.error(
+        '[autoCancelStalePosOrders] could not read tab statuses; deferring every tab-attached order this run:',
+        tabsError,
+      )
+      for (const id of tabIds) liveTabIds.add(id)
+    } else {
+      for (const t of (tabRows ?? []) as Array<{ id: string; status: string }>) {
+        liveTabIds.add(String(t.id))
+      }
+    }
+  }
+
+  const rows = posRows.filter((row) => !row.tab_id || !liveTabIds.has(row.tab_id))
 
   for (const row of allRows) {
     if (channelOf(row) === SWEEP_ACTIONABLE_CHANNEL) continue
