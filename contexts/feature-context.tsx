@@ -13,6 +13,7 @@ export interface RestaurantFeatures {
   staff_app_enabled: boolean
   kiosk_enabled: boolean
   whatsapp_enabled: boolean
+  station_screens_enabled: boolean
 }
 
 export interface FeatureContextType {
@@ -34,6 +35,7 @@ const defaultFeatures: RestaurantFeatures = {
   staff_app_enabled: false,
   kiosk_enabled: false,
   whatsapp_enabled: false,
+  station_screens_enabled: false,
 }
 
 const FeatureContext = createContext<FeatureContextType>({
