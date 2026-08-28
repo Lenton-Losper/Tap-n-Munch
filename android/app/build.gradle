@@ -95,8 +95,8 @@ android {
         applicationId "com.flashtap.pos"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 107
-        versionName "2.06"
+        versionCode 108
+        versionName "2.07"
         buildConfigField "String", "GIT_SHA", "\"${gitSha()}\""
     }
     buildFeatures {
