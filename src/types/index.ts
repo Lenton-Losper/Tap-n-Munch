@@ -84,6 +84,20 @@ export interface TableTab {
   status: string;
   total: number;
   unpaid_total: number;
+  /**
+   * The counts that make `unpaid_total: 0` legible. Zero owed with a paid order is a settled
+   * tab; zero owed with nothing billed is a tab whose orders were all CANCELLED — and those two
+   * are indistinguishable from `unpaid_total` alone, which is how a NAD 19 tab at Digi Cofee
+   * rendered as PAID IN FULL on 2026-08-28 with no money ever taken.
+   *
+   * OPTIONAL because an older worker does not send them, and `deriveTabSettlementState` falls
+   * back to scanning `orders`. An APK reaches a venue before the worker does, and the reverse,
+   * so neither half may assume the other is already there.
+   */
+  paid_order_count?: number;
+  unpaid_order_count?: number;
+  billable_order_count?: number;
+  order_count?: number;
   payment_preference?: string;
   orders: TabOrder[];
   /**

@@ -54,6 +54,14 @@ export type TabSettlementState =
   /** Live tab, nothing owed — AND STILL OPEN. Paid is not closed. */
   | 'fully_paid'
   /**
+   * Live tab, nothing owed AND nothing ever billed — every order on it was cancelled.
+   *
+   * NOT a shade of 'fully_paid'. Zero owed because everything was cancelled is a different fact
+   * from zero owed because everything was paid, and conflating them told a waiter at Digi Cofee
+   * that a NAD 19 tab was settled when no money had ever changed hands.
+   */
+  | 'nothing_billed'
+  /**
    * The money payload could not be read. Deliberately its own state rather than being folded
    * into 'unpaid': "we do not know" is not a shade of "nobody has paid", and rendering it as one
    * invites a waiter to charge a card for a bill that may already be settled.
@@ -100,13 +108,60 @@ export function deriveTabSettlementState(
   }
 
   const orders = table.tab.orders ?? [];
-  const owing = orders.filter(order => owesMoney(order.payment_status));
-  const paid = orders.filter(isPaidOrder);
 
-  if (owing.length === 0) {
+  /**
+   * ==========================================================================================
+   * ZERO OWED IS NOT THE SAME FACT AS FULLY PAID.
+   * ==========================================================================================
+   *
+   * `owing.length === 0` used to return `fully_paid` on its own. A tab whose orders were all
+   * CANCELLED has nothing owing and nothing paid, so it rendered as PAID IN FULL over a table
+   * where no money had ever changed hands.
+   *
+   * That happened on production: Digi Cofee Table 1, 2026-08-28. The stale-payment sweep
+   * cancelled orders #30, #31 and #32 (NAD 3 + 5 + 11) two to three minutes after each was
+   * placed. `paid_at` was null on all three, the kitchen had already cooked the food, and the
+   * screen told the waiter the bill was settled. A waiter reading "paid in full" closes the
+   * table, and the venue loses the money.
+   *
+   * PREFER THE SERVER'S COUNTS. `paid_order_count` / `unpaid_order_count` /
+   * `billable_order_count` are computed where the payment vocabulary actually lives, so the
+   * device is not maintaining a second opinion about what "paid" means. The local scan below is
+   * the fallback for a server that does not send them yet — an APK reaches a venue before the
+   * worker does, and the reverse, so both halves have to stand alone.
+   */
+  const serverPaid = table.tab.paid_order_count;
+  const serverUnpaid = table.tab.unpaid_order_count;
+  const serverBillable = table.tab.billable_order_count;
+
+  const hasServerCounts =
+    typeof serverPaid === 'number' &&
+    typeof serverUnpaid === 'number' &&
+    typeof serverBillable === 'number';
+
+  const owingCount = hasServerCounts
+    ? (serverUnpaid as number)
+    : orders.filter(order => owesMoney(order.payment_status)).length;
+  const paidCount = hasServerCounts
+    ? (serverPaid as number)
+    : orders.filter(isPaidOrder).length;
+  const billableCount = hasServerCounts
+    ? (serverBillable as number)
+    : owingCount + paidCount;
+
+  if (owingCount === 0) {
+    /**
+     * Nothing owed AND nothing ever billed. Not paid — there was never anything to pay. Kept as
+     * its own state rather than folded into `unpaid` so the screen can never be tempted to call
+     * it settled, and so a reader of this function meets the distinction rather than a bare
+     * `paidCount > 0` test they might simplify away.
+     */
+    if (paidCount === 0 || billableCount === 0) {
+      return 'nothing_billed';
+    }
     return 'fully_paid';
   }
-  return paid.length > 0 ? 'partially_paid' : 'unpaid';
+  return paidCount > 0 ? 'partially_paid' : 'unpaid';
 }
 
 /**

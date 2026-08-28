@@ -253,3 +253,69 @@ describe('settleableOrderIds', () => {
     expect(settleableOrderIds(table({}, [order({id: 'legacy'})]))).toEqual([]);
   });
 });
+
+/**
+ * ZERO OWED BECAUSE CANCELLED IS NOT ZERO OWED BECAUSE PAID.
+ *
+ * PRODUCTION, Digi Cofee Table 1, 2026-08-28: the stale-payment sweep cancelled orders #30, #31
+ * and #32 (NAD 3 + 5 + 11) two to three minutes after each was placed. `paid_at` was null on all
+ * three and the kitchen had already cooked the food. Nothing was owed because nothing was
+ * billable, so `deriveTabSettlementState` returned `fully_paid` and the screen told the waiter
+ * the bill was settled.
+ *
+ * THE CONTROLS ARE THE POINT. "A cancelled tab is not fully_paid" passes trivially if the
+ * function stops returning `fully_paid` at all. Every case below is paired with a genuinely paid
+ * tab that MUST still be `fully_paid`.
+ */
+describe('a tab whose orders were all cancelled is not paid', () => {
+  it('reports nothing_billed, not fully_paid, from the server counts', () => {
+    expect(
+      deriveTabSettlementState(
+        table({
+          unpaid_total: 0,
+          paid_order_count: 0,
+          unpaid_order_count: 0,
+          billable_order_count: 0,
+          order_count: 3,
+        }),
+      ),
+    ).toBe('nothing_billed');
+  });
+
+  it('CONTROL: a genuinely settled tab still reports fully_paid', () => {
+    expect(
+      deriveTabSettlementState(
+        table({
+          unpaid_total: 0,
+          paid_order_count: 2,
+          unpaid_order_count: 0,
+          billable_order_count: 2,
+          order_count: 2,
+        }),
+      ),
+    ).toBe('fully_paid');
+  });
+
+  it('falls back to scanning orders when the server sends no counts', () => {
+    expect(
+      deriveTabSettlementState(
+        table({unpaid_total: 0}, [
+          {id: 'o1', payment_status: 'cancelled'} as TabOrder,
+          {id: 'o2', payment_status: 'cancelled'} as TabOrder,
+        ]),
+      ),
+    ).toBe('nothing_billed');
+  });
+
+  it('CONTROL: the same fallback still reports a paid tab as fully_paid', () => {
+    expect(
+      deriveTabSettlementState(
+        table({unpaid_total: 0}, [{id: 'o1', payment_status: 'paid'} as TabOrder]),
+      ),
+    ).toBe('fully_paid');
+  });
+
+  it('does not offer to settle a tab where there is nothing to charge for', () => {
+    expect(canOfferSettle('nothing_billed')).toBe(false);
+  });
+});

@@ -381,7 +381,22 @@ export default function ServiceTableScreen({route, navigation}: Props) {
             SIGNED by the owner 2026-08-28, verbatim. Each state names BOTH the money and the session -- "paid in full" against "table still open" vs "table closed" is what carries the paid-is-not-closed rule to a waiter. The unreadable state deliberately says nothing about the money: a blank or a soft message there reads as nothing owed, which is the trap.
           */}
           <View style={styles.paymentStateRow}>
-            {settlementState === 'unpaid' ? (
+            {/*
+              'nothing_billed' shares the UNPAID chip, deliberately, and this is the safe
+              direction rather than a shortcut.
+
+              A tab whose orders were all cancelled has nothing owed and nothing paid. It used to
+              fall into 'fully_paid' and render PAID IN FULL over a table where no money had ever
+              changed hands — Digi Cofee Table 1, 2026-08-28, NAD 19 of food already cooked.
+
+              "Nothing paid yet · table open" is TRUE of it: nothing has been paid, and the table
+              is open. It uses signed wording rather than an invented sentence, and it cannot tell
+              a waiter the bill is settled. A dedicated string saying the rounds were cancelled
+              would be better and needs the owner; until then this is honest and safe, and it is
+              never silent — an unhandled state renders NO chip at all, which reads as nothing to
+              pay, which is the trap this whole row exists to avoid.
+            */}
+            {settlementState === 'unpaid' || settlementState === 'nothing_billed' ? (
               <View style={[styles.stateChip, styles.stateChipUnpaid]}>
                 <Text style={[styles.stateChipText, styles.stateChipTextUnpaid]}>
                   {'Nothing paid yet · table open'}

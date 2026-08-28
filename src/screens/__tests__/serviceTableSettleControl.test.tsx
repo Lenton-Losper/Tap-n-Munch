@@ -56,7 +56,7 @@ jest.mock('../../context/ServiceSessionContext', () => ({
 
 import ServiceTableScreen from '../ServiceTableScreen';
 
-const SETTLE_LABEL = 'PENDING COPY: take payment for this table';
+const SETTLE_LABEL = 'Take payment';
 
 function linesPayload(): TabLinesPayload {
   return {
@@ -238,8 +238,8 @@ describe('the settle control on the waiter table view', () => {
     const {tree} = await renderScreen();
     const screen = textOf(tree.root);
 
-    expect(screen).toContain('PENDING COPY: tab status paid in full and still open');
-    expect(screen).not.toContain('PENDING COPY: tab status session closed');
+    expect(screen).toContain('Paid in full · table still open');
+    expect(screen).not.toContain('Paid in full · table closed');
     expect(screen).toContain('Add Round');
     // Nothing left to charge, so the control is present but inert.
     expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(true);
@@ -264,9 +264,9 @@ describe('the settle control on the waiter table view', () => {
     const screen = textOf(tree.root);
 
     expect(screen).toContain(
-      'PENDING COPY: tab status part paid part still owed',
+      'Part paid · balance still owed',
     );
-    expect(screen).not.toContain('PENDING COPY: tab status nothing paid yet');
+    expect(screen).not.toContain('Nothing paid yet · table open');
     // Still settleable — the remainder is still owed and still payable.
     expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(false);
     // And the figure shown is the server's unpaid_total, not the tab total.
@@ -281,7 +281,7 @@ describe('the settle control on the waiter table view', () => {
 
     const {tree} = await renderScreen();
 
-    expect(textOf(tree.root)).toContain('PENDING COPY: tab status session closed');
+    expect(textOf(tree.root)).toContain('Paid in full · table closed');
     expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(true);
   });
 
@@ -298,8 +298,8 @@ describe('the settle control on the waiter table view', () => {
     const {tree, navigation} = await renderScreen();
     const screen = textOf(tree.root);
 
-    expect(screen).toContain('PENDING COPY: payment state could not be read');
-    expect(screen).not.toContain('PENDING COPY: tab status nothing paid yet');
+    expect(screen).toContain('Payment status unavailable · do not assume the bill is settled');
+    expect(screen).not.toContain('Nothing paid yet · table open');
     expect(buttonWithText(tree.root, SETTLE_LABEL).props.disabled).toBe(true);
 
     // Even if the press somehow arrives, it must not navigate into a payment.
