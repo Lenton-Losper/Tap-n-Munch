@@ -73,6 +73,19 @@ export const STATION_COPY = {
     heading: 'Station screens are not turned on yet',
     description: 'Ask whoever manages this venue to enable kitchen and bar screens for it.',
   },
+  /**
+   * Shown instead of the board when this terminal is authenticated but not paired to THIS
+   * screen (20260828230000_terminal_station_pairing.sql) -- a valid code for the other screen,
+   * or a screen that was revoked. Distinct from notEnabled: the flag can be on venue-wide and
+   * this one specific screen still be wrong.
+   */
+  notPaired: {
+    heading: 'This screen is not paired',
+    description: (pairedTo: string | null) =>
+      pairedTo
+        ? `This code is paired to the ${pairedTo} screen, not this one. Pair this screen from Settings.`
+        : 'This code is not paired to a screen. Pair this screen from Settings.',
+  },
   /** The on-page activation flow — reuses /api/terminals/activate, no new auth is built. */
   activation: {
     heading: 'Activate this screen',

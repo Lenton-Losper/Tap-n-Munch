@@ -4,6 +4,11 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { ORDER_LINES_TABLE, ORDER_LINE_EVENTS_TABLE } from '@/lib/stations/schema-assumptions'
+import {
+  assertTerminalPairedToStation,
+  isStationKind,
+  StationPairingMismatchError,
+} from '@/lib/stations/station-pairing'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,6 +22,10 @@ export const dynamic = 'force-dynamic'
  * column on order_lines (confirmed 2026-08-28 from live rows; see
  * lib/stations/schema-assumptions.ts). "Still on the board" is bounded by the order's own
  * status, excluding completed/cancelled.
+ *
+ * `?station=kitchen|bar` is REQUIRED (20260828230000_terminal_station_pairing.sql). Pairing is
+ * pointless if the same code works against both URLs, so this is what makes "pair a screen"
+ * (components/settings/station-screens-pairing-section.tsx) mean something.
  */
 export async function GET(req: Request) {
   try {
@@ -26,7 +35,27 @@ export async function GET(req: Request) {
 
     const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
     if (!allowed) {
-      return NextResponse.json({ error: 'Station screens are not enabled for this restaurant' }, { status: 403 })
+      return NextResponse.json(
+        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
+
+    const station = String(new URL(req.url).searchParams.get('station') ?? '').trim().toLowerCase()
+    if (!isStationKind(station)) {
+      return NextResponse.json(
+        { error: "station must be 'kitchen' or 'bar'", code: 'INVALID_STATION' },
+        { status: 400 },
+      )
+    }
+
+    try {
+      await assertTerminalPairedToStation(supabase, terminal, station)
+    } catch (err) {
+      if (err instanceof StationPairingMismatchError) {
+        return NextResponse.json({ error: err.message, code: err.code, pairedTo: err.pairedTo }, { status: 403 })
+      }
+      throw err
     }
 
     // #323-shaped: `orders` is unbounded past 1000 rows without an explicit range, and

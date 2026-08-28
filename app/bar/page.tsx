@@ -20,6 +20,8 @@ import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-ses
 function BarScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [rounds, setRounds] = useState<BarRound[]>([])
   const [notEnabled, setNotEnabled] = useState(false)
+  const [notPaired, setNotPaired] = useState(false)
+  const [pairedTo, setPairedTo] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -32,6 +34,16 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
     return () => window.clearInterval(id)
   }, [])
 
+  // See app/kitchen/page.tsx's matching comment: last_seen_at only moves if something calls
+  // this, and a paired-screens list that always reads "last seen: at activation" cannot tell a
+  // week-long-healthy screen from one that has been dark for six days.
+  useEffect(() => {
+    const beat = () => void authFetch('/api/terminal/heartbeat', { method: 'POST' })
+    beat()
+    const id = window.setInterval(beat, 60_000)
+    return () => window.clearInterval(id)
+  }, [authFetch])
+
   useEffect(() => {
     let cancelled = false
     const channelKey = `station-bar:${session.terminalId}`
@@ -41,6 +53,8 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
         if (cancelled) return
         setRounds(snapshot.items)
         setNotEnabled(snapshot.notEnabled)
+        setNotPaired(snapshot.notPaired)
+        setPairedTo(snapshot.pairedTo)
       })
     }
 
@@ -67,6 +81,9 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
     }
   }, [session.restaurantId, session.terminalId, authFetch])
 
+  if (notPaired) {
+    return <StationNotEnabled reason="not_paired" pairedTo={pairedTo} />
+  }
   if (notEnabled) {
     return <StationNotEnabled />
   }

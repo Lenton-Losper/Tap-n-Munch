@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { ORDER_LINES_TABLE, ORDER_LINE_EVENTS_TABLE } from '@/lib/stations/schema-assumptions'
+import { assertTerminalPairedToStation, StationPairingMismatchError } from '@/lib/stations/station-pairing'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,7 +27,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ roundId
 
     const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
     if (!allowed) {
-      return NextResponse.json({ error: 'Station screens are not enabled for this restaurant' }, { status: 403 })
+      return NextResponse.json(
+        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
+        { status: 403 },
+      )
+    }
+
+    try {
+      await assertTerminalPairedToStation(supabase, terminal, 'bar')
+    } catch (err) {
+      if (err instanceof StationPairingMismatchError) {
+        return NextResponse.json({ error: err.message, code: err.code, pairedTo: err.pairedTo }, { status: 403 })
+      }
+      throw err
     }
 
     const { roundId: orderId } = await params
