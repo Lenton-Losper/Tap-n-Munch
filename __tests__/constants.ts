@@ -21,5 +21,5 @@ export const VALID_FEATURE_KEYS = [
   'kitchen_enabled', 'inventory_enabled', 'analytics_enabled',
   'split_bill_enabled', 'reservations_enabled', 'loyalty_enabled',
   'online_payments_enabled', 'multi_branch_enabled', 'staff_app_enabled',
-  'kiosk_enabled', 'whatsapp_enabled',
+  'kiosk_enabled', 'whatsapp_enabled', 'station_screens_enabled',
 ];
