@@ -29,6 +29,7 @@ jest.mock('@/lib/restaurant-roles/server-roles', () => ({
 /** Table-switching stub. Each table's insert behaviour is configurable per test. */
 function makeSupabase(opts: {
   usersEmailNotNull?: boolean
+  usersIdNotNull?: boolean
   restaurantUsersFails?: boolean
   staffMembersFails?: boolean
   pinFails?: boolean
@@ -58,7 +59,17 @@ function makeSupabase(opts: {
                     error: { message: 'null value in column "email" violates not-null constraint' },
                   }
                 }
-                const id = `user-${++nextUserId}`
+                if (opts.usersIdNotNull && row.id == null) {
+                  return {
+                    data: null,
+                    error: { message: 'null value in column "id" of relation "users" violates not-null constraint' },
+                  }
+                }
+                // users.id has NO column default (confirmed against staging) -- a real insert
+                // succeeds only because the route supplies one. Honouring row.id here, rather than
+                // always synthesising one the way this mock used to, is what lets a test tell "the
+                // route generated an id" from "the mock papered over a missing one".
+                const id = typeof row.id === 'string' ? row.id : `user-${++nextUserId}`
                 inserted.users.push({ ...row, id })
                 return { data: { id }, error: null }
               }
@@ -129,6 +140,13 @@ describe('POST /api/admin/staff/bulk-create', () => {
     expect(body.created_count).toBe(1)
     expect(body.failed_count).toBe(0)
     expect(inserted.users[0]).toMatchObject({ name: 'Maria', email: null })
+    // THE REAL BUG, PINNED. users.id has no column default (confirmed against staging
+    // 2026-08-28) -- this route must supply one itself or the insert fails on "null value in
+    // column id" before it ever reaches the email check. A UUID, not the auth id this person does
+    // not have.
+    expect(inserted.users[0].id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    )
     expect(inserted.restaurant_users[0]).toMatchObject({
       restaurant_id: RESTAURANT,
       role: 'waiter',
@@ -200,6 +218,22 @@ describe('POST /api/admin/staff/bulk-create', () => {
 
     expect(body.failed_count).toBe(1)
     expect(body.results[0].error).toMatch(/schema change/i)
+  })
+
+  /**
+   * PROVES THE MOCK ITSELF WOULD CATCH THE REGRESSION -- were usersIdNotNull ever real (a
+   * migration reverted the column default some other way), a route that omitted id would be
+   * reported per-entry, not silently. Not exercised by the route's own current call (it always
+   * supplies id, so this branch never fires against real code); this pins the FIXTURE's own
+   * honesty about the failure shape, the same way this repo's other mocks are pinned.
+   */
+  it('the fixture reports a missing id per-entry, not silently, if a caller ever omits it', async () => {
+    const { client } = makeSupabase({ usersIdNotNull: true })
+    currentClient = client
+
+    const res = await client.from('users').insert({ name: 'No id' }).single()
+
+    expect(res.error?.message).toMatch(/column "id"/)
   })
 
   it('a failed PIN write after the person is created reports the failure, not a silent orphan', async () => {

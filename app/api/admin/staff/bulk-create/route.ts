@@ -98,10 +98,19 @@ export async function POST(request: Request) {
         continue
       }
 
-      // public.users first: everything else references its id.
+      /**
+       * public.users first: everything else references its id.
+       *
+       * id.column_default IS NULL (confirmed against staging 2026-08-28 -- the row this route
+       * was leaving unset failed with "null value in column id", before the insert could even
+       * reach the email check the docblock above warns about). Every OTHER writer of this table
+       * sets id explicitly, mirroring an existing auth.users id (lib/auth/ensure-public-user.ts).
+       * This route has no auth id to mirror -- the whole point is a person with no login -- so it
+       * generates a fresh one, the same way app/api/admin/invites/route.ts's own token does.
+       */
       const { data: createdUser, error: userError } = await supabase
         .from('users')
-        .insert({ name, email: null })
+        .insert({ id: crypto.randomUUID(), name, email: null })
         .select('id')
         .single()
 
