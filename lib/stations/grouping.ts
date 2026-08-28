@@ -13,13 +13,43 @@
 import { sortOldestFirst } from '@/lib/stations/age'
 import type { BarRound, KitchenLine } from '@/lib/stations/types'
 
+export type TableGroup = { tableNumber: string; lines: KitchenLine[] }
+
 export type KitchenBoard = {
-  /** "Cooked — awaiting pass". Escalates in urgency; see types.ts on what age this uses. */
+  /** "Cooked — awaiting pass", flat and oldest-first. Kept because it is the ORDER the pass reads
+   *  in; the board renders `cookedByTable` so the per-table shortcut has a card to live on. */
   cooked: KitchenLine[]
+  /**
+   * The same cooked lines, one group per table.
+   *
+   * ADDED for the wall rebuild. The pass zone used to be one card per LINE, which meant there was
+   * no per-table object for "all ready to run" to attach to, and a table of five plates was five
+   * separate cards scattered by age across the grid — so running one table meant finding its cards
+   * first. Grouped, the card is the unit a runner actually carries.
+   *
+   * Ordered by the oldest PASS clock in each group (cookedAt, falling back to the order's age when
+   * the cooked event could not be read), not by the order's age, for the same reason the colour is:
+   * how long the plate has sat is the question, not how long ago they ordered.
+   */
+  cookedByTable: TableGroup[]
   /** Table number -> lines. Table order follows first-seen (oldest line) order. No sub-station
    *  grouping — order_lines has no such column; see types.ts's docblock. */
-  outstandingByTable: { tableNumber: string; lines: KitchenLine[] }[]
+  outstandingByTable: TableGroup[]
   unrouted: KitchenLine[]
+}
+
+/** Table order follows the first line seen, so callers control it by sorting their input. */
+function groupByTable(lines: KitchenLine[]): TableGroup[] {
+  const tableOrder: string[] = []
+  const byTable = new Map<string, KitchenLine[]>()
+  for (const line of lines) {
+    if (!byTable.has(line.tableNumber)) {
+      tableOrder.push(line.tableNumber)
+      byTable.set(line.tableNumber, [])
+    }
+    byTable.get(line.tableNumber)!.push(line)
+  }
+  return tableOrder.map((tableNumber) => ({ tableNumber, lines: byTable.get(tableNumber)! }))
 }
 
 export function buildKitchenBoard(lines: KitchenLine[]): KitchenBoard {
@@ -31,27 +61,22 @@ export function buildKitchenBoard(lines: KitchenLine[]): KitchenBoard {
     (line) => line.placedAt ?? '',
   )
 
+  const cookedByPassClock = sortOldestFirst(
+    routed.filter((line) => line.state === 'cooked'),
+    (line) => line.cookedAt ?? line.placedAt ?? '',
+  )
+
   const outstanding = sortOldestFirst(
     routed.filter((line) => line.state === 'outstanding'),
     (line) => line.placedAt ?? '',
   )
 
-  const tableOrder: string[] = []
-  const byTable = new Map<string, KitchenLine[]>()
-  for (const line of outstanding) {
-    if (!byTable.has(line.tableNumber)) {
-      tableOrder.push(line.tableNumber)
-      byTable.set(line.tableNumber, [])
-    }
-    byTable.get(line.tableNumber)!.push(line)
+  return {
+    cooked,
+    cookedByTable: groupByTable(cookedByPassClock),
+    outstandingByTable: groupByTable(outstanding),
+    unrouted,
   }
-
-  const outstandingByTable = tableOrder.map((tableNumber) => ({
-    tableNumber,
-    lines: byTable.get(tableNumber)!,
-  }))
-
-  return { cooked, outstandingByTable, unrouted }
 }
 
 export type BarBoard = {

@@ -62,19 +62,6 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient()
     const nowIso = new Date().toISOString()
-    /**
-     * TEMPORARY INSTRUMENTATION, 2026-08-28 -- four failed activation attempts on staging with
-     * four different (wrong, unverified) explanations offered. Rather than a fifth hypothesis,
-     * this logs and (behind an explicit opt-in header, never on by default) returns exactly what
-     * was asked for: the raw code as received, the code after normalizeActivationCode, the
-     * where-clause values the redemption query actually runs with, and -- separately from the
-     * strict 3-condition query below -- whether ANY row exists for that normalized code at all,
-     * ignoring active/expiry, so "no such code" is distinguishable from "code exists but already
-     * active" or "code exists but expired" instead of collapsing all three into one 400. Remove
-     * once the live cause is confirmed; do not let this rot in as permanent surface area.
-     */
-    const debugRequested = request.headers.get('x-debug-activation') === '1'
-
     const { data, error } = await supabase
       .from('restaurant_terminals')
       .select('id, restaurant_id, device_id, name, activation_code_expires_at, active, activation_code')
@@ -86,32 +73,20 @@ export async function POST(request: Request) {
     if (error) throw error
 
     if (!data?.id) {
-      const { data: anyMatch } = await supabase
-        .from('restaurant_terminals')
-        .select('id, restaurant_id, terminal_name, status, active, activation_code, activation_code_expires_at')
-        .eq('activation_code', code)
-        .maybeSingle()
-
-      console.error('[activate] no strict match', {
-        rawCode,
-        normalizedCode: code,
-        whereClause: { activation_code: code, active: false, activation_code_expires_at_gt: nowIso },
-        anyMatchIgnoringActiveAndExpiry: anyMatch ?? null,
-      })
-
-      return NextResponse.json({
-        error: 'Invalid or expired activation code',
-        ...(debugRequested
-          ? {
-              debug: {
-                rawCode,
-                normalizedCode: code,
-                whereClause: { activation_code: code, active: false, activation_code_expires_at_gt: nowIso },
-                anyMatchIgnoringActiveAndExpiry: anyMatch ?? null,
-              },
-            }
-          : {}),
-      }, { status: 400 })
+      /**
+       * Deliberately says nothing about WHICH of the three conditions failed. This endpoint is
+       * unauthenticated — anyone who can reach it can guess codes — so distinguishing "no such
+       * code" from "code exists but is already active" would confirm a valid code to someone who
+       * only guessed it.
+       *
+       * The temporary 2026-08-28 activation instrumentation that lived here has been removed. It
+       * logged the raw submitted code and, behind an `x-debug-activation: 1` request header,
+       * returned the matching terminal row — `activation_code` included — to any caller who set
+       * the header. An opt-in flag on an unauthenticated route is not a safeguard: the opt-in
+       * belongs to whoever is calling.
+       */
+      console.warn('[terminals/activate] no terminal matched an activation attempt')
+      return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
     }
 
     const restaurantId = String(data.restaurant_id)

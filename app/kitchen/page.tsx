@@ -6,6 +6,7 @@ import { KitchenScreen } from '@/components/stations/kitchen-screen'
 import { StationNotEnabled } from '@/components/stations/station-not-enabled'
 import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialKitchenLines } from '@/lib/stations/data-port'
+import { postStationBump } from '@/lib/stations/bump'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
 import {
   registerFeedChannel,
@@ -102,25 +103,19 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
     return <StationNotEnabled />
   }
 
+  /**
+   * ONE call for one line and for a whole table alike — see lib/stations/bump.ts. Both used to be
+   * fire-and-forget `void authFetch(...)`, which meant a bump the server REFUSED produced no
+   * visible effect at all: the line stayed on the board and the cook's only signal was that tapping
+   * it again also did nothing. The outcome is now returned to the card, which marks the rows that
+   * did not move.
+   */
   return (
     <KitchenScreen
       lines={lines}
       now={nowMs}
       connectionState={connectionState}
-      onMarkCooked={(lineId) => {
-        void authFetch(`/api/terminal/station-lines/${lineId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'cooked' }),
-        })
-      }}
-      onMarkReadyToRun={(lineId) => {
-        void authFetch(`/api/terminal/station-lines/${lineId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'ready_to_run' }),
-        })
-      }}
+      onBump={(lineIds, action) => postStationBump(authFetch, 'kitchen', lineIds, action)}
     />
   )
 }

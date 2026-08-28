@@ -5,6 +5,26 @@ on:
     branches:
       - cloudflare-staging
 
+# ONE STAGING RUN AT A TIME.
+#
+# The authorize- and staff-role suites are DB-BACKED: they run against the real staging Supabase
+# project and share a single fixture staff_member, because `resolveStaffMemberId` links a user to
+# staff_members BY EMAIL, so every run must use the same row. Their setup deletes duplicate
+# staff_members and clears that member's permission overrides.
+#
+# Two overlapping runs therefore corrupt each other rather than merely queueing: run B's beforeEach
+# clears the override row run A inserted a moment earlier, and run A then reads `false` from an
+# `allow` it just wrote. That is exactly the 2026-08-28 red — "staff_permissions overrides on
+# DB-backed defaults, expected true got false" — which passes in isolation and cannot be reproduced
+# by re-reading the code, because the defect is not in the code.
+#
+# QUEUE, DO NOT CANCEL. cancel-in-progress would kill a run between a fixture's insert and its
+# afterEach cleanup, leaving the override rows behind for the next run to trip over — turning an
+# overlap into a persistent red instead of a transient one.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
 jobs:
 
   probe-realtime-and-23505:

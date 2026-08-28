@@ -24,6 +24,8 @@ export type StationLineDTO = {
   route_to: RouteTo
   kitchen_state: string | null
   bar_state: string | null
+  /** When this station last tapped Cooked. Null while the line is still outstanding. */
+  cooked_at?: string | null
   is_ready: boolean
   unrouted: boolean
   shared_with_other_station: boolean
@@ -63,7 +65,10 @@ export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO)
       out.push({
         id: line.id,
         orderId: card.order_id,
-        tableNumber: String(card.table_number ?? '—'),
+        // Empty string, not a dash: the LABEL decides how an absent table reads, and a dash baked
+        // in here would render as "Table —" wherever it is used. GET /api/station/lines already
+        // normalises a zero table number to null, so this is the single absent case.
+        tableNumber: card.table_number == null ? '' : String(card.table_number),
         orderNumber: card.order_number,
         itemName: line.name_snapshot,
         quantity: line.quantity,
@@ -71,6 +76,7 @@ export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO)
         routeTo: line.route_to,
         state: toKitchenLineState(line.kitchen_state),
         placedAt: card.placed_at,
+        cookedAt: line.cooked_at ?? null,
         unrouted: line.unrouted,
         sharedWithOtherStation: line.shared_with_other_station,
       })
@@ -89,9 +95,18 @@ export function mapStationLinesToBarRounds(response: StationLinesResponseDTO): B
     .filter((card) => card.lines.length > 0)
     .map((card) => ({
       id: card.order_id,
-      tableNumber: String(card.table_number ?? '—'),
+      /**
+       * Empty string, never a dash — the SAME rule the kitchen mapper above follows, and it was
+       * missed here when defect 2 was fixed on 2026-08-28. `?? '—'` meant an order with no table
+       * rendered "Table —" on the bar wall, which is precisely the "reads as a broken screen"
+       * failure the ruling exists to prevent; STATION_COPY.bar.tableLabel('') has said "No table"
+       * since that commit and nothing was ever reaching it.
+       */
+      tableNumber: card.table_number == null ? '' : String(card.table_number),
       orderNumber: card.order_number,
       items: card.lines.map((line) => ({
+        // Carried so the bar can bump ONE drink — see BarRoundItem's own note.
+        id: line.id,
         itemName: line.name_snapshot,
         quantity: line.quantity,
         lineNote: line.line_note,

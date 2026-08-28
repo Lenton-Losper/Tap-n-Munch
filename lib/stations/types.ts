@@ -76,14 +76,36 @@ export type KitchenLine = {
   lineNote: string | null
   routeTo: RouteTo
   state: KitchenLineState
-  /** The order's placed_at — see the module docblock on why this is order age, not line age. */
+  /**
+   * The order's placed_at. Correct for OUTSTANDING work — how long the kitchen has had the
+   * ticket — and it is what the outstanding side is sorted and aged on.
+   */
   placedAt: string | null
+  /**
+   * When this station tapped Cooked, from order_line_events. Null while still outstanding.
+   *
+   * A cooked card escalates on THIS, not on placedAt. Order age answers "how long ago did they
+   * order", which for a dish already made is the wrong question — a steak that took eleven honest
+   * minutes would open red the moment it was tapped, and every cooked card went red within six
+   * minutes of the round landing. This clock answers "how long has it been sitting on the pass",
+   * which is the thing that actually goes cold.
+   */
+  cookedAt: string | null
   unrouted: boolean
   /** True for a 'both' or 'unrouted' line — the bar also has (or shares) this line. */
   sharedWithOtherStation: boolean
 }
 
 export type BarRoundItem = {
+  /**
+   * The order_line id. ADDED for per-line bumping on the bar.
+   *
+   * The bar screen could only ever bump a WHOLE round, because the item it rendered had no identity
+   * — the round was the smallest thing that could be named to the server. A round is not poured all
+   * at once any more than a table is plated all at once, so this carries the id the whole way
+   * through and the per-round control becomes a shortcut over these rather than the only option.
+   */
+  id: string
   itemName: string
   quantity: number
   lineNote: string | null

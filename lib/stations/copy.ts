@@ -51,16 +51,50 @@ export const STATION_COPY = {
     cookedButton: 'Cooked',
     /** Pass tap: this line is confirmed and can leave the kitchen. Removes it from this board. */
     readyToRunButton: 'Ready to run',
-    tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
+    /**
+     * SIGNED by the owner 2026-08-28. The per-table shortcut, on the card header, beside the table number. One tap for a
+     * table whose whole ticket landed at once — it must not cost five taps — while every line keeps
+     * its own button, because a salad and a steak do not finish together.
+     *
+     * Whoever writes this: it acts on EVERY OUTSTANDING LINE THIS CARD IS SHOWING and nothing else.
+     * It is not "the whole order" and it is not "the whole table" — the bar's half of the same
+     * order is untouched, and so is anything already cooked.
+     */
+    allCookedButton: 'All cooked',
+    /**
+     * SIGNED by the owner 2026-08-28. Same shortcut on the pass side of the board: every line this card is showing as
+     * cooked-and-waiting goes ready to run at once.
+     */
+    allReadyToRunButton: 'All ready',
+    /**
+     * "Table 0" was on the wall. Zero is not a table in any restaurant — it was a default from a
+     * writer with no table to record, and a cook reading it has nothing to act on.
+     *
+     * An absent table now says so in words. NOT a dash: at 3m a dash reads as a rendering fault,
+     * and a cook's next move is to ask whether the screen is broken. "No table" is a fact about
+     * the order, and the card still carries the item so the food can be made while somebody works
+     * out where it goes.
+     */
+    tableLabel: (tableNumber: string) =>
+      tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
   bar: {
     pageTitle: 'Bar',
     inHeading: 'In',
     inEmpty: 'Nothing in.',
     /** The one tap that sends a whole round straight to ready. Removes it from this board — see
-     *  bar-screen.tsx on why there is no persisted Out column any more. */
+     *  bar-screen.tsx on why there is no persisted Out column any more. NOW PER LINE: a round is
+     *  not poured all at once either, and the label is still exactly what the tap does. */
     outButton: 'Out',
-    tableLabel: (tableNumber: string) => `Table ${tableNumber}`,
+    /**
+     * SIGNED by the owner 2026-08-28. The per-round shortcut, matching the kitchen's per-table one: every line this round
+     * card is showing goes out in one tap. The bar's half only — a kitchen line on the same order
+     * is untouched.
+     */
+    allOutButton: 'All out',
+    /** Same absent-table rule as the kitchen — see the note there. */
+    tableLabel: (tableNumber: string) =>
+      tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
   /** Shared by both screens — a route_to = 'unrouted' line must never read as ordinary work. */
   unrouted: {
@@ -73,6 +107,31 @@ export const STATION_COPY = {
      * banner — the banner can be scrolled past; this cannot, because it sits on the item itself.
      */
     itemNote: 'This item has no station set. Check the menu.',
+  },
+  /**
+   * WHAT A CARD SAYS WHEN A MULTI-LINE BUMP ONLY PARTLY LANDED.
+   *
+   * The failure this exists for: one tap on "all cooked" for a table of five, three lines move and
+   * two are refused (another screen got there first, the terminal voided one mid-service). The
+   * three that moved leave the board on the next refetch. Without this, the card silently shrinks
+   * from five rows to two and reads exactly like a table where two dishes are still being made —
+   * so nobody ever finds out that two lines were refused.
+   *
+   * Deliberately NOT a toast. A toast on a wall screen nobody stands in front of is the same as no
+   * message: it appears and expires while the kitchen is looking at the grill. These sit ON the
+   * card, and stay until the lines they name leave it.
+   *
+   * The counts are rendered as their own element next to `heading`, not interpolated into it, so
+   * that scripts/check-no-pending-copy.mjs — a SOURCE scanner — can still see these markers. A
+   * marker it cannot see is worse than no marker.
+   */
+  bumpFailure: {
+    /** SIGNED by the owner 2026-08-28. Card-level: some of what you just tapped did not move. Shown with "N/M" beside it. */
+    heading: 'Some did not send',
+    /** SIGNED by the owner 2026-08-28. Row-level, on each individual line that was refused, so it is findable at 3m. */
+    lineMarker: 'Not sent',
+    /** SIGNED by the owner 2026-08-28. The button's own label while its bump is in flight and it is not tappable. */
+    working: 'Sending',
   },
   age: {
     justNow: 'just now',

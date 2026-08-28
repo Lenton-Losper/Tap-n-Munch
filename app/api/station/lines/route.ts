@@ -126,6 +126,44 @@ export async function GET(req: Request) {
       orderById.set(String(order.id), order)
     }
 
+    /**
+     * WHEN EACH LINE WAS ACTUALLY COOKED, not when its order was placed.
+     *
+     * The board escalated a cooked card on the ORDER age because this payload never carried a
+     * per-line transition time. That is wrong in ordinary service, not only in old fixtures: a
+     * steak that legitimately took eleven minutes to cook goes red the instant it is tapped
+     * Cooked, because its ORDER is eleven minutes old. Every cooked card then turns red within six
+     * minutes of the round landing, the pass sees a wall of identical red, and the colour carries
+     * no information — which is what the owner saw on the wall on 2026-08-28.
+     *
+     * The timestamp existed the whole time and only the contract was missing it:
+     * `order_line_events` records every transition with `occurred_at`.
+     *
+     * Read newest-first, keep the FIRST seen per line. A line can be cooked, sent back to
+     * outstanding and cooked again, and the clock a cook cares about starts at the LATEST cooking.
+     *
+     * A failure here must not blank the board, so it degrades to order age rather than throwing.
+     */
+    const cookedAtByLineId = new Map<string, string>()
+    const { data: cookedEvents, error: cookedEventsError } = await supabase
+      .from('order_line_events')
+      .select('order_line_id, occurred_at')
+      .in('order_line_id', lineRows.map((l) => String(l.id)))
+      .eq('station', station)
+      .eq('to_state', 'cooked')
+      .order('occurred_at', { ascending: false })
+
+    if (cookedEventsError) {
+      console.error('[station/lines] cooked_at unavailable', cookedEventsError.message)
+    } else {
+      for (const event of (cookedEvents ?? []) as Array<Record<string, unknown>>) {
+        const lineId = String(event.order_line_id)
+        if (!cookedAtByLineId.has(lineId)) {
+          cookedAtByLineId.set(lineId, String(event.occurred_at))
+        }
+      }
+    }
+
     // One clock for the whole payload, so two cards cannot report ages that disagree.
     const now = Date.now()
 
@@ -138,7 +176,20 @@ export async function GET(req: Request) {
       return {
         order_id: orderId,
         order_number: order?.order_number ?? null,
-        table_number: order?.table_number ?? null,
+        /**
+         * ZERO IS NOT A TABLE. `?? null` does not catch it, so order #5 rendered as "Table 0" on
+         * the wall — a table that does not exist in any restaurant. Two staging orders carry it,
+         * and it is a default left by a writer that had no table to record rather than a real
+         * number anyone can shout across a kitchen.
+         *
+         * Normalised to null HERE rather than in the component so every consumer of this payload
+         * — board, runner view, any future screen — gets the same answer, and so a screen never
+         * has to know that zero is a sentinel.
+         */
+        table_number:
+          order?.table_number === 0 || order?.table_number == null
+            ? null
+            : order.table_number,
         order_instructions: order?.order_instructions ?? null,
         placed_at: placedAt,
         // Server-computed: a screen that has been on a wall for a week does not have a clock
@@ -162,6 +213,9 @@ export async function GET(req: Request) {
         route_to: line.route_to,
         kitchen_state: line.kitchen_state,
         bar_state: line.bar_state,
+        // Null until this station taps Cooked. The board keys its escalation on this and falls
+        // back to the order's age only when it is absent.
+        cooked_at: cookedAtByLineId.get(String(line.id)) ?? null,
         // Computed here so the runner's view and the screens cannot disagree about a plate.
         is_ready: isLineReady(line),
         // Render these under a visible heading. Do not filter them out.

@@ -6,6 +6,7 @@ import { BarScreen } from '@/components/stations/bar-screen'
 import { StationNotEnabled } from '@/components/stations/station-not-enabled'
 import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialBarRounds } from '@/lib/stations/data-port'
+import { postStationBump } from '@/lib/stations/bump'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
 import {
   registerFeedChannel,
@@ -94,18 +95,21 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
     return <StationNotEnabled />
   }
 
+  /**
+   * The bar now bumps BY LINE ID, not by round id, so one drink can go out on its own and the
+   * per-round control is a shortcut over the same call — see lib/stations/bump.ts.
+   *
+   * POST /api/terminal/bar-rounds/[roundId] still exists and still works; it is simply no longer
+   * what this screen calls. It re-derives the set of lines server-side from the order, which is the
+   * one thing the per-round control must not do: the card was painted from a snapshot, and a line
+   * added since is a line nobody at the bar has seen.
+   */
   return (
     <BarScreen
       rounds={rounds}
       now={nowMs}
       connectionState={connectionState}
-      onBumpOut={(roundId) => {
-        void authFetch(`/api/terminal/bar-rounds/${roundId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'out' }),
-        })
-      }}
+      onBump={(lineIds, action) => postStationBump(authFetch, 'bar', lineIds, action)}
     />
   )
 }
