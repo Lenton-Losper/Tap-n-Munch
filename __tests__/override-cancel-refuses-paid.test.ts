@@ -17,7 +17,7 @@
  */
 
 const queryFinaticOrderPaid = jest.fn()
-const isFinaticMerchantOrderInvalidError = jest.fn(() => false)
+const isFinaticMerchantOrderInvalidError = jest.fn((..._a: unknown[]) => false)
 
 jest.mock('@/lib/payments/query-finatic-order-paid', () => ({
   queryFinaticOrderPaid: (...a: unknown[]) => queryFinaticOrderPaid(...a),
