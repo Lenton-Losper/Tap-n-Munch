@@ -26,7 +26,7 @@
  * at 1920x1080 in a real browser and fails if either surface's content exceeds its own bounds.
  */
 
-export type BoardDensity = 'roomy' | 'standard' | 'compact'
+export type BoardDensity = 'roomy' | 'standard' | 'compact' | 'dense'
 
 export type DensityScale = {
   density: BoardDensity
@@ -92,17 +92,43 @@ const COMPACT: DensityScale = {
 }
 
 /**
+ * A FOURTH TIER, FOUND BY ACTUALLY SCREENSHOTTING THE 40-ROUND FIXTURE. COMPACT's 4-column cap
+ * fixed the wrapping defect, but at real stress (both board-owning agents independently hit this:
+ * ~29-30 multi-item Active rounds in a 68%-height surface) four wide columns run TALLER than the
+ * surface — bar's own screenshot showed the last TO MAKE row clipped behind the Ready divider,
+ * which is exactly "a tier hides a line", the one thing this file has never allowed.
+ *
+ * DENSE trades a little of COMPACT's width back for height: 5 columns instead of 4. It only
+ * engages well past the round count that motivated capping at 4 in the first place (that fix was
+ * measured against an 11-20-round case, not a 29-round one), so the common "busy but not a stress
+ * test" range still gets COMPACT's wider, wrap-proof columns.
+ */
+const DENSE: DensityScale = {
+  density: 'dense',
+  columnsClass: 'columns-4 xl:columns-5',
+  tableClass: 'text-3xl',
+  itemClass: 'text-2xl',
+  noteClass: 'text-sm',
+  buttonClass: 'px-1.5 py-0.5 text-sm',
+  borderClass: 'border',
+  cardPadClass: 'px-1.5 py-1',
+  rowPadClass: 'py-0.5',
+}
+
+/**
  * The thresholds. A zone gets a FRACTION of the wall (Active ~68%, Ready ~32% — but Ready no
  * longer uses this scale at all, see dispatchDensityFor), derived from round heights with the
  * current chrome, then measured in a real browser by the e2e spec rather than left as arithmetic.
  */
 export const ROOMY_MAX_ROUNDS = 5
 export const STANDARD_MAX_ROUNDS = 10
+export const COMPACT_MAX_ROUNDS = 20
 
 export function densityFor(roundCount: number): DensityScale {
   if (roundCount <= ROOMY_MAX_ROUNDS) return ROOMY
   if (roundCount <= STANDARD_MAX_ROUNDS) return STANDARD
-  return COMPACT
+  if (roundCount <= COMPACT_MAX_ROUNDS) return COMPACT
+  return DENSE
 }
 
 /**
