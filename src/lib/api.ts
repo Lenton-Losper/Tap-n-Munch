@@ -2532,3 +2532,126 @@ export async function getTabLines(
     server_time: typeof data.server_time === 'string' ? data.server_time : null,
   };
 }
+
+// ─── Menu availability (mark a dish unavailable from the terminal) ─────────────────────────
+//
+// POST /api/terminal/menu-items/{itemId}/availability
+//
+// ONE ROUTE, BOTH DIRECTIONS. `available: false` puts the item into `hidden` — gone from every
+// customer menu at the venue, QR and terminal alike. `available: true` puts it back. Both require
+// the same single-use PIN authorization token, from POST /api/terminal/authorize with purpose
+// `menu_availability`.
+//
+// THIS ROUTE USES throwIfTerminalSessionExpired (401 ONLY), NOT throwIfUnauthorized, AND THAT IS
+// THE WHOLE POINT — the same reasoning as the waiter-led service routes above.
+//
+// A 403 here means THE PIN DID NOT AUTHORISE IT. It is a business answer about a person, and no
+// amount of terminal-token refreshing can change it. throwIfUnauthorized would collapse it into
+// TerminalAuthError, and the layer above would then do what it does for an expired session:
+// refresh the device JWT and try again — against a problem the new JWT cannot fix. That loop
+// cannot succeed, cannot terminate on its own, and is the failure class that produced #327.
+//
+// terminalFetch's own refresh-and-retry is likewise 401-only, so a 403 makes exactly ONE request.
+// That is asserted, not assumed: see __tests__/menuAvailabilityContract.test.ts.
+
+/** The item as the server reports it AFTER the write. `status` is 'available' or 'hidden'. */
+export interface MenuAvailabilityItem {
+  id: string;
+  name: string;
+  status: string;
+}
+
+/**
+ * The outcome of an availability change.
+ *
+ * A REFUSAL IS NOT AN ERROR AND IS NOT THROWN. The server answers `already_in_that_state` with
+ * HTTP 200, because during service it is a NORMAL outcome: two waiters noticed the same empty
+ * tray, and the second one is being told the first already did it. `item_not_found` (404) and
+ * `authorization_failed` (403) are the same shape for the same reason — each carries a `message`
+ * the screen renders verbatim, and none of them is a condition the device should retry, log as a
+ * crash, or dress up in its own wording.
+ *
+ * What DOES throw: a 401 (TerminalAuthError, the session really is gone) and any response that is
+ * neither a success nor a recognisable refusal (ApiRequestError).
+ */
+export type MenuAvailabilityOutcome =
+  | {ok: true; item: MenuAvailabilityItem; hidden: boolean}
+  | {ok: false; refusal: string; message: string};
+
+/**
+ * Spends the single-use 90-second authorization token on a menu availability change.
+ *
+ * Call this IMMEDIATELY after authorizeAction, exactly as openServiceTable is called. The token is
+ * single-use and expires in 90 seconds; caching it, reusing it, or fetching it ahead of the PIN
+ * all end in a 403 that has already burned the waiter's PIN entry.
+ */
+export async function setMenuItemAvailability(
+  params: {
+    itemId: string;
+    userId: string;
+    authorizationTokenId: string;
+    available: boolean;
+  },
+  token: string,
+): Promise<MenuAvailabilityOutcome> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/menu-items/${encodeURIComponent(
+      params.itemId,
+    )}/availability`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        user_id: params.userId,
+        authorization_token_id: params.authorizationTokenId,
+        available: params.available,
+      }),
+    },
+    token,
+  );
+
+  // 401 ONLY. See the block comment above for why a 403 must not come through here.
+  throwIfTerminalSessionExpired(response);
+
+  // The body is read ONCE, by hand, and every branch below reads the parsed object rather than the
+  // response. parseApiError would consume the stream, and a refusal carries `message` where every
+  // older route carries `error` — so the shared parser would drop the one field that must be shown.
+  let body: Record<string, unknown> | null = null;
+  try {
+    body = (await response.json()) as Record<string, unknown>;
+  } catch {
+    body = null;
+  }
+
+  const message = typeof body?.message === 'string' ? body.message : '';
+
+  // Checked BEFORE response.ok, because a refusal arrives on 200 and on 403/404 alike and must be
+  // handled identically in all three cases.
+  if (body && body.ok === false && typeof body.refusal === 'string') {
+    return {ok: false, refusal: body.refusal, message};
+  }
+
+  if (!response.ok) {
+    const fallback =
+      typeof body?.error === 'string'
+        ? body.error
+        : `Request failed (${response.status})`;
+    throw new ApiRequestError(message || fallback, response.status, {
+      code: typeof body?.code === 'string' ? body.code : undefined,
+    });
+  }
+
+  const item = (body?.item ?? {}) as Record<string, unknown>;
+  return {
+    ok: true,
+    item: {
+      id: typeof item.id === 'string' ? item.id : params.itemId,
+      name: typeof item.name === 'string' ? item.name : '',
+      status: typeof item.status === 'string' ? item.status : '',
+    },
+    // Defaulted FALSE only when the field is absent, and the screen does not rely on it alone —
+    // it reconciles against `item.status` too. Same reasoning as is_ready above: an unreadable
+    // flag must never assert the more destructive of the two states.
+    hidden: body?.hidden === true,
+  };
+}
