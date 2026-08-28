@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { TerminalActivationGate } from '@/components/stations/terminal-activation-gate'
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
 import { StationNotEnabled } from '@/components/stations/station-not-enabled'
+import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialKitchenLines } from '@/lib/stations/data-port'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
 import {
@@ -19,6 +20,7 @@ import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-ses
 
 function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [lines, setLines] = useState<KitchenLine[]>([])
+  const [loading, setLoading] = useState(true)
   const [notEnabled, setNotEnabled] = useState(false)
   const [notPaired, setNotPaired] = useState(false)
   const [pairedTo, setPairedTo] = useState<string | null>(null)
@@ -58,6 +60,7 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
         setNotEnabled(snapshot.notEnabled)
         setNotPaired(snapshot.notPaired)
         setPairedTo(snapshot.pairedTo)
+        setLoading(false)
       })
     }
 
@@ -89,6 +92,9 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
     }
   }, [session.restaurantId, session.terminalId, authFetch])
 
+  if (loading) {
+    return <StationLoading />
+  }
   if (notPaired) {
     return <StationNotEnabled reason="not_paired" pairedTo={pairedTo} />
   }
