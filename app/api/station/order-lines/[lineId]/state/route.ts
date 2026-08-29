@@ -50,6 +50,7 @@ import {
   type LineState,
   type Station,
 } from '@/lib/orders/order-lines'
+import { broadcastLineChanged } from '@/lib/stations/realtime-invalidate'
 
 export const dynamic = 'force-dynamic'
 
@@ -256,6 +257,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ lineId:
         { lineId, station, from: currentState, to: toState, error: eventError },
       )
     }
+
+    /**
+     * Invalidation only -- no line data in the payload, see lib/stations/realtime-invalidate.ts.
+     * Awaited (not `void`-fired) so a broadcast that never lands isn't racing the response the
+     * client uses to decide its own next move, but its own failure handling means this can never
+     * turn a successful state change into a failed response -- same as the audit insert above.
+     */
+    await broadcastLineChanged(supabase, terminal.restaurantId)
 
     return NextResponse.json({
       ok: true,

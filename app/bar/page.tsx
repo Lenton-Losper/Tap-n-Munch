@@ -19,7 +19,9 @@ import {
 import type { BarRound } from '@/lib/stations/types'
 import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-session'
 
-function BarScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
+// Exported (not just used by BarPage below) so a test can mount the data-wired screen directly,
+// with a fake session/authFetch — see KitchenScreenLive's identical note in app/kitchen/page.tsx.
+export function BarScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [rounds, setRounds] = useState<BarRound[]>([])
   const [loading, setLoading] = useState(true)
   const [notEnabled, setNotEnabled] = useState(false)

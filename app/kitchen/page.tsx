@@ -19,7 +19,10 @@ import {
 import type { KitchenLine } from '@/lib/stations/types'
 import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-session'
 
-function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
+// Exported (not just used by KitchenPage below) so a test can mount the data-wired screen
+// directly, with a fake session/authFetch, without also exercising TerminalActivationGate's own
+// activation flow — that flow is a separate concern with its own tests.
+export function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [lines, setLines] = useState<KitchenLine[]>([])
   const [loading, setLoading] = useState(true)
   const [notEnabled, setNotEnabled] = useState(false)
