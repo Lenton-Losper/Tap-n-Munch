@@ -78,13 +78,25 @@
  * MIN_INVALIDATE_INTERVAL_MS bounds the damage at the one place all three trigger paths funnel
  * through: whatever rate broadcasts (real or fake) arrive at, onInvalidate fires at most once per
  * interval, trailing-edge (the LAST call in a burst still lands, so a genuine final state change
- * is never dropped, only coalesced with the noise around it). Worst case under attack, this
- * behaves like a poll at MIN_INVALIDATE_INTERVAL_MS — no worse than the old 15s mitigation, and
- * the legitimate path (one real bump, no attacker) is unaffected since real bumps are not sent
- * faster than a human can tap a button.
+ * is never dropped, only coalesced with the noise around it).
+ *
+ * SET TO 45s -- MATCHING TABLE_POLL_INTERVAL_MS / ServiceFloorScreen's own REFRESH_INTERVAL_MS,
+ * DELIBERATELY, NOT AN ARBITRARY "BIGGER NUMBER". An earlier version of this file set it to 2s
+ * and claimed that was "no worse than" the pre-realtime poll -- wrong, caught in review: under
+ * sustained flooding this fires in continuous steady state at 1/intervalMs, so 2s is a PERMANENT
+ * 0.5 req/s client per terminal, seven and a half times the 45s poll's own 0.022 req/s -- at 100
+ * simultaneously connected terminals that is 50 req/s sustained against
+ * GET /api/terminal/tabs/{tabId}/lines versus 2.2 req/s today, indefinitely, for as long as an
+ * attacker leaves a script running. Aligning the two numbers exactly means the worst case under
+ * attack is IDENTICAL to today's accepted baseline at every terminal count: the realtime path can
+ * only ever reduce load below that baseline (the leading-edge fire, for a real, isolated event),
+ * never be forced above it. A real Out/Cooked/amend/round still reflects instantly whenever this
+ * terminal has been idle 45s or more, which is true almost always in real service; several real
+ * changes landing inside the same 45s window coalesce into one trailing refresh instead of each
+ * getting its own near-instant push, which is the accepted trade for that ceiling.
  *
  * This does not need to be, and deliberately is not, a fix for "can a hostile client send fake
- * broadcasts at all" — that would need the channel to stop being public, which would need the
+ * broadcasts at all" -- that would need the channel to stop being public, which would need the
  * terminal to hold a Supabase-Auth-shaped credential RLS could check, which is the same larger
  * change (a second identity system) the module docblock above already ruled out of scope for
  * closing this specific gap. Debouncing closes the actual harm (hammering the API) without that.
@@ -99,7 +111,7 @@ export function restaurantLinesChannelName(restaurantId: string): string {
 export const LINE_CHANGED_EVENT = 'line_changed';
 
 /** Exported so a test can assert against the real number rather than a duplicated literal. */
-export const MIN_INVALIDATE_INTERVAL_MS = 2_000;
+export const MIN_INVALIDATE_INTERVAL_MS = 45_000;
 
 type ChannelHealth = 'joining' | 'up' | 'down';
 
