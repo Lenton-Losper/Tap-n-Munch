@@ -27,6 +27,7 @@ import {
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
+import * as Copy from '../constants/serviceCopy';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ServiceOpenTable'>;
 
@@ -61,6 +62,7 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
   const [listError, setListError] = useState<string | null>(null);
 
   const [selected, setSelected] = useState<AuthorizedUser | null>(null);
+  const [customerName, setCustomerName] = useState('');
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
@@ -126,6 +128,7 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
           tableId,
           userId: selected.user_id,
           authorizationTokenId: auth.token_id,
+          customerName,
         },
         token,
       );
@@ -226,6 +229,7 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
     backToGrid,
     beginSession,
     busy,
+    customerName,
     locked,
     navigation,
     next,
@@ -273,6 +277,21 @@ export default function ServiceOpenTableScreen({route, navigation}: Props) {
           style={styles.content}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <Text style={styles.pinTitle}>Enter PIN for {selected.name}</Text>
+
+          <Text style={styles.customerNameLabel}>
+            {Copy.OPEN_TABLE_CUSTOMER_NAME_LABEL}
+          </Text>
+          <TextInput
+            style={styles.customerNameInput}
+            value={customerName}
+            onChangeText={setCustomerName}
+            placeholder={Copy.OPEN_TABLE_CUSTOMER_NAME_PLACEHOLDER}
+            placeholderTextColor={Colors.textMuted}
+            maxLength={100}
+            editable={!busy && !locked}
+            returnKeyType="next"
+            onSubmitEditing={() => pinInputRef.current?.focus()}
+          />
 
           <TextInput
             ref={pinInputRef}
@@ -422,6 +441,22 @@ const styles = StyleSheet.create({
     ...Typography.heading,
     color: Colors.textPrimary,
     textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  customerNameLabel: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+  },
+  customerNameInput: {
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+    fontSize: 17,
+    color: Colors.textPrimary,
     marginBottom: Spacing.lg,
   },
   input: {

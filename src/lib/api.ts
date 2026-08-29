@@ -2093,6 +2093,8 @@ export interface FloorTableTab {
   status: string;
   total: number;
   opened_by_user_id?: string | null;
+  /** Who the tab is for, typed in by the waiter at open. Optional -- most tabs have none. */
+  customer_name?: string | null;
 }
 
 export interface FloorTable {
@@ -2182,6 +2184,7 @@ export interface OpenTableResult {
     total: number;
     opened_at?: string;
     opened_by_user_id?: string;
+    customer_name?: string | null;
   };
   owner: FloorTableOwner | null;
 }
@@ -2197,9 +2200,16 @@ export interface OpenTableResult {
  * those two re-render the grid rather than re-prompting for a PIN.
  */
 export async function openServiceTable(
-  params: {tableId: string; userId: string; authorizationTokenId: string},
+  params: {
+    tableId: string;
+    userId: string;
+    authorizationTokenId: string;
+    /** Optional. Trimmed and dropped if empty -- the server treats a missing field the same way. */
+    customerName?: string;
+  },
   token: string,
 ): Promise<OpenTableResult> {
+  const trimmedName = params.customerName?.trim();
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tables/${encodeURIComponent(
       params.tableId,
@@ -2210,6 +2220,7 @@ export async function openServiceTable(
       body: JSON.stringify({
         user_id: params.userId,
         authorization_token_id: params.authorizationTokenId,
+        ...(trimmedName ? {customer_name: trimmedName} : {}),
       }),
     },
     token,

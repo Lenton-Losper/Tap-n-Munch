@@ -38,6 +38,14 @@ import {TableWithTab} from '../types';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'ServiceTable'>;
 
+/**
+ * How often this screen refetches while it is on screen, so a line another device (bar/kitchen)
+ * bumped shows up without the waiter having to leave and come back. Matches the floor grid's own
+ * refresh cadence (ServiceFloorScreen's REFRESH_INTERVAL_MS) rather than inventing a different
+ * number for the same class of staleness.
+ */
+const TABLE_POLL_INTERVAL_MS = 15_000;
+
 function formatMoney(amount: number): string {
   return `NAD ${amount.toFixed(2)}`;
 }
@@ -240,6 +248,19 @@ export default function ServiceTableScreen({route, navigation}: Props) {
     useCallback(() => {
       navigatingToSettle.current = false;
       load();
+
+      /**
+       * Poll while this table is on screen.
+       *
+       * `line.is_ready` is read straight from another device's action (a station tapping Cooked,
+       * or the bar tapping Out) — see LineRow's docblock. Without this, a waiter standing at a
+       * table they already have open would see a chip frozen at whatever it read on arrival until
+       * they backed out and back in, which is exactly the "I tapped Out and the terminal still
+       * says Being made" report this was added for. `pull=false` throughout: a background poll
+       * must not flash the pull-to-refresh spinner every cycle.
+       */
+      const interval = setInterval(() => load(false), TABLE_POLL_INTERVAL_MS);
+      return () => clearInterval(interval);
     }, [load]),
   );
 

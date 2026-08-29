@@ -39,6 +39,14 @@ export const FLOOR_OWNER_UNASSIGNED = 'No waiter';
 export const FLOOR_OFFLINE_BANNER = 'Not connected. This is the last floor that loaded.';
 
 /**
+ * Optional, not required -- a busy service must not be blocked on typing a name. Left blank, the
+ * tab carries no customer_name and the floor grid and table screen fall back to showing the
+ * waiter alone, same as they did before this field existed.
+ */
+export const OPEN_TABLE_CUSTOMER_NAME_LABEL = 'Customer name (optional)';
+export const OPEN_TABLE_CUSTOMER_NAME_PLACEHOLDER = 'e.g. Smith party';
+
+/**
  * The three derived warning flags. See lib/tabLines.ts deriveTableFlag for what each one means and
  * why they rank in this order. These are the highest-value strings in the file: they are what a
  * waiter reads across a room at a glance.

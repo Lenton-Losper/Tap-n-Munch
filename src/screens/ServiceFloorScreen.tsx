@@ -140,9 +140,11 @@ function FloorRow({table, badge, elapsedSinceLoad, onPress}: FloorRowProps) {
         {isOpen ? (
           <>
             {/* A null owner on an open table is legitimate — a QR-opened tab, or an assignment
-                that failed while the tab succeeded. Show it as open with no name; never block. */}
+                that failed while the tab succeeded. Show it as open with no name; never block.
+                Customer name is optional and typed at open, so it is just as often absent. */}
             <Text style={styles.metaText} numberOfLines={1}>
               {table.owner?.name ?? Copy.FLOOR_OWNER_UNASSIGNED}
+              {table.tab?.customer_name ? ` · ${table.tab.customer_name}` : ''}
               {age ? ` · ${age}` : ''}
             </Text>
             <Text style={styles.tabTotal}>{formatTotal(table.tab?.total)}</Text>

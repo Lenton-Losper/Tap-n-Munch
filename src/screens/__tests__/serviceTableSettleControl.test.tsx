@@ -139,6 +139,19 @@ function buttonWithText(root: ReactTestInstance, label: string) {
   return matches[matches.length - 1];
 }
 
+/**
+ * Every tree this file creates, so it can be unmounted after each test.
+ *
+ * ServiceTableScreen now polls (TABLE_POLL_INTERVAL_MS) so a waiter sees a bump made from another
+ * device without leaving and returning to the table -- see ServiceTableScreen's own comment on
+ * why. That interval is only ever cleared by the useFocusEffect cleanup React runs on unmount,
+ * and react-test-renderer does not run it unless something calls tree.unmount() -- an unmounted
+ * tree here leaves a live 15s interval running past the test that created it, which then fires
+ * into a torn-down Jest environment and fails the run with a ReferenceError that has nothing to
+ * do with whatever the suite was actually testing.
+ */
+const treesToUnmount: renderer.ReactTestRenderer[] = [];
+
 async function renderScreen() {
   const navigation = {navigate: jest.fn(), goBack: jest.fn()};
   let tree!: renderer.ReactTestRenderer;
@@ -163,12 +176,21 @@ async function renderScreen() {
       />,
     );
   });
+  treesToUnmount.push(tree);
   return {tree, navigation};
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetTabLines.mockImplementation(async () => linesPayload());
+});
+
+afterEach(() => {
+  while (treesToUnmount.length > 0) {
+    act(() => {
+      treesToUnmount.pop()!.unmount();
+    });
+  }
 });
 
 describe('the settle control on the waiter table view', () => {
