@@ -59,6 +59,64 @@ export async function POST(request: Request) {
     const restaurantId = String(invite.restaurant_id)
     const role = String(invite.role).toLowerCase()
 
+    /**
+     * THE EMAIL MAY ALREADY HAVE AN ACCOUNT. Found 2026-08-29: a manager invite for
+     * finance@taste-hospitalitygroup.com hit `duplicate key value violates unique constraint
+     * "users_email_key"` on every retry, because that email already had a `users` row from an
+     * unrelated earlier signup with zero restaurant memberships. The unconditional
+     * auth.admin.createUser() below has no path for that -- it always tries to mint a brand new
+     * account, so a real pre-existing user can never accept an invite at all, silently forever.
+     *
+     * RULED 2026-08-29: link the existing account to the new restaurant instead. The submitted
+     * password and full name are NOT applied in this branch -- they keep the credentials and
+     * name they already have. `linked_existing: true` in the response is what tells the client
+     * not to attempt signIn() with the just-typed password, which would fail against an account
+     * whose real password is something else entirely.
+     */
+    const { data: existingUser, error: existingUserError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle()
+
+    if (existingUserError) throw existingUserError
+
+    if (existingUser?.id) {
+      const existingUserId = String(existingUser.id)
+
+      const { data: existingMembership, error: membershipReadError } = await supabase
+        .from('restaurant_users')
+        .select('id')
+        .eq('restaurant_id', restaurantId)
+        .eq('user_id', existingUserId)
+        .maybeSingle()
+
+      if (membershipReadError) throw membershipReadError
+
+      // Not already a member of THIS restaurant: link them. Already a member (a re-sent or
+      // double-clicked invite): nothing to insert, still mark the invite accepted below --
+      // the same "double-tap is not an error" posture the station bump routes use.
+      if (!existingMembership) {
+        const { error: membershipError } = await supabase.from('restaurant_users').insert({
+          restaurant_id: restaurantId,
+          user_id: existingUserId,
+          role,
+        })
+
+        if (membershipError) throw membershipError
+      }
+
+      const now = new Date().toISOString()
+      const { error: inviteUpdateError } = await supabase
+        .from('staff_invites')
+        .update({ accepted: true, accepted_at: now })
+        .eq('id', invite.id)
+
+      if (inviteUpdateError) throw inviteUpdateError
+
+      return NextResponse.json({ success: true, email, linked_existing: true })
+    }
+
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
@@ -99,7 +157,7 @@ export async function POST(request: Request) {
 
     if (inviteUpdateError) throw inviteUpdateError
 
-    return NextResponse.json({ success: true, email })
+    return NextResponse.json({ success: true, email, linked_existing: false })
   } catch (error: unknown) {
     if (authUserId) {
       await supabase.auth.admin.deleteUser(authUserId).catch(() => {})

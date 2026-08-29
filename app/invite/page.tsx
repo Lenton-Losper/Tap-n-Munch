@@ -42,6 +42,11 @@ function InviteAcceptForm() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // True once the server reports it linked an EXISTING account (users_email_key already taken)
+  // to this restaurant, rather than creating a new one -- see the route's own note. The password
+  // just typed was never applied in that case, so signing in with it would fail; this screen
+  // must show a "you already have an account" message and send them to /signin instead.
+  const [linkedExisting, setLinkedExisting] = useState(false)
 
   useEffect(() => {
     if (tokenMissing) return
@@ -105,6 +110,13 @@ function InviteAcceptForm() {
         throw new Error(payload?.error || 'Failed to accept invite')
       }
 
+      if (payload.linked_existing) {
+        // The submitted password was never applied server-side -- their existing account keeps
+        // its existing credentials. Signing in with what was just typed would fail here.
+        setLinkedExisting(true)
+        return
+      }
+
       await signIn(payload.email || invite?.email || '', password)
       router.replace('/dashboard')
     } catch (submitError: unknown) {
@@ -124,6 +136,24 @@ function InviteAcceptForm() {
         <section className="w-full max-w-lg rounded-2xl border border-[#E9E9E7] bg-white p-8 shadow-[0_10px_35px_rgba(55,53,47,0.05)] sm:p-10">
           {showLoading ? (
             <p className="text-sm text-[#6B675F]">Validating your invitation...</p>
+          ) : linkedExisting && invite ? (
+            <>
+              <h1 className="font-serif text-3xl font-semibold">You&apos;re in</h1>
+              <p className="mt-4 text-sm text-[#6B675F]">
+                {invite.email} already has a FlashTap account, so we added it to{' '}
+                <strong className="text-[#37352F]">{invite.restaurantName}</strong> as a{' '}
+                <strong className="text-[#37352F]">{formatRole(invite.role)}</strong> rather than
+                creating a new one. Sign in with your existing password.
+              </p>
+              <div className="mt-6">
+                <Link
+                  href="/signin"
+                  className="text-sm font-medium text-[#37352F] underline decoration-[#BFBAB0] underline-offset-4 hover:text-[#6B675F]"
+                >
+                  Go to sign in
+                </Link>
+              </div>
+            </>
           ) : showInvalid || !invite ? (
             <>
               <h1 className="font-serif text-3xl font-semibold">Invitation unavailable</h1>
