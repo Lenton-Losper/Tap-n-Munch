@@ -37,6 +37,10 @@ jest.mock('../../lib/api', () => {
 
 jest.mock('../../lib/storage', () => ({
   getTerminalToken: jest.fn(async () => 'terminal-token'),
+  // null -> subscribeLineChangeInvalidation's own no-op path (see its docblock): this suite is
+  // about the settle control, not realtime, and a null restaurantId keeps it from ever touching
+  // the real supabase client.
+  getRestaurantId: jest.fn(async () => null),
 }));
 
 jest.mock('@react-navigation/native', () => ({

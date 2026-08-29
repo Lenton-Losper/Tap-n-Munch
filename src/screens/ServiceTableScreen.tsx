@@ -31,7 +31,8 @@ import {
   deriveTabSettlementState,
   TabSettlementState,
 } from '../lib/tabSettlement';
-import {getTerminalToken} from '../lib/storage';
+import {getTerminalToken, getRestaurantId} from '../lib/storage';
+import {subscribeLineChangeInvalidation} from '../lib/realtimeInvalidation';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TableWithTab} from '../types';
@@ -39,12 +40,16 @@ import {TableWithTab} from '../types';
 type Props = NativeStackScreenProps<MainStackParamList, 'ServiceTable'>;
 
 /**
- * How often this screen refetches while it is on screen, so a line another device (bar/kitchen)
- * bumped shows up without the waiter having to leave and come back. Matches the floor grid's own
- * refresh cadence (ServiceFloorScreen's REFRESH_INTERVAL_MS) rather than inventing a different
- * number for the same class of staleness.
+ * The SAFETY NET, not the transport. Real synchronization is
+ * subscribeLineChangeInvalidation (src/lib/realtimeInvalidation.ts) — a bar/kitchen bump reaches
+ * this screen through that within about a second, the same way the web boards' own Realtime
+ * channel does. This poll exists only for the case Realtime cannot cover: a broadcast that never
+ * lands (dropped, or sent while this screen's channel was mid-reconnect and not yet counted as
+ * `everUp`). 45s, not the 15s this used to be — 15s was the mitigation before the transport was
+ * fixed; a slow reconciliation poll on top of a working push channel does not need to be fast,
+ * see the architecture note above `load`'s useFocusEffect below.
  */
-const TABLE_POLL_INTERVAL_MS = 15_000;
+const TABLE_POLL_INTERVAL_MS = 45_000;
 
 function formatMoney(amount: number): string {
   return `NAD ${amount.toFixed(2)}`;
@@ -244,23 +249,43 @@ export default function ServiceTableScreen({route, navigation}: Props) {
 
   // Refetch on every focus, so returning from a round shows the lines it just created —
   // and, now, so returning from taking payment shows the money that was taken.
+  //
+  // ============================================================================================
+  // WHY THIS IS Realtime FIRST, POLL SECOND — NOT THE 15s POLL THIS SCREEN SHIPPED WITH FIRST
+  // ============================================================================================
+  //
+  // `line.is_ready` is read straight from another device's action (a station tapping Cooked, or
+  // the bar tapping Out) — see LineRow's docblock. The first fix for "I tapped Out and the
+  // terminal still says Being made" was a 15s poll, which worked but was a mitigation: staff could
+  // still be looking at a stale chip for up to 15 seconds, and it re-asked the server every 15
+  // seconds whether anyone was looking or not.
+  //
+  // subscribeLineChangeInvalidation (src/lib/realtimeInvalidation.ts) is the actual fix — a
+  // restaurant-scoped Realtime Broadcast channel the server sends on immediately after any real
+  // kitchen_state/bar_state write, so a bump reaches this screen in about the time a websocket
+  // frame takes, not up to a whole poll interval later. TABLE_POLL_INTERVAL_MS (now 45s) is what
+  // is left for the case Realtime cannot cover — a dropped broadcast, a channel mid-reconnect —
+  // and 45s is fine for that because it is a safety net, not the transport.
   useFocusEffect(
     useCallback(() => {
       navigatingToSettle.current = false;
       load();
 
-      /**
-       * Poll while this table is on screen.
-       *
-       * `line.is_ready` is read straight from another device's action (a station tapping Cooked,
-       * or the bar tapping Out) — see LineRow's docblock. Without this, a waiter standing at a
-       * table they already have open would see a chip frozen at whatever it read on arrival until
-       * they backed out and back in, which is exactly the "I tapped Out and the terminal still
-       * says Being made" report this was added for. `pull=false` throughout: a background poll
-       * must not flash the pull-to-refresh spinner every cycle.
-       */
+      let cancelled = false;
+      let unsubscribeRealtime: (() => void) | null = null;
+
+      void getRestaurantId().then((restaurantId) => {
+        if (cancelled) return;
+        // `load(false)`: a background invalidation must not flash the pull-to-refresh spinner.
+        unsubscribeRealtime = subscribeLineChangeInvalidation(restaurantId, () => load(false));
+      });
+
       const interval = setInterval(() => load(false), TABLE_POLL_INTERVAL_MS);
-      return () => clearInterval(interval);
+      return () => {
+        cancelled = true;
+        unsubscribeRealtime?.();
+        clearInterval(interval);
+      };
     }, [load]),
   );
 
