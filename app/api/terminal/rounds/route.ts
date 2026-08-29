@@ -72,6 +72,7 @@ import {
   writeOrderLines,
   type LineRouteTo,
 } from '@/lib/orders/order-lines'
+import { broadcastLineChanged } from '@/lib/stations/realtime-invalidate'
 
 export const dynamic = 'force-dynamic'
 
@@ -328,6 +329,14 @@ export async function POST(request: Request) {
         { status: 502 },
       )
     }
+
+    /**
+     * A new round is new outstanding work -- exactly the kind of "what this tab looks like just
+     * changed" event a station board or another terminal with this same table open needs to know
+     * about, same reason a bump does. The replay branch above (existing lines, nothing written)
+     * deliberately does not reach here.
+     */
+    await broadcastLineChanged(supabase, terminal.restaurantId)
 
     return NextResponse.json({
       success: true,

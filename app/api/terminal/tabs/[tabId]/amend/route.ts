@@ -17,6 +17,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { nextOrderNumber, isOrderNumberCollision } from '@/lib/orders/order-number'
+import { broadcastLineChanged } from '@/lib/stations/realtime-invalidate'
 
 export const dynamic = 'force-dynamic'
 
@@ -121,6 +122,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       order_number: number | null
       applied: Array<{ line_id: string; action: 'voided' | 'replaced'; new_line_id?: string }>
       refused: Array<{ line_id: string; reason: string }>
+    }
+
+    /**
+     * A voided/replaced line changes what every station board and every terminal with this tab
+     * open is showing -- an amend can drop a line from someone's outstanding count or ready
+     * count exactly the way a bump can. Only when something actually moved: a fully-refused
+     * amendment (`applied` empty) changed nothing, and an invalidation for it would just cost
+     * every listening screen a no-op refetch.
+     */
+    if (result.applied.length > 0) {
+      await broadcastLineChanged(supabase, terminal.restaurantId)
     }
 
     return NextResponse.json({
