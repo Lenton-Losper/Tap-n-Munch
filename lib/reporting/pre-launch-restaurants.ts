@@ -36,13 +36,10 @@ export type PreLaunchRestaurant = {
 }
 
 export const PRE_LAUNCH_RESTAURANTS: readonly PreLaunchRestaurant[] = [
-  {
-    restaurantId: '01bf27f1-a958-4322-bb3e-cc5240987808',
-    name: 'Riviera',
-    reason:
-      'Has not opened; all 15 orders are owner testing. Remove this entry on the day Riviera takes ' +
-      'its first real customer order. Recorded 2026-08-21.',
-  },
+  // Riviera's entry was removed 2026-08-29: the venue is opening today, per the owner. All of its
+  // pre-launch test orders (everything before 2026-08-29) were separately wiped by
+  // scripts/wipe-riviera-pre-launch-orders-production.ts, so what's left to report from here is
+  // real trade, not owner testing -- exactly the exit condition this list documents.
 ]
 
 /** True when a restaurant's reported figures are test data rather than trade. */

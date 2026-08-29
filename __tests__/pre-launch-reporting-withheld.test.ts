@@ -8,20 +8,23 @@ import {
 } from '@/lib/reporting/pre-launch-restaurants'
 
 /**
- * Riviera's figures are WITHHELD from reporting until it opens. Ruled 2026-08-21.
+ * Riviera's figures were WITHHELD from reporting until it opened. Ruled 2026-08-21; the entry was
+ * removed 2026-08-29 when the venue opened (see lib/reporting/pre-launch-restaurants.ts).
  *
  * The alternative was a script that cancels completed, paid orders. It was rejected on the grounds
  * that a capability to un-book real sales is worth more as a thing that does not exist — so the
  * load-bearing property of this whole change is that **it alters no financial record**. These tests
- * exist to keep it that way, and to stop the withheld state degrading into a rendered zero.
+ * exist to keep it that way, and to stop the withheld state degrading into a rendered zero. The list
+ * is empty now that Riviera has opened, but the mechanism stays covered for whichever venue needs it
+ * next.
  */
 const read = (rel: string) => readFileSync(join(process.cwd(), rel), 'utf8')
 
 describe('pre-launch reporting', () => {
   const RIVIERA = '01bf27f1-a958-4322-bb3e-cc5240987808'
 
-  it('matches Riviera and nothing else', () => {
-    expect(isPreLaunchRestaurant(RIVIERA)).toBe(true)
+  it('withholds nobody now that the list is empty, including the venues that were never on it', () => {
+    expect(isPreLaunchRestaurant(RIVIERA)).toBe(false) // opened 2026-08-29
     // The three trading venues must never be suppressed.
     expect(isPreLaunchRestaurant('b161c758-582d-4dfa-839a-9fa35c492a49')).toBe(false) // FNB ChowNow
     expect(isPreLaunchRestaurant('131c39d1-b816-407d-8c5f-e628fc38967e')).toBe(false) // Mingle
@@ -29,8 +32,8 @@ describe('pre-launch reporting', () => {
   })
 
   it('is case- and whitespace-insensitive, and safe on null', () => {
-    expect(isPreLaunchRestaurant(RIVIERA.toUpperCase())).toBe(true)
-    expect(isPreLaunchRestaurant(`  ${RIVIERA}  `)).toBe(true)
+    expect(isPreLaunchRestaurant(RIVIERA.toUpperCase())).toBe(false)
+    expect(isPreLaunchRestaurant(`  ${RIVIERA}  `)).toBe(false)
     expect(isPreLaunchRestaurant(null)).toBe(false)
     expect(isPreLaunchRestaurant(undefined)).toBe(false)
     expect(isPreLaunchRestaurant('')).toBe(false)
@@ -43,7 +46,8 @@ describe('pre-launch reporting', () => {
       expect(entry.reason.trim().length).toBeGreaterThan(30)
       expect(entry.reason.toLowerCase()).toMatch(/remove this entry/)
     }
-    expect(preLaunchRestaurant(RIVIERA)?.name).toBe('Riviera')
+    // Riviera opened 2026-08-29 and its entry was removed -- no reason to look up any more.
+    expect(preLaunchRestaurant(RIVIERA)).toBeNull()
   })
 
   it('the API WITHHOLDS the figures rather than sending zero', () => {
