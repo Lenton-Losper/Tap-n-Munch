@@ -358,7 +358,7 @@ async function respondWithFloorGrid(
 
   const { data: tabs, error: tabsError } = await supabase
     .from('tabs')
-    .select('id, table_id, status, total, created_at, opened_by_user_id')
+    .select('id, table_id, status, total, created_at, opened_by_user_id, customer_name')
     .eq('restaurant_id', restaurantId)
     .in('status', ['open', 'ready_to_pay'])
 
@@ -413,6 +413,7 @@ async function respondWithFloorGrid(
             status: tab.status ?? null,
             total: tab.total ?? 0,
             opened_by_user_id: tab.opened_by_user_id ?? null,
+            customer_name: tab.customer_name ?? null,
           }
         : null,
       // Reported for diagnosis only. See the header: it is not what `state` is computed from.

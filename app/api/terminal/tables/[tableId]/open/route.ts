@@ -93,9 +93,14 @@ export async function POST(
     const body = (await req.json().catch(() => ({}))) as {
       user_id?: unknown
       authorization_token_id?: unknown
+      customer_name?: unknown
     }
     const userId = String(body.user_id ?? '').trim()
     const tokenId = String(body.authorization_token_id ?? '').trim()
+    // Optional -- a waiter can open a table without naming who it is for. Capped well above any
+    // real name so a stray paste cannot blow out the floor grid's row height.
+    const customerNameRaw = typeof body.customer_name === 'string' ? body.customer_name.trim() : ''
+    const customerName = customerNameRaw.slice(0, 100) || null
 
     if (!userId || !isUuid(userId)) {
       return NextResponse.json({ error: 'user_id must be a valid UUID' }, { status: 400 })
@@ -148,7 +153,7 @@ export async function POST(
     // An existing live tab means "add a round", not "start again". See the header.
     const { data: existingTab, error: existingTabError } = await supabase
       .from('tabs')
-      .select('id, status, total, created_at, opened_by_user_id')
+      .select('id, status, total, created_at, opened_by_user_id, customer_name')
       .eq('restaurant_id', terminal.restaurantId)
       .eq('table_id', table.id)
       .in('status', ['open', 'ready_to_pay'])
@@ -203,6 +208,25 @@ export async function POST(
         }
       }
 
+      // Same fill-only-if-empty rule as opened_by_user_id, but this one is not a tip anchor --
+      // just avoids a waiter's later "adopt" silently overwriting a name someone already typed.
+      let adoptedCustomerName = existingTab.customer_name ?? null
+      if (!adoptedCustomerName && customerName) {
+        const { data: namedTab, error: nameError } = await supabase
+          .from('tabs')
+          .update({ customer_name: customerName })
+          .eq('id', existingTab.id)
+          .is('customer_name', null)
+          .select('customer_name')
+          .maybeSingle()
+
+        if (nameError) {
+          console.error('[terminal/tables/open] could not set customer_name on adopt', nameError)
+        } else if (namedTab?.customer_name) {
+          adoptedCustomerName = String(namedTab.customer_name)
+        }
+      }
+
       const owner =
         (await loadTableOwners(supabase, terminal.restaurantId, [table.id])).get(table.id) ?? null
 
@@ -217,6 +241,7 @@ export async function POST(
           total: existingTab.total,
           opened_at: existingTab.created_at,
           opened_by_user_id: adoptedOwnerId,
+          customer_name: adoptedCustomerName,
         },
         owner,
       })
@@ -233,8 +258,9 @@ export async function POST(
         total: 0,
         // ADR-005 §6: snapshotted at open, never updated. The tip anchor.
         opened_by_user_id: userId,
+        customer_name: customerName,
       })
-      .select('id, status, total, created_at, opened_by_user_id')
+      .select('id, status, total, created_at, opened_by_user_id, customer_name')
       .single()
 
     if (tabError || !tab?.id) throw tabError ?? new Error('Failed to create tab')
@@ -267,6 +293,7 @@ export async function POST(
         total: tab.total,
         opened_at: tab.created_at,
         opened_by_user_id: tab.opened_by_user_id ?? null,
+        customer_name: tab.customer_name ?? null,
       },
       owner,
     })
