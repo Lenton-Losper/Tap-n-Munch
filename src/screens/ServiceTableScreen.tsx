@@ -31,8 +31,8 @@ import {
   deriveTabSettlementState,
   TabSettlementState,
 } from '../lib/tabSettlement';
-import {getTerminalToken, getRestaurantId} from '../lib/storage';
-import {subscribeLineChangeInvalidation} from '../lib/realtimeInvalidation';
+import {getTerminalToken} from '../lib/storage';
+import {subscribeLineChangeInvalidation, resolveRestaurantId} from '../lib/realtimeInvalidation';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import {TableWithTab} from '../types';
@@ -274,7 +274,11 @@ export default function ServiceTableScreen({route, navigation}: Props) {
       let cancelled = false;
       let unsubscribeRealtime: (() => void) | null = null;
 
-      void getRestaurantId().then((restaurantId) => {
+      // resolveRestaurantId, not getRestaurantId directly: recovers from GET /api/terminal/me
+      // when storage never got it written -- see its own docblock. Re-run on every focus, same
+      // as the rest of this effect, so a device that failed to resolve it once is not stuck that
+      // way permanently.
+      void resolveRestaurantId().then((restaurantId) => {
         if (cancelled) return;
         // `load(false)`: a background invalidation must not flash the pull-to-refresh spinner.
         unsubscribeRealtime = subscribeLineChangeInvalidation(restaurantId, () => load(false));

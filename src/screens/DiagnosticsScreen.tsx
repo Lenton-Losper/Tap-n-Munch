@@ -33,6 +33,11 @@ import {
   getTerminalId,
   getTerminalToken,
 } from '../lib/storage';
+import {
+  getRealtimeDiagnostics,
+  subscribeRealtimeDiagnostics,
+  RealtimeDiagnostics,
+} from '../lib/realtimeInvalidation';
 import {buildSdk6TestPrintLines, buildTestPrintPayload} from '../lib/testPrintPayload';
 import {resolutionHint, resolutionVerdict} from '../lib/printerResolutionCopy';
 import {
@@ -102,6 +107,14 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
   const [terminalId, setTerminalId] = useState<string | null>(null);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [tokenPresent, setTokenPresent] = useState(false);
+  // Temporary diagnostic (production incident, 2026-08-29): "Out takes far too long to
+  // propagate" traced to Realtime silently never activating on some devices, with no symptom
+  // visible anywhere -- the poll kept working normally regardless. This makes that state visible
+  // without a debugger. Reads the live store (realtimeInvalidation.ts), not a value fetched once
+  // -- see subscribeRealtimeDiagnostics.
+  const [realtimeState, setRealtimeState] = useState<RealtimeDiagnostics>(
+    getRealtimeDiagnostics(),
+  );
 
   const [receiptPrintingOn, setReceiptPrintingOn] = useState(false);
   const [printerLabel, setPrinterLabel] = useState<string>('Not configured');
@@ -211,6 +224,12 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
     } else {
       setPrinterLabel('Not configured');
     }
+  }, []);
+
+  // Live, not fetched once: whichever station screen currently holds a subscription (only one
+  // is ever focused at a time) drives this store, and it can change while Diagnostics is open.
+  useEffect(() => {
+    return subscribeRealtimeDiagnostics(() => setRealtimeState(getRealtimeDiagnostics()));
   }, []);
 
   useEffect(() => {
@@ -1050,6 +1069,27 @@ export default function DiagnosticsScreen({onClose}: {onClose: () => void}) {
       <Text style={styles.label}>Restaurant ID (storage)</Text>
       <Text style={styles.value}>
         [{restaurantId === null ? 'NULL' : restaurantId}]
+      </Text>
+
+      {/* Temporary diagnostic — see the note above realtimeState's own declaration. Deliberately
+          shows the RAW Supabase status string alongside the coarse category: the category alone
+          can hide exactly the distinction worth seeing while diagnosing a device in the field. */}
+      <Text style={styles.sectionTitle}>Realtime (temporary diagnostic)</Text>
+
+      <Text style={styles.label}>Status</Text>
+      <Text style={styles.value} selectable>
+        {realtimeState.status}
+        {realtimeState.lastRawStatus ? ` (${realtimeState.lastRawStatus})` : ''}
+      </Text>
+
+      <Text style={styles.label}>Channel restaurantId (resolved)</Text>
+      <Text style={styles.value} selectable>
+        [{realtimeState.restaurantId === null ? 'NULL' : realtimeState.restaurantId}]
+      </Text>
+
+      <Text style={styles.label}>Last invalidation received</Text>
+      <Text style={styles.value} selectable>
+        {realtimeState.lastInvalidationAt ?? 'none this session'}
       </Text>
 
       <Text style={styles.sectionTitle}>Runtime config</Text>

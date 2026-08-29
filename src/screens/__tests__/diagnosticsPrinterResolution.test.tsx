@@ -27,6 +27,21 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+// DiagnosticsScreen now transitively imports lib/supabase.ts (via realtimeInvalidation.ts, for
+// the temporary Realtime diagnostic section), which calls createClient(SUPABASE_URL, ...) at
+// MODULE LOAD TIME -- this test's env has no real Supabase URL, so that throws before the screen
+// ever renders. Mocked here, not by supplying a fake URL, since this suite has nothing to do with
+// Realtime and the mock is the more direct statement of that.
+jest.mock('../../lib/realtimeInvalidation', () => ({
+  getRealtimeDiagnostics: () => ({
+    status: 'idle',
+    lastRawStatus: null,
+    restaurantId: null,
+    lastInvalidationAt: null,
+  }),
+  subscribeRealtimeDiagnostics: () => () => {},
+}));
+
 // Budget covers a MEASURED cold react-native module-graph transform (24-38s here depending on
 // machine load), not slow logic — mounting a screen pays that fixed cost on the first render.
 // Do not tighten it: at 30000 this suite passed or failed purely on how busy the box was.

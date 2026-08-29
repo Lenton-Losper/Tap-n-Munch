@@ -27,8 +27,8 @@ import {
   TableBadge,
   TableFlag,
 } from '../lib/tabLines';
-import {getTerminalToken, getRestaurantId} from '../lib/storage';
-import {subscribeLineChangeInvalidation} from '../lib/realtimeInvalidation';
+import {getTerminalToken} from '../lib/storage';
+import {subscribeLineChangeInvalidation, resolveRestaurantId} from '../lib/realtimeInvalidation';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -367,7 +367,9 @@ export default function ServiceFloorScreen() {
 
       let cancelled = false;
       let unsubscribeRealtime: (() => void) | null = null;
-      void getRestaurantId().then(restaurantId => {
+      // resolveRestaurantId, not getRestaurantId directly -- see ServiceTableScreen's identical
+      // note and realtimeInvalidation.ts's own docblock on why.
+      void resolveRestaurantId().then(restaurantId => {
         if (cancelled) return;
         // 'poll' mode, not 'pull': an invalidation arriving in the background must not flash the
         // pull-to-refresh spinner, same rule ServiceTableScreen's own wiring follows.

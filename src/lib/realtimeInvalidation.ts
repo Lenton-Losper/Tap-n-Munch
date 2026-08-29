@@ -103,6 +103,8 @@
  */
 import {AppState, type AppStateStatus} from 'react-native';
 import {supabase} from './supabase';
+import {getRestaurantId, saveRestaurantId, getTerminalToken} from './storage';
+import {getTerminalInfo} from './api';
 
 export function restaurantLinesChannelName(restaurantId: string): string {
   return `restaurant-lines:${restaurantId}`;
@@ -121,6 +123,108 @@ function classifyStatus(status: string): ChannelHealth {
   if (status === 'SUBSCRIBED') return 'up';
   if (DOWN_STATUSES.includes(status)) return 'down';
   return 'joining';
+}
+
+/**
+ * ============================================================================================
+ * RESOLVING restaurantId — NOT JUST READING IT
+ * ============================================================================================
+ *
+ * Traced during the production incident this recovery exists for: getRestaurantId() reads a
+ * value written exactly once, inside activateTerminal(), at pairing time. If that write was ever
+ * missed on a given device -- an interrupted activation, storage cleared by the OS, a device that
+ * predates this being stored at all -- subscribeLineChangeInvalidation's own null check makes
+ * that PERMANENT and SILENT: no restaurantId, no channel, no error, ever, on that device, while
+ * TABLE_POLL_INTERVAL_MS / REFRESH_INTERVAL_MS's plain poll keeps working normally (it does not
+ * need restaurantId), so nothing about the app looks broken. That is indistinguishable, from the
+ * outside, from "realtime is slow" -- it looks identical to "realtime doesn't exist."
+ *
+ * resolveRestaurantId() is what every caller should use instead of getRestaurantId() directly for
+ * this purpose: try storage first (free, no network), and if that comes back empty, recover it
+ * from GET /api/terminal/me (getTerminalInfo, src/lib/api.ts) -- the terminal already calls this
+ * route on its own regular cadence, so `restaurant_id` in its response is exactly the "authoritative
+ * terminal/session/activation API response" the incident review asked this be recovered from, not
+ * a new endpoint invented for the purpose. A successful recovery is written back via
+ * saveRestaurantId() so the next call (next screen focus, next app launch) reads it from storage
+ * again without needing the network round trip -- self-healing, not a one-time patch.
+ *
+ * NOT cached in memory beyond that: every call re-checks storage first, so this can never get
+ * stuck returning a stale null the way the old direct getRestaurantId() call effectively could.
+ * A token-less device (never activated at all) still correctly resolves to null -- there is
+ * nothing to recover without a terminal to ask.
+ */
+export async function resolveRestaurantId(): Promise<string | null> {
+  const stored = await getRestaurantId();
+  if (stored) return stored;
+
+  const token = await getTerminalToken();
+  if (!token) return null;
+
+  try {
+    const info = await getTerminalInfo(token);
+    const recovered = info.restaurant_id ?? info.restaurantId ?? null;
+    if (recovered) {
+      await saveRestaurantId(recovered);
+    }
+    return recovered;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ============================================================================================
+ * DIAGNOSTICS — TEMPORARY, FOR VERIFYING A PHYSICAL DEVICE IS ACTUALLY SUBSCRIBED IN PRODUCTION
+ * ============================================================================================
+ *
+ * The production incident this exists for had no way to tell, from the device, whether Realtime
+ * was connected at all -- everything server-side measured healthy, and the only evidence was
+ * indirect (a poll cadence in server logs). This is that visibility, surfaced in
+ * DiagnosticsScreen. `status` is the coarse read; `lastRawStatus` is the literal string Supabase
+ * reported (SUBSCRIBED / CHANNEL_ERROR / TIMED_OUT / CLOSED / anything else), kept alongside
+ * because the coarse categories can hide exactly the distinction worth seeing while diagnosing.
+ * `restaurantId` here is never a secret -- a UUID identifying the venue, already visible in that
+ * venue's own public menu URL -- so surfacing it is not a credential leak.
+ */
+export type RealtimeDiagnosticStatus = 'idle' | 'joining' | 'subscribed' | 'reconnecting';
+
+export type RealtimeDiagnostics = {
+  status: RealtimeDiagnosticStatus;
+  lastRawStatus: string | null;
+  restaurantId: string | null;
+  /** ISO timestamp of the last line_changed broadcast actually received this session, or null. */
+  lastInvalidationAt: string | null;
+};
+
+let diagnostics: RealtimeDiagnostics = {
+  status: 'idle',
+  lastRawStatus: null,
+  restaurantId: null,
+  lastInvalidationAt: null,
+};
+const diagnosticsListeners = new Set<() => void>();
+
+function setDiagnostics(patch: Partial<RealtimeDiagnostics>) {
+  diagnostics = {...diagnostics, ...patch};
+  diagnosticsListeners.forEach(listener => listener());
+}
+
+export function getRealtimeDiagnostics(): RealtimeDiagnostics {
+  return diagnostics;
+}
+
+/** Subscribe to diagnostics changes. Returns a teardown. */
+export function subscribeRealtimeDiagnostics(listener: () => void): () => void {
+  diagnosticsListeners.add(listener);
+  return () => {
+    diagnosticsListeners.delete(listener);
+  };
+}
+
+/** Tests only. The store is module-level (deliberately -- see the module docblock), so it
+ *  outlives any one test unless something puts it back. */
+export function resetRealtimeDiagnosticsForTest(): void {
+  diagnostics = {status: 'idle', lastRawStatus: null, restaurantId: null, lastInvalidationAt: null};
 }
 
 /**
@@ -171,8 +275,11 @@ export function subscribeLineChangeInvalidation(
   onInvalidate: () => void,
 ): () => void {
   if (!restaurantId) {
+    setDiagnostics({status: 'idle', restaurantId: null});
     return () => {};
   }
+
+  setDiagnostics({status: 'joining', restaurantId, lastRawStatus: null});
 
   const debounced = debouncedInvalidate(onInvalidate, MIN_INVALIDATE_INTERVAL_MS);
 
@@ -180,11 +287,17 @@ export function subscribeLineChangeInvalidation(
   const channel = supabase.channel(restaurantLinesChannelName(restaurantId));
 
   channel.on('broadcast', {event: LINE_CHANGED_EVENT}, () => {
+    setDiagnostics({lastInvalidationAt: new Date().toISOString()});
     debounced.call();
   });
 
   channel.subscribe((status: string) => {
-    if (classifyStatus(status) === 'up') {
+    const health = classifyStatus(status);
+    setDiagnostics({
+      status: health === 'up' ? 'subscribed' : everUp ? 'reconnecting' : 'joining',
+      lastRawStatus: status,
+    });
+    if (health === 'up') {
       if (everUp) {
         debounced.call();
       }
@@ -202,5 +315,6 @@ export function subscribeLineChangeInvalidation(
     debounced.cancel();
     appStateSub.remove();
     supabase.removeChannel(channel);
+    setDiagnostics({status: 'idle'});
   };
 }

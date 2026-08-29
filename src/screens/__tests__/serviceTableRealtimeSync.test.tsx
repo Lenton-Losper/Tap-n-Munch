@@ -50,6 +50,10 @@ jest.mock('../../context/ServiceSessionContext', () => ({
 let capturedOnInvalidate: (() => void) | null = null;
 const mockUnsubscribe = jest.fn();
 jest.mock('../../lib/realtimeInvalidation', () => ({
+  // resolveRestaurantId, not getRestaurantId, is what the screen calls now -- see its own
+  // docblock. A fixed non-null value is enough here: this file's tests aren't about resolution
+  // itself, only about what happens once a subscription (real or captured) exists.
+  resolveRestaurantId: jest.fn(async () => 'restaurant-1'),
   subscribeLineChangeInvalidation: (
     _restaurantId: string | null,
     onInvalidate: () => void,

@@ -13,10 +13,28 @@
 import {AppState} from 'react-native';
 import {
   subscribeLineChangeInvalidation,
+  resolveRestaurantId,
+  getRealtimeDiagnostics,
+  subscribeRealtimeDiagnostics,
+  resetRealtimeDiagnosticsForTest,
   restaurantLinesChannelName,
   LINE_CHANGED_EVENT,
   MIN_INVALIDATE_INTERVAL_MS,
 } from '../realtimeInvalidation';
+
+const mockGetRestaurantId = jest.fn();
+const mockSaveRestaurantId = jest.fn();
+const mockGetTerminalToken = jest.fn();
+jest.mock('../storage', () => ({
+  getRestaurantId: (...args: unknown[]) => mockGetRestaurantId(...args),
+  saveRestaurantId: (...args: unknown[]) => mockSaveRestaurantId(...args),
+  getTerminalToken: (...args: unknown[]) => mockGetTerminalToken(...args),
+}));
+
+const mockGetTerminalInfo = jest.fn();
+jest.mock('../api', () => ({
+  getTerminalInfo: (...args: unknown[]) => mockGetTerminalInfo(...args),
+}));
 
 type BroadcastHandler = (payload: unknown) => void;
 type StatusHandler = (status: string) => void;
@@ -80,6 +98,11 @@ beforeEach(() => {
   mockAppStateListener = null;
   mockAppStateRemove.mockClear();
   (AppState.addEventListener as jest.Mock).mockClear();
+  mockGetRestaurantId.mockReset();
+  mockSaveRestaurantId.mockReset();
+  mockGetTerminalToken.mockReset();
+  mockGetTerminalInfo.mockReset();
+  resetRealtimeDiagnosticsForTest();
 });
 
 describe('subscribeLineChangeInvalidation — null restaurantId', () => {
@@ -229,5 +252,188 @@ describe('subscribeLineChangeInvalidation — teardown', () => {
 
     expect(mockRemoveChannelCalls).toEqual([mockChannel]);
     expect(mockAppStateRemove).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * resolveRestaurantId — the production-incident recovery. Traced during that investigation:
+ * getRestaurantId() reads a value written exactly once, at activation, and
+ * subscribeLineChangeInvalidation's null check makes a missed write PERMANENT and SILENT on that
+ * device -- the poll keeps working (it does not need restaurantId), so nothing looks broken, and
+ * Realtime just never activates, forever, with no error anywhere. These prove storage is tried
+ * first (free), GET /api/terminal/me is the fallback (not a bespoke new endpoint), a successful
+ * recovery is written back so the NEXT call does not need the network again, and -- the specific
+ * "no longer PERMANENTLY disabled" claim -- that a device with no token at all still resolves to
+ * null without throwing, and a device whose token exists but whose recovery fails this time tries
+ * again cleanly on the next call rather than caching the failure.
+ */
+describe('resolveRestaurantId', () => {
+  it('returns the stored value without ever calling the recovery API', async () => {
+    mockGetRestaurantId.mockResolvedValue('stored-rest-1');
+
+    const result = await resolveRestaurantId();
+
+    expect(result).toBe('stored-rest-1');
+    expect(mockGetTerminalToken).not.toHaveBeenCalled();
+    expect(mockGetTerminalInfo).not.toHaveBeenCalled();
+    expect(mockSaveRestaurantId).not.toHaveBeenCalled();
+  });
+
+  it('recovers from GET /api/terminal/me when storage is empty, and persists it', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue('a-real-terminal-token');
+    mockGetTerminalInfo.mockResolvedValue({restaurant_id: 'recovered-rest-1'});
+
+    const result = await resolveRestaurantId();
+
+    expect(result).toBe('recovered-rest-1');
+    expect(mockGetTerminalInfo).toHaveBeenCalledWith('a-real-terminal-token');
+    expect(mockSaveRestaurantId).toHaveBeenCalledWith('recovered-rest-1');
+  });
+
+  it('accepts the camelCase restaurantId field too, not only restaurant_id', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue('token');
+    mockGetTerminalInfo.mockResolvedValue({restaurantId: 'camel-rest-1'});
+
+    expect(await resolveRestaurantId()).toBe('camel-rest-1');
+    expect(mockSaveRestaurantId).toHaveBeenCalledWith('camel-rest-1');
+  });
+
+  it('a device with no terminal token at all resolves to null without touching the network', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue(null);
+
+    const result = await resolveRestaurantId();
+
+    expect(result).toBeNull();
+    expect(mockGetTerminalInfo).not.toHaveBeenCalled();
+    expect(mockSaveRestaurantId).not.toHaveBeenCalled();
+  });
+
+  it('a recovery API failure resolves to null this call, but does NOT cache the failure permanently', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue('token');
+    mockGetTerminalInfo.mockRejectedValueOnce(new Error('network down'));
+
+    const firstAttempt = await resolveRestaurantId();
+    expect(firstAttempt).toBeNull();
+    expect(mockSaveRestaurantId).not.toHaveBeenCalled();
+
+    // The network recovers (or storage does, if another code path wrote it meanwhile) by the
+    // NEXT call -- e.g. the next screen focus. Nothing in resolveRestaurantId remembers the
+    // first failure and short-circuits early.
+    mockGetTerminalInfo.mockResolvedValueOnce({restaurant_id: 'recovered-on-retry'});
+    const secondAttempt = await resolveRestaurantId();
+    expect(secondAttempt).toBe('recovered-on-retry');
+  });
+
+  it('a /me response with no restaurant_id at all resolves to null, not undefined or a crash', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue('token');
+    mockGetTerminalInfo.mockResolvedValue({});
+
+    expect(await resolveRestaurantId()).toBeNull();
+    expect(mockSaveRestaurantId).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The end-to-end version of "no longer permanently disabled": storage empty on the first focus,
+ * subscribeLineChangeInvalidation never gets to run at all that time (the null no-op path) --
+ * but resolving it fresh on a LATER focus, once recovery succeeds, actually starts a real
+ * subscription. This is the shape ServiceTableScreen/ServiceFloorScreen's own effect follows
+ * (call resolveRestaurantId() -> pass whatever it returns to subscribeLineChangeInvalidation),
+ * exercised directly here without needing a full screen render.
+ */
+describe('resolveRestaurantId + subscribeLineChangeInvalidation — recovery unblocks a real subscription', () => {
+  it('first focus: no restaurantId anywhere -> no subscription. Later focus: recovered -> a real channel opens', async () => {
+    mockGetRestaurantId.mockResolvedValue(null);
+    mockGetTerminalToken.mockResolvedValue(null); // nothing to recover from yet either
+
+    const firstResolved = await resolveRestaurantId();
+    const firstTeardown = subscribeLineChangeInvalidation(firstResolved, jest.fn());
+    expect(firstResolved).toBeNull();
+    expect(mockChannelCalls).toHaveLength(0);
+    firstTeardown();
+
+    // The device comes back online / activation catches up; the SAME storage read now succeeds.
+    mockGetRestaurantId.mockResolvedValue('rest-now-available');
+
+    const secondResolved = await resolveRestaurantId();
+    const secondTeardown = subscribeLineChangeInvalidation(secondResolved, jest.fn());
+    expect(secondResolved).toBe('rest-now-available');
+    expect(mockChannelCalls).toEqual([restaurantLinesChannelName('rest-now-available')]);
+    secondTeardown();
+  });
+});
+
+/**
+ * The diagnostics store — surfaced in DiagnosticsScreen so a physical device's actual Realtime
+ * state is visible without needing a debugger attached. Proves the status transitions match what
+ * subscribeLineChangeInvalidation actually does, the raw Supabase status string is preserved
+ * alongside the coarse category, restaurantId is exposed (not a secret -- see the module
+ * docblock), and lastInvalidationAt updates only when a broadcast is actually received.
+ */
+describe('realtime diagnostics store', () => {
+  it('starts idle with no restaurantId when subscribeLineChangeInvalidation is called with null', () => {
+    subscribeLineChangeInvalidation(null, jest.fn());
+    expect(getRealtimeDiagnostics()).toMatchObject({status: 'idle', restaurantId: null});
+  });
+
+  it('goes joining -> subscribed, exposing the resolved restaurantId and the raw status string', () => {
+    subscribeLineChangeInvalidation('rest-1', jest.fn());
+    expect(getRealtimeDiagnostics()).toMatchObject({status: 'joining', restaurantId: 'rest-1'});
+
+    mockChannel.fireStatus('SUBSCRIBED');
+    expect(getRealtimeDiagnostics()).toMatchObject({
+      status: 'subscribed',
+      restaurantId: 'rest-1',
+      lastRawStatus: 'SUBSCRIBED',
+    });
+  });
+
+  it('reports reconnecting (not joining) when a channel that WAS up goes down', () => {
+    subscribeLineChangeInvalidation('rest-1', jest.fn());
+    mockChannel.fireStatus('SUBSCRIBED');
+
+    mockChannel.fireStatus('CHANNEL_ERROR');
+    expect(getRealtimeDiagnostics()).toMatchObject({
+      status: 'reconnecting',
+      lastRawStatus: 'CHANNEL_ERROR',
+    });
+  });
+
+  it('records lastInvalidationAt when a broadcast is actually received, not before', () => {
+    subscribeLineChangeInvalidation('rest-1', jest.fn());
+    mockChannel.fireStatus('SUBSCRIBED');
+    expect(getRealtimeDiagnostics().lastInvalidationAt).toBeNull();
+
+    mockChannel.fireBroadcast();
+    expect(getRealtimeDiagnostics().lastInvalidationAt).not.toBeNull();
+  });
+
+  it('returns to idle on teardown', () => {
+    const teardown = subscribeLineChangeInvalidation('rest-1', jest.fn());
+    mockChannel.fireStatus('SUBSCRIBED');
+    teardown();
+    expect(getRealtimeDiagnostics().status).toBe('idle');
+  });
+
+  it('notifies subscribers on every change', () => {
+    const listener = jest.fn();
+    const unsub = subscribeRealtimeDiagnostics(listener);
+
+    subscribeLineChangeInvalidation('rest-1', jest.fn());
+    expect(listener).toHaveBeenCalled();
+
+    listener.mockClear();
+    mockChannel.fireStatus('SUBSCRIBED');
+    expect(listener).toHaveBeenCalled();
+
+    unsub();
+    listener.mockClear();
+    mockChannel.fireStatus('CHANNEL_ERROR');
+    expect(listener).not.toHaveBeenCalled();
   });
 });

@@ -25,7 +25,6 @@ jest.mock('../../lib/api', () => {
 
 jest.mock('../../lib/storage', () => ({
   getTerminalToken: jest.fn(async () => 'terminal-token'),
-  getRestaurantId: jest.fn(async () => 'restaurant-1'),
 }));
 
 // Also stable, same reason as mockEndSession above.
@@ -56,6 +55,9 @@ let capturedOnInvalidate: (() => void) | null = null;
 let capturedRestaurantId: string | null | undefined;
 const mockUnsubscribe = jest.fn();
 jest.mock('../../lib/realtimeInvalidation', () => ({
+  // resolveRestaurantId, not getRestaurantId, is what the screen calls now -- the value it
+  // resolves to is exactly what this file's first test asserts against.
+  resolveRestaurantId: jest.fn(async () => 'restaurant-1'),
   subscribeLineChangeInvalidation: (restaurantId: string | null, onInvalidate: () => void) => {
     capturedRestaurantId = restaurantId;
     capturedOnInvalidate = onInvalidate;

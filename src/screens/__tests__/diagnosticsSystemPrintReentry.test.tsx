@@ -100,6 +100,19 @@ jest.mock('../../lib/storage', () => ({
   getTerminalId: jest.fn(async () => 'terminal-1'),
   getTerminalToken: jest.fn(async () => 'token'),
 }));
+// DiagnosticsScreen now transitively imports lib/supabase.ts (via realtimeInvalidation.ts, for
+// the temporary Realtime diagnostic section), which calls createClient(SUPABASE_URL, ...) at
+// MODULE LOAD TIME -- this test's env has no real Supabase URL, so that throws before the screen
+// ever renders. This suite is about print re-entry, not Realtime.
+jest.mock('../../lib/realtimeInvalidation', () => ({
+  getRealtimeDiagnostics: () => ({
+    status: 'idle',
+    lastRawStatus: null,
+    restaurantId: null,
+    lastInvalidationAt: null,
+  }),
+  subscribeRealtimeDiagnostics: () => () => {},
+}));
 jest.mock('../../lib/testPrintPayload', () => ({
   buildSdk6TestPrintLines: () => [],
   buildTestPrintPayload: () => '',

@@ -32,6 +32,11 @@ jest.mock('../../lib/api', () => {
     getTabLines: (...args: unknown[]) => mockGetTabLines(...(args as [])),
     getTablesWithMeta: (...args: unknown[]) =>
       mockGetTablesWithMeta(...(args as [])),
+    // resolveRestaurantId (realtimeInvalidation.ts) falls back to this when storage's
+    // getRestaurantId comes back null (below) -- without a mock here it would attempt a REAL
+    // fetch to GET /api/terminal/me. No restaurant_id in the response is what makes recovery
+    // correctly resolve to null, same intent the null getRestaurantId mock already had.
+    getTerminalInfo: jest.fn(async () => ({})),
   };
 });
 
