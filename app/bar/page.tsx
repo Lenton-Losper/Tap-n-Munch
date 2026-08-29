@@ -30,10 +30,14 @@ function BarScreenLive({ session, authFetch }: { session: TerminalSession; authF
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
 
-  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches. Bar has no
-  // age escalation, but the round age label ("in" vs "out") still needs a live `now`.
+  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches.
+  //
+  // 1s, matching the kitchen board -- see its own comment. The board redesign gave the bar its
+  // own active/ready escalation bands (barActiveEscalation, barReadyEscalation), so the "Bar has
+  // no age escalation" this comment used to say is no longer true either way: both the escalation
+  // bands and the visible MM:SS clock need second-resolution ticking now, not just the label.
   useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000)
     return () => window.clearInterval(id)
   }, [])
 

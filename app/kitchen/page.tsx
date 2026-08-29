@@ -30,11 +30,16 @@ function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; a
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
 
-  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches. 30s here
-  // (tighter than the dashboard's 60s) because the ready-to-run escalation bands are what this
-  // clock drives, and the red threshold sits at 5 minutes on a wall screen nobody refreshes.
+  // Same #350 pattern as orders-dashboard.tsx: ticks a clock only, never refetches.
+  //
+  // 1s, not 30s. This used to be 30s, back when the clock only had to catch escalation-band
+  // colour crossings (5/10/20 minute thresholds -- 30s of slack there is invisible). The board
+  // redesign then put formatElapsedClock's MM:SS directly on screen, second-resolution, and a
+  // 30s tick made that render sit frozen for up to half a minute and then visibly jump -- the
+  // wall clock nobody trusts. The escalation bands still update on every tick same as before;
+  // this only changes how often that tick happens.
   useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 30_000)
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000)
     return () => window.clearInterval(id)
   }, [])
 
