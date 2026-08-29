@@ -11,7 +11,12 @@
  * handover docs about trusting the wrong signal.
  */
 import {AppState} from 'react-native';
-import {subscribeLineChangeInvalidation, restaurantLinesChannelName, LINE_CHANGED_EVENT} from '../realtimeInvalidation';
+import {
+  subscribeLineChangeInvalidation,
+  restaurantLinesChannelName,
+  LINE_CHANGED_EVENT,
+  MIN_INVALIDATE_INTERVAL_MS,
+} from '../realtimeInvalidation';
 
 type BroadcastHandler = (payload: unknown) => void;
 type StatusHandler = (status: string) => void;
@@ -145,6 +150,75 @@ describe('subscribeLineChangeInvalidation — the must-NOT-fire cases', () => {
     mockChannel.fireStatus('TIMED_OUT');
     mockChannel.fireStatus('CLOSED');
     expect(onInvalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('subscribeLineChangeInvalidation — the debounce (spam/amplification defense)', () => {
+  // The security finding this exists for: the channel is public (private: false — RLS cannot
+  // apply to this app's identity) and the restaurant id in its name is not a secret (it is
+  // already in that restaurant's own public menu QR URL), so anyone holding the anon key can
+  // publish fake line_changed messages on a real restaurant's channel as fast as they like. A
+  // burst like that must not turn into a burst of GET /api/terminal/tabs/{tabId}/lines calls.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('collapses a burst of broadcasts into one call, not one per message', () => {
+    const onInvalidate = jest.fn();
+    subscribeLineChangeInvalidation('rest-1', onInvalidate);
+    mockChannel.fireStatus('SUBSCRIBED'); // first join
+    onInvalidate.mockClear();
+
+    for (let i = 0; i < 50; i++) {
+      mockChannel.fireBroadcast();
+    }
+    // The FIRST call in a fresh window fires immediately (real bumps must still feel instant) --
+    // the other 49 in the same burst must not each cost a refetch.
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('still delivers the LAST invalidation in a burst, trailing-edge, not just the first', () => {
+    const onInvalidate = jest.fn();
+    subscribeLineChangeInvalidation('rest-1', onInvalidate);
+    mockChannel.fireStatus('SUBSCRIBED');
+    onInvalidate.mockClear();
+
+    mockChannel.fireBroadcast(); // fires immediately (call #1)
+    mockChannel.fireBroadcast(); // suppressed, schedules a trailing call
+    mockChannel.fireBroadcast(); // already scheduled -- this one changes nothing new
+
+    jest.advanceTimersByTime(MIN_INVALIDATE_INTERVAL_MS);
+    expect(onInvalidate).toHaveBeenCalledTimes(2); // the immediate one, then the trailing one
+  });
+
+  it('a real bump well after the window is never suppressed by an unrelated attack burst', () => {
+    const onInvalidate = jest.fn();
+    subscribeLineChangeInvalidation('rest-1', onInvalidate);
+    mockChannel.fireStatus('SUBSCRIBED');
+    onInvalidate.mockClear();
+
+    mockChannel.fireBroadcast(); // the "attack" -- fires immediately, starts the window
+    jest.advanceTimersByTime(MIN_INVALIDATE_INTERVAL_MS + 100); // window fully elapsed
+
+    mockChannel.fireBroadcast(); // a genuine bump, well clear of the window
+    expect(onInvalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels a pending trailing call on teardown so it cannot fire after unmount', () => {
+    const onInvalidate = jest.fn();
+    const teardown = subscribeLineChangeInvalidation('rest-1', onInvalidate);
+    mockChannel.fireStatus('SUBSCRIBED');
+    onInvalidate.mockClear();
+
+    mockChannel.fireBroadcast(); // immediate
+    mockChannel.fireBroadcast(); // schedules a trailing call
+    teardown();
+
+    jest.advanceTimersByTime(MIN_INVALIDATE_INTERVAL_MS + 100);
+    expect(onInvalidate).toHaveBeenCalledTimes(1); // only the immediate one -- trailing was cancelled
   });
 });
 

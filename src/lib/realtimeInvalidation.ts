@@ -55,6 +55,39 @@
  *
  * Does NOT fire on plain visibility of the channel joining, or on every status callback — only on
  * the three events above.
+ *
+ * ============================================================================================
+ * WHY onInvalidate IS DEBOUNCED, NOT CALLED DIRECTLY
+ * ============================================================================================
+ *
+ * The channel is a PUBLIC Broadcast (`private: false` — see the section above on why: RLS cannot
+ * apply to this app's identity, and that is the whole reason this design works at all). The anon
+ * key that lets a legitimate terminal listen is not a secret — it ships inside every APK — and the
+ * restaurant id in the channel name is not a secret either, since it already appears in that
+ * restaurant's own public menu QR URL (/menu/{restaurantId}/...). So this channel's name is
+ * discoverable, not merely guessable, by anyone who wants it, and Broadcast's REST send endpoint
+ * accepts a message from anyone holding the anon key — nothing here stops a hostile client from
+ * publishing `line_changed` on a real restaurant's channel as fast as it likes.
+ *
+ * The payload carries no data, so a fake invalidation cannot lie about order state — the terminal
+ * always re-asks the terminal-JWT-gated GET /api/terminal/tabs/{tabId}/lines, which is what
+ * decides the truth. But a flood of fake invalidations would still turn every terminal listening
+ * into a client hammering that endpoint once per fake message, which is a real amplification
+ * attack even though it cannot corrupt data.
+ *
+ * MIN_INVALIDATE_INTERVAL_MS bounds the damage at the one place all three trigger paths funnel
+ * through: whatever rate broadcasts (real or fake) arrive at, onInvalidate fires at most once per
+ * interval, trailing-edge (the LAST call in a burst still lands, so a genuine final state change
+ * is never dropped, only coalesced with the noise around it). Worst case under attack, this
+ * behaves like a poll at MIN_INVALIDATE_INTERVAL_MS — no worse than the old 15s mitigation, and
+ * the legitimate path (one real bump, no attacker) is unaffected since real bumps are not sent
+ * faster than a human can tap a button.
+ *
+ * This does not need to be, and deliberately is not, a fix for "can a hostile client send fake
+ * broadcasts at all" — that would need the channel to stop being public, which would need the
+ * terminal to hold a Supabase-Auth-shaped credential RLS could check, which is the same larger
+ * change (a second identity system) the module docblock above already ruled out of scope for
+ * closing this specific gap. Debouncing closes the actual harm (hammering the API) without that.
  */
 import {AppState, type AppStateStatus} from 'react-native';
 import {supabase} from './supabase';
@@ -65,6 +98,9 @@ export function restaurantLinesChannelName(restaurantId: string): string {
 
 export const LINE_CHANGED_EVENT = 'line_changed';
 
+/** Exported so a test can assert against the real number rather than a duplicated literal. */
+export const MIN_INVALIDATE_INTERVAL_MS = 2_000;
+
 type ChannelHealth = 'joining' | 'up' | 'down';
 
 const DOWN_STATUSES = ['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'];
@@ -73,6 +109,42 @@ function classifyStatus(status: string): ChannelHealth {
   if (status === 'SUBSCRIBED') return 'up';
   if (DOWN_STATUSES.includes(status)) return 'down';
   return 'joining';
+}
+
+/**
+ * Trailing-edge debounce, deliberately not the generic "leading or trailing, configurable" kind:
+ * this only ever wants trailing (the last invalidation in a burst is the one worth acting on) and
+ * only ever wants one caller, so it stays a plain closure rather than a dependency.
+ */
+function debouncedInvalidate(onInvalidate: () => void, intervalMs: number) {
+  let lastFiredAt = 0;
+  let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const fire = () => {
+    lastFiredAt = Date.now();
+    onInvalidate();
+  };
+
+  return {
+    call() {
+      const elapsed = Date.now() - lastFiredAt;
+      if (elapsed >= intervalMs) {
+        fire();
+        return;
+      }
+      if (trailingTimer) return; // a trailing call is already scheduled; this burst is covered
+      trailingTimer = setTimeout(() => {
+        trailingTimer = null;
+        fire();
+      }, intervalMs - elapsed);
+    },
+    cancel() {
+      if (trailingTimer) {
+        clearTimeout(trailingTimer);
+        trailingTimer = null;
+      }
+    },
+  };
 }
 
 /**
@@ -90,17 +162,19 @@ export function subscribeLineChangeInvalidation(
     return () => {};
   }
 
+  const debounced = debouncedInvalidate(onInvalidate, MIN_INVALIDATE_INTERVAL_MS);
+
   let everUp = false;
   const channel = supabase.channel(restaurantLinesChannelName(restaurantId));
 
   channel.on('broadcast', {event: LINE_CHANGED_EVENT}, () => {
-    onInvalidate();
+    debounced.call();
   });
 
   channel.subscribe((status: string) => {
     if (classifyStatus(status) === 'up') {
       if (everUp) {
-        onInvalidate();
+        debounced.call();
       }
       everUp = true;
     }
@@ -108,11 +182,12 @@ export function subscribeLineChangeInvalidation(
 
   const appStateSub = AppState.addEventListener('change', (state: AppStateStatus) => {
     if (state === 'active') {
-      onInvalidate();
+      debounced.call();
     }
   });
 
   return () => {
+    debounced.cancel();
     appStateSub.remove();
     supabase.removeChannel(channel);
   };

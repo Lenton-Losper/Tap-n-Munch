@@ -27,13 +27,20 @@ import {
   TableBadge,
   TableFlag,
 } from '../lib/tabLines';
-import {getTerminalToken} from '../lib/storage';
+import {getTerminalToken, getRestaurantId} from '../lib/storage';
+import {subscribeLineChangeInvalidation} from '../lib/realtimeInvalidation';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
 type NavProp = NativeStackNavigationProp<MainStackParamList>;
 
-const REFRESH_INTERVAL_MS = 15_000;
+/**
+ * The SAFETY NET, not the transport — same split as ServiceTableScreen's own
+ * TABLE_POLL_INTERVAL_MS. subscribeLineChangeInvalidation (src/lib/realtimeInvalidation.ts) is
+ * what makes a bump show up promptly now; this is only what covers a broadcast that never lands.
+ * Raised from 15s (when it WAS the transport) for the same reason.
+ */
+const REFRESH_INTERVAL_MS = 45_000;
 const MAX_BACKOFF_MS = 60_000;
 
 /**
@@ -51,16 +58,16 @@ const FLAG_CONCURRENCY = 4;
 /**
  * Badges are re-fetched no more often than this.
  *
- * NOW EQUAL TO THE GRID'S OWN POLL, so in practice every poll refreshes the badges. It was 30s,
- * which put up to 45 seconds between a kitchen bumping a dish and the waiter's grid saying so, and
- * 45 seconds under a heat lamp is most of the problem this badge exists to solve. Ruled explicitly:
- * N requests per 15s on this floor is not a load concern.
- *
- * It stays a separate named constant rather than collapsing into REFRESH_INTERVAL_MS because the
- * two throttle different things — one is a single grid request, the other is one request per open
- * table — and the day the floor gets big enough to care, this is the number to move, alone.
+ * DECOUPLED FROM REFRESH_INTERVAL_MS (it used to just equal it). Now that a realtime invalidation
+ * (subscribeLineChangeInvalidation) calls `load('poll')` directly the moment a bump lands,
+ * tying this to the now-45s safety-net poll would mean a real-time-delivered invalidation still
+ * only refreshed badges once every 45s — defeating the reason realtime was added to this screen
+ * at all. 5s is short enough that a kitchen bump reads as prompt, long enough (combined with
+ * subscribeLineChangeInvalidation's own MIN_INVALIDATE_INTERVAL_MS debounce upstream of this)
+ * that the per-table fan-out below cannot be forced into a request storm by a flood of fake
+ * invalidations — see realtimeInvalidation.ts's own doc block on that finding.
  */
-const FLAG_MIN_INTERVAL_MS = REFRESH_INTERVAL_MS;
+const FLAG_MIN_INTERVAL_MS = 5_000;
 
 /** What a row renders before its tab has been read, or when it has no tab to read. */
 const NO_BADGE: TableBadge = {flag: null, readyCount: 0};
@@ -357,8 +364,22 @@ export default function ServiceFloorScreen() {
       // sent is unaffected, because attribution is read server-side from the tab.
       endSession();
       load('initial').then(() => scheduleNext());
+
+      let cancelled = false;
+      let unsubscribeRealtime: (() => void) | null = null;
+      void getRestaurantId().then(restaurantId => {
+        if (cancelled) return;
+        // 'poll' mode, not 'pull': an invalidation arriving in the background must not flash the
+        // pull-to-refresh spinner, same rule ServiceTableScreen's own wiring follows.
+        unsubscribeRealtime = subscribeLineChangeInvalidation(restaurantId, () =>
+          load('poll'),
+        );
+      });
+
       return () => {
         focusedRef.current = false;
+        cancelled = true;
+        unsubscribeRealtime?.();
         if (timerRef.current) {
           clearTimeout(timerRef.current);
           timerRef.current = null;
