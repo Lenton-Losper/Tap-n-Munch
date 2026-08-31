@@ -36,6 +36,19 @@ jest.mock('@/lib/supabase/orders', () => ({
     subscribeRestaurantOrdersRealtime(...(args as [])),
 }))
 
+// The SECOND realtime subscriber the pages carry — the restaurant-lines Broadcast that is the
+// feed actually reaching a station screen (see lib/stations/realtime-invalidate.ts). Stubbed for
+// the same reason the postgres_changes one above is: this file tests the clock tick and nothing
+// else. It is mocked at the module boundary rather than left to run against a stub client
+// because importing it for real pulls in lib/supabase/client.ts, whose module scope constructs a
+// browser Supabase client and throws without NEXT_PUBLIC_SUPABASE_URL — a suite that fails to
+// load reports zero tests, which is a red that proves nothing.
+const subscribeLineChanged = jest.fn(() => () => {})
+jest.mock('@/lib/stations/realtime-invalidate', () => ({
+  subscribeLineChanged: (...args: unknown[]) => subscribeLineChanged(...(args as [])),
+}))
+jest.mock('@/lib/supabase/client', () => ({ supabase: {} }))
+
 let container: HTMLDivElement
 let root: Root
 

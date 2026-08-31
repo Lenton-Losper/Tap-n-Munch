@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { TerminalActivationGate } from '@/components/stations/terminal-activation-gate'
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
 import { StationNotEnabled } from '@/components/stations/station-not-enabled'
@@ -8,6 +8,8 @@ import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialKitchenLines } from '@/lib/stations/data-port'
 import { postStationBump } from '@/lib/stations/bump'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
+import { supabase } from '@/lib/supabase/client'
+import { subscribeLineChanged } from '@/lib/stations/realtime-invalidate'
 import {
   registerFeedChannel,
   reportFeedChannelStatus,
@@ -30,6 +32,15 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
   const [pairedTo, setPairedTo] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
   const [nowMs, setNowMs] = useState(() => Date.now())
+
+  /**
+   * The live `refetch` for this session, published out of the effect that owns it so a bump can
+   * call it. A ref rather than a hoisted useCallback deliberately: the effect's `cancelled` flag
+   * is per-effect-run and guards its own setState calls, and hoisting the fetch would have to
+   * reproduce that cancellation semantics for no gain. Reset to a no-op on teardown so a bump
+   * resolving after unmount cannot start a fetch nobody will read.
+   */
+  const refetchRef = useRef<() => void>(() => {})
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
 
@@ -73,6 +84,7 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
       })
     }
 
+    refetchRef.current = refetch
     refetch()
 
     // Ruled: reuse subscribeRestaurantOrdersRealtime (lib/supabase/orders.ts) rather than a
@@ -91,12 +103,40 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
       },
     })
 
+    /**
+     * THE FEED THAT ACTUALLY REACHES THIS SCREEN. See subscribeLineChanged's own docblock: the
+     * postgres_changes subscription above is RLS-gated through auth.uid(), and a station wall
+     * screen has no Supabase Auth session — only the terminal-JWT — so its socket is `anon` and
+     * Realtime answers a denied subscription with silence, not an error. Measured: SUBSCRIBED,
+     * zero events. This restaurant-scoped Broadcast carries no data and no RLS check, so it is
+     * the one that lands.
+     *
+     * REGISTERED AS ITS OWN FEED CHANNEL, which is the point rather than bookkeeping. The
+     * connection indicator takes the WORST of every registered channel, so a broadcast that
+     * fails to join now shows as degraded instead of being masked by a postgres_changes channel
+     * that reports SUBSCRIBED while delivering nothing to this screen. The whole defect being
+     * fixed here is an indicator that read `live` over a dead feed; wiring the replacement in
+     * without registering it would rebuild exactly that.
+     */
+    const broadcastKey = `station-kitchen-broadcast:${session.terminalId}`
+    const unregisterBroadcast = registerFeedChannel(broadcastKey)
+    const unsubscribeBroadcast = subscribeLineChanged(supabase, session.restaurantId, {
+      onLineChanged: refetch,
+      onStatus: (status) => {
+        const { refetch: shouldRefetch } = reportFeedChannelStatus(broadcastKey, status)
+        if (shouldRefetch) refetch()
+      },
+    })
+
     const stopFallback = startFeedFallback({ refetch })
 
     return () => {
       cancelled = true
+      refetchRef.current = () => {}
       unregister()
       unsubscribe()
+      unregisterBroadcast()
+      unsubscribeBroadcast()
       stopFallback()
     }
   }, [session.restaurantId, session.terminalId, authFetch])
@@ -123,7 +163,28 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
       lines={lines}
       now={nowMs}
       connectionState={connectionState}
-      onBump={(lineIds, action) => postStationBump(authFetch, 'kitchen', lineIds, action)}
+      onBump={async (lineIds, action) => {
+        const outcome = await postStationBump(authFetch, 'kitchen', lineIds, action)
+        /**
+         * RE-ASK THE SERVER, ALWAYS, AND DO NOT PAINT THE ANSWER LOCALLY.
+         *
+         * The tap's own screen used to depend on a socket to learn about its own write: nothing
+         * here refetched, so the board sat on stale state until the Broadcast landed or, before
+         * that subscription existed, until FEED_POLL_INTERVAL_MS (60s). That is the "I pressed it
+         * and nothing happened" report.
+         *
+         * Unconditional, including on failure and on a 409: every non-success outcome means the
+         * board's belief about that line is in question -- LINE_CHANGED specifically means
+         * somebody else already moved it -- and a refetch is the cheap way to stop guessing.
+         *
+         * This does not construct any state client-side. `outcome` is returned to the card
+         * untouched (it still marks the rows that would not move) and the rendered lines still
+         * come only from the terminal-JWT-gated snapshot route, so the database stays the single
+         * authority. It removes a wait, not a round trip.
+         */
+        refetchRef.current()
+        return outcome
+      }}
     />
   )
 }

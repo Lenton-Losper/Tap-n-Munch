@@ -76,3 +76,66 @@ export async function broadcastLineChanged(
     })
   }
 }
+
+/**
+ * THE RECEIVING HALF, for the web boards.
+ *
+ * ============================================================================================
+ * WHY THE BOARDS NEED THIS AND NOT ONLY postgres_changes
+ * ============================================================================================
+ *
+ * The docblock at the top of this file establishes that order_lines' `postgres_changes` feed is
+ * RLS-gated through auth.uid() and that the P5 terminal, holding only a terminal-JWT, would be
+ * silently denied. THE WEB BOARDS HAVE THE SAME IDENTITY. app/kitchen/page.tsx and
+ * app/bar/page.tsx authenticate with the same terminal-JWT (lib/stations/use-terminal-session.ts,
+ * localStorage, no Supabase Auth session anywhere), and lib/supabase/client.ts is a plain
+ * createBrowserClient(url, anonKey) with no setAuth call. So a station wall screen's socket
+ * authenticates as `anon`, exactly like the terminal's.
+ *
+ * Measured against staging on 2026-08-31, two subscribers on `orders-channel-<id>`, one real
+ * order_lines UPDATE, with a service-role subscriber as the positive control:
+ *
+ *     [anon]         subscribe status = SUBSCRIBED   ->  0 events
+ *     [service_role] subscribe status = SUBSCRIBED   ->  1 event at +686ms, old image 13 columns
+ *
+ * The publication is correct, REPLICA IDENTITY FULL is correct, delivery is correct. RLS is the
+ * filter -- and the channel still reports SUBSCRIBED, so nothing downstream can tell. That is the
+ * same silence this file's opening docblock named, one screen over from where it was fixed.
+ *
+ * The boards' `onLineChange` has therefore never fired in production. Their only refresh was
+ * FEED_POLL_INTERVAL_MS (60s), which is why a tap appeared to do nothing for up to a minute.
+ *
+ * ============================================================================================
+ * WHY NOT JUST GIVE order_lines AN ANON RLS POLICY
+ * ============================================================================================
+ *
+ * Because `anon` is the public key in every browser on the internet, and a policy that lets it
+ * read order_lines lets it read every venue's order lines. The boards' actual line data already
+ * comes from the terminal-JWT-gated snapshot route and must keep doing so. Broadcast carries no
+ * data -- "something changed at this restaurant" is the whole message -- so it is the half that
+ * can safely be public.
+ *
+ * The `postgres_changes` subscription in app/kitchen/page.tsx and app/bar/page.tsx is deliberately
+ * LEFT IN PLACE alongside this. It is not dead: a board opened on a device where a member of staff
+ * IS signed in to Supabase Auth passes that policy and gets both feeds. This is the one that works
+ * regardless.
+ */
+export function subscribeLineChanged(
+  supabase: SupabaseClient,
+  restaurantId: string,
+  callbacks: { onLineChanged: () => void; onStatus?: (status: string) => void },
+): () => void {
+  const channel = supabase.channel(restaurantLinesChannelName(restaurantId))
+
+  channel.on('broadcast', { event: LINE_CHANGED_EVENT }, () => {
+    callbacks.onLineChanged()
+  })
+
+  channel.subscribe((status: string) => {
+    callbacks.onStatus?.(status)
+  })
+
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
