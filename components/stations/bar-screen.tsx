@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageSeconds, formatElapsedClock } from '@/lib/stations/age'
+import { ageSeconds, formatMinutesShort } from '@/lib/stations/age'
 import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
 import { densityFor, dispatchDensityFor, type DensityScale } from '@/lib/stations/board-density'
 import type { BumpLines } from '@/lib/stations/bump'
@@ -13,6 +13,8 @@ import {
   CardFailureBanner,
   DispatchRowView,
   NotSentStrip,
+  ReadySection,
+  OlderUnresolvedSection,
   PerCardButton,
   StationCard,
   StationLineRow,
@@ -137,13 +139,13 @@ function BarActiveRoundCard({
     <StationCard
       testId="bar-round-card"
       tableLabel={STATION_COPY.bar.tableLabel(round.tableNumber)}
-      ageLabel={formatElapsedClock(ageSeconds(round.placedAt ?? '', now))}
+      ageLabel={formatMinutesShort(ageSeconds(round.placedAt ?? '', now) / 60)}
       escalation={escalation}
       scale={scale}
       headerAction={
         round.items.length > 1 ? (
           <PerCardButton
-            label={STATION_COPY.bar.allOutButton}
+            label={STATION_COPY.bar.allReadyButton}
             count={round.items.length}
             lineIds={lineIds}
             action="out"
@@ -162,7 +164,7 @@ function BarActiveRoundCard({
           itemName={item.itemName}
           quantity={item.quantity}
           lineNote={item.lineNote}
-          buttonLabel={STATION_COPY.bar.outButton}
+          buttonLabel={STATION_COPY.bar.readyButton}
           action="out"
           tone="station"
           bump={bump}
@@ -235,7 +237,11 @@ export function BarScreen({
         rather than being silently clipped.
       */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="station-board-body">
-        <section className="min-h-0 flex-[68] overflow-auto" data-testid="bar-active-section">
+        <section
+          /* See kitchen-screen.tsx's matching note: content-height, not viewport-height. */
+          className="flex min-h-0 flex-[0_1_auto] flex-col overflow-y-auto overflow-x-hidden"
+          data-testid="bar-active-section"
+        >
           <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.bar.activeHeading}
           </h2>
@@ -254,38 +260,56 @@ export function BarScreen({
           WAITING FOR COLLECTION — pinned to its own ~32% of the wall, dense dispatch rows, not
           cards. "No production cards... it is a dispatch queue, not a shrunken production card."
         */}
-        <section
-          className="mt-2 min-h-0 flex-[32] overflow-auto border-t-4 border-[#37352F] pt-1.5"
-          data-testid="bar-ready-section"
+        <ReadySection
+          heading={STATION_COPY.bar.readyHeading}
+          emptyLabel={STATION_COPY.bar.readyEmpty}
+          rowCount={displayRows.length}
+          density={dispatchScale.density}
+          testId="bar-ready-section"
         >
-          <h2 className="mb-1 text-lg font-black uppercase tracking-wide text-[#37352F]">
-            {STATION_COPY.bar.readyHeading}
-          </h2>
-          {displayRows.length === 0 ? (
-            <p className="text-base text-[#6B675F]">{STATION_COPY.bar.readyEmpty}</p>
-          ) : (
-            <div className={`gap-1 ${dispatchScale.columnsClass}`} data-testid="bar-ready-list">
-              {displayRows.map((row) => (
-                <DispatchRowView
-                  key={row.lineId}
-                  row={row}
-                  now={now}
-                  escalation={barReadyRowEscalation(row, now)}
-                  scale={dispatchScale}
-                  tableLabel={STATION_COPY.bar.tableLabel}
-                  readyWord={STATION_COPY.dispatch.readyWord}
-                  action="collected"
-                  actionLabel={STATION_COPY.bar.collectedButton}
-                  tone="pass"
-                  bump={readyBump}
-                  collected={collectedIds.has(row.lineId)}
-                  undoLabel={STATION_COPY.dispatch.undoButton}
-                  onUndo={() => void readyBump.run([row.lineId], 'out')}
-                />
-              ))}
-            </div>
+          {displayRows.map((row) => (
+            <DispatchRowView
+              key={row.lineId}
+              row={row}
+              now={now}
+              escalation={barReadyRowEscalation(row, now)}
+              scale={dispatchScale}
+              tableLabel={STATION_COPY.bar.tableLabel}
+              action="collected"
+              actionLabel={STATION_COPY.bar.collectedButton}
+              tone="pass"
+              bump={readyBump}
+              collected={collectedIds.has(row.lineId)}
+              undoLabel={STATION_COPY.dispatch.undoButton}
+              onUndo={() => void readyBump.run([row.lineId], 'out')}
+            />
+          ))}
+        </ReadySection>
+
+        <OlderUnresolvedSection
+          count={board.olderUnresolved.length}
+          heading={STATION_COPY.older.heading}
+          hint={STATION_COPY.older.hint}
+        >
+          {board.olderUnresolved.flatMap((round) =>
+            round.items.map((item) => (
+              <div
+                key={item.id}
+                data-testid="older-unresolved-row"
+                data-line-id={item.id}
+                className="flex items-center gap-2 px-2 py-0.5 text-sm text-[#8A857C]"
+              >
+                <span className="w-[7.5rem] shrink-0 truncate font-bold">
+                  {STATION_COPY.bar.tableLabel(round.tableNumber)}
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {item.quantity}× {item.itemName}
+                </span>
+                <span className="shrink-0 tabular-nums opacity-70">{item.state}</span>
+              </div>
+            )),
           )}
-        </section>
+        </OlderUnresolvedSection>
       </div>
     </div>
   )

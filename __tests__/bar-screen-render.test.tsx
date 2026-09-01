@@ -75,12 +75,18 @@ describe('BarScreen — structure', () => {
     expect(active!.compareDocumentPosition(ready!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('gives Active a 68-share and Ready a 32-share of the body height', () => {
+  it('gives Ready only the height it needs and lets Active take the rest', () => {
     renderBar()
     const active = container.querySelector('[data-testid="bar-active-section"]')!
     const ready = container.querySelector('[data-testid="bar-ready-section"]')!
-    expect(active.className).toMatch(/flex-\[68\]/)
-    expect(ready.className).toMatch(/flex-\[32\]/)
+    // REDESIGN 2026-09-01 — see the kitchen's matching test. Elastic, not a fixed ratio.
+    // Active is CONTENT-height (flex 0 1 auto): it takes what its cards need, shrinks and scrolls
+    // when they exceed the space Ready leaves, and never claims the viewport's full remainder —
+    // that is what put a 500-600px dead band between Active and Ready on a quiet board.
+    expect(active.className).toMatch(/flex-\[0_1_auto\]/)
+    expect(active.className).not.toMatch(/flex-\[68\]/)
+    expect(ready.className).toMatch(/shrink-0/)
+    expect(ready.className).not.toMatch(/flex-\[32\]/)
   })
 })
 
@@ -140,10 +146,11 @@ describe('BarScreen — TO MAKE (active)', () => {
     expect(activeGrid.textContent).not.toContain('Sparkling water')
   })
 
-  it('shows the elapsed clock as MM:SS, not a unit-scaled age string', () => {
+  it('shows the elapsed age as whole minutes, not a ticking clock', () => {
     renderBar()
     const clock = container.querySelector('[data-testid="bar-round-card"] [data-testid="card-age"]')!
-    expect(clock.textContent).toMatch(/^\d{2,}:\d{2}$/)
+    // REDESIGN 2026-09-01: whole minutes, no seconds.
+    expect(clock.textContent).toMatch(/^\d+m$|^<1m$/)
   })
 
   it('every drink in a TO MAKE round carries its own Out button', () => {
@@ -151,13 +158,13 @@ describe('BarScreen — TO MAKE (active)', () => {
     const row = q('[data-testid="bar-active-grid"] [data-testid="station-line-row"]').find((r) =>
       r.textContent?.includes('IPA'),
     )!
-    expect(row.querySelector('button')!.textContent).toBe(STATION_COPY.bar.outButton)
+    expect(row.querySelector('button')!.textContent).toBe(STATION_COPY.bar.readyButton)
   })
 
   it('tapping Out bumps ONE drink, by line id — a round is not poured all at once', async () => {
     const onBump = jest.fn(NO_BUMP)
     renderBar(onBump)
-    await act(async () => buttonsLabelled(STATION_COPY.bar.outButton)[0].click())
+    await act(async () => buttonsLabelled(STATION_COPY.bar.readyButton)[0].click())
     expect(onBump).toHaveBeenCalledWith(['bl-1'], 'out')
   })
 
@@ -226,15 +233,16 @@ describe('BarScreen — Waiting for collection (Ready dispatch queue)', () => {
     expect(row.textContent).toContain('Sparkling water')
   })
 
-  it('a dispatch row names table, quantity, item and the READY word with its clock', () => {
+  it('a dispatch row names table, quantity, item and a whole-minute age', () => {
     renderBar()
     const row = q('[data-testid="dispatch-row"]').find((r) => r.textContent?.includes('Sparkling water'))!
     expect(row.textContent).toContain(STATION_COPY.bar.tableLabel('11'))
     expect(row.textContent).toContain('1×')
-    expect(row.querySelector('[data-testid="dispatch-row-clock"]')!.textContent).toContain(
-      STATION_COPY.dispatch.readyWord,
-    )
-    expect(row.querySelector('[data-testid="dispatch-row-clock"]')!.textContent).toMatch(/\d{2,}:\d{2}/)
+    // REDESIGN 2026-09-01: whole minutes, no seconds, and no repeated READY word — the row is
+    // already under the READY heading. Four fixed slots: TABLE | qty x item | Nm | action.
+    const clock = row.querySelector('[data-testid="dispatch-row-clock"]')!
+    expect(clock.textContent).toMatch(/^\d+m$|^<1m$/)
+    expect(clock.textContent).not.toContain(':')
   })
 
   it('carries the Collected button, labelled from STATION_COPY.bar', () => {
@@ -398,10 +406,15 @@ describe('the bar board at real volume (forty rounds)', () => {
     expect(rowCount).toBeGreaterThan(0)
   })
 
-  it('reads the multi-day age as MM:SS, unbounded, not a unit-scaled string', () => {
+  it('shows every Ready age in whole minutes, and never seconds', () => {
+    // REDESIGN 2026-09-01. Multi-day lines no longer reach this zone at all — past 12h they are
+    // partitioned into OLDER UNRESOLVED — so the unbounded MM:SS case this used to pin cannot
+    // occur here. What remains true, and is what a wall screen needs, is that every clock in the
+    // dispatch queue is whole minutes with no seconds component.
     renderWall()
-    const clocks = q('[data-testid="dispatch-row-clock"]').map((c) => c.textContent)
-    expect(clocks.some((t) => /\d{3,}:\d{2}/.test(t ?? ''))).toBe(true)
+    const clocks = q('[data-testid="dispatch-row-clock"]').map((c) => c.textContent ?? '')
+    expect(clocks.length).toBeGreaterThan(0)
+    for (const t of clocks) expect(t).toMatch(/^\d+m$|^<1m$/)
   })
 
   it('reads an absent table as words, never "Table 0" and never a bare dash', () => {
@@ -430,7 +443,7 @@ describe('the bar board at real volume (forty rounds)', () => {
     const rows = Array.from(card.querySelectorAll('[data-testid="station-line-row"]'))
     expect(rows.length).toBeGreaterThan(1)
     for (const row of rows) {
-      expect(row.querySelector('button')!.textContent).toBe(STATION_COPY.bar.outButton)
+      expect(row.querySelector('button')!.textContent).toBe(STATION_COPY.bar.readyButton)
     }
   })
 })

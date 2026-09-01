@@ -80,8 +80,15 @@ export const STATION_COPY = {
     readyEmpty: 'Nothing ready.',
     /** Station tap: this line is cooked, awaiting the pass. */
     cookedButton: 'Cooked',
-    /** Pass tap: this line is confirmed and can leave the kitchen. Moves it to the Ready zone. */
-    readyToRunButton: 'Ready to run',
+    /**
+     * Pass tap: this line is confirmed and can leave the kitchen. Moves it to the Ready zone.
+     *
+     * UNIFIED 2026-09-01: was 'Ready to run' here and 'Out' on the bar — two words for ONE state
+     * (order_lines.*_state = 'ready'), on two screens one person works in one shift. The wire
+     * action is still `ready_to_run` / `out`: those are the API's vocabulary and changing them
+     * would be a contract change, which this display-only redesign has no business making.
+     */
+    readyButton: 'Ready',
     /** Runner/waiter tap on a Ready line: it has physically been taken off the pass. Clears it
      *  from the Ready zone — without this a pinned zone never empties. */
     collectedButton: 'Collected',
@@ -99,7 +106,7 @@ export const STATION_COPY = {
      * SIGNED by the owner 2026-08-28. Same shortcut on the pass side of the board: every line this card is showing as
      * cooked-and-waiting goes ready to run at once.
      */
-    allReadyToRunButton: 'All ready',
+    allReadyButton: 'All ready',
     /** Same shortcut on the Ready zone: every line this table's Ready card is showing is
      *  collected at once. */
     allCollectedButton: 'All collected',
@@ -125,11 +132,11 @@ export const STATION_COPY = {
     /** The pinned zone: poured, waiting to be collected. Ages on the same clock and bands as the
      *  kitchen's Ready zone — a drink sitting uncollected is a different problem from one not yet
      *  made. */
-    readyHeading: 'Waiting for collection',
-    readyEmpty: 'Nothing waiting for collection.',
+    readyHeading: 'Ready',
+    readyEmpty: 'Nothing ready.',
     /** The one tap that sends a drink to Ready. NOW PER LINE: a round is not poured all at once,
      *  and the label is still exactly what the tap does. */
-    outButton: 'Out',
+    readyButton: 'Ready',
     /** Waiter/runner tap on a Ready drink: it has physically been taken off the bar. Clears it
      *  from the Ready zone. Same word the kitchen uses, on purpose — see the file docblock. */
     collectedButton: 'Collected',
@@ -138,13 +145,23 @@ export const STATION_COPY = {
      * card is showing goes out in one tap. The bar's half only — a kitchen line on the same order
      * is untouched.
      */
-    allOutButton: 'All out',
+    allReadyButton: 'All ready',
     /** Same shortcut on the Ready zone: every drink this round's Ready card is showing is
      *  collected at once. */
     allCollectedButton: 'All collected',
     /** Same absent-table rule as the kitchen — see the note there. */
     tableLabel: (tableNumber: string) =>
       tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
+  },
+  /**
+   * The 12h partition, shared by both screens. DISPLAY ONLY -- these lines are still live work
+   * and nothing about them has been collected, voided or written. The wording carries that: it
+   * says UNRESOLVED, not "old" or "done", because a cook reading it must understand the board has
+   * set them aside, not that the system has dealt with them.
+   */
+  older: {
+    heading: 'Older unresolved',
+    hint: 'not touched - still open',
   },
   /**
    * Shared by both screens — a route_to = 'unrouted' line must never read as ordinary work.

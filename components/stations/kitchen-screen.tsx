@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageSeconds, formatElapsedClock, worstEscalation } from '@/lib/stations/age'
+import { ageSeconds, formatMinutesShort, worstEscalation } from '@/lib/stations/age'
 import {
   buildKitchenBoard,
   kitchenActiveLineEscalation,
@@ -20,6 +20,8 @@ import {
   NotSentStrip,
   PerCardButton,
   StationCard,
+  ReadySection,
+  OlderUnresolvedSection,
   StationLineRow,
   useCardBump,
   useRecentlyCollected,
@@ -112,7 +114,7 @@ function ActiveTableCard({
     <StationCard
       testId="active-table-card"
       tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
-      ageLabel={formatElapsedClock(oldestSeconds)}
+      ageLabel={formatMinutesShort(oldestSeconds / 60)}
       escalation={worstEscalation(escalations)}
       scale={scale}
       headerAction={
@@ -131,7 +133,7 @@ function ActiveTableCard({
             ) : null}
             {cookedLines.length > 1 ? (
               <PerCardButton
-                label={STATION_COPY.kitchen.allReadyToRunButton}
+                label={STATION_COPY.kitchen.allReadyButton}
                 count={cookedLines.length}
                 lineIds={cookedLines.map((line) => line.id)}
                 action="ready_to_run"
@@ -167,7 +169,7 @@ function ActiveTableCard({
           itemName={line.itemName}
           quantity={line.quantity}
           lineNote={line.lineNote}
-          buttonLabel={STATION_COPY.kitchen.readyToRunButton}
+          buttonLabel={STATION_COPY.kitchen.readyButton}
           action="ready_to_run"
           tone="pass"
           bump={bump}
@@ -305,7 +307,21 @@ export function KitchenScreen({
           system ever undersizes a busy service, THIS surface admits it with its own scrollbar
           rather than stealing Ready's fixed share of the wall.
         */}
-        <section className="flex min-h-0 flex-[68] flex-col" data-testid="active-section">
+        <section
+          /*
+           * `flex-[0_1_auto]`, not `flex-1`. Active takes the height its cards actually need and
+           * no more, so READY sits directly beneath the last row of work instead of being pinned
+           * to the bottom of the viewport — which on a quiet board left a 500-600px dead band
+           * between them. Empty space now collects BELOW Ready, where it reads as headroom
+           * rather than as a hole in the middle of the board.
+           *
+           * It still SHRINKS (the `1` in 0 1 auto) and still scrolls: when the grid is taller
+           * than the space left after Ready, this section is what gives, and Ready — shrink-0 —
+           * stays on screen. Cards are never stretched to fill; that was explicitly rejected.
+           */
+          className="flex min-h-0 flex-[0_1_auto] flex-col"
+          data-testid="active-section"
+        >
           <h2 className="mb-1 shrink-0 text-lg font-black uppercase tracking-wide text-[#37352F]">
             {STATION_COPY.kitchen.activeHeading}
           </h2>
@@ -313,7 +329,7 @@ export function KitchenScreen({
             <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.activeEmpty}</p>
           ) : (
             <div
-              className={`min-h-0 flex-1 overflow-y-auto gap-1.5 ${activeScale.columnsClass}`}
+              className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden gap-1.5 ${activeScale.columnsClass}`}
               data-testid="active-grid"
             >
               {board.activeByTable.map((group) => (
@@ -329,46 +345,54 @@ export function KitchenScreen({
           )}
         </section>
 
-        {/* READY, PINNED — a genuine 32% of the two-surface height, ALWAYS fully present
-            regardless of Active's content (see the note above — that is what min-h-0 on Active
-            guarantees). "What can leave right now" — a dense dispatch queue of rows, not cards. */}
-        <section
-          className="mt-2 flex min-h-0 flex-[32] flex-col border-t-4 border-[#37352F] pt-1.5"
-          data-testid="ready-section"
-          data-ready-density={readyDensity.density}
+        <ReadySection
+          heading={STATION_COPY.kitchen.readyHeading}
+          emptyLabel={STATION_COPY.kitchen.readyEmpty}
+          rowCount={readyDisplayRows.length}
+          density={readyDensity.density}
+          testId="ready-section"
         >
-          <h2 className="mb-1 shrink-0 text-lg font-black uppercase tracking-wide text-[#37352F]">
-            {STATION_COPY.kitchen.readyHeading}
-          </h2>
-          {readyDisplayRows.length === 0 ? (
-            <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.readyEmpty}</p>
-          ) : (
+          {readyDisplayRows.map(({ row, collected }) => (
+            <DispatchRowView
+              key={row.lineId}
+              row={row}
+              now={now}
+              escalation={kitchenReadyRowEscalation(row, now)}
+              scale={readyDensity}
+              tableLabel={STATION_COPY.kitchen.tableLabel}
+              action="collected"
+              actionLabel={STATION_COPY.kitchen.collectedButton}
+              tone="pass"
+              bump={readyBump}
+              collected={collected}
+              undoLabel={STATION_COPY.dispatch.undoButton}
+              onUndo={collected ? () => handleUndo(row) : undefined}
+            />
+          ))}
+        </ReadySection>
+
+        <OlderUnresolvedSection
+          count={board.olderUnresolved.length}
+          heading={STATION_COPY.older.heading}
+          hint={STATION_COPY.older.hint}
+        >
+          {board.olderUnresolved.map((line) => (
             <div
-              className={`min-h-0 flex-1 overflow-y-auto gap-1 ${readyDensity.columnsClass}`}
-              data-testid="ready-dispatch-list"
+              key={line.id}
+              data-testid="older-unresolved-row"
+              data-line-id={line.id}
+              className="flex items-center gap-2 px-2 py-0.5 text-sm text-[#8A857C]"
             >
-              {readyDisplayRows.map(({ row, collected }) => (
-                <div key={row.lineId} className="mb-1 break-inside-avoid">
-                  <DispatchRowView
-                    row={row}
-                    now={now}
-                    escalation={kitchenReadyRowEscalation(row, now)}
-                    scale={readyDensity}
-                    tableLabel={STATION_COPY.kitchen.tableLabel}
-                    readyWord={STATION_COPY.dispatch.readyWord}
-                    action="collected"
-                    actionLabel={STATION_COPY.kitchen.collectedButton}
-                    tone="pass"
-                    bump={readyBump}
-                    collected={collected}
-                    undoLabel={STATION_COPY.dispatch.undoButton}
-                    onUndo={collected ? () => handleUndo(row) : undefined}
-                  />
-                </div>
-              ))}
+              <span className="w-[7.5rem] shrink-0 truncate font-bold">
+                {STATION_COPY.kitchen.tableLabel(line.tableNumber)}
+              </span>
+              <span className="min-w-0 flex-1 truncate">
+                {line.quantity}× {line.itemName}
+              </span>
+              <span className="shrink-0 tabular-nums opacity-70">{line.state}</span>
             </div>
-          )}
-        </section>
+          ))}
+        </OlderUnresolvedSection>
       </div>
     </div>
   )

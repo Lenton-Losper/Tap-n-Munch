@@ -73,12 +73,20 @@ describe('KitchenScreen — layout skeleton', () => {
     expect(active.compareDocumentPosition(ready) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('splits the two surfaces 68/32 by height, not any other ratio', () => {
+  it('gives Ready only the height it needs and lets Active take the rest', () => {
     renderKitchen()
     const active = container.querySelector('[data-testid="active-section"]')!
     const ready = container.querySelector('[data-testid="ready-section"]')!
-    expect(active.className).toMatch(/flex-\[68\]/)
-    expect(ready.className).toMatch(/flex-\[32\]/)
+    // REDESIGN 2026-09-01: the fixed 68/32 is gone. Active takes whatever Ready does not need
+    // (flex-1), and Ready sizes to its rows up to a cap (shrink-0 + max-h). A quiet board used to
+    // spend a third of a 1080p wall rendering "Nothing ready."
+    // Active is CONTENT-height (flex 0 1 auto): it takes what its cards need, shrinks and scrolls
+    // when they exceed the space Ready leaves, and never claims the viewport's full remainder —
+    // that is what put a 500-600px dead band between Active and Ready on a quiet board.
+    expect(active.className).toMatch(/flex-\[0_1_auto\]/)
+    expect(active.className).not.toMatch(/flex-\[68\]/)
+    expect(ready.className).toMatch(/shrink-0/)
+    expect(ready.className).not.toMatch(/flex-\[32\]/)
   })
 
   it('renders the NOT SENT strip OUTSIDE station-board-body, before it in DOM order', () => {
@@ -120,11 +128,12 @@ describe('KitchenScreen — the active surface', () => {
     expect(active.textContent).not.toContain('Onion rings')
   })
 
-  it('shows the card age as a fixed-width MM:SS clock, not "N min" / "Nh Nm"', () => {
+  it('shows the card age as whole minutes, the quietest element on the card', () => {
     renderKitchen()
     const table4 = q('[data-testid="active-table-card"]').find((c) => c.textContent?.includes('Table 4'))!
     const age = table4.querySelector('[data-testid="card-age"]')!
-    expect(age.textContent).toBe('01:00')
+    // REDESIGN 2026-09-01: whole minutes, no seconds — see formatMinutesShort.
+    expect(age.textContent).toBe('1m')
   })
 
   it('an outstanding line carries Cooked, a cooked line carries Ready to run', () => {
@@ -132,7 +141,7 @@ describe('KitchenScreen — the active surface', () => {
     const friesRow = q('[data-testid="station-line-row"]').find((r) => r.textContent?.includes('Truffle fries'))!
     expect(friesRow.querySelector('button')!.textContent).toBe(STATION_COPY.kitchen.cookedButton)
     const ribeyeRow = q('[data-testid="station-line-row"]').find((r) => r.textContent?.includes('Ribeye'))!
-    expect(ribeyeRow.querySelector('button')!.textContent).toBe(STATION_COPY.kitchen.readyToRunButton)
+    expect(ribeyeRow.querySelector('button')!.textContent).toBe(STATION_COPY.kitchen.readyButton)
   })
 
   it('tapping Cooked bumps exactly that one line', async () => {
@@ -145,7 +154,7 @@ describe('KitchenScreen — the active surface', () => {
   it('tapping Ready to run bumps exactly that one line', async () => {
     const onBump = jest.fn(NO_BUMP)
     renderKitchen(onBump)
-    await act(async () => buttonsLabelled(STATION_COPY.kitchen.readyToRunButton)[0].click())
+    await act(async () => buttonsLabelled(STATION_COPY.kitchen.readyButton)[0].click())
     expect(onBump).toHaveBeenCalledWith(['kl-3'], 'ready_to_run')
   })
 
@@ -179,13 +188,16 @@ describe('KitchenScreen — the ready surface is a dispatch queue, not cards', (
     expect(ready.querySelector('[data-testid="dispatch-row"]')).toBeTruthy()
   })
 
-  it('reads as "table · qty x item · READY MM:SS"', () => {
+  it('reads as "TABLE | qty x item | Nm" in four fixed slots', () => {
     renderKitchen()
     const row = q('[data-testid="dispatch-row"]').find((r) => r.textContent?.includes('Onion rings'))!
     expect(row.textContent).toContain('Table 5')
     expect(row.textContent).toContain('1× Onion rings')
     const clock = row.querySelector('[data-testid="dispatch-row-clock"]')!
-    expect(clock.textContent).toBe('READY 02:00')
+    // REDESIGN 2026-09-01: whole minutes, no seconds, no "READY" word. The row already sits under
+    // a READY heading; repeating it on every row was noise, and a ticking MM:SS was the most
+    // animated thing on the wall. Urgency is the border accent (data-escalation), not this number.
+    expect(clock.textContent).toBe('2m')
   })
 
   it('a ready row carries the Collected button', () => {
@@ -207,7 +219,7 @@ describe('KitchenScreen — the ready surface is a dispatch queue, not cards', (
     expect(ready.querySelector('[data-testid="per-card-control"]')).toBeNull()
   })
 
-  it('shows "Nothing ready." when the ready surface is empty', () => {
+  it('says zero with the heading alone when the ready surface is empty', () => {
     renderKitchen()
     act(() => {
       root.render(
@@ -220,7 +232,15 @@ describe('KitchenScreen — the ready surface is a dispatch queue, not cards', (
       )
     })
     const ready = container.querySelector('[data-testid="ready-section"]')!
-    expect(ready.textContent).toContain(STATION_COPY.kitchen.readyEmpty)
+    // REDESIGN 2026-09-01: the heading already reads "READY · 0". A second sentence saying the
+    // same thing cost a whole row of a wall screen for no information, so an empty Ready zone is
+    // now exactly one heading tall and Active takes the rest.
+    expect(ready.getAttribute('data-ready-collapsed')).toBe('true')
+    expect(ready.getAttribute('data-ready-count')).toBe('0')
+    expect(ready.textContent).toContain(STATION_COPY.kitchen.readyHeading)
+    expect(ready.textContent).toContain('0')
+    expect(ready.textContent).not.toContain(STATION_COPY.kitchen.readyEmpty)
+    expect(container.querySelector('[data-testid="ready-empty"]')).toBeNull()
   })
 })
 
@@ -364,12 +384,20 @@ describe('KitchenScreen — per line is the default, per table is a small shortc
     expect(ready.textContent).not.toContain('Table 0')
   })
 
-  it('carries the 12877-minute-old ready line as an unbounded MM:SS clock, the quietest tier on the board', () => {
+  it('partitions the 12877-minute-old line into OLDER UNRESOLVED instead of the Ready queue', () => {
+    // REDESIGN 2026-09-01. 12877 minutes is ~9 days — far past UNRESOLVED_AFTER_MINUTES (12h).
+    // It used to sit in the Ready queue as an unbounded MM:SS clock; on production that class of
+    // line was 80% of the board AND dragged the density tier down, shrinking live orders.
+    // It is MOVED, never hidden: still on the board, in its own collapsed section, state untouched.
     renderWall()
-    const row = q('[data-testid="dispatch-row"]').find((r) => r.textContent?.includes('Beef burger'))!
-    expect(row.getAttribute('data-escalation')).toBe('stale')
-    const clock = row.querySelector('[data-testid="dispatch-row-clock"]')!
-    expect(clock.textContent).toBe('READY 12877:00')
+    const inReady = q('[data-testid="dispatch-row"]').find((r) => r.textContent?.includes('Beef burger'))
+    expect(inReady).toBeUndefined()
+
+    const older = container.querySelector('[data-testid="older-unresolved-section"]')!
+    expect(older).toBeTruthy()
+    expect(Number(older.getAttribute('data-older-count'))).toBeGreaterThan(0)
+    // Collapsed by default — the count is visible without opening it.
+    expect(older.getAttribute('data-older-open')).toBe('false')
   })
 
   it('buys columns with density as the board fills, both surfaces respond independently', () => {

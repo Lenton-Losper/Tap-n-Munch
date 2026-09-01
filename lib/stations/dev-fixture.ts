@@ -13,7 +13,7 @@
  * line independent of its counterpart on the other screen, and the bar's own neutral-vs-ageing
  * split between its two zones.
  */
-import type { BarRound, KitchenLine } from '@/lib/stations/types'
+import type { BarLineState, BarRound, KitchenLine } from '@/lib/stations/types'
 
 const minutesAgo = (n: number, from: number) => new Date(from - n * 60_000).toISOString()
 
@@ -458,5 +458,211 @@ export function buildBarWallFixture(now: number = Date.now()): BarRound[] {
     unrouted: true,
   })
 
+  return rounds
+}
+
+/* ============================================================================================
+ * KDS REDESIGN SCENARIOS — 2026-09-01. Local visual QA only, same rules as the fixtures above:
+ * no auth, no network, frozen clock, not linked from anywhere the real app can reach.
+ *
+ * Two volumes, because the redesign's whole claim is that the board behaves differently at each:
+ * QUIET must give Active the space an empty Ready gives back; BUSY must stay readable and must
+ * never grow sideways. Both carry the same four things worth looking at — a multi-item card, an
+ * allergy note, an urgent (red) order, and a collapsed OLDER UNRESOLVED section.
+ * ==========================================================================================*/
+
+function kline(
+  now: number,
+  id: string,
+  tableNumber: string,
+  itemName: string,
+  quantity: number,
+  minutesAgo: number,
+  extra: Partial<KitchenLine> = {},
+): KitchenLine {
+  const placedAt = new Date(now - minutesAgo * 60_000).toISOString()
+  return {
+    id,
+    orderId: `o-${id}`,
+    tableNumber,
+    orderNumber: Number(id.replace(/\D/g, '')) || 1,
+    itemName,
+    quantity,
+    lineNote: null,
+    routeTo: 'kitchen',
+    state: 'outstanding',
+    placedAt,
+    cookedAt: null,
+    readyAt: null,
+    unrouted: false,
+    sharedWithOtherStation: false,
+    ...extra,
+  }
+}
+
+/** 3 active cards + 1 ready + 2 partitioned. Table 6 is multi-item; table 2 carries the allergy;
+ *  table 9 is 26 minutes old, which is red on the outstanding bands. */
+export function buildKitchenQuietScenario(now: number): KitchenLine[] {
+  const old = 14 * 60
+  return [
+    kline(now, 'q1', '9', 'Ribeye', 1, 26),
+    kline(now, 'q2', '2', 'Chicken burger', 2, 11, { lineNote: 'NO NUTS — anaphylactic' }),
+    kline(now, 'q3', '6', 'Fish & chips', 2, 4),
+    kline(now, 'q4', '6', 'Caesar salad', 1, 4),
+    kline(now, 'q5', '6', 'Garlic bread', 3, 4),
+    kline(now, 'q6', '4', 'Cheese toast', 2, 6, {
+      state: 'ready',
+      readyAt: new Date(now - 6 * 60_000).toISOString(),
+    }),
+    kline(now, 'q7', '1', 'Lamb curry', 1, old),
+    kline(now, 'q8', '1', 'Rice', 2, old),
+  ]
+}
+
+/** ~12 active cards + 4 ready + 3 partitioned. The volume case. */
+export function buildKitchenBusyScenario(now: number): KitchenLine[] {
+  const old = 15 * 60
+  const menu = [
+    'Ribeye', 'Beef burger', 'Fish & chips', 'Lamb shank', 'Chicken schnitzel', 'Beef lasagna',
+    'Pork belly', 'Prawn linguine', 'Veg curry', 'Steak sandwich', 'Chicken wrap', 'Fillet',
+  ]
+  const lines: KitchenLine[] = menu.map((name, i) =>
+    kline(now, `b${i}`, String(i + 1), name, (i % 3) + 1, 3 + i * 2),
+  )
+  // A multi-item card, an allergy, and a very old (red) ticket.
+  lines.push(kline(now, 'b-extra1', '3', 'Side salad', 2, 7))
+  lines.push(kline(now, 'b-extra2', '3', 'Onion rings', 1, 7))
+  lines[1] = { ...lines[1], lineNote: 'SHELLFISH ALLERGY — separate pan' }
+  lines[0] = { ...lines[0], placedAt: new Date(now - 31 * 60_000).toISOString() }
+  // Ready queue.
+  for (const [i, name] of ['Cheese toast', 'Chips', 'Soup', 'Bruschetta'].entries()) {
+    lines.push(
+      kline(now, `br${i}`, String(14 + i), name, (i % 2) + 1, 5 + i, {
+        state: 'ready',
+        readyAt: new Date(now - (3 + i) * 60_000).toISOString(),
+      }),
+    )
+  }
+  for (const [i, name] of ['Bobotie', 'Sausage roll', 'Pie'].entries()) {
+    lines.push(kline(now, `bo${i}`, String(20 + i), name, 1, old + i * 30))
+  }
+  return lines
+}
+
+function bround(
+  now: number,
+  id: string,
+  tableNumber: string,
+  minutesAgo: number,
+  items: Array<[string, number, BarLineState?, string?]>,
+): BarRound {
+  return {
+    id,
+    tableNumber,
+    orderNumber: Number(id.replace(/\D/g, '')) || 1,
+    placedAt: new Date(now - minutesAgo * 60_000).toISOString(),
+    unrouted: false,
+    items: items.map(([itemName, quantity, state = 'outstanding', note], i) => ({
+      id: `${id}-i${i}`,
+      itemName,
+      quantity,
+      lineNote: note ?? null,
+      state,
+      cookedAt: null,
+      readyAt: state === 'ready' ? new Date(now - Math.max(1, minutesAgo - 2) * 60_000).toISOString() : null,
+    })),
+  }
+}
+
+/** Bar equivalent of the quiet scenario. */
+export function buildBarQuietScenario(now: number): BarRound[] {
+  const old = 14 * 60
+  return [
+    bround(now, 'bq1', '9', 34, [['Espresso martini', 2]]),
+    bround(now, 'bq2', '2', 12, [['Gin & tonic', 1, 'outstanding', 'NO ICE — allergy']]),
+    bround(now, 'bq3', '6', 5, [['Cappuccino', 2], ['Flat white', 1], ['Still water', 3]]),
+    bround(now, 'bq4', '4', 8, [['Coke', 2, 'ready']]),
+    bround(now, 'bq5', '1', old, [['House red', 2], ['Sparkling water', 1]]),
+  ]
+}
+
+/** Bar equivalent of the busy scenario. */
+export function buildBarBusyScenario(now: number): BarRound[] {
+  const old = 15 * 60
+  const drinks = [
+    'Cappuccino', 'Americano', 'Flat white', 'Gin & tonic', 'House red', 'Draught lager',
+    'Espresso martini', 'Sparkling water', 'Coke', 'Iced tea', 'Mojito', 'Rooibos',
+  ]
+  const rounds: BarRound[] = drinks.map((d, i) =>
+    bround(now, `bb${i}`, String(i + 1), 3 + i * 2, [[d, (i % 3) + 1]]),
+  )
+  rounds[2] = bround(now, 'bb2', '3', 9, [
+    ['Cappuccino', 2],
+    ['Flat white', 1],
+    ['Hot chocolate', 1, 'outstanding', 'OAT MILK ONLY — dairy allergy'],
+  ])
+  rounds[0] = bround(now, 'bb0', '1', 33, [['Cappuccino', 2]])
+  rounds.push(bround(now, 'bbr1', '14', 6, [['Coke', 2, 'ready'], ['Fanta', 1, 'ready']]))
+  rounds.push(bround(now, 'bbr2', '15', 5, [['Still water', 3, 'ready']]))
+  rounds.push(bround(now, 'bbo1', '20', old, [['House white', 2]]))
+  rounds.push(bround(now, 'bbo2', '21', old + 45, [['Craft IPA', 1]]))
+  return rounds
+}
+
+/** 20-order volume: the DENSE tier's boundary. Mixed card heights on purpose — a third of the
+ *  cards carry two or three items so the packing behaviour is visible rather than theoretical. */
+export function buildKitchenVolumeScenario(now: number, cards: number): KitchenLine[] {
+  const names = [
+    'Ribeye', 'Beef burger', 'Fish & chips', 'Lamb shank', 'Chicken schnitzel', 'Beef lasagna',
+    'Pork belly', 'Prawn linguine', 'Veg curry', 'Steak sandwich', 'Chicken wrap', 'Fillet',
+    'Bobotie', 'Oxtail', 'Kingklip', 'Bunny chow', 'Boerewors', 'Calamari', 'Gnocchi', 'Risotto',
+  ]
+  const sides = ['Chips', 'Side salad', 'Onion rings', 'Garlic bread', 'Mash']
+  const lines: KitchenLine[] = []
+  for (let i = 0; i < cards; i += 1) {
+    const table = String(i + 1)
+    const age = 3 + i * 1.5
+    lines.push(kline(now, `v${i}`, table, names[i % names.length], (i % 3) + 1, age))
+    // Every third table is a multi-item card; every seventh gets a third line.
+    if (i % 3 === 1) lines.push(kline(now, `v${i}b`, table, sides[i % sides.length], 1, age))
+    if (i % 7 === 3) lines.push(kline(now, `v${i}c`, table, sides[(i + 2) % sides.length], 2, age))
+    if (i === 1) {
+      lines[lines.length - 1] = { ...lines[lines.length - 1], lineNote: 'NO GLUTEN — coeliac' }
+    }
+  }
+  for (const [i, name] of ['Cheese toast', 'Soup', 'Bruschetta'].entries()) {
+    lines.push(
+      kline(now, `vr${i}`, String(90 + i), name, (i % 2) + 1, 5 + i, {
+        state: 'ready',
+        readyAt: new Date(now - (3 + i) * 60_000).toISOString(),
+      }),
+    )
+  }
+  lines.push(kline(now, 'vo1', '99', 'Lamb curry', 1, 15 * 60))
+  lines.push(kline(now, 'vo2', '98', 'Rice', 2, 16 * 60))
+  return lines
+}
+
+/** Bar equivalent of the volume scenario. */
+export function buildBarVolumeScenario(now: number, cards: number): BarRound[] {
+  const drinks = [
+    'Cappuccino', 'Americano', 'Flat white', 'Gin & tonic', 'House red', 'Draught lager',
+    'Espresso martini', 'Sparkling water', 'Coke', 'Iced tea', 'Mojito', 'Rooibos',
+    'Latte', 'Hot chocolate', 'Craft IPA', 'House white', 'Negroni', 'Chai', 'Fanta', 'Cortado',
+  ]
+  const extras = ['Still water', 'Lemonade', 'Espresso', 'Ginger beer']
+  const rounds: BarRound[] = []
+  for (let i = 0; i < cards; i += 1) {
+    const items: Array<[string, number, BarLineState?, string?]> = [
+      [drinks[i % drinks.length], (i % 3) + 1],
+    ]
+    if (i % 3 === 1) items.push([extras[i % extras.length], 1])
+    if (i % 7 === 3) items.push([extras[(i + 1) % extras.length], 2])
+    if (i === 1) items[0] = [items[0][0], items[0][1], 'outstanding', 'OAT MILK ONLY — dairy allergy']
+    rounds.push(bround(now, `bv${i}`, String(i + 1), 3 + i * 1.5, items))
+  }
+  rounds.push(bround(now, 'bvr1', '90', 6, [['Coke', 2, 'ready'], ['Fanta', 1, 'ready']]))
+  rounds.push(bround(now, 'bvr2', '91', 5, [['Still water', 3, 'ready']]))
+  rounds.push(bround(now, 'bvo1', '99', 15 * 60, [['House white', 2]]))
   return rounds
 }

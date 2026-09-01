@@ -55,6 +55,7 @@
  */
 import {
   ageMinutes,
+  isOlderUnresolved,
   barActiveEscalation,
   barReadyEscalation,
   outstandingEscalation,
@@ -136,6 +137,13 @@ export type KitchenBoard = {
    *  kitchenReadyRowEscalation then FIFO. */
   readyRows: DispatchRow[]
   unrouted: KitchenLine[]
+  /**
+   * Lines older than UNRESOLVED_AFTER_MINUTES (12h), partitioned out of the normal layout.
+   * DISPLAY ONLY: state untouched, still rendered -- in their own collapsed section -- so
+   * nothing is ever lost. Kept out of activeByTable/readyRows so dead work cannot inflate the
+   * density tier and shrink live orders.
+   */
+  olderUnresolved: KitchenLine[]
 }
 
 export function buildKitchenBoard(lines: KitchenLine[], now: number = Date.now()): KitchenBoard {
@@ -143,17 +151,32 @@ export function buildKitchenBoard(lines: KitchenLine[], now: number = Date.now()
     lines.filter((line) => line.unrouted),
     (line) => line.placedAt ?? '',
   )
-  const routed = lines.filter((line) => !line.unrouted)
+  const routedAll = lines.filter((line) => !line.unrouted)
+
+  /**
+   * Partitioned FIRST, before anything counts cards. Dead work must not reach the density tier —
+   * on production 2026-09-01 twelve 3-to-4-day-old lines pushed a three-order board from ROOMY to
+   * COMPACT and shrank the live orders. DISPLAY ONLY: state is untouched, and these are rendered
+   * in their own collapsed section rather than removed from the board.
+   */
+  const olderUnresolved = sortOldestFirst(
+    routedAll.filter((line) => isOlderUnresolved(line.placedAt, now)),
+    (line) => line.placedAt ?? '',
+  )
+  const routed = routedAll.filter((line) => !isOlderUnresolved(line.placedAt, now))
 
   const activeLines = sortOldestFirst(
     routed.filter((line) => line.state !== 'ready'),
     (line) => (line.state === 'cooked' ? line.cookedAt ?? line.placedAt ?? '' : line.placedAt ?? ''),
   )
 
-  const activeByTable = sortByUrgency(
-    groupByTable(activeLines),
-    (group) => worstEscalation(group.lines.map((line) => kitchenActiveLineEscalation(line, now))),
-    (group) => Math.min(...group.lines.map((line) => kitchenActiveLineClockMs(line, now))),
+  /** OLDEST FIRST across cards too. Urgency is carried by colour, not by position. */
+  const activeByTable = sortOldestFirst(groupByTable(activeLines), (group) =>
+    group.lines
+      .map((line) =>
+        line.state === 'cooked' ? line.cookedAt ?? line.placedAt ?? '' : line.placedAt ?? '',
+      )
+      .sort()[0] ?? '',
   )
 
   const readyRowsUnsorted: DispatchRow[] = routed
@@ -173,7 +196,7 @@ export function buildKitchenBoard(lines: KitchenLine[], now: number = Date.now()
     (row) => dispatchRowClockMs(row, now),
   )
 
-  return { activeByTable, readyRows, unrouted }
+  return { activeByTable, readyRows, unrouted, olderUnresolved }
 }
 
 function itemsInState(round: BarRound, predicate: (item: BarRoundItem) => boolean): BarRound | null {
@@ -204,6 +227,8 @@ export type BarBoard = {
    *  FIFO, softer bands than the kitchen's own Ready zone. */
   readyRows: DispatchRow[]
   unrouted: BarRound[]
+  /** See KitchenBoard.olderUnresolved -- same 12h partition, same display-only guarantee. */
+  olderUnresolved: BarRound[]
 }
 
 export function buildBarBoard(rounds: BarRound[], now: number = Date.now()): BarBoard {
@@ -211,17 +236,19 @@ export function buildBarBoard(rounds: BarRound[], now: number = Date.now()): Bar
     rounds.filter((round) => round.unrouted),
     (round) => round.placedAt ?? '',
   )
-  const routed = rounds.filter((round) => !round.unrouted)
+  const routedAll = rounds.filter((round) => !round.unrouted)
+  const olderUnresolved = sortOldestFirst(
+    routedAll.filter((round) => isOlderUnresolved(round.placedAt, now)),
+    (round) => round.placedAt ?? '',
+  )
+  const routed = routedAll.filter((round) => !isOlderUnresolved(round.placedAt, now))
 
   const activeRounds = routed
     .map((round) => itemsInState(round, (item) => item.state !== 'ready'))
     .filter(isPresent)
 
-  const active = sortByUrgency(
-    activeRounds,
-    (round) => barActiveLineEscalation(round, now),
-    (round) => clockMs(round.placedAt, now),
-  )
+  /** OLDEST FIRST — same rule as the kitchen. Colour carries urgency. */
+  const active = sortOldestFirst(activeRounds, (round) => round.placedAt ?? '')
 
   const readyRowsUnsorted: DispatchRow[] = routed.flatMap((round) =>
     round.items
@@ -242,5 +269,5 @@ export function buildBarBoard(rounds: BarRound[], now: number = Date.now()): Bar
     (row) => dispatchRowClockMs(row, now),
   )
 
-  return { active, readyRows, unrouted }
+  return { active, readyRows, unrouted, olderUnresolved }
 }

@@ -124,7 +124,7 @@ function readyBarRound(readyAt: string): BarRound {
 }
 
 describe('kitchen board wall clock', () => {
-  it('advances the visible READY clock every second without causing another fetch', async () => {
+  it('advances the visible age across a minute boundary without causing another fetch', async () => {
     const readyAt = new Date(Date.now()).toISOString()
     fetchInitialKitchenLines.mockResolvedValue({
       items: [readyKitchenLine(readyAt)],
@@ -140,26 +140,30 @@ describe('kitchen board wall clock', () => {
     })
 
     const clock = () => container.querySelector('[data-testid="dispatch-row-clock"]')?.textContent
-    expect(clock()).toBe('READY 00:00')
+    // REDESIGN 2026-09-01: whole minutes, no seconds. The 1s tick still runs and is still a pure
+    // local re-render — the property this file exists to protect — but what it advances is now a
+    // minute counter and the escalation bands rather than a ticking MM:SS.
+    expect(clock()).toBe('<1m')
     expect(fetchInitialKitchenLines).toHaveBeenCalledTimes(1)
 
-    // Three 1s ticks. If the interval were still 30s (what this was before the fix), none of
-    // these would have moved the displayed clock at all.
-    for (let i = 0; i < 3; i++) {
-      await act(async () => {
-        jest.advanceTimersByTime(1_000)
-      })
-    }
-
-    expect(clock()).toBe('READY 00:03')
-    // The clock tick's only job is setNowMs — a pure re-render. Nothing about ticking it three
-    // times may have triggered a second fetch of the board.
+    // 59 one-second ticks, deliberately stopping SHORT of FEED_POLL_INTERVAL_MS (60s) so the poll
+    // cannot account for any fetch. This is the real guarantee: ticking never fetches.
+    await act(async () => {
+      jest.advanceTimersByTime(59_000)
+    })
     expect(fetchInitialKitchenLines).toHaveBeenCalledTimes(1)
+
+    // Cross the minute boundary — the display moves. (The 60s poll also fires here, which is
+    // correct and separately covered, so fetch counts are not asserted past this point.)
+    await act(async () => {
+      jest.advanceTimersByTime(2_000)
+    })
+    expect(clock()).toBe('1m')
   })
 })
 
 describe('bar board wall clock', () => {
-  it('advances the visible READY clock every second without causing another fetch', async () => {
+  it('advances the visible age across a minute boundary without causing another fetch', async () => {
     const readyAt = new Date(Date.now()).toISOString()
     fetchInitialBarRounds.mockResolvedValue({
       items: [readyBarRound(readyAt)],
@@ -175,16 +179,19 @@ describe('bar board wall clock', () => {
     })
 
     const clock = () => container.querySelector('[data-testid="dispatch-row-clock"]')?.textContent
-    expect(clock()).toBe('READY 00:00')
+    // REDESIGN 2026-09-01 — see the kitchen's matching test. Whole minutes, no seconds.
+    // REDESIGN 2026-09-01 — see the kitchen's matching test.
+    expect(clock()).toBe('<1m')
     expect(fetchInitialBarRounds).toHaveBeenCalledTimes(1)
 
-    for (let i = 0; i < 4; i++) {
-      await act(async () => {
-        jest.advanceTimersByTime(1_000)
-      })
-    }
-
-    expect(clock()).toBe('READY 00:04')
+    await act(async () => {
+      jest.advanceTimersByTime(59_000)
+    })
     expect(fetchInitialBarRounds).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      jest.advanceTimersByTime(2_000)
+    })
+    expect(clock()).toBe('1m')
   })
 })

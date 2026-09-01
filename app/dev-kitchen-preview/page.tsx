@@ -1,5 +1,7 @@
 'use client'
 
+import { useSearchParams } from 'next/navigation'
+
 /**
  * Local visual QA only — renders KitchenScreen against the dev fixture, no auth, no network.
  * lib/stations/dev-fixture.ts's own docblock: "safe to import from a page for local visual
@@ -16,14 +18,27 @@
  * proof images in docs/proof/ are rendered from exactly this.
  */
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
-import { buildKitchenWallFixture } from '@/lib/stations/dev-fixture'
+import { buildKitchenWallFixture, buildKitchenQuietScenario, buildKitchenBusyScenario, buildKitchenVolumeScenario } from '@/lib/stations/dev-fixture'
 
 const NOW = Date.parse('2026-08-28T18:30:00.000Z')
 
+/**
+ * `?scenario=quiet` / `?scenario=busy` select the KDS-redesign scenarios; anything else keeps the
+ * original twenty-table wall fixture so the existing proof images stay reproducible.
+ */
+function pickFixture(scenario: string | null, now: number) {
+  if (scenario === 'quiet') return buildKitchenQuietScenario(now)
+  if (scenario === 'busy') return buildKitchenBusyScenario(now)
+  if (scenario === 'v20') return buildKitchenVolumeScenario(now, 20)
+  if (scenario === 'v40') return buildKitchenVolumeScenario(now, 40)
+  return buildKitchenWallFixture(now)
+}
+
 export default function DevKitchenPreviewPage() {
+  const scenario = useSearchParams().get('scenario')
   return (
     <KitchenScreen
-      lines={buildKitchenWallFixture(NOW)}
+      lines={pickFixture(scenario, NOW)}
       now={NOW}
       connectionState="live"
       onBump={async (lineIds) => ({ ok: true, total: lineIds.length, failedLineIds: [] })}

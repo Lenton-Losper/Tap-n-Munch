@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
-import { ageSeconds, formatElapsedClock, type AgeEscalation } from '@/lib/stations/age'
+import { ageSeconds, formatMinutesShort, type AgeEscalation } from '@/lib/stations/age'
 import type { DensityScale, DispatchDensity } from '@/lib/stations/board-density'
 import type { BumpLines, StationBumpAction } from '@/lib/stations/bump'
 import type { DispatchRow } from '@/lib/stations/types'
@@ -332,8 +332,15 @@ export function StationCard({
           <p className={`font-black leading-none tabular-nums ${scale.tableClass}`}>{tableLabel}</p>
           {headerAction}
         </div>
+        {/*
+          SECONDARY, 2026-09-01. This rendered at `tableClass` — the SAME size as the table
+          number, 36px at roomy — so a ticking clock competed head-on with the one token that
+          routes a plate to a human, and motion wins that contest every time. It is now the
+          quietest element on the card: small, medium weight, muted. Urgency is the card's border
+          and tint (escalationClasses), which resolves at three metres where two digits do not.
+        */}
         <span
-          className={`shrink-0 font-black leading-none tabular-nums ${scale.tableClass}`}
+          className={`shrink-0 font-medium leading-none tabular-nums opacity-60 ${scale.noteClass}`}
           data-testid="card-age"
         >
           {ageLabel}
@@ -417,7 +424,6 @@ export function DispatchRowView({
   escalation,
   scale,
   tableLabel,
-  readyWord,
   action,
   actionLabel,
   tone,
@@ -432,7 +438,6 @@ export function DispatchRowView({
   scale: DispatchDensity
   tableLabel: (tableNumber: string) => string
   /** "READY" / "WAITING" — the word between the item and the clock. Signed per board. */
-  readyWord: string
   action: StationBumpAction
   actionLabel: string
   tone: 'station' | 'pass'
@@ -454,12 +459,20 @@ export function DispatchRowView({
       data-collected={collected ? 'true' : 'false'}
       className={`flex items-center gap-2 border-l-4 ${scale.rowPadClass} px-2 ${DISPATCH_ACCENT_CLASSES[escalation]} ${collected ? 'opacity-70' : ''}`}
     >
+      {/* TABLE | ITEM | TIME | ACTION — four fixed slots, so the eye lands in the same place on
+          every row. The table is its own column rather than run into the item name: it is the
+          token that routes a plate to a human, and at a glance it must not need parsing. */}
+      <span className={`w-[7.5rem] shrink-0 truncate font-black ${scale.rowTextClass}`}>
+        {tableLabel(row.tableNumber)}
+      </span>
       <span className={`min-w-0 flex-1 truncate font-bold ${scale.rowTextClass} ${collected ? 'line-through' : ''}`}>
-        {tableLabel(row.tableNumber)} · {row.quantity}× {row.itemName}
+        {row.quantity}× {row.itemName}
         {row.lineNote ? <span className="ml-1.5 font-black text-red-900">⚠ {row.lineNote}</span> : null}
       </span>
-      <span className={`shrink-0 font-black tabular-nums opacity-70 ${scale.clockClass}`} data-testid="dispatch-row-clock">
-        {readyWord} {formatElapsedClock(elapsed)}
+      {/* Whole minutes, no seconds — see formatMinutesShort. Deliberately the quietest element in
+          the row: normal weight, muted, small. Urgency is the border accent, not this number. */}
+      <span className={`w-14 shrink-0 text-right font-medium tabular-nums opacity-60 ${scale.clockClass}`} data-testid="dispatch-row-clock">
+        {formatMinutesShort(elapsed / 60)}
       </span>
       {collected ? (
         <button
@@ -551,4 +564,125 @@ export function useRecentlyCollected() {
   }, [])
 
   return { entries, markCollected, clear }
+}
+
+/* ============================================================================================
+ * SHARED SECTIONS — both boards render these, neither owns them.
+ * ==========================================================================================*/
+
+/**
+ * THE READY ZONE. Elastic, capped, and honest when empty.
+ *
+ * WHY IT COLLAPSES. The old layout gave Ready a fixed `flex-[32]` of the wall whether or not it
+ * held anything, so a quiet board spent a third of a 1080p screen rendering the words "Nothing
+ * ready." while the live orders above it were squeezed into a smaller tier. Now it takes only the
+ * height its rows need, up to a maximum, and shrinks to a single summary line when there is
+ * nothing to dispatch — Active gets the space back automatically, with no branch anywhere else.
+ *
+ * WHY A MAXIMUM. Ready must never be allowed to push Active off the screen either. Past the cap
+ * it scrolls VERTICALLY inside itself. It is `overflow-y-auto` with `overflow-x-hidden`: the rows
+ * are a flex column, so there is no mechanism by which content can travel sideways, and the
+ * explicit x-hidden is belt-and-braces against a future row that forgets to truncate.
+ */
+export function ReadySection({
+  heading,
+  emptyLabel,
+  rowCount,
+  density,
+  testId,
+  children,
+}: {
+  heading: string
+  emptyLabel: string
+  rowCount: number
+  density: string
+  testId: string
+  children: ReactNode
+}) {
+  const empty = rowCount === 0
+  return (
+    <section
+      data-testid={testId}
+      data-ready-density={density}
+      data-ready-collapsed={empty ? 'true' : 'false'}
+      data-ready-count={rowCount}
+      className={`mt-2 flex shrink-0 flex-col border-t-4 border-[#37352F] pt-1.5 ${
+        empty ? '' : 'max-h-[38vh] min-h-0'
+      }`}
+    >
+      <h2 className="mb-1 flex shrink-0 items-baseline gap-2 text-lg font-black uppercase tracking-wide text-[#37352F]">
+        <span>{heading}</span>
+        <span className="tabular-nums opacity-60">· {rowCount}</span>
+      </h2>
+      {empty ? (
+        /*
+         * NOTHING. Not a sentence, not a placeholder — the heading already reads "READY · 0",
+         * which is the whole message. An empty Ready zone is now one heading row tall, and every
+         * pixel below it belongs to Active. `emptyLabel` is still accepted and still the single
+         * source of that wording for any caller that wants it; this surface simply does not need
+         * a second way of saying zero.
+         */
+        null
+      ) : (
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+          data-testid="ready-dispatch-list"
+        >
+          {children}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * OLDER UNRESOLVED — the 12h partition, collapsed by default, never hidden.
+ *
+ * These lines are still live work in the database; nothing about them has been collected, voided
+ * or written. They are simply not what anyone on this shift is about to make, and leaving them in
+ * the main grid did active harm: on production 2026-09-01 twelve 3-to-4-day-old lines were 80% of
+ * the kitchen board AND pushed the density tier down far enough to shrink the three real orders.
+ *
+ * Collapsed, not removed. A summary row states how many there are and opens on tap. The count is
+ * always visible even when closed, because a board that silently forgets work is worse than a
+ * cluttered one — that is the whole reason this is a partition and not a filter.
+ */
+export function OlderUnresolvedSection({
+  count,
+  heading,
+  hint,
+  children,
+}: {
+  count: number
+  heading: string
+  hint: string
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  if (count === 0) return null
+  return (
+    <section
+      data-testid="older-unresolved-section"
+      data-older-count={count}
+      data-older-open={open ? 'true' : 'false'}
+      className="mt-2 shrink-0 border-t-2 border-dashed border-[#B8B4AC]"
+    >
+      <button
+        type="button"
+        data-testid="older-unresolved-toggle"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-baseline gap-2 py-1 text-left text-sm font-black uppercase tracking-wide text-[#8A857C]"
+      >
+        <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span>{heading}</span>
+        <span className="tabular-nums">· {count}</span>
+        <span className="ml-2 font-medium normal-case tracking-normal opacity-70">{hint}</span>
+      </button>
+      {open ? (
+        <div className="max-h-[30vh] overflow-y-auto overflow-x-hidden pb-1" data-testid="older-unresolved-list">
+          {children}
+        </div>
+      ) : null}
+    </section>
+  )
 }

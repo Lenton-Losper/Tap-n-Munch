@@ -52,7 +52,7 @@ export type DensityScale = {
 
 const ROOMY: DensityScale = {
   density: 'roomy',
-  columnsClass: 'columns-2 xl:columns-3',
+  columnsClass: 'grid grid-cols-2 xl:grid-cols-3 content-start items-start',
   tableClass: 'text-4xl',
   itemClass: 'text-2xl',
   noteClass: 'text-base',
@@ -64,7 +64,7 @@ const ROOMY: DensityScale = {
 
 const STANDARD: DensityScale = {
   density: 'standard',
-  columnsClass: 'columns-3 xl:columns-4',
+  columnsClass: 'grid grid-cols-3 xl:grid-cols-4 content-start items-start',
   tableClass: 'text-3xl',
   itemClass: 'text-2xl',
   noteClass: 'text-sm',
@@ -78,7 +78,7 @@ const COMPACT: DensityScale = {
   density: 'compact',
   // Capped at 4, not scaled up to 5/6 — see the file docblock. ~480px per column at 1920px,
   // comfortable room for a name and its button on one line.
-  columnsClass: 'columns-3 xl:columns-4',
+  columnsClass: 'grid grid-cols-3 xl:grid-cols-4 content-start items-start',
   // 30px. The floor for a number read across a kitchen. Not "oversized" — this already IS the
   // smallest tier's number; "no oversized table numbers" is chrome guidance, not a floor change.
   tableClass: 'text-3xl',
@@ -105,7 +105,7 @@ const COMPACT: DensityScale = {
  */
 const DENSE: DensityScale = {
   density: 'dense',
-  columnsClass: 'columns-4 xl:columns-5',
+  columnsClass: 'grid grid-cols-4 xl:grid-cols-5 content-start items-start',
   tableClass: 'text-3xl',
   itemClass: 'text-2xl',
   noteClass: 'text-sm',
@@ -120,14 +120,24 @@ const DENSE: DensityScale = {
  * longer uses this scale at all, see dispatchDensityFor), derived from round heights with the
  * current chrome, then measured in a real browser by the e2e spec rather than left as arithmetic.
  */
-export const ROOMY_MAX_ROUNDS = 5
-export const STANDARD_MAX_ROUNDS = 10
-export const COMPACT_MAX_ROUNDS = 20
+export const ROOMY_MAX_ROUNDS = 4
+export const STANDARD_MAX_ROUNDS = 8
+export const COMPACT_MAX_ROUNDS = 12
+export const DENSE_MAX_ROUNDS = 20
 
 export function densityFor(roundCount: number): DensityScale {
   if (roundCount <= ROOMY_MAX_ROUNDS) return ROOMY
   if (roundCount <= STANDARD_MAX_ROUNDS) return STANDARD
   if (roundCount <= COMPACT_MAX_ROUNDS) return COMPACT
+  /**
+   * THE FLOOR. Past DENSE_MAX_ROUNDS the board STOPS shrinking and overflows vertically instead.
+   *
+   * There is no tier below DENSE, on purpose. Shrinking further would trade the one property a
+   * wall screen exists for -- being readable from three metres -- for the ability to fit more,
+   * and a board nobody can read from the pass is not a denser board, it is a blank wall. Past
+   * twenty rounds the grid scrolls; it never gets smaller. `itemClass` holds at text-2xl (24px)
+   * in every tier including this one, which is that guarantee expressed in the type scale.
+   */
   return DENSE
 }
 
@@ -155,7 +165,7 @@ export type DispatchDensity = {
 
 const DISPATCH_ROOMY: DispatchDensity = {
   density: 'roomy',
-  columnsClass: 'columns-1 xl:columns-2',
+  columnsClass: 'flex flex-col',
   rowTextClass: 'text-2xl',
   clockClass: 'text-xl',
   buttonClass: 'px-3 py-1 text-base',
@@ -164,7 +174,7 @@ const DISPATCH_ROOMY: DispatchDensity = {
 
 const DISPATCH_STANDARD: DispatchDensity = {
   density: 'standard',
-  columnsClass: 'columns-2 xl:columns-3',
+  columnsClass: 'flex flex-col',
   rowTextClass: 'text-2xl',
   clockClass: 'text-lg',
   buttonClass: 'px-2.5 py-1 text-sm',
@@ -173,7 +183,7 @@ const DISPATCH_STANDARD: DispatchDensity = {
 
 const DISPATCH_COMPACT: DispatchDensity = {
   density: 'compact',
-  columnsClass: 'columns-2 xl:columns-4',
+  columnsClass: 'flex flex-col',
   rowTextClass: 'text-2xl',
   clockClass: 'text-base',
   buttonClass: 'px-2 py-0.5 text-sm',

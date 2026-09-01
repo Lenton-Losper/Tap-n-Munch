@@ -247,3 +247,48 @@ export function sortByUrgency<T>(
     return clockMsOf(a) - clockMsOf(b)
   })
 }
+
+/* ============================================================================================
+ * KDS REDESIGN 2026-09-01 — time is a SECONDARY signal, and 12h is where a shift ends.
+ * ==========================================================================================*/
+
+/**
+ * Whole minutes, never seconds. "3m", "12m", "<1m".
+ *
+ * REPLACES formatElapsedClock ON THE BOARDS. A ticking MM:SS was the most animated thing on a
+ * wall screen and it competed with the item name for the eye; motion wins that contest every
+ * time. Nobody behaves differently at 04:59 than at 05:02 — the actionable signal is the
+ * escalation COLOUR, which resolves at three metres where two digits do not.
+ *
+ * formatElapsedClock is deliberately left in place: it is still the honest rendering anywhere a
+ * second-resolution clock is genuinely wanted, and removing it would be a change to code this
+ * redesign has no reason to touch.
+ */
+export function formatMinutesShort(minutes: number): string {
+  const whole = Math.floor(minutes)
+  if (whole < 1) return '<1m'
+  return `${whole}m`
+}
+
+/**
+ * How long an unresolved line may sit in the normal layout before it is partitioned out.
+ *
+ * 12 hours, i.e. longer than any single service. Measured on production 2026-09-01: the Digi
+ * Cofee kitchen board carried 15 lines of which 12 were 3-4 DAYS old, and the bar board 16 of
+ * which 12 were. That is 80% of a wall screen showing work nobody will ever do.
+ *
+ * The harm is not only clutter, it COMPOUNDS: card count drives the density tier, so nine dead
+ * cards pushed a three-order board from ROOMY to TIGHT and shrank the live orders. Dead work was
+ * making live work harder to read.
+ *
+ * DISPLAY ONLY. Nothing here collects, voids, or writes anything — a partitioned line keeps its
+ * exact state and reappears in the normal layout the moment it is bumped. It is moved, never
+ * hidden and never resolved.
+ */
+export const UNRESOLVED_AFTER_MINUTES = 12 * 60
+
+/** True when this clock is older than the 12h shift boundary. */
+export function isOlderUnresolved(sinceIso: string | null, now: number = Date.now()): boolean {
+  if (!sinceIso) return false
+  return ageMinutes(sinceIso, now) >= UNRESOLVED_AFTER_MINUTES
+}
