@@ -12,6 +12,8 @@ node_modules/
 # OpenNext build output. Never commit an artifact -- a Windows-built one 500s every route
 # (see scripts/deploy/check-opennext-artifact.mjs).
 /.open-next/
+# Written by the deploy sequence: the version to roll back to. Machine-local.
+/.deploy/
 /out/
 
 # Production

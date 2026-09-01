@@ -1,0 +1,200 @@
+#!/usr/bin/env node
+/**
+ * THE PRODUCTION DEPLOY SEQUENCE, as one command that cannot skip its own gates.
+ *
+ * ============================================================================================
+ * WHY THIS EXISTS WHEN THE GATES ALREADY DO
+ * ============================================================================================
+ *
+ * `check-opennext-artifact.mjs` refuses a malformed artifact — but only if somebody runs it. On
+ * 2026-09-01 the outage was not caused by a missing check; it was caused by a person, in a hurry,
+ * running `wrangler deploy` because that was the shortest path to production. A gate you have to
+ * remember is a gate that gets skipped exactly when it matters.
+ *
+ * So this makes the SAFE path the SHORT path, and the stages are ordered so each one's failure
+ * costs less than the next one's:
+ *
+ *   verify   -> the artifact is Linux-built and complete            (costs nothing)
+ *   upload   -> a version at 0% traffic, with a preview URL         (costs no customer)
+ *   smoke    -> the preview answers on every route                 (costs no customer)
+ *   record   -> the rollback target, WRITTEN DOWN BEFORE promoting (costs nothing)
+ *   promote  -> traffic moves                                       (costs everything)
+ *   watch    -> the live site, sampled                              (catches it early)
+ *
+ * ============================================================================================
+ * PROMOTION IS OPT-IN AND CANNOT BE REACHED BY ACCIDENT
+ * ============================================================================================
+ *
+ * Without `--promote` this uploads and smokes and stops, having sent no traffic anywhere. With
+ * `--promote` it ALSO requires `--i-have-read-the-runbook`, because a single flag is one typo or
+ * one copied line away from moving production, and the second flag is not something anybody types
+ * by accident.
+ *
+ * A failed stage stops the sequence. There is no `--force`.
+ *
+ * Usage:
+ *   node scripts/deploy/deploy-production.mjs                       # verify + upload + smoke
+ *   node scripts/deploy/deploy-production.mjs --promote --i-have-read-the-runbook
+ *   node scripts/deploy/deploy-production.mjs --rollback <version-id>
+ *
+ * See docs/production-deploy-runbook.md. The build itself is a separate step, in Docker:
+ *   docker run --rm -v "<repo>:/app" -v flashtap_prod_linux_build_node_modules:/app/node_modules \
+ *     -w /app node:20-bookworm bash /app/scripts/deploy/build-linux.sh
+ */
+import { spawnSync } from 'node:child_process'
+import { existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const args = process.argv.slice(2)
+const has = (flag) => args.includes(flag)
+const valueOf = (flag) => {
+  const i = args.indexOf(flag)
+  return i !== -1 ? args[i + 1] : null
+}
+
+const CONFIG = 'wrangler.production.toml'
+const WRANGLER = 'wrangler@3.99.0'
+const LIVE_URL = 'https://flashtap.app'
+const ROLLBACK_FILE = join('.deploy', 'rollback-target.json')
+
+let stage = 0
+function banner(title) {
+  stage += 1
+  console.log(`\n${'='.repeat(72)}\n  STAGE ${stage}: ${title}\n${'='.repeat(72)}`)
+}
+function fail(message) {
+  console.error(`\nSTOPPED: ${message}`)
+  console.error('Nothing further was attempted. There is no --force.')
+  process.exit(1)
+}
+function run(command, commandArgs, { capture = false } = {}) {
+  const result = spawnSync(command, commandArgs, {
+    encoding: 'utf8',
+    stdio: capture ? ['inherit', 'pipe', 'pipe'] : 'inherit',
+    shell: process.platform === 'win32',
+  })
+  if (capture) {
+    process.stdout.write(result.stdout ?? '')
+    process.stderr.write(result.stderr ?? '')
+  }
+  return { code: result.status ?? 1, out: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+}
+
+// ── rollback ─────────────────────────────────────────────────────────────────
+
+if (has('--rollback')) {
+  const target = valueOf('--rollback')
+  if (!target) fail('--rollback needs a version id')
+  banner(`ROLL BACK to ${target}`)
+  console.log('Rolling back first and diagnosing afterwards is the correct order.')
+  const r = run('npx', [WRANGLER, 'versions', 'deploy', '--config', CONFIG, `${target}@100`, '-y'])
+  if (r.code !== 0) fail('rollback command failed — escalate immediately')
+  banner('POST-ROLLBACK HEALTH')
+  const s = run('node', ['scripts/deploy/smoke-preview.mjs', LIVE_URL, '--samples', '10'])
+  if (s.code !== 0) fail('the site is still unhealthy after rollback')
+  console.log('\nRolled back and healthy.')
+  process.exit(0)
+}
+
+// ── 1. verify ────────────────────────────────────────────────────────────────
+
+banner('VERIFY THE ARTIFACT')
+if (!existsSync(join('.open-next', 'server-functions', 'default', 'handler.mjs'))) {
+  fail('no artifact found. Build it in Docker first — see the runbook. A host build is not shippable.')
+}
+if (run('node', ['scripts/deploy/check-opennext-artifact.mjs', '.open-next']).code !== 0) {
+  fail('the artifact is malformed. This is the check that would have prevented the 2026-09-01 outage.')
+}
+
+// ── 2. upload at 0% ──────────────────────────────────────────────────────────
+
+banner('UPLOAD AT 0% TRAFFIC')
+const sha = run('git', ['rev-parse', '--short', 'HEAD'], { capture: true }).out.trim() || 'unknown'
+const upload = run(
+  'npx',
+  [
+    WRANGLER, 'versions', 'upload', '--config', CONFIG,
+    '--tag', `deploy-${sha}`,
+    '--message', `0%-traffic candidate ${sha}; NOT promoted`,
+  ],
+  { capture: true },
+)
+if (upload.code !== 0) fail('upload failed')
+
+const versionId = (upload.out.match(/Worker Version ID:\s*([0-9a-f-]{36})/) || [])[1]
+const previewUrl = (upload.out.match(/Version Preview URL:\s*(https:\/\/\S+)/) || [])[1]
+if (!versionId || !previewUrl) {
+  fail('could not read a version id or preview URL from the upload output — refusing to continue blind')
+}
+console.log(`\n  version : ${versionId}\n  preview : ${previewUrl}`)
+
+// ── 3. smoke the preview ─────────────────────────────────────────────────────
+
+banner('SMOKE THE PREVIEW — no customer traffic has moved')
+const smokeArgs = ['scripts/deploy/smoke-preview.mjs', previewUrl, '--samples', '3']
+for (const m of args.filter((a, i) => args[i - 1] === '--expect')) smokeArgs.push('--expect', m)
+for (const m of args.filter((a, i) => args[i - 1] === '--absent')) smokeArgs.push('--absent', m)
+if (run('node', smokeArgs).code !== 0) fail('the preview is not healthy. Do not promote.')
+
+// ── 4. record the rollback target ────────────────────────────────────────────
+
+banner('RECORD THE ROLLBACK TARGET — before promoting, not after')
+const deployments = run('npx', [WRANGLER, 'deployments', 'list', '--config', CONFIG], { capture: true })
+const current = (deployments.out.match(/\(100%\)\s*([0-9a-f-]{36})/) || [])[1] ?? null
+if (!current) {
+  console.log('  Could not parse the current 100% version. Record it by hand before promoting.')
+} else {
+  try {
+    run('node', ['-e', "require('node:fs').mkdirSync('.deploy',{recursive:true})"])
+    writeFileSync(
+      ROLLBACK_FILE,
+      JSON.stringify({ rollbackTarget: current, replacedBy: versionId, sha, at: new Date().toISOString() }, null, 2),
+    )
+    console.log(`  rollback target: ${current}`)
+    console.log(`  written to     : ${ROLLBACK_FILE}`)
+  } catch (err) {
+    console.log(`  could not write ${ROLLBACK_FILE}: ${err.message}. Record ${current} by hand.`)
+  }
+}
+
+// ── 5. promote, or stop ──────────────────────────────────────────────────────
+
+if (!has('--promote')) {
+  console.log('\n' + '='.repeat(72))
+  console.log('  STOPPING BEFORE PROMOTION. No customer traffic has moved.')
+  console.log('='.repeat(72))
+  console.log(`\n  The candidate is live at 0%: ${previewUrl}`)
+  console.log('  To promote:')
+  console.log('    node scripts/deploy/deploy-production.mjs --promote --i-have-read-the-runbook')
+  if (current) console.log(`\n  To roll back afterwards:  --rollback ${current}`)
+  process.exit(0)
+}
+
+if (!has('--i-have-read-the-runbook')) {
+  fail(
+    '--promote also requires --i-have-read-the-runbook. One flag is a typo away from moving ' +
+      'production; two is a decision.',
+  )
+}
+
+banner('PROMOTE TO 100%')
+if (run('npx', [WRANGLER, 'versions', 'deploy', '--config', CONFIG, `${versionId}@100`, '-y']).code !== 0) {
+  fail(`promotion failed. The previous version ${current ?? '(see deployments list)'} is still serving.`)
+}
+
+// ── 6. watch ─────────────────────────────────────────────────────────────────
+
+banner('LIVE HEALTH — sampled, because rollout is gradual')
+const live = run('node', ['scripts/deploy/smoke-preview.mjs', LIVE_URL, '--samples', '20'])
+if (live.code !== 0) {
+  console.error('\nTHE LIVE SITE IS UNHEALTHY AFTER PROMOTION.')
+  if (current) {
+    console.error(`ROLL BACK NOW:\n  node scripts/deploy/deploy-production.mjs --rollback ${current}`)
+  }
+  process.exit(1)
+}
+
+console.log(`\nPromoted ${versionId} (${sha}).`)
+if (existsSync(ROLLBACK_FILE)) {
+  console.log(`Rollback target recorded in ${ROLLBACK_FILE}: ${JSON.parse(readFileSync(ROLLBACK_FILE, 'utf8')).rollbackTarget}`)
+}

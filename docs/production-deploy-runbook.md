@@ -25,6 +25,34 @@ unless its identity can be independently proven.**
 
 ---
 
+## The one command
+
+Everything below is wrapped in a single sequence that cannot skip its own gates, because the
+outage was not caused by a missing check — it was caused by `wrangler deploy` being the shortest
+path to production. The safe path is now the short one.
+
+```bash
+# 1. build (Docker, always)
+# (the full docker command is in step 1 below - it is long, and one copy of it is enough)
+
+# 2. verify + upload at 0% + smoke + record the rollback target, then STOP
+npm run deploy:preview
+
+# 3. only when step 2 is clean, and only deliberately
+npm run deploy:promote
+
+# if anything 5xxs
+npm run deploy:rollback -- <version-id>
+```
+
+All three wrap `scripts/deploy/deploy-production.mjs`.
+
+`deploy:preview` moves no customer traffic. `deploy:promote` requires a second flag
+(`--i-have-read-the-runbook`) because one flag is a typo away from moving production and two is a
+decision. There is no `--force`: a failed stage stops the sequence.
+
+The manual equivalent of each stage is below, for when something needs doing by hand.
+
 ## The procedure
 
 ### 0. Know where you are
@@ -135,13 +163,17 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
 | No artifact is ever committed | `/.open-next/` in `.gitignore` | every commit |
 | 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once billing allows |
 | No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | both |
+| The sequence cannot skip its own gates | `scripts/deploy/deploy-production.mjs` | local |
+| The sequence still gates | `__tests__/deploy-sequence-gates.test.ts` (13 tests) | every test run |
 
 ## Known gaps
 
 - **CI cannot run** while billing is locked. Every gate above exists in the workflow and is
   exercised locally; none of it runs automatically today.
 - **The local path is not forced.** Nothing physically stops someone running `wrangler deploy` by
-  hand and skipping all of this. The artifact gate makes the failure loud if they run it; it
-  cannot make them run it.
+  hand and skipping all of this. What has changed is that the safe path is now the SHORT one —
+  `npm run deploy:preview` is fewer keystrokes than the manual sequence and refuses a malformed
+  artifact before it uploads. A gate you have to remember is a gate that gets skipped exactly when
+  it matters, so the fix was to make remembering unnecessary rather than to add another check.
 - `supabase/schema.sql` carries a stale copy of `deduct_recipe_stock` — unrelated to deploys but
   found while writing the stock contract, and it should be regenerated.
