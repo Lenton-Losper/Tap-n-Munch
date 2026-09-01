@@ -129,7 +129,7 @@ failure is invisible outside the Postgres log.
 
 ---
 
-## 5. Voids, cancellations and refunds — **THE OPEN DECISION**
+## 5. Voids, cancellations and refunds — **RESOLVED, see §7**
 
 ### What happens today
 
@@ -146,18 +146,20 @@ no `void`, no `refund`.** No code writes a positive movement referencing an orde
 | Line voided before completion | See §6. |
 | **Order refunded after completion** | **Stock stays deducted. No movement is written.** |
 
-### Why this is a decision and not a bug
+### Ruled 2026-09-01: that is correct, and it is now an invariant
 
-For a refund, "stock stays deducted" is very likely **correct**: the food was made and served, the
-ingredients are gone, and the customer got their money back. Returning ingredients to inventory
-would overstate stock and understate cost of sales.
+"Stock stays deducted" is the answer. The food was made and served, the ingredients are gone, and
+the customer got their money back — returning ingredients to inventory would overstate stock and
+understate cost of sales.
 
-But it is a *choice*, and nothing records that it was ever made. The opposite reading — a refund
-means the sale did not happen, so the stock should come back — produces different inventory
-valuation and different COGS. **That is an accounting decision, not an engineering one**, so this
-sprint stops here rather than encoding an answer.
+The behaviour does not change; what changes is that it is now **decided and enforced** rather than
+an accident of there being no code. See §7 R1/R2, and I2/I3 in
+`__tests__/stock-consumption-invariants.test.ts`.
 
-**What is needed from the owner:** see §7.
+Also corrected in this pass: the row above claiming a completed order cannot be cancelled is true
+of the TERMINAL route only. `cancelOrderWithTrail` filters on `payment_status`, not `status`, so a
+completed-and-paid order is excluded in practice but not by that guard. One order has in fact been
+cancelled after completion (`75cb3796`) and correctly kept its stock.
 
 ---
 
@@ -179,25 +181,85 @@ The fix depends on the §5 ruling — whether a void returns stock — so it is 
 
 ---
 
-## 7. What the owner has to decide
+## 7. RESOLVED — the owner's rulings, 2026-09-01
 
-Nothing below is implemented. Each changes inventory valuation or cost of sales.
+All four questions this document previously left open have been answered. They are now
+**invariants**, pinned by `__tests__/stock-consumption-invariants.test.ts` (I1-I5).
 
-1. **Does a refund on a completed order return stock?**
-   Recommended: **no** — the food was made and served. Encode it explicitly so the answer stops
-   being an accident of there being no code.
-2. **Does voiding a line on a completed order return stock?**
-   This is the one that actually needs thought: the kitchen may or may not have made it. The
-   station states already distinguish those cases (`outstanding` vs `cooked`/`ready`), so the
-   system *can* tell "cancelled before we started" from "cancelled after it was plated" — but
-   only if someone rules on which of those returns stock.
-3. **Should the ledger drive menu availability?**
-   Today `menu_items.status = 'out_of_stock'` is a **manual merchant state** (ruled 2026-08-28:
-   shown, greyed, Add disabled — so a QR customer still learns the dish exists). A tracked item
-   whose ingredients hit zero stays orderable and is refused at checkout with a 409. Wiring the
-   ledger to availability would overrule that decision, so it needs a new one.
-4. **The 38 tracked-but-unconfigured items.** Not code. Either configure recipes or untick
-   tracking; today they are badged 🟠 and deducting nothing.
+### R1 — A refund does NOT restore stock
+
+A financial refund does not imply physical inventory came back. The food was made and served; the
+ingredients are gone. Refunding money is a payment event and has no inventory consequence.
+
+Already true in code — there is no reversal path — so this ruling **changes nothing and enforces
+everything**: I2's test refuses any future `sale_reversal` / `refund` / `void` reason in the
+ledger vocabulary, and refuses any refund/cancel/void module that touches `stock_movements`.
+
+### R2 — A void after completion does NOT restore stock by default
+
+Inventory returns **only** through an explicit adjustment representing stock that genuinely came
+back to usable inventory. It is never inferred from payment or order state.
+
+The mechanism already exists and needs nothing new: `reason` accepts `adjustment`, `loss`,
+`recount`. Food made but not sold is a `loss`; ingredients genuinely returned to the shelf are an
+`adjustment`. Both are somebody's deliberate act, recorded with an actor, which is exactly what
+"do not infer this" requires.
+
+**This has already happened once and behaved correctly.** Order `75cb3796` was completed
+2026-08-25 13:01 and cancelled 16:53 — nearly four hours later. Its sale movements are still in
+the ledger. Under R2 that is the right outcome.
+
+### R3 — Inventory does NOT control menu availability
+
+`menu_items.status = 'out_of_stock'` stays merchant-controlled (the 2026-08-28 ruling stands).
+Stock levels may WARN staff; they may not silently hide or unhide a dish.
+
+Warning already exists and is untouched: `computeStockStatus` derives
+`negative | out_of_stock | low_stock | healthy | not_tracked`, and the stock overview counts all
+three attention states together. `check_stock_sufficiency_locked` still refuses a sale at
+PLACEMENT, which is a refusal, not an availability change.
+
+Newly enforced: **I5** — no module under `lib/stock` or `lib/recipes` may write a `status` key to
+`menu_items`, and `deduct_recipe_stock` may not `UPDATE menu_items` at all.
+
+### R4 — Tracked items without recipes are incomplete configuration
+
+Never guessed. Excluded from automatic recipe-based deduction, and surfaced.
+
+`lib/stock/inventory-configuration.ts` names the four states rather than collapsing them to a
+boolean, because two of the four are faults that look like the third:
+
+| state | deducts | meaning |
+|---|---|---|
+| `deducting` | yes | tracked **and** a live recipe with ≥1 ingredient |
+| `tracked_without_recipe` | no | **the silent fault.** Every screen says tracked; nothing moves. |
+| `recipe_without_tracking` | no | dormant by design since `20260731230000` |
+| `not_tracked` | no | a merchant choice, not a fault — deliberately not reported |
+
+An **empty** recipe counts as `tracked_without_recipe`, not as configured: it satisfies "a recipe
+exists" while deducting precisely nothing, which is the exact shape that would report the silent
+case as healthy.
+
+Production, 2026-09-01: **38 `tracked_without_recipe`** (the whole of Chownow Nedbank's coffee
+menu) and 26 `recipe_without_tracking`. Run
+`node scripts/reports/merchant-configuration-report.mjs` for the current list.
+
+---
+
+## 7b. WHY `completed` IS THE RIGHT CONSUMPTION POINT
+
+The brief required proving the point rather than inheriting it. The choice follows from R2:
+
+| candidate | verdict |
+|---|---|
+| placed / accepted | Cancelled routinely, nothing made. Would deduct for food that never existed. |
+| ready | Physically truest — the ingredients really are gone. But a ready order can still be cancelled, and under R2 nothing would put the stock back automatically, so each such case leaves a permanently wrong ledger no code may correct. It converts a rare event into an uncorrectable error. |
+| **completed** | **Correct.** Every deduction corresponds to a completed sale. Food made but not sold is real waste, and the ledger already has the right word for it — an explicit `loss`, which is the mechanism R2 mandates. |
+
+**Irreversibility, measured.** Of 2,573 production orders carrying a `completed_at`, exactly
+**one** is no longer `completed` (`75cb3796`, above). Exactly-once does not depend on that anyway:
+the trigger fires only on `OLD.status IS DISTINCT FROM 'completed'`, and the function returns early
+if any movement already references the order, so re-entering completion deducts nothing further.
 
 ---
 

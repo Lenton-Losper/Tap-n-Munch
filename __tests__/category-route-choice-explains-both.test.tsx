@@ -63,7 +63,7 @@ describe('the consequence is stated for every destination', () => {
 
   it('both says it is NOT ready until both stations bump — the inversion, spelled out', () => {
     const { consequence } = render('both')
-    expect(consequence).toMatch(/NOT ready until BOTH stations/)
+    expect(consequence).toMatch(/NOT ready until the KITCHEN and the BAR have EACH finished it/)
     expect(consequence).toMatch(/One station finishing alone will not release it/)
   })
 

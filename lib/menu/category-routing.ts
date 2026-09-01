@@ -80,7 +80,7 @@ export const CATEGORY_ROUTE_OPTIONS: readonly CategoryRouteOption[] = [
     label: 'Both stations',
     meaning: 'The kitchen and the bar each make a part of these.',
     consequence:
-      'NOT ready until BOTH stations have bumped it. One station finishing alone will not release it to the waiter.',
+      'NOT ready until the KITCHEN and the BAR have EACH finished it. One station finishing alone will not release it to the waiter.',
     requiresAcknowledgement: true,
   },
 ]
