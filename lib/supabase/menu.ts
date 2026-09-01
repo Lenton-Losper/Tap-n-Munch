@@ -285,7 +285,9 @@ export async function createMenuCategory(
   firebaseRestaurantId: string,
   name: string,
   description?: string,
-  routeTo?: 'kitchen' | 'bar' | 'both'
+  routeTo?: 'kitchen' | 'bar' | 'both',
+  /** Required by the API when routeTo is 'both'. See lib/menu/category-routing.ts. */
+  confirmBoth?: boolean
 ) {
   if (typeof window !== 'undefined') {
     const accessToken = await getStaffAccessToken()
@@ -299,6 +301,7 @@ export async function createMenuCategory(
         name,
         description,
         route_to: routeTo || 'kitchen',
+        confirm_both: confirmBoth === true,
       }),
     })
     const payload = await response.json().catch(() => ({}))
@@ -343,6 +346,8 @@ export async function updateMenuCategory(
 export async function bulkSetCategoryRoute(
   categoryIds: string[],
   routeTo: 'kitchen' | 'bar' | 'both',
+  /** Required by the API when routeTo is 'both'. See lib/menu/category-routing.ts. */
+  confirmBoth?: boolean,
 ) {
   const accessToken = await getStaffAccessToken()
   const response = await fetch('/api/admin/menu/categories', {
@@ -351,7 +356,7 @@ export async function bulkSetCategoryRoute(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ categoryIds, route_to: routeTo }),
+    body: JSON.stringify({ categoryIds, route_to: routeTo, confirm_both: confirmBoth === true }),
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.error || 'Failed to update category routing')

@@ -4,6 +4,10 @@ import {
   loadCategoryForRestaurant,
   requireMenuWriteContext,
 } from '@/lib/api/menu-route-auth'
+import {
+  readBothAcknowledgement,
+  validateCategoryRouteWrite,
+} from '@/lib/menu/category-routing'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,10 +21,7 @@ export async function POST(request: Request) {
     const body = await request.json()
     const name = String(body?.name || '').trim()
     const description = body?.description ? String(body.description).trim() : null
-    const routeTo = String(body?.route_to || body?.routeTo || 'kitchen').trim() as
-      | 'kitchen'
-      | 'bar'
-      | 'both'
+    const requestedRoute = String(body?.route_to || body?.routeTo || 'kitchen').trim()
 
     if (!name) {
       return NextResponse.json(
@@ -28,6 +29,15 @@ export async function POST(request: Request) {
         { status: 400 },
       )
     }
+
+    // Previously this cast an arbitrary string straight into the insert, so an unrecognised
+    // route_to surfaced as a raw Postgres CHECK violation with a 500. Validate here, and make
+    // 'both' require the acknowledgement -- see lib/menu/category-routing.ts for why.
+    const routeCheck = validateCategoryRouteWrite(requestedRoute, readBothAcknowledgement(body))
+    if (!routeCheck.ok) {
+      return NextResponse.json({ error: routeCheck.error }, { status: 400 })
+    }
+    const routeTo = routeCheck.route
 
     const { data: existing, error: findError } = await supabase
       .from('menu_categories')
@@ -68,9 +78,6 @@ export async function POST(request: Request) {
   }
 }
 
-/** kitchen | bar | both -- matches the DB CHECK constraint on menu_categories.route_to. */
-const VALID_ROUTES = new Set(['kitchen', 'bar', 'both'])
-
 export async function PATCH(request: Request) {
   try {
     const user = await getUserFromRequest(request)
@@ -93,16 +100,17 @@ export async function PATCH(request: Request) {
       if (categoryIds.length === 0) {
         return NextResponse.json({ error: 'categoryIds must be a non-empty array' }, { status: 400 })
       }
-      if (!VALID_ROUTES.has(routeTo)) {
-        return NextResponse.json(
-          { error: "route_to must be 'kitchen', 'bar', or 'both'" },
-          { status: 400 },
-        )
+      // Bulk is the highest-blast-radius way to set 'both' -- one click can put nineteen
+      // categories behind a two-station gate -- so it takes the same acknowledgement as the
+      // single-category path, not a weaker one.
+      const bulkCheck = validateCategoryRouteWrite(routeTo, readBothAcknowledgement(body))
+      if (!bulkCheck.ok) {
+        return NextResponse.json({ error: bulkCheck.error }, { status: 400 })
       }
 
       const { data, error } = await supabase
         .from('menu_categories')
-        .update({ route_to: routeTo, updated_at: new Date().toISOString() })
+        .update({ route_to: bulkCheck.route, updated_at: new Date().toISOString() })
         .eq('restaurant_id', restaurantId)
         .in('id', categoryIds)
         .select('id')
@@ -139,8 +147,20 @@ export async function PATCH(request: Request) {
     if ('display_order' in body) {
       updates.display_order = Number(body.display_order)
     }
+    /**
+     * Only a write that actually SETS route_to is checked. Renaming a category that is already
+     * 'both' does not re-assert its routing and must keep working untouched -- that is what stops
+     * this guard from breaking the venues currently running 'both' on purpose.
+     */
     if ('route_to' in body || 'routeTo' in body) {
-      updates.route_to = String(body.route_to || body.routeTo || 'kitchen')
+      const singleCheck = validateCategoryRouteWrite(
+        String(body.route_to || body.routeTo || 'kitchen'),
+        readBothAcknowledgement(body),
+      )
+      if (!singleCheck.ok) {
+        return NextResponse.json({ error: singleCheck.error }, { status: 400 })
+      }
+      updates.route_to = singleCheck.route
     }
     if ('active' in body) {
       updates.active = Boolean(body.active)

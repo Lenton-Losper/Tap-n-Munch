@@ -40,6 +40,10 @@ import { FoodItemImage } from '@/components/menu/food-item-image'
 import { MenuItemFormModal } from '@/components/menu/menu-item-form-modal'
 import { InventorySetupBanner } from '@/components/menu/inventory-setup-ui'
 import { MenuItemInventoryBadge } from '@/components/menu/menu-item-inventory-badge'
+import {
+  CategoryRouteChoice,
+  categoryRouteChoiceIsComplete,
+} from '@/components/menu/category-route-choice'
 import { loadInventorySetupAction } from '@/lib/recipes/actions'
 import type { InventorySetupData } from '@/lib/recipes/queries'
 
@@ -97,6 +101,14 @@ export function MenuManagementV2({
   const [showRoutingModal, setShowRoutingModal] = useState(false)
   const [routingSelection, setRoutingSelection] = useState<Set<string>>(new Set())
   const [routingBulkValue, setRoutingBulkValue] = useState<'kitchen' | 'bar' | 'both'>('kitchen')
+  /**
+   * Acknowledgement of what 'both' costs, one per surface. Deliberately NOT one shared flag:
+   * ticking it in the create dialog must not pre-tick the bulk dialog, which is the one that can
+   * put nineteen categories behind a two-station gate at once.
+   */
+  const [routingBulkBothAck, setRoutingBulkBothAck] = useState(false)
+  const [menuCategoryBothAck, setMenuCategoryBothAck] = useState(false)
+  const [editMenuCategoryBothAck, setEditMenuCategoryBothAck] = useState(false)
   const [routingSaving, setRoutingSaving] = useState(false)
   const [showEditSubCategoryModal, setShowEditSubCategoryModal] = useState(false)
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null)
@@ -478,13 +490,15 @@ export function MenuManagementV2({
         restaurantId,
         name,
         menuCategoryForm.description || undefined,
-        menuCategoryForm.route_to
+        menuCategoryForm.route_to,
+        menuCategoryBothAck
       )
       toast({
         title: 'Success',
         description: `Category "${name}" created successfully`,
       })
       setMenuCategoryForm({ name: '', description: '', route_to: 'kitchen' })
+      setMenuCategoryBothAck(false)
       setShowMenuCategoryModal(false)
       
       // Reload categories
@@ -551,6 +565,13 @@ export function MenuManagementV2({
       display_order: String(category.display_order ?? ''),
       route_to: (category.route_to || 'kitchen') as 'kitchen' | 'bar' | 'both',
     })
+    /**
+     * A category that is ALREADY 'both' opens pre-acknowledged. The guard exists to stop a
+     * category being moved TO 'both' by a stray click; it must not stop a manager renaming one of
+     * the seven categories already routed that way. Switching the destination away and back clears
+     * this again (CategoryRouteChoice retracts the tick on change), so a fresh choice still asks.
+     */
+    setEditMenuCategoryBothAck((category.route_to || 'kitchen') === 'both')
     setShowEditMenuCategoryModal(true)
   }
 
@@ -584,6 +605,7 @@ export function MenuManagementV2({
         description: editMenuCategoryForm.description.trim() || null,
         display_order: nextDisplayOrder,
         route_to: editMenuCategoryForm.route_to,
+        confirm_both: editMenuCategoryBothAck,
       } as Partial<MenuCategory>)
 
       const categories = ((await getMenuCategories(restaurantId)) || []) as any[]
@@ -625,7 +647,7 @@ export function MenuManagementV2({
 
     setRoutingSaving(true)
     try {
-      await bulkSetCategoryRoute([...routingSelection], routingBulkValue)
+      await bulkSetCategoryRoute([...routingSelection], routingBulkValue, routingBulkBothAck)
       const categories = ((await getMenuCategories(restaurantId)) || []) as any[]
       setMenuCategories(categories)
       toast({
@@ -633,6 +655,7 @@ export function MenuManagementV2({
         description: `${routingSelection.size} ${routingSelection.size === 1 ? 'category' : 'categories'} set to route to ${routingBulkValue}`,
       })
       setRoutingSelection(new Set())
+      setRoutingBulkBothAck(false)
       await invalidateServerMenuCache()
     } catch (err: any) {
       toast({
@@ -1373,29 +1396,22 @@ export function MenuManagementV2({
                 rows={3}
               />
             </div>
-            <div>
-              <Label>Order goes to</Label>
-              <Select
-                value={menuCategoryForm.route_to}
-                onValueChange={(value: 'kitchen' | 'bar' | 'both') =>
-                  setMenuCategoryForm({ ...menuCategoryForm, route_to: value })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select destination" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="kitchen">Kitchen</SelectItem>
-                  <SelectItem value="bar">Bar</SelectItem>
-                  <SelectItem value="both">Both</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <CategoryRouteChoice
+              idPrefix="create-category"
+              value={menuCategoryForm.route_to}
+              onChange={(value) => setMenuCategoryForm({ ...menuCategoryForm, route_to: value })}
+              acknowledged={menuCategoryBothAck}
+              onAcknowledgedChange={setMenuCategoryBothAck}
+            />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShowMenuCategoryModal(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleCreateMenuCategory} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+              <Button
+                onClick={handleCreateMenuCategory}
+                disabled={!categoryRouteChoiceIsComplete(menuCategoryForm.route_to, menuCategoryBothAck)}
+                className="bg-[#FF6B35] hover:bg-[#e55a28]"
+              >
                 Create
               </Button>
             </div>
@@ -1446,24 +1462,13 @@ export function MenuManagementV2({
                 placeholder="0"
               />
             </div>
-            <div>
-              <Label>Order goes to</Label>
-              <Select
-                value={editMenuCategoryForm.route_to}
-                onValueChange={(value: 'kitchen' | 'bar' | 'both') =>
-                  setEditMenuCategoryForm({ ...editMenuCategoryForm, route_to: value })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select destination" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="kitchen">Kitchen</SelectItem>
-                  <SelectItem value="bar">Bar</SelectItem>
-                  <SelectItem value="both">Both</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <CategoryRouteChoice
+              idPrefix="edit-category"
+              value={editMenuCategoryForm.route_to}
+              onChange={(value) => setEditMenuCategoryForm({ ...editMenuCategoryForm, route_to: value })}
+              acknowledged={editMenuCategoryBothAck}
+              onAcknowledgedChange={setEditMenuCategoryBothAck}
+            />
             <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
@@ -1474,7 +1479,13 @@ export function MenuManagementV2({
               >
                 Cancel
               </Button>
-              <Button onClick={handleSaveMenuCategoryEdit} className="bg-[#FF6B35] hover:bg-[#e55a28]">
+              <Button
+                onClick={handleSaveMenuCategoryEdit}
+                disabled={
+                  !categoryRouteChoiceIsComplete(editMenuCategoryForm.route_to, editMenuCategoryBothAck)
+                }
+                className="bg-[#FF6B35] hover:bg-[#e55a28]"
+              >
                 Save
               </Button>
             </div>
@@ -1644,8 +1655,21 @@ export function MenuManagementV2({
                     />
                     <span className="truncate text-sm">{category.name}</span>
                   </span>
-                  <span className="text-xs text-muted-foreground shrink-0 capitalize">
-                    {category.route_to || 'kitchen'}
+                  {/*
+                    An existing 'both' says so plainly here rather than reading as a third
+                    equivalent word. The seven categories already routed this way stay exactly as
+                    configured -- they are just no longer silent about what it costs.
+                  */}
+                  <span
+                    className={`text-xs shrink-0 ${
+                      (category.route_to || 'kitchen') === 'both'
+                        ? 'text-amber-700 dark:text-amber-400 font-medium'
+                        : 'text-muted-foreground capitalize'
+                    }`}
+                  >
+                    {(category.route_to || 'kitchen') === 'both'
+                      ? 'both — needs kitchen AND bar'
+                      : category.route_to || 'kitchen'}
                   </span>
                 </label>
               ))}
@@ -1656,24 +1680,23 @@ export function MenuManagementV2({
               )}
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t">
-              <Select
+            <div className="space-y-3 pt-2 border-t">
+              <CategoryRouteChoice
+                idPrefix="bulk-routing"
+                label="Send the selected categories to"
                 value={routingBulkValue}
-                onValueChange={(value: 'kitchen' | 'bar' | 'both') => setRoutingBulkValue(value)}
-              >
-                <SelectTrigger className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="kitchen">Kitchen</SelectItem>
-                  <SelectItem value="bar">Bar</SelectItem>
-                  <SelectItem value="both">Both</SelectItem>
-                </SelectContent>
-              </Select>
+                onChange={setRoutingBulkValue}
+                acknowledged={routingBulkBothAck}
+                onAcknowledgedChange={setRoutingBulkBothAck}
+              />
               <Button
                 onClick={handleApplyBulkRouting}
-                disabled={routingSelection.size === 0 || routingSaving}
-                className="bg-[#FF6B35] hover:bg-[#e55a28] flex-1"
+                disabled={
+                  routingSelection.size === 0 ||
+                  routingSaving ||
+                  !categoryRouteChoiceIsComplete(routingBulkValue, routingBulkBothAck)
+                }
+                className="bg-[#FF6B35] hover:bg-[#e55a28] w-full"
               >
                 {routingSaving
                   ? 'Saving…'
