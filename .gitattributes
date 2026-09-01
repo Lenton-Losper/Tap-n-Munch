@@ -1,0 +1,12 @@
+# Shell scripts MUST keep LF endings, whatever the checkout platform.
+#
+# scripts/deploy/build-linux.sh runs inside a Linux container from a Windows bind mount. With CRLF
+# endings the container fails on `\r: command not found` — an error that reads like a missing
+# binary rather than a line-ending problem, and which cost a manual `sed -i 's/\r$//'` on every
+# copy of the build script during the 2026-09-01 recovery.
+#
+# core.autocrlf on a Windows clone would otherwise rewrite these on checkout.
+*.sh text eol=lf
+
+# Same reasoning for anything else executed by a Linux runtime.
+*.bash text eol=lf

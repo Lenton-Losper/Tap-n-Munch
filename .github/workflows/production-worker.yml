@@ -336,11 +336,75 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - name: Deploy to flashtap-production
-        run: npx wrangler@3.99.0 deploy --config wrangler.production.toml --var GIT_COMMIT_SHA:${{ github.sha }} --var NEXT_PUBLIC_COMMIT_SHA:${{ github.sha }}
+      # ────────────────────────────────────────────────────────────────────────
+      # THE OUTAGE GATE. 2026-09-01: a Windows-built artifact was uploaded to
+      # flashtap-production and every route returned 500 for about three and a half minutes.
+      # `next build`, the OpenNext step and `wrangler deploy` were ALL GREEN — the artifact was
+      # simply ~10.4 MB short, because Windows does not inline the Turbopack server chunks.
+      #
+      # Nothing in the toolchain treats that as an error, so the first thing that notices is a
+      # customer. This step is the thing that notices instead. It self-tests both detectors
+      # before giving a verdict, and it is BLOCKING.
+      #
+      # It is here as well as in scripts/deploy/build-linux.sh on purpose: this runner is Linux
+      # so it should never fire, and a gate that only guards the path you already trust is not
+      # a gate. If it ever fires here, something has changed that nobody predicted.
+      - name: Refuse a malformed OpenNext artifact
+        run: node scripts/deploy/check-opennext-artifact.mjs .open-next
+
+      # ────────────────────────────────────────────────────────────────────────
+      # UPLOAD AT 0% TRAFFIC, SMOKE, THEN PROMOTE. Previously this was a single
+      # `wrangler deploy`, which puts a new Worker in front of every customer with nothing
+      # between the build and them. The three steps below are the procedure that was used by
+      # hand to recover from the outage, made repeatable.
+      - name: Upload version at 0% traffic
+        id: upload
+        run: |
+          set -euo pipefail
+          OUT=$(npx wrangler@3.99.0 versions upload --config wrangler.production.toml \
+            --tag "ci-${GITHUB_SHA:0:8}" \
+            --message "CI candidate ${GITHUB_SHA} — uploaded at 0% traffic, not promoted" 2>&1 | tee /dev/stderr)
+          VERSION=$(echo "$OUT" | grep -oE 'Worker Version ID: [0-9a-f-]+' | awk '{print $4}')
+          PREVIEW=$(echo "$OUT" | grep -oE 'Version Preview URL: https://[^ ]+' | awk '{print $4}')
+          if [ -z "$VERSION" ]; then
+            echo "Could not read a version id from the upload output — refusing to continue."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "preview=$PREVIEW" >> "$GITHUB_OUTPUT"
+          echo "Uploaded $VERSION at 0% traffic. Preview: $PREVIEW"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # A 200 proves the Worker boots. It does NOT prove what shipped: on 2026-09-01 the preview
+      # and the live site returned byte-identical HTML for /kitchen while only one carried the
+      # board redesign, because those pages are client-rendered. Hence the smoke script also
+      # greps the JavaScript when markers are supplied.
+      - name: Smoke the preview before any traffic reaches it
+        run: node scripts/deploy/smoke-preview.mjs "${{ steps.upload.outputs.preview }}" --samples 3
+
+      - name: Record the rollback target BEFORE promoting
+        run: |
+          set -euo pipefail
+          echo "Current 100% version (this is the rollback target):"
+          npx wrangler@3.99.0 deployments list --config wrangler.production.toml 2>&1 | tail -20
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Promote to 100%
+        run: |
+          set -euo pipefail
+          npx wrangler@3.99.0 versions deploy --config wrangler.production.toml \
+            "${{ steps.upload.outputs.version }}@100" -y
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_SHADOW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Worker rollout is gradual, so one green request proves nothing about the fleet.
+      - name: Live post-deploy check
+        run: node scripts/deploy/smoke-preview.mjs https://flashtap.app --samples 10
       - name: Set Cloudflare worker secrets
         run: |
           if [ -n "$CRON_SECRET" ]; then

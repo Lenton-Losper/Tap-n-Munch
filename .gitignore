@@ -9,6 +9,9 @@ node_modules/
 
 # Next.js
 /.next/
+# OpenNext build output. Never commit an artifact -- a Windows-built one 500s every route
+# (see scripts/deploy/check-opennext-artifact.mjs).
+/.open-next/
 /out/
 
 # Production

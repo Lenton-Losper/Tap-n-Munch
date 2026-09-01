@@ -1,0 +1,147 @@
+# Production deploy runbook
+
+**The short version: build in Docker Linux, prove the artifact, upload at 0%, smoke it, promote,
+watch, and know your rollback target before you need it.**
+
+GitHub Actions cannot run while the account's billing is locked, so **today the only working path
+is local**. That is also the dangerous path, because a local build on Windows produces an artifact
+that passes every build step and 500s every route.
+
+---
+
+## The outage this exists because of
+
+2026-09-01. A Windows-built Worker was uploaded to `flashtap-production`. Every route returned 500.
+Rolled back in about three and a half minutes.
+
+`next build` green. OpenNext green. `wrangler deploy` green. The artifact was **~10.4 MB short** —
+`handler.mjs` was 2.95 MB where the Linux build produces 13.36 MB, because Windows does not inline
+the Turbopack server chunks. Nothing in the toolchain calls that an error.
+
+Diagnosis then cost more than the outage, because a downloaded "known-good" artifact was used as a
+baseline and turned out to be the broken upload itself — Cloudflare's content endpoint returns the
+**latest** upload, not the version you asked for. **Never use a downloaded artifact as a baseline
+unless its identity can be independently proven.**
+
+---
+
+## The procedure
+
+### 0. Know where you are
+
+```bash
+git rev-parse HEAD                 # the commit you are about to ship
+npx wrangler@3.99.0 deployments list --config wrangler.production.toml | tail -20
+```
+
+Write down the version currently at 100%. **That is your rollback target.** Do this before you
+build, not after something goes wrong.
+
+### 1. Build — Docker Linux, never the host
+
+```bash
+docker run --rm \
+  -v "D:\dev\flashtap\build:/app" \
+  -v flashtap_prod_linux_build_node_modules:/app/node_modules \
+  -w /app node:20-bookworm bash /app/scripts/deploy/build-linux.sh
+```
+
+The named volume for `node_modules` is not optional: a Windows bind mount puts Windows-resolved
+native binaries on the container's path, which is how `npx` ends up running the wrong binary.
+
+`build-linux.sh` refuses to run outside Linux and finishes by running the artifact gate.
+
+### 2. Prove the artifact
+
+```bash
+node scripts/deploy/check-opennext-artifact.mjs .open-next
+```
+
+Three checks, self-tested before either is trusted:
+
+| Check | Good | The 2026-09-01 artifact |
+|---|---|---|
+| `handler.mjs` size | 13,374,852 B | 2,954,790 B |
+| `outputFileTracingRoot` | `/app` | `D:\dev\flashtap\build` |
+| chunk inlining | each appears ≥ 2× | `instrumentation_ts` appears 1× |
+
+**Exit 1 means stop.** Do not upload, do not promote, do not "try it and see".
+
+### 3. Upload at 0% traffic
+
+```bash
+npx wrangler@3.99.0 versions upload --config wrangler.production.toml \
+  --tag "docker-$(git rev-parse --short HEAD)" \
+  --message "0%-traffic candidate; NOT promoted"
+```
+
+`versions upload` creates a version and a preview URL and sends **no** customer traffic to it.
+`wrangler deploy` does not — it goes straight to 100%.
+
+Note `wrangler` needs `CLOUDFLARE_ACCOUNT_ID` exported, not just the API token: without it, it
+tries `/memberships` and fails with a confusing `code: 9106` auth error. `build-linux.sh` sources
+`.env.local` with `set -a`, which exports both.
+
+### 4. Smoke the preview
+
+```bash
+node scripts/deploy/smoke-preview.mjs <preview-url> --samples 3 \
+  --expect "<a string only the new build has>" \
+  --absent "<a string only the old build had>"
+```
+
+`/api/version`, `/`, `/kitchen` and `/bar`, none of which may 5xx.
+
+**Status codes alone are not enough.** `/kitchen` and `/bar` are client-rendered behind auth: on
+2026-09-01 the preview and live returned byte-identical HTML while only one carried the redesign.
+Pass `--expect` **and** `--absent` together — expectation alone cannot tell "it shipped" from "the
+probe fetched nothing", because an empty bundle satisfies every absence check.
+
+### 5. Promote, explicitly
+
+Only if step 4 was clean.
+
+```bash
+npx wrangler@3.99.0 versions deploy --config wrangler.production.toml <version-id>@100 -y
+```
+
+### 6. Watch
+
+```bash
+node scripts/deploy/smoke-preview.mjs https://flashtap.app --samples 20 \
+  --expect "<marker>" --absent "<old marker>"
+```
+
+**Sample, do not spot-check.** Worker rollout is gradual: for a couple of minutes a single request
+can be served by either version, so one green hit proves nothing. Require unanimity.
+
+### 7. If anything 5xxs
+
+```bash
+npx wrangler@3.99.0 versions deploy --config wrangler.production.toml <rollback-target>@100 -y
+```
+
+The target is the version you wrote down in step 0. Roll back first, diagnose afterwards.
+
+---
+
+## What is enforced, and where
+
+| Guard | Enforced by | Covers |
+|---|---|---|
+| Artifact is Linux-built and complete | `scripts/deploy/check-opennext-artifact.mjs` | local build **and** CI |
+| The gate still detects | `__tests__/deploy-artifact-gate.test.ts` (8 tests) | every test run |
+| Build cannot run on the host | `scripts/deploy/build-linux.sh` refuses non-Linux | local |
+| No artifact is ever committed | `/.open-next/` in `.gitignore` | every commit |
+| 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once billing allows |
+| No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | both |
+
+## Known gaps
+
+- **CI cannot run** while billing is locked. Every gate above exists in the workflow and is
+  exercised locally; none of it runs automatically today.
+- **The local path is not forced.** Nothing physically stops someone running `wrangler deploy` by
+  hand and skipping all of this. The artifact gate makes the failure loud if they run it; it
+  cannot make them run it.
+- `supabase/schema.sql` carries a stale copy of `deduct_recipe_stock` — unrelated to deploys but
+  found while writing the stock contract, and it should be regenerated.
