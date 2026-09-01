@@ -29,7 +29,20 @@
  *                         bar_state:     ready 15, outstanding 1, null 2
  *   voided lines          0            (no amendment has ever run)
  *   menu items by route   both 72, kitchen 265, bar 178
- *   receipts              2,514        every one reconciling payments == grand_total
+ *   inventory config      not_tracked 430, deducting 21, recipe_without_tracking 26,
+ *                         tracked_without_recipe 38
+ *   payment shapes        card 2,951 / cash 91; 1,115 sale events, NONE covering >1 order
+ *   receipts              2,514        2,512 reconciling payments == grand_total
+ *
+ * AND THE FIGURE THAT DECIDED THIS FIXTURE, re-measured 2026-09-01 by
+ * `scripts/reports/production-shape-report.mjs`:
+ *
+ *   of the 13 `both` lines, TEN are PARTIAL — exactly one station finished.
+ *   three have both finished. NONE has neither finished.
+ *
+ * So the partially-done `both` line is not an edge case, it is the single most common state a
+ * live line is in — and it is precisely the shape that rendered as "Being made" on the P5 until
+ * the terminal learned to name the waiting station.
  *
  * `both` is the MAJORITY shape in production and the minority shape in every previous fixture.
  * This suite therefore leads with it.
