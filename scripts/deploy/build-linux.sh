@@ -46,11 +46,47 @@ else
   echo "  env   : no .env.local — the upload step will need credentials from elsewhere"
 fi
 
+# ---------------------------------------------------------------------------
+# TARGET. Defaults to production, so nothing about the existing path changes.
+#
+# NEXT_PUBLIC_* IS INLINED INTO THE CLIENT BUNDLE AT BUILD TIME, not read at runtime. A build made
+# with production values and deployed to the staging Worker would serve a browser bundle that talks
+# to the PRODUCTION database — the Worker's own [vars] cannot correct that, because the value is
+# already baked into the JavaScript the customer downloads.
+#
+# So the staging target overrides them explicitly AFTER .env.local has been sourced (that file is
+# production, and `set -a` would otherwise win). The token and account id still come from
+# .env.local: the Cloudflare account is the same, only the app's data plane differs.
+# ---------------------------------------------------------------------------
+FLASHTAP_BUILD_TARGET="${FLASHTAP_BUILD_TARGET:-production}"
+echo "=== target: ${FLASHTAP_BUILD_TARGET} ==="
+
+if [ "$FLASHTAP_BUILD_TARGET" = "staging" ]; then
+  : "${STAGING_SUPABASE_URL:?staging build needs STAGING_SUPABASE_URL}"
+  : "${STAGING_SUPABASE_ANON_KEY:?staging build needs STAGING_SUPABASE_ANON_KEY}"
+  export NEXT_PUBLIC_SUPABASE_URL="$STAGING_SUPABASE_URL"
+  export NEXT_PUBLIC_SUPABASE_ANON_KEY="$STAGING_SUPABASE_ANON_KEY"
+  export SUPABASE_URL="$STAGING_SUPABASE_URL"
+  export SUPABASE_ANON_KEY="$STAGING_SUPABASE_ANON_KEY"
+  export NEXT_PUBLIC_APP_URL="https://flashtap-staging.llosperofficial.workers.dev"
+  export NEXT_PUBLIC_BASE_URL="https://flashtap-staging.llosperofficial.workers.dev"
+  echo "  client bundle will point at: $NEXT_PUBLIC_SUPABASE_URL"
+elif [ "$FLASHTAP_BUILD_TARGET" != "production" ]; then
+  echo "REFUSING: unknown FLASHTAP_BUILD_TARGET '$FLASHTAP_BUILD_TARGET' (expected staging|production)."
+  exit 1
+else
+  echo "  client bundle will point at: ${NEXT_PUBLIC_SUPABASE_URL:-<from .env.local>}"
+fi
+
 echo "=== npm ci ==="
 npm ci --no-audit --no-fund
 
 echo "=== opennext build ==="
 npx @opennextjs/cloudflare@1.20.1 build
+
+# The value actually baked in, read back out of the artifact rather than trusted from the shell.
+echo "=== which Supabase project is in the client bundle? ==="
+grep -rhoE "https://[a-z]{20}\.supabase\.co" .open-next/assets/_next/static 2>/dev/null | sort -u | sed 's/^/  /' || true
 
 echo "=== artifact check (the gate) ==="
 node /app/scripts/deploy/check-opennext-artifact.mjs /app/.open-next
