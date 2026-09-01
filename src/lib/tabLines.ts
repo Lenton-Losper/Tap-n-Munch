@@ -25,14 +25,79 @@ export interface TabLine {
    * which `is_ready` collapses to a single false. Nothing renders that yet and nothing should start
    * without wording, so the honest statement is that they are carried, unread, on purpose.
    *
+   * STILL UNREAD, AND NOW WITH A MEASURED COST. 2026-09-01, Digi Cofee: 4x Coffee routed to both
+   * stations sat at "Being made" on this screen while the bar board showed it done. Nothing was
+   * broken — the kitchen half had genuinely not been started — but the device held the two station
+   * states that would have said so and rendered neither. Showing partial progress needs wording,
+   * and the wording needs the owner's sign-off, so it is listed for decision rather than invented
+   * here. Note the server DOWNGRADES a collected half to 'ready' in these raw strings for older
+   * clients, so they answer "is this station finished", never "was it picked up".
+   *
    * Do not derive readiness from them. `is_ready` is the server's single definition; a second one
    * on the device is how a waiter comes to believe a table is ready that the kitchen does not.
    */
   kitchen_state: string | null;
   bar_state: string | null;
   is_ready: boolean;
+  /**
+   * The food was physically taken off the pass. Sent by the server since the `collected` split
+   * (web `app/api/terminal/tabs/[tabId]/lines/route.ts`), whose own comment describes it as
+   * "additive, for a terminal that has been taught the word". This is that word.
+   *
+   * OPTIONAL ON PURPOSE. A payload from a server that predates the split carries no such field,
+   * and `undefined` must behave exactly as this app behaved before — which it does, because every
+   * reader below treats it as falsy. Never make it required: that would turn an older server into
+   * a crash rather than into the old behaviour.
+   *
+   * IT IS NOT A SECOND READINESS SIGNAL. `is_ready` and `is_collected` are mutually exclusive
+   * buckets on the server, not a flag pair: a collected line arrives with `is_ready: false`. That
+   * is the whole reason this field had to be read — see lineDisplayState.
+   */
+  is_collected?: boolean;
   is_voided: boolean;
   unrouted: boolean;
+}
+
+/**
+ * What a waiter should see against one line. ONE definition, because two would disagree.
+ *
+ * ============================================================================================
+ * THE DEFECT THIS EXISTS TO FIX
+ * ============================================================================================
+ *
+ * The server used to put collected food in the `ready` bucket, so `is_ready` stayed true forever
+ * once the kitchen bumped it. The `collected` split gave collection its own bucket, which is
+ * correct — but it means a collected line now arrives as `is_ready: false, is_voided: false`.
+ *
+ * Every screen in this app chose its chip with `is_voided ? voided : is_ready ? ready : waiting`.
+ * Under the new payload that ternary falls through to WAITING, so food a waiter has already
+ * carried to the table reads as **"Being made"** — the app reporting that finished, delivered food
+ * is still cooking. That is worse than the gap it replaced.
+ *
+ * ============================================================================================
+ * WHY 'collected' RENDERS AS THE READY CHIP AND NOT A NEW WORD
+ * ============================================================================================
+ *
+ * Because every staff-facing string in constants/serviceCopy.ts is signed by the owner and may not
+ * be added to without a new sign-off, and because the server's own comment already settles the
+ * equivalence: "to a waiter, 'picked up' and 'ready' both mean 'not still being made'".
+ *
+ * So 'collected' is returned as its own state — the callers know the difference and can de-
+ * emphasise it — but it carries the EXISTING Ready wording. A distinct "Collected" chip is a copy
+ * decision, and it is listed for sign-off rather than invented here.
+ */
+export type LineDisplayState = 'voided' | 'collected' | 'ready' | 'making';
+
+export function lineDisplayState(line: TabLine): LineDisplayState {
+  if (line.is_voided) {
+    return 'voided';
+  }
+  // Checked BEFORE is_ready, though the two cannot both be true today. If a future server ever
+  // sends both, "already collected" is the more advanced fact and the one a waiter needs.
+  if (line.is_collected === true) {
+    return 'collected';
+  }
+  return line.is_ready ? 'ready' : 'making';
 }
 
 export interface TabLineOrder {
@@ -55,6 +120,16 @@ export interface TabLineSummary {
   total_lines: number;
   outstanding: number;
   ready: number;
+  /**
+   * Lines already taken off the pass. Optional for the same reason as TabLine.is_collected: a
+   * server predating the split does not send it, and absent must mean "this server does not
+   * distinguish", not zero-with-confidence.
+   *
+   * Note `ready` on the server EXCLUDES collected since the split, so the Ready figure this screen
+   * already shows became correct on its own. It is the per-line chip and the floor badge that did
+   * not.
+   */
+  collected?: number;
   voided: number;
 }
 
@@ -167,11 +242,20 @@ const NO_BADGE: TableBadge = {flag: null, readyCount: 0};
  * a QR or pre-migration tab — and inventing a badge for it would be asserting something the payload
  * explicitly declines to say.
  *
- * WHAT THIS CANNOT KNOW: nothing in the system records that food was COLLECTED, so a line stays
- * ready forever once the kitchen bumps it. The badge therefore means "food has been up as of the
- * last refresh", NOT "food is still sitting there" — a waiter who has already run the plates keeps
- * seeing the badge until the rest of the tab lands. See docs/collected-state-proposal.md; that
- * missing transition is precisely why this is a badge on a table and not a runner's work list.
+ * WHAT THIS COULD NOT KNOW, AND NOW CAN — corrected 2026-09-01.
+ *
+ * This block used to read: "nothing in the system records that food was COLLECTED, so a line stays
+ * ready forever once the kitchen bumps it." That was true when written and is now false. The
+ * server records collection and sends `is_collected` per line, so the badge finally means what it
+ * always claimed to: food that is ON THE PASS RIGHT NOW, not food that has been up at some point.
+ *
+ * `readyCount` needed no change to benefit — it counts `is_ready`, which the server now clears on
+ * collection — but the `all_ready` rescue below did, and it is the whole reason this comment is
+ * being rewritten rather than deleted.
+ *
+ * STILL TRUE, AND STILL THE REASON THIS IS A BADGE AND NOT A WORK LIST: the runner screen is
+ * explicitly not approved (docs/collected-state-proposal.md — "the state comes first and the
+ * screen comes after"). Nothing here builds one.
  */
 export function deriveTableBadge(
   payload: TabLinesPayload | null | undefined,
@@ -199,13 +283,38 @@ export function deriveTableBadge(
     0,
   );
 
-  if (readyCount > 0 || payload.all_ready) {
+  /**
+   * THE `all_ready` RESCUE IS NOW CONDITIONAL, AND THIS IS THE SECOND HALF OF THE COLLECTED FIX.
+   *
+   * `all_ready` means "nothing outstanding" (server: `summary.outstanding === 0`). It was OR-ed in
+   * as belt-and-braces for the shape where the tab is complete but no individual line carries
+   * is_ready. When it was written, that shape was a payload oddity.
+   *
+   * Since the collected split it is an ORDINARY, EXPECTED shape: a table whose food has all been
+   * run has outstanding 0, every line collected, and NOT ONE line ready. The unconditional OR
+   * therefore renders FOOD UP — with no count, because readyCount is 0 — against a table where
+   * there is provably nothing on the pass. That is the badge crying wolf, which the docblock above
+   * identifies as the exact failure that discredited the WAITING badge.
+   *
+   * So the rescue survives only where it was actually meant to apply: a payload with NO collected
+   * lines at all. That is precisely the pre-split shape, so an older server behaves exactly as
+   * before, and a current one stops sending waiters to empty passes.
+   */
+  const anyCollected = live.some(({line}) => line.is_collected === true);
+
+  if (readyCount > 0 || (payload.all_ready && !anyCollected)) {
     return {flag: 'ready', readyCount};
   }
 
+  /**
+   * `!is_ready` USED TO MEAN "still outstanding". It stopped meaning that at the collected split:
+   * a collected line also carries is_ready false, so an hour-old table whose food was all run an
+   * hour ago raised WAITING LONG — telling a waiter that delivered food is late. Ask the display
+   * state instead, which is the one place that knows the difference.
+   */
   const stale = live.some(
     ({line, order}) =>
-      !line.is_ready &&
+      lineDisplayState(line) === 'making' &&
       order.seconds_since_placed != null &&
       order.seconds_since_placed >= OUTSTANDING_ATTENTION_SECONDS,
   );
@@ -277,8 +386,9 @@ export function oldestOutstandingSeconds(
   }
   let oldest: number | null = null;
   for (const order of payload.orders) {
+    // Same correction as the staleness check above: collected is not outstanding.
     const hasOutstanding = order.lines.some(
-      line => !line.is_voided && !line.is_ready,
+      line => lineDisplayState(line) === 'making',
     );
     if (!hasOutstanding || order.seconds_since_placed == null) {
       continue;

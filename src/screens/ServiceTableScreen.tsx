@@ -21,6 +21,7 @@ import {ApiRequestError, getTabLines, getTablesWithMeta} from '../lib/api';
 import {
   formatAge,
   itemCount,
+  lineDisplayState,
   TabLine,
   TabLinesPayload,
   tabRunningTotal,
@@ -58,16 +59,26 @@ function formatMoney(amount: number): string {
 /**
  * One fulfilment line.
  *
- * The chip reads the SERVER's `is_ready`. It is not recomputed from kitchen_state/bar_state here —
- * those are shown as detail only. The station screens and this screen must agree about what
- * "ready" means, and they only do so if exactly one place decides it.
+ * The chip reads the SERVER's verdict — `is_ready` and, since the collected split, `is_collected`.
+ * It is never recomputed from kitchen_state/bar_state. The station screens and this screen must
+ * agree about what "ready" means, and they only do so if exactly one place decides it.
  */
 function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void}) {
-  const chip = line.is_voided
-    ? Copy.TABLE_LINE_VOIDED_CHIP
-    : line.is_ready
-    ? Copy.TABLE_LINE_READY_CHIP
-    : Copy.TABLE_LINE_WAITING_CHIP;
+  /**
+   * ONE state, from one place. This was a ternary on is_voided / is_ready, which since the
+   * server's `collected` split rendered picked-up food as "Being made" — see lineDisplayState.
+   *
+   * 'collected' carries the EXISTING Ready wording (no new signed string) and is de-emphasised
+   * rather than re-worded, so a waiter scanning a round can see which plates are still on the pass
+   * without the app claiming that delivered food is still cooking.
+   */
+  const display = lineDisplayState(line);
+  const chip =
+    display === 'voided'
+      ? Copy.TABLE_LINE_VOIDED_CHIP
+      : display === 'making'
+      ? Copy.TABLE_LINE_WAITING_CHIP
+      : Copy.TABLE_LINE_READY_CHIP;
 
   /**
    * Tappable ONLY while the amend window is open. A line the kitchen has started is not pressable
@@ -110,23 +121,31 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
           </View>
         ) : null}
       </View>
+      {/*
+        'collected' reuses the READY chip's shape and wording and drops its fill, so the rounds a
+        waiter still has to walk for are the only green on the screen. Same word, less shout — the
+        distinction a scanning eye needs, made without a string the owner has not signed.
+      */}
       <View
         style={[
           styles.lineChip,
-          line.is_voided
+          display === 'voided'
             ? styles.lineChipVoided
-            : line.is_ready
-            ? styles.lineChipReady
-            : styles.lineChipWaiting,
-        ]}>
+            : display === 'making'
+            ? styles.lineChipWaiting
+            : styles.lineChipReady,
+          display === 'collected' && styles.lineChipCollected,
+        ]}
+        testID={`line-chip-${display}`}>
         <Text
           style={[
             styles.lineChipText,
-            line.is_voided
+            display === 'voided'
               ? styles.lineChipTextVoided
-              : line.is_ready
-              ? styles.lineChipTextReady
-              : styles.lineChipTextWaiting,
+              : display === 'making'
+              ? styles.lineChipTextWaiting
+              : styles.lineChipTextReady,
+            display === 'collected' && styles.lineChipTextCollected,
           ]}>
           {chip}
         </Text>
@@ -826,6 +845,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   lineChipReady: {backgroundColor: Colors.greenLight},
+  /**
+   * Collected: the Ready chip with the fill removed and an outline left behind. It must not read
+   * as a THIRD status colour — it is the same status, already dealt with — so it borrows the ready
+   * palette at low emphasis rather than introducing a colour of its own.
+   */
+  lineChipCollected: {
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  lineChipTextCollected: {color: Colors.textMuted},
   lineChipWaiting: {backgroundColor: Colors.amberLight},
   lineChipVoided: {backgroundColor: Colors.surface},
   lineChipText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.3},
