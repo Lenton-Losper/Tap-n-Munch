@@ -100,6 +100,65 @@ export function lineDisplayState(line: TabLine): LineDisplayState {
   return line.is_ready ? 'ready' : 'making';
 }
 
+/**
+ * WHICH HALF OF A `both` LINE IS STILL OUTSTANDING — display only.
+ *
+ * ============================================================================================
+ * THIS DOES NOT DECIDE READINESS, AND CANNOT
+ * ============================================================================================
+ *
+ * `is_ready` remains the SERVER's single verdict and is never recomputed here. This answers a
+ * different, narrower question that the server does not answer: of the two stations that owe this
+ * line, which one has finished? It is consulted ONLY when the server has already said the line is
+ * not ready and not collected, so there is no arrangement of station states in which this can
+ * make a line look ready that the kitchen does not consider ready. That was the whole reason the
+ * station columns were parsed and deliberately left unrendered.
+ *
+ * ============================================================================================
+ * WHY THIS IS WORTH RENDERING
+ * ============================================================================================
+ *
+ * 2026-09-01, Digi Cofee: 4x Coffee routed to both stations sat at "Being made" while the bar had
+ * poured it and the kitchen had never started. True, and useless — it was reported as a stale
+ * terminal. The device held `bar_state: 'ready'` and `kitchen_state: 'outstanding'` the whole
+ * time and rendered neither.
+ *
+ * ============================================================================================
+ * WHAT COUNTS AS FINISHED
+ * ============================================================================================
+ *
+ * Only `ready`. NOT `cooked` — a cooked dish is plated and still the station's business until the
+ * pass takes it, which is the entire reason the five-state vocabulary exists. Treating cooked as
+ * finished would tell a waiter the kitchen was done while the plate was still under the lamp.
+ *
+ * The server DOWNGRADES a collected half to 'ready' in these raw strings for older clients, so
+ * 'ready' here means "this station has finished", never "it was picked up". That is exactly the
+ * question being asked, so the downgrade costs nothing.
+ */
+export type PartialProgress = 'kitchen_ready' | 'bar_ready';
+
+const STATION_FINISHED = new Set(['ready', 'collected']);
+
+export function partialProgress(line: TabLine): PartialProgress | null {
+  // The server has the last word. If it says ready or collected, there is no partial state to
+  // describe and nothing here may contradict it.
+  if (line.is_voided || line.is_ready || line.is_collected === true) {
+    return null;
+  }
+  // Only a line owned by BOTH stations can be half done. A single-station line has NULL for the
+  // station that does not own it, and a NULL is not a station that is waiting.
+  if (line.kitchen_state == null || line.bar_state == null) {
+    return null;
+  }
+  const kitchenDone = STATION_FINISHED.has(String(line.kitchen_state));
+  const barDone = STATION_FINISHED.has(String(line.bar_state));
+  if (kitchenDone === barDone) {
+    // Neither has finished (ordinary "being made"), or both have and the server will say ready.
+    return null;
+  }
+  return kitchenDone ? 'kitchen_ready' : 'bar_ready';
+}
+
 export interface TabLineOrder {
   order_id: string;
   order_number: number;

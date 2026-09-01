@@ -111,6 +111,13 @@ const LINES: TabLine[] = [
   line('Oysters', {is_voided: true}),
 ];
 
+/** The 2026-09-01 Digi Cofee shape: routed to both, bar poured it, kitchen never started. */
+const PARTIAL_LINES: TabLine[] = [
+  line('Coffee', {route_to: 'both', kitchen_state: 'outstanding', bar_state: 'ready'}),
+  line('Toastie', {route_to: 'both', kitchen_state: 'ready', bar_state: 'outstanding'}),
+  line('Cheesecake', {route_to: 'both', kitchen_state: 'outstanding', bar_state: 'outstanding'}),
+];
+
 function payload(lines: TabLine[]): TabLinesPayload {
   const live = lines.filter(l => !l.is_voided);
   return {
@@ -223,14 +230,15 @@ describe('ServiceTableScreen renders collected food as already dealt with', () =
     const collected = chips.find(c => c.state === 'collected');
     expect(collected).toBeDefined();
     expect(collected!.text).not.toBe(Copy.TABLE_LINE_WAITING_CHIP);
-    expect(collected!.text).toBe(Copy.TABLE_LINE_READY_CHIP);
+    // Since the 2026-09-01 sign-off it says the word rather than borrowing "Ready".
+    expect(collected!.text).toBe(Copy.TABLE_LINE_COLLECTED_CHIP);
   });
 
   it('renders one chip per line, and each line its own state', async () => {
     const chips = chipsByState(await mount(LINES));
     expect(chips.map(c => c.state)).toEqual(['collected', 'ready', 'making', 'voided']);
     expect(chips.map(c => c.text)).toEqual([
-      Copy.TABLE_LINE_READY_CHIP,
+      Copy.TABLE_LINE_COLLECTED_CHIP,
       Copy.TABLE_LINE_READY_CHIP,
       Copy.TABLE_LINE_WAITING_CHIP,
       Copy.TABLE_LINE_VOIDED_CHIP,
@@ -273,5 +281,72 @@ describe('ServiceTableScreen renders collected food as already dealt with', () =
     // The formerly-collected line has no marker of any kind now, so it reads as still being made —
     // which is what an older server genuinely means by that payload.
     expect(chips.map(c => c.state)).toEqual(['making', 'ready', 'making', 'voided']);
+  });
+});
+
+describe('a half-finished both line names the station still working', () => {
+  it('renders the approved wording, and prints it as evidence', async () => {
+    const tree = await mount(PARTIAL_LINES);
+    const chips = chipsByState(tree);
+
+    console.log()
+    console.log('  partial-both chips, in screen order:');
+    for (const c of chips) {
+      console.log(`    ${c.state.padEnd(22)} "${c.text}"`);
+    }
+
+    expect(chips.map(c => c.text)).toEqual([
+      Copy.TABLE_LINE_BAR_READY_KITCHEN_WAITING,
+      Copy.TABLE_LINE_KITCHEN_READY_BAR_WAITING,
+      Copy.TABLE_LINE_WAITING_CHIP,
+    ]);
+  });
+
+  it('keeps the amber not-done palette — a half-done line is not a done line', async () => {
+    const tree = await mount(PARTIAL_LINES);
+    const flatten = (st: unknown): Record<string, unknown> =>
+      Object.assign({}, ...(Array.isArray(st) ? st : [st]).filter(Boolean));
+    const node = (id: string) =>
+      tree.root.findAll(n => typeof n.type === 'string' && n.props?.testID === id)[0];
+
+    const partial = flatten(node('line-chip-partial-bar_ready').props.style);
+    const waiting = flatten(node('line-chip-making').props.style);
+    expect(partial.backgroundColor).toBe(waiting.backgroundColor);
+    // …and it may shrink rather than push the dish name off a narrow P5 row.
+    expect(partial.flexShrink).toBe(1);
+  });
+});
+
+/**
+ * P5 ERGONOMICS. The fleet is not one device — production has recorded three models (P5, P5 Lite
+ * and P052) — so this asserts PROPERTIES that hold across a range rather than pixel-matching a
+ * resolution nobody here can verify.
+ */
+describe('P5 touch and legibility', () => {
+  it('the dish name is never smaller than the chip beside it', async () => {
+    const tree = await mount(PARTIAL_LINES);
+    const flatten = (st: unknown): Record<string, unknown> =>
+      Object.assign({}, ...(Array.isArray(st) ? st : [st]).filter(Boolean));
+    const texts = tree.root.findAllByType(Text);
+    const name = texts.find(t => String(t.props.children).includes('Coffee'));
+    expect(name).toBeDefined();
+    const nameSize = Number(flatten(name!.props.style).fontSize ?? 0);
+    console.log()
+    console.log(`  dish name fontSize: ${nameSize}`);
+    // 16pt body. Anything under 14 is unreadable at arm's length on a handheld.
+    expect(nameSize).toBeGreaterThanOrEqual(14);
+  });
+
+  it('a long partial chip cannot truncate the dish name to nothing', async () => {
+    const tree = await mount(PARTIAL_LINES);
+    const texts = tree.root.findAllByType(Text);
+    const chipText = texts.find(
+      t => String(t.props.children) === Copy.TABLE_LINE_BAR_READY_KITCHEN_WAITING,
+    );
+    expect(chipText).toBeDefined();
+    // The chip is one line; the name gets two. The name is the one that may wrap.
+    expect(chipText!.props.numberOfLines).toBe(1);
+    const name = texts.find(t => String(t.props.children).includes('Coffee'));
+    expect(name!.props.numberOfLines).toBe(2);
   });
 });

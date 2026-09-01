@@ -22,6 +22,7 @@ import {
   formatAge,
   itemCount,
   lineDisplayState,
+  partialProgress,
   TabLine,
   TabLinesPayload,
   tabRunningTotal,
@@ -68,17 +69,28 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
    * ONE state, from one place. This was a ternary on is_voided / is_ready, which since the
    * server's `collected` split rendered picked-up food as "Being made" — see lineDisplayState.
    *
-   * 'collected' carries the EXISTING Ready wording (no new signed string) and is de-emphasised
-   * rather than re-worded, so a waiter scanning a round can see which plates are still on the pass
-   * without the app claiming that delivered food is still cooking.
+   * Since the owner's 2026-09-01 sign-off, 'collected' says COLLECTED in its own words rather
+   * than borrowing the Ready chip, and a half-finished `both` line names the station still
+   * working instead of collapsing to "Being made".
+   *
+   * `partialProgress` is display only and is consulted ONLY when the server has already said the
+   * line is neither ready nor collected — it can never make a line look readier than the server
+   * says it is.
    */
   const display = lineDisplayState(line);
+  const partial = display === 'making' ? partialProgress(line) : null;
   const chip =
     display === 'voided'
       ? Copy.TABLE_LINE_VOIDED_CHIP
-      : display === 'making'
-      ? Copy.TABLE_LINE_WAITING_CHIP
-      : Copy.TABLE_LINE_READY_CHIP;
+      : display === 'collected'
+      ? Copy.TABLE_LINE_COLLECTED_CHIP
+      : display === 'ready'
+      ? Copy.TABLE_LINE_READY_CHIP
+      : partial === 'kitchen_ready'
+      ? Copy.TABLE_LINE_KITCHEN_READY_BAR_WAITING
+      : partial === 'bar_ready'
+      ? Copy.TABLE_LINE_BAR_READY_KITCHEN_WAITING
+      : Copy.TABLE_LINE_WAITING_CHIP;
 
   /**
    * Tappable ONLY while the amend window is open. A line the kitchen has started is not pressable
@@ -122,9 +134,10 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
         ) : null}
       </View>
       {/*
-        'collected' reuses the READY chip's shape and wording and drops its fill, so the rounds a
-        waiter still has to walk for are the only green on the screen. Same word, less shout — the
-        distinction a scanning eye needs, made without a string the owner has not signed.
+        'collected' now says COLLECTED (owner sign-off 2026-09-01) and keeps the ready chip's
+        shape without its fill, so the rounds a waiter still has to walk for are the only green on
+        the screen. A partial `both` line names the station still working and is allowed to shrink
+        rather than push the dish name off the row.
       */}
       <View
         style={[
@@ -135,8 +148,9 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
             ? styles.lineChipWaiting
             : styles.lineChipReady,
           display === 'collected' && styles.lineChipCollected,
+          partial != null && styles.lineChipPartial,
         ]}
-        testID={`line-chip-${display}`}>
+        testID={partial ? `line-chip-partial-${partial}` : `line-chip-${display}`}>
         <Text
           style={[
             styles.lineChipText,
@@ -146,7 +160,8 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
               ? styles.lineChipTextWaiting
               : styles.lineChipTextReady,
             display === 'collected' && styles.lineChipTextCollected,
-          ]}>
+          ]}
+          numberOfLines={1}>
           {chip}
         </Text>
       </View>
@@ -850,6 +865,12 @@ const styles = StyleSheet.create({
    * as a THIRD status colour — it is the same status, already dealt with — so it borrows the ready
    * palette at low emphasis rather than introducing a colour of its own.
    */
+  /**
+   * A partial chip carries three words instead of one. It keeps the amber "still being made"
+   * palette — nothing about it is done — and is allowed to shrink rather than push the dish name
+   * off the row, which on a P5 held one-handed is the text that matters most.
+   */
+  lineChipPartial: {flexShrink: 1},
   lineChipCollected: {
     backgroundColor: Colors.background,
     borderWidth: 1,

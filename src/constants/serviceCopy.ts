@@ -70,6 +70,25 @@ export const TABLE_READY_LABEL = 'Ready';
 export const TABLE_LINE_READY_CHIP = 'Ready';
 export const TABLE_LINE_WAITING_CHIP = 'Being made';
 export const TABLE_LINE_VOIDED_CHIP = 'Voided';
+
+/**
+ * SIGNED BY THE OWNER 2026-09-01. Three strings, added under a new sign-off.
+ *
+ * COLLECTED. Food that has been taken off the pass. Before this it borrowed the Ready chip,
+ * because adding a word to this file needed an approval that had not been given; the ruling gives
+ * it. "Collected" is the word the schema uses and the word the floor uses for the same act.
+ *
+ * PARTIAL PROGRESS. A line routed to BOTH stations where exactly one has finished. It used to
+ * read "Being made", which is true and useless: on 2026-09-01 at Digi Cofee a 4x Coffee sat that
+ * way while the bar had already poured it and the kitchen had never started, and nobody could see
+ * which half was missing. The device was holding both station states and rendering neither.
+ *
+ * The station named is the one still WORKING, because that is the actionable half — the waiter
+ * needs to know who to chase, not who to thank.
+ */
+export const TABLE_LINE_COLLECTED_CHIP = 'Collected';
+export const TABLE_LINE_KITCHEN_READY_BAR_WAITING = 'Kitchen ready · Bar waiting';
+export const TABLE_LINE_BAR_READY_KITCHEN_WAITING = 'Bar ready · Kitchen waiting';
 export const TABLE_ORDER_HEADING = 'Order #{number}';
 export const TABLE_EMPTY_NO_ORDERS = 'No rounds sent yet. Tap Add Round to start.';
 
