@@ -37,14 +37,26 @@
  */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const SCRIPT = join(__dirname, '..', 'scripts', 'deploy', 'check-opennext-artifact.mjs')
+const ROOT = join(__dirname, '..')
+const SCRIPT = join(ROOT, 'scripts', 'deploy', 'check-opennext-artifact.mjs')
 const BACKSLASH = String.fromCharCode(92)
 /** `outputFileTracingRoot:"D:\\dev\\flashtap\\build"` as it appears in the bundled source. */
 const WINDOWS_ROOT = `outputFileTracingRoot:"D:${BACKSLASH}${BACKSLASH}dev${BACKSLASH}${BACKSLASH}flashtap"`
 const LINUX_ROOT = 'outputFileTracingRoot:"/app"'
+
+/**
+ * TEMP DIRECTORIES LIVE BESIDE THE REPO, NOT IN THE SYSTEM TEMP.
+ *
+ * These fixtures are ~10 MB each, because the artifact gate has an 8 MB size floor and a test
+ * that cannot clear it would be testing nothing. os.tmpdir() is on the system drive, and when
+ * that drive filled up every one of these failed with ENOSPC — an environmental failure that
+ * reads exactly like a broken gate. The repo's own drive is where the build output already goes,
+ * so it is the honest place for the fixtures too.
+ */
+const TMP_ROOT = join(ROOT, '.tmp-tests')
+mkdirSync(TMP_ROOT, { recursive: true })
 
 const created: string[] = []
 
@@ -54,7 +66,7 @@ afterAll(() => {
 
 /** Writes a fake .open-next tree and returns its path. */
 function artifact(body: string, padToBytes: number): string {
-  const root = mkdtempSync(join(tmpdir(), 'opennext-'))
+  const root = mkdtempSync(join(TMP_ROOT, 'opennext-'))
   created.push(root)
   const dir = join(root, 'server-functions', 'default')
   mkdirSync(dir, { recursive: true })
@@ -105,7 +117,7 @@ describe('the gate refuses a Windows-built artifact', () => {
   })
 
   it('refuses when there is no artifact at all, rather than passing vacuously', () => {
-    const empty = mkdtempSync(join(tmpdir(), 'opennext-empty-'))
+    const empty = mkdtempSync(join(TMP_ROOT, 'opennext-empty-'))
     created.push(empty)
     const r = runGate(empty)
     expect(r.code).toBe(1)

@@ -14,6 +14,9 @@ node_modules/
 /.open-next/
 # Written by the deploy sequence: the version to roll back to. Machine-local.
 /.deploy/
+# Large synthetic artifacts written by the deploy gate tests. Kept on the repo drive so a
+# full system drive cannot make an environmental ENOSPC look like a broken gate.
+/.tmp-tests/
 /out/
 
 # Production

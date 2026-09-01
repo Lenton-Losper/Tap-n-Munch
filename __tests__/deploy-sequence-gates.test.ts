@@ -12,12 +12,23 @@
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const ROOT = join(__dirname, '..')
 const SCRIPT = join(ROOT, 'scripts', 'deploy', 'deploy-production.mjs')
 const source = readFileSync(SCRIPT, 'utf8')
+
+/**
+ * TEMP DIRECTORIES LIVE BESIDE THE REPO, NOT IN THE SYSTEM TEMP.
+ *
+ * These fixtures are ~10 MB each, because the artifact gate has an 8 MB size floor and a test
+ * that cannot clear it would be testing nothing. os.tmpdir() is on the system drive, and when
+ * that drive filled up every one of these failed with ENOSPC — an environmental failure that
+ * reads exactly like a broken gate. The repo's own drive is where the build output already goes,
+ * so it is the honest place for the fixtures too.
+ */
+const TMP_ROOT = join(ROOT, '.tmp-tests')
+mkdirSync(TMP_ROOT, { recursive: true })
 
 const created: string[] = []
 afterAll(() => {
@@ -40,7 +51,7 @@ function runIn(dir: string, args: string[] = []) {
 }
 
 function workspace(withArtifact: 'none' | 'windows' | 'linux') {
-  const dir = mkdtempSync(join(tmpdir(), 'deployseq-'))
+  const dir = mkdtempSync(join(TMP_ROOT, 'deployseq-'))
   created.push(dir)
   // The scripts the sequence shells out to must be reachable from the temp cwd.
   mkdirSync(join(dir, 'scripts', 'deploy'), { recursive: true })
