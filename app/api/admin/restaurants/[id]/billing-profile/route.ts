@@ -30,7 +30,15 @@ const LENGTH_LIMITED_FIELDS: BillingProfileField[] = [
   'bank_branch_code',
 ]
 
-type BillingProfilePayload = Record<BillingProfileField, string | null>
+/**
+ * `vat_registered` is a BOOLEAN and is deliberately not in BILLING_PROFILE_FIELDS, which is a
+ * list of trimmed text fields. Three states, all real: null = not answered (every venue today),
+ * true = registered, false = explicitly not registered. Never inferred from vat_number being
+ * blank -- that ambiguity is the whole reason the column exists.
+ */
+type BillingProfilePayload = Record<BillingProfileField, string | null> & {
+  vat_registered: boolean | null
+}
 
 function emptyBillingProfile(): BillingProfilePayload {
   return {
@@ -40,6 +48,7 @@ function emptyBillingProfile(): BillingProfilePayload {
     bank_account_name: null,
     bank_account_number: null,
     bank_branch_code: null,
+    vat_registered: null,
   }
 }
 
@@ -52,6 +61,9 @@ function toBillingProfilePayload(
     const value = row[key]
     base[key] = value == null ? null : String(value)
   }
+  const registered = (row as { vat_registered?: unknown }).vat_registered
+  // Only an explicit boolean answers. Anything else stays null -- "not answered".
+  base.vat_registered = typeof registered === 'boolean' ? registered : null
   return base
 }
 
@@ -70,6 +82,11 @@ function parseBillingProfileBody(body: unknown): BillingProfilePayload | null {
     const trimmed = raw.trim()
     payload[key] = trimmed || null
   }
+  if ('vat_registered' in record) {
+    const raw = record.vat_registered
+    if (raw !== null && typeof raw !== 'boolean') return null
+    payload.vat_registered = raw as boolean | null
+  }
   return payload
 }
 
@@ -85,6 +102,14 @@ function validateBillingProfilePayload(payload: BillingProfilePayload): string |
     !BANK_ACCOUNT_NUMBER_PATTERN.test(payload.bank_account_number)
   ) {
     return 'bank_account_number may only contain digits, spaces, and hyphens'
+  }
+  /**
+   * The same rule the database CHECK enforces, refused here with a readable message rather than
+   * as a raw constraint violation. Claiming registration without a number would put a VAT-charging
+   * receipt in front of a customer with nothing to identify the registration.
+   */
+  if (payload.vat_registered === true && !payload.vat_number) {
+    return 'vat_number is required when the business is VAT registered'
   }
   return null
 }
@@ -117,7 +142,7 @@ export async function GET(
 
     const { data, error } = await supabase
       .from('restaurant_billing_profiles')
-      .select(BILLING_PROFILE_FIELDS.join(', '))
+      .select([...BILLING_PROFILE_FIELDS, 'vat_registered'].join(', '))
       .eq('restaurant_id', restaurantId)
       .maybeSingle()
     if (error) throw error
@@ -175,7 +200,7 @@ export async function PATCH(
         },
         { onConflict: 'restaurant_id' },
       )
-      .select(BILLING_PROFILE_FIELDS.join(', '))
+      .select([...BILLING_PROFILE_FIELDS, 'vat_registered'].join(', '))
       .single()
     if (error) throw error
 

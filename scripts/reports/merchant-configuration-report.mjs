@@ -99,6 +99,39 @@ const recipeNoTracking = items.filter(
   (i) => i.track_inventory !== true && liveRecipeByItem[i.id],
 ).length
 
+// ── report 3: VAT registration ───────────────────────────────────────────────
+//
+// Ruled 2026-09-01: VAT registration is an explicit merchant answer. A blank vat_number cannot
+// distinguish "not registered" from "not asked", which is why migration 20260901120000 adds
+// `vat_registered`. This lists who still has to answer, and what their receipts have been saying
+// meanwhile. It repairs nothing: a historical receipt records what was known at issue time.
+
+const billing = await all('restaurant_billing_profiles', '*')
+const billingByVenue = Object.fromEntries(billing.map((b) => [b.restaurant_id, b]))
+const receipts = await all('receipt_documents', 'restaurant_id,snapshot_json')
+const taxRates = await all('tax_rates', 'restaurant_id,name,percentage,is_default')
+
+const vatRows = restaurants
+  .map((r) => {
+    const profile = billingByVenue[r.id] ?? null
+    const mine = receipts.filter((d) => d.restaurant_id === r.id)
+    const chargedVat = mine.filter((d) => Number(d.snapshot_json?.totals?.vat ?? 0) > 0).length
+    const withNumber = mine.filter((d) => d.snapshot_json?.outlet?.vat_number).length
+    const registered =
+      profile && typeof profile.vat_registered === 'boolean' ? profile.vat_registered : null
+    return {
+      venue: r.name,
+      hasProfile: Boolean(profile),
+      registered,
+      vatNumber: profile?.vat_number ?? null,
+      receipts: mine.length,
+      chargedVat,
+      withNumber,
+      rates: taxRates.filter((t) => t.restaurant_id === r.id).length,
+    }
+  })
+  .filter((row) => row.receipts > 0 || row.rates > 0)
+
 // ── output ───────────────────────────────────────────────────────────────────
 
 if (asCsv) {
@@ -164,6 +197,31 @@ if (asCsv) {
   }
   console.log(`  Also: ${recipeNoTracking} items have a live recipe but are NOT flagged tracked.`)
   console.log('  Those are dormant by design and need no action.\n')
+
+  console.log('='.repeat(78))
+  console.log('3. VAT REGISTRATION — an explicit answer is required from each merchant')
+  console.log('='.repeat(78))
+  console.log('A blank VAT number cannot tell "not registered" apart from "not asked". Until the')
+  console.log('merchant answers, receipts record the honest value: unknown. Nothing is backfilled.')
+  console.log()
+  for (const v of vatRows.sort((a, b) => b.chargedVat - a.chargedVat)) {
+    const answer =
+      v.registered === true ? 'REGISTERED' : v.registered === false ? 'not registered' : 'NOT ANSWERED'
+    console.log(`  ${v.venue.slice(0, 24).padEnd(26)} ${answer.padEnd(14)} tax rates=${String(v.rates).padStart(2)}`)
+    console.log(
+      `      receipts ${String(v.receipts).padStart(5)}   charged VAT ${String(v.chargedVat).padStart(5)}   carrying a VAT number ${v.withNumber}`,
+    )
+    if (v.chargedVat > 0 && v.withNumber === 0) {
+      console.log('      ^ charges VAT on receipts that carry no registration number')
+    }
+    if (!v.hasProfile) console.log('      ^ no billing profile exists at all')
+  }
+  const unanswered = vatRows.filter((v) => v.registered === null)
+  console.log()
+  console.log(`  ${unanswered.length} of ${vatRows.length} trading venues have not answered.`)
+  console.log('  Set it via PATCH /api/admin/restaurants/<id>/billing-profile { vat_registered, vat_number }')
+  console.log('  (requires migration 20260901120000).')
+  console.log()
 
   console.log('Each merchant chooses per item: configure it, or untick tracking.')
   console.log('Nothing in this report has been changed by running it.')

@@ -76,6 +76,21 @@ export interface ReceiptSnapshot {
     /** Frozen billing VAT / registration at issue time (null if unset). */
     vat_number: string | null
     registration_number: string | null
+    /**
+     * THE MERCHANT'S OWN ANSWER, frozen at issue time. Three states, all meaningful:
+     *
+     *   true       registered. `vat_number` is then guaranteed non-empty by the database CHECK.
+     *   false      explicitly not registered, so no VAT number is the CORRECT output.
+     *   null /     nobody had answered when this receipt was issued. Every one of the 2,514
+     *   absent    receipts on production at 2026-09-01 is in this state, 1,241 of which charged
+     *             VAT with no registration number.
+     *
+     * OPTIONAL AND NEVER BACKFILLED. Absent means unknown; it must NEVER be read as "not
+     * registered". Inferring the negative from silence is the same error as inferring the
+     * positive, and on a tax document it would be forging the answer to a question nobody asked
+     * the merchant.
+     */
+    vat_registered?: boolean | null
     /** Restaurant currency code/symbol at issue (e.g. NAD / N$). */
     currency: string
   }
@@ -225,6 +240,51 @@ export function receiptLineVatBasis(line: ReceiptLineItem): ReceiptLineVatBasis 
         : null,
     tax_inclusive: typeof line.tax_inclusive === 'boolean' ? line.tax_inclusive : null,
   }
+}
+
+/**
+ * How to read a receipt's VAT registration, and the ONLY sanctioned way to ask.
+ *
+ * Three answers, and the third is the point:
+ *
+ *   'registered'      the merchant said yes when this receipt was issued.
+ *   'not_registered'  the merchant said no. No VAT number is the CORRECT output, not a gap.
+ *   'unknown'         nobody had answered. Every receipt issued before 2026-09-01 answers this.
+ *
+ * A caller that wants a boolean must decide what to do about 'unknown' — it must not coerce it.
+ * Reading absence as "not registered" would state, on a tax document, an answer the merchant was
+ * never asked for; 1,241 production receipts charged VAT while in exactly this state, and calling
+ * those "not registered" would assert that VAT was charged by a non-registered business.
+ */
+export type ReceiptVatRegistration = 'registered' | 'not_registered' | 'unknown'
+
+export function receiptVatRegistration(snapshot: ReceiptSnapshot): ReceiptVatRegistration {
+  const value = snapshot?.outlet?.vat_registered
+  if (value === true) return 'registered'
+  if (value === false) return 'not_registered'
+  return 'unknown'
+}
+
+/**
+ * Is this receipt internally consistent about tax? Reports, never rewrites.
+ *
+ * A receipt that charges VAT while the merchant is recorded as NOT registered is a contradiction
+ * worth surfacing; so is one that charges VAT with no registration number. Neither is repaired
+ * here — a historical document records what happened, and correcting it would be forgery.
+ */
+export function receiptVatConcern(snapshot: ReceiptSnapshot): string | null {
+  const vat = Number(snapshot?.totals?.vat ?? 0)
+  if (!Number.isFinite(vat) || vat <= 0) return null
+  const registration = receiptVatRegistration(snapshot)
+  if (registration === 'not_registered') {
+    return 'VAT was charged but the merchant is recorded as not VAT registered'
+  }
+  if (!snapshot?.outlet?.vat_number) {
+    return registration === 'registered'
+      ? 'VAT was charged and the merchant is registered, but no VAT number was frozen'
+      : 'VAT was charged and no VAT registration answer was recorded'
+  }
+  return null
 }
 
 function extractModifiers(item: Record<string, unknown>): string[] {
@@ -416,6 +476,33 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
     .eq('restaurant_id', order.restaurant_id)
     .maybeSingle()
 
+  /**
+   * READ SEPARATELY, AND TOLERANTLY, BECAUSE THE COLUMN MAY NOT EXIST YET.
+   *
+   * `vat_registered` arrives with migration 20260901120000. This code can reach a database that
+   * has not had it applied — a rollback, a preview environment, or simply deploying before
+   * migrating.
+   *
+   * It must NOT be folded into the select above. That read discards its error by long-standing
+   * choice (a missing billing profile is normal and must not fail issuance), so asking there for
+   * a column that does not exist would make the whole row come back null and SILENTLY DROP the
+   * VAT number and registration number from every receipt issued — turning a missing feature into
+   * corrupted tax documents.
+   *
+   * Asked on its own, a failure costs exactly the new field, which freezes as null: "we did not
+   * know". That is the correct answer from a database that cannot yet hold the answer.
+   */
+  let vatRegistered: boolean | null = null
+  {
+    const { data: registrationRow } = await supabase
+      .from('restaurant_billing_profiles')
+      .select('vat_registered')
+      .eq('restaurant_id', order.restaurant_id)
+      .maybeSingle()
+    const value = (registrationRow as { vat_registered?: unknown } | null)?.vat_registered
+    if (typeof value === 'boolean') vatRegistered = value
+  }
+
   const { data: saleEvents, error: saleEventsError } = await supabase
     .from('payment_events')
     .select('amount, transaction_id, business_order_no, created_at')
@@ -489,6 +576,10 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
       registration_number: billing?.registration_number?.trim()
         ? billing.registration_number.trim()
         : null,
+      // Only an explicit boolean is recorded. A missing profile, a missing column on an older
+      // deploy, or an unanswered question all freeze as null -- "we did not know" -- which is the
+      // one honest thing a receipt can say about a fact nobody supplied.
+      vat_registered: vatRegistered,
       currency,
     },
     customer_name: order.customer_name ?? null,
