@@ -266,13 +266,13 @@ export const STATION_COPY = {
     screensDisabled: {
       heading: 'Kitchen and bar screens are switched off here',
       description:
-        'A manager needs to turn them on in Settings, under Payment and terminals. Show them this screen.',
+        'A manager needs to switch them on in Settings.',
     },
     /** No restaurant_features row at all — nothing to switch on, it has to be set up first. */
     screensNotConfigured: {
       heading: 'This venue has not been set up for kitchen and bar screens yet',
       description:
-        'There is nothing to switch on here yet — it has to be set up first. Ask a manager to set up kitchen and bar screens in Settings.',
+        'Ask a manager to set up kitchen and bar screens in Settings.',
     },
     /**
      * The settings read itself failed. Nobody can fix this by changing a setting, so this is the
@@ -281,15 +281,15 @@ export const STATION_COPY = {
     screensUnavailable: {
       heading: 'This screen cannot check its settings right now',
       description:
-        'Something on our side is not answering, so this screen cannot tell whether it should be showing orders. Orders are still being taken as normal. Try reloading this page, and if it stays like this, tell a manager to report it.',
+        'Orders are still being taken as normal. Try reloading this page. If it stays like this, tell a manager.',
     },
     /** Authenticated, but this terminal is not paired to THIS screen. */
     notPaired: {
       heading: 'This screen is not paired yet',
       description: (pairedTo: string | null) =>
         pairedTo
-          ? `This code was used for the ${pairedTo} screen, not this one. A manager can pair this screen in Settings, under Payment and terminals.`
-          : 'A manager can pair this screen in Settings, under Payment and terminals.',
+          ? `This code was used for the ${pairedTo} screen. A manager can pair this one in Settings.`
+          : 'A manager can pair this screen in Settings.',
     },
     /**
      * Paired, but the token carries no orders:read scope. Re-pairing fixes it and the venue flag
@@ -298,7 +298,7 @@ export const STATION_COPY = {
     missingPermission: {
       heading: 'This screen is not allowed to see orders',
       description:
-        'It was set up without permission to see orders, so it cannot show the board. Ask a manager to pair this screen again in Settings, under Payment and terminals.',
+        'Ask a manager to pair this screen again in Settings.',
     },
     /**
      * Anything unrecognised. Deliberately vague about the cause and specific about what to do:
@@ -307,7 +307,7 @@ export const STATION_COPY = {
     unknown: {
       heading: 'This screen could not load the board',
       description:
-        'Orders are still being taken and nothing has been lost — this screen just cannot show them at the moment. Try reloading this page, and if it stays like this, tell a manager to report it.',
+        'Orders are still being taken. Try reloading this page. If it stays like this, tell a manager.',
     },
   },
   /** The on-page activation flow — reuses /api/terminals/activate, no new auth is built. */
