@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
+import { featureDenialBody } from '@/lib/stations/faults'
 import {
   assertTerminalPairedToStation,
   isStationKind,
@@ -45,12 +46,15 @@ export async function GET(req: Request) {
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
 
-    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
-    if (!allowed) {
-      return NextResponse.json(
-        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
-        { status: 403 },
-      )
+    /**
+     * #370: one denial, three causes — the flag is off, there is no restaurant_features row at
+     * all, or the read failed. They used to collapse into a single code and therefore into a
+     * single message telling staff to go and switch on a setting that, in two of the three cases,
+     * is not the problem. `requireFeature` now says which; this maps it onto the wire.
+     */
+    const featureCheck = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!featureCheck.allowed) {
+      return NextResponse.json(featureDenialBody(featureCheck.reason), { status: 403 })
     }
 
     const station = String(new URL(req.url).searchParams.get('station') ?? '').trim().toLowerCase()

@@ -128,8 +128,7 @@ describe('kitchen board wall clock', () => {
     const readyAt = new Date(Date.now()).toISOString()
     fetchInitialKitchenLines.mockResolvedValue({
       items: [readyKitchenLine(readyAt)],
-      notEnabled: false,
-      notPaired: false,
+      fault: null,
       pairedTo: null,
     })
 
@@ -167,8 +166,7 @@ describe('bar board wall clock', () => {
     const readyAt = new Date(Date.now()).toISOString()
     fetchInitialBarRounds.mockResolvedValue({
       items: [readyBarRound(readyAt)],
-      notEnabled: false,
-      notPaired: false,
+      fault: null,
       pairedTo: null,
     })
 

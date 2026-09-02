@@ -38,6 +38,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
+import { featureDenialBody, STATION_FAULT_CODES } from '@/lib/stations/faults'
 import { isLineReady, type LineRouteTo, type LineState, type Station } from '@/lib/orders/order-lines'
 
 export const dynamic = 'force-dynamic'
@@ -60,16 +61,23 @@ export async function GET(req: Request) {
      * this URL directly (lib/stations/data-port.ts only ever calls the terminal wrapper), so this
      * closes a reachability gap rather than changing an actual call path.
      */
-    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
-    if (!allowed) {
-      return NextResponse.json(
-        { error: 'Station screens are not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
-        { status: 403 },
-      )
+    const featureCheck = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    if (!featureCheck.allowed) {
+      return NextResponse.json(featureDenialBody(featureCheck.reason), { status: 403 })
     }
 
+    /**
+     * #370: this used to be a 403 with NO `code` at all, which the screen read as "not the pairing
+     * error, therefore the venue flag must be off" and rendered as "ask your manager to enable
+     * station screens". A screen paired without `orders:read` is not a venue-settings problem --
+     * re-pairing fixes it, and no amount of looking at the venue's flag ever will. It is
+     * identifiable on the wire now, like every other refusal this route can return.
+     */
     if (!terminal.permissions.includes('orders:read')) {
-      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+      return NextResponse.json(
+        { error: 'This screen is not permitted to read orders', code: STATION_FAULT_CODES.MISSING_PERMISSION },
+        { status: 403 },
+      )
     }
 
     const station = String(new URL(req.url).searchParams.get('station') ?? '').trim().toLowerCase()

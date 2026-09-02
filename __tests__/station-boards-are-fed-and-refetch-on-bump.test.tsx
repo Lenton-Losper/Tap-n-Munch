@@ -156,8 +156,8 @@ beforeEach(() => {
   fetchInitialBarRounds.mockReset()
   postStationBump.mockReset()
   authFetch.mockClear()
-  fetchInitialKitchenLines.mockResolvedValue({ items: [kitchenLine()], notEnabled: false, notPaired: false, pairedTo: null })
-  fetchInitialBarRounds.mockResolvedValue({ items: [barRound()], notEnabled: false, notPaired: false, pairedTo: null })
+  fetchInitialKitchenLines.mockResolvedValue({ items: [kitchenLine()], fault: null, pairedTo: null })
+  fetchInitialBarRounds.mockResolvedValue({ items: [barRound()], fault: null, pairedTo: null })
   postStationBump.mockResolvedValue({ ok: true, total: 1, failedLineIds: [] })
 })
 
