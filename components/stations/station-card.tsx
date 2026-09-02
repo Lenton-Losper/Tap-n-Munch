@@ -297,6 +297,7 @@ export function StationCard({
   scale,
   headerAction,
   banner,
+  contextLabel = null,
   children,
 }: {
   testId: string
@@ -306,6 +307,12 @@ export function StationCard({
   scale: DensityScale
   headerAction?: ReactNode
   banner?: ReactNode
+  /**
+   * "Eat-in - by Paulus". Absent renders nothing at all: a card that says neither is the normal
+   * case for a QR order at a table, and inventing a value to fill the row would be worse than an
+   * empty one. See STATION_COPY.orderType.
+   */
+  contextLabel?: string | null
   children: ReactNode
 }) {
   return (
@@ -346,6 +353,20 @@ export function StationCard({
           {ageLabel}
         </span>
       </div>
+      {/*
+        WHERE THE ORDER GOES AND WHO SENT IT. Third in the reading order deliberately -- table
+        number, then age, then this. It is the line that answers "is this going to a table or to
+        the counter", which a cook needs once per ticket rather than continuously, so it is quiet
+        and small. It never wraps to a second line at any density: at roomy it is one short phrase.
+      */}
+      {contextLabel ? (
+        <p
+          className={`mt-0.5 truncate font-medium uppercase tracking-wide opacity-70 ${scale.noteClass}`}
+          data-testid="card-context"
+        >
+          {contextLabel}
+        </p>
+      ) : null}
       {banner}
       <div className="mt-0.5">{children}</div>
     </div>

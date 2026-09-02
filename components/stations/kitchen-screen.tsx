@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
-import { STATION_COPY } from '@/lib/stations/copy'
+import { STATION_COPY, orderContextLabel } from '@/lib/stations/copy'
 import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort, worstEscalation } from '@/lib/stations/age'
 import {
@@ -115,6 +115,9 @@ function ActiveTableCard({
     <StationCard
       testId="active-table-card"
       tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
+      // Every line in a group belongs to the same table and the same ticket, so the first line
+      // answers for the group. Reading them all would just be the same answer N times.
+      contextLabel={orderContextLabel(group.lines[0]?.orderType ?? null, group.lines[0]?.servedBy ?? null)}
       ageLabel={formatMinutesShort(oldestSeconds / 60)}
       escalation={worstEscalation(escalations)}
       scale={scale}

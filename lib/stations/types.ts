@@ -66,11 +66,26 @@ export type RouteTo = LineRouteTo
 /** A line on the kitchen board. Never 'collected' or 'voided' — see the module docblock. */
 export type KitchenLineState = 'outstanding' | 'cooked' | 'ready'
 
+export type OrderType = 'eat_in' | 'counter'
+
 export type KitchenLine = {
   id: string
   orderId: string
   tableNumber: string
   orderNumber: string | number | null
+  /**
+   * OPTIONAL ON PURPOSE, and the two reasons are different.
+   *
+   * `orderType` is derived server-side and an older Worker simply will not send it, so the wire
+   * genuinely has three states: eat-in, counter, and not-told. `servedBy` is absent whenever a
+   * customer opened the tab by QR, which is a large share of real orders.
+   *
+   * Optional rather than required also means every existing fixture and test stays valid — these
+   * fields are additive to a board that already worked. The mapper always writes both (null when
+   * unknown), so nothing at runtime sees `undefined` from the real path.
+   */
+  orderType?: OrderType | null
+  servedBy?: string | null
   itemName: string
   quantity: number
   lineNote: string | null
@@ -137,6 +152,8 @@ export type BarRound = {
   id: string
   tableNumber: string
   orderNumber: string | number | null
+  orderType?: OrderType | null
+  servedBy?: string | null
   items: BarRoundItem[]
   placedAt: string | null
   /** True if ANY line in this round is unrouted. Round-level, not line-level: splitting one

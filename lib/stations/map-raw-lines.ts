@@ -35,6 +35,10 @@ export type StationOrderCardDTO = {
   order_id: string
   order_number: string | number | null
   table_number: string | number | null
+  /** Derived server-side from table_number. Optional: an older worker will not send it. */
+  order_type?: 'eat_in' | 'counter' | null
+  /** The staff member who opened the tab. Absent for QR/customer-opened tabs. */
+  served_by?: string | null
   order_instructions?: string | null
   placed_at: string | null
   seconds_waiting: number | null
@@ -72,6 +76,9 @@ export function mapStationLinesToKitchenLines(response: StationLinesResponseDTO)
         // normalises a zero table number to null, so this is the single absent case.
         tableNumber: card.table_number == null ? '' : String(card.table_number),
         orderNumber: card.order_number,
+        // Absent on an older payload -> 'counter' is NOT assumed; null means "we were not told".
+        orderType: card.order_type ?? null,
+        servedBy: card.served_by ?? null,
         itemName: line.name_snapshot,
         quantity: line.quantity,
         lineNote: line.line_note,
@@ -111,6 +118,8 @@ export function mapStationLinesToBarRounds(response: StationLinesResponseDTO): B
        */
       tableNumber: card.table_number == null ? '' : String(card.table_number),
       orderNumber: card.order_number,
+      orderType: card.order_type ?? null,
+      servedBy: card.served_by ?? null,
       items: card.lines.map((line) => ({
         // Carried so the bar can bump ONE drink — see BarRoundItem's own note.
         id: line.id,

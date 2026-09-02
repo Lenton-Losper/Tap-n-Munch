@@ -154,6 +154,24 @@ export const STATION_COPY = {
       tableNumber.trim() === '' ? 'No table' : `Table ${tableNumber}`,
   },
   /**
+   * HOW THIS ORDER LEAVES THE BUILDING — the line the reference KDS puts at the top of every card
+   * as "EAT-IN".
+   *
+   * DERIVED FROM THE TABLE, not stored: an order with a table is eaten at that table, one without
+   * is collected at the counter. No migration, and no second source of truth to drift.
+   *
+   * `unknown` renders NOTHING rather than guessing. A card that silently claims "Counter" because
+   * an older worker did not send the field would send a waiter to the wrong place, which is worse
+   * than a card that simply does not say.
+   */
+  orderType: {
+    eatIn: 'Eat-in',
+    counter: 'Counter',
+  },
+  /** Prefix for the staff member who sent the order. Kept to one short word: the NAME is the
+   *  useful part, and the card is read from three metres. */
+  servedBy: (name: string) => `by ${name}`,
+  /**
    * The 12h partition, shared by both screens. DISPLAY ONLY -- these lines are still live work
    * and nothing about them has been collected, voided or written. The wording carries that: it
    * says UNRESOLVED, not "old" or "done", because a cook reading it must understand the board has
@@ -359,3 +377,24 @@ export const STATION_COPY = {
     startButton: 'Show the board',
   },
 } as const
+
+/**
+ * "Eat-in - by Paulus", "Counter", "by Paulus", or null.
+ *
+ * ONE BUILDER, both boards. The kitchen and the bar ask the same question of a ticket and must not
+ * answer it in two different word orders -- one person works both screens in one shift.
+ *
+ * Returns null when neither fact is known, so the card can omit the row entirely rather than
+ * render an empty element that still costs vertical space at every density tier.
+ */
+export function orderContextLabel(
+  orderType: 'eat_in' | 'counter' | null,
+  servedBy: string | null,
+): string | null {
+  const parts: string[] = []
+  if (orderType === 'eat_in') parts.push(STATION_COPY.orderType.eatIn)
+  if (orderType === 'counter') parts.push(STATION_COPY.orderType.counter)
+  const name = (servedBy ?? '').trim()
+  if (name) parts.push(STATION_COPY.servedBy(name))
+  return parts.length > 0 ? parts.join(' · ') : null
+}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
-import { STATION_COPY } from '@/lib/stations/copy'
+import { STATION_COPY, orderContextLabel } from '@/lib/stations/copy'
 import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort } from '@/lib/stations/age'
 import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
@@ -140,6 +140,7 @@ function BarActiveRoundCard({
     <StationCard
       testId="bar-round-card"
       tableLabel={STATION_COPY.bar.tableLabel(round.tableNumber)}
+      contextLabel={orderContextLabel(round.orderType ?? null, round.servedBy ?? null)}
       ageLabel={formatMinutesShort(ageSeconds(round.placedAt ?? '', now) / 60)}
       escalation={escalation}
       scale={scale}

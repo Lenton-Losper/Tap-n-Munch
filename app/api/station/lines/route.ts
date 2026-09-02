@@ -146,10 +146,74 @@ export async function GET(req: Request) {
     const orderIds = [...new Set(lineRows.map((l) => String(l.order_id)))]
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
-      .select('id, order_number, table_number, placed_at, order_instructions')
+      .select('id, order_number, table_number, placed_at, order_instructions, tab_id')
       .in('id', orderIds)
 
     if (ordersError) throw ordersError
+
+    /**
+     * WHO SENT THIS ORDER — the name a cook can call back across the pass.
+     *
+     * Two batched hops: orders.tab_id -> tabs.opened_by_user_id -> users.name. A tab opened by a
+     * customer scanning a QR code has no opened_by_user_id at all (see
+     * app/api/terminal/tables/[tableId]/open/route.ts), so this is legitimately absent for a large
+     * share of orders and every card must render without it.
+     *
+     * DEGRADES TO ABSENT, NEVER THROWS — same trade the cooked_at/ready_at reads below already
+     * make. A missing name is a slightly less useful card; throwing here would be a blank pass in
+     * the middle of service.
+     *
+     * ONLY THE DISPLAY NAME CROSSES THE WIRE. No email, no user id, no role. A wall screen in a
+     * kitchen is visible to everyone in the room, and often through the pass to customers.
+     */
+    const servedByOrderId = new Map<string, string>()
+    const orderRows = (orders ?? []) as Array<Record<string, unknown>>
+    const tabIds = [
+      ...new Set(
+        orderRows
+          .map((o) => o.tab_id)
+          .filter((t): t is string => typeof t === 'string' && t.length > 0),
+      ),
+    ]
+    if (tabIds.length > 0) {
+      const { data: tabs, error: tabsError } = await supabase
+        .from('tabs')
+        .select('id, opened_by_user_id')
+        .in('id', tabIds)
+
+      if (tabsError) {
+        console.error('[station/lines] served_by unavailable', tabsError.message)
+      } else {
+        const openerByTabId = new Map<string, string>()
+        for (const tab of (tabs ?? []) as Array<Record<string, unknown>>) {
+          const opener = tab.opened_by_user_id
+          if (typeof opener === 'string' && opener.length > 0) openerByTabId.set(String(tab.id), opener)
+        }
+        const userIds = [...new Set([...openerByTabId.values()])]
+        if (userIds.length > 0) {
+          const { data: users, error: usersError } = await supabase
+            .from('users')
+            .select('id, name')
+            .in('id', userIds)
+
+          if (usersError) {
+            console.error('[station/lines] served_by names unavailable', usersError.message)
+          } else {
+            const nameByUserId = new Map<string, string>()
+            for (const user of (users ?? []) as Array<Record<string, unknown>>) {
+              const name = typeof user.name === 'string' ? user.name.trim() : ''
+              if (name) nameByUserId.set(String(user.id), name)
+            }
+            for (const order of orderRows) {
+              const tabId = typeof order.tab_id === 'string' ? order.tab_id : null
+              const opener = tabId ? openerByTabId.get(tabId) : undefined
+              const name = opener ? nameByUserId.get(opener) : undefined
+              if (name) servedByOrderId.set(String(order.id), name)
+            }
+          }
+        }
+      }
+    }
 
     const orderById = new Map<string, Record<string, unknown>>()
     for (const order of (orders ?? []) as Array<Record<string, unknown>>) {
@@ -248,6 +312,20 @@ export async function GET(req: Request) {
           order?.table_number === 0 || order?.table_number == null
             ? null
             : order.table_number,
+        /**
+         * EAT-IN OR COUNTER — DERIVED, not stored. There is no order-type column in this schema
+         * and adding one would be a migration for a fact the data already carries: an order with a
+         * table is being eaten at that table, and an order without one is collected at the counter.
+         * `restaurants.is_counter_service` says what a VENUE is; this says what this ORDER is, and
+         * a table-service venue still takes the occasional counter order.
+         *
+         * Zero is normalised away above before this reads it, so a sentinel table cannot masquerade
+         * as eat-in.
+         */
+        order_type:
+          order?.table_number === 0 || order?.table_number == null ? 'counter' : 'eat_in',
+        /** Absent for QR/customer-opened tabs. See servedByOrderId's docblock. */
+        served_by: servedByOrderId.get(orderId) ?? null,
         order_instructions: order?.order_instructions ?? null,
         placed_at: placedAt,
         // Server-computed: a screen that has been on a wall for a week does not have a clock
