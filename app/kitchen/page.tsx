@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { TerminalActivationGate } from '@/components/stations/terminal-activation-gate'
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
-import { StationNotEnabled } from '@/components/stations/station-not-enabled'
+import { StationFaultNotice } from '@/components/stations/station-fault-notice'
+import type { StationFault } from '@/lib/stations/faults'
 import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialKitchenLines } from '@/lib/stations/data-port'
 import { postStationBump } from '@/lib/stations/bump'
@@ -27,8 +28,8 @@ import type { AuthFetch, TerminalSession } from '@/lib/stations/use-terminal-ses
 export function KitchenScreenLive({ session, authFetch }: { session: TerminalSession; authFetch: AuthFetch }) {
   const [lines, setLines] = useState<KitchenLine[]>([])
   const [loading, setLoading] = useState(true)
-  const [notEnabled, setNotEnabled] = useState(false)
-  const [notPaired, setNotPaired] = useState(false)
+  // One fault, not a set of booleans that can disagree with each other. See lib/stations/faults.ts.
+  const [fault, setFault] = useState<StationFault | null>(null)
   const [pairedTo, setPairedTo] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -77,8 +78,7 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
       void fetchInitialKitchenLines(authFetch).then((snapshot) => {
         if (cancelled) return
         setLines(snapshot.items)
-        setNotEnabled(snapshot.notEnabled)
-        setNotPaired(snapshot.notPaired)
+        setFault(snapshot.fault)
         setPairedTo(snapshot.pairedTo)
         setLoading(false)
       })
@@ -144,11 +144,8 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
   if (loading) {
     return <StationLoading />
   }
-  if (notPaired) {
-    return <StationNotEnabled reason="not_paired" pairedTo={pairedTo} />
-  }
-  if (notEnabled) {
-    return <StationNotEnabled />
+  if (fault) {
+    return <StationFaultNotice fault={fault} pairedTo={pairedTo} />
   }
 
   /**

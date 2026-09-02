@@ -239,30 +239,76 @@ export const STATION_COPY = {
       'not receiving new orders. this list is refreshing slowly and orders may be missing. check the connection or reload.',
   },
   /**
-   * Shown instead of the board (and instead of notPaired/notEnabled, which are not yet known
+   * Shown instead of the board (and instead of any fault, which is not yet known
    * either) from mount until the first fetch resolves. Not "Nothing waiting" -- that is a claim
    * about what the board found, and this is the moment before it has looked.
    */
   loading: {
     heading: 'Loading the board…',
   },
-  /** Shown instead of the board when stationScreensEnabled (20260828220000) is off. */
-  notEnabled: {
-    heading: 'Station screens are not turned on yet',
-    description: 'Ask whoever manages this venue to enable kitchen and bar screens for it.',
-  },
   /**
-   * Shown instead of the board when this terminal is authenticated but not paired to THIS
-   * screen (20260828230000_terminal_station_pairing.sql) -- a valid code for the other screen,
-   * or a screen that was revoked. Distinct from notEnabled: the flag can be on venue-wide and
-   * this one specific screen still be wrong.
+   * SHOWN INSTEAD OF THE BOARD WHEN IT CANNOT LOAD — ONE ENTRY PER DISTINCT FAULT (#370).
+   *
+   * These used to be two entries, `notEnabled` and `notPaired`, and `notEnabled` was shown for
+   * every refusal that was not a pairing mismatch. On 2026-09-02 a kitchen screen showed "ask
+   * whoever manages this venue to enable kitchen and bar screens" for ~45 minutes while that
+   * venue's flag was already on — the screen was paired to a different venue. The message named a
+   * real setting and the wrong venue's copy of it, so every check of that setting came back
+   * looking correct.
+   *
+   * WRITTEN FOR A COOK OR A BARTENDER, NOT FOR US. No error codes, no field names. Each one says
+   * what is wrong in words a person can repeat out loud to a manager, and ends with the next thing
+   * to do. Where there is nothing they can do, it says so plainly rather than sending them to a
+   * settings page that will not help.
    */
-  notPaired: {
-    heading: 'This screen is not paired',
-    description: (pairedTo: string | null) =>
-      pairedTo
-        ? `This code is paired to the ${pairedTo} screen, not this one. Pair this screen from Settings.`
-        : 'This code is not paired to a screen. Pair this screen from Settings.',
+  faults: {
+    /** The venue's row exists and station_screens_enabled is false. Someone switches it on. */
+    screensDisabled: {
+      heading: 'Kitchen and bar screens are switched off here',
+      description:
+        'A manager needs to turn them on in Settings, under Payment and terminals. Show them this screen.',
+    },
+    /** No restaurant_features row at all — nothing to switch on, it has to be set up first. */
+    screensNotConfigured: {
+      heading: 'This venue has not been set up for kitchen and bar screens yet',
+      description:
+        'There is nothing to switch on here yet — it has to be set up first. Ask a manager to set up kitchen and bar screens in Settings.',
+    },
+    /**
+     * The settings read itself failed. Nobody can fix this by changing a setting, so this is the
+     * one message that does NOT send anyone to Settings.
+     */
+    screensUnavailable: {
+      heading: 'This screen cannot check its settings right now',
+      description:
+        'Something on our side is not answering, so this screen cannot tell whether it should be showing orders. Orders are still being taken as normal. Try reloading this page, and if it stays like this, tell a manager to report it.',
+    },
+    /** Authenticated, but this terminal is not paired to THIS screen. */
+    notPaired: {
+      heading: 'This screen is not paired yet',
+      description: (pairedTo: string | null) =>
+        pairedTo
+          ? `This code was used for the ${pairedTo} screen, not this one. A manager can pair this screen in Settings, under Payment and terminals.`
+          : 'A manager can pair this screen in Settings, under Payment and terminals.',
+    },
+    /**
+     * Paired, but the token carries no orders:read scope. Re-pairing fixes it and the venue flag
+     * is irrelevant — which is exactly what the old shared message got wrong.
+     */
+    missingPermission: {
+      heading: 'This screen is not allowed to see orders',
+      description:
+        'It was set up without permission to see orders, so it cannot show the board. Ask a manager to pair this screen again in Settings, under Payment and terminals.',
+    },
+    /**
+     * Anything unrecognised. Deliberately vague about the cause and specific about what to do:
+     * naming a cause we have not established is the entire defect this set exists to fix.
+     */
+    unknown: {
+      heading: 'This screen could not load the board',
+      description:
+        'Orders are still being taken and nothing has been lost — this screen just cannot show them at the moment. Try reloading this page, and if it stays like this, tell a manager to report it.',
+    },
   },
   /** The on-page activation flow — reuses /api/terminals/activate, no new auth is built. */
   activation: {
