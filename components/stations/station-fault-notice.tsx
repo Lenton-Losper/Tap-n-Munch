@@ -2,6 +2,8 @@
 
 import { STATION_COPY } from '@/lib/stations/copy'
 import type { StationFault } from '@/lib/stations/faults'
+import { StationVenueHeader } from '@/components/stations/station-venue-header'
+import type { StationKind } from '@/lib/stations/station-pairing'
 
 /**
  * Shown in place of the board when it cannot load. ONE MESSAGE PER DISTINCT FAULT (#370).
@@ -17,9 +19,14 @@ import type { StationFault } from '@/lib/stations/faults'
 export function StationFaultNotice({
   fault,
   pairedTo = null,
+  station,
+  venueName = null,
 }: {
   fault: StationFault
   pairedTo?: string | null
+  /** #371: a board showing no work must still answer "whose orders is this?". */
+  station: StationKind
+  venueName?: string | null
 }) {
   const copy = STATION_COPY.faults
   const { heading, description } =
@@ -37,13 +44,28 @@ export function StationFaultNotice({
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-[#FAFAF8] p-6"
+      className="flex min-h-screen flex-col bg-[#FAFAF8] p-6"
       data-testid="station-fault-notice"
       data-fault={fault}
     >
-      <div className="max-w-md rounded-2xl border border-[#E9E9E7] bg-white p-8 text-center">
-        <h1 className="font-serif text-2xl font-semibold text-[#37352F]">{heading}</h1>
-        <p className="mt-3 text-base leading-relaxed text-[#6B675F]">{description}</p>
+      {/*
+        #371: pinned top-left, the same place and size it sits on a working board. A screen showing
+        no work is exactly when someone asks whose orders it is supposed to be showing — a screen
+        pointed at the wrong venue and a screen with nothing to do look identical without this.
+      */}
+      <StationVenueHeader station={station} venueName={venueName} />
+      <div className="flex flex-1 items-center justify-center">
+        <div className="max-w-md rounded-2xl border border-[#E9E9E7] bg-white p-8 text-center">
+          {/* h2, not h1: StationVenueHeader above is this page's heading. Two h1s on one
+              page is wrong for a screen reader and made "find the fault heading" ambiguous. */}
+          <h2 className="font-serif text-2xl font-semibold text-[#37352F]" data-testid="station-fault-heading">
+            {heading}
+          </h2>
+          <p className="mt-3 text-base leading-relaxed text-[#6B675F]">{description}</p>
+          {(venueName ?? '').trim() ? null : (
+            <p className="mt-3 text-base text-[#B0341F]">{STATION_COPY.venue.unknownHelp}</p>
+          )}
+        </div>
       </div>
     </div>
   )
