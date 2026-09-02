@@ -25,8 +25,49 @@
  * itself.
  */
 import { useCallback, useEffect, useState } from 'react'
+import type { StationKind } from '@/lib/stations/station-pairing'
 
-const STORAGE_KEY = 'flashtap.station.terminal-session.v1'
+/**
+ * ONE KEY PER STATION, NOT ONE PER ORIGIN.
+ *
+ * ============================================================================================
+ * THE DEFECT THIS REPLACES
+ * ============================================================================================
+ *
+ * This was a single constant, `flashtap.station.terminal-session.v1`, shared by every station page
+ * on the origin. /kitchen and /bar read and wrote the SAME localStorage entry, so pairing the bar
+ * overwrote the kitchen's token and both boards then used whichever was paired last.
+ *
+ * Two consequences, both seen in the wild on 2026-09-02:
+ *   - two boards could not be paired in one browser profile at all, which is why an operator had
+ *     to resort to an incognito window;
+ *   - a tab opened at /kitchen could be carrying a token paired as something else entirely, at a
+ *     different venue, and the board would render it perfectly correctly.
+ *
+ * THE SERVER WAS NEVER THE PROBLEM. `restaurant_terminals` rows are per terminal, each with its own
+ * `station_kind`, and activation updates only the row whose code was redeemed — it has never
+ * revoked or displaced a sibling. Two screens were always pairable; the client simply could not
+ * hold two tokens.
+ *
+ * Nothing about how a token is ISSUED changes here. This is only where it is kept.
+ */
+const STORAGE_KEY_PREFIX = 'flashtap.station.terminal-session.v1'
+
+/**
+ * The pre-fix key. Read once, adopted by the first station page that finds it, then removed.
+ *
+ * Without this every screen already paired in the field would silently need re-activation the
+ * moment this deploys — including screens about to be installed on a wall tonight. Adoption is
+ * first-come: if the device was paired as bar and someone opens /kitchen first, the kitchen page
+ * adopts it, the server refuses it with STATION_NOT_PAIRED, and the operator sees the pairing
+ * message that already exists for exactly that case. No authority is granted by the migration;
+ * the server still decides.
+ */
+const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX
+
+function storageKeyFor(station: StationKind): string {
+  return `${STORAGE_KEY_PREFIX}:${station}`
+}
 
 export type TerminalSession = {
   accessToken: string
@@ -36,10 +77,9 @@ export type TerminalSession = {
   restaurantName: string
 }
 
-function readStoredSession(): TerminalSession | null {
+function parseSession(raw: string | null): TerminalSession | null {
+  if (!raw) return null
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<TerminalSession>
     if (!parsed.accessToken || !parsed.refreshToken || !parsed.restaurantId || !parsed.terminalId) {
       return null
@@ -50,27 +90,43 @@ function readStoredSession(): TerminalSession | null {
   }
 }
 
-function writeStoredSession(session: TerminalSession | null) {
+export function readStoredSession(station: StationKind): TerminalSession | null {
+  try {
+    const own = parseSession(window.localStorage.getItem(storageKeyFor(station)))
+    if (own) return own
+
+    // One-time adoption of a pre-fix session. See LEGACY_STORAGE_KEY.
+    const legacy = parseSession(window.localStorage.getItem(LEGACY_STORAGE_KEY))
+    if (!legacy) return null
+    window.localStorage.setItem(storageKeyFor(station), JSON.stringify(legacy))
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY)
+    return legacy
+  } catch {
+    return null
+  }
+}
+
+export function writeStoredSession(station: StationKind, session: TerminalSession | null) {
   try {
     if (session) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+      window.localStorage.setItem(storageKeyFor(station), JSON.stringify(session))
     } else {
-      window.localStorage.removeItem(STORAGE_KEY)
+      window.localStorage.removeItem(storageKeyFor(station))
     }
   } catch {
     // Best-effort. A private window or a full localStorage means re-activation next load, not a crash.
   }
 }
 
-export function useTerminalSession() {
+export function useTerminalSession(station: StationKind) {
   const [session, setSession] = useState<TerminalSession | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   /* eslint-disable react-hooks/set-state-in-effect -- one-time read of persisted session on mount */
   useEffect(() => {
-    setSession(readStoredSession())
+    setSession(readStoredSession(station))
     setLoaded(true)
-  }, [])
+  }, [station])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const activate = useCallback(async (code: string) => {
@@ -92,7 +148,7 @@ export function useTerminalSession() {
       terminalId: body.terminal_id,
       restaurantName: body.restaurant_name || '',
     }
-    writeStoredSession(next)
+    writeStoredSession(station, next)
     setSession(next)
     return { error: null }
   }, [])
@@ -108,7 +164,7 @@ export function useTerminalSession() {
     })
 
     if (!response.ok) {
-      writeStoredSession(null)
+      writeStoredSession(station, null)
       setSession(null)
       return null
     }
@@ -119,13 +175,13 @@ export function useTerminalSession() {
       accessToken: body.accessToken,
       refreshToken: body.refreshToken,
     }
-    writeStoredSession(next)
+    writeStoredSession(station, next)
     setSession(next)
     return next
   }, [session])
 
   const signOut = useCallback(() => {
-    writeStoredSession(null)
+    writeStoredSession(station, null)
     setSession(null)
   }, [])
 

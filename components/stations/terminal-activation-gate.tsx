@@ -20,7 +20,9 @@ export function TerminalActivationGate({
   /** Which screen is being paired, so the confirmation can say so in words. #371. */
   station: StationKind
 }) {
-  const { session, loaded, activate, authFetch } = useTerminalSession()
+  // The station this gate is guarding decides WHICH stored session it reads. See
+  // lib/stations/use-terminal-session.ts: one key per station, not one per origin.
+  const { session, loaded, activate, authFetch } = useTerminalSession(station)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
