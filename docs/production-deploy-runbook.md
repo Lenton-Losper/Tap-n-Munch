@@ -163,6 +163,7 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
 | No artifact is ever committed | `/.open-next/` in `.gitignore` | every commit |
 | 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once billing allows |
 | No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | both |
+| A migration never bundles DDL with a write to live rows | `scripts/check-migration-no-data-write.mjs` | every run |
 | The sequence cannot skip its own gates | `scripts/deploy/deploy-production.mjs` | local |
 | The sequence still gates | `__tests__/deploy-sequence-gates.test.ts` (13 tests) | every test run |
 
@@ -177,3 +178,27 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
   it matters, so the fix was to make remembering unnecessary rather than to add another check.
 - `supabase/schema.sql` carries a stale copy of `deduct_recipe_stock` — unrelated to deploys but
   found while writing the stock contract, and it should be regenerated.
+
+---
+
+## Migration rule, ruled 2026-09-02
+
+**A migration must not bundle a schema change with a data write to live rows.**
+
+The halves have different risk profiles. A schema change is reviewable in the diff and reversible
+with another DDL statement. A write to production rows is neither: once
+`UPDATE restaurants SET vat_rate = 15` has run, the previous values are gone unless somebody
+captured them first, and no later migration restores what was never recorded.
+
+Bundling them gets the dangerous half approved on the strength of the safe half. Someone reads
+"adds a nullable column", says yes, and ships a data write nobody examined. The fault is not that
+the write is wrong — it is that nobody was asked about it separately.
+
+Separate files, separate approvals, separate deploys. The schema lands and is verified; only then
+does anyone decide what should be written into it.
+
+Enforced by `scripts/check-migration-no-data-write.mjs`, which self-tests its detectors and then
+fails on any NEW migration containing both. Nineteen historical files are baselined by name — the
+rule cannot unbundle migrations that ran months ago, and failing over them would just get the check
+switched off. A pure backfill is fine (the write IS the review), as is seeding a table the same
+file created (there were no live rows a moment earlier).
