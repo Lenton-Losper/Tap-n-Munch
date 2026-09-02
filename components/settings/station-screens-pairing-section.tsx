@@ -9,6 +9,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { STATION_KINDS, type StationKind } from '@/lib/stations/station-pairing'
 import { STATION_PAIRING_COPY as COPY } from '@/lib/stations/pairing-copy'
 import { StationLaunchPanel } from '@/components/settings/station-launch-panel'
+import { stationActivationLink } from '@/lib/stations/activation-link'
 import { getSettingsAccessToken } from './settings-utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -94,6 +95,9 @@ function CodeDialog({
   const { toast } = useToast()
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [copied, setCopied] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
+  /** Absolute, so the link can be sent to another machine. Empty during the server render. */
+  const origin = typeof window === 'undefined' ? '' : window.location.origin
   const [confirmingClose, setConfirmingClose] = useState(false)
 
   useEffect(() => {
@@ -175,6 +179,33 @@ function CodeDialog({
                 <Copy className="mr-2 h-4 w-4" />
                 {copied ? COPY.codeIssued.copiedButton : COPY.codeIssued.copyButton}
               </Button>
+
+            {/* One-click: the SAME code, carried instead of retyped. See activation-link.ts. */}
+            <div className="mt-5 border-t pt-4" data-testid="activation-link-block">
+              <p className="text-sm font-medium">{COPY.codeIssued.linkHeading}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{COPY.codeIssued.linkBody(stationLabel)}</p>
+              <code data-testid="activation-link" className="mt-2 block break-all rounded bg-muted px-2 py-1 text-xs">
+                {stationActivationLink(issued.station, issued.activationCode, origin)}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2"
+                data-testid="copy-activation-link"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(
+                      stationActivationLink(issued.station, issued.activationCode, origin),
+                    )
+                    setLinkCopied(true)
+                  } catch {
+                    setLinkCopied(false)
+                  }
+                }}
+              >
+                {linkCopied ? COPY.codeIssued.copiedLinkButton : COPY.codeIssued.copyLinkButton}
+              </Button>
+            </div>
               <Button onClick={requestClose}>{COPY.codeIssued.closeButton}</Button>
             </DialogFooter>
           </>

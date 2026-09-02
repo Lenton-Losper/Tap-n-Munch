@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
 import { useTerminalSession, type AuthFetch, type TerminalSession } from '@/lib/stations/use-terminal-session'
 import type { StationKind } from '@/lib/stations/station-pairing'
+import { readActivationCode, stripActivationParam } from '@/lib/stations/activation-link'
 
 /**
  * feat/station-screens-v1 — the on-page activation form, shown until a terminal session exists.
@@ -23,6 +24,7 @@ export function TerminalActivationGate({
   // The station this gate is guarding decides WHICH stored session it reads. See
   // lib/stations/use-terminal-session.ts: one key per station, not one per origin.
   const { session, loaded, activate, authFetch } = useTerminalSession(station)
+
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -34,6 +36,30 @@ export function TerminalActivationGate({
    * there to dismiss. It is set only by a successful activate() in this session.
    */
   const [justPaired, setJustPaired] = useState(false)
+  /**
+   * ONE-CLICK PAIRING. A link from the venue's settings carries the SAME activation code someone
+   * would otherwise read off a laptop and type in here — see lib/stations/activation-link.ts. The
+   * typed form below is untouched and remains the fallback.
+   *
+   * `attempted` guards against a second submission: React may run this effect again, and a spent
+   * code would then produce a spurious "invalid or expired" over a pairing that already worked.
+   */
+  const [autoAttempted, setAutoAttempted] = useState(false)
+  useEffect(() => {
+    if (!loaded || session || autoAttempted) return
+    const code = readActivationCode(window.location.search)
+    if (!code) return
+    setAutoAttempted(true)
+    /**
+     * STRIPPED BEFORE IT IS SUBMITTED, not after. A failure must not leave a spent or invalid code
+     * in the address bar to be reloaded, bookmarked or photographed.
+     */
+    window.history.replaceState(null, '', `${window.location.pathname}${stripActivationParam(window.location.search)}`)
+    void activate(code).then((result) => {
+      if (result.error) setError(result.error)
+      else setJustPaired(true)
+    })
+  }, [loaded, session, autoAttempted, activate])
 
   if (!loaded) {
     return null

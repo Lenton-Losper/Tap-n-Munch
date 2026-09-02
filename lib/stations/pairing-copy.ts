@@ -83,6 +83,17 @@ export const STATION_PAIRING_COPY = {
     /** Countdown label; `mmss` is pre-formatted "MM:SS" by the component, ticking live. */
     expiresIn: (mmss: string) => `Expires in ${mmss}`,
     expired: 'This code has expired. Generate a new one.',
+    /**
+     * ONE-CLICK PAIRING. The same code, carried instead of retyped — see
+     * lib/stations/activation-link.ts for why this reuses the code rather than minting a
+     * second kind of secret. The typed instructions above stay: they are the fallback when
+     * the screen cannot reach this page, and for anyone who would rather read the characters.
+     */
+    linkHeading: 'Or open it straight on the screen',
+    linkBody: (stationLabel: string) =>
+      `Open this link on the ${stationLabel} screen and it pairs itself. The link works once and expires with the code.`,
+    copyLinkButton: 'Copy link',
+    copiedLinkButton: 'Link copied',
     copyButton: 'Copy code',
     copiedButton: 'Copied',
     /** The exit — deliberately not "Done", which reads as "task complete" for something that
