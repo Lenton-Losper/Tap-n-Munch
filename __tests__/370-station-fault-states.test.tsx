@@ -125,7 +125,7 @@ describe('StationFaultNotice renders each fault distinctly', () => {
   })
 
   const renderFault = (fault: StationFault, pairedTo: string | null = null) => {
-    act(() => root.render(<StationFaultNotice fault={fault} pairedTo={pairedTo} />))
+    act(() => root.render(<StationFaultNotice fault={fault} pairedTo={pairedTo} station="kitchen" venueName="Riviera" />))
     return container.querySelector('[data-testid="station-fault-notice"]') as HTMLElement
   }
 
@@ -139,7 +139,10 @@ describe('StationFaultNotice renders each fault distinctly', () => {
   ]
 
   it('gives every fault its own heading — no two share one', () => {
-    const headings = ALL.map((f) => renderFault(f).querySelector('h1')?.textContent ?? '')
+    // Scoped to the FAULT heading — the page's h1 is now the venue header (#371).
+    const headings = ALL.map(
+      (f) => renderFault(f).querySelector('[data-testid="station-fault-heading"]')?.textContent ?? '',
+    )
     expect(new Set(headings).size).toBe(ALL.length)
     expect(headings.every((h) => h.length > 0)).toBe(true)
   })
@@ -181,11 +184,20 @@ describe('StationFaultNotice renders each fault distinctly', () => {
     }
   })
 
+  it('still names the venue on every fault (#371) — an empty board must say whose it is', () => {
+    for (const fault of ALL) {
+      expect(renderFault(fault).querySelector('[data-testid="station-venue-header"]')?.textContent).toContain(
+        'Riviera',
+      )
+    }
+  })
+
   it('names the other screen when the pairing mismatch knows it', () => {
     expect(renderFault('not_paired', 'bar').textContent).toContain('bar')
     // …and stays a complete sentence when it does not.
-    const blind = renderFault('not_paired', null).textContent ?? ''
-    expect(blind).toBe(
+    const card = renderFault('not_paired', null).querySelector('[data-testid="station-fault-heading"]')
+      ?.parentElement
+    expect(card?.textContent).toBe(
       STATION_COPY.faults.notPaired.heading + STATION_COPY.faults.notPaired.description(null),
     )
   })

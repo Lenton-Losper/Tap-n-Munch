@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
+import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort, worstEscalation } from '@/lib/stations/age'
 import {
   buildKitchenBoard,
@@ -186,11 +187,14 @@ export function KitchenScreen({
   now,
   connectionState,
   onBump,
+  venueName = null,
 }: {
   lines: KitchenLine[]
   now: number
   connectionState: FeedConnectionState
   onBump: BumpLines
+  /** From the terminal session, never the URL. See StationVenueHeader. */
+  venueName?: string | null
 }) {
   const board = buildKitchenBoard(lines, now)
   const activeScale = densityFor(board.activeByTable.length)
@@ -270,7 +274,7 @@ export function KitchenScreen({
       data-ready-row-count={readyDisplayRows.length}
     >
       <div className="mb-2 flex shrink-0 items-center justify-between">
-        <h1 className="font-serif text-2xl font-bold text-[#37352F]">{STATION_COPY.kitchen.pageTitle}</h1>
+        <StationVenueHeader station="kitchen" venueName={venueName} />
         <StationConnectionIndicator state={connectionState} />
       </div>
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
+import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort } from '@/lib/stations/age'
 import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
 import { densityFor, dispatchDensityFor, type DensityScale } from '@/lib/stations/board-density'
@@ -181,11 +182,14 @@ export function BarScreen({
   now,
   connectionState,
   onBump,
+  venueName = null,
 }: {
   rounds: BarRound[]
   now: number
   connectionState: FeedConnectionState
   onBump: BumpLines
+  /** From the terminal session, never the URL. See StationVenueHeader. */
+  venueName?: string | null
 }) {
   const board = buildBarBoard(rounds, now)
   const activeScale = densityFor(board.active.length)
@@ -219,7 +223,7 @@ export function BarScreen({
       data-card-count={board.active.length + displayRows.length}
     >
       <div className="mb-2 flex shrink-0 items-center justify-between">
-        <h1 className="font-serif text-2xl font-bold text-[#37352F]">{STATION_COPY.bar.pageTitle}</h1>
+        <StationVenueHeader station="bar" venueName={venueName} />
         <StationConnectionIndicator state={connectionState} />
       </div>
 

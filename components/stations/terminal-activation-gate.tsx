@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
 import { useTerminalSession, type AuthFetch, type TerminalSession } from '@/lib/stations/use-terminal-session'
+import type { StationKind } from '@/lib/stations/station-pairing'
 
 /**
  * feat/station-screens-v1 — the on-page activation form, shown until a terminal session exists.
@@ -13,20 +14,68 @@ import { useTerminalSession, type AuthFetch, type TerminalSession } from '@/lib/
  */
 export function TerminalActivationGate({
   children,
+  station,
 }: {
   children: (session: TerminalSession, authFetch: AuthFetch) => React.ReactNode
+  /** Which screen is being paired, so the confirmation can say so in words. #371. */
+  station: StationKind
 }) {
   const { session, loaded, activate, authFetch } = useTerminalSession()
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  /**
+   * #371: TRUE ONLY FOR A PAIRING THAT JUST HAPPENED IN FRONT OF SOMEBODY.
+   *
+   * Initial state is false, so a screen that reloads with a stored session goes straight to the
+   * board as before -- a wall screen rebooting at 6am must not stop on a confirmation nobody is
+   * there to dismiss. It is set only by a successful activate() in this session.
+   */
+  const [justPaired, setJustPaired] = useState(false)
 
   if (!loaded) {
     return null
   }
 
-  if (session) {
+  if (session && !justPaired) {
     return <>{children(session, authFetch)}</>
+  }
+
+  const stationLabel = station === 'kitchen' ? STATION_COPY.kitchen.pageTitle : STATION_COPY.bar.pageTitle
+
+  /**
+   * THE CONFIRMATION. The whole point of #371: the activation code carries the venue with it and
+   * the person typing it cannot see which one. On 2026-09-02 a screen standing in Riviera was
+   * paired to another venue entirely and said nothing about it for 45 minutes.
+   */
+  if (session && justPaired) {
+    const venueName = (session.restaurantName ?? '').trim()
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAFAF8] p-6">
+        <div
+          className="w-full max-w-md rounded-2xl border border-[#E9E9E7] bg-white p-8 text-center"
+          data-testid="terminal-paired-confirmation"
+          data-venue={venueName || 'unknown'}
+        >
+          <h1 className="font-serif text-2xl font-semibold text-[#37352F]">
+            {STATION_COPY.activation.pairedHeading}
+          </h1>
+          <p className="mt-3 text-lg text-[#37352F]">
+            {venueName
+              ? STATION_COPY.activation.pairedTo(venueName, stationLabel)
+              : STATION_COPY.activation.pairedToUnknownVenue(stationLabel)}
+          </p>
+          <p className="mt-3 text-sm text-[#6B675F]">{STATION_COPY.activation.pairedWrongVenueHint}</p>
+          <button
+            type="button"
+            onClick={() => setJustPaired(false)}
+            className="mt-6 w-full rounded-lg bg-[#FF6B35] px-3 py-2 font-medium text-white hover:bg-[#e85f2f]"
+          >
+            {STATION_COPY.activation.startButton}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -37,7 +86,9 @@ export function TerminalActivationGate({
     setSubmitting(false)
     if (result.error) {
       setError(result.error)
+      return
     }
+    setJustPaired(true)
   }
 
   return (

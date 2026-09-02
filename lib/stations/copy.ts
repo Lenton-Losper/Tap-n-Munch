@@ -310,6 +310,28 @@ export const STATION_COPY = {
         'Orders are still being taken. Try reloading this page. If it stays like this, tell a manager.',
     },
   },
+  /**
+   * WHICH VENUE THIS SCREEN IS SHOWING (#371).
+   *
+   * On 2026-09-02 a kitchen screen sitting in Riviera was paired, with a code generated from a
+   * different venue's settings page, to FNB ChowNow. Nothing on the screen said so. A screen
+   * pointed at the wrong restaurant and a screen with genuinely nothing to do both read "Nothing
+   * waiting", so the board looked merely quiet for 45 minutes.
+   *
+   * The venue name is therefore ALWAYS on the board, including on every empty and fault state --
+   * which is exactly when it matters, because that is when someone is standing there wondering
+   * why nothing has arrived.
+   */
+  venue: {
+    /**
+     * Shown in place of the name when the session has none. NOT blank: a missing venue rendered as
+     * empty space is the same silence this exists to break, and it is recoverable -- re-pairing
+     * writes the name.
+     */
+    unknownName: 'Venue not set',
+    unknownHelp:
+      'This screen does not know which venue it belongs to. Pair it again in Settings, under Payment and terminals, and it will.',
+  },
   /** The on-page activation flow — reuses /api/terminals/activate, no new auth is built. */
   activation: {
     heading: 'Activate this screen',
@@ -319,5 +341,21 @@ export const STATION_COPY = {
     submittingButton: 'Activating…',
     invalidCode: 'Invalid or expired activation code.',
     genericError: 'Something went wrong. Try again.',
+    /**
+     * SHOWN THE MOMENT PAIRING SUCCEEDS, BEFORE THE BOARD (#371).
+     *
+     * The activation code carries the venue with it, and the person entering it cannot see which
+     * venue that was. Dropping them straight onto a board makes a wrong-venue pairing look
+     * identical to a right one until someone notices no food is arriving -- which, on 2026-09-02,
+     * took 45 minutes. This is the one moment where naming the venue is free and someone is still
+     * standing in front of the screen.
+     */
+    pairedHeading: 'This screen is paired',
+    pairedTo: (venueName: string, stationLabel: string) =>
+      `It will show ${stationLabel} orders for ${venueName}.`,
+    pairedToUnknownVenue: (stationLabel: string) =>
+      `It will show ${stationLabel} orders, but it did not receive a venue name. Check with a manager before you rely on it.`,
+    pairedWrongVenueHint: 'Not the right venue? Pair it again with a code from that venue instead.',
+    startButton: 'Show the board',
   },
 } as const

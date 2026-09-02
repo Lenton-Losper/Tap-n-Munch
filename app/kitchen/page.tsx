@@ -145,7 +145,7 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
     return <StationLoading />
   }
   if (fault) {
-    return <StationFaultNotice fault={fault} pairedTo={pairedTo} />
+    return <StationFaultNotice fault={fault} pairedTo={pairedTo} station="kitchen" venueName={session.restaurantName} />
   }
 
   /**
@@ -157,6 +157,7 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
    */
   return (
     <KitchenScreen
+      venueName={session.restaurantName}
       lines={lines}
       now={nowMs}
       connectionState={connectionState}
@@ -188,7 +189,7 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
 
 export default function KitchenPage() {
   return (
-    <TerminalActivationGate>
+    <TerminalActivationGate station="kitchen">
       {(session, authFetch) => <KitchenScreenLive session={session} authFetch={authFetch} />}
     </TerminalActivationGate>
   )

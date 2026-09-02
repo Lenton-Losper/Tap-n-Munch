@@ -129,7 +129,7 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
     return <StationLoading />
   }
   if (fault) {
-    return <StationFaultNotice fault={fault} pairedTo={pairedTo} />
+    return <StationFaultNotice fault={fault} pairedTo={pairedTo} station="bar" venueName={session.restaurantName} />
   }
 
   /**
@@ -143,6 +143,7 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
    */
   return (
     <BarScreen
+      venueName={session.restaurantName}
       rounds={rounds}
       now={nowMs}
       connectionState={connectionState}
@@ -174,7 +175,7 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
 
 export default function BarPage() {
   return (
-    <TerminalActivationGate>
+    <TerminalActivationGate station="bar">
       {(session, authFetch) => <BarScreenLive session={session} authFetch={authFetch} />}
     </TerminalActivationGate>
   )
