@@ -161,8 +161,10 @@ describe('StationFaultNotice renders each fault distinctly', () => {
       const text = renderFault(fault).textContent ?? ''
       expect(text).not.toMatch(/in Settings/i)
       expect(text).not.toMatch(/ask a manager to/i)
-      // Instead they get the one thing that is actually useful.
-      expect(text).toMatch(/report it/i)
+      // Instead they get the two things that ARE useful: try the page again, and if that does not
+      // work escalate to a person rather than to a settings page that cannot help.
+      expect(text).toMatch(/reloading this page/i)
+      expect(text).toMatch(/tell a manager/i)
     }
   })
 
