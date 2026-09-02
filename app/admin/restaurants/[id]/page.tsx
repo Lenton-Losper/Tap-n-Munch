@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { VenueStationScreens, type VenueStationScreen } from '@/components/admin/venue-station-screens'
 import { notFound } from 'next/navigation'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -258,7 +259,7 @@ async function loadRestaurant(id: string) {
       .limit(50),
     supabase
       .from('restaurant_terminals')
-      .select('id, terminal_name, name, sn, model, app_version, active, status, last_seen_at, created_at')
+      .select('id, terminal_name, name, sn, model, app_version, active, status, last_seen_at, created_at, station_kind, activated_at')
       .eq('restaurant_id', id)
       .order('created_at', { ascending: false }),
     supabase
@@ -617,7 +618,25 @@ export default async function RestaurantDetailPage({
           {terminals.length === 0 ? (
             <EmptyState title="No terminals" body="No devices are registered to this restaurant." />
           ) : (
-            <Card title="Terminals">
+              <>
+            <Card title="Kitchen and bar screens">
+                <VenueStationScreens
+                  screens={terminals
+                    .filter((t) => t.station_kind === 'kitchen' || t.station_kind === 'bar')
+                    .map((t): VenueStationScreen => ({
+                      id: String(t.id),
+                      stationKind: t.station_kind as 'kitchen' | 'bar',
+                      name: t.terminal_name ? String(t.terminal_name) : null,
+                      status: t.status ? String(t.status) : null,
+                      active: Boolean(t.active),
+                      lastSeenAt: t.last_seen_at ? String(t.last_seen_at) : null,
+                      activatedAt: t.activated_at ? String(t.activated_at) : null,
+                    }))}
+                  now={loadedAt}
+                />
+              </Card>
+
+              <Card title="Terminals">
               <div className="grid gap-3 md:grid-cols-2">
                 {terminals.map((terminal) => {
                   const online = Boolean(
@@ -637,6 +656,7 @@ export default async function RestaurantDetailPage({
                 })}
               </div>
             </Card>
+              </>
           )}
         </TabsContent>
 
