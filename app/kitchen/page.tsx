@@ -5,6 +5,8 @@ import { TerminalActivationGate } from '@/components/stations/terminal-activatio
 import { KitchenScreen } from '@/components/stations/kitchen-screen'
 import { StationFaultNotice } from '@/components/stations/station-fault-notice'
 import type { StationFault } from '@/lib/stations/faults'
+import { StationVenueMismatch } from '@/components/stations/station-venue-mismatch'
+import { readVenueHint, isVenueMismatch, type VenueHint } from '@/lib/stations/venue-hint'
 import { StationLoading } from '@/components/stations/station-loading'
 import { fetchInitialKitchenLines } from '@/lib/stations/data-port'
 import { postStationBump } from '@/lib/stations/bump'
@@ -30,6 +32,13 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
   const [loading, setLoading] = useState(true)
   // One fault, not a set of booleans that can disagree with each other. See lib/stations/faults.ts.
   const [fault, setFault] = useState<StationFault | null>(null)
+  /**
+   * THE VENUE HINT, READ ONCE. Purely a check against what the token resolved to — see
+   * lib/stations/venue-hint.ts. No hint means no opinion, and a wall screen launched from its own
+   * icon carries none, so its behaviour is unchanged.
+   */
+  const [hint, setHint] = useState<VenueHint>({ id: null, name: null })
+  const [mismatchDismissed, setMismatchDismissed] = useState(false)
   const [pairedTo, setPairedTo] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<FeedConnectionState>(getFeedConnectionState())
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -42,6 +51,12 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
    * resolving after unmount cannot start a fetch nobody will read.
    */
   const refetchRef = useRef<() => void>(() => {})
+
+  /* eslint-disable react-hooks/set-state-in-effect -- one-time read of the launch URL on mount */
+  useEffect(() => {
+    setHint(readVenueHint(typeof window === 'undefined' ? '' : window.location.search))
+  }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => subscribeFeedConnectionState(() => setConnectionState(getFeedConnectionState())), [])
 
@@ -144,6 +159,22 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
   if (loading) {
     return <StationLoading />
   }
+  /**
+   * BEFORE the board and before any fault state: if the dashboard named one venue and the token
+   * resolved to another, that disagreement is the most important thing on this screen. It is not
+   * an error — the board below is correct — so it is dismissible.
+   */
+  if (isVenueMismatch(hint, session.restaurantId) && !mismatchDismissed) {
+    return (
+      <StationVenueMismatch
+        station="kitchen"
+        showingVenueName={session.restaurantName}
+        openedFromVenueName={hint.name}
+        onContinue={() => setMismatchDismissed(true)}
+      />
+    )
+  }
+
   if (fault) {
     return <StationFaultNotice fault={fault} pairedTo={pairedTo} station="kitchen" venueName={session.restaurantName} />
   }

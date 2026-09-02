@@ -632,6 +632,8 @@ export default async function RestaurantDetailPage({
                       lastSeenAt: t.last_seen_at ? String(t.last_seen_at) : null,
                       activatedAt: t.activated_at ? String(t.activated_at) : null,
                     }))}
+                  venueId={String(id)}
+                  venueName={restaurant?.name ? String(restaurant.name) : null}
                   now={loadedAt}
                 />
               </Card>

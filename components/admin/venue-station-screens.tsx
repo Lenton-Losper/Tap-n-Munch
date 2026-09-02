@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { VENUE_LAUNCHER_COPY as COPY } from '@/lib/stations/venue-launcher-copy'
 import { STATION_PWA } from '@/lib/stations/pwa'
+import { stationHrefWithVenueHint } from '@/lib/stations/venue-hint'
 import type { StationKind } from '@/lib/stations/station-pairing'
 
 export type VenueStationScreen = {
@@ -38,9 +39,18 @@ function screenState(screen: VenueStationScreen, now: number): string {
  */
 export function VenueStationScreens({
   screens,
+  venueId,
+  venueName,
   now = Date.now(),
 }: {
   screens: VenueStationScreen[]
+  /**
+   * Passed onto the Open link as a HINT so the board can tell the operator when the device it
+   * lands on belongs to a different venue. It grants nothing and never scopes anything — see
+   * lib/stations/venue-hint.ts. Optional so the panel still renders without it.
+   */
+  venueId?: string | null
+  venueName?: string | null
   now?: number
 }) {
   const stations: Array<{ kind: StationKind; label: string; open: string }> = [
@@ -80,7 +90,11 @@ export function VenueStationScreens({
                 )}
               </div>
               <Link
-                href={STATION_PWA[kind].startUrl}
+                href={
+                  venueId
+                    ? stationHrefWithVenueHint(STATION_PWA[kind].startUrl, venueId, venueName ?? null)
+                    : STATION_PWA[kind].startUrl
+                }
                 target="_blank"
                 rel="noopener noreferrer"
                 data-testid={`venue-open-${kind}`}

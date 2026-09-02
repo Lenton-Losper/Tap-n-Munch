@@ -267,6 +267,31 @@ export const STATION_COPY = {
     heading: 'Loading the board…',
   },
   /**
+   * THE SCREEN IS SHOWING A DIFFERENT VENUE FROM THE ONE YOU OPENED IT FROM.
+   *
+   * Not an error: the board is correct, the token says so, and the food on it is real. What is
+   * wrong is the EXPECTATION — someone clicked Open on Riviera's dashboard and got ChowNow's pass.
+   * Saying "error" would send them looking for a fault that does not exist.
+   *
+   * Both venues are named, because naming only one is what made this take 45 minutes the first
+   * time. The venue the screen is actually showing comes from the session and is authoritative;
+   * the one they opened from comes from the link and is only ever quoted back.
+   *
+   * There is a way past it. The board is not broken and a manager may legitimately want to look at
+   * it, so this states the situation and gets out of the way rather than trapping the screen.
+   */
+  venueMismatch: {
+    heading: 'This screen is showing a different venue',
+    body: (showing: string, openedFrom: string) =>
+      `This screen is showing ${showing}, but you opened it from ${openedFrom}.`,
+    /** The fix, for the case where this is a genuinely mis-paired screen. */
+    fix: 'If this screen belongs to the other venue, pair it again with a code from that venue, in Settings under Payment and terminals.',
+    /** The escape, for the case where a manager just wanted a look. */
+    continueButton: 'Show this board anyway',
+    /** Fallback when the link carried no name — never invent one. */
+    unknownOpenedFrom: 'another venue',
+  },
+  /**
    * SHOWN INSTEAD OF THE BOARD WHEN IT CANNOT LOAD — ONE ENTRY PER DISTINCT FAULT (#370).
    *
    * These used to be two entries, `notEnabled` and `notPaired`, and `notEnabled` was shown for
