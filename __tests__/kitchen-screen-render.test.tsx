@@ -377,11 +377,21 @@ describe('KitchenScreen — per line is the default, per table is a small shortc
     expect(active.size).toBeGreaterThanOrEqual(3)
   })
 
-  it('reads an absent table as words in the ready zone, never "Table 0"', () => {
+  it('identifies a table-less ready line by its order number, and never as "Table 0"', () => {
+    /**
+     * UPDATED with the order-identifier change. The original guarantee is unchanged and still
+     * asserted: zero is not a table and must never render as one.
+     *
+     * What changed is the FALLBACK. "No table" is true but useless at the pass — a counter order
+     * being handed to whoever is waiting for it cannot be called by a phrase that names no order.
+     * The order number was on the payload the whole time and is now rendered in its place.
+     */
     renderWall()
     const ready = container.querySelector('[data-testid="ready-section"]')!
-    expect(ready.textContent).toContain('No table')
     expect(ready.textContent).not.toContain('Table 0')
+    expect(ready.textContent).toMatch(/Order #\d+/)
+    // and the useless phrasing is gone from the rows that have an order number to show
+    expect(ready.textContent).not.toContain('No table')
   })
 
   it('partitions the 12877-minute-old line into OLDER UNRESOLVED instead of the Ready queue', () => {

@@ -221,9 +221,9 @@ export function StationLineRow({
       data-escalation={escalation ?? 'none'}
       className={`flex items-center justify-between gap-3 border-t border-current/15 first:border-t-0 ${scale.rowPadClass}`}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className={`font-bold leading-tight ${scale.itemClass}`}>
-          {quantity}× {itemName}
+          {itemName}
         </p>
         {lineNote ? (
           <p
@@ -239,6 +239,19 @@ export function StationLineRow({
           </p>
         ) : null}
       </div>
+      {/*
+        QUANTITY AS ITS OWN RIGHT-ALIGNED COLUMN, not "2x Spring Rolls" inside the name.
+        A cook counting covers scans a straight right-hand edge; embedded in a sentence, the number
+        moves horizontally with the length of every dish name above it and has to be hunted for on
+        each line. Same size and weight as the item name, because on a ticket the count is not
+        secondary to the dish -- getting it wrong is the error that reaches a table.
+      */}
+      <span
+        data-testid="line-quantity"
+        className={`shrink-0 pl-2 text-right font-black leading-tight tabular-nums ${scale.itemClass}`}
+      >
+        {quantity}
+      </span>
       <BumpButton
         label={buttonLabel}
         lineIds={[lineId]}
@@ -395,7 +408,7 @@ export function NotSentStrip({
   tableLabel,
 }: {
   items: Array<{ lineId: string; tableNumber: string; quantity: number; itemName: string }>
-  tableLabel: (tableNumber: string) => string
+  tableLabel: (tableNumber: string, orderNumber?: string | number | null) => string
 }) {
   if (items.length === 0) return null
   return (
@@ -457,7 +470,7 @@ export function DispatchRowView({
   now: number
   escalation: AgeEscalation
   scale: DispatchDensity
-  tableLabel: (tableNumber: string) => string
+  tableLabel: (tableNumber: string, orderNumber?: string | number | null) => string
   /** "READY" / "WAITING" — the word between the item and the clock. Signed per board. */
   action: StationBumpAction
   actionLabel: string
@@ -484,7 +497,7 @@ export function DispatchRowView({
           every row. The table is its own column rather than run into the item name: it is the
           token that routes a plate to a human, and at a glance it must not need parsing. */}
       <span className={`w-[7.5rem] shrink-0 truncate font-black ${scale.rowTextClass}`}>
-        {tableLabel(row.tableNumber)}
+        {tableLabel(row.tableNumber, row.orderNumber)}
       </span>
       <span className={`min-w-0 flex-1 truncate font-bold ${scale.rowTextClass} ${collected ? 'line-through' : ''}`}>
         {row.quantity}× {row.itemName}

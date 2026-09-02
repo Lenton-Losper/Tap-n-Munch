@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
-import { STATION_COPY, orderContextLabel } from '@/lib/stations/copy'
+import { STATION_COPY, orderContextLabel, orderIdentifier } from '@/lib/stations/copy'
 import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort } from '@/lib/stations/age'
 import { barActiveLineEscalation, barReadyRowEscalation, buildBarBoard } from '@/lib/stations/grouping'
@@ -139,7 +139,7 @@ function BarActiveRoundCard({
   return (
     <StationCard
       testId="bar-round-card"
-      tableLabel={STATION_COPY.bar.tableLabel(round.tableNumber)}
+      tableLabel={orderIdentifier(round.tableNumber, round.orderNumber, 'bar')}
       contextLabel={orderContextLabel(round.orderType ?? null, round.servedBy ?? null)}
       ageLabel={formatMinutesShort(ageSeconds(round.placedAt ?? '', now) / 60)}
       escalation={escalation}
@@ -232,7 +232,7 @@ export function BarScreen({
         NOT SENT — full-width, above the scrollable two-surface area entirely, so it can never be
         buried by any amount of active or ready work. See station-card.tsx's NotSentStrip docblock.
       */}
-      <NotSentStrip items={unroutedItems} tableLabel={STATION_COPY.bar.tableLabel} />
+      <NotSentStrip items={unroutedItems} tableLabel={(t, o) => orderIdentifier(t, o, 'bar')} />
 
       {/*
         THE ONE SCROLLABLE THING, AND IT IS SUPPOSED TO NEVER SCROLL — same contract the kitchen
@@ -251,7 +251,20 @@ export function BarScreen({
             {STATION_COPY.bar.activeHeading}
           </h2>
           {board.active.length === 0 ? (
-            <p className="text-base text-[#6B675F]">{STATION_COPY.bar.activeEmpty}</p>
+            <div
+              data-testid="active-zone-empty"
+              className="flex h-full items-center justify-center py-10"
+            >
+              {/*
+                AN IDLE BOARD MUST READ AS ALIVE AND EMPTY, NOT AS A PAGE THAT FAILED TO LOAD.
+                This was a 16px grey line in the top-left corner of a 1920px wall display — from
+                three metres that is indistinguishable from a blank screen, which is the reading a
+                cook actually took from it. Centred in the zone it owns, at a size that resolves
+                across a kitchen, and deliberately calm: nothing waiting is good news, so it must
+                not borrow the visual weight of a fault.
+              */}
+              <p className="text-3xl font-medium text-[#A8A39A]">{STATION_COPY.bar.activeEmpty}</p>
+            </div>
           ) : (
             <div className={`gap-1.5 ${activeScale.columnsClass}`} data-testid="bar-active-grid">
               {board.active.map((round) => (
@@ -279,7 +292,7 @@ export function BarScreen({
               now={now}
               escalation={barReadyRowEscalation(row, now)}
               scale={dispatchScale}
-              tableLabel={STATION_COPY.bar.tableLabel}
+              tableLabel={(t, o) => orderIdentifier(t, o, 'bar')}
               action="collected"
               actionLabel={STATION_COPY.bar.collectedButton}
               tone="pass"

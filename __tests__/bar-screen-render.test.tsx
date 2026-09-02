@@ -417,10 +417,13 @@ describe('the bar board at real volume (forty rounds)', () => {
     for (const t of clocks) expect(t).toMatch(/^\d+m$|^<1m$/)
   })
 
-  it('reads an absent table as words, never "Table 0" and never a bare dash', () => {
+  it('identifies a table-less round by its order number, never "Table 0" and never a bare dash', () => {
+    // Same change as the kitchen board's own version of this test: the anti-"Table 0" guarantee is
+    // untouched; the fallback is now something a bartender can actually call out.
     renderWall()
-    expect(container.textContent).toContain('No table')
     expect(container.textContent).not.toContain('Table 0')
+    expect(container.textContent).toMatch(/Order #\d+/)
+    expect(container.textContent).not.toContain('No table')
   })
 
   it('spends the wall on size when quiet and buys columns with type size when full', () => {

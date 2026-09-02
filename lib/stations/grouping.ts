@@ -184,6 +184,7 @@ export function buildKitchenBoard(lines: KitchenLine[], now: number = Date.now()
     .map((line) => ({
       lineId: line.id,
       tableNumber: line.tableNumber,
+      orderNumber: line.orderNumber,
       itemName: line.itemName,
       quantity: line.quantity,
       lineNote: line.lineNote,
@@ -256,6 +257,7 @@ export function buildBarBoard(rounds: BarRound[], now: number = Date.now()): Bar
       .map((item) => ({
         lineId: item.id,
         tableNumber: round.tableNumber,
+        orderNumber: round.orderNumber,
         itemName: item.itemName,
         quantity: item.quantity,
         lineNote: item.lineNote,

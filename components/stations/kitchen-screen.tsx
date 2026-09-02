@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
-import { STATION_COPY, orderContextLabel } from '@/lib/stations/copy'
+import { STATION_COPY, orderContextLabel, orderIdentifier } from '@/lib/stations/copy'
 import { StationVenueHeader } from '@/components/stations/station-venue-header'
 import { ageSeconds, formatMinutesShort, worstEscalation } from '@/lib/stations/age'
 import {
@@ -114,7 +114,7 @@ function ActiveTableCard({
   return (
     <StationCard
       testId="active-table-card"
-      tableLabel={STATION_COPY.kitchen.tableLabel(group.tableNumber)}
+      tableLabel={orderIdentifier(group.tableNumber, group.lines[0]?.orderNumber, 'kitchen')}
       // Every line in a group belongs to the same table and the same ticket, so the first line
       // answers for the group. Reading them all would just be the same answer N times.
       contextLabel={orderContextLabel(group.lines[0]?.orderType ?? null, group.lines[0]?.servedBy ?? null)}
@@ -293,7 +293,7 @@ export function KitchenScreen({
           quantity: line.quantity,
           itemName: line.itemName,
         }))}
-        tableLabel={STATION_COPY.kitchen.tableLabel}
+        tableLabel={(t, o) => orderIdentifier(t, o, 'kitchen')}
       />
 
       {/*
@@ -333,7 +333,20 @@ export function KitchenScreen({
             {STATION_COPY.kitchen.activeHeading}
           </h2>
           {board.activeByTable.length === 0 ? (
-            <p className="text-base text-[#6B675F]">{STATION_COPY.kitchen.activeEmpty}</p>
+            <div
+              data-testid="active-zone-empty"
+              className="flex h-full items-center justify-center py-10"
+            >
+              {/*
+                AN IDLE BOARD MUST READ AS ALIVE AND EMPTY, NOT AS A PAGE THAT FAILED TO LOAD.
+                This was a 16px grey line in the top-left corner of a 1920px wall display — from
+                three metres that is indistinguishable from a blank screen, which is the reading a
+                cook actually took from it. Centred in the zone it owns, at a size that resolves
+                across a kitchen, and deliberately calm: nothing waiting is good news, so it must
+                not borrow the visual weight of a fault.
+              */}
+              <p className="text-3xl font-medium text-[#A8A39A]">{STATION_COPY.kitchen.activeEmpty}</p>
+            </div>
           ) : (
             <div
               className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden gap-1.5 ${activeScale.columnsClass}`}
@@ -366,7 +379,7 @@ export function KitchenScreen({
               now={now}
               escalation={kitchenReadyRowEscalation(row, now)}
               scale={readyDensity}
-              tableLabel={STATION_COPY.kitchen.tableLabel}
+              tableLabel={(t, o) => orderIdentifier(t, o, 'kitchen')}
               action="collected"
               actionLabel={STATION_COPY.kitchen.collectedButton}
               tone="pass"
@@ -391,7 +404,7 @@ export function KitchenScreen({
               className="flex items-center gap-2 px-2 py-0.5 text-sm text-[#8A857C]"
             >
               <span className="w-[7.5rem] shrink-0 truncate font-bold">
-                {STATION_COPY.kitchen.tableLabel(line.tableNumber)}
+                {orderIdentifier(line.tableNumber, line.orderNumber, 'kitchen')}
               </span>
               <span className="min-w-0 flex-1 truncate">
                 {line.quantity}× {line.itemName}

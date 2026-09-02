@@ -176,6 +176,11 @@ export type BarRound = {
 export type DispatchRow = {
   lineId: string
   tableNumber: string
+  /**
+   * Optional so every existing fixture stays valid. Needed because the Ready zone is exactly where
+   * a COUNTER order is handed over, and "No table" is not something anyone can call out.
+   */
+  orderNumber?: string | number | null
   itemName: string
   quantity: number
   lineNote: string | null

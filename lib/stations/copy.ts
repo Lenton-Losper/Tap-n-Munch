@@ -164,6 +164,8 @@ export const STATION_COPY = {
    * an older worker did not send the field would send a waiter to the wrong place, which is worse
    * than a card that simply does not say.
    */
+  /** Prefix for a ticket with no table. "#66" is what a counter hand-over actually says. */
+  orderNumberPrefix: 'Order #',
   orderType: {
     eatIn: 'Eat-in',
     counter: 'Counter',
@@ -397,4 +399,41 @@ export function orderContextLabel(
   const name = (servedBy ?? '').trim()
   if (name) parts.push(STATION_COPY.servedBy(name))
   return parts.length > 0 ? parts.join(' · ') : null
+}
+
+/**
+ * WHAT TO CALL THIS TICKET OUT LOUD.
+ *
+ * `tableLabel` answers "which table" and correctly says "No table" when there isn't one — that
+ * wording is a recorded fix (zero is not a table) and is left exactly as it is.
+ *
+ * But "No table" alone is not an IDENTIFIER. A counter order arriving on the pass as
+ *
+ *     No table                  01:07
+ *     COUNTER
+ *     Prawn Vermicelli       1
+ *
+ * cannot be called, handed over, or matched to the person waiting for it. The order number was on
+ * the payload the whole time and simply never rendered. Every ticket now carries something a human
+ * can say.
+ *
+ * Order of preference is deliberate: a table number is what staff actually shout, so it wins
+ * whenever there is one. The order number is the fallback, not the default.
+ */
+export function orderIdentifier(
+  tableNumber: string,
+  orderNumber: string | number | null | undefined,
+  station: 'kitchen' | 'bar' = 'kitchen',
+): string {
+  const table = (tableNumber ?? '').trim()
+  if (table !== '') return STATION_COPY[station].tableLabel(table)
+  /**
+   * ZERO IS NOT AN ORDER NUMBER either, for the same reason zero is not a table: it is what a
+   * writer leaves behind when it has nothing to record. "Order #0" is exactly as uncallable as
+   * "No table" and looks more authoritative, which makes it worse.
+   */
+  const order = orderNumber == null ? '' : String(orderNumber).trim()
+  if (order !== '' && order !== '0') return `${STATION_COPY.orderNumberPrefix}${order}`
+  // Neither: keep the established wording rather than inventing a third phrase.
+  return STATION_COPY[station].tableLabel('')
 }
