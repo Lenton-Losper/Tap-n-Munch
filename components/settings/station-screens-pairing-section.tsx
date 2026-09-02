@@ -8,6 +8,7 @@ import { usePermissions } from '@/hooks/use-permissions'
 import { PERMISSIONS } from '@/lib/permissions'
 import { STATION_KINDS, type StationKind } from '@/lib/stations/station-pairing'
 import { STATION_PAIRING_COPY as COPY } from '@/lib/stations/pairing-copy'
+import { StationLaunchPanel } from '@/components/settings/station-launch-panel'
 import { getSettingsAccessToken } from './settings-utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -342,6 +343,9 @@ export function StationScreensPairingSection() {
           {COPY.section.pairButton}
         </Button>
       </div>
+
+      {/* Install first, pair second — one job, one place. See StationLaunchPanel. */}
+      <StationLaunchPanel />
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

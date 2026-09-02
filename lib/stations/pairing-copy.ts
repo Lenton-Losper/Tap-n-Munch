@@ -42,6 +42,32 @@ export const STATION_PAIRING_COPY = {
   },
 
   /** Default names when the manager leaves the name field blank. */
+  /**
+   * INSTALLING THE STATION AS AN APP ON THE SCREEN ITSELF.
+   *
+   * Staff were typing flashtap.app/kitchen by hand, which is how a screen standing in Riviera got
+   * paired to another venue on 2026-09-02. These words are aimed at whoever sets the screen up
+   * once -- a manager or an owner -- not at the cook who uses it every day, so they may say
+   * "Chrome" and "install". The cook never sees this page; they see an icon.
+   */
+  launch: {
+    heading: 'Put Kitchen and Bar on the screen itself',
+    body:
+      'Open this page on the screen that will stand in the kitchen or behind the bar, then install it there. It becomes an app with its own icon, and that icon always opens the same station.',
+    openKitchen: 'Open the Kitchen screen',
+    openBar: 'Open the Bar screen',
+    installHeading: 'To install it on that screen',
+    installSteps: [
+      'Open the station above on the screen that will keep it.',
+      'In Chrome, click the install icon at the right of the address bar.',
+      'Confirm. The icon appears on the desktop and in the Start menu.',
+    ],
+    /** The one thing that is easy to get wrong, said plainly. */
+    pairingNote:
+      'Installing does not pair the screen. Pair it once with a code from this page, and it stays paired after that.',
+    venueNote:
+      'The app always shows the venue the screen is paired to. It is not in the address, so it cannot be changed by editing a shortcut.',
+  },
   defaultName: {
     kitchen: 'Kitchen Screen',
     bar: 'Bar Screen',
