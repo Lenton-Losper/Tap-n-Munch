@@ -551,17 +551,59 @@ describe('the private channel probe (Phase B)', () => {
     stop();
   });
 
-  it('shares the 45s debounce with the public channel — two channels must not double the load', async () => {
-    // The ceiling stays until the private path is proven. A message on either channel inside one
-    // window must still produce exactly one refetch.
+  it('a PRIVATE message invalidates IMMEDIATELY — the 45s ceiling does not apply to it', async () => {
+    // The ceiling exists because the PUBLIC topic accepts a message from anyone holding the anon
+    // key, which ships in every APK. That is not true of the private topic: SELECT is gated by an
+    // RLS policy keyed to this terminal's restaurant_id, and there is no INSERT policy at all, so
+    // the only publisher is our server's service role. No flood is possible, so no ceiling.
     mockGetTerminalToken.mockResolvedValue('terminal-jwt');
     const onInvalidate = jest.fn();
     const stop = subscribeLineChangeInvalidation(RID, onInvalidate);
     await flush();
 
-    mockChannel.fireBroadcast();
-    mockPrivateChannel.fireBroadcast();
+    mockChannel.fireStatus('SUBSCRIBED');
+    onInvalidate.mockClear();
 
+    mockPrivateChannel.fireBroadcast();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+
+    // ...and again straight away, with no 45s wait in between.
+    mockPrivateChannel.fireBroadcast();
+    expect(onInvalidate).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('the PUBLIC channel keeps its 45s ceiling — it is still floodable', async () => {
+    mockGetTerminalToken.mockResolvedValue(null); // no private probe; isolate the public path
+    const onInvalidate = jest.fn();
+    const stop = subscribeLineChangeInvalidation(RID, onInvalidate);
+    await flush();
+    onInvalidate.mockClear();
+
+    mockChannel.fireBroadcast();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+
+    // A second within the window is coalesced, not fired.
+    mockChannel.fireBroadcast();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it('coalesces the public copy of the same change into the private one', async () => {
+    // The server dual-publishes, so one state change arrives on BOTH topics. The private one
+    // fires instantly and must absorb the public copy rather than leaving a second refetch
+    // scheduled behind it.
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const onInvalidate = jest.fn();
+    const stop = subscribeLineChangeInvalidation(RID, onInvalidate);
+    await flush();
+    onInvalidate.mockClear();
+
+    mockPrivateChannel.fireBroadcast();
+    mockChannel.fireBroadcast();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(MIN_INVALIDATE_INTERVAL_MS + 1000);
     expect(onInvalidate).toHaveBeenCalledTimes(1);
     stop();
   });

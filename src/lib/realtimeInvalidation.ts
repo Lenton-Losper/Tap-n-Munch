@@ -100,6 +100,39 @@
  * terminal to hold a Supabase-Auth-shaped credential RLS could check, which is the same larger
  * change (a second identity system) the module docblock above already ruled out of scope for
  * closing this specific gap. Debouncing closes the actual harm (hammering the API) without that.
+ *
+ * ============================================================================================
+ * UPDATED 2026-09-03 — THE CEILING NOW APPLIES TO THE PUBLIC CHANNEL ONLY
+ * ============================================================================================
+ *
+ * The paragraph above ruled a private channel out of scope because it would need "a second
+ * identity system" for RLS to check. That turned out to be wrong, and the reason is worth keeping:
+ * the terminal-JWT did not need replacing, it needed PUBLISHING. Signing it ES256 and serving the
+ * public half at https://flashtap.app/.well-known/jwks.json lets Supabase verify the credential the
+ * terminal already carries, with no new identity, no new token lifecycle and no new login.
+ *
+ * So there are now TWO topics, and they are not the same channel with a flag flipped:
+ *
+ *   restaurant-lines:<id>          PUBLIC   — unchanged, still floodable, still debounced at 45s.
+ *   restaurant-lines-private:<id>  PRIVATE  — RLS on realtime.messages, SELECT only, keyed to the
+ *                                             restaurant_id claim. No INSERT policy at all, so the
+ *                                             only publisher is our server's service role.
+ *
+ * A message on the private topic fires onInvalidate IMMEDIATELY (debounced.callNow), because the
+ * flood the ceiling exists to absorb cannot happen on a channel strangers cannot publish to. The
+ * public topic keeps the 45s debounce exactly as described above, and the server dual-publishes to
+ * both, so a terminal on an older build loses nothing.
+ *
+ * Proven end to end against PRODUCTION on 2026-09-03, with the controls that matter, because a
+ * denied Realtime subscription reports SUBSCRIBED and then delivers nothing forever:
+ *
+ *   public topic, anon                      -> SUBSCRIBED, message received   (the rig works)
+ *   private topic, terminal JWT, own venue  -> SUBSCRIBED, message received   (the proof)
+ *   private topic, terminal JWT, other venue-> CHANNEL_ERROR "Unauthorized: You do not have
+ *                                              permissions to read from this Channel topic"
+ *   private topic, anon, no token           -> CHANNEL_ERROR "Unauthorized: ..."
+ *
+ * WHEN THE PUBLIC SEND IS RETIRED, the debounce and this whole section go with it.
  */
 import {AppState, type AppStateStatus} from 'react-native';
 import {supabase, createPrivateChannelClient} from './supabase';
@@ -281,6 +314,37 @@ function debouncedInvalidate(onInvalidate: () => void, intervalMs: number) {
         fire();
       }, intervalMs - elapsed);
     },
+    /**
+     * THE CEILING DOES NOT APPLY TO A CHANNEL STRANGERS CANNOT PUBLISH TO.
+     *
+     * MIN_INVALIDATE_INTERVAL_MS exists for one reason, stated at length in the module docblock:
+     * the PUBLIC topic accepts a message from anyone holding the anon key, which ships inside
+     * every APK, so an attacker can publish fake `line_changed` events as fast as they like and
+     * turn every terminal into a client hammering the API. The debounce bounds that at the
+     * already-accepted 45s poll rate.
+     *
+     * None of that is true of the private topic. Subscribing is checked against an RLS policy
+     * keyed to this terminal's own restaurant_id claim, and there is deliberately NO INSERT
+     * policy, so the only party that can publish is our own server through the service role.
+     * Proven end to end against production on 2026-09-03: a receipt on its own topic, and
+     * "Unauthorized: You do not have permissions to read from this Channel topic" both for a
+     * foreign venue's topic and for a join carrying no token at all.
+     *
+     * So a private message invalidates IMMEDIATELY. That is the 45 seconds coming off the number
+     * staff actually feel, without giving up the protection on the channel that still needs it --
+     * the public one stays, dual-published, until every client has moved.
+     *
+     * It also updates lastFiredAt and clears any pending trailing call, so the public copy of THE
+     * SAME state change, arriving on the other channel a moment later, coalesces into this one
+     * instead of firing a second refetch behind it.
+     */
+    callNow() {
+      if (trailingTimer) {
+        clearTimeout(trailingTimer);
+        trailingTimer = null;
+      }
+      fire();
+    },
     cancel() {
       if (trailingTimer) {
         clearTimeout(trailingTimer);
@@ -432,7 +496,7 @@ export function subscribeLineChangeInvalidation(
    */
   let stopPrivate: (() => void) | null = null;
   let privateTornDown = false;
-  void startPrivateLineProbe(restaurantId, debounced.call).then(stop => {
+  void startPrivateLineProbe(restaurantId, debounced.callNow).then(stop => {
     // The caller may already have unmounted while the token was resolving. Without this the
     // probe's socket would outlive its teardown and leak one connection per remount.
     if (privateTornDown) {
