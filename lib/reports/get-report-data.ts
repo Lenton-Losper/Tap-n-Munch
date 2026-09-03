@@ -63,6 +63,12 @@ export interface GetReportDataParams {
   status?: string
 }
 
+/**
+ * The one status a report describes. Named rather than inlined so the query filter, the
+ * narrowing guard and the tests all refer to the same value.
+ */
+const REPORTABLE_STATUS = 'completed'
+
 export async function getReportData(params: GetReportDataParams): Promise<ReportData> {
   const supabase = createServerSupabaseClient()
 
@@ -87,11 +93,36 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     timezone,
   )
 
+  /**
+   * ============================================================================================
+   * COMPLETED ONLY, FILTERED AT THE QUERY — NOT HIDDEN AT RENDER TIME
+   * ============================================================================================
+   *
+   * This read `.neq('status', 'cancelled')`, so PENDING orders were in the exported rows. Found on
+   * a real terminal trial 2026-09-03: the downloaded Order History contained #84, #76, #75 and #74,
+   * all `pending`.
+   *
+   * The deeper defect was that THE ROWS AND THE SUMMARY WERE NEVER THE SAME DATASET. The rows were
+   * every non-cancelled order; the totals below were computed from a separate
+   * `payment_status === 'paid'` subset. Measured on production across 90 days: 87 pending orders
+   * worth N$11,137 appeared as rows in a report whose Total Revenue read N$203,845 and never
+   * counted them. Somebody adding the rows up could not reach the total, and the gap was a whole
+   * category of order rather than a rounding difference.
+   *
+   * So the filter moves to the QUERY and everything below derives from the single set that comes
+   * back. Hiding pending rows at render time would have left those two datasets in place.
+   *
+   * WHY `status = 'completed'` AND NOT `payment_status = 'paid'`: on the same 90 days, `paid` is a
+   * strict SUBSET of `completed` -- 3066 are both, ZERO are paid-but-not-completed, and 3 are
+   * completed-but-unpaid (N$26 across all venues). Keying on the order's own lifecycle status is
+   * what the report claims to show and is the field the exported Status column prints, so the rows
+   * and the filter now agree by construction rather than by coincidence.
+   */
   let query = supabase
     .from('orders')
     .select('id, order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
     .eq('restaurant_id', params.restaurantId)
-    .neq('status', 'cancelled')
+    .eq('status', REPORTABLE_STATUS)
     .gte('placed_at', startIso)
     .lt('placed_at', endIsoExclusive)
     .order('placed_at', { ascending: false })
@@ -99,7 +130,12 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
   if (params.tableNumber) {
     query = query.eq('table_number', params.tableNumber)
   }
-  if (params.status && params.status !== 'All') {
+  /**
+   * A caller-supplied status can only NARROW, never widen. Anything other than 'completed' yields
+   * an empty report rather than reintroducing the rows this filter exists to exclude -- which is
+   * what a second `.eq('status', ...)` on the same column does in PostgREST.
+   */
+  if (params.status && params.status !== 'All' && params.status !== REPORTABLE_STATUS) {
     query = query.eq('status', params.status)
   }
 
@@ -146,14 +182,22 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     }
   })
 
-  const paidOrders = (rawOrders ?? []).filter((o: any) => o.payment_status === 'paid')
-  const grossPaid = paidOrders.reduce((sum, o: any) => sum + Number(o.total ?? 0), 0)
+  /**
+   * ONE DATASET. Total Revenue, Total Orders, Average Order Value, the payment split, the refunds
+   * and the exported rows are all computed from `rawOrders` -- the completed-only set the query
+   * returned -- so the rows reconcile with the summary by construction.
+   *
+   * This was `rawOrders.filter(payment_status === 'paid')`, a SECOND dataset narrower than the rows
+   * being printed beside it. That is what made the totals unreachable by adding up the export.
+   */
+  const reportedOrders = (rawOrders ?? []) as Array<Record<string, unknown>>
+  const grossCompleted = reportedOrders.reduce((sum, o) => sum + Number(o.total ?? 0), 0)
   const refundedDistinct = sumDistinctRefundedAmounts(
-    paidOrders.map((o: any) => String(o.id)),
+    reportedOrders.map((o) => String(o.id)),
     projections,
   )
-  const totalRevenue = grossPaid - refundedDistinct
-  const totalOrders = paidOrders.length
+  const totalRevenue = grossCompleted - refundedDistinct
+  const totalOrders = reportedOrders.length
   const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0
 
   // Payment-method split, computed here rather than by the caller because this is the only
@@ -162,7 +206,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
   // built from it would silently under-count. Gross of refunds, so the parts sum to grossPaid,
   // not to totalRevenue -- refunds are reported separately.
   const splitByMethod = new Map<string, { orders: number; gross: number }>()
-  for (const o of paidOrders as Array<Record<string, unknown>>) {
+  for (const o of reportedOrders) {
     const method = String(o.payment_method ?? '').trim().toLowerCase() || 'unknown'
     const entry = splitByMethod.get(method) ?? { orders: 0, gross: 0 }
     entry.orders += 1
@@ -190,8 +234,24 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
    * order itself was not therefore counted as "stranded/pending, surfaced same-day" on the staff
    * report — money nobody owes, presented as money to chase.
    *
-   * The `status !== 'cancelled'` half was redundant besides: the query above already applies
-   * `.neq('status', 'cancelled')`.
+   * ============================================================================================
+   * MEASURED OVER ITS OWN, WIDER SET — 2026-09-03
+   * ============================================================================================
+   *
+   * This counted over `rawOrders`, which was every non-cancelled order. The completed-only filter
+   * above would have quietly gutted it: on production over 90 days, orders owing money drop from
+   * 87 (worth N$11,137) to the 3 that are completed-but-unpaid. The figure would still have
+   * rendered, still been labelled "stranded/pending, surfaced same-day", and been wrong by two
+   * orders of magnitude -- a safety signal silently switched off by a reporting change, which is
+   * how a stranded payment stops being noticed.
+   *
+   * It is NOT part of the revenue summary and was not in scope for the completed-only rule: Total
+   * Revenue, Total Orders, Average Order Value, the rows and the refunds all describe completed
+   * business, whereas this one exists precisely to surface what has NOT completed. So it keeps its
+   * own query over the same window and the same non-cancelled population it always had.
+   *
+   * The `status !== 'cancelled'` half of the old predicate was redundant against that query, which
+   * applies `.neq('status', 'cancelled')` itself.
    *
    * MEASURED IMPACT ON STAGING TODAY: none. Read-only over the 14 non-cancelled orders present,
    * `payment_status` is only ever `paid` (7) or `pending` (7), so the two predicates agree
@@ -200,7 +260,17 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
    * moment a cancelled payment sits on a live order. Stated rather than dressed up as a fix for
    * something observed.
    */
-  const unresolvedOrders = (rawOrders ?? []).filter((o: any) => owesMoney(o.payment_status)).length
+  const unresolvedRows = await fetchAllRows<{ id: string; payment_status: unknown }>(
+    supabase
+      .from('orders')
+      .select('id, payment_status')
+      .eq('restaurant_id', params.restaurantId)
+      .neq('status', 'cancelled')
+      .gte('placed_at', startIso)
+      .lt('placed_at', endIsoExclusive),
+    { label: 'getReportData:unresolved' },
+  )
+  const unresolvedOrders = (unresolvedRows ?? []).filter((o) => owesMoney(o.payment_status as string)).length
 
   return {
     restaurant: {

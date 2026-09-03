@@ -8,7 +8,7 @@ import {
   isStationKind,
   StationPairingMismatchError,
 } from '@/lib/stations/station-pairing'
-import { GET as getStationLines } from '@/app/api/station/lines/route'
+import { stationLinesForValidatedTerminal } from '@/app/api/station/lines/route'
 
 export const dynamic = 'force-dynamic'
 
@@ -105,7 +105,18 @@ export async function GET(req: Request) {
       throw err
     }
 
-    return getStationLines(req)
+    /**
+     * HANDS OVER WHAT IT ALREADY ESTABLISHED, rather than delegating to the route handler.
+     *
+     * This used to call `GET` from the same module, which re-ran validateTerminalRecord and
+     * requireFeature -- the two queries just performed above, in a second sequential round trip.
+     * Worker->Supabase is roughly 520 ms, so that duplication was about a third of this endpoint's
+     * entire response time, spent re-deciding something already decided.
+     *
+     * The same `supabase` client is passed too, so the handover reuses this request's connection
+     * rather than constructing a second one.
+     */
+    return stationLinesForValidatedTerminal(req, terminal, supabase)
   } catch (err: unknown) {
     if (err instanceof Response) return err
     console.error('[terminal/station-lines] failed:', err)

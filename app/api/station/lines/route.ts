@@ -81,6 +81,49 @@ export async function GET(req: Request) {
       return NextResponse.json(featureDenialBody(featureCheck.reason), { status: 403 })
     }
 
+    return stationLinesForValidatedTerminal(req, terminal, supabase)
+  } catch (err: unknown) {
+    if (err instanceof Response) return err
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    console.error('[station/lines GET]', message)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
+/**
+ * ============================================================================================
+ * THE SHARED BODY — FOR A CALLER THAT HAS ALREADY DONE THE AUTHORISATION CHECKS
+ * ============================================================================================
+ *
+ * `/api/terminal/station-lines` validates the terminal record, reads the feature flag and checks
+ * station pairing, and then delegated to `GET` above -- which validated the terminal record and
+ * read the feature flag AGAIN. The same two queries, a second time, in a second round trip.
+ *
+ * Measured on staging 2026-09-03 with ZERO outstanding lines, so no board data was fetched at all:
+ * TTFB p50 1822 ms, body download 1.5 ms. An unauthenticated 401 on the same worker returns in
+ * ~260 ms, so ~1560 ms of that was server-side -- three sequential waves of Supabase queries at
+ * roughly 520 ms each. Worker->Supabase is NOT the ~205 ms browser->Supabase figure; it is far
+ * worse, which is what makes an avoidable wave cost so much.
+ *
+ * One of those three waves was pure duplication. This is that route body with the checks hoisted
+ * out, so a caller that has just performed them can hand over what it already established.
+ *
+ * SECURITY IS UNCHANGED, and that is the part worth being careful about:
+ *
+ *   - this is NOT a route handler and is reachable through no URL. `GET` above still performs the
+ *     full check for anything arriving over HTTP, including a direct hit on /api/station/lines.
+ *   - the only caller that skips the checks is one that has provably just performed them, and it
+ *     passes the `terminal` IT validated rather than re-deriving one from the request.
+ *   - no query runs before an authorisation decision on either path. The permission check below is
+ *     still ahead of every read.
+ */
+export async function stationLinesForValidatedTerminal(
+  req: Request,
+  terminal: Awaited<ReturnType<typeof requireTerminalAuth>>,
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+) {
+  try {
+
     /**
      * #370: this used to be a 403 with NO `code` at all, which the screen read as "not the pairing
      * error, therefore the venue flag must be off" and rendered as "ask your manager to enable
