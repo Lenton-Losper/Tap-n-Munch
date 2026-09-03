@@ -23,6 +23,7 @@ import {
   itemCount,
   lineDisplayState,
   partialProgress,
+  cookedProgress,
   TabLine,
   TabLinesPayload,
   tabRunningTotal,
@@ -78,7 +79,14 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
    * says it is.
    */
   const display = lineDisplayState(line);
-  const partial = display === 'making' ? partialProgress(line) : null;
+  /**
+   * Partial detail is consulted for `cooked` as well as `making`. A half-voided line sits in the
+   * server's outstanding bucket and may carry a cooked half at the same time, and "Kitchen
+   * cancelled" is the more important of the two facts: a waiter can act on a cancellation, whereas
+   * "Nearly ready" only tells them to keep waiting for something that is not coming.
+   */
+  const partial =
+    display === 'making' || display === 'cooked' ? partialProgress(line) : null;
   const chip =
     display === 'voided'
       ? Copy.TABLE_LINE_VOIDED_CHIP
@@ -86,10 +94,20 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
       ? Copy.TABLE_LINE_COLLECTED_CHIP
       : display === 'ready'
       ? Copy.TABLE_LINE_READY_CHIP
+      : partial === 'kitchen_cancelled_bar_ready'
+      ? Copy.TABLE_LINE_KITCHEN_CANCELLED_BAR_READY
+      : partial === 'bar_cancelled_kitchen_ready'
+      ? Copy.TABLE_LINE_BAR_CANCELLED_KITCHEN_READY
+      : partial === 'kitchen_cancelled'
+      ? Copy.TABLE_LINE_KITCHEN_CANCELLED
+      : partial === 'bar_cancelled'
+      ? Copy.TABLE_LINE_BAR_CANCELLED
       : partial === 'kitchen_ready'
       ? Copy.TABLE_LINE_KITCHEN_READY_BAR_WAITING
       : partial === 'bar_ready'
       ? Copy.TABLE_LINE_BAR_READY_KITCHEN_WAITING
+      : display === 'cooked'
+      ? Copy.TABLE_LINE_COOKED_CHIP
       : Copy.TABLE_LINE_WAITING_CHIP;
 
   /**
@@ -144,7 +162,7 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
           styles.lineChip,
           display === 'voided'
             ? styles.lineChipVoided
-            : display === 'making'
+            : display === 'making' || display === 'cooked'
             ? styles.lineChipWaiting
             : styles.lineChipReady,
           display === 'collected' && styles.lineChipCollected,
@@ -156,7 +174,7 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
             styles.lineChipText,
             display === 'voided'
               ? styles.lineChipTextVoided
-              : display === 'making'
+              : display === 'making' || display === 'cooked'
               ? styles.lineChipTextWaiting
               : styles.lineChipTextReady,
             display === 'collected' && styles.lineChipTextCollected,
@@ -403,6 +421,7 @@ export default function ServiceTableScreen({route, navigation}: Props) {
   const summary = payload?.summary;
   const hasLines = payload?.has_lines === true;
   const items = itemCount(payload);
+  const cooked = cookedProgress(payload);
 
   return (
     <View style={styles.wrapper}>
@@ -568,6 +587,37 @@ export default function ServiceTableScreen({route, navigation}: Props) {
             </View>
           ) : null}
 
+
+          {/**
+            * COOKED PROGRESS — a count, under the existing summary rather than inside it.
+            *
+            * Not a fourth summary cell: outstanding / ready / items are single numbers, and
+            * "2 of 5" is a ratio that would read as a number in that row. It sits below, one line
+            * per station that actually owes work, so a food-only tab shows no bar line at all
+            * rather than "Bar 0 of 0".
+            *
+            * Absent on an older server, which renders nothing — the pre-change screen.
+            */}
+          {hasLines && (cooked.kitchen || cooked.bar) ? (
+            <View style={styles.cookedProgressRow}>
+              {cooked.kitchen ? (
+                <Text style={styles.cookedProgressText}>
+                  {Copy.TABLE_COOKED_PROGRESS_KITCHEN.replace(
+                    '{cooked}',
+                    String(cooked.kitchen.cooked),
+                  ).replace('{total}', String(cooked.kitchen.total))}
+                </Text>
+              ) : null}
+              {cooked.bar ? (
+                <Text style={styles.cookedProgressText}>
+                  {Copy.TABLE_COOKED_PROGRESS_BAR.replace(
+                    '{cooked}',
+                    String(cooked.bar.cooked),
+                  ).replace('{total}', String(cooked.bar.total))}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
           {/* has_lines: false — a QR or pre-migration tab. The bill is right; readiness is simply
               not tracked for it, and the screen says exactly that rather than inventing a badge. */}
           {payload && !hasLines ? (
@@ -836,6 +886,15 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
     minHeight: 64,
   },
+  cookedProgressRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+  /** Secondary by design: progress informs the decision to walk over, it never triggers it. */
+  cookedProgressText: {...Typography.small, color: Colors.textSecondary},
   lineRowVoided: {opacity: 0.55},
   lineQty: {
     ...Typography.body,

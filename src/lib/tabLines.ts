@@ -54,6 +54,16 @@ export interface TabLine {
    * is the whole reason this field had to be read — see lineDisplayState.
    */
   is_collected?: boolean;
+  /**
+   * At least one station has PLATED this, and the line has not moved past that yet. Additive, and
+   * optional for the same reason as `is_collected`: a server that predates it sends nothing, and
+   * `undefined` must behave exactly as this app behaved before — which it does, because every
+   * reader below treats it as falsy.
+   *
+   * The server scopes it to its own `outstanding` bucket, so `is_cooked` and `is_ready` are never
+   * both true and nothing here has to decide which of them wins.
+   */
+  is_cooked?: boolean;
   is_voided: boolean;
   unrouted: boolean;
 }
@@ -86,8 +96,25 @@ export interface TabLine {
  * emphasise it — but it carries the EXISTING Ready wording. A distinct "Collected" chip is a copy
  * decision, and it is listed for sign-off rather than invented here.
  */
-export type LineDisplayState = 'voided' | 'collected' | 'ready' | 'making';
+export type LineDisplayState =
+  | 'voided'
+  | 'collected'
+  | 'ready'
+  | 'cooked'
+  | 'making';
 
+/**
+ * PRECEDENCE LIVES HERE AND NOWHERE ELSE.
+ *
+ * `cooked` is inserted between ready and making, which is the whole ordering rule: anything ready
+ * wins, else anything cooked shows progress, else it is still being made. No screen rebuilds this
+ * ternary — the last time chip selection was inlined in the UI, the `collected` split turned it
+ * into "Being made" for food a waiter had already carried to the table, and it was wrong in four
+ * places at once because it existed in four places.
+ *
+ * `cooked` ranks BELOW ready deliberately. A plated dish is still the station's business until the
+ * pass takes it; promoting it would tell a waiter to walk over for something nobody has passed.
+ */
 export function lineDisplayState(line: TabLine): LineDisplayState {
   if (line.is_voided) {
     return 'voided';
@@ -97,7 +124,10 @@ export function lineDisplayState(line: TabLine): LineDisplayState {
   if (line.is_collected === true) {
     return 'collected';
   }
-  return line.is_ready ? 'ready' : 'making';
+  if (line.is_ready) {
+    return 'ready';
+  }
+  return line.is_cooked === true ? 'cooked' : 'making';
 }
 
 /**
@@ -135,10 +165,39 @@ export function lineDisplayState(line: TabLine): LineDisplayState {
  * 'ready' here means "this station has finished", never "it was picked up". That is exactly the
  * question being asked, so the downgrade costs nothing.
  */
-export type PartialProgress = 'kitchen_ready' | 'bar_ready';
+export type PartialProgress =
+  | 'kitchen_ready'
+  | 'bar_ready'
+  | 'kitchen_cancelled_bar_ready'
+  | 'bar_cancelled_kitchen_ready'
+  | 'kitchen_cancelled'
+  | 'bar_cancelled';
 
 const STATION_FINISHED = new Set(['ready', 'collected']);
 
+/**
+ * ============================================================================================
+ * A CANCELLED STATION IS NOT A WAITING STATION — the half-voided gap
+ * ============================================================================================
+ *
+ * An amend voids only the stations that have not finished:
+ *
+ *     voidKitchen = isStationOutstanding(line.kitchen_state)   // outstanding OR cooked
+ *
+ * so a `both`-routed line whose bar has already poured and whose kitchen never started comes back
+ * as `kitchen_state: 'voided', bar_state: 'ready'`. The server's `isVoided` requires EVERY owning
+ * station to be voided — "a half-voided line is still work", which is right for its bucket — so
+ * `is_voided` is false and the line lands in `outstanding`.
+ *
+ * The previous version of this function then read barDone=true, kitchenDone=false and returned
+ * `bar_ready`, rendering **"Bar ready · Kitchen waiting"**. The kitchen half had been CANCELLED
+ * and the waiter was told it was coming. That is the failure mode where somebody waits for an item
+ * that will never arrive and then argues with the kitchen about it — worse than saying nothing,
+ * because it is a confident wrong answer.
+ *
+ * Voided is now classified before anything else, and never folded into "waiting". The server's
+ * buckets are untouched; this is display only.
+ */
 export function partialProgress(line: TabLine): PartialProgress | null {
   // The server has the last word. If it says ready or collected, there is no partial state to
   // describe and nothing here may contradict it.
@@ -150,13 +209,61 @@ export function partialProgress(line: TabLine): PartialProgress | null {
   if (line.kitchen_state == null || line.bar_state == null) {
     return null;
   }
-  const kitchenDone = STATION_FINISHED.has(String(line.kitchen_state));
-  const barDone = STATION_FINISHED.has(String(line.bar_state));
+
+  const kitchen = String(line.kitchen_state);
+  const bar = String(line.bar_state);
+  const kitchenVoided = kitchen === 'voided';
+  const barVoided = bar === 'voided';
+  const kitchenDone = STATION_FINISHED.has(kitchen);
+  const barDone = STATION_FINISHED.has(bar);
+
+  if (kitchenVoided && !barVoided) {
+    return barDone ? 'kitchen_cancelled_bar_ready' : 'kitchen_cancelled';
+  }
+  if (barVoided && !kitchenVoided) {
+    return kitchenDone ? 'bar_cancelled_kitchen_ready' : 'bar_cancelled';
+  }
   if (kitchenDone === barDone) {
     // Neither has finished (ordinary "being made"), or both have and the server will say ready.
     return null;
   }
   return kitchenDone ? 'kitchen_ready' : 'bar_ready';
+}
+
+/**
+ * COOKED PROGRESS FOR THE WHOLE TAB, split by station.
+ *
+ * A count, not a flag. "Kitchen 2 of 5 plated" is something a waiter can act on; a COOKING chip is
+ * another word for not-ready and gets ignored within a week.
+ *
+ * Split, because three of four food items plated while the drinks have not been started is
+ * different information from three of four overall — the first says the trip is nearly worth
+ * making, the second says nothing about whether anything is collectable.
+ *
+ * Returns null for a station with no work in hand, so a food-only tab shows no bar line rather
+ * than "Bar 0 of 0". Absent summary fields (an older server) also yield null, which renders
+ * nothing at all — the pre-change behaviour.
+ */
+export interface StationCookedProgress {
+  cooked: number;
+  total: number;
+}
+
+export function cookedProgress(
+  payload: TabLinesPayload | null | undefined,
+): {kitchen: StationCookedProgress | null; bar: StationCookedProgress | null} {
+  const read = (p: StationCookedProgress | undefined): StationCookedProgress | null => {
+    if (!p || !Number.isFinite(p.total) || p.total <= 0) {
+      return null;
+    }
+    // Nothing plated yet is a real answer and worth showing ("Kitchen 0 of 4 plated" tells a
+    // waiter the kitchen has not started), so only an absent or empty station is suppressed.
+    return {cooked: Math.max(0, Number(p.cooked) || 0), total: Number(p.total)};
+  };
+  return {
+    kitchen: read(payload?.summary?.kitchen),
+    bar: read(payload?.summary?.bar),
+  };
 }
 
 export interface TabLineOrder {
@@ -190,6 +297,16 @@ export interface TabLineSummary {
    */
   collected?: number;
   voided: number;
+  /**
+   * Per-station cooked progress. Optional for the same reason as `collected`: absent means "this
+   * server does not report it", never zero-with-confidence.
+   *
+   * `total` counts lines that station OWNS and has not had voided, so it is work in hand rather
+   * than a share of the whole tab. Note the server keeps cooked lines inside `outstanding` above —
+   * these fields are purely additive and cannot move `all_ready`.
+   */
+  kitchen?: StationCookedProgress;
+  bar?: StationCookedProgress;
 }
 
 export interface TabLinesPayload {

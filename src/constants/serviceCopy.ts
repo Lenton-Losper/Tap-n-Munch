@@ -89,6 +89,44 @@ export const TABLE_LINE_VOIDED_CHIP = 'Voided';
 export const TABLE_LINE_COLLECTED_CHIP = 'Collected';
 export const TABLE_LINE_KITCHEN_READY_BAR_WAITING = 'Kitchen ready · Bar waiting';
 export const TABLE_LINE_BAR_READY_KITCHEN_WAITING = 'Bar ready · Kitchen waiting';
+
+/**
+ * PROPOSED 2026-09-03 — NOT YET SIGNED. Seven strings, in two groups.
+ *
+ * COOKED PROGRESS. The terminal has had no representation of `cooked` at all: a plated dish and
+ * one nobody has started look identical on the table view. Waiters asked for it.
+ *
+ * Deliberately a COUNT and not a chip-only state. A COOKING chip is another word for not-ready,
+ * and staff learn to ignore a label that never changes what they do; "Kitchen 2 of 5 plated" is
+ * progress somebody can act on. Split by station because three of four food items plated while the
+ * drinks have not been started is different information from three of four overall.
+ *
+ * PLATED and POURED rather than one shared "cooked": the kitchen plates and the bar pours, and the
+ * station-specific verb is what staff already say. Both mean the same underlying state.
+ *
+ * NEARLY READY for the per-line chip, not "Cooked". A waiter does not act on cooked — the pass has
+ * not passed it — so the chip says how close it is rather than naming an internal state. It ranks
+ * below Ready, which is the point: it must not read as "come and collect this".
+ *
+ * HALF-VOIDED. An amend voids only the stations that have not finished, so a both-routed line can
+ * come back with the kitchen cancelled and the bar ready. That rendered "Bar ready · Kitchen
+ * waiting" — telling a waiter to expect food that had been cancelled, which is how somebody ends
+ * up waiting and then arguing with the kitchen. CANCELLED is the customer-facing word for it;
+ * "voided" is the schema's word and the existing chip already uses it for a wholly cancelled line,
+ * so these say cancelled to make the partial case read as a different thing rather than a variant
+ * of the same one.
+ *
+ * The station named FIRST is the one carrying the actionable fact, matching the existing partial
+ * strings above: what is ready, or what is not coming.
+ */
+export const TABLE_LINE_COOKED_CHIP = 'Nearly ready';
+export const TABLE_COOKED_PROGRESS_KITCHEN = 'Kitchen {cooked} of {total} plated';
+export const TABLE_COOKED_PROGRESS_BAR = 'Bar {cooked} of {total} poured';
+export const TABLE_LINE_KITCHEN_CANCELLED_BAR_READY = 'Bar ready · Kitchen cancelled';
+export const TABLE_LINE_BAR_CANCELLED_KITCHEN_READY = 'Kitchen ready · Bar cancelled';
+export const TABLE_LINE_KITCHEN_CANCELLED = 'Kitchen cancelled · Bar still coming';
+export const TABLE_LINE_BAR_CANCELLED = 'Bar cancelled · Kitchen still coming';
+
 export const TABLE_ORDER_HEADING = 'Order #{number}';
 export const TABLE_EMPTY_NO_ORDERS = 'No rounds sent yet. Tap Add Round to start.';
 

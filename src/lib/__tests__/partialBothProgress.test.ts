@@ -111,16 +111,58 @@ describe('THE SERVER HAS THE LAST WORD', () => {
 
   it('cannot be coaxed into implying readiness by any pair of station states', () => {
     const states = ['outstanding', 'cooked', 'ready', 'collected', 'voided', null];
+    /**
+     * WIDENED 2026-09-03, INTENT UNCHANGED. The half-voided fix added four cancelled values, two
+     * of which name a station as ready ('kitchen_cancelled_bar_ready'). The guarantee this test
+     * exists to hold is NOT "the word ready never appears" — 'bar_ready' always contained it — it
+     * is that this function never implies THE LINE is ready when the server has not said so.
+     *
+     * So the allow-list is widened, and the real property is asserted directly underneath: any
+     * value naming a station as ready must be backed by that station actually being ready or
+     * collected. A value that named a station ready over an outstanding state would be exactly the
+     * lie this test was written to prevent, and it now fails on that rather than on vocabulary.
+     */
+    const ALLOWED = [
+      null,
+      'kitchen_ready',
+      'bar_ready',
+      'kitchen_cancelled_bar_ready',
+      'bar_cancelled_kitchen_ready',
+      'kitchen_cancelled',
+      'bar_cancelled',
+    ];
+    const FINISHED = ['ready', 'collected'];
+    let checked = 0;
     for (const k of states) {
       for (const b of states) {
         const result = partialProgress(
           line({kitchen_state: k as string | null, bar_state: b as string | null}),
         );
-        // The only thing it may ever return is which HALF is done. It has no vocabulary for
-        // "ready", so it cannot say it however the states are arranged.
-        expect(result === null || result === 'kitchen_ready' || result === 'bar_ready').toBe(true);
+        expect({k, b, ok: ALLOWED.includes(result)}).toEqual({k, b, ok: true});
+
+        // Whatever it names as ready must really be ready.
+        if (result === 'kitchen_ready' || result === 'bar_cancelled_kitchen_ready') {
+          expect({k, b, kitchenFinished: FINISHED.includes(String(k))}).toEqual({
+            k, b, kitchenFinished: true,
+          });
+        }
+        if (result === 'bar_ready' || result === 'kitchen_cancelled_bar_ready') {
+          expect({k, b, barFinished: FINISHED.includes(String(b))}).toEqual({
+            k, b, barFinished: true,
+          });
+        }
+        // And whatever it names as cancelled must really be voided.
+        if (result === 'kitchen_cancelled' || result === 'kitchen_cancelled_bar_ready') {
+          expect({k, b, kitchenVoided: k === 'voided'}).toEqual({k, b, kitchenVoided: true});
+        }
+        if (result === 'bar_cancelled' || result === 'bar_cancelled_kitchen_ready') {
+          expect({k, b, barVoided: b === 'voided'}).toEqual({k, b, barVoided: true});
+        }
+        checked += 1;
       }
     }
+    // A matrix that silently iterates nothing is a green that proves nothing.
+    expect(checked).toBe(36);
   });
 
   it('both finished returns null — that is the server\'s call to make, not this function\'s', () => {
