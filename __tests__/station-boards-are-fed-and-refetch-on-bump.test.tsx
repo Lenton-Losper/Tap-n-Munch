@@ -85,6 +85,10 @@ const subscribeLineChanged = jest.fn(
   },
 )
 jest.mock('@/lib/stations/realtime-invalidate', () => ({
+  // Phase B's private-channel probe starts from the same mount effect. A no-op here keeps this
+  // suite about the PUBLIC feed — but it must be PRESENT: omitting it left the import undefined
+  // and the thrown TypeError took the whole board down at mount.
+  subscribeLineChangedPrivate: () => () => {},
   subscribeLineChanged: (...args: unknown[]) =>
     subscribeLineChanged(...(args as [unknown, string, LineChangedCallbacks])),
 }))

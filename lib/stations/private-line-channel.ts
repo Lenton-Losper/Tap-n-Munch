@@ -95,6 +95,35 @@ export function startPrivateLineChannelProbe(args: {
   station: 'kitchen' | 'bar'
   onLineChanged: () => void
 }): () => void {
+  try {
+    return startProbe(args)
+  } catch (error) {
+    /**
+     * A PROBE MUST NEVER BE ABLE TO TAKE DOWN A BOARD.
+     *
+     * Not defensive decoration — this is the fix for a regression this very change caused. The
+     * probe starts inside app/kitchen/page.tsx's mount effect, so anything it throws propagates out
+     * of the mount and the WHOLE BOARD fails to render. Four suites went red at once with
+     * `subscribeLineChangedPrivate is not a function`, and the production equivalent of that is a
+     * wall screen showing nothing because a DIAGNOSTIC could not start. The board's real feeds —
+     * postgres_changes, the public broadcast, the fallback poll — are registered independently and
+     * are entirely unaffected by this returning a no-op.
+     */
+    console.error('[private-line-channel] probe could not start; the board is unaffected', {
+      station: args.station,
+      restaurantId: args.restaurantId,
+      error,
+    })
+    return () => {}
+  }
+}
+
+function startProbe(args: {
+  restaurantId: string
+  terminalToken: string
+  station: 'kitchen' | 'bar'
+  onLineChanged: () => void
+}): () => void {
   const { restaurantId, terminalToken, station, onLineChanged } = args
 
   const stop = subscribeLineChangedPrivate(

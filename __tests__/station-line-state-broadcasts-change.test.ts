@@ -242,3 +242,29 @@ describe('a real state change broadcasts an invalidation', () => {
     expect(fake.httpSendCalls[0].event).toBe(LINE_CHANGED_EVENT)
   })
 })
+
+describe('a broken Supabase client cannot fail a committed write', () => {
+  it('returns 200 when channel() does not exist at all', async () => {
+    // THE REGRESSION GUARD. `supabase.channel(...)` runs synchronously; as a plain arrow inside the
+    // Promise.allSettled array a throw from it escaped before allSettled could absorb it, and the
+    // route returned 500 for a state change that had ALREADY COMMITTED — so a board would re-bump
+    // a line that had already moved. Three route suites caught it as
+    // "supabase.channel is not a function". `send` is async so a sync throw becomes a rejection.
+    fake = makeFakeSupabase({
+      id: LINE_ID,
+      restaurant_id: RESTAURANT_ID,
+      route_to: 'bar',
+      kitchen_state: null,
+      bar_state: 'cooked',
+    })
+    // A client with no channel() at all, which is what a partial stub looks like.
+    delete (fake.client as unknown as Record<string, unknown>).channel
+
+    const res = await POST(request({ station: 'bar', to_state: 'ready' }), {
+      params: Promise.resolve({ lineId: LINE_ID }),
+    })
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).line.bar_state).toBe('ready')
+  })
+})

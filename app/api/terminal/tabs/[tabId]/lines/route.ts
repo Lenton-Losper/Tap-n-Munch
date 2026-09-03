@@ -112,6 +112,51 @@ function bucketForLine(line: { kitchen_state: LineState | null; bar_state: LineS
 }
 
 /**
+ * ============================================================================================
+ * COOKED PROGRESS — ADDITIVE, AND DELIBERATELY *NOT* A FIFTH BUCKET
+ * ============================================================================================
+ *
+ * Waiters asked to see cooked progress; the terminal has no representation of `cooked` at all
+ * today, so a plated dish and an unstarted one look identical on the table view.
+ *
+ * The tempting change is to give `cooked` its own bucket alongside outstanding/ready/collected/
+ * voided. THAT WOULD BE A SILENT REGRESSION, and it is worth naming precisely:
+ *
+ *     all_ready is `summary.outstanding === 0`.
+ *
+ * Move cooked lines out of `outstanding` and a table whose every dish is plated but not yet passed
+ * reports all_ready -- "nothing outstanding at this table" -- while the food is still under the
+ * lamp and the pass has not touched it. A progress indicator must not be able to change what
+ * "this table is finished" means.
+ *
+ * So cooked stays IN the outstanding bucket, exactly as before, and everything here is new fields
+ * that old clients ignore. `summary.outstanding`, `summary.ready`, `all_ready` and the raw
+ * kitchen_state/bar_state strings are byte-for-byte what they were, and
+ * serializeStateForLegacyTerminal is untouched -- widening that vocabulary is what made an old
+ * till render "Being made" for a collected line.
+ *
+ * A COUNT, NOT A FLAG. "2 of 5 cooked" is progress a waiter can act on; a COOKING chip is another
+ * word for not-ready, and staff learn to ignore a chip that never changes anything.
+ *
+ * SPLIT BY STATION, because three of four food items plated while the drinks have not been started
+ * is different information from three of four overall -- the first says the trip is nearly worth
+ * making, the second says nothing about whether anything is collectable.
+ */
+function hasCookedStation(line: { kitchen_state: LineState | null; bar_state: LineState | null }): boolean {
+  return line.kitchen_state === 'cooked' || line.bar_state === 'cooked'
+}
+
+/** Per-station progress. `total` excludes voided halves -- a cancelled item is not work in hand. */
+type StationProgress = { total: number; cooked: number }
+
+function tallyStation(progress: StationProgress, state: LineState | null): void {
+  // A null state is a station that does not own this line, so it is not work either way.
+  if (state == null || state === 'voided') return
+  progress.total += 1
+  if (state === 'cooked') progress.cooked += 1
+}
+
+/**
  * 'collected' (20260829160000, the board rebuild's pinned Ready zone) DOWNGRADES to 'ready' in
  * the raw kitchen_state/bar_state strings THIS route serialises. Nowhere else -- the station
  * screens (lib/stations/map-raw-lines.ts) read the real five-value vocabulary directly and must
@@ -243,7 +288,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
     // 'collected' is its own bucket, additive -- a pre-collected terminal reads outstanding/
     // ready/voided by name, same as before, and now correctly sees 'ready' drop once a line is
     // actually picked up rather than counting it forever. See bucketForLine's own docblock.
-    const summary = { total_lines: 0, outstanding: 0, ready: 0, collected: 0, voided: 0 }
+    const summary = {
+      total_lines: 0,
+      outstanding: 0,
+      ready: 0,
+      collected: 0,
+      voided: 0,
+      // Additive station progress. See hasCookedStation's docblock: cooked lines are still counted
+      // in `outstanding` above, so nothing here can move `all_ready`.
+      kitchen: { total: 0, cooked: 0 } as StationProgress,
+      bar: { total: 0, cooked: 0 } as StationProgress,
+    }
 
     const grouped = new Map<string, Record<string, unknown>>()
 
@@ -271,6 +326,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
 
       summary.total_lines += 1
       summary[bucket] += 1
+      tallyStation(summary.kitchen, line.kitchen_state)
+      tallyStation(summary.bar, line.bar_state)
 
       ;(grouped.get(orderId)!.lines as Array<Record<string, unknown>>).push({
         id: line.id,
@@ -286,6 +343,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
         is_ready: bucket === 'ready',
         is_collected: bucket === 'collected',
         is_voided: bucket === 'voided',
+        /**
+         * At least one station has plated this, and the line is not already past that. Scoped to
+         * the outstanding bucket ON PURPOSE, so the precedence a client renders can be a straight
+         * fall-through — ready, then cooked, then still being made — with no arrangement of states
+         * in which is_cooked and is_ready are both true and a client has to guess which wins.
+         */
+        is_cooked: bucket === 'outstanding' && hasCookedStation(line),
         unrouted: line.route_to === 'unrouted',
       })
     }

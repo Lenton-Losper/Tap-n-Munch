@@ -128,8 +128,23 @@ export async function broadcastLineChanged(
    * without the controls, that looks exactly like a policy that is subtly wrong or a signing key
    * that has not propagated, and both of those would have been days of chasing the wrong thing.
    */
-  const send = (topic: string, isPrivate: boolean) =>
-    supabase.channel(topic, isPrivate ? { config: { private: true } } : undefined)
+  /**
+   * `async` IS LOAD-BEARING, NOT STYLE.
+   *
+   * `supabase.channel(...)` is called SYNCHRONOUSLY. As a plain arrow, a throw from it — a client
+   * that does not implement channel(), a misconfigured stub — escapes the array literal before
+   * Promise.allSettled ever sees it, propagates out of broadcastLineChanged, and fails the request.
+   * The state change has ALREADY COMMITTED at that point, so the caller returns 500 for a write
+   * that succeeded, and the board re-bumps a line that already moved.
+   *
+   * That is precisely the contract this function's docblock promises to keep and the try/catch it
+   * replaced used to enforce. Caught in test: three route suites returned 500 with
+   * "supabase.channel is not a function". An async function turns a synchronous throw into a
+   * rejected promise, which allSettled then absorbs like any other failure.
+   */
+  const send = async (topic: string, isPrivate: boolean) =>
+    supabase
+      .channel(topic, isPrivate ? { config: { private: true } } : undefined)
       .httpSend(LINE_CHANGED_EVENT, {})
 
   const [publicResult, privateResult] = await Promise.allSettled([
