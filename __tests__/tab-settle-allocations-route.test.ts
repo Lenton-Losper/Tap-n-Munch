@@ -32,6 +32,17 @@ jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
   safeIssueReceiptsForOrders: jest.fn(async () => {}),
 }))
 
+let consumeResult: { ok: boolean; reason?: string } = { ok: true }
+let consumeShouldThrow = false
+const consumeCalls: Array<Record<string, unknown>> = []
+jest.mock('@/lib/terminal-auth/consume-authorization-token', () => ({
+  consumeAuthorizationToken: async (_sb: unknown, params: Record<string, unknown>) => {
+    consumeCalls.push(params)
+    if (consumeShouldThrow) throw new Error('authorization_events insert failed')
+    return consumeResult
+  },
+}))
+
 jest.mock('@/lib/tabs/settle-tab-state', () => ({
   clearReadyToPayAndReopenTab: jest.fn(async () => ({ reopened: false, readyToPayPreserved: false })),
 }))
@@ -46,6 +57,8 @@ let orderUpdateCalls: Row[]
 let orderUpdateShouldClaim: boolean
 let tabOrderRows: Row[]
 let rpcCalls: Array<{ name: string; args: unknown }>
+let inFlightOrderRows: Row[]
+let inFlightOrdersError: { message: string } | null
 
 function makeSupabase() {
   return {
@@ -67,7 +80,18 @@ function makeSupabase() {
       if (table === 'order_line_allocations') {
         return {
           select: () => ({
-            in: async () => ({ data: appliedAllocationRows, error: null }),
+            // `.in(...)` is CHAINABLE and thenable: the route now calls
+            // .in('id', ids).eq('restaurant_id', ...) to resolve which orders these allocations
+            // belong to, and also awaits .in(...) directly when re-reading applied rows.
+            in: () => {
+              const res = { data: appliedAllocationRows, error: null }
+              const node: Record<string, unknown> = {
+                eq: async () => res,
+                then: (ok: (v: unknown) => unknown, no?: (e: unknown) => unknown) =>
+                  Promise.resolve(res).then(ok, no),
+              }
+              return node
+            },
             eq: () => ({
               eq: () => ({
                 eq: () => ({
@@ -83,7 +107,12 @@ function makeSupabase() {
       if (table === 'orders') {
         return {
           select: () => ({
+            // Tab-total recalculation: .select().eq(tab_id)
             eq: async () => ({ data: tabOrderRows, error: null }),
+            // Card-in-flight guard: .select().in(ids).eq(restaurant_id)
+            in: () => ({
+              eq: async () => ({ data: inFlightOrderRows, error: inFlightOrdersError }),
+            }),
           }),
           update: (patch: Row) => ({
             eq: () => ({
@@ -145,6 +174,12 @@ beforeEach(() => {
   orderUpdateShouldClaim = true
   tabOrderRows = []
   rpcCalls = []
+  // No card in flight by default: the guard is off the happy path.
+  inFlightOrderRows = [{ id: 'order-1', payment_status: 'pending', terminal_pushed_at: null }]
+  inFlightOrdersError = null
+  consumeResult = { ok: true }
+  consumeShouldThrow = false
+  consumeCalls.length = 0
 })
 
 describe('POST /api/terminal/tabs/[tabId]/settle-allocations', () => {
@@ -230,5 +265,178 @@ describe('POST /api/terminal/tabs/[tabId]/settle-allocations', () => {
     // The member lookup path used .eq chains, not .in -- reaching settle at all proves it resolved.
     const settleCall = rpcCalls.find((c) => c.name === 'settle_order_line_allocations')!
     expect(settleCall).toBeTruthy()
+  })
+})
+
+/**
+ * ============================================================================================
+ * THE TWO GAPS THE ROUTE'S OWN HEADER DECLARED, CLOSED 2026-09-03
+ * ============================================================================================
+ *
+ * Both handle real money, and both were documented as deliberate omissions:
+ *
+ *   "Does not consume a cash-authorization token... staff_user_id is recorded when supplied,
+ *    unverified."
+ *   "Does not implement the whole-order route's card-in-flight guard: that guard exists for a
+ *    card payment race that is specific to per-order settlement's own push/poll flow."
+ *
+ * The second reasoning was wrong in the direction that costs a customer money. The race belongs to
+ * the ORDER, not to the flow: if a card attempt is live on order X and the gateway may still
+ * answer yes, taking cash against X charges twice -- whether the cash covered the whole order or
+ * one diner's share of it.
+ */
+describe('card-in-flight guard', () => {
+  const PUSHED_NOW = () => new Date().toISOString()
+
+  it('refuses CASH while a card is in flight on an order these allocations touch', async () => {
+    inFlightOrderRows = [
+      { id: 'order-1', payment_status: 'terminal_pending', terminal_pushed_at: PUSHED_NOW() },
+    ]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.code).toBe('CARD_PAYMENT_IN_FLIGHT')
+    expect(body.order_ids).toEqual(['order-1'])
+    // A countdown, so the terminal can say "try again in N" rather than refuse without explaining.
+    expect(body.retry_after_seconds).toBeGreaterThan(0)
+  })
+
+  it('TAKES NO MONEY when it refuses -- the RPC is never reached', async () => {
+    // The assertion that matters. A guard that refuses AFTER settling has not guarded anything.
+    inFlightOrderRows = [
+      { id: 'order-1', payment_status: 'terminal_pending', terminal_pushed_at: PUSHED_NOW() },
+    ]
+    await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+    expect(orderUpdateCalls).toHaveLength(0)
+  })
+
+  it('allows cash once the attempt is past the timeout -- a dead reader cannot strand a table', async () => {
+    inFlightOrderRows = [
+      {
+        id: 'order-1',
+        payment_status: 'terminal_pending',
+        terminal_pushed_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      },
+    ]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('does NOT block a CARD settlement -- the guard is cash-specific', async () => {
+    inFlightOrderRows = [
+      { id: 'order-1', payment_status: 'terminal_pending', terminal_pushed_at: PUSHED_NOW() },
+    ]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'card' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('FAILS CLOSED when the payment state cannot be read', async () => {
+    // Not being able to see whether a card is in flight is not permission to take cash.
+    inFlightOrdersError = { message: 'connection reset' }
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(503)
+    expect((await res.json()).code).toBe('IN_FLIGHT_CHECK_FAILED')
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+})
+
+describe('cash-authorization token', () => {
+  it('refuses a token supplied without a staff id', async () => {
+    const res = await POST(
+      req({ allocation_ids: ['alloc-1'], method: 'cash', authorization_token_id: 'tok-1' }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('ATTRIBUTION_INCOMPLETE')
+  })
+
+  it('consumes the token against the cash_settlement purpose, scoped to this terminal', async () => {
+    consumeResult = { ok: true }
+    await POST(
+      req({
+        allocation_ids: ['alloc-1'],
+        method: 'cash',
+        authorization_token_id: 'tok-1',
+        staff_user_id: 'user-9',
+      }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(consumeCalls).toHaveLength(1)
+    expect(consumeCalls[0]).toMatchObject({
+      tokenId: 'tok-1',
+      expectedUserId: 'user-9',
+      expectedRestaurantId: RESTAURANT,
+      expectedTerminalId: 'term-1',
+      expectedPurpose: 'cash_settlement',
+    })
+  })
+
+  it('refuses -- and TAKES NO MONEY -- when the token is rejected', async () => {
+    consumeResult = { ok: false, reason: 'expired' }
+    const res = await POST(
+      req({
+        allocation_ids: ['alloc-1'],
+        method: 'cash',
+        authorization_token_id: 'tok-1',
+        staff_user_id: 'user-9',
+      }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('AUTHORIZATION_INVALID')
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+
+  it('fails closed when consuming the token THROWS', async () => {
+    // Consuming a token also writes an authorization_events row; letting that write escape would
+    // land in the generic catch and answer 401, which tells staff nothing about the refusal.
+    consumeShouldThrow = true
+    const res = await POST(
+      req({
+        allocation_ids: ['alloc-1'],
+        method: 'cash',
+        authorization_token_id: 'tok-1',
+        staff_user_id: 'user-9',
+      }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(res.status).toBe(403)
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+
+  it('passes the VERIFIED staff id to the RPC, never the raw body field', async () => {
+    // The ledger is append-only. A staff id nobody authorised cannot be corrected afterwards.
+    consumeResult = { ok: true }
+    await POST(
+      req({
+        allocation_ids: ['alloc-1'],
+        method: 'cash',
+        authorization_token_id: 'tok-1',
+        staff_user_id: 'user-9',
+      }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    const call = rpcCalls.find((c) => c.name === 'settle_order_line_allocations')
+    expect((call!.args as { p_staff_user_id: string }).p_staff_user_id).toBe('user-9')
+  })
+
+  it('records NULL attribution when no token was supplied, rather than an unproven staff id', async () => {
+    await POST(
+      req({ allocation_ids: ['alloc-1'], method: 'cash', staff_user_id: 'user-9' }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    const call = rpcCalls.find((c) => c.name === 'settle_order_line_allocations')
+    expect((call!.args as { p_staff_user_id: string | null }).p_staff_user_id).toBeNull()
   })
 })

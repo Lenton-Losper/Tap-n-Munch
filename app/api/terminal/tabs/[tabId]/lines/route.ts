@@ -35,6 +35,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { isLineReady, type LineRouteTo, type LineState } from '@/lib/orders/order-lines'
+import { toCents } from '@/lib/billing/split-cents'
 
 export const dynamic = 'force-dynamic'
 
@@ -240,7 +241,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
      * The 404 still wins over any line data: the tab is checked first below, exactly as before, so
      * a terminal guessing another venue's uuid gets the same answer it always did.
      */
-    const [tabRes, linesRes] = await Promise.all([
+    const [tabRes, linesRes, allocationsRes] = await Promise.all([
       supabase
         .from('tabs')
         .select('id, table_number, status, total, opened_by_user_id, created_at')
@@ -255,6 +256,31 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
         .eq('restaurant_id', terminal.restaurantId)
         .eq('tab_id', tabId)
         .order('created_at', { ascending: true }),
+      /**
+       * ============================================================================================
+       * THE SPLIT, AS IT STANDS — without this the terminal cannot SEE one
+       * ============================================================================================
+       *
+       * docs/design-item-level-bill-splitting.md point 3: "extending it to also carry
+       * `allocations: []` when present is additive". It was never done, and the omission made the
+       * feature unusable rather than merely incomplete: `POST .../allocate` returns the rows it
+       * just wrote, so a split was visible ONLY to the device that made it, only until that screen
+       * was closed. A second waiter, a reopened table, or a crashed app saw an unsplit bill and
+       * would have split it again.
+       *
+       * Keyed by tab_id, so it joins the existing wave rather than adding a round trip — this
+       * endpoint's latency is already the thing being watched.
+       *
+       * VOIDED ALLOCATIONS ARE EXCLUDED, settled ones are NOT. A settled allocation is exactly what
+       * the collect screen must show as already paid; dropping it would offer the same share for
+       * payment twice.
+       */
+      supabase
+        .from('order_line_allocations')
+        .select('id, order_line_id, allocated_to, quantity_allocated, amount_cents, settled_at')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('tab_id', tabId)
+        .is('voided_at', null),
     ])
 
     const { data: tab, error: tabError } = tabRes
@@ -268,13 +294,36 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
 
     const lineRows = (lines ?? []) as LineRow[]
 
+    /**
+     * A failed allocations read DEGRADES to "no split" rather than failing the table view. The
+     * bill, the readiness and every existing figure are unaffected by it, and a waiter who cannot
+     * see the table at all is worse off than one who cannot see a split. Logged, never silent.
+     */
+    const allocationsByLineId = new Map<string, Array<Record<string, unknown>>>()
+    if (allocationsRes.error) {
+      console.error('[terminal/tabs/lines] allocations unavailable', allocationsRes.error.message)
+    } else {
+      for (const a of (allocationsRes.data ?? []) as Array<Record<string, unknown>>) {
+        const key = String(a.order_line_id)
+        const list = allocationsByLineId.get(key) ?? []
+        list.push({
+          id: String(a.id),
+          allocated_to: a.allocated_to,
+          quantity_allocated: Number(a.quantity_allocated),
+          amount_cents: Number(a.amount_cents),
+          settled_at: a.settled_at ?? null,
+        })
+        allocationsByLineId.set(key, list)
+      }
+    }
+
     const orderIds = [...new Set(lineRows.map((l) => String(l.order_id)))]
     const ordersById = new Map<string, Record<string, unknown>>()
 
     if (orderIds.length > 0) {
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
-        .select('id, order_number, placed_at, order_instructions, total')
+        .select('id, order_number, placed_at, order_instructions, total, items')
         .in('id', orderIds)
 
       if (ordersError) throw ordersError
@@ -324,6 +373,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
 
       const bucket = bucketForLine(line)
 
+      // Same derivation as readLineTotalCents(): orders.items[source_item_index].total, integer
+      // cents. Null when unpriceable rather than 0 -- see total_cents below.
+      const orderItems = Array.isArray(ordersById.get(orderId)?.items)
+        ? (ordersById.get(orderId)!.items as Array<Record<string, unknown>>)
+        : []
+      const sourceItem = orderItems[line.source_item_index]
+      const rawTotal = sourceItem?.total
+      const derivedCents =
+        rawTotal === undefined || rawTotal === null ? NaN : toCents(Number(rawTotal))
+      const lineTotalCents =
+        Number.isFinite(derivedCents) && derivedCents >= 0 ? derivedCents : null
+      const lineAllocations = allocationsByLineId.get(String(line.id)) ?? []
+
       summary.total_lines += 1
       summary[bucket] += 1
       tallyStation(summary.kitchen, line.kitchen_state)
@@ -351,6 +413,27 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
          */
         is_cooked: bucket === 'outstanding' && hasCookedStation(line),
         unrouted: line.route_to === 'unrouted',
+        /**
+         * ============================================================================================
+         * THE SPLIT, PER LINE — money derived the SAME way the allocate route derives it
+         * ============================================================================================
+         *
+         * `total_cents` is orders.items[source_item_index].total in integer cents, which is exactly
+         * what readLineTotalCents() (lib/orders/order-line-allocations.ts) computes server-side
+         * before splitting. Deriving it a second, different way here is how a screen comes to show
+         * "N$40 not yet assigned" against a line the server would split for some other figure — so
+         * it reads the same field through the same toCents().
+         *
+         * order_lines carries no price column by design, so this join back to orders.items is the
+         * only place a line's own money exists.
+         *
+         * NULL when the item cannot be priced (missing index, malformed item). The screen must then
+         * decline to offer a split for that line rather than guess — which is why this is null and
+         * not 0. A zero would read as a free item and split cleanly into nothing.
+         */
+        total_cents: lineTotalCents,
+        allocations: lineAllocations,
+        allocated_cents: lineAllocations.reduce((sum, a) => sum + Number(a.amount_cents ?? 0), 0),
       })
     }
 
