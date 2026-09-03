@@ -114,11 +114,27 @@ export async function broadcastLineChanged(
   supabase: SupabaseClient,
   restaurantId: string,
 ): Promise<void> {
-  const send = (topic: string) => supabase.channel(topic).httpSend(LINE_CHANGED_EVENT, {})
+  /**
+   * THE PUBLISHER MUST DECLARE `private` TOO, AND THIS IS NOT SYMMETRY FOR ITS OWN SAKE.
+   *
+   * A channel handle built WITHOUT `config.private` posts to the PUBLIC channel that happens to
+   * share the name — a different logical topic from the private one a subscriber joined. The send
+   * succeeds. It reports nothing wrong. It reaches nobody.
+   *
+   * Found by the end-to-end proof against production, and it is worth recording how it presented:
+   * the private subscriber's join returned SUBSCRIBED (so the JWT verified, the JWKS resolved, and
+   * the RLS policy MATCHED), a foreign venue's topic returned "Unauthorized", and an anon join
+   * returned "Unauthorized" — every authorisation signal correct — and still nothing arrived. Read
+   * without the controls, that looks exactly like a policy that is subtly wrong or a signing key
+   * that has not propagated, and both of those would have been days of chasing the wrong thing.
+   */
+  const send = (topic: string, isPrivate: boolean) =>
+    supabase.channel(topic, isPrivate ? { config: { private: true } } : undefined)
+      .httpSend(LINE_CHANGED_EVENT, {})
 
   const [publicResult, privateResult] = await Promise.allSettled([
-    send(restaurantLinesChannelName(restaurantId)),
-    send(restaurantLinesPrivateChannelName(restaurantId)),
+    send(restaurantLinesChannelName(restaurantId), false),
+    send(restaurantLinesPrivateChannelName(restaurantId), true),
   ])
 
   if (publicResult.status === 'rejected') {

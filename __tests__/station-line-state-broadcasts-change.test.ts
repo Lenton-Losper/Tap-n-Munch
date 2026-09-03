@@ -36,6 +36,7 @@ function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean; pri
   const line: Row = { ...initialLine }
   const events: Row[] = []
   const channelCalls: string[] = []
+  const channelConfigs: unknown[] = []
   const httpSendCalls: Array<{ event: string; payload: unknown }> = []
 
   function orderLinesTable() {
@@ -78,8 +79,9 @@ function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean; pri
       }
       throw new Error(`unexpected table in fake: ${table}`)
     },
-    channel(name: string) {
+    channel(name: string, config?: unknown) {
       channelCalls.push(name)
+      channelConfigs.push(config)
       return {
         async httpSend(event: string, payload: unknown) {
           if (opts.channelThrows) throw new Error('simulated broadcast transport failure')
@@ -95,7 +97,7 @@ function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean; pri
     },
   }
 
-  return { client, line, events, channelCalls, httpSendCalls }
+  return { client, line, events, channelCalls, channelConfigs, httpSendCalls }
 }
 
 let fake: ReturnType<typeof makeFakeSupabase>
@@ -146,6 +148,11 @@ describe('a real state change broadcasts an invalidation', () => {
     // The private channel does not get to become the place data leaks just because it is private.
     expect(fake.httpSendCalls[0].payload).toEqual({})
     expect(fake.httpSendCalls[1].payload).toEqual({})
+    // THE PRIVATE FLAG ON THE PUBLISHER, asserted because omitting it fails SILENTLY: the send
+    // succeeds, reports nothing wrong, and lands on the public channel of the same name where no
+    // private subscriber is listening. It cost a full end-to-end run to find, during which every
+    // authorisation signal read correct (join SUBSCRIBED, foreign topic Unauthorized).
+    expect(fake.channelConfigs).toEqual([undefined, { config: { private: true } }])
   })
 
   it('does NOT broadcast on a double-tap (already at the target state)', async () => {
