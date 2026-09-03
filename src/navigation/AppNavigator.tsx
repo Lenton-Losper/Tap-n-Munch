@@ -28,6 +28,8 @@ import ServiceFloorScreen from '../screens/ServiceFloorScreen';
 import ServiceOpenTableScreen from '../screens/ServiceOpenTableScreen';
 import ServiceRoundReviewScreen from '../screens/ServiceRoundReviewScreen';
 import ServiceRoundScreen from '../screens/ServiceRoundScreen';
+import ServiceSplitAssignScreen from '../screens/ServiceSplitAssignScreen';
+import ServiceSplitCollectScreen from '../screens/ServiceSplitCollectScreen';
 import ServiceTableScreen from '../screens/ServiceTableScreen';
 import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
@@ -138,6 +140,13 @@ export type MainStackParamList = {
    * screen received, and every line it names must light up at once.
    */
   ServiceRound: {outOfStockLineIds?: string[]} | undefined;
+  /**
+   * Item-level bill splitting. tabId travels in params rather than through
+   * ServiceSessionContext because these screens are reachable from a table a waiter is only
+   * LOOKING at -- the same reason ServiceTable takes its ids as params.
+   */
+  ServiceSplitAssign: {tabId: string; tableNumber: number};
+  ServiceSplitCollect: {tabId: string; tableNumber: number; name: string};
   /** Waiter-led service, screen 4. The ONE review screen; Send lives here. */
   ServiceRoundReview: undefined;
   /**
@@ -312,6 +321,16 @@ function MainNavigator() {
         <MainStack.Screen
           name="ServiceTable"
           component={ServiceTableScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="ServiceSplitAssign"
+          component={ServiceSplitAssignScreen}
+          options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="ServiceSplitCollect"
+          component={ServiceSplitCollectScreen}
           options={{headerShown: false}}
         />
         <MainStack.Screen

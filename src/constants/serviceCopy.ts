@@ -167,3 +167,52 @@ export const ROUND_SEARCH_NO_MATCH = 'Nothing on the menu matches that.';
 export const TAB_LABEL_FLOOR = 'Tables';
 export const TAB_LABEL_SALE = 'Sale';
 export const TAB_LABEL_ORDERS = 'Orders';
+
+// ─── Split payment (Ship 1) ───────────────────────────────────────────────────
+
+/**
+ * SIGNED BY THE OWNER 2026-09-03. Twelve strings, pinned as written.
+ *
+ * WHY THESE WORDS. A split happens at the table, in front of the people paying, while a waiter is
+ * holding a card machine. Every string here is read aloud or read over a shoulder, so they say the
+ * thing plainly rather than naming an internal concept: "Who is paying for this?", not "Allocate
+ * line"; "still owing on this table", not "unsettled remainder".
+ *
+ * SPLIT_CARD_IN_FLIGHT DELIBERATELY MIRRORS THE SERVER'S OWN WORDING for the same refusal
+ * (app/api/terminal/tabs/[tabId]/settle-allocations/route.ts, code CARD_PAYMENT_IN_FLIGHT), so a
+ * waiter reads the same sentence whichever path produced it. Two different sentences for one
+ * refusal is how staff conclude the terminal is broken rather than that a card is still going
+ * through.
+ *
+ * SPLIT_LINE_VOIDED exists because the schema deliberately leaves an allocation on a voided line
+ * UNSETTLEABLE and VISIBLE, rather than silently charging it or silently dropping it
+ * (20260829170000_order_line_allocations.sql). Without wording, "visible" is just a row that will
+ * not respond to a tap.
+ *
+ * HALF, NOT N-WAY, is the owner's ruling: three people sharing a pizza is a rounding argument at
+ * the table, and an N-way control is more ways to mis-tap mid-service. SPLIT_SHARE_HALF is
+ * therefore the only fraction offered.
+ */
+export const SPLIT_ASSIGN_TITLE = 'Who is paying for this?';
+export const SPLIT_ADD_PERSON = 'Add person';
+export const SPLIT_PERSON_PLACEHOLDER = 'Name';
+export const SPLIT_SHARE_WHOLE = 'All of it';
+export const SPLIT_SHARE_HALF = 'Half';
+export const SPLIT_UNASSIGNED = '{amount} not yet assigned';
+export const SPLIT_COLLECT_TITLE = 'Collect from {name}';
+export const SPLIT_COLLECT_TOTAL = '{name} owes {amount}';
+export const SPLIT_REMAINDER_OPEN = '{amount} still owing on this table';
+export const SPLIT_CARD_IN_FLIGHT =
+  'A card payment is going through for part of this bill. Wait for it to finish, or cancel it on the terminal, then take cash.';
+export const SPLIT_NOTHING_SETTLED = 'None of these could be paid. They may already be settled.';
+export const SPLIT_LINE_VOIDED = 'This item was cancelled, so it cannot be paid for.';
+
+/**
+ * PROPOSED 2026-09-03 — NOT YET SIGNED. One string.
+ *
+ * The entry point from the table view into the split flow. It was not in the twelve signed
+ * strings, because the design at sign-off time described the two SCREENS and not the button that
+ * opens them. Flagged rather than quietly shipped: it is user-facing, and this file's convention
+ * is that user-facing text carries an owner's signature.
+ */
+export const SPLIT_ENTRY_BUTTON = 'Split bill';

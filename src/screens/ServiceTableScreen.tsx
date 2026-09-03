@@ -707,6 +707,33 @@ export default function ServiceTableScreen({route, navigation}: Props) {
               {Copy.TABLE_ADD_ROUND_BUTTON}
             </Text>
           </Pressable>
+
+          {/*
+            SPLIT BILL — beside Add Round, not beside Take payment.
+
+            Splitting is an ASSIGNMENT step that happens before money moves, and putting it next to
+            Take payment would read as a second way to settle the whole table. It is only offered
+            when the tab has lines: a QR or pre-migration tab has a bill but no fulfilment lines to
+            assign, and the server would have nothing to allocate.
+          */}
+          {hasLines ? (
+            <Pressable
+              testID="table-split-bill"
+              style={styles.addRoundButton}
+              onPress={() =>
+                navigation.navigate('ServiceSplitAssign', {
+                  tabId,
+                  tableNumber,
+                })
+              }>
+              <MaterialCommunityIcons
+                name="account-multiple-outline"
+                size={24}
+                color={Colors.white}
+              />
+              <Text style={styles.addRoundText}>{Copy.SPLIT_ENTRY_BUTTON}</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {/*

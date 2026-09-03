@@ -54,6 +54,16 @@ export interface TabLine {
    * is the whole reason this field had to be read — see lineDisplayState.
    */
   is_collected?: boolean;
+  /** Split fields, additive. Absent on a server that predates item-level splitting. */
+  total_cents?: number | null;
+  allocated_cents?: number;
+  allocations?: Array<{
+    id: string;
+    allocated_to: string;
+    quantity_allocated: number;
+    amount_cents: number;
+    settled_at: string | null;
+  }>;
   /**
    * At least one station has PLATED this, and the line has not moved past that yet. Additive, and
    * optional for the same reason as `is_collected`: a server that predates it sends nothing, and

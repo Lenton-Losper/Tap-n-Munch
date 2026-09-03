@@ -2722,3 +2722,118 @@ export async function setMenuItemAvailability(
     hidden: body?.hidden === true,
   };
 }
+
+// ─── Item-level bill splitting (Ship 1) ──────────────────────────────────────
+
+export interface AllocateLineResult {
+  order_id: string;
+  line_id: string;
+  line_total_cents: number;
+  allocations: Array<{
+    id: string;
+    allocated_to: string;
+    quantity_allocated: number;
+    amount_cents: number;
+  }>;
+}
+
+/**
+ * Assign one line to one or two people. The device sends WEIGHTS, never amounts — see
+ * lib/splitBill.ts sharesFor() for why that separation is the safety property.
+ *
+ * Re-assigning a line the server has already taken money against is refused with ALREADY_SETTLED
+ * (409); the screen checks canSplitLine() first so a waiter is told rather than tapping into it,
+ * but the server is still the one that decides.
+ */
+export async function allocateLine(
+  tabId: string,
+  lineId: string,
+  shares: Array<{allocated_to: string; quantity_allocated: number}>,
+  token: string,
+): Promise<AllocateLineResult> {
+  if (shares.length === 0) {
+    throw new Error('allocateLine called with no shares');
+  }
+
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(
+      tabId,
+    )}/lines/${encodeURIComponent(lineId)}/allocate`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({shares}),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+  return (await response.json()) as AllocateLineResult;
+}
+
+export interface SettleAllocationsResult {
+  success: boolean;
+  payment_reference: string;
+  method: string;
+  applied: Array<{allocation_id: string; amount_cents: number}>;
+  refused: Array<{allocation_id: string; reason: string}>;
+  completed_order_ids: string[];
+  new_tab_total: number | null;
+  tab_total_stale: boolean;
+}
+
+/**
+ * Take money for one person's share of a tab.
+ *
+ * PARTIAL BY DESIGN: the remainder stays open and the tab keeps accepting rounds (the owner's
+ * ruling). Nothing here closes a table.
+ *
+ * `authorizationTokenId` and `staffUserId` travel together or not at all — the server answers
+ * ATTRIBUTION_INCOMPLETE (400) for a token without a staff id, because an append-only settlements
+ * ledger must not name somebody who authorised nothing.
+ *
+ * CARD_PAYMENT_IN_FLIGHT (409) is the refusal a waiter will actually meet: a card is going through
+ * on one of these orders and taking cash alongside it would charge twice. The screen shows
+ * Copy.SPLIT_CARD_IN_FLIGHT, which is deliberately the same sentence the server sends.
+ */
+export async function settleAllocations(
+  tabId: string,
+  params: {
+    allocationIds?: string[];
+    allocatedTo?: string;
+    method: 'cash' | 'card';
+    staffUserId?: string | null;
+    authorizationTokenId?: string | null;
+  },
+  token: string,
+): Promise<SettleAllocationsResult> {
+  const body: Record<string, unknown> = {method: params.method};
+  if (params.allocationIds && params.allocationIds.length > 0) {
+    body.allocation_ids = params.allocationIds;
+  } else if (params.allocatedTo) {
+    body.allocated_to = params.allocatedTo;
+  } else {
+    throw new Error('settleAllocations needs allocationIds or allocatedTo');
+  }
+  if (params.staffUserId) body.staff_user_id = params.staffUserId;
+  if (params.authorizationTokenId) body.authorization_token_id = params.authorizationTokenId;
+
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/settle-allocations`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+  return (await response.json()) as SettleAllocationsResult;
+}
