@@ -1,4 +1,5 @@
-import { fetchWithTimeout } from './helpers';
+import { fetchWithTimeout, getSupabaseAdmin } from './helpers';
+import { resolvePrimaryVenue } from './target-project';
 import { RIVIERA_ID } from './constants';
 
 const BASE = process.env.FLASHTAP_BASE_URL!;
@@ -15,8 +16,14 @@ describe('Web app & routing', () => {
     expect(res.status).toBe(200);
   });
 
-  test('/table/1 route responds 200', async () => {
-    const res = await fetchWithTimeout(`${RIVIERA}/table/1`);
+  test('the customer table entry route responds 200', async () => {
+    // WAS `/table/1`, WHICH HAS NEVER BEEN A ROUTE. Confirmed 404 on production as well as
+    // staging, so this was not an environment artefact -- the test asserted a path the app does
+    // not and never did serve, and had been red for as long as it has existed. QR codes are built
+    // by lib/onboarding/qr-url.ts as `/menu/${restaurantId}/v2?table=${n}`, which is the URL a
+    // customer actually scans, and that is what is asserted now.
+    const venue = await resolvePrimaryVenue(getSupabaseAdmin());
+    const res = await fetchWithTimeout(`${RIVIERA}/menu/${venue.id}/v2?table=1`);
     expect(res.status).toBe(200);
   });
 

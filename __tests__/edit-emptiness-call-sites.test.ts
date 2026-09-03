@@ -27,7 +27,9 @@ const reprice = fs.readFileSync(REPRICE, 'utf8')
 
 describe('#291 the panel decides emptiness with the shared predicate', () => {
   it('the scan found a real file', () => {
-    expect(panel).toContain('Save changes')
+    // The label moved into signed copy (MENU_COPY.editSaveChanges) -- assert the panel still
+    // renders THAT control, not a literal that a copy pass can move out from under this scan.
+    expect(panel).toContain('MENU_COPY.editSaveChanges')
   })
 
   it('imports editLeavesOrderEmpty', () => {

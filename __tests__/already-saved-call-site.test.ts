@@ -35,7 +35,9 @@ const route = codeOnly(read(ROUTE))
 describe('#306 the already_saved branch is wired end to end', () => {
   it('the scan found real files', () => {
     // Without this a moved file turns every assertion below into a no-op that reports green.
-    expect(panel).toContain('Save changes')
+    // The label moved into signed copy (MENU_COPY.editSaveChanges) -- assert the panel still
+    // renders THAT control, not a literal that a copy pass can move out from under this scan.
+    expect(panel).toContain('MENU_COPY.editSaveChanges')
     expect(client).toContain('OrderEditRefused')
     expect(route).toContain('alreadySavedResponse')
   })

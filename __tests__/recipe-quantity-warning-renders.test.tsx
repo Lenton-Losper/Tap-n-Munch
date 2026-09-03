@@ -109,7 +109,9 @@ describe('the quantity warning reaches the screen', () => {
     })
     const text = warningText()
     expect(text).not.toBeNull()
-    expect(text).toContain('PLACEHOLDER')
+    // 'the whole lot' is the distinguishing clause of the signed equals_on_hand string;
+    // __tests__/recipe-quantity-copy-signed-off.test.ts owns the exact wording.
+    expect(text).toContain('the whole lot')
   })
 
   it('shows a warning when the quantity is more than the amount on hand', () => {
@@ -120,13 +122,15 @@ describe('the quantity warning reaches the screen', () => {
       stockItemName: 'Wedge biscuits',
       currentStock: 12,
     })
-    expect(warningText()).toContain('negative')
+    // 'below zero' is pinned by the signed-copy lock test; this asserts WHICH warning reached
+    // the screen, and that file owns the wording.
+    expect(warningText()).toContain('below zero')
   })
 
   it('shows NOTHING for a correct one-per-sale recipe', () => {
     renderTab({ menuItemName: 'Coke', quantity: '1', stockItemName: 'Coke', currentStock: 100 })
     expect(warningText()).toBeNull()
-    expect(container.textContent).not.toContain('PLACEHOLDER: quantity')
+    expect(container.textContent).not.toContain('PLACEHOLDER')
   })
 
   it('shows NOTHING for FNB ChowNow Chicken Wings at 5 per portion', () => {
@@ -175,7 +179,7 @@ describe('the quantity warning reaches the screen', () => {
   it('labels the quantity field as a per-sale amount, not a bare "Quantity"', () => {
     renderTab({ menuItemName: 'Coke', quantity: '1', stockItemName: 'Coke', currentStock: 100 })
     const label = container.querySelector('label[for^="ingredient-qty-"]')
-    expect(label?.textContent).toContain('per one sold')
+    expect(label?.textContent).toContain('per single sale')
   })
 })
 
@@ -220,7 +224,7 @@ describe('the standalone recipe editor warns too', () => {
 
   it('warns when the only ingredient is the item itself at a quantity other than 1', () => {
     // Mingle's "Sausage roll" recipe, which consumes 20 Sausage rolls per Sausage roll sold.
-    expect(renderEditor('Sausage roll', 20, 'Sausage roll')).toContain('the item itself')
+    expect(renderEditor('Sausage roll', 20, 'Sausage roll')).toContain('the same item being sold')
   })
 
   it('stays silent once that recipe is corrected to 1', () => {
@@ -236,6 +240,6 @@ describe('the standalone recipe editor warns too', () => {
   it('labels its quantity field as a per-sale amount too', () => {
     renderEditor('Coke', 1, 'Coke')
     const label = container.querySelector('label[for^="quantity-"]')
-    expect(label?.textContent).toContain('per one sold')
+    expect(label?.textContent).toContain('per single sale')
   })
 })
