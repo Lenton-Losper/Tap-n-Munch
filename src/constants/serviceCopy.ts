@@ -208,11 +208,10 @@ export const SPLIT_NOTHING_SETTLED = 'None of these could be paid. They may alre
 export const SPLIT_LINE_VOIDED = 'This item was cancelled, so it cannot be paid for.';
 
 /**
- * PROPOSED 2026-09-03 — NOT YET SIGNED. One string.
+ * SIGNED BY THE OWNER 2026-09-04. The thirteenth split string.
  *
- * The entry point from the table view into the split flow. It was not in the twelve signed
- * strings, because the design at sign-off time described the two SCREENS and not the button that
- * opens them. Flagged rather than quietly shipped: it is user-facing, and this file's convention
- * is that user-facing text carries an owner's signature.
+ * The entry point from the table view into the split flow. It was not in the original twelve
+ * because the design at sign-off described the two SCREENS and not the button that opens them --
+ * flagged rather than quietly shipped, and signed on the next pass. Locked with the other twelve.
  */
 export const SPLIT_ENTRY_BUTTON = 'Split bill';

@@ -1,5 +1,5 @@
 /**
- * The twelve split-payment strings, SIGNED 2026-09-03, pinned character for character.
+ * The thirteen split-payment strings — twelve signed 2026-09-03, the entry button 2026-09-04.
  *
  * Same discipline as cookedCopySignedOff, and for the same reason: these ship inside an APK, so a
  * drift is not fixable by a deploy -- it needs a rebuild and a TMS upload. A tidier shortening
@@ -22,6 +22,7 @@ const SIGNED = {
     'A card payment is going through for part of this bill. Wait for it to finish, or cancel it on the terminal, then take cash.',
   SPLIT_NOTHING_SETTLED: 'None of these could be paid. They may already be settled.',
   SPLIT_LINE_VOIDED: 'This item was cancelled, so it cannot be paid for.',
+  SPLIT_ENTRY_BUTTON: 'Split bill',
 } as const;
 
 describe('split-payment copy — signed 2026-09-03', () => {
@@ -29,8 +30,8 @@ describe('split-payment copy — signed 2026-09-03', () => {
     expect((Copy as Record<string, string>)[name]).toBe(text);
   });
 
-  it('all twelve are present', () => {
-    expect(Object.keys(SIGNED)).toHaveLength(12);
+  it('all thirteen are present', () => {
+    expect(Object.keys(SIGNED)).toHaveLength(13);
     for (const name of Object.keys(SIGNED)) {
       expect(typeof (Copy as Record<string, string>)[name]).toBe('string');
     }
