@@ -69,6 +69,14 @@ async function main() {
   const es = decodeJwt(esToken)
   check('ES256 path carries the same claim set', es.role === 'authenticated' && es.aud === 'authenticated' && es.type === 'terminal')
 
+  /**
+   * Supabase refuses a token whose `iss` does not match the registered issuer, and a localhost
+   * issuer shipped to production once already — inlined from .env.local via NEXT_PUBLIC_APP_URL.
+   * Our verifier ignores iss, so only an explicit assertion catches this.
+   */
+  check('issuer is an https URL, never localhost', typeof es.iss === 'string' && es.iss.startsWith('https://') && !es.iss.includes('localhost'))
+  check('issuer is the registered one', es.iss === 'https://flashtap.app')
+
   // ---- verification accepts both ------------------------------------------------------------
   delete process.env.TERMINAL_JWT_PRIVATE_KEY
   const { requireTerminalAuth } = await import('../../lib/terminal-auth')

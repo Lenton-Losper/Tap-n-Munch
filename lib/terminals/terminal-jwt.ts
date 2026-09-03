@@ -80,9 +80,25 @@ export async function signTerminalJwt(payload: {
 }
 
 /**
- * Must match whatever is registered with Supabase. Kept as a function so the value has one home;
- * a mismatch between this and the registered issuer is a silent verification failure.
+ * THE ISSUER, AND WHY IT IS NOT A NEXT_PUBLIC_ VAR.
+ *
+ * This first read NEXT_PUBLIC_APP_URL, and every ES256 token issued on production came out claiming
+ * `iss: "http://localhost:3000"`. Caught by inspecting a freshly issued token, not by any test.
+ *
+ * NEXT_PUBLIC_* IS INLINED INTO THE BUNDLE AT BUILD TIME. The build sources .env.local, where that
+ * value is localhost, so the constant was frozen in at compile. wrangler.production.toml also sets
+ * NEXT_PUBLIC_APP_URL = "https://flashtap.app" as a Worker var — and it cannot win, because there
+ * is no longer a lookup to override. Exactly the trap the station manifests hit from the other
+ * direction.
+ *
+ * Nothing broke, because our own verifier ignores `iss`. Supabase does NOT: once the provider is
+ * registered, a token claiming localhost is refused, and it would present as "the policy is wrong"
+ * or "the 30-minute key poll has not landed" — a failure pointing at the two things we would
+ * already be waiting on.
+ *
+ * So: a plain server-side variable, resolved at RUNTIME, defaulting to the production issuer. It
+ * must match the URL registered with Supabase exactly.
  */
 export function terminalJwtIssuer(): string {
-  return process.env.NEXT_PUBLIC_APP_URL || 'https://flashtap.app'
+  return process.env.TERMINAL_JWT_ISSUER || 'https://flashtap.app'
 }
