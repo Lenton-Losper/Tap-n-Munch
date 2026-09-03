@@ -47,6 +47,8 @@ export const VENUE_LAUNCHER_COPY = {
   multiplePaired: (station: string) =>
     `More than one screen is paired as ${station}. They all show the same orders.`,
 
+  /** #373. Distinct from a version we know is old — this one has never told us. */
+  versionUnknown: 'version not reported',
   seenRecently: 'Seen just now',
   seenAt: (when: string) => `Last seen ${when}`,
   neverSeen: 'Never connected',

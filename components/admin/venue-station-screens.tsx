@@ -12,6 +12,8 @@ export type VenueStationScreen = {
   active: boolean
   lastSeenAt: string | null
   activatedAt: string | null
+  /** #373: what bundle/build this screen is actually running. null until it has beaten once. */
+  appVersion?: string | null
 }
 
 /** Online on the same 15-minute rule the venue page already applies to every other terminal. */
@@ -84,6 +86,13 @@ export function VenueStationScreens({
                     {paired.map((s) => (
                       <li key={s.id} data-testid="venue-station-screen-row" className="text-xs text-[#8A867C]">
                         <span className="text-[#1A1A1A]">{s.name || label}</span> · {screenState(s, now)}
+                        {' · '}
+                        {/*
+                          #373: a screen that has never reported is not the same as one running an
+                          old build, and "unknown" says which. Before this, EVERY station screen
+                          read null and the field was useless.
+                        */}
+                        <span data-testid="screen-version">{s.appVersion?.trim() || COPY.versionUnknown}</span>
                       </li>
                     ))}
                   </ul>

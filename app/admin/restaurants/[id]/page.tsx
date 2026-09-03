@@ -631,6 +631,7 @@ export default async function RestaurantDetailPage({
                       active: Boolean(t.active),
                       lastSeenAt: t.last_seen_at ? String(t.last_seen_at) : null,
                       activatedAt: t.activated_at ? String(t.activated_at) : null,
+                      appVersion: t.app_version ? String(t.app_version) : null,
                     }))}
                   venueId={String(id)}
                   venueName={restaurant?.name ? String(restaurant.name) : null}

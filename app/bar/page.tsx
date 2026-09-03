@@ -5,6 +5,7 @@ import { TerminalActivationGate } from '@/components/stations/terminal-activatio
 import { BarScreen } from '@/components/stations/bar-screen'
 import { StationFaultNotice } from '@/components/stations/station-fault-notice'
 import type { StationFault } from '@/lib/stations/faults'
+import { getClientVersion } from '@/lib/stations/client-version'
 import { StationVenueMismatch } from '@/components/stations/station-venue-mismatch'
 import { readVenueHint, isVenueMismatch, type VenueHint } from '@/lib/stations/venue-hint'
 import { StationLoading } from '@/components/stations/station-loading'
@@ -74,7 +75,19 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
   // this, and a paired-screens list that always reads "last seen: at activation" cannot tell a
   // week-long-healthy screen from one that has been dark for six days.
   useEffect(() => {
-    const beat = () => void authFetch('/api/terminal/heartbeat', { method: 'POST' })
+    /**
+     * #373: this used to send NO BODY, so app_version stayed null on every station screen forever
+     * and the terminals list could not say what any wall screen was running. The version is the
+     * bundle THIS page loaded (lib/stations/client-version.ts), not the server's current one.
+     */
+    const beat = () =>
+      void getClientVersion().then((appVersion) =>
+        authFetch('/api/terminal/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(appVersion ? { appVersion } : {}),
+        }),
+      )
     beat()
     const id = window.setInterval(beat, 60_000)
     return () => window.clearInterval(id)
