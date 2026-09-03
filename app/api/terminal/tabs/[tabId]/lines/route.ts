@@ -153,14 +153,22 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
   try {
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
-    await validateTerminalRecord(supabase, terminal)
 
     /**
+     * Independent reads, one round trip instead of two — measured median for this route was 994 ms
+     * on production 2026-09-03, against ~1 ms of database execution. allSettled preserves the
+     * original order of refusal; see app/api/terminal/station-lines/route.ts.
+     *
      * ADR-005 is a station_screens_enabled venue's flow, not server policy yet. Riviera-only was
      * an accident of client version -- Mingle and ChowNow are protected only by an old APK never
      * calling this endpoint, not by anything server-side. Added 2026-08-28.
      */
-    const { allowed } = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    const [validation, feature] = await Promise.allSettled([
+      validateTerminalRecord(supabase, terminal),
+      requireFeature(terminal.restaurantId, 'station_screens_enabled'),
+    ])
+    if (validation.status === 'rejected') throw validation.reason
+    const { allowed } = feature.status === 'fulfilled' ? feature.value : { allowed: false }
     if (!allowed) {
       return NextResponse.json(
         { error: 'Waiter-led service is not enabled for this restaurant', code: 'STATION_SCREENS_DISABLED' },
@@ -179,27 +187,38 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
 
     // Scoped by restaurant as well as id, so a terminal cannot read another venue's tab by
     // guessing a uuid.
-    const { data: tab, error: tabError } = await supabase
-      .from('tabs')
-      .select('id, table_number, status, total, opened_by_user_id, created_at')
-      .eq('id', tabId)
-      .eq('restaurant_id', terminal.restaurantId)
-      .maybeSingle()
+    /**
+     * The tab header and its lines are both keyed by tabId — neither needs the other's answer, so
+     * they are one wave. Only `orders` below must wait, because it is keyed by the order_ids the
+     * line rows return.
+     *
+     * The 404 still wins over any line data: the tab is checked first below, exactly as before, so
+     * a terminal guessing another venue's uuid gets the same answer it always did.
+     */
+    const [tabRes, linesRes] = await Promise.all([
+      supabase
+        .from('tabs')
+        .select('id, table_number, status, total, opened_by_user_id, created_at')
+        .eq('id', tabId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .maybeSingle(),
+      supabase
+        .from('order_lines')
+        .select(
+          'id, order_id, source_item_index, name_snapshot, quantity, line_note, route_to, kitchen_state, bar_state, created_at',
+        )
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('tab_id', tabId)
+        .order('created_at', { ascending: true }),
+    ])
 
+    const { data: tab, error: tabError } = tabRes
     if (tabError) throw tabError
     if (!tab?.id) {
       return NextResponse.json({ error: 'Tab not found' }, { status: 404 })
     }
 
-    const { data: lines, error: linesError } = await supabase
-      .from('order_lines')
-      .select(
-        'id, order_id, source_item_index, name_snapshot, quantity, line_note, route_to, kitchen_state, bar_state, created_at',
-      )
-      .eq('restaurant_id', terminal.restaurantId)
-      .eq('tab_id', tabId)
-      .order('created_at', { ascending: true })
-
+    const { data: lines, error: linesError } = linesRes
     if (linesError) throw linesError
 
     const lineRows = (lines ?? []) as LineRow[]

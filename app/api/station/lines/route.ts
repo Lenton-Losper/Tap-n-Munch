@@ -51,7 +51,20 @@ export async function GET(req: Request) {
   try {
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
-    await validateTerminalRecord(supabase, terminal)
+
+    /**
+     * The record check and the feature flag are independent — one reads restaurant_terminals, the
+     * other restaurant_features, neither uses the other's answer. Sequentially they cost two
+     * ~205 ms round trips for one round trip's worth of work.
+     *
+     * allSettled, not all, so the ORDER OF REFUSAL is unchanged: `Promise.all` reports whichever
+     * rejects first, which would let a feature denial overtake an invalid-terminal 401.
+     */
+    const [validation, feature] = await Promise.allSettled([
+      validateTerminalRecord(supabase, terminal),
+      requireFeature(terminal.restaurantId, 'station_screens_enabled'),
+    ])
+    if (validation.status === 'rejected') throw validation.reason
 
     /**
      * DEFENSE IN DEPTH. This is the real domain route `/api/terminal/station-lines` delegates to
@@ -61,7 +74,9 @@ export async function GET(req: Request) {
      * this URL directly (lib/stations/data-port.ts only ever calls the terminal wrapper), so this
      * closes a reachability gap rather than changing an actual call path.
      */
-    const featureCheck = await requireFeature(terminal.restaurantId, 'station_screens_enabled')
+    // Failing closed on a rejection: see the note in app/api/terminal/station-lines/route.ts.
+    const featureCheck =
+      feature.status === 'fulfilled' ? feature.value : { allowed: false, reason: 'unreadable' as const }
     if (!featureCheck.allowed) {
       return NextResponse.json(featureDenialBody(featureCheck.reason), { status: 403 })
     }
@@ -95,7 +110,7 @@ export async function GET(req: Request) {
     const { data: lines, error: linesError } = await supabase
       .from('order_lines')
       .select(
-        'id, order_id, source_item_index, name_snapshot, quantity, line_note, route_to, kitchen_state, bar_state, created_at',
+        'id, order_id, tab_id, source_item_index, name_snapshot, quantity, line_note, route_to, kitchen_state, bar_state, created_at',
       )
       .eq('restaurant_id', terminal.restaurantId)
       /**
@@ -123,6 +138,8 @@ export async function GET(req: Request) {
     const lineRows = (lines ?? []) as Array<{
       id: string
       order_id: string
+      /** Carried so the tab lookup does not have to wait for the orders read. */
+      tab_id: string | null
       source_item_index: number
       name_snapshot: string
       quantity: number
@@ -141,75 +158,101 @@ export async function GET(req: Request) {
       })
     }
 
-    // Order headers, read separately rather than embedded: the screen needs the order number and
-    // the table a human can shout, and a failed embed would silently drop the whole card.
+    /**
+     * FOUR INDEPENDENT READS, ONE WAVE INSTEAD OF FOUR.
+     *
+     * Measured on production 2026-09-03: this route's median was 2119 ms while its queries execute
+     * in ~1 ms. The cost is ~205 ms of round trip per await, and these four share no data:
+     *
+     *   orders        keyed by the line rows' order_ids
+     *   tabs          keyed by the line rows' OWN tab_id -- which is why the select above now
+     *                 carries it. Reading tab_id off `orders` made this wait for orders for no
+     *                 reason; order_lines has had the column all along.
+     *   cooked events keyed by line ids
+     *   ready events  keyed by line ids
+     *
+     * Only `users` still has to follow, because it needs the opener ids that tabs returns.
+     *
+     * ERROR POSTURE IS UNCHANGED, per read: a failed orders read still throws (a card with no
+     * order number is not a card), while tabs, users and both event reads still degrade to absent
+     * and log. Promise.all is safe here precisely because the two that could reject are handled
+     * identically to before -- the orders read is the only throw, and it threw first previously too.
+     */
     const orderIds = [...new Set(lineRows.map((l) => String(l.order_id)))]
-    const { data: orders, error: ordersError } = await supabase
-      .from('orders')
-      .select('id, order_number, table_number, placed_at, order_instructions, tab_id')
-      .in('id', orderIds)
+    const lineIds = lineRows.map((l) => String(l.id))
+    const tabIds = [
+      ...new Set(
+        lineRows.map((l) => l.tab_id).filter((t): t is string => typeof t === 'string' && t.length > 0),
+      ),
+    ]
 
-    if (ordersError) throw ordersError
+    const eventQuery = (toState: 'cooked' | 'ready') =>
+      supabase
+        .from('order_line_events')
+        .select('order_line_id, occurred_at')
+        .in('order_line_id', lineIds)
+        .eq('station', station)
+        .eq('to_state', toState)
+        .order('occurred_at', { ascending: false })
+
+    const [ordersRes, tabsRes, cookedRes, readyRes] = await Promise.all([
+      supabase
+        .from('orders')
+        .select('id, order_number, table_number, placed_at, order_instructions, tab_id')
+        .in('id', orderIds),
+      tabIds.length > 0
+        ? supabase.from('tabs').select('id, opened_by_user_id').in('id', tabIds)
+        : Promise.resolve({ data: [] as Array<Record<string, unknown>>, error: null }),
+      eventQuery('cooked'),
+      eventQuery('ready'),
+    ])
+
+    if (ordersRes.error) throw ordersRes.error
+    const orders = ordersRes.data
 
     /**
      * WHO SENT THIS ORDER — the name a cook can call back across the pass.
      *
-     * Two batched hops: orders.tab_id -> tabs.opened_by_user_id -> users.name. A tab opened by a
-     * customer scanning a QR code has no opened_by_user_id at all (see
+     * A tab opened by a customer scanning a QR code has no opened_by_user_id at all (see
      * app/api/terminal/tables/[tableId]/open/route.ts), so this is legitimately absent for a large
      * share of orders and every card must render without it.
-     *
-     * DEGRADES TO ABSENT, NEVER THROWS — same trade the cooked_at/ready_at reads below already
-     * make. A missing name is a slightly less useful card; throwing here would be a blank pass in
-     * the middle of service.
      *
      * ONLY THE DISPLAY NAME CROSSES THE WIRE. No email, no user id, no role. A wall screen in a
      * kitchen is visible to everyone in the room, and often through the pass to customers.
      */
     const servedByOrderId = new Map<string, string>()
-    const orderRows = (orders ?? []) as Array<Record<string, unknown>>
-    const tabIds = [
-      ...new Set(
-        orderRows
-          .map((o) => o.tab_id)
-          .filter((t): t is string => typeof t === 'string' && t.length > 0),
-      ),
-    ]
-    if (tabIds.length > 0) {
-      const { data: tabs, error: tabsError } = await supabase
-        .from('tabs')
-        .select('id, opened_by_user_id')
-        .in('id', tabIds)
+    const tabIdByOrderId = new Map<string, string>()
+    for (const line of lineRows) {
+      if (typeof line.tab_id === 'string' && line.tab_id) tabIdByOrderId.set(String(line.order_id), line.tab_id)
+    }
 
-      if (tabsError) {
-        console.error('[station/lines] served_by unavailable', tabsError.message)
-      } else {
-        const openerByTabId = new Map<string, string>()
-        for (const tab of (tabs ?? []) as Array<Record<string, unknown>>) {
-          const opener = tab.opened_by_user_id
-          if (typeof opener === 'string' && opener.length > 0) openerByTabId.set(String(tab.id), opener)
-        }
-        const userIds = [...new Set([...openerByTabId.values()])]
-        if (userIds.length > 0) {
-          const { data: users, error: usersError } = await supabase
-            .from('users')
-            .select('id, name')
-            .in('id', userIds)
+    if (tabsRes.error) {
+      console.error('[station/lines] served_by unavailable', tabsRes.error.message)
+    } else {
+      const openerByTabId = new Map<string, string>()
+      for (const tab of (tabsRes.data ?? []) as Array<Record<string, unknown>>) {
+        const opener = tab.opened_by_user_id
+        if (typeof opener === 'string' && opener.length > 0) openerByTabId.set(String(tab.id), opener)
+      }
+      const userIds = [...new Set([...openerByTabId.values()])]
+      if (userIds.length > 0) {
+        const { data: users, error: usersError } = await supabase
+          .from('users')
+          .select('id, name')
+          .in('id', userIds)
 
-          if (usersError) {
-            console.error('[station/lines] served_by names unavailable', usersError.message)
-          } else {
-            const nameByUserId = new Map<string, string>()
-            for (const user of (users ?? []) as Array<Record<string, unknown>>) {
-              const name = typeof user.name === 'string' ? user.name.trim() : ''
-              if (name) nameByUserId.set(String(user.id), name)
-            }
-            for (const order of orderRows) {
-              const tabId = typeof order.tab_id === 'string' ? order.tab_id : null
-              const opener = tabId ? openerByTabId.get(tabId) : undefined
-              const name = opener ? nameByUserId.get(opener) : undefined
-              if (name) servedByOrderId.set(String(order.id), name)
-            }
+        if (usersError) {
+          console.error('[station/lines] served_by names unavailable', usersError.message)
+        } else {
+          const nameByUserId = new Map<string, string>()
+          for (const user of (users ?? []) as Array<Record<string, unknown>>) {
+            const name = typeof user.name === 'string' ? user.name.trim() : ''
+            if (name) nameByUserId.set(String(user.id), name)
+          }
+          for (const [orderId, tabId] of tabIdByOrderId) {
+            const opener = openerByTabId.get(tabId)
+            const name = opener ? nameByUserId.get(opener) : undefined
+            if (name) servedByOrderId.set(orderId, name)
           }
         }
       }
@@ -221,68 +264,28 @@ export async function GET(req: Request) {
     }
 
     /**
-     * WHEN EACH LINE WAS ACTUALLY COOKED, not when its order was placed.
-     *
-     * The board escalated a cooked card on the ORDER age because this payload never carried a
-     * per-line transition time. That is wrong in ordinary service, not only in old fixtures: a
-     * steak that legitimately took eleven minutes to cook goes red the instant it is tapped
-     * Cooked, because its ORDER is eleven minutes old. Every cooked card then turns red within six
-     * minutes of the round landing, the pass sees a wall of identical red, and the colour carries
-     * no information — which is what the owner saw on the wall on 2026-08-28.
-     *
-     * The timestamp existed the whole time and only the contract was missing it:
-     * `order_line_events` records every transition with `occurred_at`.
-     *
-     * Read newest-first, keep the FIRST seen per line. A line can be cooked, sent back to
-     * outstanding and cooked again, and the clock a cook cares about starts at the LATEST cooking.
-     *
-     * A failure here must not blank the board, so it degrades to order age rather than throwing.
+     * WHEN EACH LINE WAS ACTUALLY COOKED / REACHED THE PASS, not when its order was placed.
+     * Newest-first, keep the FIRST seen per line: a line can be cooked, sent back and cooked again,
+     * and the clock a cook cares about starts at the LATEST cooking. A failure degrades to order
+     * age rather than blanking the board.
      */
     const cookedAtByLineId = new Map<string, string>()
-    const { data: cookedEvents, error: cookedEventsError } = await supabase
-      .from('order_line_events')
-      .select('order_line_id, occurred_at')
-      .in('order_line_id', lineRows.map((l) => String(l.id)))
-      .eq('station', station)
-      .eq('to_state', 'cooked')
-      .order('occurred_at', { ascending: false })
-
-    if (cookedEventsError) {
-      console.error('[station/lines] cooked_at unavailable', cookedEventsError.message)
+    if (cookedRes.error) {
+      console.error('[station/lines] cooked_at unavailable', cookedRes.error.message)
     } else {
-      for (const event of (cookedEvents ?? []) as Array<Record<string, unknown>>) {
+      for (const event of (cookedRes.data ?? []) as Array<Record<string, unknown>>) {
         const lineId = String(event.order_line_id)
-        if (!cookedAtByLineId.has(lineId)) {
-          cookedAtByLineId.set(lineId, String(event.occurred_at))
-        }
+        if (!cookedAtByLineId.has(lineId)) cookedAtByLineId.set(lineId, String(event.occurred_at))
       }
     }
 
-    /**
-     * WHEN EACH LINE ACTUALLY REACHED THE PASS, not when it was cooked or placed.
-     *
-     * 20260829160000: the Ready zone is pinned and ages on its own clock -- "sitting uncollected"
-     * is a different problem from "not yet made", and the board rebuild rules that only THIS zone
-     * escalates by age (the TO MAKE zone stays neutral for bar, always). Same newest-first,
-     * keep-first-seen shape as cooked_at, same degrade-to-null-not-throw on failure.
-     */
     const readyAtByLineId = new Map<string, string>()
-    const { data: readyEvents, error: readyEventsError } = await supabase
-      .from('order_line_events')
-      .select('order_line_id, occurred_at')
-      .in('order_line_id', lineRows.map((l) => String(l.id)))
-      .eq('station', station)
-      .eq('to_state', 'ready')
-      .order('occurred_at', { ascending: false })
-
-    if (readyEventsError) {
-      console.error('[station/lines] ready_at unavailable', readyEventsError.message)
+    if (readyRes.error) {
+      console.error('[station/lines] ready_at unavailable', readyRes.error.message)
     } else {
-      for (const event of (readyEvents ?? []) as Array<Record<string, unknown>>) {
+      for (const event of (readyRes.data ?? []) as Array<Record<string, unknown>>) {
         const lineId = String(event.order_line_id)
-        if (!readyAtByLineId.has(lineId)) {
-          readyAtByLineId.set(lineId, String(event.occurred_at))
-        }
+        if (!readyAtByLineId.has(lineId)) readyAtByLineId.set(lineId, String(event.occurred_at))
       }
     }
 
