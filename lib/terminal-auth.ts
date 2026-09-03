@@ -1,4 +1,5 @@
-import { jwtVerify } from 'jose'
+import { jwtVerify, decodeProtectedHeader, importJWK } from 'jose'
+import { findSigningKey } from '@/lib/terminals/signing-keys'
 
 const secret = new TextEncoder().encode(
   process.env.TERMINAL_JWT_SECRET!
@@ -50,9 +51,39 @@ export async function requireTerminalAuth(req: Request) {
   }
   const token = auth.replace('Bearer ', '')
 
+  /**
+   * TWO VERIFICATION PATHS, DELIBERATELY, FOR AS LONG AS ANY HS256 TOKEN CAN STILL BE IN THE FIELD.
+   *
+   * Phase A switched issuance to ES256 (lib/terminals/signing-keys.ts). Tokens live an hour, and a
+   * till asleep in a drawer can present a valid HS256 token well after the deploy. Refusing those
+   * would log the estate out mid-service to no purpose, so both are accepted:
+   *
+   *   header carries a known kid  ->  ES256, verified against that published public key
+   *   no kid                      ->  HS256, verified against TERMINAL_JWT_SECRET, as before
+   *
+   * WHICH PATH RAN IS LOGGED, because retirement has to be evidenced rather than assumed. The
+   * HS256 branch comes out only once no token has taken it for seven consecutive days, read from
+   * these logs. A kid we do not recognise falls through to HS256 and fails there — it is not
+   * trusted just for carrying a kid.
+   */
   let payload: Awaited<ReturnType<typeof jwtVerify>>['payload']
   try {
-    ;({ payload } = await jwtVerify(token, secret))
+    let kid: string | undefined
+    try {
+      kid = decodeProtectedHeader(token).kid
+    } catch {
+      kid = undefined
+    }
+
+    const signingKey = findSigningKey(kid)
+    if (signingKey) {
+      const publicKey = await importJWK(signingKey.jwk, 'ES256')
+      ;({ payload } = await jwtVerify(token, publicKey))
+      console.log('[terminal-auth] verified via ES256', { kid })
+    } else {
+      ;({ payload } = await jwtVerify(token, secret))
+      console.log('[terminal-auth] verified via HS256 (legacy path still in use)')
+    }
   } catch {
     // Expired, malformed, wrong signature — all of them are 401, and 401 is the status that makes
     // the device refresh its token and retry.
