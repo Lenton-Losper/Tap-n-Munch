@@ -11,7 +11,7 @@
  * spec explicitly ruled out.
  */
 import { POST } from '@/app/api/station/order-lines/[lineId]/state/route'
-import { restaurantLinesChannelName, LINE_CHANGED_EVENT } from '@/lib/stations/realtime-invalidate'
+import { restaurantLinesChannelName, restaurantLinesPrivateChannelName, LINE_CHANGED_EVENT } from '@/lib/stations/realtime-invalidate'
 
 const RESTAURANT_ID = 'b2000277-eefa-40d1-ad1f-2f01282a1652'
 const LINE_ID = '5662777f-0906-4724-a67f-dc4cd191ef7d'
@@ -32,7 +32,7 @@ jest.mock('@/lib/features/get-restaurant-features', () => ({
 
 type Row = Record<string, unknown>
 
-function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean } = {}) {
+function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean; privateChannelThrows?: boolean } = {}) {
   const line: Row = { ...initialLine }
   const events: Row[] = []
   const channelCalls: string[] = []
@@ -83,6 +83,11 @@ function makeFakeSupabase(initialLine: Row, opts: { channelThrows?: boolean } = 
       return {
         async httpSend(event: string, payload: unknown) {
           if (opts.channelThrows) throw new Error('simulated broadcast transport failure')
+          // Phase B: the private topic is the new, unproven one. A failure there must not be
+          // able to take down the send the whole estate is listening to.
+          if (opts.privateChannelThrows && name.startsWith('restaurant-lines-private:')) {
+            throw new Error('simulated private broadcast failure')
+          }
           httpSendCalls.push({ event, payload })
           return { success: true }
         },
@@ -126,12 +131,21 @@ describe('a real state change broadcasts an invalidation', () => {
     expect(body.unchanged).toBe(false)
     expect(body.line.bar_state).toBe('ready')
 
-    expect(fake.channelCalls).toEqual([restaurantLinesChannelName(RESTAURANT_ID)])
-    expect(fake.httpSendCalls).toHaveLength(1)
-    expect(fake.httpSendCalls[0].event).toBe(LINE_CHANGED_EVENT)
-    // Invalidation only -- no line id, no item name, no table number in the wire payload. The
-    // terminal's own GET (already terminal-JWT gated) is what may carry that, never this channel.
+    // DUAL-PUBLISH (Phase B). The public topic every till and wall screen in the estate is
+    // currently listening on, AND the new private one. Both, on every real state change, for as
+    // long as any client remains on the old build -- retiring the public send before they have
+    // moved would strand them on their 45s/60s polls, silently.
+    expect(fake.channelCalls).toEqual([
+      restaurantLinesChannelName(RESTAURANT_ID),
+      restaurantLinesPrivateChannelName(RESTAURANT_ID),
+    ])
+    expect(fake.httpSendCalls).toHaveLength(2)
+    expect(fake.httpSendCalls.map((c) => c.event)).toEqual([LINE_CHANGED_EVENT, LINE_CHANGED_EVENT])
+    // Invalidation only -- no line id, no item name, no table number in the wire payload, on
+    // EITHER channel. The terminal's own GET (already terminal-JWT gated) is what may carry that.
+    // The private channel does not get to become the place data leaks just because it is private.
     expect(fake.httpSendCalls[0].payload).toEqual({})
+    expect(fake.httpSendCalls[1].payload).toEqual({})
   })
 
   it('does NOT broadcast on a double-tap (already at the target state)', async () => {
@@ -185,5 +199,39 @@ describe('a real state change broadcasts an invalidation', () => {
     expect(body.line.bar_state).toBe('ready')
     // The write is real regardless of what the broadcast did.
     expect(fake.line.bar_state).toBe('ready')
+  })
+
+  it('still sends on the PUBLIC channel when the private one fails', async () => {
+    // The load-bearing property of settling the two sends independently. The private topic is new
+    // and, until the third-party auth provider is registered, has no subscribers at all. If a
+    // rejection there could skip the public send, a Phase B problem would present as every board
+    // and till in the estate going quiet -- the worst possible failure, caused by the safest
+    // possible change. Promise.all would do exactly that; Promise.allSettled is why it cannot.
+    fake = makeFakeSupabase(
+      {
+        id: LINE_ID,
+        restaurant_id: RESTAURANT_ID,
+        route_to: 'bar',
+        kitchen_state: null,
+        bar_state: 'cooked',
+      },
+      { privateChannelThrows: true },
+    )
+
+    const res = await POST(request({ station: 'bar', to_state: 'ready' }), {
+      params: Promise.resolve({ lineId: LINE_ID }),
+    })
+
+    // The write itself is unaffected: a broadcast is best-effort and never fails the request.
+    expect(res.status).toBe(200)
+    expect((await res.json()).line.bar_state).toBe('ready')
+
+    // Both were attempted; only the public one landed.
+    expect(fake.channelCalls).toEqual([
+      restaurantLinesChannelName(RESTAURANT_ID),
+      restaurantLinesPrivateChannelName(RESTAURANT_ID),
+    ])
+    expect(fake.httpSendCalls).toHaveLength(1)
+    expect(fake.httpSendCalls[0].event).toBe(LINE_CHANGED_EVENT)
   })
 })

@@ -14,6 +14,7 @@ import { postStationBump } from '@/lib/stations/bump'
 import { subscribeRestaurantOrdersRealtime } from '@/lib/supabase/orders'
 import { supabase } from '@/lib/supabase/client'
 import { subscribeLineChanged } from '@/lib/stations/realtime-invalidate'
+import { startPrivateLineChannelProbe } from '@/lib/stations/private-line-channel'
 import {
   registerFeedChannel,
   reportFeedChannelStatus,
@@ -140,6 +141,20 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
       },
     })
 
+    /**
+     * PHASE B PROBE — subscribes, reports, and is deliberately NOT registered as a feed
+     * channel. See lib/stations/private-line-channel.ts: this path stays denied until the
+     * third-party auth provider is registered, and registering it would put every board in the
+     * estate into a permanent "degraded" state over a channel carrying no traffic. It calls
+     * refetch on a real message, so the boards get faster the moment it starts working.
+     */
+    const stopPrivateProbe = startPrivateLineChannelProbe({
+      restaurantId: session.restaurantId,
+      terminalToken: session.accessToken,
+      station: 'bar',
+      onLineChanged: refetch,
+    })
+
     const stopFallback = startFeedFallback({ refetch })
 
     return () => {
@@ -149,6 +164,7 @@ export function BarScreenLive({ session, authFetch }: { session: TerminalSession
       unsubscribe()
       unregisterBroadcast()
       unsubscribeBroadcast()
+      stopPrivateProbe()
       stopFallback()
     }
   }, [session.restaurantId, session.terminalId, authFetch])

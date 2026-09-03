@@ -55,24 +55,84 @@ export function restaurantLinesChannelName(restaurantId: string): string {
   return `restaurant-lines:${restaurantId}`
 }
 
+/**
+ * THE PRIVATE TOPIC (Phase B) — A DIFFERENT NAME, not the same channel with a flag flipped.
+ *
+ * ============================================================================================
+ * WHY A SECOND NAME RATHER THAN `private: true` ON THE FIRST
+ * ============================================================================================
+ *
+ * The migration that grants read on this topic
+ * (20260903060000_realtime_private_lines_channel.sql) carries the full reasoning; the short
+ * version is that the private path must not be able to break the public one while it is being
+ * proven. Reusing the topic name would put public and private subscribers on the same topic with
+ * different `private` flags, and whether Realtime serves both correctly in that state is not
+ * something I have verified. The failure it would produce if that guess were wrong is this
+ * codebase's signature one: a subscription that reports SUBSCRIBED and then delivers nothing,
+ * forever, with nothing downstream able to tell — the same silence that hid the boards' dead
+ * postgres_changes feed, twice, in the docblocks above.
+ *
+ * Distinct names mean the two cannot interact at all, each is independently observable, and a
+ * total failure of Phase B costs exactly nothing.
+ *
+ * WHEN THE PRIVATE PATH IS PROVEN, the public send below is deleted and this becomes the only
+ * channel. That is also the point at which the 45s client debounce can come down, because the
+ * reason it exists — anyone holding the anon key can publish to a public topic — stops being true.
+ */
+export function restaurantLinesPrivateChannelName(restaurantId: string): string {
+  return `restaurant-lines-private:${restaurantId}`
+}
+
 export const LINE_CHANGED_EVENT = 'line_changed'
 
 /**
- * Fire-and-forget. A broadcast failure must not fail the request that already committed a real
- * state change -- same trade the order_line_events audit insert two lines above this call already
- * makes, for the same reason: the write is done and correct, and answering non-2xx over a
- * best-effort notification would make a screen re-bump a line that has already moved.
+ * Fire-and-forget, to BOTH topics. A broadcast failure must not fail the request that already
+ * committed a real state change -- same trade the order_line_events audit insert two lines above
+ * this call already makes, for the same reason: the write is done and correct, and answering
+ * non-2xx over a best-effort notification would make a screen re-bump a line that has already
+ * moved.
+ *
+ * ============================================================================================
+ * DUAL-PUBLISH, AND WHY THE TWO SENDS ARE SETTLED INDEPENDENTLY
+ * ============================================================================================
+ *
+ * Every listener in the estate today is on the public topic: every till on a build older than
+ * this one, and every wall screen that has not been reloaded since. They keep working, unchanged,
+ * for as long as this function keeps sending to both. Retiring the public send before those
+ * clients have moved would strand them on their 45s/60s polls, silently.
+ *
+ * The two sends are settled INDEPENDENTLY rather than awaited together, because the risk is
+ * asymmetric: the private topic is new, unproven, and — until the third-party auth provider is
+ * registered — has no subscribers at all. A rejection there must not be able to skip the public
+ * send the entire estate is currently listening to. `Promise.all` would do exactly that, and the
+ * damage would show up as boards going quiet everywhere.
+ *
+ * They still run concurrently, so dual-publishing costs one round trip rather than two on a write
+ * path that sits in a request's critical section.
  */
 export async function broadcastLineChanged(
   supabase: SupabaseClient,
   restaurantId: string,
 ): Promise<void> {
-  try {
-    await supabase.channel(restaurantLinesChannelName(restaurantId)).httpSend(LINE_CHANGED_EVENT, {})
-  } catch (error) {
-    console.error('[realtime-invalidate] broadcast failed; terminals fall back to their reconciliation poll', {
+  const send = (topic: string) => supabase.channel(topic).httpSend(LINE_CHANGED_EVENT, {})
+
+  const [publicResult, privateResult] = await Promise.allSettled([
+    send(restaurantLinesChannelName(restaurantId)),
+    send(restaurantLinesPrivateChannelName(restaurantId)),
+  ])
+
+  if (publicResult.status === 'rejected') {
+    console.error('[realtime-invalidate] PUBLIC broadcast failed; terminals fall back to their reconciliation poll', {
       restaurantId,
-      error,
+      error: publicResult.reason,
+    })
+  }
+  if (privateResult.status === 'rejected') {
+    // Logged separately, and named, so a Phase B problem is never mistaken for a regression on the
+    // path the estate actually runs on.
+    console.error('[realtime-invalidate] PRIVATE broadcast failed (Phase B); the public channel is unaffected', {
+      restaurantId,
+      error: privateResult.reason,
     })
   }
 }
@@ -137,5 +197,70 @@ export function subscribeLineChanged(
 
   return () => {
     void supabase.removeChannel(channel)
+  }
+}
+
+/**
+ * THE PRIVATE RECEIVING HALF (Phase B) — same invalidation, RLS-checked, on its own socket.
+ *
+ * ============================================================================================
+ * WHY THIS BUILDS ITS OWN CLIENT INSTEAD OF USING THE SHARED ONE
+ * ============================================================================================
+ *
+ * Joining a private channel means the socket must present the terminal-JWT, via
+ * `realtime.setAuth(token)`. That call is not scoped to a channel — it sets the access token for
+ * the WHOLE realtime connection, and lib/supabase/client.ts exports a single shared browser client
+ * that the boards' `postgres_changes` subscription also runs on.
+ *
+ * The docblock above establishes that the postgres_changes feed is dead for a board authenticated
+ * only by a terminal-JWT, but ALIVE and deliberately kept for a board opened on a device where a
+ * member of staff is signed in to Supabase Auth — that socket carries their session token and
+ * passes order_lines' RLS. Calling setAuth on the shared client would overwrite that token with
+ * the terminal-JWT and take the working feed away from exactly the users it works for. A silent
+ * regression, on a path with no test, discoverable only by someone noticing a board got slower.
+ *
+ * So this opens a second, isolated client whose only job is this one channel. The cost is one
+ * extra WebSocket per board, which is the correct price for not reaching into shared auth state.
+ *
+ * ============================================================================================
+ * INERT UNTIL THE PROVIDER IS REGISTERED — AND IT FAILS LOUDLY, NOT SILENTLY
+ * ============================================================================================
+ *
+ * Until Supabase is told to trust https://flashtap.app/.well-known/jwks.json, a terminal-JWT is
+ * not verifiable there: auth.jwt() is null, the policy in
+ * 20260903060000_realtime_private_lines_channel.sql cannot match, and this subscription is
+ * refused. `onStatus` is therefore not optional decoration — it is the only way to distinguish
+ * "registered and working" from "registered and silently denied", which is the distinction this
+ * codebase has lost twice. Callers must dual-subscribe (public AND private) and compare, rather
+ * than trusting a SUBSCRIBED that may mean nothing.
+ */
+export function subscribeLineChangedPrivate(
+  createPrivateClient: () => SupabaseClient,
+  restaurantId: string,
+  terminalToken: string,
+  callbacks: { onLineChanged: () => void; onStatus?: (status: string) => void },
+): () => void {
+  const client = createPrivateClient()
+
+  // Must precede the join: the token is read when the channel sends its phx_join.
+  client.realtime.setAuth(terminalToken)
+
+  const channel = client.channel(restaurantLinesPrivateChannelName(restaurantId), {
+    config: { private: true },
+  })
+
+  channel.on('broadcast', { event: LINE_CHANGED_EVENT }, () => {
+    callbacks.onLineChanged()
+  })
+
+  channel.subscribe((status: string) => {
+    callbacks.onStatus?.(status)
+  })
+
+  return () => {
+    void client.removeChannel(channel)
+    // This client exists solely for this channel, so its socket goes with it. Left open, every
+    // board remount would leak one.
+    void client.realtime.disconnect()
   }
 }
