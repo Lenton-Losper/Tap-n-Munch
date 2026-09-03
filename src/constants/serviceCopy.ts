@@ -91,7 +91,7 @@ export const TABLE_LINE_KITCHEN_READY_BAR_WAITING = 'Kitchen ready · Bar waitin
 export const TABLE_LINE_BAR_READY_KITCHEN_WAITING = 'Bar ready · Kitchen waiting';
 
 /**
- * PROPOSED 2026-09-03 — NOT YET SIGNED. Seven strings, in two groups.
+ * SIGNED BY THE OWNER 2026-09-03. Seven strings, in two groups, pinned as written.
  *
  * COOKED PROGRESS. The terminal has had no representation of `cooked` at all: a plated dish and
  * one nobody has started look identical on the table view. Waiters asked for it.
