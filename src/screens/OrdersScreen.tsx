@@ -29,7 +29,6 @@ import {Order} from '../types';
 type Tab = 'new' | 'preparing' | 'ready' | 'completed';
 
 const POLL_INTERVAL_MS = 30_000;
-const HEARTBEAT_INTERVAL_MS = 5 * 60_000;
 
 const TAB_CONFIG: {
   key: Tab;
@@ -172,16 +171,8 @@ export default function OrdersScreen() {
     return () => clearInterval(pollId);
   }, [loadOrders]);
 
-  useEffect(() => {
-    const heartbeatId = setInterval(async () => {
-      const token = tokenRef.current ?? (await getTerminalToken());
-      if (token) {
-        sendHeartbeat(token, APP_VERSION).catch(() => {});
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-
-    return () => clearInterval(heartbeatId);
-  }, []);
+  // Heartbeat moved to the app root (src/lib/useTerminalHeartbeat.ts, #373): it belongs to the
+  // session, not to this screen — a till parked elsewhere was never reporting its version.
 
   useEffect(() => {
     let disconnectStream: (() => void) | null = null;
