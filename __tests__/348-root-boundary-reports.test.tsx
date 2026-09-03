@@ -185,17 +185,12 @@ describe('#348 — the root screen renders when reporting is impossible', () => 
   })
 })
 
-describe('#348 — the root copy is not signed, and announces it', () => {
-  it('every user-visible string still carries the marker', async () => {
-    // Not a wording assertion. This is the tripwire that keeps the placeholders findable by
-    // scripts/check-no-pending-copy.mjs until somebody signs them off, and it is expected to be
-    // DELETED, not edited, when they are.
-    for (const value of Object.values(ROOT_BOUNDARY_COPY)) {
-      expect(value).toMatch(/PENDING COPY/)
-    }
-  })
-
-  it('renders the placeholders rather than inventing wording around them', async () => {
+describe('#348 — the root copy is signed, and nothing unsigned renders', () => {
+  // The tripwire that used to live here asserted every string still carried a PENDING COPY
+  // marker, and its own comment said it was to be DELETED, not edited, once they were signed.
+  // The owner signed all five verbatim on 2026-08-27 (13292374), so it has been. What remains is
+  // the half that keeps working after sign-off: nothing reaches the screen that nobody approved.
+  it('renders only the signed strings, inventing no wording around them', async () => {
     await renderRoot()
     const rendered = text().replace(/\s+/g, ' ')
     const accounted = Object.values(ROOT_BOUNDARY_COPY).reduce(

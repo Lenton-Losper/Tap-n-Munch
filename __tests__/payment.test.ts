@@ -1,15 +1,22 @@
 import { getSupabase, getSupabaseAdmin } from './helpers';
-import { RIVIERA_ID, VALID_SETTLED_TYPES } from './constants';
+import { VALID_SETTLED_TYPES } from './constants';
+import { resolvePrimaryVenue } from './target-project';
 
 describe('Payment & checkout', () => {
   const sb = getSupabase();
   const admin = getSupabaseAdmin();
 
   test('Checkout credentials present or fallback documented', async () => {
+    // Was pinned to RIVIERA_ID -- a PRODUCTION venue -- while this suite runs against STAGING, so
+    // the read returned zero rows and the assertion below never described anything. What it checks
+    // is a SHAPE (the columns are readable, and either populated or null with the app falling back
+    // to the shared checkout merchant), which is true of any real venue, so it is asked of one that
+    // exists in whichever project the suite is pointed at.
+    const venue = await resolvePrimaryVenue(admin);
     const { data, error } = await admin
       .from('restaurants')
       .select('checkout_merchant_no, checkout_store_no')
-      .eq('id', RIVIERA_ID)
+      .eq('id', venue.id)
       .single();
     expect(error).toBeNull();
     // Either own checkout creds or null (fallback to shared checkout merchant is handled in app)
