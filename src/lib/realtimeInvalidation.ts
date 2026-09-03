@@ -102,12 +102,21 @@
  * closing this specific gap. Debouncing closes the actual harm (hammering the API) without that.
  */
 import {AppState, type AppStateStatus} from 'react-native';
-import {supabase} from './supabase';
+import {supabase, createPrivateChannelClient} from './supabase';
 import {getRestaurantId, saveRestaurantId, getTerminalToken} from './storage';
 import {getTerminalInfo} from './api';
 
 export function restaurantLinesChannelName(restaurantId: string): string {
   return `restaurant-lines:${restaurantId}`;
+}
+
+/**
+ * Phase B. A DIFFERENT topic, not the same one with a flag flipped -- so the unproven private
+ * path cannot break the public one this terminal depends on. Contract shared with the web repo's
+ * lib/stations/realtime-invalidate.ts: change one, change both.
+ */
+export function restaurantLinesPrivateChannelName(restaurantId: string): string {
+  return `restaurant-lines-private:${restaurantId}`;
 }
 
 export const LINE_CHANGED_EVENT = 'line_changed';
@@ -194,6 +203,15 @@ export type RealtimeDiagnostics = {
   restaurantId: string | null;
   /** ISO timestamp of the last line_changed broadcast actually received this session, or null. */
   lastInvalidationAt: string | null;
+  /**
+   * PHASE B, KEPT SEPARATE FROM `status` ON PURPOSE. This path is expected to be denied until the
+   * third-party auth provider is registered, and a probe that is supposed to be failing must not
+   * make a healthy terminal read as faulty. SUBSCRIBED here proves nothing -- a denied Realtime
+   * subscription reports exactly that and then delivers nothing, forever. `privateLastMessageAt`
+   * is the observable that actually distinguishes working from silently denied.
+   */
+  privateStatus: string | null;
+  privateLastMessageAt: string | null;
 };
 
 let diagnostics: RealtimeDiagnostics = {
@@ -201,6 +219,8 @@ let diagnostics: RealtimeDiagnostics = {
   lastRawStatus: null,
   restaurantId: null,
   lastInvalidationAt: null,
+  privateStatus: null,
+  privateLastMessageAt: null,
 };
 const diagnosticsListeners = new Set<() => void>();
 
@@ -224,7 +244,14 @@ export function subscribeRealtimeDiagnostics(listener: () => void): () => void {
 /** Tests only. The store is module-level (deliberately -- see the module docblock), so it
  *  outlives any one test unless something puts it back. */
 export function resetRealtimeDiagnosticsForTest(): void {
-  diagnostics = {status: 'idle', lastRawStatus: null, restaurantId: null, lastInvalidationAt: null};
+  diagnostics = {
+    status: 'idle',
+    lastRawStatus: null,
+    restaurantId: null,
+    lastInvalidationAt: null,
+    privateStatus: null,
+    privateLastMessageAt: null,
+  };
 }
 
 /**
@@ -270,6 +297,99 @@ function debouncedInvalidate(onInvalidate: () => void, intervalMs: number) {
  * Safe to call with `restaurantId: null` (a no-op, returns an inert teardown) so a caller does not
  * have to gate its whole effect on an async restaurantId lookup resolving first.
  */
+/**
+ * ============================================================================================
+ * PHASE B — THE PRIVATE CHANNEL PROBE
+ * ============================================================================================
+ *
+ * The module docblock above explains, at length, why the existing channel is public and why that
+ * forces MIN_INVALIDATE_INTERVAL_MS to 45s: a public Broadcast topic accepts a message from
+ * anyone holding the anon key, which ships inside every APK, so a hostile client can publish fake
+ * `line_changed` messages as fast as it likes. The debounce is what stops that turning every
+ * terminal into a client hammering the API. It is also, unavoidably, why a real Out or Cooked can
+ * take up to 45 seconds to reach this screen during a busy service -- several genuine changes
+ * inside one window coalesce into a single trailing refresh.
+ *
+ * That is the complaint. The ceiling is not an oversight to be tuned down; it can only come down
+ * once the channel stops accepting messages from strangers.
+ *
+ * A PRIVATE channel is what makes that true. Subscribing is checked against an RLS policy on
+ * realtime.messages keyed to the `restaurant_id` claim in this terminal's own JWT, and publishing
+ * has no policy at all, so only our server (service role) can send. The flood the debounce exists
+ * to absorb stops being possible.
+ *
+ * ============================================================================================
+ * WHY IT RUNS ALONGSIDE THE PUBLIC CHANNEL AND SHARES ITS DEBOUNCE
+ * ============================================================================================
+ *
+ * It joins a DIFFERENT topic (`restaurant-lines-private:<id>`, not the same one with a flag), so
+ * it cannot affect the public subscription this terminal actually depends on. The server
+ * dual-publishes to both.
+ *
+ * It shares the SAME debounce instance, so while both are live the terminal's refresh rate is
+ * exactly what it was -- one refetch per 45s, not two. Adding a second channel must not double
+ * the load, and must not change behaviour at all until the private path is proven.
+ *
+ * ============================================================================================
+ * IT IS EXPECTED TO FAIL, AND THAT MUST NOT LOOK LIKE A FAULT
+ * ============================================================================================
+ *
+ * Until the third-party auth provider is registered against the JWKS at
+ * https://flashtap.app/.well-known/jwks.json, this terminal's JWT is not verifiable by Supabase:
+ * auth.jwt() is null, the policy cannot match, and every join here is denied. Even after
+ * registration the docs say to allow up to 30 minutes for a signing-key change to be picked up.
+ *
+ * So its status is recorded SEPARATELY from the real channel's and never merged into it. The
+ * diagnostics screen's existing `status` must keep describing the feed the terminal is actually
+ * running on; a probe that is supposed to be failing must not make a healthy terminal look sick.
+ *
+ * `privateLastMessageAt` is the field that matters. A denied Realtime subscription does not error
+ * -- it reports SUBSCRIBED and delivers nothing, forever, which is the single fact that has cost
+ * this project two long investigations. SUBSCRIBED here proves nothing. An ARRIVAL proves it
+ * works, and the public channel is the positive control to compare it against.
+ */
+async function startPrivateLineProbe(
+  restaurantId: string,
+  onMessage: () => void,
+): Promise<() => void> {
+  try {
+    const token = await getTerminalToken();
+    if (!token) return () => {};
+
+    // A separate client, built in ./supabase. setAuth applies to a whole CONNECTION rather than
+    // one channel, so using the shared client would change the identity of the socket carrying
+    // the public channel this terminal depends on.
+    const client = createPrivateChannelClient();
+    client.realtime.setAuth(token);
+
+    const channel = client.channel(restaurantLinesPrivateChannelName(restaurantId), {
+      config: {private: true},
+    });
+
+    channel.on('broadcast', {event: LINE_CHANGED_EVENT}, () => {
+      setDiagnostics({privateLastMessageAt: new Date().toISOString()});
+      onMessage();
+    });
+
+    channel.subscribe((status: string) => {
+      setDiagnostics({privateStatus: status});
+    });
+
+    return () => {
+      client.removeChannel(channel);
+      client.realtime.disconnect();
+    };
+  } catch (error) {
+    // A PROBE MUST NEVER BREAK THE TERMINAL. This path is expected to fail until the provider is
+    // registered, and a throw here would surface as an unhandled rejection in the middle of
+    // service. Recorded so it is not invisible either -- "did not run" must be distinguishable
+    // from "ran and was denied". The public channel is unaffected either way.
+    console.warn('[realtime] private channel probe unavailable', error);
+    setDiagnostics({privateStatus: 'PROBE_UNAVAILABLE'});
+    return () => {};
+  }
+}
+
 export function subscribeLineChangeInvalidation(
   restaurantId: string | null,
   onInvalidate: () => void,
@@ -305,6 +425,23 @@ export function subscribeLineChangeInvalidation(
     }
   });
 
+  /**
+   * PHASE B, alongside the real channel and sharing its debounce -- so while both are live this
+   * terminal refreshes exactly as often as it did before, never twice. Fired and forgotten
+   * because resolving the token is async, and the public subscription above must not wait on it.
+   */
+  let stopPrivate: (() => void) | null = null;
+  let privateTornDown = false;
+  void startPrivateLineProbe(restaurantId, debounced.call).then(stop => {
+    // The caller may already have unmounted while the token was resolving. Without this the
+    // probe's socket would outlive its teardown and leak one connection per remount.
+    if (privateTornDown) {
+      stop();
+      return;
+    }
+    stopPrivate = stop;
+  });
+
   const appStateSub = AppState.addEventListener('change', (state: AppStateStatus) => {
     if (state === 'active') {
       debounced.call();
@@ -315,6 +452,8 @@ export function subscribeLineChangeInvalidation(
     debounced.cancel();
     appStateSub.remove();
     supabase.removeChannel(channel);
-    setDiagnostics({status: 'idle'});
+    privateTornDown = true;
+    stopPrivate?.();
+    setDiagnostics({status: 'idle', privateStatus: null});
   };
 }

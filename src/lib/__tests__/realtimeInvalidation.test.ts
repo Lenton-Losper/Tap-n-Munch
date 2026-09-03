@@ -18,6 +18,7 @@ import {
   subscribeRealtimeDiagnostics,
   resetRealtimeDiagnosticsForTest,
   restaurantLinesChannelName,
+  restaurantLinesPrivateChannelName,
   LINE_CHANGED_EVENT,
   MIN_INVALIDATE_INTERVAL_MS,
 } from '../realtimeInvalidation';
@@ -67,6 +68,12 @@ let mockChannel: ReturnType<typeof makeFakeChannel>;
 const mockChannelCalls: string[] = [];
 const mockRemoveChannelCalls: unknown[] = [];
 
+let mockPrivateChannel: ReturnType<typeof makeFakeChannel>;
+const mockPrivateChannelCalls: Array<{name: string; config: unknown}> = [];
+const mockPrivateSetAuth = jest.fn();
+const mockPrivateDisconnect = jest.fn();
+const mockPrivateRemoveChannel = jest.fn();
+
 jest.mock('../supabase', () => ({
   supabase: {
     channel: (name: string) => {
@@ -77,6 +84,17 @@ jest.mock('../supabase', () => ({
       mockRemoveChannelCalls.push(ch);
     },
   },
+  // WITHOUT THIS the private probe throws on every call and the failure is invisible: it runs
+  // inside a floating promise, so an unhandled rejection is all that happens and every test in
+  // this file still passes. That is the shape of bug this whole change is about.
+  createPrivateChannelClient: () => ({
+    realtime: {setAuth: mockPrivateSetAuth, disconnect: mockPrivateDisconnect},
+    channel: (name: string, config: unknown) => {
+      mockPrivateChannelCalls.push({name, config});
+      return mockPrivateChannel;
+    },
+    removeChannel: mockPrivateRemoveChannel,
+  }),
 }));
 
 let mockAppStateListener: ((state: string) => void) | null = null;
@@ -94,6 +112,11 @@ jest.mock('react-native', () => ({
 beforeEach(() => {
   mockChannel = makeFakeChannel();
   mockChannelCalls.length = 0;
+  mockPrivateChannel = makeFakeChannel();
+  mockPrivateChannelCalls.length = 0;
+  mockPrivateSetAuth.mockClear();
+  mockPrivateDisconnect.mockClear();
+  mockPrivateRemoveChannel.mockClear();
   mockRemoveChannelCalls.length = 0;
   mockAppStateListener = null;
   mockAppStateRemove.mockClear();
@@ -435,5 +458,145 @@ describe('realtime diagnostics store', () => {
     listener.mockClear();
     mockChannel.fireStatus('CHANNEL_ERROR');
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ============================================================================================
+ * PHASE B — THE PRIVATE CHANNEL PROBE
+ * ============================================================================================
+ *
+ * These exist because the probe's first version was, itself, an instance of the bug this change
+ * is about. It runs inside a floating promise, so when the test mock did not export
+ * createPrivateChannelClient it threw on every single call, produced nothing but an unhandled
+ * rejection, and all 25 tests in this file still passed. It was doing nothing at all and looked
+ * fine.
+ *
+ * So the assertions below are about the probe HAVING RUN — the topic it joined, the flag it
+ * joined with, the token it presented — not merely about it not crashing.
+ */
+describe('the private channel probe (Phase B)', () => {
+  const RID = 'rest-1';
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+    }
+  };
+
+  it('joins the PRIVATE topic, with private: true, presenting the terminal token', async () => {
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+
+    expect(mockPrivateChannelCalls).toEqual([
+      {name: restaurantLinesPrivateChannelName(RID), config: {config: {private: true}}},
+    ]);
+    expect(mockPrivateSetAuth).toHaveBeenCalledWith('terminal-jwt');
+    stop();
+  });
+
+  it('is a DIFFERENT topic from the public one — the two must not be the same channel', () => {
+    // Reusing the topic name would put public and private subscribers on one topic with different
+    // `private` flags. The private path must not be able to break the path the estate runs on.
+    expect(restaurantLinesPrivateChannelName(RID)).not.toBe(restaurantLinesChannelName(RID));
+  });
+
+  it('leaves the PUBLIC subscription completely untouched', async () => {
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+
+    expect(mockChannelCalls).toEqual([restaurantLinesChannelName(RID)]);
+    stop();
+  });
+
+  it('does not join at all when the terminal has no token', async () => {
+    mockGetTerminalToken.mockResolvedValue(null);
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+
+    expect(mockPrivateChannelCalls).toEqual([]);
+    expect(mockPrivateSetAuth).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('records its status separately, never merging it into the real channel health', async () => {
+    // The probe is EXPECTED to be denied until the provider is registered. A terminal whose real
+    // feed is healthy must not read as faulty because of it.
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+
+    mockChannel.fireStatus('SUBSCRIBED');
+    mockPrivateChannel.fireStatus('CHANNEL_ERROR');
+
+    expect(getRealtimeDiagnostics().status).toBe('subscribed');
+    expect(getRealtimeDiagnostics().lastRawStatus).toBe('SUBSCRIBED');
+    expect(getRealtimeDiagnostics().privateStatus).toBe('CHANNEL_ERROR');
+    stop();
+  });
+
+  it('records privateLastMessageAt only on a real arrival — SUBSCRIBED alone proves nothing', async () => {
+    // A denied Realtime subscription reports SUBSCRIBED and then delivers nothing, forever. The
+    // arrival is the only observable that tells the two apart.
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+
+    mockPrivateChannel.fireStatus('SUBSCRIBED');
+    expect(getRealtimeDiagnostics().privateLastMessageAt).toBeNull();
+
+    mockPrivateChannel.fireBroadcast();
+    expect(getRealtimeDiagnostics().privateLastMessageAt).not.toBeNull();
+    stop();
+  });
+
+  it('shares the 45s debounce with the public channel — two channels must not double the load', async () => {
+    // The ceiling stays until the private path is proven. A message on either channel inside one
+    // window must still produce exactly one refetch.
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const onInvalidate = jest.fn();
+    const stop = subscribeLineChangeInvalidation(RID, onInvalidate);
+    await flush();
+
+    mockChannel.fireBroadcast();
+    mockPrivateChannel.fireBroadcast();
+
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it('releases its own socket on teardown, so a remount cannot leak one', async () => {
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    await flush();
+    stop();
+
+    expect(mockPrivateRemoveChannel).toHaveBeenCalled();
+    expect(mockPrivateDisconnect).toHaveBeenCalled();
+  });
+
+  it('tears down a probe that resolved AFTER its caller already unmounted', async () => {
+    // The token lookup is async, so a fast unmount can beat it. Without the privateTornDown
+    // guard the socket outlives the teardown and every remount leaks one.
+    mockGetTerminalToken.mockResolvedValue('terminal-jwt');
+    const stop = subscribeLineChangeInvalidation(RID, jest.fn());
+    stop();
+    await flush();
+
+    expect(mockPrivateDisconnect).toHaveBeenCalled();
+  });
+
+  it('survives a probe that throws — a terminal must never break because of it', async () => {
+    mockGetTerminalToken.mockRejectedValue(new Error('storage unavailable'));
+    const onInvalidate = jest.fn();
+
+    const stop = subscribeLineChangeInvalidation(RID, onInvalidate);
+    await flush();
+
+    // The public channel still works, and the failure is recorded rather than silent.
+    expect(mockChannelCalls).toEqual([restaurantLinesChannelName(RID)]);
+    expect(getRealtimeDiagnostics().privateStatus).toBe('PROBE_UNAVAILABLE');
+    stop();
   });
 });
