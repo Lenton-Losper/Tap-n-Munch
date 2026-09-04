@@ -77,7 +77,24 @@ function run(command, commandArgs, { capture = false } = {}) {
     process.stdout.write(result.stdout ?? '')
     process.stderr.write(result.stderr ?? '')
   }
-  return { code: result.status ?? 1, out: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+  /**
+   * `out` IS BOTH STREAMS, and `stdout` is stdout alone. Both are needed, for opposite reasons.
+   *
+   * Parsing wrangler needs the combined stream: it prints the version id and preview URL to
+   * whichever it likes, and a stdout-only match silently found nothing.
+   *
+   * Taking a VALUE from a command needs stdout alone. When `git rev-parse` failed inside the
+   * container, stdout was empty and stderr was not, so `out.trim() || 'unknown'` evaluated to
+   * `fatal: not a git repository: /app/C:/Users/...` -- and that became the version tag, which
+   * Cloudflare rejected with `workers/tag exceeds maximum length 100`. The `|| 'unknown'` guard
+   * reads as if it handles a failed command and cannot: a failure is precisely when stderr is
+   * non-empty. Measured 2026-09-04.
+   */
+  return {
+    code: result.status ?? 1,
+    out: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+    stdout: result.stdout ?? '',
+  }
 }
 
 // ── rollback ─────────────────────────────────────────────────────────────────
@@ -109,13 +126,48 @@ if (run('node', ['scripts/deploy/check-opennext-artifact.mjs', '.open-next']).co
 // ── 2. upload at 0% ──────────────────────────────────────────────────────────
 
 banner('UPLOAD AT 0% TRAFFIC')
-const sha = run('git', ['rev-parse', '--short', 'HEAD'], { capture: true }).out.trim() || 'unknown'
+/**
+ * THE COMMIT THIS ARTIFACT IS, and the deploy refuses without it.
+ *
+ * stdout only (see run()), and then SHAPE-CHECKED: a short sha is 7-40 hex characters and nothing
+ * else. Belt and braces on purpose -- if some future failure leaks a different string into stdout,
+ * the tag still cannot become a paragraph, and an unidentifiable version still cannot be uploaded.
+ */
+const shaRaw = run('git', ['rev-parse', '--short', 'HEAD'], { capture: true }).stdout.trim()
+const sha = /^[0-9a-f]{7,40}$/.test(shaRaw) ? shaRaw : ''
+if (!sha) {
+  fail(
+    [
+      'could not resolve the commit sha from git.',
+      `  git said: ${JSON.stringify(shaRaw)}`,
+      '  A version that cannot identify itself must not be uploaded: /api/version would',
+      '  answer null, and the 20/20 sampling that verifies a promotion would have nothing',
+      '  to compare. In Docker this means the gitdir is not mounted -- the repo is a git',
+      '  worktree, so .git is a pointer to a path outside the container.',
+    ].join('\n'),
+  )
+}
 const upload = run(
   'npx',
   [
     WRANGLER, 'versions', 'upload', '--config', CONFIG,
     '--tag', `deploy-${sha}`,
     '--message', `0%-traffic candidate ${sha}; NOT promoted`,
+    /**
+     * THE VERSION SAYS WHICH COMMIT IT IS. Without these two vars /api/version answers
+     * {"commit":null}, and a deploy path that produces a version unable to identify itself can
+     * silently ship anything -- there is no way to check what production is running, and the
+     * 20/20 sampling that verifies a promotion has nothing to compare.
+     *
+     * A VAR AND NOT A BUILD-TIME VALUE, established rather than assumed: the built bundle keeps
+     * the literal `GIT_COMMIT_SHA` and does not contain the sha, so app/api/version reads
+     * process.env at RUNTIME. Baking it into the build would change nothing.
+     *
+     * Both names, because resolveCommitSha() checks GIT_COMMIT_SHA then NEXT_PUBLIC_COMMIT_SHA,
+     * and the other workflows that deploy this worker set the pair together.
+     */
+    '--var', `GIT_COMMIT_SHA:${sha}`,
+    '--var', `NEXT_PUBLIC_COMMIT_SHA:${sha}`,
   ],
   { capture: true },
 )

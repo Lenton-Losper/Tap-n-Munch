@@ -81,6 +81,40 @@ fi
 echo "=== npm ci ==="
 npm ci --no-audit --no-fund
 
+# ---------------------------------------------------------------------------
+# THE COMMIT SHA, BAKED IN AT BUILD TIME.
+#
+# /api/version reads process.env.GIT_COMMIT_SHA, and that value is inlined by this build -- not
+# supplied at runtime. The CI workflow sets it on this step (GIT_COMMIT_SHA: ${{ github.sha }});
+# the local path never did, so every locally-built version answered {"commit":null} and there was
+# no way to tell what production was running. Measured 2026-09-04 against a 0%-traffic preview.
+#
+# Resolved from the caller's environment first, because git usually CANNOT run in here: this repo
+# is a git WORKTREE, so /app/.git is a pointer file holding a Windows path to a gitdir outside the
+# mount. The deploy wrapper passes GIT_COMMIT_SHA in; the `git rev-parse` below is the fallback for
+# a normal checkout or a container with the gitdir mounted.
+#
+# NOT DEFAULTED TO A PLACEHOLDER. An artifact that cannot say which commit it is must not be built,
+# because the only thing worse than no answer from /api/version is a confident wrong one.
+# ---------------------------------------------------------------------------
+if [ -z "${GIT_COMMIT_SHA:-}" ]; then
+  GIT_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
+case "$GIT_COMMIT_SHA" in
+  [0-9a-f]*) : ;;
+  *) GIT_COMMIT_SHA="" ;;
+esac
+if [ -z "$GIT_COMMIT_SHA" ]; then
+  echo "REFUSING: no GIT_COMMIT_SHA and git cannot resolve one here."
+  echo "  Pass it in:  docker run -e GIT_COMMIT_SHA=\$(git rev-parse HEAD) ..."
+  echo "  A build that cannot identify itself becomes a production version answering"
+  echo "  {\"commit\":null} on /api/version, which is how a deploy silently ships anything."
+  exit 1
+fi
+export GIT_COMMIT_SHA
+export NEXT_PUBLIC_COMMIT_SHA="$GIT_COMMIT_SHA"
+echo "  commit: $GIT_COMMIT_SHA"
+
 echo "=== opennext build ==="
 npx @opennextjs/cloudflare@1.20.1 build
 
