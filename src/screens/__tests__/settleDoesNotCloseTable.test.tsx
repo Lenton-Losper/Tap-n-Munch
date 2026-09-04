@@ -42,7 +42,11 @@ jest.mock('../../lib/api', () => {
     settleTab: (...args: unknown[]) => mockSettleTab(...(args as [])),
     closeTable: (...args: unknown[]) => mockCloseTable(...(args as [])),
     getTablesWithMeta: (...args: unknown[]) =>
-      mockGetTablesWithMeta(...(args as [])),
+      mockGetTablesWithMeta(...(args as [])),    // Take Payment reads the item list on every refresh. Stubbed to null here: these suites are
+    // about the ORDER-level path, and null is exactly what a tab with no line tracking sends, so
+    // the screen renders the order list they were written against.
+    getTabLines: jest.fn(async () => null),
+
     completePaymentReliably: (...args: unknown[]) =>
       mockCompletePaymentReliably(...(args as [])),
     getAuthorizedUsers: jest.fn(async () => []),

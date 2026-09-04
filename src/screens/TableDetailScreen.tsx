@@ -21,15 +21,18 @@ import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
 import {
   ApiRequestError,
   AuthorizedUser,
+  allocateLine,
   authorizeTerminalAction,
   getAuthorizedUsers,
   closeTable,
   completePaymentReliably,
   type PendingOrderRequest,
   getTablesWithMeta,
+  getTabLines,
   getTerminalInfo,
   recordSaleEvent,
   resetTabPin,
+  settleAllocations,
   settleTab,
 } from '../lib/api';
 import QRCode from 'react-native-qrcode-svg';
@@ -49,6 +52,30 @@ import {
   showsSkipOnly,
 } from '../lib/cashAttributionPicker';
 import {selectCashSettleableOrders} from '../lib/cashSettlement';
+import {
+  ALLOCATION_PAYER_AT_TABLE,
+  canTakePaymentByItem,
+  formatCents,
+  outstandingTotalCents,
+  payableLines,
+  planFor,
+  selectionTotalCents,
+  type PayableLine,
+  type SettlementPlan,
+} from '../lib/takePaymentLines';
+import {
+  TAKE_PAYMENT_ALL_PAID,
+  TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER,
+  TAKE_PAYMENT_LINE_NO_PRICE,
+  TAKE_PAYMENT_LINE_NOT_CLAIMABLE,
+  TAKE_PAYMENT_LINE_PAID,
+  TAKE_PAYMENT_LINE_PART_PAID,
+  TAKE_PAYMENT_NOT_ITEMISED,
+  TAKE_PAYMENT_ORDER_HEADING,
+  TAKE_PAYMENT_SELECTION,
+  TAKE_PAYMENT_SELECTION_ONE,
+} from '../constants/takePaymentCopy';
+import type {TabLinesPayload} from '../lib/tabLines';
 import {canResetTabPin} from '../lib/terminalPermissions';
 import {
   TAB_RECOVERY_ACTION_LABEL,
@@ -104,6 +131,28 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
   const [table, setTable] = useState<TableWithTab>(route.params.table);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /**
+   * TAKE PAYMENT BY ITEM (Ship 1b).
+   *
+   * The screen lists THINGS now, not guests. `linesPayload` is the server's line-by-line view of
+   * this tab and `selectedLineIds` is what the waiter has ticked. `selectedIds` above stays what
+   * it always was -- an ORDER selection -- and in item mode it is not used for the item list at
+   * all; the plan decides which orders a payment covers, so nothing reads a selection twice.
+   *
+   * Null means not loaded or not readable. A tab the server cannot itemise falls back to the
+   * order list this screen has always shown, rather than presenting an empty bill.
+   */
+  const [linesPayload, setLinesPayload] = useState<TabLinesPayload | null>(null);
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
+  /**
+   * What the pending cash prompt is about to collect.
+   *
+   * Captured when the prompt OPENS, not read back off the selection when it closes. The staff-PIN
+   * dialog is a second screen over a live list: a refresh behind it can change what is selected,
+   * and a cash payment must collect the amount the waiter agreed to, not whatever is ticked by the
+   * time the PIN lands.
+   */
+  const [pendingCash, setPendingCash] = useState<SettlementPlan | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [closingTable, setClosingTable] = useState(false);
   /** #120 residual: the rows the close route reported as blocking, and its own message. */
@@ -202,6 +251,46 @@ export default function TableDetailScreen({route, navigation}: Props) {
     [selectedOrders],
   );
 
+  // ---- Take Payment by item -------------------------------------------------------------
+  /** Every line a waiter could be looking at, with its own money and its own refusal. */
+  const payable = useMemo(
+    () => payableLines(linesPayload, orders),
+    [linesPayload, orders],
+  );
+  /** Whether this tab can be paid item by item at all. False falls back to the order list. */
+  const byItem = useMemo(
+    () => canTakePaymentByItem(linesPayload) && payable.length > 0,
+    [linesPayload, payable.length],
+  );
+  /**
+   * WHICH MONEY PATH THE TICKED ITEMS TAKE. Computed in lib/takePaymentLines and nowhere else --
+   * a selection covering whole orders goes down the proven whole-order route with its card
+   * fallbacks; only a genuine part-order payment uses the item ledger.
+   */
+  const plan = useMemo(
+    () => (byItem ? planFor(payable, selectedLineIds) : ({kind: 'nothing'} as SettlementPlan)),
+    [byItem, payable, selectedLineIds],
+  );
+  const selectedItemCents = useMemo(
+    () => selectionTotalCents(payable, selectedLineIds),
+    [payable, selectedLineIds],
+  );
+  /** Rows for the item list: an order heading followed by its lines. */
+  const itemRows = useMemo(() => {
+    const rows: Array<
+      {kind: 'heading'; key: string; orderNumber: number} | {kind: 'line'; key: string; line: PayableLine}
+    > = [];
+    let lastOrderId: string | null = null;
+    for (const line of payable) {
+      if (line.orderId !== lastOrderId) {
+        rows.push({kind: 'heading', key: `h-${line.orderId}`, orderNumber: line.orderNumber});
+        lastOrderId = line.orderId;
+      }
+      rows.push({kind: 'line', key: line.id, line});
+    }
+    return rows;
+  }, [payable]);
+
   // Cash settleability comes from the SERVER (can_settle_cash), never re-derived here.
   // The server owns the settleable-status sets; a second definition on the client is
   // exactly how the two drift apart. Undefined (older server) is treated as "no".
@@ -249,6 +338,18 @@ export default function TableDetailScreen({route, navigation}: Props) {
       const updated = tables.find(t => t.id === table.id);
       if (updated) {
         setTable(updated);
+        /**
+         * The item list, read AFTER the tables so it describes the same tab the totals came from,
+         * and only for a table the tables route still returns -- a tab id from the stale copy in
+         * state would list items belonging to a session that has ended.
+         *
+         * Its failure is swallowed to null on purpose: a tab whose lines cannot be read is not a
+         * broken screen, it is a tab that must be paid by order, which is what null renders.
+         */
+        const tabId = updated.tab?.id ?? null;
+        setLinesPayload(
+          tabId ? await getTabLines(tabId, token).catch(() => null) : null,
+        );
       }
     } catch (err) {
       Alert.alert(
@@ -268,6 +369,26 @@ export default function TableDetailScreen({route, navigation}: Props) {
       refreshTable();
     }, [refreshTable]),
   );
+
+  /**
+   * Tick or untick one item. A line that cannot be sold -- paid, unpriced, on a cancelled order --
+   * is inert here as well as visually: the refusal is enforced where the money is counted, not
+   * only where the checkbox is drawn.
+   */
+  const toggleLineSelection = (line: PayableLine) => {
+    if (!line.selectable) {
+      return;
+    }
+    setSelectedLineIds(prev => {
+      const next = new Set(prev);
+      if (next.has(line.id)) {
+        next.delete(line.id);
+      } else {
+        next.add(line.id);
+      }
+      return next;
+    });
+  };
 
   const toggleOrderSelection = (order: TabOrder) => {
     if (!isClaimable(order)) {
@@ -523,6 +644,100 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * still be taken when nobody enters a PIN, and that settle is recorded as
    * terminal_only rather than being silently attributed to no one.
    */
+  /**
+   * CASH FOR PART OF AN ORDER, through the item ledger.
+   *
+   * Two steps, and only the second one moves money: lines nobody has split yet are allocated
+   * first, then every allocation in scope is settled in one call. The allocate step writes no
+   * settlement -- an interrupted run leaves allocations that are visibly still owed on this very
+   * screen, which is recoverable; a settle without them would not be.
+   *
+   * CASH ONLY, DELIBERATELY. The card reader is driven by the whole-order flow, which owns the
+   * push/poll and the four gateway fallbacks. Recording method 'card' here without charging
+   * anything would write a card payment nobody took -- so the card button refuses a part-order
+   * selection and says how to get the card back. See TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER.
+   */
+  const runCashSettleAllocations = async (
+    target: Extract<SettlementPlan, {kind: 'allocations'}>,
+    attribution?: {staffUserId: string; authorizationTokenId: string},
+  ) => {
+    if (settleInFlight.current) {
+      return;
+    }
+    if (!tab?.id) {
+      Alert.alert('Error', 'No active tab found for this table.');
+      return;
+    }
+    settleInFlight.current = true;
+    setCashSettling(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+
+      const allocationIds = [...target.settle];
+      for (const {lineId} of target.allocate) {
+        const line = payable.find(row => row.id === lineId);
+        if (!line) {
+          continue;
+        }
+        const result = await allocateLine(
+          tab.id,
+          lineId,
+          [
+            {
+              allocated_to: ALLOCATION_PAYER_AT_TABLE,
+              quantity_allocated: line.quantity,
+            },
+          ],
+          token,
+        );
+        allocationIds.push(...result.allocations.map(a => a.id));
+      }
+
+      if (allocationIds.length === 0) {
+        Alert.alert('Cannot take cash', 'Nothing on this selection is still owed.');
+        return;
+      }
+
+      const result = await settleAllocations(
+        tab.id,
+        {
+          allocationIds,
+          method: 'cash',
+          staffUserId: attribution?.staffUserId ?? null,
+          authorizationTokenId: attribution?.authorizationTokenId ?? null,
+        },
+        token,
+      );
+
+      // The SERVER's arithmetic, never the device's running total: `applied` is what it actually
+      // took, and a partially refused settle must not report the amount that was asked for.
+      const takenCents = result.applied.reduce((sum, a) => sum + a.amount_cents, 0);
+      setSelectedLineIds(new Set());
+      setCashBlockedFor(null);
+      Alert.alert('Cash recorded', `${formatCents(takenCents)} taken in cash.`);
+      await refreshTable();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'CARD_PAYMENT_IN_FLIGHT') {
+        setCashBlockedFor(
+          err.retryAfterSeconds != null && err.retryAfterSeconds > 0
+            ? Math.ceil(err.retryAfterSeconds)
+            : cardTimeoutSeconds,
+        );
+      }
+      Alert.alert(
+        'Could not take cash',
+        err instanceof Error ? err.message : 'Please try again.',
+      );
+      await refreshTable();
+    } finally {
+      settleInFlight.current = false;
+      setCashSettling(false);
+    }
+  };
+
   const runCashSettle = async (
     requestedOrderIds: string[],
     attribution?: {staffUserId: string; authorizationTokenId: string},
@@ -768,6 +983,25 @@ export default function TableDetailScreen({route, navigation}: Props) {
     }
   };
 
+  /**
+   * Take cash for whatever the prompt was opened about. THE ONE PLACE that turns a plan into a
+   * request, so the choice of money path is made in lib/takePaymentLines and read here, never
+   * decided twice.
+   */
+  const runCashForPlan = async (
+    target: SettlementPlan | null,
+    attribution?: {staffUserId: string; authorizationTokenId: string},
+  ) => {
+    if (!target || target.kind === 'nothing') {
+      return;
+    }
+    if (target.kind === 'orders') {
+      await runCashSettle(target.orderIds, attribution);
+      return;
+    }
+    await runCashSettleAllocations(target, attribution);
+  };
+
   /** Verify the staff PIN, then take the cash with that person attributed to it. */
   const submitPinAndTakeCash = async () => {
     if (!pinStaff) {
@@ -786,10 +1020,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
         'cash_settlement',
         token,
       );
-      const ids = Array.from(selectedIds);
+      const target = pendingCash;
       setPinPromptVisible(false);
       setPinValue('');
-      await runCashSettle(ids, {
+      await runCashForPlan(target, {
         staffUserId: pinStaff.user_id,
         authorizationTokenId: token_id,
       });
@@ -803,21 +1037,39 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   const handleTakeCash = () => {
-    const ids =
-      selectedIds.size > 0
-        ? Array.from(selectedIds)
-        : cashSettleableOrders.map(o => o.id);
-    if (ids.length === 0) {
+    /**
+     * WHAT THIS PROMPT IS ABOUT, decided once and held. In item mode an empty selection means the
+     * whole tab, exactly as it always has at order level; the plan is built from every line that
+     * is still owed so the same rule picks the money path either way.
+     */
+    let target: SettlementPlan;
+    if (byItem) {
+      const ids =
+        selectedLineIds.size > 0
+          ? selectedLineIds
+          : new Set(payable.filter(line => line.selectable).map(line => line.id));
+      target = planFor(payable, ids);
+    } else {
+      const ids =
+        selectedIds.size > 0
+          ? Array.from(selectedIds)
+          : cashSettleableOrders.map(o => o.id);
+      target = ids.length === 0 ? {kind: 'nothing'} : {kind: 'orders', orderIds: ids, totalCents: 0};
+    }
+    if (target.kind === 'nothing') {
       return;
     }
-    setSelectedIds(new Set(ids));
+    if (target.kind === 'orders' && !byItem) {
+      setSelectedIds(new Set(target.orderIds));
+    }
+    setPendingCash(target);
     // Attribution is offered, never forced — Skip still records the settlement.
     Alert.alert(
       'Staff PIN',
       'Enter a staff PIN to record who took this cash, or skip.',
       [
-        {text: 'Cancel', style: 'cancel'},
-        {text: 'Skip', onPress: () => runCashSettle(ids)},
+        {text: 'Cancel', style: 'cancel', onPress: () => setPendingCash(null)},
+        {text: 'Skip', onPress: () => runCashForPlan(target)},
         {text: 'Enter PIN', onPress: () => openPinPrompt()},
       ],
     );
@@ -862,12 +1114,27 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   const handleSettleSelected = () => {
-    runSettle(Array.from(selectedIds));
+    if (!byItem) {
+      runSettle(Array.from(selectedIds));
+      return;
+    }
+    /**
+     * CARD ON A PART-ORDER SELECTION IS REFUSED, not quietly recorded. The reader is driven by the
+     * whole-order flow; the item ledger does not drive it. See runCashSettleAllocations.
+     */
+    if (plan.kind === 'allocations') {
+      Alert.alert('Take Payment', TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER);
+      return;
+    }
+    if (plan.kind === 'orders') {
+      runSettle(plan.orderIds);
+    }
   };
 
   const handleSettleEntireTab = () => {
     const unpaidIds = unpaidOrders.map(o => o.id);
     setSelectedIds(new Set(unpaidIds));
+    setSelectedLineIds(new Set());
     runSettle(unpaidIds);
   };
 
@@ -881,6 +1148,63 @@ export default function TableDetailScreen({route, navigation}: Props) {
       tableNumber: table.table_number,
       total: order.total,
     });
+  };
+
+  /**
+   * ONE ITEM. What a customer at the table is actually paying for.
+   *
+   * A row that cannot be sold still RENDERS -- greyed, with its reason. Hiding a paid item makes a
+   * bill a waiter cannot reconcile against the table in front of them; hiding an unpriced one is
+   * how it gets collected for nothing.
+   */
+  const renderItemRow = (line: PayableLine) => {
+    const partPaid = line.settledCents > 0 && !line.isPaid;
+    const label =
+      line.refusal === 'paid'
+        ? TAKE_PAYMENT_LINE_PAID
+        : line.refusal === 'no_price'
+          ? TAKE_PAYMENT_LINE_NO_PRICE
+          : line.refusal === 'order_not_claimable'
+            ? TAKE_PAYMENT_LINE_NOT_CLAIMABLE
+            : partPaid
+              ? TAKE_PAYMENT_LINE_PART_PAID.replace(
+                  '{amount}',
+                  formatCents(line.outstandingCents),
+                )
+              : null;
+    const selected = selectedLineIds.has(line.id);
+
+    return (
+      <Pressable
+        key={line.id}
+        testID={`take-payment-line-${line.id}`}
+        style={[styles.orderRow, !line.selectable && styles.orderRowPaid]}
+        disabled={!line.selectable || settling || cashSettling}
+        onPress={() => toggleLineSelection(line)}>
+        <MaterialCommunityIcons
+          name={
+            line.selectable && selected ? 'checkbox-marked' : 'checkbox-blank-outline'
+          }
+          size={24}
+          color={line.selectable ? Colors.primary : Colors.textMuted}
+        />
+        <View style={styles.orderInfo}>
+          <Text style={styles.memberName} numberOfLines={1}>
+            {line.quantity > 1 ? `${line.quantity}x ` : ''}
+            {line.name}
+          </Text>
+          {line.note ? (
+            <Text style={styles.orderMeta} numberOfLines={1}>
+              {line.note}
+            </Text>
+          ) : null}
+          {label ? <Text style={styles.orderMeta}>{label}</Text> : null}
+        </View>
+        <Text style={styles.orderTotal}>
+          {line.totalCents == null ? '—' : formatCents(line.outstandingCents || line.totalCents)}
+        </Text>
+      </Pressable>
+    );
   };
 
   const renderOrderRow = ({item}: {item: TabOrder}) => {
@@ -1010,31 +1334,75 @@ export default function TableDetailScreen({route, navigation}: Props) {
         </View>
       ) : null}
 
-      <FlatList
-        data={orders}
-        keyExtractor={item => item.id}
-        renderItem={renderOrderRow}
-        contentContainerStyle={
-          orders.length === 0 ? styles.emptyList : styles.list
-        }
-        refreshing={refreshing}
-        onRefresh={refreshTable}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No orders on this tab</Text>
-          </View>
-        }
-      />
+      {byItem ? (
+        /**
+         * THE BILL, BY ITEM. Take Payment's interaction is unchanged -- a list, checkboxes, a
+         * running total, one button. Only what it lists is different: THINGS, not guests.
+         */
+        <FlatList
+          data={itemRows}
+          keyExtractor={row => row.key}
+          testID="take-payment-item-list"
+          renderItem={({item: row}) =>
+            row.kind === 'heading' ? (
+              <Text style={styles.itemGroupHeading}>
+                {TAKE_PAYMENT_ORDER_HEADING.replace('{number}', String(row.orderNumber))}
+              </Text>
+            ) : (
+              renderItemRow(row.line)
+            )
+          }
+          contentContainerStyle={styles.list}
+          refreshing={refreshing}
+          onRefresh={refreshTable}
+          ListFooterComponent={
+            outstandingTotalCents(payable) === 0 ? (
+              <Text style={styles.itemNotice}>{TAKE_PAYMENT_ALL_PAID}</Text>
+            ) : null
+          }
+        />
+      ) : (
+        <FlatList
+          data={orders}
+          keyExtractor={item => item.id}
+          renderItem={renderOrderRow}
+          contentContainerStyle={
+            orders.length === 0 ? styles.emptyList : styles.list
+          }
+          refreshing={refreshing}
+          onRefresh={refreshTable}
+          ListHeaderComponent={
+            /**
+             * Only when the tab HAS orders but the server cannot itemise them. An empty tab needs
+             * no explanation, and saying "not itemised" over nothing reads as a fault.
+             */
+            orders.length > 0 && linesPayload != null ? (
+              <Text style={styles.itemNotice}>{TAKE_PAYMENT_NOT_ITEMISED}</Text>
+            ) : null
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No orders on this tab</Text>
+            </View>
+          }
+        />
+      )}
 
-      {selectedIds.size > 0 ? (
+      {(byItem ? selectedLineIds.size : selectedIds.size) > 0 ? (
         <View
           style={[
             styles.selectionBar,
             {paddingBottom: insets.bottom + Spacing.sm},
           ]}>
-          <Text style={styles.selectionText}>
-            {selectedIds.size} {selectedIds.size === 1 ? 'order' : 'orders'}{' '}
-            selected — {formatNad(selectedTotal)}
+          <Text style={styles.selectionText} testID="take-payment-selection">
+            {byItem
+              ? (selectedLineIds.size === 1
+                  ? TAKE_PAYMENT_SELECTION_ONE
+                  : TAKE_PAYMENT_SELECTION.replace('{count}', String(selectedLineIds.size))
+                ).replace('{amount}', formatCents(selectedItemCents))
+              : `${selectedIds.size} ${
+                  selectedIds.size === 1 ? 'order' : 'orders'
+                } selected — ${formatNad(selectedTotal)}`}
           </Text>
           <Pressable
             style={[styles.settleButton, settling && styles.buttonDisabled]}
@@ -1057,7 +1425,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
             spinnerColor={Colors.textPrimary}>
             <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
           </LoadingButton>
-          {renderCashButton(selectedCashOrders.length)}
+          {renderCashButton(
+            byItem
+              ? payable.filter(line => line.selectable && selectedLineIds.has(line.id)).length
+              : selectedCashOrders.length,
+          )}
         </View>
       ) : (
         <View
@@ -1076,7 +1448,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
             spinnerColor={Colors.white}>
             <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
           </LoadingButton>
-          {renderCashButton(cashSettleableOrders.length)}
+          {renderCashButton(
+            byItem
+              ? payable.filter(line => line.selectable).length
+              : cashSettleableOrders.length,
+          )}
         </View>
       )}
 
@@ -1109,9 +1485,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
                   disabled={false}
                   loading={false}
                   onPress={() => {
-                    const ids = Array.from(selectedIds);
+                    const target = pendingCash;
                     setPinPromptVisible(false);
-                    runCashSettle(ids);
+                    runCashForPlan(target);
                   }}
                   spinnerColor={Colors.white}>
                   <Text style={styles.cashButtonText}>
@@ -1550,6 +1926,21 @@ const styles = StyleSheet.create({
     ...Typography.subheading,
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+  /** The order a group of items came from. Quiet: it is context, not a thing to act on. */
+  itemGroupHeading: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  itemNotice: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    paddingVertical: Spacing.sm,
+    textAlign: 'center',
   },
   selectionBar: {
     position: 'absolute',

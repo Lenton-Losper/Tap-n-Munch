@@ -168,53 +168,24 @@ export const TAB_LABEL_FLOOR = 'Tables';
 export const TAB_LABEL_SALE = 'Sale';
 export const TAB_LABEL_ORDERS = 'Orders';
 
-// ─── Split payment (Ship 1) ───────────────────────────────────────────────────
+// ─── Split payment (Ship 1) — RETIRED ─────────────────────────────────────────
 
-/**
- * SIGNED BY THE OWNER 2026-09-03. Twelve strings, pinned as written.
+/*
+ * THE THIRTEEN SPLIT STRINGS ARE GONE, WITH THE TWO SCREENS THEY WERE WRITTEN FOR.
  *
- * WHY THESE WORDS. A split happens at the table, in front of the people paying, while a waiter is
- * holding a card machine. Every string here is read aloud or read over a shoulder, so they say the
- * thing plainly rather than naming an internal concept: "Who is paying for this?", not "Allocate
- * line"; "still owing on this table", not "unsettled remainder".
+ * Signed 2026-09-03/04 and retired 2026-09-04 in the same week, on the owner's ruling: Take
+ * Payment already had the right interaction, and the split screens were a second way to do the
+ * same thing reached from a different button. What replaced them is the item list on Take
+ * Payment -- see lib/takePaymentLines and constants/takePaymentCopy.
  *
- * SPLIT_CARD_IN_FLIGHT DELIBERATELY MIRRORS THE SERVER'S OWN WORDING for the same refusal
- * (app/api/terminal/tabs/[tabId]/settle-allocations/route.ts, code CARD_PAYMENT_IN_FLIGHT), so a
- * waiter reads the same sentence whichever path produced it. Two different sentences for one
- * refusal is how staff conclude the terminal is broken rather than that a card is still going
- * through.
+ * The SERVER side is untouched and still live: order_line_allocations, the allocate route and the
+ * settle-allocations route. Take Payment settles through them for any part-order payment, so a
+ * split already taken is unaffected and its money is where it was.
  *
- * SPLIT_LINE_VOIDED exists because the schema deliberately leaves an allocation on a voided line
- * UNSETTLEABLE and VISIBLE, rather than silently charging it or silently dropping it
- * (20260829170000_order_line_allocations.sql). Without wording, "visible" is just a row that will
- * not respond to a tap.
- *
- * HALF, NOT N-WAY, is the owner's ruling: three people sharing a pizza is a rounding argument at
- * the table, and an N-way control is more ways to mis-tap mid-service. SPLIT_SHARE_HALF is
- * therefore the only fraction offered.
+ * Recorded here rather than deleted silently, because these strings were signed. If a split UI
+ * ever returns, the wording and the reasoning behind every word of it are in git at 2.23
+ * (versionCode 124).
  */
-export const SPLIT_ASSIGN_TITLE = 'Who is paying for this?';
-export const SPLIT_ADD_PERSON = 'Add person';
-export const SPLIT_PERSON_PLACEHOLDER = 'Name';
-export const SPLIT_SHARE_WHOLE = 'All of it';
-export const SPLIT_SHARE_HALF = 'Half';
-export const SPLIT_UNASSIGNED = '{amount} not yet assigned';
-export const SPLIT_COLLECT_TITLE = 'Collect from {name}';
-export const SPLIT_COLLECT_TOTAL = '{name} owes {amount}';
-export const SPLIT_REMAINDER_OPEN = '{amount} still owing on this table';
-export const SPLIT_CARD_IN_FLIGHT =
-  'A card payment is going through for part of this bill. Wait for it to finish, or cancel it on the terminal, then take cash.';
-export const SPLIT_NOTHING_SETTLED = 'None of these could be paid. They may already be settled.';
-export const SPLIT_LINE_VOIDED = 'This item was cancelled, so it cannot be paid for.';
-
-/**
- * SIGNED BY THE OWNER 2026-09-04. The thirteenth split string.
- *
- * The entry point from the table view into the split flow. It was not in the original twelve
- * because the design at sign-off described the two SCREENS and not the button that opens them --
- * flagged rather than quietly shipped, and signed on the next pass. Locked with the other twelve.
- */
-export const SPLIT_ENTRY_BUTTON = 'Split bill';
 
 /**
  * SIGNED BY THE OWNER 2026-09-04. Two strings, on the round screen's basket row.
