@@ -24,7 +24,7 @@ import { TAB_FIGURES_COPY } from '@/lib/tabs/tab-outstanding'
 import {
   fetchOrdersForTab,
   fetchTabById,
-  isActiveTabStatus,
+  isTabSessionEndedStatus,
   resolveStoredTabId,
   type TabRow,
 } from '@/lib/tab-session'
@@ -246,7 +246,13 @@ export default function ReceiptPage() {
           return
         }
 
-        if (!isActiveTabStatus(tab.status)) {
+        /**
+         * THE DENYLIST, NOT `!isActiveTabStatus`. handleSessionExpired evicts the customer and
+         * wipes their basket, so an unrecognised status must not reach it — see the ruling on
+         * TAB_SESSION_ENDED_STATUSES in lib/tab-status.ts. `tabs.status` has no CHECK constraint,
+         * so a typo in any writer used to bounce a customer off their own receipt.
+         */
+        if (isTabSessionEndedStatus(tab.status)) {
           setRedirecting(true)
           handleSessionExpired(restaurantId)
           return
