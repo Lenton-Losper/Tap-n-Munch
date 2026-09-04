@@ -60,20 +60,50 @@ export function shouldShowTabPaymentThanks(tab: TabRow | null | undefined): bool
   )
 }
 
-/** Clear localStorage and leave tab flow (not for card-payment thank-you screen). */
+/**
+ * Clear localStorage and leave tab flow (not for card-payment thank-you screen).
+ *
+ * ============================================================================================
+ * A DENYLIST, BECAUSE THE FAILURE MODE HERE IS EVICTION
+ * ============================================================================================
+ *
+ * This used to end in a bare `return true`, so ANY status outside
+ * `open | ready_to_pay | settled | closed` fell through and answered "clear the session".
+ * contexts/tab-context.tsx calls this on every poll and runs `clearTabSession()` on a true, so an
+ * unrecognised status wiped a customer's tab with a live meal in front of them.
+ *
+ * `tabs.status` has no CHECK constraint. The set is open-ended, so a typo in any writer or any
+ * future value triggered it — no new feature required.
+ *
+ * It now asks `isTabSessionEndedStatus`, the denylist whose own comment in lib/tab-status.ts
+ * already ruled this exact question: "An unrecognised status must not evict a customer who is in
+ * the middle of a meal." The two mistakes are not symmetrical. Keeping a session that should have
+ * ended shows a stale tab until the next poll returns a status the vocabulary knows; ending one
+ * that should have been kept loses the customer their tab, their basket and their bill. Nothing is
+ * weakened: cross-tenant safety on this path is the session VERSION check and the restaurant
+ * scoping beside it, never the status string.
+ *
+ * `!tab` is UNCHANGED and deliberately so. "There is no tab" is a different input from "a status I
+ * do not recognise", and widening this fix to cover it would be a separate decision about what a
+ * null means at each call site.
+ */
 export function shouldClearTabAfterSettlement(tab: TabRow | null | undefined): boolean {
   if (!tab) return true
   if (shouldShowTabPaymentThanks(tab)) return false
-  const status = String(tab.status || '').toLowerCase()
-  if (isActiveTabStatus(status)) return false
-  if (status === 'settled' || status === 'closed') return true
-  return true
+  return isTabSessionEndedStatus(tab.status)
 }
 
+/**
+ * CURRENTLY UNCALLED, and fixed anyway.
+ *
+ * It carried the same inverted allowlist (`!isActiveTabStatus`) that the receipt page was applying
+ * inline, which is the same eviction by another door. Leaving the trap in a helper named for the
+ * exact job is how it gets wired up later and reintroduces the defect.
+ */
 export function shouldRedirectFromTabReceipt(tab: TabRow | null | undefined): boolean {
   if (!tab) return true
   if (shouldShowTabPaymentThanks(tab)) return false
-  return !isActiveTabStatus(tab.status)
+  return isTabSessionEndedStatus(tab.status)
 }
 
 /** Prefer localStorage tab id; optional URL tab id must match stored id when both present. */
