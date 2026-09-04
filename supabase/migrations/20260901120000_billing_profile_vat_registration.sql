@@ -1,18 +1,16 @@
--- @env: none
+-- @env: staging
 --
--- EXPECTED IN NEITHER ENVIRONMENT, and that is the whole point of the header. This file is
--- written and parked: applying it is a separate, deliberate step the owner has not taken (see the
--- comment immediately below, which predates this line and still governs).
+-- APPLIED ON STAGING, NOT ON PRODUCTION. Verified 2026-09-04 by running
+-- scripts/check-migration-drift.mjs against both databases: production reports it missing, staging
+-- reports it present. The header says where it IS, which is what the drift guard needs.
 --
--- Without a scope, check-migration-drift.mjs defaults to `both`, reported this as
--- LOCAL_NOT_APPLIED, and FAILED every production deploy -- measured 2026-09-04, when it blocked
--- the tab-session eviction fix. `staging` would have silenced production by asserting something
--- about staging that nobody had verified, and would have failed the staging gate instead.
+-- Without a header it defaulted to `both`, was reported LOCAL_NOT_APPLIED on production, and
+-- FAILED every production deploy -- it blocked the tab-session eviction fix on 2026-09-04.
 --
--- REMOVE THIS HEADER when the migration is actually applied. The drift check treats a committed
--- file as documented whatever its scope, so applying it while this line is still here is reported
--- as a warning rather than drift -- but the header would then be a lie, and the next person reads
--- it as permission to leave it unapplied.
+-- It was briefly marked `-- @env: none` on the assumption that it was applied nowhere. That was
+-- wrong, and it was wrong because I could not reach the staging database and inferred instead of
+-- checking; the credentials were in .env.test the whole time. Applying it to production is still a
+-- separate, deliberate step -- see the note below, which predates this header and still governs.
 -- VAT registration becomes an explicit merchant answer, not an inference from a blank field.
 --
 -- NOT APPLIED. Written and explained; applying it is a separate, deliberate step.
