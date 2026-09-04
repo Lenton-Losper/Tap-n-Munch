@@ -50,11 +50,11 @@ export const CLOSE_CONFIRM_CANCEL = 'Keep it open';
 
 // ─── The refusal sheet ───────────────────────────────────────────────────────
 
-export const CLOSE_REFUSED_TITLE = 'This table cannot be closed yet';
+export const CLOSE_REFUSED_TITLE = 'Not ready to close';
 
-export const CLOSE_REFUSED_BODY = 'Deal with each of these first, then close it.';
+export const CLOSE_REFUSED_BODY = 'Sort these first:';
 
-export const CLOSE_REFUSED_DISMISS = 'Close';
+export const CLOSE_REFUSED_DISMISS = 'Not yet';
 
 // ─── Failures the server, not the device, decides ────────────────────────────
 
@@ -95,3 +95,66 @@ export const CLOSE_TABLE_REFUSAL_COPY: Record<CloseTableRefusalId, string> = {
   UNSENT_ROUND_ON_DEVICE:
     'This terminal is holding a round you have not sent. Send it or clear it before closing, or it will be lost.',
 };
+
+// ─── The refusal sheet, reworked (Ship 2b) ───────────────────────────────────
+
+/**
+ * SIGNED BY THE OWNER 2026-09-04. Twelve strings.
+ *
+ * ============================================================================================
+ * WHAT WAS WRONG WITH THE SHEET, AND WHY THE FIX IS PRESENTATION AND NOT WORDING
+ * ============================================================================================
+ *
+ * The twelve refusal strings in CLOSE_TABLE_REFUSAL_COPY above are DELIBERATELY UNCHANGED. They
+ * are already plain and already say what to do; rewriting signed copy that was not the problem
+ * would be churn. What was wrong was how they were shown:
+ *
+ *   - every row rendered in Colors.red on Colors.redLight, whatever it said. A table that could
+ *     not be read and a card that may have been charged looked identical, which is how staff learn
+ *     to ignore red.
+ *   - the list sat in a fixed-height ScrollView, so the third reason was below the fold on a P5.
+ *   - the dismiss button said "Close" -- on the dialog for closing a table. It dismissed.
+ *
+ * This is the screen a waiter reads when a customer has walked out and the room is watching. It
+ * has to read calm.
+ *
+ * ============================================================================================
+ * THE OVERRIDE IS OFFERED FOR MONEY OWED AND NOTHING ELSE
+ * ============================================================================================
+ *
+ * Owner's ruling: the blockers differ in kind. "Still being made" is something a waiter fixes by
+ * waiting or voiding, and offering a manager PIN there teaches staff to reach for the override
+ * reflexively -- which is exactly how an override stops being a control.
+ *
+ * Only UNPAID_BALANCE, ORDER_OWES_MONEY and LINE_TRACKING_UNAVAILABLE are money, and the offer
+ * appears only when the money blockers are the ONLY ones left.
+ *
+ * WALKOUT_OFFER_BODY NAMES THE AMOUNT BEFORE THE PIN. A manager authorising a write-off should see
+ * the number while deciding, not after.
+ */
+export const CLOSE_REFUSED_MORE = 'and {count} more';
+
+export const WALKOUT_OFFER_TITLE = 'Customer left without paying?';
+export const WALKOUT_OFFER_BODY =
+  'A manager can close this table. {amount} will be recorded as unpaid.';
+export const WALKOUT_PICK_MANAGER = 'Who is authorising this?';
+export const WALKOUT_PIN_PROMPT = "{name}'s PIN";
+export const WALKOUT_REASON_PROMPT = 'Why is this being closed unpaid?';
+export const WALKOUT_CONFIRM = 'Close and record';
+export const WALKOUT_REFUSED_PIN =
+  'That PIN cannot authorise this. A manager or owner must do it.';
+/**
+ * REACHABLE, THOUGH NOT TODAY -- checked against production 2026-09-04.
+ *
+ * All 11 venues have at least one manager or owner (Riviera 7, FNB ChowNow 4, Mingle 4, Digi
+ * Cofee 2, the rest 1 each), all 22 manager/owner role rows carry tabs:close_unpaid, and no senior
+ * has an unaccepted invite. So the state does not exist right now.
+ *
+ * It stays reachable three ways: someone unticks the permission on the staff page
+ * (restaurant_roles is editable); a `staff_permissions` DENY row strips it per-user (the table
+ * exists and authorize() applies deny-removes, though all 3 live rows today are 'allow'); or a
+ * venue's only senior is soft-deleted. It tells the reader how to fix it rather than only that it
+ * is broken, because the person reading it will be the one who has to.
+ */
+export const WALKOUT_NO_MANAGERS =
+  'Nobody at this venue can authorise a walkout. Ask the owner to grant it on the staff page.';

@@ -21,6 +21,7 @@ import {
   CLOSE_FAILED_PENDING_REQUESTS,
   CLOSE_REFUSED_BODY,
   CLOSE_REFUSED_DISMISS,
+  CLOSE_REFUSED_MORE,
   CLOSE_REFUSED_TITLE,
   CLOSE_TABLE_BUTTON,
   CLOSE_TABLE_CHECKING,
@@ -35,10 +36,15 @@ import {
   PendingOrderRequest,
 } from '../lib/api';
 import {
+  CLOSE_TABLE_REFUSAL_KIND,
   CloseTableRefusalId,
+  CloseTableRefusalKind,
   evaluateCloseTableRefusals,
   findTableRow,
+  walkoutOverrideAvailable,
 } from '../lib/closeTableRefusals';
+import WalkoutOverride from './WalkoutOverride';
+import {amountOwed} from '../lib/tabSettlement';
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 
@@ -80,6 +86,29 @@ type Props = {
 
 type Phase = 'idle' | 'checking' | 'refused' | 'confirming' | 'closing';
 
+/**
+ * How many reasons are SHOWN before the tail is counted. Four fits a P5 without scrolling; the
+ * fifth onward is summarised, never hidden below a fold.
+ */
+const VISIBLE_REASON_LIMIT = 4
+
+/**
+ * Colour and icon by KIND, not one red for everything.
+ *
+ * A "broken" refusal is amber, because "refresh and try again" is not an emergency and rendering
+ * it red is what devalued the colour. An "alarming" one keeps red, so red still means something:
+ * money may already have moved, or food is on a bill nobody is making.
+ *
+ * "money" and "waiter" are ordinary text with a plain icon. They are the common case and they are
+ * not warnings — a table that owes money is the normal state of a table.
+ */
+const REASON_TONE: Record<CloseTableRefusalKind, {icon: string; color: string}> = {
+  money: {icon: 'cash-remove', color: Colors.textPrimary},
+  waiter: {icon: 'clock-outline', color: Colors.textPrimary},
+  alarming: {icon: 'alert-circle-outline', color: Colors.red},
+  broken: {icon: 'refresh', color: Colors.amber ?? '#92400E'},
+}
+
 export default function CloseTableAction({
   tableId,
   tabId,
@@ -99,6 +128,14 @@ export default function CloseTableAction({
    * verdict came from another.
    */
   const [noLineTracking, setNoLineTracking] = useState(false);
+  /**
+   * What the table owes, captured from the SAME pre-flight snapshot the refusals came from.
+   *
+   * Only the manager override reads it, and only to show a manager the number they are about to
+   * write off. It is the server's `unpaid_total` via tabSettlement.amountOwed and nothing else --
+   * null when unreadable, never 0, because a zero here would tell a manager nothing is owed.
+   */
+  const [owed, setOwed] = useState<number | null>(null);
 
   /**
    * Re-read both halves of the truth, then ask the refusal set.
@@ -143,6 +180,7 @@ export default function CloseTableAction({
     // A settled QR tab now passes the rules (owner's ruling 2026-08-28), and the confirm sheet is
     // the only place the waiter learns nothing checked the food. See closeTableRefusals rule 11.
     setNoLineTracking(snapshot.lines != null && snapshot.lines.has_lines !== true);
+    setOwed(amountOwed(snapshot.table));
     const found = evaluateCloseTableRefusals(snapshot);
     if (found.length > 0) {
       setRefusals(found);
@@ -254,20 +292,71 @@ export default function CloseTableAction({
           <View style={styles.sheet} testID="close-table-refusal-sheet">
             <Text style={styles.sheetTitle}>{CLOSE_REFUSED_TITLE}</Text>
             <Text style={styles.sheetBody}>{CLOSE_REFUSED_BODY}</Text>
-            <ScrollView style={styles.reasonScroll}>
-              {refusals.map(id => (
-                <View key={id} style={styles.reasonRow} testID={`close-refusal-${id}`}>
-                  <MaterialCommunityIcons
-                    name="alert-circle-outline"
-                    size={18}
-                    color={Colors.red}
-                  />
-                  <Text style={styles.reasonText}>
-                    {CLOSE_TABLE_REFUSAL_COPY[id]}
-                  </Text>
-                </View>
-              ))}
-            </ScrollView>
+            {/**
+              * NO ScrollView, AND COLOUR BY KIND.
+              *
+              * This list was a fixed-height ScrollView in which every row rendered red on red.
+              * Two consequences, both real on a P5:
+              *
+              *   - the third reason sat below the fold, so a waiter fixed two things and was
+              *     refused again for one they were never shown.
+              *   - a table that could not be READ looked identical to a card that MAY HAVE BEEN
+              *     CHARGED. Rendering "refresh and try again" in the same red as "the card may
+              *     have been charged" is what teaches staff that red means nothing.
+              *
+              * Twelve refusals exist and one or two fire in practice, so they fit without
+              * scrolling. Past VISIBLE_REASON_LIMIT the tail is COUNTED rather than hidden -- a
+              * waiter is told there are more, which a fold never does.
+              */}
+            <View style={styles.reasonList}>
+              {refusals.slice(0, VISIBLE_REASON_LIMIT).map(id => {
+                const tone = REASON_TONE[CLOSE_TABLE_REFUSAL_KIND[id]];
+                return (
+                  <View key={id} style={styles.reasonRow} testID={`close-refusal-${id}`}>
+                    <MaterialCommunityIcons
+                      name={tone.icon}
+                      size={18}
+                      color={tone.color}
+                      testID={`close-refusal-icon-${CLOSE_TABLE_REFUSAL_KIND[id]}`}
+                    />
+                    <Text style={[styles.reasonText, {color: tone.color}]}>
+                      {CLOSE_TABLE_REFUSAL_COPY[id]}
+                    </Text>
+                  </View>
+                );
+              })}
+              {refusals.length > VISIBLE_REASON_LIMIT ? (
+                <Text style={styles.reasonMore} testID="close-refusal-more">
+                  {CLOSE_REFUSED_MORE.replace(
+                    '{count}',
+                    String(refusals.length - VISIBLE_REASON_LIMIT),
+                  )}
+                </Text>
+              ) : null}
+            </View>
+
+            {/**
+              * THE OVERRIDE, IN THE SAME DIALOG.
+              *
+              * Offered only when every remaining blocker is money -- see walkoutOverrideAvailable.
+              * The owner's ruling: "still being made" is something a waiter fixes by waiting or
+              * voiding, and offering a manager PIN there teaches staff to reach for the override
+              * reflexively, which is how an override stops being a control.
+              *
+              * In this dialog rather than on a screen of its own, because the waiter is standing
+              * at the table with a manager beside them. Sending them away to find another screen
+              * is how a walkout becomes an unclosed table for the rest of the shift.
+              */}
+            {walkoutOverrideAvailable(refusals) ? (
+              <WalkoutOverride
+                tableId={tableId}
+                amountOwed={owed}
+                onClosed={() => {
+                  setPhase('idle');
+                  onClosed();
+                }}
+              />
+            ) : null}
             <Pressable
               style={styles.secondaryAction}
               testID="close-refusal-dismiss"
@@ -367,7 +456,9 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {...Typography.subheading, color: Colors.textPrimary},
   sheetBody: {...Typography.small, color: Colors.textSecondary},
-  reasonScroll: {maxHeight: 260},
+  /** No fixed height and no scroll: the tail is counted, never hidden below a fold. */
+  reasonList: {gap: Spacing.sm},
+  reasonMore: {...Typography.small, color: Colors.textSecondary, marginTop: 2},
   reasonRow: {
     flexDirection: 'row',
     gap: Spacing.sm,

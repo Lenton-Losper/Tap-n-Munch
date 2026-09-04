@@ -215,3 +215,25 @@ export const SPLIT_LINE_VOIDED = 'This item was cancelled, so it cannot be paid 
  * flagged rather than quietly shipped, and signed on the next pass. Locked with the other twelve.
  */
 export const SPLIT_ENTRY_BUTTON = 'Split bill';
+
+/**
+ * SIGNED BY THE OWNER 2026-09-04. Two strings, on the round screen's basket row.
+ *
+ * THE PROBLEM THEY SOLVE. The basket already supports per-unit notes: addLine refuses to merge
+ * into a line that carries one, so "tap, note, tap" produces two separately-noted lines, and
+ * splitLine peels a unit off an existing one. It fails in exactly one order of operations --
+ * tap, tap, note -- where the note lands on a quantity-2 line and silently applies to both.
+ *
+ * The Split control existed for this and sat between "+" and the bin, where it reads as a
+ * quantity button. The owner hit the trap on a first attempt, which is the evidence that its
+ * placement did not communicate what it was for. It now sits beside the note field, and the
+ * warning appears at the moment a note is typed on a multi-unit line.
+ *
+ * ROUND_NOTE_APPLIES_TO_ALL states the CONSEQUENCE, not the rule: what the kitchen will receive,
+ * which is the thing the waiter is about to get wrong. "{count}" is the line quantity.
+ *
+ * ROUND_SPLIT_ONE_OFF says what the button does to the basket rather than naming the operation.
+ * "Split" alone was accurate and meant nothing at the moment it mattered.
+ */
+export const ROUND_NOTE_APPLIES_TO_ALL = 'This note goes to the kitchen for all {count}.';
+export const ROUND_SPLIT_ONE_OFF = 'Split one off';

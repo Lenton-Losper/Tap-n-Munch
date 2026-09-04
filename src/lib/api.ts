@@ -823,7 +823,7 @@ export async function settleTab(
 export async function authorizeTerminalAction(
   userId: string,
   pin: string,
-  purpose: 'cash_settlement' | 'refund',
+  purpose: 'cash_settlement' | 'refund' | 'walkout_close' | 'menu_availability',
   token: string,
 ): Promise<{token_id: string; expires_at: string}> {
   const response = await terminalFetch(
@@ -2836,4 +2836,46 @@ export async function settleAllocations(
     throw await parseApiError(response);
   }
   return (await response.json()) as SettleAllocationsResult;
+}
+
+/**
+ * Close a table that still owes money — a walkout.
+ *
+ * NOT the ordinary close. That route is gated on orders:update, which every terminal JWT carries;
+ * this one demands a manager or owner PIN (purpose 'walkout_close', permission tabs:close_unpaid)
+ * and a reason, and both are verified BEFORE anything closes.
+ *
+ * IT MARKS NOTHING PAID. No paid_at, no payment_status, no payment_events row — the tab closes and
+ * the orders stay honestly unpaid, so the loss shows up in every report rather than being absorbed.
+ */
+export async function walkoutCloseTable(
+  tableId: string,
+  params: {reason: string; staffUserId: string; authorizationTokenId: string},
+  token: string,
+): Promise<{
+  success: boolean;
+  closed_by_user_id: string;
+  reason: string;
+  unpaid_order_count: number;
+  amount_written_off: number;
+}> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tables/${encodeURIComponent(tableId)}/walkout-close`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        reason: params.reason,
+        staff_user_id: params.staffUserId,
+        authorization_token_id: params.authorizationTokenId,
+      }),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+  return await response.json();
 }

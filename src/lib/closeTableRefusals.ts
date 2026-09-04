@@ -399,3 +399,62 @@ export function findTableRow(
   }
   return tables.find(row => row.id === tableId) ?? null;
 }
+
+/**
+ * ═══ WHAT KIND OF REFUSAL EACH ONE IS ═══
+ *
+ * Every rule rendered in red on red, whatever it said. A table that could not be READ and a card
+ * that MAY HAVE BEEN CHARGED looked identical, which is how staff learn that red means nothing.
+ *
+ * Four kinds, and they differ in what the waiter should do:
+ *
+ *   money      Somebody owes money. THE ONLY KIND THAT OFFERS THE MANAGER OVERRIDE -- owner's
+ *              ruling. A walkout is the case this exists for.
+ *   waiter     The waiter fixes it themselves, by waiting, sending, or voiding. Offering an
+ *              override here would teach staff to reach for a manager reflexively, which is how
+ *              an override stops being a control.
+ *   alarming   Money may already have moved, or food is on a bill that nobody is making. These
+ *              keep red, and they are the reason red still means something.
+ *   broken     Something failed to load. Not the waiter's fault and not their problem to solve --
+ *              "refresh and try again". Amber. Rendering these red is what devalued the colour.
+ */
+export type CloseTableRefusalKind = 'money' | 'waiter' | 'alarming' | 'broken'
+
+export const CLOSE_TABLE_REFUSAL_KIND: Record<CloseTableRefusalId, CloseTableRefusalKind> = {
+  // Money owed. The override applies to exactly these three.
+  UNPAID_BALANCE: 'money',
+  ORDER_OWES_MONEY: 'money',
+  LINE_TRACKING_UNAVAILABLE: 'money',
+
+  // The waiter's own to clear.
+  OUTSTANDING_LINE: 'waiter',
+  UNSENT_ROUND_ON_DEVICE: 'waiter',
+  CARD_PAYMENT_IN_FLIGHT: 'waiter',
+
+  // Genuinely alarming: "the card may have been charged", and food on a bill nobody is making.
+  CARD_PAYMENT_STUCK: 'alarming',
+  UNROUTED_LINE: 'alarming',
+
+  // Something did not load.
+  TABLE_UNKNOWN: 'broken',
+  LINES_UNKNOWN: 'broken',
+  TAB_STATUS_UNKNOWN: 'broken',
+  SERVER_REFUSES: 'broken',
+}
+
+/**
+ * Whether the manager override may be offered for this exact set of refusals.
+ *
+ * ONLY WHEN MONEY IS THE ONLY THING LEFT. A table that owes money AND has food still cooking is
+ * not a walkout -- it is a table mid-service, and closing it would strand a dish somebody is
+ * making. The override answers "the customer has gone", which cannot be true while the kitchen is
+ * still working on their order.
+ *
+ * Empty set returns false: there is nothing to override.
+ */
+export function walkoutOverrideAvailable(
+  refusals: readonly CloseTableRefusalId[],
+): boolean {
+  if (refusals.length === 0) return false
+  return refusals.every(id => CLOSE_TABLE_REFUSAL_KIND[id] === 'money')
+}

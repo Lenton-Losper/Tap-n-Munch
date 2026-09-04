@@ -85,12 +85,6 @@ function BasketRow({
           <Text style={styles.qtyButtonText}>+</Text>
         </Pressable>
 
-        {line.quantity > 1 ? (
-          <Pressable style={styles.textButton} onPress={onSplit}>
-            <Text style={styles.textButtonText}>Split</Text>
-          </Pressable>
-        ) : null}
-
         <View style={styles.flexSpacer} />
 
         <Pressable style={styles.iconButton} onPress={onRemove} hitSlop={6}>
@@ -112,6 +106,36 @@ function BasketRow({
         placeholderTextColor={Colors.textMuted}
         maxLength={140}
       />
+
+      {/**
+        * SPLIT LIVES HERE, BESIDE THE NOTE, NOT UP IN THE QUANTITY ROW.
+        *
+        * It used to sit between "+" and the bin, where it reads as a quantity control. It is not
+        * one — it is the thing that makes a per-unit note possible, and a waiter only wants it at
+        * the moment they are typing a note. The owner hit the trap personally on a first attempt,
+        * which is the evidence that the old placement did not communicate what it was for.
+        *
+        * THE WARNING IS THE REAL FIX. serviceRound.addLine already refuses to merge into a noted
+        * line, so "tap, note, tap" has always produced two separately-noted lines. It fails in
+        * exactly ONE order of operations — tap, tap, note — where the note lands on a quantity-2
+        * line and silently applies to both units. That case is now called out at the moment it
+        * happens, in terms of what actually goes to the kitchen.
+        */}
+      {line.quantity > 1 ? (
+        <View style={styles.splitPrompt}>
+          {line.note.trim() ? (
+            <Text style={styles.splitPromptText} testID={`split-warning-${line.lineId}`}>
+              {Copy.ROUND_NOTE_APPLIES_TO_ALL.replace('{count}', String(line.quantity))}
+            </Text>
+          ) : null}
+          <Pressable
+            style={styles.splitButton}
+            onPress={onSplit}
+            testID={`split-one-off-${line.lineId}`}>
+            <Text style={styles.splitButtonText}>{Copy.ROUND_SPLIT_ONE_OFF}</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {flagged ? (
         <Text style={styles.flaggedText}>Out of stock — remove to send</Text>
@@ -738,6 +762,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  /**
+   * The split affordance sits under the note, indented to read as belonging to it rather than to
+   * the quantity row above.
+   */
+  splitPrompt: {marginTop: Spacing.xs, gap: 4},
+  /** Amber, not red: this is a "did you mean" and not an error. Nothing is broken. */
+  splitPromptText: {...Typography.small, color: Colors.amber ?? '#92400E'},
+  splitButton: {alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: Spacing.sm},
+  splitButtonText: {...Typography.small, color: Colors.primary, fontWeight: '700'},
   noteInput: {
     marginTop: Spacing.sm,
     backgroundColor: Colors.background,
