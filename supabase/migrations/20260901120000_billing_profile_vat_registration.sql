@@ -1,3 +1,18 @@
+-- @env: none
+--
+-- EXPECTED IN NEITHER ENVIRONMENT, and that is the whole point of the header. This file is
+-- written and parked: applying it is a separate, deliberate step the owner has not taken (see the
+-- comment immediately below, which predates this line and still governs).
+--
+-- Without a scope, check-migration-drift.mjs defaults to `both`, reported this as
+-- LOCAL_NOT_APPLIED, and FAILED every production deploy -- measured 2026-09-04, when it blocked
+-- the tab-session eviction fix. `staging` would have silenced production by asserting something
+-- about staging that nobody had verified, and would have failed the staging gate instead.
+--
+-- REMOVE THIS HEADER when the migration is actually applied. The drift check treats a committed
+-- file as documented whatever its scope, so applying it while this line is still here is reported
+-- as a warning rather than drift -- but the header would then be a lie, and the next person reads
+-- it as permission to leave it unapplied.
 -- VAT registration becomes an explicit merchant answer, not an inference from a blank field.
 --
 -- NOT APPLIED. Written and explained; applying it is a separate, deliberate step.

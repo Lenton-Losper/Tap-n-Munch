@@ -22,8 +22,20 @@
  *     -- @env: staging        only expected on staging
  *     -- @env: production     only expected on production
  *     -- @env: both           explicit default
+ *     -- @env: none           expected NOWHERE -- written, parked, deliberately unapplied
  *
  * No header means "both", so every existing migration keeps its current behaviour exactly.
+ *
+ * `none` exists because the first three could not describe a file applied in NEITHER environment.
+ * 20260901120000_billing_profile_vat_registration is exactly that -- its own header says "NOT
+ * APPLIED. Written and explained; applying it is a separate, deliberate step" -- and with no way to
+ * say so it was reported as LOCAL_NOT_APPLIED and failed every production deploy. Marking such a
+ * file `staging` to silence production would be a claim about staging that nobody has checked, and
+ * would fail the staging gate instead. `none` states the truth.
+ *
+ * It needs no branch of its own: `expected` already keeps only `both` and the target env, so any
+ * other value is excluded everywhere -- and the rule below, that a committed file is documented
+ * whatever its scope, still means applying one later can never read as undocumented drift.
  *
  * Scope decides only what is EXPECTED. A migration that has a committed file is always treated as
  * documented, whatever its scope, so scoping can never turn a real applied migration into
@@ -62,7 +74,7 @@ function targetEnvironment() {
   return PROJECT_REFS[ref] ?? 'unknown'
 }
 
-const SCOPE_RE = /^[ \t]*--[ \t]*@env:[ \t]*(staging|production|both)[ \t]*$/im
+const SCOPE_RE = /^[ \t]*--[ \t]*@env:[ \t]*(staging|production|both|none)[ \t]*$/im
 
 /** Reads the `-- @env:` header from the first 30 lines. Absent means 'both'. */
 function scopeOf(fileName) {
