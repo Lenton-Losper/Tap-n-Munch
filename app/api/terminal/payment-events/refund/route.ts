@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -237,6 +238,19 @@ export async function POST(req: Request) {
       expectedRestaurantId: terminal.restaurantId,
       expectedTerminalId: terminal.terminalId,
       expectedPurpose: 'refund',
+      /**
+       * RE-CHECKED AT SPEND TIME, not only at mint (2026-09-04).
+       *
+       * A minted token was bearer authority: the permission behind a purpose was verified once, in
+       * POST /api/terminal/authorize, and never asked again. Its TTL is a window in which the
+       * authoriser can be demoted, removed from the venue, or have payments:refund unticked.
+       *
+       * Refund first, deliberately: payments:refund is held by NOBODY by default and four tokens
+       * have ever been issued, so tightening it can strand nothing. cash_settlement and
+       * service_session are left alone -- a permission read failing mid-service would refuse cash
+       * at the till, which is a worse failure than the one it prevents.
+       */
+      requirePermission: PERMISSIONS.PAYMENTS_REFUND,
     })
     if (!consume.ok) {
       return NextResponse.json(
