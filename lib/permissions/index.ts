@@ -26,6 +26,18 @@ export const PERMISSIONS = {
   TABLES_READ:    'tables:read',
   TABLES_MANAGE:  'tables:manage',
 
+  /**
+   * Closing a tab that still owes money — a walkout.
+   *
+   * SEPARATE FROM tables:manage, DELIBERATELY. `tables:manage` is arranging the floor, and WAITERS
+   * hold it because they legitimately need it. Gating a walkout on it would let the person being
+   * walked out on sign off the loss, which is the one party who should not be able to.
+   *
+   * Manager and owner only. Not cashier: taking payment and writing off a debt are different
+   * authorities, and the second is the one that needs a second pair of eyes.
+   */
+  TABS_CLOSE_UNPAID: 'tabs:close_unpaid',
+
   // Payments
   PAYMENTS_PROCESS: 'payments:process',
   PAYMENTS_VIEW: 'payments:view',

@@ -11,7 +11,10 @@ export async function closeTableSession({
   restaurantId: string
   tableId: string
   closedBy: string
-  source: 'dashboard' | 'terminal' | 'staff_app'
+  // 'terminal_walkout' is a CLOSE THAT WROTE OFF A DEBT. Distinguished at the source rather than
+  // inferred later: an ordinary close and a walkout are the same rows apart from this field, and
+  // a report that cannot tell them apart cannot count what the venue lost.
+  source: 'dashboard' | 'terminal' | 'staff_app' | 'terminal_walkout'
 }) {
   const { data, error } = await supabase.rpc('close_table_session', {
     p_table_id: tableId,

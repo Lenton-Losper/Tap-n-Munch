@@ -32,6 +32,31 @@ export const TERMINAL_AUTHORIZATION_PURPOSES = {
    * screen, and would take effect on the next refresh at venues that never asked for it.
    */
   menu_availability: PERMISSIONS.MENU_WRITE,
+  /**
+   * A WALKOUT — closing a tab that still owes money, so the table can be turned.
+   *
+   * WHY A PIN AT ALL. Closing an unpaid tab writes off a debt. The waiter holding the terminal is
+   * the person the money was owed to, and asking them to approve their own shortfall is not a
+   * control. The PIN puts a second, named person on the record before the table is freed.
+   *
+   * THE PERMISSION IS TABS_CLOSE_UNPAID, NOT TABLES_MANAGE, and that is the whole reason a new
+   * permission exists rather than a reused one. Measured 2026-09-04 against the shipped role
+   * config:
+   *
+   *     tables:manage     owner, manager, WAITER
+   *     payments:process  owner, manager, cashier
+   *     payments:refund   nobody, by default
+   *
+   * `tables:manage` is arranging the floor and waiters legitimately hold it, so gating on it would
+   * let the person being walked out on sign off the loss. `payments:process` includes cashier, and
+   * taking payment is a different authority from writing off a debt. Neither fits, so one exists
+   * that does: manager and owner only.
+   *
+   * THE IDENTITY THIS PRODUCES IS A users.id, and it is what lands in the audit trail as the person
+   * who authorised the write-off. Before this, a close recorded `closed_by: <terminal id>` -- the
+   * DEVICE it happened on, which answers "which box" and never "who".
+   */
+  walkout_close: PERMISSIONS.TABS_CLOSE_UNPAID,
 } as const satisfies Record<string, Permission>
 
 export type TerminalAuthorizationPurpose = keyof typeof TERMINAL_AUTHORIZATION_PURPOSES

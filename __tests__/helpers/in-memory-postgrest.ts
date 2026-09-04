@@ -81,7 +81,7 @@ export class InMemoryDb {
   }
 }
 
-type Filter = { kind: 'eq' | 'neq'; column: string; value: unknown }
+type Filter = { kind: 'eq' | 'neq' | 'is_null'; column: string; value: unknown }
 
 class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private filters: Filter[] = []
@@ -102,6 +102,21 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   neq(column: string, value: unknown) {
     this.filters.push({ kind: 'neq', column, value })
+    return this
+  }
+  /**
+   * PostgREST's null test — `.is('voided_at', null)`, as the tab-lines route uses to exclude voided
+   * allocations.
+   *
+   * Only null is modelled. PostgREST also accepts true/false, and implementing those with no caller
+   * to exercise them would be inventing behaviour: a fake that silently accepts a filter it does
+   * not apply returns the wrong rows and looks like a passing test.
+   */
+  is(column: string, value: unknown) {
+    if (value !== null) {
+      throw new Error(`in-memory .is() models only null; received ${String(value)}`)
+    }
+    this.filters.push({ kind: 'is_null', column, value: null })
     return this
   }
   in(column: string, values: readonly unknown[]) {
@@ -137,11 +152,16 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private matching(): Row[] {
     let out = this.db.rows(this.table)
     for (const f of this.filters) {
-      out = out.filter((r) =>
-        f.kind === 'eq'
+      out = out.filter((r) => {
+        // is_null tests the ACTUAL null/undefined, not the stringified value: the eq/neq branches
+        // coalesce to '' before comparing, which would make `.is('voided_at', null)` also match a
+        // row whose voided_at is the empty string. For a filter that excludes voided rows from a
+        // billing read, matching too much is the dangerous direction.
+        if (f.kind === 'is_null') return r[f.column] == null
+        return f.kind === 'eq'
           ? String(r[f.column] ?? '') === String(f.value)
-          : String(r[f.column] ?? '') !== String(f.value),
-      )
+          : String(r[f.column] ?? '') !== String(f.value)
+      })
     }
     for (const f of this.inFilters) {
       const allowed = f.values.map(String)

@@ -48,6 +48,11 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Manage Tables & QR',
     description: 'Configure tables, QR codes, and ordering channels.',
   },
+  [PERMISSIONS.TABS_CLOSE_UNPAID]: {
+    label: 'Close Unpaid Tables',
+    description:
+      'Close a table that still owes money, when a customer leaves without paying. Records who authorised it, why, and how much was written off. Nothing is marked as paid.',
+  },
   [PERMISSIONS.PAYMENTS_PROCESS]: {
     label: 'Process Payments',
     description: 'Take card and cash payments at the terminal.',
@@ -158,7 +163,11 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   },
   {
     domain: 'Tables',
-    permissions: [PERMISSIONS.TABLES_READ, PERMISSIONS.TABLES_MANAGE].map((key) => ({
+    permissions: [
+      PERMISSIONS.TABLES_READ,
+      PERMISSIONS.TABLES_MANAGE,
+      PERMISSIONS.TABS_CLOSE_UNPAID,
+    ].map((key) => ({
       key,
       ...LABELS[key],
     })),

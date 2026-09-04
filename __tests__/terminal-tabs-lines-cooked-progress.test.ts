@@ -45,6 +45,8 @@ function makeChain(result: { data: unknown; error: unknown }) {
   chain.select = self
   chain.eq = self
   chain.order = self
+  // The allocations read filters voided rows out with is(voided_at, null).
+  chain.is = self
   chain.in = self
   chain.maybeSingle = () => Promise.resolve(result)
   chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -58,6 +60,9 @@ jest.mock('@/lib/supabase/server', () => ({
       if (table === 'tabs') return makeChain({ data: tabRow, error: null })
       if (table === 'order_lines') return makeChain({ data: lineRows, error: null })
       if (table === 'orders') return makeChain({ data: orderRows, error: null })
+      // Split allocations, queried by the lines route since Ship 1. Empty by default: these suites
+      // are about line state, and an unsplit tab is the ordinary case.
+      if (table === 'order_line_allocations') return makeChain({ data: [], error: null })
       throw new Error(`unexpected table in test: ${table}`)
     },
   }),
