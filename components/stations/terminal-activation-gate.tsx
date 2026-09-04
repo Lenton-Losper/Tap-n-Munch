@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { STATION_COPY } from '@/lib/stations/copy'
 import { useTerminalSession, type AuthFetch, type TerminalSession } from '@/lib/stations/use-terminal-session'
 import type { StationKind } from '@/lib/stations/station-pairing'
@@ -41,15 +41,25 @@ export function TerminalActivationGate({
    * would otherwise read off a laptop and type in here — see lib/stations/activation-link.ts. The
    * typed form below is untouched and remains the fallback.
    *
-   * `attempted` guards against a second submission: React may run this effect again, and a spent
-   * code would then produce a spurious "invalid or expired" over a pairing that already worked.
+   * `autoAttempted` guards against a second submission: React may run this effect again, and a
+   * spent code would then produce a spurious "invalid or expired" over a pairing that already
+   * worked.
+   *
+   * A REF, NOT STATE, and it was state until 2026-09-04. Nothing renders this value — it is read
+   * only by the effect that sets it — so as state it bought a re-render per pairing and a
+   * setState synchronously inside an effect, which is what the react-compiler rule refuses.
+   *
+   * The ref is also the STRONGER guard. A ref updates synchronously, so the immediate second
+   * invocation React performs in StrictMode already sees `true`; a state update is queued, so the
+   * second invocation could still read `false` and fire the spent code a second time. Removing the
+   * value from the dependency array is safe for the same reason: it was never a reason to re-run.
    */
-  const [autoAttempted, setAutoAttempted] = useState(false)
+  const autoAttempted = useRef(false)
   useEffect(() => {
-    if (!loaded || session || autoAttempted) return
+    if (!loaded || session || autoAttempted.current) return
     const code = readActivationCode(window.location.search)
     if (!code) return
-    setAutoAttempted(true)
+    autoAttempted.current = true
     /**
      * STRIPPED BEFORE IT IS SUBMITTED, not after. A failure must not leave a spent or invalid code
      * in the address bar to be reloaded, bookmarked or photographed.
@@ -59,7 +69,7 @@ export function TerminalActivationGate({
       if (result.error) setError(result.error)
       else setJustPaired(true)
     })
-  }, [loaded, session, autoAttempted, activate])
+  }, [loaded, session, activate])
 
   if (!loaded) {
     return null
