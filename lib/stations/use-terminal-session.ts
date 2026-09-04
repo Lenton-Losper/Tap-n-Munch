@@ -151,7 +151,7 @@ export function useTerminalSession(station: StationKind) {
     writeStoredSession(station, next)
     setSession(next)
     return { error: null }
-  }, [])
+  }, [station])
 
   /** Called by a caller that got a 401 from a station API route — rotates both tokens. */
   const refresh = useCallback(async () => {
@@ -178,12 +178,22 @@ export function useTerminalSession(station: StationKind) {
     writeStoredSession(station, next)
     setSession(next)
     return next
-  }, [session])
+  }, [session, station])
 
+  /**
+   * `station` IS A DEPENDENCY of all three callbacks that write the stored session.
+   *
+   * Each calls writeStoredSession(station, ...), which keys localStorage BY STATION. Omitting it
+   * meant a callback captured on one station could persist a session under the other's key. It has
+   * never happened, because every caller mounts this hook with a literal ('kitchen' or 'bar') that
+   * cannot change for the life of the component -- which is exactly why it went unnoticed rather
+   * than why it was safe. Adding it costs nothing at runtime and removes the trap for whoever
+   * makes station dynamic.
+   */
   const signOut = useCallback(() => {
     writeStoredSession(station, null)
     setSession(null)
-  }, [])
+  }, [station])
 
   /**
    * Attaches the current access token and retries ONCE, through refresh(), on a 401 — the

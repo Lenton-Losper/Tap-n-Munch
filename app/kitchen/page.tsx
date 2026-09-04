@@ -183,7 +183,19 @@ export function KitchenScreenLive({ session, authFetch }: { session: TerminalSes
       stopPrivateProbe()
       stopFallback()
     }
-  }, [session.restaurantId, session.terminalId, authFetch])
+  /**
+   * `session.accessToken` IS IN THE DEPS, and its absence was a real defect (2026-09-04).
+   *
+   * The effect hands the token to startPrivateLineChannelProbe. Keyed only on restaurantId and
+   * terminalId, it did not re-run when the token refreshed -- so the private channel went on
+   * holding the token it was opened with. Terminal tokens expire hourly; a wall screen left up
+   * across a shift therefore kept a subscription authenticated by a credential that had since
+   * expired, and the board stops updating with nothing on screen to say so.
+   *
+   * The cost of including it is a teardown and resubscribe per refresh, which is the correct
+   * behaviour: a subscription must be opened with a credential that is currently valid.
+   */
+  }, [session.restaurantId, session.terminalId, session.accessToken, authFetch])
 
   if (loading) {
     return <StationLoading />

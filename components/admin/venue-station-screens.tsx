@@ -43,7 +43,7 @@ export function VenueStationScreens({
   screens,
   venueId,
   venueName,
-  now = Date.now(),
+  now,
 }: {
   screens: VenueStationScreen[]
   /**
@@ -53,7 +53,16 @@ export function VenueStationScreens({
    */
   venueId?: string | null
   venueName?: string | null
-  now?: number
+  /**
+   * REQUIRED, and passed in rather than defaulted to Date.now() here.
+   *
+   * It was `now = Date.now()`, an impure call evaluated during render, which the react-compiler
+   * rule refuses -- and it is right for a reason beyond the rule: a timestamp read inside a
+   * component belongs to whenever React happened to render it, so two panels on one page could
+   * disagree about "recently". Read once per request by the caller, every row is judged against
+   * the same instant.
+   */
+  now: number
 }) {
   const stations: Array<{ kind: StationKind; label: string; open: string }> = [
     { kind: 'kitchen', label: COPY.kitchenLabel, open: COPY.openKitchen },
