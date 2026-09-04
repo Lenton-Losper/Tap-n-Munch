@@ -50,6 +50,7 @@ import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authoriza
 import { guardTableClose } from '@/lib/tabs/pending-order-requests'
 import { closeTableSession } from '@/lib/session-manager'
 import { owesMoney } from '@/lib/payments/payment-integrity'
+import { PERMISSIONS } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -118,6 +119,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tableId
         expectedRestaurantId: terminal.restaurantId,
         expectedTerminalId: terminal.terminalId,
         expectedPurpose: 'walkout_close',
+        // RE-CHECKED HERE, not only at mint. Otherwise a minted token is bearer authority, and
+        // its TTL is a window in which the authoriser can be demoted or removed from the venue.
+        requirePermission: PERMISSIONS.TABS_CLOSE_UNPAID,
       })
     } catch (authErr) {
       console.error('[terminal/tables/walkout-close] authorization check failed', authErr)

@@ -252,3 +252,33 @@ describe('the close itself', () => {
     expect((await res.json()).amount_written_off).toBe(0)
   })
 })
+
+/**
+ * ============================================================================================
+ * CONSUME-TIME PERMISSION RE-CHECK — one enforcement point is one bug away from none
+ * ============================================================================================
+ *
+ * Until 2026-09-04 the permission was checked only at MINT, in POST /api/terminal/authorize. A
+ * token was therefore bearer authority: anything holding one could spend it, and this route
+ * re-verified nothing.
+ *
+ * Found by effect, not by reading: a probe minted a walkout token for a waiter directly, bypassing
+ * the only place the check lives, and this route accepted it and closed the table. A minted token
+ * also carries a TTL, and a manager can be demoted inside that window.
+ */
+describe('the permission is re-checked when the token is SPENT', () => {
+  it('asks for tabs:close_unpaid at consume time', async () => {
+    await call(VALID)
+    expect(consumeCalls[0]).toMatchObject({ requirePermission: 'tabs:close_unpaid' })
+  })
+
+  it('refuses — and does NOT close — when the permission is gone by spend time', async () => {
+    // A manager demoted, removed from the venue, or unticked between mint and spend.
+    consumeResult = { ok: false, reason: 'missing_permission' }
+    const res = await call(VALID)
+    expect(res.status).toBe(403)
+    expect((await res.json()).reason).toBe('missing_permission')
+    expect(closeCalls).toHaveLength(0)
+    expect(auditInserts).toHaveLength(0)
+  })
+})

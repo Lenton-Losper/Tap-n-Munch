@@ -1,10 +1,12 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { authorize } from '@/lib/permissions/authorize'
+import type { Permission } from '@/lib/permissions'
 
 export type ConsumeAuthorizationTokenResult =
   | { ok: true }
   | {
       ok: false
-      reason: 'not_found' | 'already_used' | 'expired' | 'mismatch'
+      reason: 'not_found' | 'already_used' | 'expired' | 'mismatch' | 'missing_permission'
     }
 
 type ConsumeAuthorizationTokenParams = {
@@ -13,6 +15,29 @@ type ConsumeAuthorizationTokenParams = {
   expectedRestaurantId: string
   expectedTerminalId: string
   expectedPurpose: string
+  /**
+   * ============================================================================================
+   * RE-CHECK THE PERMISSION AT CONSUME TIME — one enforcement point is one bug away from none
+   * ============================================================================================
+   *
+   * Until 2026-09-04 the permission behind a purpose was checked ONCE, when the token was minted
+   * by POST /api/terminal/authorize. Consumption verified the token's user, restaurant, terminal,
+   * purpose and expiry — but never asked again whether that user may still do the thing.
+   *
+   * A token was therefore BEARER AUTHORITY: anything holding one could spend it and the acting
+   * route re-verified nothing. Found by effect while proving Ship 2's gate — a probe minted a
+   * walkout token for a waiter directly, bypassing the only place the check lives, and the walkout
+   * route accepted it and closed the table.
+   *
+   * A minted token is also not instantaneous. It carries a TTL, and in that window a manager can
+   * be demoted, removed from the venue, or have the permission unticked. With a single check, a
+   * token minted before a demotion stays spendable until it expires.
+   *
+   * OPTIONAL, deliberately. Passing it opts a caller into the stricter behaviour. `refund` and
+   * `cash_settlement` are unchanged in this ship: widening an auth path every till depends on is
+   * its own change with its own verification, not a rider on this one.
+   */
+  requirePermission?: Permission
 }
 
 type TokenRow = {
@@ -95,6 +120,44 @@ export async function consumeAuthorizationToken(
   } = params
 
   const nowIso = new Date().toISOString()
+
+  /**
+   * BEFORE the consuming UPDATE, so a token that should not exist is never spent.
+   *
+   * Checking after would burn the token on the way to refusing, which turns a permission error
+   * into a second problem: the manager's authorisation is gone and they have to PIN in again for a
+   * refusal they will meet identically the second time.
+   *
+   * A denial is recorded as an authorization_event with the same shape as every other, so "someone
+   * tried to spend a token they were not entitled to" is visible rather than inferred from a
+   * missing success.
+   */
+  if (params.requirePermission) {
+    let allowed = false
+    try {
+      allowed = await authorize(expectedUserId, expectedRestaurantId, params.requirePermission)
+    } catch (permErr) {
+      // FAILS CLOSED. Not being able to read a permission is not permission.
+      console.error('[consume-authorization-token] permission check failed', permErr)
+      allowed = false
+    }
+    if (!allowed) {
+      await recordAuthorizationEvent(supabase, {
+        event_type: 'denied',
+        actor_user_id: expectedUserId,
+        restaurant_id: expectedRestaurantId,
+        terminal_id: expectedTerminalId,
+        token_id: tokenId,
+        detail: {
+          reason: 'missing_permission',
+          action: 'consume_token',
+          permission: params.requirePermission,
+          purpose: expectedPurpose,
+        },
+      })
+      return { ok: false, reason: 'missing_permission' }
+    }
+  }
 
   const { data: consumed, error: consumeError } = await supabase
     .from('privileged_authorization_tokens')
