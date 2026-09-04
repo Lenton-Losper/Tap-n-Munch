@@ -278,8 +278,9 @@ export function canTakePaymentByItem(payload: TabLinesPayload | null): boolean {
  * worse than saying nothing: it would record that the person who placed the round paid for it,
  * which is exactly the claim nobody made.
  *
- * PENDING SIGN-OFF along with the rest of the Ship 1b wording -- it reaches reports, not just the
- * screen.
+ * SIGNED BY THE OWNER 2026-09-04 along with the rest of the Ship 1b wording, explicitly on this
+ * reasoning: member_name would record that whoever placed the round paid for it. It reaches
+ * reports, not just the screen, which is why it was signed rather than chosen here.
  */
 export const ALLOCATION_PAYER_AT_TABLE = 'Table';
 

@@ -2,16 +2,19 @@
  * TAKE PAYMENT, BY ITEM (Ship 1b).
  *
  * ============================================================================================
- * NOT YET SIGNED -- PENDING THE OWNER'S SIGN-OFF
+ * SIGNED BY THE OWNER 2026-09-04. Ten strings, pinned as written.
  * ============================================================================================
  *
- * Every string below is shown to a waiter at a table with a customer waiting. None of it ships in
- * a binary until the owner has read it. The lock test (takePaymentCopySignedOff.test.ts) is
- * written against these exact strings so a later edit cannot slip through unnoticed.
+ * Every string below is shown to a waiter at a table with a customer waiting, which is why they
+ * were signed before any binary. The lock test (takePaymentCopySignedOff.test.ts) is written
+ * against these exact strings so a later edit cannot slip through unnoticed.
+ *
+ * SIGNED WITH ONE CHANGE, on TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER -- see the comment on it. The
+ * other nine went in as proposed.
  *
  * The existing labels -- "Settle Selected", "Settle Entire Tab", "Take Cash" -- are UNCHANGED and
  * are deliberately not restated here. The interaction was already right; only what the list shows
- * is different, so only the new wording needs a decision.
+ * is different, so only the new wording needed a decision.
  */
 
 /** The heading above each order's items. {number} is the order number. */
@@ -43,9 +46,20 @@ export const TAKE_PAYMENT_SELECTION_ONE = '1 item — {amount}';
  * for an ambiguous answer. Part-order payments settle through the item ledger, which does not
  * drive the reader -- so offering a card button there would record a card payment nobody took.
  * Cash is the honest answer, and ticking the whole order gets the card back.
+ *
+ * THE OWNER'S EDIT, 2026-09-04. Proposed as "Card takes a whole order. Tick everything on the
+ * order, or take cash." Two faults, both real at a table:
+ *
+ *   - "Card takes a whole order" reads as though the CARD is doing the taking. It is the waiter
+ *     who takes payment; the card is the method. "Card payments cover a whole order" states the
+ *     constraint without making the instrument the actor.
+ *   - "Tick everything on the order" is ambiguous the moment a tab carries several orders, which
+ *     is the exact situation this message appears in -- the waiter has ticked across orders or
+ *     part of one. "Tick the whole order" names the unit; "take cash for these items" names what
+ *     is already selected, so both branches point at something the waiter can see.
  */
 export const TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER =
-  'Card takes a whole order. Tick everything on the order, or take cash.';
+  'Card payments cover a whole order. Tick the whole order, or take cash for these items.';
 
 /**
  * Shown instead of the item list when the server cannot describe this tab line by line -- a tab
